@@ -3,7 +3,7 @@ import * as queue from '@/db/sync-queue'
 import { onEnqueue } from '@/db/sync-queue'
 import * as api from './api'
 import type { DbThread, DbMessage } from './types'
-import { getHeader, getBodyHtml, getBodyText, parseFrom, getAllHeaders, getAttachments, getCalendarEvent } from '@/utils/email'
+import { getHeader, getBodyHtml, getBodyText, parseFrom, getAllHeaders, getAttachments, getCalendarPart, parseCalendarData } from '@/utils/email'
 import { getAccessToken } from './auth'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline'
@@ -56,10 +56,21 @@ function gmailMessageToDbThread(thread: Awaited<ReturnType<typeof api.getThread>
   }
 }
 
-function gmailMessageToDbMessage(msg: Awaited<ReturnType<typeof api.getMessage>>): DbMessage {
+async function gmailMessageToDbMessage(msg: Awaited<ReturnType<typeof api.getMessage>>): Promise<DbMessage> {
   const from = parseFrom(getHeader(msg, 'From'))
   const attachments = getAttachments(msg)
-  const calendarEvent = getCalendarEvent(msg)
+
+  let calendarEvent: DbMessage['calendarEvent'] = undefined
+  const calPart = getCalendarPart(msg)
+  if (calPart) {
+    try {
+      let data = calPart.data
+      if (!data && calPart.attachmentId) {
+        data = await api.getAttachment(calPart.messageId, calPart.attachmentId)
+      }
+      if (data) calendarEvent = parseCalendarData(data)
+    } catch { /* skip calendar parse errors */ }
+  }
 
   return {
     id: msg.id,
@@ -117,19 +128,27 @@ export async function fullSync(): Promise<void> {
       const batch = allThreadIds.slice(i, i + BATCH_SIZE)
       const threads = await Promise.all(batch.map((id) => api.getThread(id)))
 
+      // Convert messages outside transaction (gmailMessageToDbMessage may fetch attachments)
+      const threadData: { dbThread: DbThread; dbMessages: DbMessage[] }[] = []
+      for (const thread of threads) {
+        const dbThread = gmailMessageToDbThread(thread)
+        const dbMessages: DbMessage[] = []
+        for (const msg of thread.messages) {
+          if (msg.labelIds?.includes('DRAFT')) continue
+          dbMessages.push(await gmailMessageToDbMessage(msg))
+        }
+        threadData.push({ dbThread, dbMessages })
+      }
+
       await db.transaction('rw', db.threads, db.messages, async () => {
-        for (const thread of threads) {
-          const dbThread = gmailMessageToDbThread(thread)
+        for (const { dbThread, dbMessages } of threadData) {
           // Preserve snoozedUntil from existing record (may be set locally)
-          const existing = await db.threads.get(thread.id)
+          const existing = await db.threads.get(dbThread.id)
           if (existing?.snoozedUntil) {
             dbThread.snoozedUntil = existing.snoozedUntil
           }
           await db.threads.put(dbThread)
-
-          for (const msg of thread.messages) {
-            if (msg.labelIds?.includes('DRAFT')) continue
-            const dbMsg = gmailMessageToDbMessage(msg)
+          for (const dbMsg of dbMessages) {
             await db.messages.put(dbMsg)
           }
         }
@@ -250,15 +269,19 @@ export async function incrementalSync(): Promise<void> {
 
         if (isInInbox) {
           const dbThread = gmailMessageToDbThread(thread)
+          // Convert messages outside transaction (gmailMessageToDbMessage may fetch attachments)
+          const dbMessages: DbMessage[] = []
+          for (const msg of thread.messages) {
+            if (msg.labelIds?.includes('DRAFT')) continue
+            dbMessages.push(await gmailMessageToDbMessage(msg))
+          }
           // Preserve snoozedUntil from existing record (may be set locally)
           const existing = await db.threads.get(threadId)
           if (existing?.snoozedUntil) {
             dbThread.snoozedUntil = existing.snoozedUntil
           }
           await db.threads.put(dbThread)
-          for (const msg of thread.messages) {
-            if (msg.labelIds?.includes('DRAFT')) continue
-            const dbMsg = gmailMessageToDbMessage(msg)
+          for (const dbMsg of dbMessages) {
             await db.messages.put(dbMsg)
           }
         } else if (!pendingThreadIds.has(threadId)) {

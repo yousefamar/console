@@ -133,12 +133,32 @@ export function getAttachments(message: GmailMessage): AttachmentMeta[] {
   return attachments
 }
 
-export function getCalendarEvent(message: GmailMessage): CalendarEvent | undefined {
-  const calPart = findPart(message.payload, 'text/calendar')
-  if (!calPart?.body.data) return undefined
+export function getCalendarPart(message: GmailMessage): { data?: string; attachmentId?: string; messageId: string } | undefined {
+  const part = findCalendarPart(message.payload)
+  if (!part) return undefined
+  return {
+    data: part.body.data,
+    attachmentId: part.body.attachmentId,
+    messageId: message.id,
+  }
+}
 
-  const ics = decodeBase64Url(calPart.body.data)
+export function parseCalendarData(base64Data: string): CalendarEvent | undefined {
+  const ics = decodeBase64Url(base64Data)
   return parseIcs(ics)
+}
+
+function findCalendarPart(part: GmailMessagePart): GmailMessagePart | null {
+  if (part.mimeType === 'text/calendar') {
+    return (part.body.data || part.body.attachmentId) ? part : null
+  }
+  if (part.parts) {
+    for (const child of part.parts) {
+      const found = findCalendarPart(child)
+      if (found) return found
+    }
+  }
+  return null
 }
 
 function parseIcs(ics: string): CalendarEvent | undefined {
