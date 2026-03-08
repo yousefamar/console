@@ -1,0 +1,68 @@
+import { useUiStore } from '@/store/ui'
+
+const BINDINGS = [
+  { section: 'Navigation', items: [
+    { key: 'j / ↓', action: 'Next thread' },
+    { key: 'k / ↑', action: 'Previous thread' },
+    { key: '/', action: 'Search' },
+  ]},
+  { section: 'Triage', items: [
+    { key: 'e', action: 'Archive (done)' },
+    { key: 'b', action: 'Snooze' },
+    { key: 'u', action: 'Undo' },
+  ]},
+  { section: 'Compose', items: [
+    { key: 'r', action: 'Reply' },
+    { key: 'R', action: 'Reply all' },
+    { key: 'f', action: 'Forward' },
+    { key: 'c', action: 'New message' },
+    { key: '⌘/Ctrl + ↵', action: 'Send' },
+  ]},
+  { section: 'App', items: [
+    { key: 'Esc', action: 'Close / cancel' },
+    { key: 'Shift + T', action: 'Toggle dark mode' },
+    { key: '?', action: 'Toggle this help' },
+  ]},
+]
+
+export function KeybindingHelp() {
+  const setShowKeybindingHelp = useUiStore((s) => s.setShowKeybindingHelp)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={() => setShowKeybindingHelp(false)} />
+
+      <div className="relative z-10 w-96 rounded-sm border border-border bg-surface-1 shadow-lg animate-slide-up">
+        <div className="flex items-center justify-between border-b border-border px-4 py-2">
+          <h3 className="text-sm font-medium text-text-primary">Keyboard shortcuts</h3>
+          <button
+            onClick={() => setShowKeybindingHelp(false)}
+            className="text-xs text-text-tertiary hover:text-text-secondary"
+          >
+            Esc
+          </button>
+        </div>
+
+        <div className="max-h-[60vh] overflow-y-auto p-4 space-y-4">
+          {BINDINGS.map((section) => (
+            <div key={section.section}>
+              <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-text-tertiary">
+                {section.section}
+              </h4>
+              <div className="space-y-1">
+                {section.items.map((item) => (
+                  <div key={item.key} className="flex items-center justify-between">
+                    <span className="text-sm text-text-secondary">{item.action}</span>
+                    <kbd className="rounded-sm border border-border bg-surface-2 px-1.5 py-0.5 text-xs font-mono text-text-tertiary">
+                      {item.key}
+                    </kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}

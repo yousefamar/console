@@ -1,0 +1,204 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   DESIGN TOKENS — CSS custom properties for the color system.
+   Dark/light mode controlled by the `dark` class on <html>.
+   Change colors here to reskin the entire app.
+   ========================================================================== */
+
+:root {
+  /* Light mode */
+  --surface-0: #ffffff;
+  --surface-1: #f7f7f7;
+  --surface-2: #efefef;
+  --surface-3: #e5e5e5;
+
+  --border: #e0e0e0;
+  --border-strong: #c7c7c7;
+
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-tertiary: #a3a3a3;
+  --text-inverse: #ffffff;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-muted: #dbeafe;
+
+  --destructive: #dc2626;
+  --destructive-muted: #fee2e2;
+
+  --success: #16a34a;
+  --warning: #d97706;
+}
+
+.dark {
+  --surface-0: #0a0a0a;
+  --surface-1: #141414;
+  --surface-2: #1e1e1e;
+  --surface-3: #2a2a2a;
+
+  --border: #262626;
+  --border-strong: #404040;
+
+  --text-primary: #e5e5e5;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #525252;
+  --text-inverse: #0a0a0a;
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-muted: #1e3a5f;
+
+  --destructive: #ef4444;
+  --destructive-muted: #450a0a;
+
+  --success: #22c55e;
+  --warning: #f59e0b;
+}
+
+/* ==========================================================================
+   BASE STYLES
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  color: var(--text-primary);
+  background: var(--surface-0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Mobile: disable iframe touch capture so swipe gestures work */
+@media (max-width: 767px) {
+  iframe {
+    pointer-events: none;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+
+/* ==========================================================================
+   TIPTAP EDITOR STYLES
+   ========================================================================== */
+
+.tiptap-editor .ProseMirror {
+  outline: none;
+  min-height: 80px;
+  padding: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.tiptap-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  height: 0;
+}
+
+.tiptap-editor .ProseMirror p {
+  margin: 0 0 0.25em 0;
+}
+
+.tiptap-editor .ProseMirror strong {
+  font-weight: 600;
+}
+
+.tiptap-editor .ProseMirror em {
+  font-style: italic;
+}
+
+.tiptap-editor .ProseMirror code {
+  background: var(--surface-2);
+  padding: 0.1em 0.3em;
+  border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.tiptap-editor .ProseMirror pre {
+  background: var(--surface-2);
+  padding: 0.5rem;
+  border-radius: 2px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+
+.tiptap-editor .ProseMirror pre code {
+  background: none;
+  padding: 0;
+}
+
+.tiptap-editor .ProseMirror blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 0.75rem;
+  margin: 0.5em 0;
+  color: var(--text-secondary);
+}
+
+.tiptap-editor .ProseMirror ul,
+.tiptap-editor .ProseMirror ol {
+  padding-left: 1.25rem;
+  margin: 0.25em 0;
+}
+
+.tiptap-editor .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.75em 0;
+}
+
+.tiptap-editor .ProseMirror a {
+  color: var(--accent);
+  text-decoration: underline;
+}
