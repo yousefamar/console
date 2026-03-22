@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import type { DbMessage } from '@/gmail/types'
 import { formatDate } from '@/utils/date'
 import { parseAddressList } from '@/utils/email'
@@ -15,7 +15,7 @@ interface MessageViewProps {
   visible: boolean
 }
 
-export function MessageView({ message, isLast, visible }: MessageViewProps) {
+export const MessageView = memo(function MessageView({ message, isLast, visible }: MessageViewProps) {
   const [collapsed, setCollapsed] = useState(!isLast)
   const [menuOpen, setMenuOpen] = useState(false)
   const setReplyMode = useInboxStore((s) => s.setReplyMode)
@@ -120,4 +120,4 @@ export function MessageView({ message, isLast, visible }: MessageViewProps) {
       )}
     </div>
   )
-}
+})

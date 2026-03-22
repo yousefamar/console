@@ -58,7 +58,23 @@ export function pickFromAddress(
 
 export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps) {
   const sendReply = useInboxStore((s) => s.sendReply)
-  const compose = useComposeStore()
+  const from = useComposeStore((s) => s.from)
+  const to = useComposeStore((s) => s.to)
+  const cc = useComposeStore((s) => s.cc)
+  const subject = useComposeStore((s) => s.subject)
+  const bodyHtml = useComposeStore((s) => s.bodyHtml)
+  const quotedHtml = useComposeStore((s) => s.quotedHtml)
+  const attachments = useComposeStore((s) => s.attachments)
+  const setFrom = useComposeStore((s) => s.setFrom)
+  const setTo = useComposeStore((s) => s.setTo)
+  const setCc = useComposeStore((s) => s.setCc)
+  const setSubject = useComposeStore((s) => s.setSubject)
+  const setBody = useComposeStore((s) => s.setBody)
+  const setQuotedHtml = useComposeStore((s) => s.setQuotedHtml)
+  const addAttachment = useComposeStore((s) => s.addAttachment)
+  const addAttachmentFromData = useComposeStore((s) => s.addAttachmentFromData)
+  const removeAttachment = useComposeStore((s) => s.removeAttachment)
+  const reset = useComposeStore((s) => s.reset)
   const userEmail = useUiStore((s) => s.userEmail)
   const toRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -77,7 +93,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
 
         // Find the most recent message received at each alias
         const recency = new Map<string, number>()
-        const allMessages = await db.messages.orderBy('date').reverse().toArray()
+        const allMessages = await db.messages.orderBy('date').reverse().limit(500).toArray()
         for (const msg of allMessages) {
           const recipients = [msg.to, msg.cc].filter(Boolean).join(', ').toLowerCase()
           for (const alias of parsed) {
@@ -99,7 +115,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
   // Set the best "from" address whenever aliases load
   useEffect(() => {
     if (aliases.length > 0) {
-      compose.setFrom(pickFromAddress(aliases, lastMessage, userEmail))
+      setFrom(pickFromAddress(aliases, lastMessage, userEmail))
     }
   }, [aliases]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -112,14 +128,14 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
     if (!lastMessage && mode !== 'compose') return
 
     if (mode === 'reply' && lastMessage) {
-      compose.setTo(lastMessage.fromEmail === userEmail ? lastMessage.to : `${lastMessage.from} <${lastMessage.fromEmail}>`)
-      compose.setSubject(
+      setTo(lastMessage.fromEmail === userEmail ? lastMessage.to : `${lastMessage.from} <${lastMessage.fromEmail}>`)
+      setSubject(
         lastMessage.subject.startsWith('Re:') ? lastMessage.subject : `Re: ${lastMessage.subject}`,
       )
     } else if (mode === 'replyAll' && lastMessage) {
-      compose.setTo(`${lastMessage.from} <${lastMessage.fromEmail}>`)
+      setTo(`${lastMessage.from} <${lastMessage.fromEmail}>`)
       // Filter out whichever alias we're sending from
-      const fromEmail = compose.from || userEmail
+      const fromEmail = from || userEmail
       const allRecipients = [lastMessage.to, lastMessage.cc].filter(Boolean).join(', ')
       const aliasEmails = aliases.map((a) => a.email.toLowerCase())
       const filtered = allRecipients
@@ -130,13 +146,13 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
           return !lower.includes(fromEmail.toLowerCase()) && !aliasEmails.some((a) => lower.includes(a))
         })
         .join(', ')
-      compose.setCc(filtered)
-      compose.setSubject(
+      setCc(filtered)
+      setSubject(
         lastMessage.subject.startsWith('Re:') ? lastMessage.subject : `Re: ${lastMessage.subject}`,
       )
     } else if (mode === 'forward' && lastMessage) {
-      compose.setTo('')
-      compose.setSubject(
+      setTo('')
+      setSubject(
         lastMessage.subject.startsWith('Fwd:') ? lastMessage.subject : `Fwd: ${lastMessage.subject}`,
       )
 
@@ -144,7 +160,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
       const nonInline = (lastMessage.attachments ?? []).filter((a: AttachmentMeta) => !a.contentId)
       if (nonInline.length > 0) {
         loadForwardAttachments(lastMessage.id, nonInline).then((atts) => {
-          if (atts.length > 0) compose.addAttachmentFromData(atts)
+          if (atts.length > 0) addAttachmentFromData(atts)
         })
       }
     }
@@ -175,7 +191,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
     onUpdate: ({ editor: e }) => {
       const md = e.storage.markdown.getMarkdown()
       const html = e.getHTML()
-      compose.setBody(md, html)
+      setBody(md, html)
     },
     autofocus: mode === 'reply' || mode === 'replyAll' ? 'end' : false,
     onCreate: () => {
@@ -201,14 +217,14 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
           `<br>` +
           originalBody +
           `</div>`
-        compose.setQuotedHtml(quoted)
+        setQuotedHtml(quoted)
       } else if (mode === 'reply' || mode === 'replyAll') {
         const quoted =
           `<br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${msgDate} ${esc(lastMessage.from)} &lt;${esc(lastMessage.fromEmail)}&gt; wrote:<br></div>` +
           `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">` +
           originalBody +
           `</blockquote></div>`
-        compose.setQuotedHtml(quoted)
+        setQuotedHtml(quoted)
       }
     },
   })
@@ -219,21 +235,21 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
 
     try {
       // Read HTML directly from editor to avoid stale compose state
-      const editorHtml = editor?.getHTML() ?? compose.bodyHtml
+      const editorHtml = editor?.getHTML() ?? bodyHtml
       // Wrap user content in a div, then append quoted content outside it
       // This ensures Gmail treats them as separate blocks (user text above the ⋯ expander)
-      let html = compose.quotedHtml
-        ? `<div dir="ltr">${editorHtml}</div>${compose.quotedHtml}`
+      let html = quotedHtml
+        ? `<div dir="ltr">${editorHtml}</div>${quotedHtml}`
         : editorHtml
-      if (!html && !compose.to) return
+      if (!html && !to) return
 
       const inReplyTo = lastMessage?.headers['message-id'] ?? undefined
       const references = lastMessage?.headers['references']
         ? `${lastMessage.headers['references']} ${inReplyTo}`
         : inReplyTo
 
-      const attachments = compose.attachments.length > 0
-        ? compose.attachments.map((a) => ({
+      const sendAttachments = attachments.length > 0
+        ? attachments.map((a) => ({
             filename: a.filename,
             mimeType: a.mimeType,
             data: a.data,
@@ -241,23 +257,23 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
         : undefined
 
       await sendReply({
-        from: compose.from || undefined,
-        to: compose.to,
-        cc: compose.cc || undefined,
-        subject: compose.subject,
+        from: from || undefined,
+        to: to,
+        cc: cc || undefined,
+        subject: subject,
         html,
         inReplyTo,
         references,
-        attachments,
+        attachments: sendAttachments,
       })
 
-      compose.reset()
+      reset()
       editor?.commands.clearContent()
       onClose()
     } finally {
       sendingRef.current = false
     }
-  }, [compose, lastMessage, sendReply, editor, onClose])
+  }, [from, to, cc, subject, bodyHtml, quotedHtml, attachments, lastMessage, sendReply, editor, onClose, reset])
 
   // Cmd+Enter to send
   useEffect(() => {
@@ -275,7 +291,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
     const files = e.target.files
     if (!files) return
     for (const file of files) {
-      compose.addAttachment(file)
+      addAttachment(file)
     }
     // Reset so same file can be re-selected
     e.target.value = ''
@@ -285,7 +301,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
     e.preventDefault()
     const files = e.dataTransfer.files
     for (const file of files) {
-      compose.addAttachment(file)
+      addAttachment(file)
     }
   }
 
@@ -303,7 +319,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
             onClick={() => setShowFromPicker(!showFromPicker)}
             className="flex items-center gap-1 text-sm text-text-primary hover:text-text-secondary transition-colors duration-fast"
           >
-            <span>{compose.from || userEmail}</span>
+            <span>{from || userEmail}</span>
             <ChevronDown size={12} className="text-text-tertiary" />
           </button>
           {showFromPicker && (
@@ -312,11 +328,11 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
                 <button
                   key={alias.email}
                   onClick={() => {
-                    compose.setFrom(alias.email)
+                    setFrom(alias.email)
                     setShowFromPicker(false)
                   }}
                   className={`flex w-full items-center gap-2 px-3 py-1.5 text-sm transition-colors duration-fast hover:bg-surface-2 ${
-                    (compose.from || userEmail) === alias.email ? 'text-accent' : 'text-text-primary'
+                    (from || userEmail) === alias.email ? 'text-accent' : 'text-text-primary'
                   }`}
                 >
                   <span>{alias.email}</span>
@@ -331,18 +347,18 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
       <div className="flex items-center gap-2 border-b border-border px-4 py-1.5">
         <span className="text-xs text-text-tertiary w-8">To</span>
         <ContactAutocomplete
-          value={compose.to}
-          onChange={compose.setTo}
+          value={to}
+          onChange={setTo}
           placeholder="recipient@email.com"
           inputRef={toRef}
         />
       </div>
-      {(mode === 'replyAll' || mode === 'compose' || compose.cc) && (
+      {(mode === 'replyAll' || mode === 'compose' || cc) && (
         <div className="flex items-center gap-2 border-b border-border px-4 py-1.5">
           <span className="text-xs text-text-tertiary w-8">Cc</span>
           <ContactAutocomplete
-            value={compose.cc}
-            onChange={compose.setCc}
+            value={cc}
+            onChange={setCc}
             placeholder="cc@email.com"
           />
         </div>
@@ -351,8 +367,8 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
         <div className="flex items-center gap-2 border-b border-border px-4 py-1.5">
           <span className="text-xs text-text-tertiary w-8">Sub</span>
           <input
-            value={compose.subject}
-            onChange={(e) => compose.setSubject(e.target.value)}
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
             className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary"
             placeholder="Subject"
           />
@@ -369,9 +385,9 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
       </div>
 
       {/* Attachment chips */}
-      {compose.attachments.length > 0 && (
+      {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-4 pb-2">
-          {compose.attachments.map((att) => (
+          {attachments.map((att) => (
             <div
               key={att.id}
               className="flex items-center gap-1.5 rounded-sm border border-border bg-surface-2 px-2 py-0.5 text-xs"
@@ -380,7 +396,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
               <span className="text-text-secondary truncate max-w-[150px]">{att.filename}</span>
               <span className="text-text-tertiary">({formatFileSize(att.size)})</span>
               <button
-                onClick={() => compose.removeAttachment(att.id)}
+                onClick={() => removeAttachment(att.id)}
                 className="text-text-tertiary hover:text-destructive transition-colors duration-fast"
               >
                 <X size={12} />
@@ -419,7 +435,7 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
         </div>
         <button
           onClick={() => {
-            compose.reset()
+            reset()
             editor?.commands.clearContent()
             onClose()
           }}

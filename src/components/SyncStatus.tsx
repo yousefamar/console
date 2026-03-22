@@ -2,13 +2,21 @@ import { useState, useRef, useCallback } from 'react'
 import { useUiStore } from '@/store/ui'
 import { getConflicts, getPending } from '@/db/sync-queue'
 import { processQueue } from '@/gmail/sync'
+import { processChatQueue } from '@/matrix/sync'
 import type { QueuedAction } from '@/gmail/types'
 import clsx from 'clsx'
 
 export function SyncStatus() {
-  const syncStatus = useUiStore((s) => s.syncStatus)
-  const syncDetail = useUiStore((s) => s.syncDetail)
+  const emailStatus = useUiStore((s) => s.syncStatus)
+  const emailDetail = useUiStore((s) => s.syncDetail)
+  const matrixStatus = useUiStore((s) => s.matrixSyncStatus)
+  const matrixDetail = useUiStore((s) => s.matrixSyncDetail)
   const queueCount = useUiStore((s) => s.queueCount)
+
+  // Show the worst status across both sync systems
+  const statusPriority = { error: 3, offline: 2, syncing: 1, idle: 0 } as const
+  const syncStatus = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailStatus : matrixStatus
+  const syncDetail = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailDetail : matrixDetail
   const [open, setOpen] = useState(false)
   const [details, setDetails] = useState<{ pending: QueuedAction[]; conflicts: QueuedAction[] } | null>(null)
   const [copied, setCopied] = useState(false)
@@ -47,7 +55,7 @@ export function SyncStatus() {
   async function handleFlush() {
     setFlushing(true)
     try {
-      await processQueue()
+      await Promise.all([processQueue(), processChatQueue()])
       const [pending, conflicts] = await Promise.all([getPending(), getConflicts()])
       setDetails({ pending, conflicts })
     } finally {

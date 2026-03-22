@@ -1,192 +1,214 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center, starting with an offline-first Gmail inbox client. Inspired by Inbox by Gmail's inbox-zero philosophy: every email is triaged (archived, snoozed, or replied to). No labels, no folders, no categories, no delete — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders, no delete — just fast triage.
 
 ## Architecture
 - **Pure web app (PWA-ready)** — works in any browser, including mobile
-- **Offline-first** — all mutations happen locally first, sync to Gmail when online
-- **Stateless post-sync** — app state is derived from synced data + local queue
-- **Cloudflare Pages** — SPA served from CDN + two Pages Functions for OAuth token exchange/refresh
-- **No traditional backend** — Gmail API + People API directly from browser; Cloudflare Worker only holds `client_secret` for OAuth code exchange
+- **Offline-first** — all mutations happen locally first, sync when online
+- **Stateless post-sync** — app state derived from synced data + local queue
+- **Cloudflare Pages** — SPA from CDN + two Pages Functions for OAuth token exchange/refresh
+- **No backend** — Gmail API + People API + Matrix CS API directly from browser; Cloudflare Worker only holds `client_secret` for OAuth
 
 ## Tech Stack
-- React 19 + TypeScript + Vite
-- Zustand (state management)
-- Dexie.js (IndexedDB wrapper for local storage)
-- Tiptap 3 + tiptap-markdown (Obsidian-style live markdown compose)
-- DOMPurify (safe email HTML rendering)
-- Tailwind CSS 3 (styling, all tokens in tailwind.config.ts)
-- Lucide React (icons)
-- Vitest (testing)
-- Cloudflare Pages + Pages Functions (hosting + OAuth backend)
-- Wrangler (Cloudflare dev/deploy CLI)
+React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, DOMPurify, Tailwind CSS 3, Lucide React, Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits)
 
 ## Project Structure
 ```
 src/
-  main.tsx            — Entry point
-  App.tsx             — Auth gate + main app shell
-  index.css           — CSS variables (design tokens) + base styles
-  __tests__/          — Vitest tests for utils, queue, etc.
-  db/                 — Dexie database schema (v3) + offline mutation queue
-    index.ts          — Dexie DB (threads, messages, attachmentData, queue, meta)
-    sync-queue.ts     — Offline mutation queue with immediate flush on enqueue
-  gmail/              — Gmail API client, OAuth auth, sync engine
-    types.ts          — All TypeScript types (DB + API, incl. AttachmentMeta, DbAttachmentData)
-    auth.ts           — Google OAuth2 authorization code flow (access token in localStorage, refresh token in IndexedDB)
-    api.ts            — Gmail REST API + People API wrapper (contacts search, attachment fetch)
-    sync.ts           — Full + incremental sync, queue processing, snooze checks
-  store/              — Zustand stores
-    inbox.ts          — Thread list, selection, triage actions, per-message reply targeting
-    compose.ts        — Compose/reply state, file attachments (base64), quotedHtml
-    ui.ts             — UI state (modals, dark mode, sync status)
-  hooks/              — React hooks
-    useKeybindings.ts — Global vim-style keyboard shortcuts
-    useSync.ts        — Sync loop + live queries + three-phase preload chain
-    useMediaQuery.ts  — Responsive breakpoint detection
-    useSwipeActions.ts — Mobile swipe gesture handler
-  components/         — All UI components
-    ContactAutocomplete.tsx — Email autocomplete (local DB + People API, sorted by recency)
-    AttachmentBar.tsx — Attachment display with download/preview (images, PDFs)
-    ComposeEditor.tsx — Tiptap compose with attachments, drag-and-drop, forward carry-over
-    CalendarEventCard.tsx — Inline calendar invite rendering (parsed from ICS)
-    DateTimePicker.tsx — Custom date/time picker (Monday-first, 24h)
-    MessageView.tsx   — Single message with per-message reply/fwd menu (⋯ button)
-    ThreadView.tsx    — All thread messages + compose, supports replyToMessage targeting
-  utils/              — Email parsing, date formatting, shared helpers
-    email.ts          — Parse emails, extract attachments, build MIME (multipart/mixed for attachments)
-    email-cache.ts    — Pre-built blob URLs for email iframes with CID inline image resolution
-    attachment-cache.ts — Attachment blob cache (IndexedDB), preload, eviction on archive
-    date.ts           — Relative time (past + future), date formatting, snooze time calculation
-    html.ts           — Shared HTML entity decoding (decodeEntities)
-functions/            — Cloudflare Pages Functions (OAuth backend)
-  api/auth/
-    exchange.ts       — POST /api/auth/exchange — code-for-tokens swap
-    refresh.ts        — POST /api/auth/refresh — refresh token for new access token
-  tsconfig.json       — Separate TS config for Workers runtime
-wrangler.jsonc        — Cloudflare Pages config
-.dev.vars             — Local secrets for Cloudflare dev (gitignored)
-.claude/
-  settings.json       — Claude Code hooks (runs tests on Stop)
+  main.tsx, App.tsx, index.css
+  __tests__/           — Vitest tests (220 tests, 12 files)
+  db/
+    index.ts           — Dexie v4: threads, messages, attachmentData, chatRooms, chatMessages, queue, meta
+    sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
+  gmail/
+    types.ts           — Gmail API + DB types (DbThread, DbMessage, QueuedAction, etc.)
+    auth.ts            — Google OAuth2 code flow (popup → backend exchange → refresh token in IndexedDB)
+    api.ts             — Gmail REST + People API wrapper
+    sync.ts            — Full + incremental email sync, queue processing, snooze checks
+  matrix/
+    types.ts           — Matrix API + DB types (DbChatRoom, DbChatMessage)
+    auth.ts            — Matrix password login, .well-known discovery, localStorage session
+    api.ts             — Matrix CS REST API (sync, send, send encrypted, read receipts, typing, media URLs, pagination)
+    crypto.ts          — E2EE via OlmMachine WASM: init, decrypt, encrypt, key sharing, outgoing request routing, cross-signing bootstrap & device verification
+    key-backup.ts      — SSSS recovery key restore: base58 decode, HKDF, AES-CTR decrypt, importExportedRoomKeys, cross-signing key import from SSSS
+    decrypt-media.ts   — AES-CTR-256 decrypt/encrypt for Matrix encrypted attachments
+    sync.ts            — Full + incremental Matrix sync, chat queue, bridge detection, E2EE-integrated event processing
+  store/
+    inbox.ts           — Email: thread list, selection, archive, snooze, reply, send, undo
+    chat.ts            — Chat: room list, selection, mark read, send, snooze, pagination, undo
+    compose.ts         — Email compose/reply state, file attachments (base64), quotedHtml
+    ui.ts              — Modals, dark mode, sync status, active pane (email/chat)
+  hooks/
+    useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
+    useSync.ts         — Dual sync loop (email + Matrix), live queries, preload chain
+    useMediaQuery.ts, useSwipeActions.ts
+  components/
+    Layout.tsx         — Mail/Chat tab toggle, split pane, pane-aware footer hints
+    ThreadList.tsx, ThreadListItem.tsx, ThreadView.tsx, MessageView.tsx
+    ChatRoomList.tsx, ChatRoomListItem.tsx, ChatRoomView.tsx, ChatMessageBubble.tsx, ChatComposeInput.tsx
+    MatrixLoginModal.tsx — Connect Matrix account (homeserver + credentials + password visibility toggle)
+    AccountModal.tsx   — Account management, Matrix key backup restore via recovery key, device verification via cross-signing
+    AgentTab.tsx          — Agent session list + session view container
+    AgentSessionView.tsx  — Message stream, status bar, tool approval, prompt input
+    AgentMessageBlock.tsx — Renders text/thinking/tool_use/tool_result/error/result blocks
+    AgentToolApproval.tsx — Bottom sheet for tool approval (Allow/Deny/Allow-all)
+    AgentPromptInput.tsx  — Prompt input with send, new session, interrupt
+    ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
+    DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
+    EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
+  utils/
+    email.ts, email-cache.ts, attachment-cache.ts, date.ts, html.ts
+agent-hub/               — Local Node.js server for Claude Code agent integration
+  src/
+    index.ts             — HTTP + WebSocket server (Hono-less, native Node)
+    session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
+    protocol.ts          — Shared types: ClientMessage, HubMessage, Claude NDJSON protocol
+    __tests__/           — Session + protocol tests (45 tests)
+functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
+docs/
+  agent-architecture.md  — Full agent system documentation
 ```
 
 ## Design System
-- **All design tokens live in two places:** `tailwind.config.ts` (spacing, typography, animations) and `src/index.css` (CSS custom properties for colors)
-- **Dark mode:** Toggle via `dark` class on `<html>`. Email iframes have a separate dark mode toggle.
-- **Email dark mode:** Uses CSS `filter: invert(1) hue-rotate(180deg)` injected via DOM (no iframe reload). Forces `color-scheme: only light` via meta tag so emails always render light variant before inversion.
-- **Philosophy:** Dense, monochrome, minimal. Sharp corners. System fonts. 100ms max transitions.
+- Tokens in `tailwind.config.ts` (spacing, typography, animations) + `src/index.css` (CSS custom properties)
+- Dark mode via `dark` class on `<html>`. Email iframes have separate dark mode toggle (CSS invert filter, no reload).
+- Philosophy: dense, monochrome, minimal. Sharp corners. System fonts. 100ms max transitions.
 
-## Key Patterns
-- **Optimistic mutations:** All triage actions (archive, snooze) update local state immediately, then queue for Gmail sync
-- **Immediate queue flush:** When actions are enqueued, processQueue fires within 500ms (debounced). No waiting for next sync interval.
-- **No delete:** User never deletes emails. Only archive (done) and snooze.
-- **Auto-archive on send:** Replying/forwarding auto-archives the thread (inbox-zero: dealt with = done). Undo available for 5s.
-- **Undo:** 5-second toast with undo for archive. Undo removes pending archive from queue and enqueues unarchive.
-- **Conflict detection:** Before sending a queued reply, check if new messages arrived in the thread.
-- **Sync race protection:** Incremental sync won't remove threads that have pending unarchive/unsnooze in the queue.
-- **Tinder UX:** After archiving/snoozing, the next thread auto-selects
-- **Pre-rendered iframes:** All email iframes for all inbox threads are mounted in DOM (display:none for non-selected). Switching threads is instant CSS toggle.
-- **CID inline images:** Resolved during email preload by fetching attachment data and replacing cid: URLs with blob URLs.
-- **Email iframe dark toggle:** Injects/removes style element via contentDocument — no iframe reload on toggle.
-- **Three-phase preload:** sync → email iframes (with CID) → attachment data. Each yields between items.
-- **Attachment eviction:** Cached attachment blobs evicted from IndexedDB on archive to keep storage lean.
-- **Auth code flow:** Uses Google's `initCodeClient` (popup mode) to get an authorization code, exchanged for access + refresh tokens via Cloudflare Pages Functions backend. Refresh token stored in IndexedDB (`meta` table, key `'refresh_token'`). Access token refreshed silently via `/api/auth/refresh` — no popups, no user interaction. Proactive refresh 5 min before expiry via `scheduleTokenRefresh`. On 401, auto-retries with refresh before logging out. Only truly revoked refresh tokens trigger re-auth banner.
-- **Snippets:** Gmail API snippets contain HTML entities — decoded via `decodeEntities` in `utils/html.ts` (shared by ThreadListItem and MessageView).
-- **Thread labelIds:** Merged from ALL messages in thread (not just latest) so threads show in inbox if any message has INBOX label.
-- **Thread sender:** Uses first message (OP) sender, not latest message sender.
-- **No drafts:** Drafts are intentionally not supported. This is an inbox-zero tool — compose and send immediately, or snooze and come back later. No half-written replies. See `docs/drafts-architecture.md` for how drafts previously worked.
-- **Double-send guard:** `handleSend` in ComposeEditor uses a `sendingRef` to prevent duplicate invocations.
-- **Snooze is local-only:** Gmail API has no snooze endpoint. Snooze = archive on Gmail + local timer. `checkSnoozedThreads` in sync loop unarchives threads when snooze expires. Sync preserves snoozed threads: incremental sync checks `snoozedUntil` before deleting non-inbox threads, full sync excludes snoozed from bulk delete, and Ctrl+click resync saves/restores snoozed threads across the clear.
-- **Undo re-selects:** After undoing an archive/delete, the restored thread is re-selected and its messages reloaded. Prevents accidentally triaging the wrong thread.
-- **Keybinding modifier guard:** Single-key shortcuts (e/b/r/c etc.) ignore Ctrl/Cmd/Alt modifiers to avoid hijacking OS shortcuts like Ctrl+C.
-- **Calendar invite parsing:** Inline `text/calendar` parts extracted from `multipart/alternative`, parsed into structured `CalendarEvent` data (ICS parser in `utils/email.ts`), rendered as a card above the email body. Attachments inside `multipart/alternative` are skipped by `getAttachments` to avoid duplicate ICS files.
-- **Send-as aliases:** Fetched from Gmail `/settings/sendAs` during full sync, cached in `meta` table. `pickFromAddress` auto-selects the best alias: exact match (alias in To/Cc) → domain match → default. From dropdown shown only when multiple aliases exist, sorted by recency of received email.
-- **DRAFT filtering:** Gmail API returns draft messages as part of threads. Sync filters out messages with DRAFT label so they don't appear as regular messages.
+## Key Patterns (Email)
+- **Optimistic mutations** — triage updates local state immediately, queues for Gmail sync
+- **Immediate queue flush** — processQueue fires within 500ms of enqueue (debounced)
+- **No delete** — only archive (done) and snooze
+- **Auto-archive on send** — replying auto-archives (inbox-zero: dealt with = done). 5s undo.
+- **Tinder UX** — after archiving/snoozing, next thread auto-selects
+- **Pre-rendered iframes** — all email iframes mounted in DOM (display:none), instant CSS toggle on selection
+- **CID inline images** — resolved during preload (attachment fetch → blob URL replacement)
+- **Three-phase preload** — sync → email iframes (with CID) → attachment data
+- **Attachment eviction** — cached blobs evicted from IndexedDB on archive
+- **Conflict detection** — checks for new thread messages before sending queued replies
+- **Sync race protection** — incremental sync preserves threads with pending unarchive/unsnooze
+- **Snooze is local-only** — Gmail API has no snooze. Snooze = archive + local timer. Sync preserves snoozed threads.
+- **Auth code flow** — Google `initCodeClient` popup → backend exchange → refresh token in IndexedDB. Proactive refresh 5min before expiry. 401 → auto-retry with refresh → re-auth banner only if refresh token revoked.
+- **Thread labelIds** — merged from ALL messages (not just latest)
+- **Thread sender** — first message (OP) sender, not latest
+- **No drafts** — intentional. Compose and send, or snooze. See `docs/drafts-architecture.md`.
+- **DRAFT filtering** — sync filters out messages with DRAFT label
+- **Send-as aliases** — fetched from Gmail `/settings/sendAs` during full sync. `pickFromAddress` auto-selects: exact match → domain match → default.
+- **Calendar invites** — inline `text/calendar` parsed into structured data, rendered as card above email body
+- **Snippets** — Gmail API snippets decoded via `decodeEntities` (shared by ThreadListItem and MessageView)
+
+## Key Patterns (Chat / Matrix)
+- **Direct REST API** — no matrix-js-sdk. Same architecture pattern as Gmail integration.
+- **Unified inbox** — chat rooms with unread messages appear in Chat tab. Tab key switches mail/chat.
+- **Inbox-zero semantics** — `e` marks room read (leaves inbox). New messages bring it back.
+- **Optimistic mark-read** — Zustand `set()` fires synchronously (instant UI), DB write + queue enqueue happen in background. `optimisticallyRemoved` Set prevents Dexie live query from re-adding rooms before DB write confirms (same pattern as email inbox.ts).
+- **Auth** — Matrix password login + .well-known discovery. Session in localStorage.
+- **Long-polling sync** — incremental sync uses Matrix long-polling (`timeout: 30000`) for near-instant message delivery. Continuous `while (!stopped)` loop, 5s backoff on error. Full sync uses `timeout: 0`. Sync lock prevents concurrent syncs from interleaving.
+- **Per-room live queries** — each `RoomMessages` component has its own `useLiveQuery` scoped to that room's messages. Avoids one giant query loading all messages for all rooms.
+- **E2EE** — full Olm/Megolm decryption + encryption via `@matrix-org/matrix-sdk-crypto-wasm` (OlmMachine WASM state machine). Crypto init'd at startup, keys persisted in IndexedDB (`console-crypto-store`). Sync feeds `to_device` events, `device_lists`, and OTK counts to OlmMachine. Outgoing requests (key upload/query/claim/to-device) routed automatically. Encrypted rooms detected via `m.room.encryption` state event; messages encrypted via `shareRoomKey` + `encryptRoomEvent` before sending. Encrypted events are decrypted then dispatched by inner type (reactions, redactions, stickers, edits — not just messages). Falls back to "🔒 Encrypted message" placeholder if decryption fails.
+- **Key backup restore** — SSSS recovery key (base58) → decrypt backup key → download all sessions from `/room_keys/keys` → `importExportedRoomKeys` into OlmMachine. Also imports cross-signing private keys from SSSS and self-signs device. UI in AccountModal. Clears cached messages after import to force re-decryption.
+- **Cross-signing & device verification** — `bootstrapAndVerifyDevice(password)` creates new cross-signing keys, uploads to server via UIA (`keys/device_signing/upload` with `m.login.password`), self-signs this device, and verifies all other user devices. Required for Beeper bridge to accept encrypted messages. UI in AccountModal ("Verify this device"). IMPORTANT: `bootstrapCrossSigning(true)` overwrites server cross-signing keys — always verify ALL devices after bootstrap, otherwise other devices become untrusted. Cross-signing private keys are NOT persisted across page reloads by OlmMachine's IndexedDB store.
+- **Image sending** — paste (Ctrl+V) or file picker. Encrypted rooms: AES-CTR-256 encrypt attachment → upload as `application/octet-stream` → send with `file` field containing key/IV/hash. Caption: `body` = caption text, `filename` = actual filename (bridges use body as caption).
+- **Send failure visibility** — local echo shows "Sending..." until sync echo confirms delivery. `sendFailed` field on DbChatMessage shows error in red. Queue retries 3 times before marking failed.
+- **Local echo lifecycle** — local echo (ID starts with `~`) kept until server echo arrives via sync (matched by body content). NOT deleted on API success — bridge may reject after Matrix accepts (e.g., untrusted device).
+- **Room hard-reload** — right-click a room in the list to clear its cached messages and re-fetch from server.
+- **Bridge detection** — auto-detects network from ghost user IDs (`@whatsapp_*` → WA icon). Bridge bot users (`@whatsappbot:*`) filtered from room names and member counts.
+- **Pre-rendered room views** — all unread room message lists mounted in DOM (display:none), toggled on selection (same pattern as email ThreadView).
+- **Pinned favourites** — rooms tagged `m.favourite` shown as a 4-wide avatar grid at top of chat list, always visible regardless of read state. Unread dot indicator, ring for selected room, fallback to initial letter on broken/missing avatars.
+- **Send-then-stay** — sending a message marks room read but keeps it in the sidebar. Room only drops from list when user presses Esc or switches to another room (if the previous room is read and not a favourite).
+- **Unread count badges** — `notification_count` from server sync displayed as monochrome text next to timestamp. Incremented locally on new messages from others; cleared on mark-read.
+- **Edit/delete diffs** — edits show word-level diffs (red strikethrough for removed, green for added) via `diffWords` from `diff` library. Deleted messages show strikethrough body + "deleted by" label. `originalBody` preserved on first edit; `isDeleted`/`deletedBy` set on redaction.
+- **Unread "New" divider** — timestamp-based divider using `lastReadTs`. `backfillLastReadTs()` converts existing `lastReadEventId` to timestamp by looking up message in DB. Called in `ensureMessages` and `preloadAllRooms`.
+- **Message preloading** — after Matrix sync, `preloadAllRooms()` fetches latest 20 messages for every unread room into IndexedDB. `ensureMessages()` on room select is a no-op if already cached.
+- **Lazy pagination** — older messages paginated on scroll-up (30 per page) via `/messages` API with `prev_batch` token.
+- **Local echo** — sent messages appear instantly with local ID (`~timestamp.random`), queued for Matrix API. Live query auto-updates view on DB write.
+- **Message grouping** — consecutive messages from same sender grouped (5-min gap threshold)
+- **Snooze** — same pattern as email (local timer, re-surfaces when expired). Optimistic UI, DB write in background.
+- **Offline queue** — `chatSend`, `chatMarkRead` use same queue system as email (3-retry limit). Immediate flush on enqueue (500ms debounce), same as email.
+- **Unread resilience** — existing rooms only re-marked unread when genuinely new messages from others arrive in sync batch. Server `notification_count` only trusted for first-time rooms. Prevents stale bridge notifications (LinkedIn, Slack) from overriding local read state.
+- **Name preservation** — on incremental sync (which lacks state events), room names and sender display names are preserved from previous syncs. Sender info gaps filled from cached messages in DB.
+- **Cache reset** — Ctrl+click refresh clears messages + sync token, forces full resync. Keeps room records so read/unread state is preserved.
 
 ## Compose & Quoting
-- **quotedHtml pattern:** Original email body is stored raw in `compose.quotedHtml` (never passed through Tiptap). Tiptap editor is only for the user's new text. At send time, editor HTML + quotedHtml are concatenated. This preserves complex email HTML (tables, inline styles, images) that Tiptap's schema would strip.
-- **Reply quoting:** Gmail-style `On {date} at {time} {sender} wrote:` + `<blockquote>` with left border containing original body.
-- **Forward quoting:** Gmail-style `---------- Forwarded message ---------` + From/Date/Subject/To header block + original body. All wrapped in `<div class="gmail_quote">`.
-- **Date format:** Locale-aware date + time joined with "at" to match Gmail's style.
-- **Forward attachments:** Original non-inline attachments carried over via `loadForwardAttachments` (Promise.all), batch-added to compose store via `addAttachmentFromData(array)`.
+- **quotedHtml** — original email body stored raw, never passed through Tiptap. Editor HTML + quotedHtml concatenated at send. Preserves complex email HTML.
+- **Reply** — Gmail-style `On {date} at {time} {sender} wrote:` + blockquote
+- **Forward** — `---------- Forwarded message ---------` + headers + body in `gmail_quote` div
+- **Forward attachments** — original non-inline attachments carried over via `loadForwardAttachments`
 
 ## Attachments
-- **Metadata** parsed from message payload parts during sync (`getAttachments` walks payload tree, skips `multipart/alternative` children), stored on `DbMessage.attachments`
-- **`hasAttachments`** flag on `DbThread` — paperclip icon in thread list (only counts non-inline attachments)
-- **Blob data** cached in `attachmentData` Dexie table (keyed by attachmentId, indexed by messageId), preloaded after email iframes
-- **Viewing:** Attachment bar per message with file chips. Download button for all types. Preview (overlay) for images and PDFs using browser native rendering.
-- **Composing:** File picker button (Paperclip icon) + drag-and-drop on editor area. Attachment chips with filename, size, and remove (X) button. Files stored as base64 in compose store.
-- **Forwarding:** Original message's non-inline attachments automatically carried over via `loadForwardAttachments` (uses Promise.all). Batch-added via `addAttachmentFromData(ComposeAttachment[])`.
-- **MIME:** `buildRawEmail` produces `multipart/mixed` when attachments present, `multipart/alternative` otherwise. Header-building extracted into shared `buildHeaders` helper.
+- Metadata parsed from payload parts during sync, stored on `DbMessage.attachments`
+- `hasAttachments` flag on `DbThread` (non-inline only)
+- Blob data cached in `attachmentData` table, preloaded after email iframes
+- View: file chips with download + preview (images, PDFs). Compose: file picker + drag-and-drop, base64 in store.
+- MIME: `multipart/mixed` when attachments, `multipart/alternative` otherwise
 
 ## Per-Message Actions
-- Each expanded message has a `⋯` (MoreHorizontal) menu button next to the date
-- Menu options: Reply, Reply all, Forward — each targets that specific message
-- `inbox.replyToMessage` tracks which message is being replied to (falls back to last message for keyboard shortcuts)
-- ComposeEditor uses `initRef` guard to prevent duplicate initialization (React strict mode safe)
+- ⋯ menu on each expanded message: Reply, Reply all, Forward — targets that specific message
+- `inbox.replyToMessage` tracks target (falls back to last message for keyboard shortcuts)
 
 ## Contacts Autocomplete
-- To/Cc fields use `ContactAutocomplete` component (uses shared `parseAddressList` from utils/email.ts)
-- **Local-first:** Mines all sender/to/cc addresses from IndexedDB messages (cached 60s, sorted by recency)
-- **Remote:** Google People API searches saved contacts + "other contacts" (people you've emailed)
-- Local results shown instantly, remote results merged in background (debounced 100ms, fires at 2+ chars)
-- Supports comma-separated multi-recipient with per-token autocomplete
-- Arrow keys navigate, Enter/Tab select, Escape dismiss
-- **Completed address skip:** Autocomplete suppressed when token contains `>` (i.e. already a complete `Name <email>` address)
+- Local-first (mines all addresses from IndexedDB, cached 60s, sorted by recency) + remote (People API, debounced 100ms at 2+ chars)
+- Comma-separated multi-recipient, per-token autocomplete, arrow/Enter/Tab/Escape navigation
 
 ## Responsive Design
-- **Desktop (>=768px):** Split pane — narrow thread list (left) + thread view (right). Keyboard-first.
-- **Mobile (<768px):** Single view — thread list OR thread detail. Tap thread to view, tap "Console" to go back to list.
-- **Mobile swipe:** Swipe right = archive, swipe left = snooze tomorrow. Iframes have pointer-events:none on mobile so swipe captures work.
-- **Mobile modals:** Snooze picker and compose are bottom sheets. Search is full-width from top.
+- Desktop (≥768px): split pane (thread list + detail), keyboard-first
+- Mobile (<768px): single view, tap to navigate. Swipe right = archive/read, left = snooze. Bottom sheets for modals.
+
+## Key Patterns (Agents / Claude Code)
+- **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio`. Same approach as Happy Coder and HAPI.
+- **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
+- **Tool approval via stdin** — `control_response` with `{ behavior: 'allow' }` or `{ behavior: 'deny' }` written to Claude's stdin
+- **WebSocket relay** — Hub exposes `ws://localhost:9877`, Console frontend connects and exchanges JSON messages
+- **Auto-approve** — per-session allowlist of tool names (set via "Allow all" button), resets on page reload
+- **Streaming** — `text_delta` and `thinking_delta` accumulated in store, flushed on complete message
+- **Multi-session** — Hub manages multiple concurrent Claude subprocesses, each with independent state
+- **Session resume** — `--resume <sessionId>` flag continues a prior Claude session
+- **Status line** — auto-derived from tool_use events (e.g., "Reading src/App.tsx...", "Running npm test...")
+- **Health/discovery** — `GET /health` returns hub state; frontend auto-connects on mount, shows setup instructions if hub not running
 
 ## Keybindings (vim-style, desktop only)
-j/k = navigate, e = archive, b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Escape = close, Shift+T = toggle dark mode, Cmd+Enter = send
+j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/agents)
+
+### Agent-specific keybindings
+y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
 
 ## Testing
-- **Framework:** Vitest, configured in `vite.config.ts` with `test.globals: true`
-- **Test files:** `src/__tests__/*.test.ts`
-- **Coverage (148 tests, 9 files):** email parsing, date utils, attachment helpers, sync queue, compose store, inbox store (thread selection, archive, snooze, send, undo), UI store, Gmail API (with fetch mocking, 401 retry), pickFromAddress (alias selection logic)
-- **Dependencies:** `fake-indexeddb` for Dexie-based tests
-- **Note:** `sanitizeHtml` tests skipped (DOMPurify needs DOM env). `attachment-cache` functions tested inline (module imports browser-only deps).
-- **Claude hook:** `.claude/settings.json` runs `npm test` on every `Stop` event (after Claude finishes responding)
-- **Commands:** `npm test` (single run), `npm run test:watch` (watch mode)
-
-## Setup
-1. Create a Google Cloud project
-2. Enable Gmail API and People API
-3. Create OAuth 2.0 credentials (Web application type)
-4. Add `http://localhost:5173` to authorized JavaScript origins
-5. Copy `.env.example` to `.env` and set `VITE_GOOGLE_CLIENT_ID`
-6. Copy `.env.example` comments to `.dev.vars` and set `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` (for Cloudflare Functions)
-7. `npm install && npm run dev`
-8. Sign out by clicking your email address in the header. Sign back in to grant new scopes.
-
-## Deployment (Cloudflare Pages)
-1. Connect GitHub repo in Cloudflare dashboard (or use `npm run deploy`)
-2. Build command: `npm run build`, output directory: `dist`
-3. Set environment secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-4. Add custom domain in Pages settings
-5. Push to `main` = production deploy. Other branches = preview deploys.
+- Vitest, 220 tests across 12 files. `fake-indexeddb` for Dexie tests.
+- `.claude/settings.json` hook runs `npm test` on every Stop event.
+- `npm test` (single run), `npm run test:watch` (watch mode)
+- `cd agent-hub && npm test` — hub tests
 
 ## Commands
-- `npm run dev` — Start Vite + Cloudflare Functions concurrently (Vite on 5173 proxies /api/* to Functions on 8788)
-- `npm run build` — Production build
-- `npm run preview` — Preview production build locally with functions
-- `npm run deploy` — Deploy to Cloudflare Pages
-- `npm test` — Run tests
-- `npm run test:watch` — Watch mode tests
-- `npx tsc --noEmit` — Type check SPA
-- `cd functions && npx tsc --noEmit` — Type check Cloudflare Functions
+- `npm run dev` — Vite + Cloudflare Functions (port 5173, proxies /api/* to 8788)
+- `cd agent-hub && npm run dev` — Agent hub server (port 9877)
+- `npm run build` / `npm run preview` / `npm run deploy`
+- `npm test` / `npm run test:watch`
+- `npx tsc --noEmit` — type check SPA
+- `cd agent-hub && npx tsc --noEmit` — type check hub
+- `cd functions && npx tsc --noEmit` — type check Workers
+
+## Setup
+1. Google Cloud project with Gmail API + People API enabled
+2. OAuth 2.0 credentials (Web application), add `http://localhost:5173` to origins
+3. `.env` → `VITE_GOOGLE_CLIENT_ID`; `.dev.vars` → `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
+4. `npm install && npm run dev`
+5. For Matrix chat: click "+Chat" in the app header to connect a Matrix account
+6. For agent sessions: `cd agent-hub && npm install && npm run dev` — then click "Agents" tab in the app
 
 ## UI Actions
-- **Refresh button** (next to Inbox): Click for incremental sync, Ctrl+click for full cache clear + resync
-- **Flush button** (in sync tooltip): Manually process pending queue items
-- **Sign out:** Click email address in header
-- **Per-message menu:** ⋯ button on each expanded message for Reply/Reply all/Forward targeting that message
-- **Snoozed threads toggle:** "N snoozed" / "hide snoozed" link next to Inbox count. Snoozed threads render at top of list as regular items (muted, with clock icon and snooze-until time), separated by an "Inbox" divider.
-- **Snooze picker:** Presets (later today, tomorrow, next week) + custom date/time picker. Desktop: inline calendar grid (Monday-first weeks, 24h time). Mobile: native `datetime-local` picker via `showPicker()`.
+- **Refresh** — click for incremental sync, Ctrl+click for full resync (email: clears all data; chat: clears messages + sync token, keeps room read state)
+- **Flush** — in sync tooltip, manually process pending queue (both email and chat)
+- **Sign out** — click email address in header
+- **Per-message menu** — ⋯ on expanded messages for Reply/Reply all/Forward
+- **Snoozed toggle** — "N snoozed" link shows snoozed threads above inbox divider
+- **Snooze picker** — presets + custom date/time (Monday-first, 24h). Mobile: native datetime-local.
+- **Mail/Chat tabs** — in list pane header. "+Chat" shown when Matrix not connected.
 
-## Known Issues / Bugs to Fix
-None currently tracked.
+## Known Issues
+- Matrix E2EE: new device won't have historical Megolm session keys — messages show as "🔒 Encrypted message" until key backup is restored via Account → "Restore encrypted message keys" (recovery key required).
+- Matrix E2EE: new device must be verified (Account → "Verify this device" with Matrix password) before Beeper bridge will accept encrypted messages. Key backup restore also auto-imports cross-signing keys and self-signs, but verification via password is more reliable.
+- Matrix E2EE: `bootstrapCrossSigning` private keys are NOT persisted by OlmMachine across page reloads. If bootstrap runs but the page reloads before all devices are verified, the keys are lost and bootstrap must run again.
+- WASM binary is ~5.6MB (1.8MB gzipped) — loaded lazily only when Matrix is connected
+- Bridge rooms (LinkedIn, Slack) may have stale `notification_count` from server — mitigated by only trusting server counts for first-time rooms, not existing rooms.
+- WASM `UserId` objects are consumed by each call — must create fresh instances per WASM API call (e.g., `updateTrackedUsers` and `getMissingSessions` need separate `new UserId()` calls).
+- `shareRoomKeys`: bridge servers (Beeper) may reject key claims for bridge devices — `claimFailed` flag skips `shareRoomKey` to prevent WASM panic ("Session wasn't created nor shared").

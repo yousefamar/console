@@ -1,18 +1,18 @@
 import { db } from './index'
 import type { QueueActionType, QueuedAction } from '@/gmail/types'
 
-// Listener for immediate queue flush
-let flushListener: (() => void) | null = null
+// Listeners for immediate queue flush
+let flushListeners: (() => void)[] = []
 
 export function onEnqueue(fn: () => void): () => void {
-  flushListener = fn
-  return () => { flushListener = null }
+  flushListeners.push(fn)
+  return () => { flushListeners = flushListeners.filter((l) => l !== fn) }
 }
 
 export async function enqueue(
   type: QueueActionType,
   payload: Record<string, unknown>,
-  opts: { threadId?: string; messageId?: string; draftId?: string } = {},
+  opts: { threadId?: string; messageId?: string; draftId?: string; roomId?: string } = {},
 ): Promise<number> {
   const action: QueuedAction = {
     type,
@@ -20,12 +20,13 @@ export async function enqueue(
     threadId: opts.threadId,
     messageId: opts.messageId,
     draftId: opts.draftId,
+    roomId: opts.roomId,
     createdAt: Date.now(),
     status: 'pending',
     retryCount: 0,
   }
   const id = await db.queue.add(action)
-  flushListener?.()
+  for (const fn of flushListeners) fn()
   return id
 }
 

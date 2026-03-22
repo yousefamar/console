@@ -22,10 +22,10 @@ interface InboxState {
   selectPrevThread: () => void
   loadMessages: (threadId: string) => Promise<void>
 
-  // Triage
-  archiveThread: (threadId?: string) => Promise<void>
-  deleteThread: (threadId?: string) => Promise<void>
-  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => Promise<void>
+  // Triage (synchronous — DB writes happen in background)
+  archiveThread: (threadId?: string) => void
+  deleteThread: (threadId?: string) => void
+  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => void
   markRead: (threadId?: string) => Promise<void>
 
   // Reply
@@ -44,9 +44,12 @@ interface InboxState {
   }) => Promise<void>
 
   // Undo support
-  undoArchive: (thread: DbThread, messages: DbMessage[]) => Promise<void>
-  undoDelete: (thread: DbThread, messages: DbMessage[]) => Promise<void>
+  undoArchive: (thread: DbThread) => Promise<void>
+  undoDelete: (thread: DbThread) => Promise<void>
 }
+
+// Threads removed optimistically (before DB confirms) — filtered from live query results
+const optimisticallyRemoved = new Set<string>()
 
 export const useInboxStore = create<InboxState>((set, get) => ({
   threads: [],
@@ -56,7 +59,23 @@ export const useInboxStore = create<InboxState>((set, get) => ({
   replyToMessage: null,
   isLoadingThreads: false,
 
-  setThreads: (threads) => set({ threads }),
+  setThreads: (threads) => {
+    // Filter out optimistically removed threads (DB hasn't confirmed yet)
+    const filtered = optimisticallyRemoved.size > 0
+      ? threads.filter((t) => !optimisticallyRemoved.has(t.id))
+      : threads
+    set((s) => {
+      // If selected thread disappeared from a non-empty list, clear selection
+      if (
+        s.selectedThreadId &&
+        filtered.length > 0 &&
+        !filtered.some((t) => t.id === s.selectedThreadId)
+      ) {
+        return { threads: filtered, selectedThreadId: null, selectedMessages: [] }
+      }
+      return { threads: filtered }
+    })
+  },
 
   selectThread: async (threadId) => {
     set({ selectedThreadId: threadId, replyMode: null, replyToMessage: null })
@@ -105,21 +124,24 @@ export const useInboxStore = create<InboxState>((set, get) => ({
       .where('threadId')
       .equals(threadId)
       .sortBy('date')
-    set({ selectedMessages: messages })
+    // Only update if this thread is still selected (guards against async races)
+    if (get().selectedThreadId === threadId) {
+      set({ selectedMessages: messages })
+    }
   },
 
-  archiveThread: async (threadId) => {
+  archiveThread: (threadId) => {
     const id = threadId ?? get().selectedThreadId
     if (!id) return
 
-    // Save for undo
-    const thread = await db.threads.get(id)
-    const messages = await db.messages.where('threadId').equals(id).toArray()
+    // Get thread from store synchronously (no await)
+    const thread = get().threads.find((t) => t.id === id)
     if (!thread) return
 
+    // Prevent live query from re-adding this thread before DB confirms
+    optimisticallyRemoved.add(id)
 
-    // Optimistic: remove from local
-    await db.threads.delete(id)
+    // Optimistic: synchronous set() — instant UI
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
       const wasSelected = s.selectedThreadId === id
@@ -133,39 +155,41 @@ export const useInboxStore = create<InboxState>((set, get) => ({
       }
     })
 
-    // Load messages for the newly selected thread
-    const newSelectedId = get().selectedThreadId
-    if (newSelectedId) {
-      await get().loadMessages(newSelectedId)
-    } else {
-      set({ selectedMessages: [] })
-    }
-
-    // Queue for sync
-    await enqueue('archive', {}, { threadId: id })
-
-    // Evict cached attachment data
-    evictThreadAttachments(id)
-
-    // Set undo
+    // Undo (synchronous — uses store snapshot)
     useUiStore.getState().setUndoAction({
       label: 'Archived',
       expiresAt: Date.now() + 5000,
-      undo: () => get().undoArchive(thread, messages),
+      undo: () => get().undoArchive(thread),
     })
+
+    // Everything below is background — no awaits blocking the UI
+    const newSelectedId = get().selectedThreadId
+    const bg = async () => {
+      if (newSelectedId) {
+        await get().loadMessages(newSelectedId)
+        const next = get().threads.find((t) => t.id === newSelectedId)
+        if (next?.isUnread) await get().markRead(newSelectedId)
+      } else {
+        set({ selectedMessages: [] })
+      }
+      await db.threads.delete(id)
+      optimisticallyRemoved.delete(id)
+      await enqueue('archive', {}, { threadId: id })
+      evictThreadAttachments(id)
+    }
+    bg().catch(() => {})
   },
 
-  deleteThread: async (threadId) => {
+  deleteThread: (threadId) => {
     const id = threadId ?? get().selectedThreadId
     if (!id) return
 
-    const thread = await db.threads.get(id)
-    const messages = await db.messages.where('threadId').equals(id).toArray()
+    const thread = get().threads.find((t) => t.id === id)
     if (!thread) return
 
-    // Optimistic remove
-    await db.threads.delete(id)
-    await db.messages.where('threadId').equals(id).delete()
+    optimisticallyRemoved.add(id)
+
+    // Optimistic: synchronous set() — instant UI
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
       const wasSelected = s.selectedThreadId === id
@@ -179,30 +203,44 @@ export const useInboxStore = create<InboxState>((set, get) => ({
       }
     })
 
-    const newSelectedId = get().selectedThreadId
-    if (newSelectedId) {
-      await get().loadMessages(newSelectedId)
-    } else {
-      set({ selectedMessages: [] })
-    }
-
-    await enqueue('trash', {}, { threadId: id })
-
+    // Read messages before deleting (needed for undo), then delete
+    let savedMessages: DbMessage[] = []
     useUiStore.getState().setUndoAction({
       label: 'Deleted',
       expiresAt: Date.now() + 5000,
-      undo: () => get().undoDelete(thread, messages),
+      undo: async () => {
+        for (const msg of savedMessages) await db.messages.put(msg)
+        await get().undoDelete(thread)
+      },
     })
+
+    const newSelectedId = get().selectedThreadId
+    const bg = async () => {
+      if (newSelectedId) {
+        await get().loadMessages(newSelectedId)
+        const next = get().threads.find((t) => t.id === newSelectedId)
+        if (next?.isUnread) await get().markRead(newSelectedId)
+      } else {
+        set({ selectedMessages: [] })
+      }
+      savedMessages = await db.messages.where('threadId').equals(id).toArray()
+      await db.threads.delete(id)
+      await db.messages.where('threadId').equals(id).delete()
+      optimisticallyRemoved.delete(id)
+      await enqueue('trash', {}, { threadId: id })
+    }
+    bg().catch(() => {})
   },
 
-  snoozeThread: async (option, customDate) => {
+  snoozeThread: (option, customDate) => {
     const id = get().selectedThreadId
     if (!id) return
 
     const snoozedUntil = getSnoozeTime(option, customDate)
 
-    // Optimistic: update thread with snooze time and remove from visible list
-    await db.threads.update(id, { snoozedUntil })
+    optimisticallyRemoved.add(id)
+
+    // Optimistic: synchronous set() — instant UI
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
       const currentIdx = s.threads.findIndex((t) => t.id === id)
@@ -214,14 +252,19 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     })
 
     const newSelectedId = get().selectedThreadId
-    if (newSelectedId) {
-      await get().loadMessages(newSelectedId)
-    } else {
-      set({ selectedMessages: [] })
+    const bg = async () => {
+      if (newSelectedId) {
+        await get().loadMessages(newSelectedId)
+        const next = get().threads.find((t) => t.id === newSelectedId)
+        if (next?.isUnread) await get().markRead(newSelectedId)
+      } else {
+        set({ selectedMessages: [] })
+      }
+      await db.threads.update(id, { snoozedUntil })
+      optimisticallyRemoved.delete(id)
+      await enqueue('snooze', { snoozedUntil }, { threadId: id })
     }
-
-    // Queue archive for sync (snooze = archive + local timer)
-    await enqueue('snooze', { snoozedUntil }, { threadId: id })
+    bg().catch(() => {})
 
     useUiStore.getState().setShowSnoozePicker(false)
   },
@@ -256,15 +299,12 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     await get().archiveThread(threadId)
   },
 
-  undoArchive: async (thread, messages) => {
-    // Restore locally
+  undoArchive: async (thread) => {
+    // Allow live query to see this thread again
+    optimisticallyRemoved.delete(thread.id)
+    // Restore thread record (messages are still in DB — archive only deletes the thread)
     await db.threads.put(thread)
-    for (const msg of messages) {
-      await db.messages.put(msg)
-    }
-    // Remove the archive action from queue
     await removeByThread(thread.id, 'archive')
-    // Queue unarchive
     await enqueue('unarchive', {}, { threadId: thread.id })
 
     // Refresh thread list and re-select the restored thread
@@ -277,11 +317,9 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     useUiStore.getState().setUndoAction(null)
   },
 
-  undoDelete: async (thread, messages) => {
+  undoDelete: async (thread) => {
+    optimisticallyRemoved.delete(thread.id)
     await db.threads.put(thread)
-    for (const msg of messages) {
-      await db.messages.put(msg)
-    }
     await removeByThread(thread.id, 'trash')
 
     const threads = await db.threads

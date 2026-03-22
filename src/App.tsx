@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { initAuth, signIn, isSignedIn, onAuthExpired } from '@/gmail/auth'
+import { isMatrixConnected } from '@/matrix/auth'
 import { getMeta } from '@/db'
 import { useKeybindings } from '@/hooks/useKeybindings'
 import { useSync } from '@/hooks/useSync'
@@ -11,6 +12,8 @@ import { SearchOverlay } from '@/components/SearchOverlay'
 import { KeybindingHelp } from '@/components/KeybindingHelp'
 import { UndoToast } from '@/components/UndoToast'
 import { ComposeEditor } from '@/components/ComposeEditor'
+import { MatrixLoginModal } from '@/components/MatrixLoginModal'
+import { AccountModal } from '@/components/AccountModal'
 
 // Shown only when the refresh token is dead (rare — user revoked access).
 // Normal token expiry is handled silently via /api/auth/refresh.
@@ -53,6 +56,8 @@ function AuthenticatedApp() {
   const showSnoozePicker = useUiStore((s) => s.showSnoozePicker)
   const showCompose = useUiStore((s) => s.showCompose)
   const setShowCompose = useUiStore((s) => s.setShowCompose)
+  const showMatrixLogin = useUiStore((s) => s.showMatrixLogin)
+  const showAccountModal = useUiStore((s) => s.showAccountModal)
   const needsReAuth = useUiStore((s) => s.needsReAuth)
 
   return (
@@ -70,6 +75,8 @@ function AuthenticatedApp() {
           </div>
         </div>
       )}
+      {showMatrixLogin && <MatrixLoginModal />}
+      {showAccountModal && <AccountModal />}
       <UndoToast />
     </>
   )
@@ -87,6 +94,13 @@ export function App() {
           const email = await getMeta('email')
           if (email) {
             useUiStore.getState().setUserEmail(email)
+          }
+          // Initialize Matrix user ID if connected
+          if (isMatrixConnected()) {
+            const matrixUserId = localStorage.getItem('matrix_user_id')
+            if (matrixUserId) {
+              useUiStore.getState().setMatrixUserId(matrixUserId)
+            }
           }
           setAuthenticated(true)
         }

@@ -1,0 +1,470 @@
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useAgentStore } from '@/store/agent'
+import { Send, Square, Plus, FolderOpen, RotateCcw, X } from 'lucide-react'
+
+// ============================================================================
+// AgentPromptInput — text input for sending prompts to the agent.
+// Supports creating new sessions and sending follow-up messages.
+// When no session is active, shows a directory picker with autocomplete.
+// ============================================================================
+
+function basename(path: string): string {
+  const parts = path.replace(/\/+$/, '').split('/')
+  return parts[parts.length - 1] || path
+}
+
+export function AgentPromptInput() {
+  const [text, setText] = useState('')
+  const [dirInput, setDirInput] = useState('')
+  const [selectedDir, setSelectedDir] = useState<string | null>(null)
+  const [dirOpen, setDirOpen] = useState(false)
+  const [dirIndex, setDirIndex] = useState(0)
+  const [slashOpen, setSlashOpen] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
+  const [selectedResumeId, setSelectedResumeId] = useState<string | null>(null)
+  const [images, setImages] = useState<Array<{ media_type: string; data: string; preview: string }>>([])
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const dirRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const slashListRef = useRef<HTMLDivElement>(null)
+  const sendingRef = useRef(false)
+
+  const activeSessionId = useAgentStore((s) => s.activeSessionId)
+  const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
+  const connected = useAgentStore((s) => s.connected)
+  const createSession = useAgentStore((s) => s.createSession)
+  const sendMessage = useAgentStore((s) => s.sendMessage)
+  const interrupt = useAgentStore((s) => s.interrupt)
+  const projectDirs = useAgentStore((s) => s.projectDirs)
+  const slashCommands = useAgentStore((s) => s.sessionSlashCommands)
+  const pastSessions = useAgentStore((s) => s.pastSessions)
+  const resumeSession = useAgentStore((s) => s.resumeSession)
+
+  // Filter dirs based on input
+  const filteredDirs = useMemo(() => dirInput.trim()
+    ? projectDirs.filter((d) => {
+        const q = dirInput.toLowerCase()
+        return d.toLowerCase().includes(q) || basename(d).toLowerCase().includes(q)
+      })
+    : projectDirs, [dirInput, projectDirs])
+
+  // Slash command filtering
+  const slashQuery = text.startsWith('/') ? text.slice(1).toLowerCase() : ''
+  const filteredSlash = useMemo(() => slashOpen && text.startsWith('/')
+    ? slashCommands.filter((cmd) => cmd.toLowerCase().startsWith(slashQuery))
+    : [], [slashOpen, text, slashCommands, slashQuery])
+
+  // Clamp slash index
+  useEffect(() => {
+    setSlashIndex((i) => Math.min(i, Math.max(0, filteredSlash.length - 1)))
+  }, [filteredSlash.length])
+
+  // Scroll selected slash item into view
+  useEffect(() => {
+    if (!slashListRef.current) return
+    const el = slashListRef.current.children[slashIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [slashIndex])
+
+  // Clamp index when filtered list changes
+  useEffect(() => {
+    setDirIndex((i) => Math.min(i, Math.max(0, filteredDirs.length - 1)))
+  }, [filteredDirs.length])
+
+  // Scroll selected item into view
+  useEffect(() => {
+    if (!listRef.current) return
+    const el = listRef.current.children[dirIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [dirIndex])
+
+  // Fetch past sessions when a directory is selected
+  useEffect(() => {
+    if (selectedDir && !activeSessionId) {
+      useAgentStore.getState().listPastSessions(selectedDir)
+    } else {
+      useAgentStore.setState({ pastSessions: [] })
+    }
+    setSelectedResumeId(null)
+  }, [selectedDir, activeSessionId])
+
+  const resolvedCwd = selectedDir || undefined
+
+  const imagePayload = images.length > 0
+    ? images.map(({ media_type, data }) => ({ media_type, data }))
+    : undefined
+
+  const handleSend = useCallback(() => {
+    if (sendingRef.current) return
+    const body = text.trim()
+    if (!body && !imagePayload) return
+
+    sendingRef.current = true
+    setText('')
+    setImages([])
+
+    if (activeSessionId) {
+      sendMessage(body || 'What do you see in this image?', imagePayload)
+    } else if (selectedResumeId) {
+      resumeSession(selectedResumeId, body || 'What do you see in this image?', resolvedCwd)
+      setSelectedResumeId(null)
+      setSelectedDir(null)
+      setDirInput('')
+    } else {
+      createSession(body || 'What do you see in this image?', resolvedCwd, imagePayload)
+      setSelectedDir(null)
+      setDirInput('')
+    }
+
+    sendingRef.current = false
+    inputRef.current?.focus()
+  }, [text, imagePayload, activeSessionId, sendMessage, createSession, resumeSession, selectedResumeId, resolvedCwd])
+
+  const handleNewSession = useCallback(() => {
+    const body = text.trim()
+    if (!body && !imagePayload) return
+    setText('')
+    setImages([])
+    createSession(body || 'What do you see in this image?', resolvedCwd, imagePayload)
+    setSelectedDir(null)
+    setDirInput('')
+    inputRef.current?.focus()
+  }, [text, imagePayload, createSession, resolvedCwd])
+
+  const attachImage = useCallback((file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      // data:image/png;base64,XXXX → extract media_type and data
+      const match = result.match(/^data:(image\/[^;]+);base64,(.+)$/)
+      if (match) {
+        setImages((prev) => [...prev, {
+          media_type: match[1]!,
+          data: match[2]!,
+          preview: result,
+        }])
+      }
+    }
+    reader.readAsDataURL(file)
+  }, [])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (file) attachImage(file)
+        return
+      }
+    }
+  }, [attachImage])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Slash command autocomplete navigation
+    if (slashOpen && filteredSlash.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIndex((i) => Math.min(i + 1, filteredSlash.length - 1))
+        return
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIndex((i) => Math.max(i - 1, 0))
+        return
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        if (filteredSlash[slashIndex]) {
+          e.preventDefault()
+          setText('/' + filteredSlash[slashIndex])
+          setSlashOpen(false)
+          return
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSlashOpen(false)
+        return
+      }
+    }
+
+    // Shift+Cmd+Enter for new session
+    if (e.shiftKey && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleNewSession()
+      return
+    }
+    // Enter sends, Ctrl+Enter for new line
+    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }, [handleSend, handleNewSession, slashOpen, filteredSlash, slashIndex])
+
+  const handleDirKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!dirOpen || filteredDirs.length === 0) {
+      // Enter in dir field when closed = focus prompt
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        inputRef.current?.focus()
+      }
+      return
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setDirIndex((i) => Math.min(i + 1, filteredDirs.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setDirIndex((i) => Math.max(i - 1, 0))
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      if (filteredDirs[dirIndex]) {
+        e.preventDefault()
+        selectDir(filteredDirs[dirIndex])
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      setDirOpen(false)
+    }
+  }, [dirOpen, filteredDirs, dirIndex])
+
+  const selectDir = useCallback((dir: string) => {
+    setSelectedDir(dir)
+    setDirInput(dir)
+    setDirOpen(false)
+    // Focus the prompt input after selecting
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }, [])
+
+  const handleDirChange = useCallback((value: string) => {
+    setDirInput(value)
+    setSelectedDir(value.trim() || null)
+    setDirIndex(0)
+    setDirOpen(true)
+  }, [])
+
+  const handleDirFocus = useCallback(() => {
+    setDirOpen(true)
+    setDirIndex(0)
+  }, [])
+
+  if (!connected) return null
+
+  const showDirPicker = !activeSessionId && projectDirs.length > 0
+
+  return (
+    <div className="border-t border-border px-3 py-2">
+      {/* Directory picker — only when no active session */}
+      {showDirPicker && (
+        <div className="relative mb-1.5">
+          <div className="flex items-center gap-1.5">
+            <FolderOpen size={12} className="text-text-tertiary flex-shrink-0" />
+            <input
+              ref={dirRef}
+              value={dirInput}
+              onChange={(e) => handleDirChange(e.target.value)}
+              onKeyDown={handleDirKeyDown}
+              onFocus={handleDirFocus}
+              onBlur={() => setTimeout(() => setDirOpen(false), 150)}
+              placeholder="~ (home directory)"
+              className="flex-1 bg-transparent text-xs text-text-secondary placeholder:text-text-tertiary outline-none"
+            />
+            {selectedDir && (
+              <button
+                onClick={() => { setSelectedDir(null); setDirInput(''); dirRef.current?.focus() }}
+                className="text-[10px] text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+              >
+                clear
+              </button>
+            )}
+          </div>
+
+          {/* Autocomplete dropdown */}
+          {dirOpen && filteredDirs.length > 0 && (
+            <div
+              ref={listRef}
+              className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
+            >
+              {filteredDirs.map((dir, i) => (
+                <button
+                  key={dir}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    selectDir(dir)
+                  }}
+                  className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left transition-colors duration-fast ${
+                    i === dirIndex ? 'bg-surface-2' : 'hover:bg-surface-2'
+                  }`}
+                >
+                  <span className="text-xs font-medium text-text-primary truncate">
+                    {basename(dir)}
+                  </span>
+                  <span className="text-[10px] text-text-tertiary truncate">
+                    {dir}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Past sessions — resume picker */}
+      {showDirPicker && selectedDir && pastSessions.length > 0 && (
+        <div className="mb-1.5">
+          <div className="flex items-center justify-between mb-0.5">
+            <div className="flex items-center gap-1 text-[10px] text-text-tertiary">
+              <RotateCcw size={9} />
+              <span>Resume a past session</span>
+            </div>
+            {selectedResumeId && (
+              <button
+                onClick={() => setSelectedResumeId(null)}
+                className="text-[10px] text-text-tertiary hover:text-text-secondary transition-colors duration-fast flex items-center gap-0.5"
+              >
+                <X size={8} />
+                <span>clear</span>
+              </button>
+            )}
+          </div>
+          <div className="max-h-[120px] overflow-y-auto">
+            {pastSessions.slice(0, 5).map((ps) => (
+              <button
+                key={ps.sessionId}
+                onClick={() => {
+                  setSelectedResumeId(ps.sessionId === selectedResumeId ? null : ps.sessionId)
+                  inputRef.current?.focus()
+                }}
+                className={`w-full text-left px-2 py-1 transition-colors duration-fast ${
+                  ps.sessionId === selectedResumeId ? 'bg-surface-2' : 'hover:bg-surface-1'
+                }`}
+              >
+                <div className="text-xs text-text-secondary truncate">{ps.prompt}</div>
+                <div className="text-[10px] text-text-tertiary">{formatRelativeDate(ps.date)}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Slash command autocomplete */}
+      <div className="relative">
+        {slashOpen && filteredSlash.length > 0 && (
+          <div
+            ref={slashListRef}
+            className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
+          >
+            {filteredSlash.map((cmd, i) => (
+              <button
+                key={cmd}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  setText('/' + cmd)
+                  setSlashOpen(false)
+                  inputRef.current?.focus()
+                }}
+                className={`flex w-full items-center px-2.5 py-1 text-left transition-colors duration-fast ${
+                  i === slashIndex ? 'bg-surface-2' : 'hover:bg-surface-2'
+                }`}
+              >
+                <span className="text-xs font-mono text-text-primary">/{cmd}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Image preview strip */}
+      {images.length > 0 && (
+        <div className="flex gap-1.5 mb-1.5 flex-wrap">
+          {images.map((img, i) => (
+            <div key={i} className="relative group">
+              <img
+                src={img.preview}
+                alt={`Pasted image ${i + 1}`}
+                className="h-12 w-12 object-cover border border-border"
+              />
+              <button
+                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+                className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-surface-2 border border-border text-text-tertiary hover:text-text-primary flex items-center justify-center text-[8px] leading-none opacity-0 group-hover:opacity-100 transition-opacity duration-fast"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-end gap-2">
+        <textarea
+          ref={inputRef}
+          value={text}
+          onChange={(e) => {
+            const val = e.target.value
+            setText(val)
+            if (val.startsWith('/') && slashCommands.length > 0) {
+              setSlashOpen(true)
+              setSlashIndex(0)
+            } else {
+              setSlashOpen(false)
+            }
+          }}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          data-agent-input
+          placeholder={activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
+          rows={1}
+          className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px]"
+          style={{ height: Math.min(120, Math.max(24, text.split('\n').length * 20)) }}
+          disabled={!connected}
+        />
+
+        {isRunning ? (
+          <button
+            onClick={interrupt}
+            className="flex-shrink-0 text-warning hover:text-warning/80 transition-colors duration-fast p-1"
+            title="Interrupt (Esc)"
+          >
+            <Square size={14} />
+          </button>
+        ) : (
+          <div className="flex items-center gap-1">
+            {activeSessionId && (
+              <button
+                onClick={handleNewSession}
+                disabled={!text.trim() && images.length === 0}
+                className="flex-shrink-0 text-text-tertiary hover:text-text-secondary disabled:opacity-30 transition-colors duration-fast p-1"
+                title="New session (Shift+Cmd+Enter)"
+              >
+                <Plus size={14} />
+              </button>
+            )}
+            <button
+              onClick={handleSend}
+              disabled={!text.trim() && images.length === 0}
+              className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
+              title="Send (Enter)"
+            >
+              <Send size={14} />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function formatRelativeDate(timestamp: number): string {
+  const now = Date.now()
+  const diff = now - timestamp
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  const weeks = Math.floor(days / 7)
+  if (weeks < 4) return `${weeks}w ago`
+  return new Date(timestamp).toLocaleDateString()
+}

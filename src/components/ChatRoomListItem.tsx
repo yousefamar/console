@@ -1,0 +1,130 @@
+import { memo, useCallback, useMemo } from 'react'
+import clsx from 'clsx'
+import { relativeTime } from '@/utils/date'
+import type { DbChatRoom } from '@/matrix/types'
+import { Clock, MessageCircle, Pin } from 'lucide-react'
+import { FaWhatsapp, FaSlack, FaDiscord, FaInstagram, FaTelegram, FaLinkedin, FaFacebook, FaTwitter } from 'react-icons/fa'
+import { SiGooglemessages, SiImessage, SiX, SiGooglechat, SiSignal } from 'react-icons/si'
+import { mxcToThumbnail, getRoomState } from '@/matrix/api'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { db } from '@/db'
+
+interface ChatRoomListItemProps {
+  room: DbChatRoom
+  isSelected: boolean
+  onSelect: (id: string) => void
+  snoozed?: boolean
+}
+
+// Network icon component — proper brand icons from react-icons (monochrome via currentColor)
+const NETWORK_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
+  whatsapp: FaWhatsapp,
+  slack: FaSlack,
+  discord: FaDiscord,
+  instagram: FaInstagram,
+  signal: SiSignal,
+  telegram: FaTelegram,
+  linkedin: FaLinkedin,
+  facebook: FaFacebook,
+  twitter: FaTwitter,
+  googlechat: SiGooglechat,
+  gmessages: SiGooglemessages,
+  imessage: SiImessage,
+}
+
+function NetworkIcon({ network }: { network: string }) {
+  // X (formerly Twitter) uses Simple Icons
+  if (network === 'twitter') {
+    const Icon = SiX
+    return <Icon size={10} />
+  }
+  const Icon = NETWORK_ICONS[network]
+  if (!Icon) return null
+  return <Icon size={10} />
+}
+
+function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoomListItemProps) {
+  const avatarUrl = room.avatar ? mxcToThumbnail(room.avatar, 32, 32) : undefined
+
+  const handleReload = useCallback(async () => {
+    await db.chatMessages.where('roomId').equals(room.id).delete()
+    await db.chatRooms.update(room.id, { prevBatch: undefined })
+    try {
+      const state = await getRoomState(room.id)
+      const nameEvent = state.find((e) => e.type === 'm.room.name' && e.state_key === '')
+      if (nameEvent?.content?.name) {
+        await db.chatRooms.update(room.id, { name: nameEvent.content.name as string })
+      }
+    } catch { /* best effort */ }
+    const { useChatStore } = await import('@/store/chat')
+    await useChatStore.getState().ensureMessages(room.id)
+  }, [room.id])
+
+  const menuItems = useMemo<ContextMenuItem[]>(() => [
+    { label: 'Reload room', onClick: handleReload },
+  ], [handleReload])
+
+  return (
+    <ContextMenu items={menuItems}>
+    <button
+      onClick={() => onSelect(room.id)}
+      className={clsx(
+        'flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors duration-fast border-b border-border',
+        snoozed && 'opacity-50',
+        isSelected
+          ? 'bg-surface-2'
+          : 'hover:bg-surface-1',
+      )}
+    >
+      {/* Avatar */}
+      <div className="relative flex-shrink-0 mt-0.5">
+        {avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt=""
+            className="h-7 w-7 rounded-full object-cover"
+          />
+        ) : (
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-surface-2 text-text-tertiary">
+            <MessageCircle size={14} />
+          </div>
+        )}
+        {room.networkIcon && (
+          <span className="absolute -bottom-1 -right-1 flex items-center justify-center rounded-full bg-surface-0 p-[2px] text-text-tertiary border border-border">
+            <NetworkIcon network={room.networkIcon} />
+          </span>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-sm text-text-secondary">
+            {room.name}
+          </span>
+          <span className="flex items-center gap-1 flex-shrink-0 text-xs text-text-tertiary">
+            {room.tags?.includes('m.favourite') && <Pin size={10} className="opacity-40" />}
+            {snoozed && <Clock size={10} />}
+            {snoozed ? relativeTime(room.snoozedUntil!) : relativeTime(room.lastMessageTime)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="truncate text-xs text-text-tertiary flex-1">
+            {room.lastMessageSender && (
+              <span className="text-text-tertiary">{room.lastMessageSender}: </span>
+            )}
+            {room.lastMessageBody}
+          </span>
+          {room.unreadCount && room.unreadCount > 0 ? (
+            <span className="flex-shrink-0 text-[10px] text-text-tertiary tabular-nums">
+              {room.unreadCount > 99 ? '99+' : room.unreadCount}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </button>
+    </ContextMenu>
+  )
+}
+
+export const ChatRoomListItem = memo(ChatRoomListItemInner)

@@ -2,21 +2,30 @@ import { useUiStore } from '@/store/ui'
 
 const BINDINGS = [
   { section: 'Navigation', items: [
-    { key: 'j / ↓', action: 'Next thread' },
-    { key: 'k / ↑', action: 'Previous thread' },
+    { key: 'j / ↓', action: 'Next item' },
+    { key: 'k / ↑', action: 'Previous item' },
+    { key: 'Tab', action: 'Switch pane' },
     { key: '/', action: 'Search' },
   ]},
   { section: 'Triage', items: [
-    { key: 'e', action: 'Archive (done)' },
+    { key: 'e', action: 'Done (mail) / Read (chat)' },
     { key: 'b', action: 'Snooze' },
     { key: 'u', action: 'Undo' },
   ]},
   { section: 'Compose', items: [
+    { key: 'i', action: 'Focus chat input' },
     { key: 'r', action: 'Reply' },
     { key: 'R', action: 'Reply all' },
     { key: 'f', action: 'Forward' },
     { key: 'c', action: 'New message' },
     { key: '⌘/Ctrl + ↵', action: 'Send' },
+  ]},
+  { section: 'Agents', items: [
+    { key: 'y', action: 'Allow tool' },
+    { key: 'n', action: 'Deny tool' },
+    { key: 'a', action: 'Allow all (tool type)' },
+    { key: 'Enter', action: 'Focus prompt input' },
+    { key: 'Esc', action: 'Interrupt agent' },
   ]},
   { section: 'App', items: [
     { key: 'Esc', action: 'Close / cancel' },

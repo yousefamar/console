@@ -27,6 +27,10 @@ function setStatus(status: SyncStatus, detail?: string) {
   for (const fn of listeners) fn(status, detail)
 }
 
+function isNetworkError(message: string): boolean {
+  return message === 'Failed to fetch' || message === 'Load failed' || message === 'NetworkError when attempting to fetch resource.'
+}
+
 function gmailMessageToDbThread(thread: Awaited<ReturnType<typeof api.getThread>>): DbThread {
   const allMessages = thread.messages
   const messages = allMessages.filter((m) => !m.labelIds?.includes('DRAFT'))
@@ -101,34 +105,23 @@ export async function fullSync(): Promise<void> {
     const profile = await api.getProfile()
     await setMeta('email', profile.emailAddress)
 
-    // Fetch send-as aliases
-    try {
-      const aliases = await api.getSendAsAliases()
-      await setMeta('sendAsAliases', JSON.stringify(aliases))
-    } catch (err) {
-      // Non-critical — fall back to primary email
-      console.warn('Failed to fetch send-as aliases:', err)
+    // Fetch send-as aliases + user labels in parallel
+    const [aliasResult, labelResult] = await Promise.allSettled([
+      api.getSendAsAliases(),
+      api.getLabels(),
+    ])
+    if (aliasResult.status === 'fulfilled') {
+      await setMeta('sendAsAliases', JSON.stringify(aliasResult.value))
+    }
+    if (labelResult.status === 'fulfilled') {
+      const labelMap: Record<string, string> = {}
+      for (const l of labelResult.value) labelMap[l.id] = l.name
+      await setMeta('labelMap', JSON.stringify(labelMap))
     }
 
-    let pageToken: string | undefined
-    const allThreadIds: string[] = []
-
-    // Fetch all inbox thread IDs
-    do {
-      const result = await api.listThreads({ maxResults: 100, pageToken })
-      if (result.threads) {
-        allThreadIds.push(...result.threads.map((t) => t.id))
-      }
-      pageToken = result.nextPageToken
-    } while (pageToken)
-
-    // Fetch full thread data in batches
-    const BATCH_SIZE = 10
-    for (let i = 0; i < allThreadIds.length; i += BATCH_SIZE) {
-      const batch = allThreadIds.slice(i, i + BATCH_SIZE)
-      const threads = await Promise.all(batch.map((id) => api.getThread(id)))
-
-      // Convert messages outside transaction (gmailMessageToDbMessage may fetch attachments)
+    // Helper: fetch thread data and save to DB
+    async function fetchAndSaveThreads(ids: string[]) {
+      const threads = await Promise.all(ids.map((id) => api.getThread(id)))
       const threadData: { dbThread: DbThread; dbMessages: DbMessage[] }[] = []
       for (const thread of threads) {
         const dbThread = gmailMessageToDbThread(thread)
@@ -139,10 +132,8 @@ export async function fullSync(): Promise<void> {
         }
         threadData.push({ dbThread, dbMessages })
       }
-
       await db.transaction('rw', db.threads, db.messages, async () => {
         for (const { dbThread, dbMessages } of threadData) {
-          // Preserve snoozedUntil from existing record (may be set locally)
           const existing = await db.threads.get(dbThread.id)
           if (existing?.snoozedUntil) {
             dbThread.snoozedUntil = existing.snoozedUntil
@@ -153,7 +144,34 @@ export async function fullSync(): Promise<void> {
           }
         }
       })
+    }
 
+    // Fetch first page of thread IDs
+    const firstPage = await api.listThreads({ maxResults: 100 })
+    const allThreadIds: string[] = firstPage.threads?.map((t) => t.id) ?? []
+
+    // Priority: load first 3 threads immediately so user can start reading
+    if (allThreadIds.length > 0) {
+      const priorityIds = allThreadIds.slice(0, 3)
+      await fetchAndSaveThreads(priorityIds)
+      setStatus('syncing', `Synced ${priorityIds.length}/${allThreadIds.length}+ threads`)
+    }
+
+    // Fetch remaining thread IDs (if paginated)
+    let pageToken = firstPage.nextPageToken
+    while (pageToken) {
+      const result = await api.listThreads({ maxResults: 100, pageToken })
+      if (result.threads) {
+        allThreadIds.push(...result.threads.map((t) => t.id))
+      }
+      pageToken = result.nextPageToken
+    }
+
+    // Fetch remaining thread data in batches of 10 (skip priority threads)
+    const BATCH_SIZE = 10
+    for (let i = 3; i < allThreadIds.length; i += BATCH_SIZE) {
+      const batch = allThreadIds.slice(i, i + BATCH_SIZE)
+      await fetchAndSaveThreads(batch)
       setStatus('syncing', `Synced ${Math.min(i + BATCH_SIZE, allThreadIds.length)}/${allThreadIds.length} threads`)
     }
 
@@ -183,7 +201,7 @@ export async function fullSync(): Promise<void> {
     setStatus('idle')
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    setStatus('error', message)
+    setStatus(isNetworkError(message) ? 'offline' : 'error', message)
     throw err
   }
 }
@@ -314,12 +332,12 @@ export async function incrementalSync(): Promise<void> {
     setStatus('idle')
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    setStatus('error', message)
+    setStatus(isNetworkError(message) ? 'offline' : 'error', message)
     throw err
   }
 }
 
-// Process the offline queue
+// Process the offline queue (email actions only — chat actions handled by matrix/sync.ts)
 export async function processQueue(): Promise<void> {
   const token = await getAccessToken()
   if (!token) return // Offline
@@ -329,6 +347,8 @@ export async function processQueue(): Promise<void> {
 
   for (const action of pending) {
     if (!action.id) continue
+    // Skip chat actions — handled by processChatQueue
+    if (action.type.startsWith('chat')) continue
     await queue.markProcessing(action.id)
 
     try {

@@ -5,6 +5,9 @@ import { useInboxStore } from '@/store/inbox'
 import { useUiStore } from '@/store/ui'
 import type { DbThread, DbMessage } from '@/gmail/types'
 
+// Flush background promises (triage ops are now fire-and-forget)
+const flush = () => new Promise((r) => setTimeout(r, 50))
+
 // Mock evictThreadAttachments (browser-only module)
 vi.mock('@/utils/attachment-cache', () => ({
   evictThreadAttachments: vi.fn(),
@@ -204,7 +207,8 @@ describe('archiveThread', () => {
     await db.messages.put(makeMessage('m2', 't2'))
     useInboxStore.setState({ threads: [t1, t2], selectedThreadId: 't1' })
 
-    await useInboxStore.getState().archiveThread('t1')
+    useInboxStore.getState().archiveThread('t1')
+    await flush()
 
     // Thread removed from state
     expect(useInboxStore.getState().threads).toHaveLength(1)
@@ -231,7 +235,7 @@ describe('archiveThread', () => {
     await db.messages.put(makeMessage('m1', 't1'))
     useInboxStore.setState({ threads: [t1], selectedThreadId: 't1' })
 
-    await useInboxStore.getState().archiveThread()
+    useInboxStore.getState().archiveThread()
 
     expect(useInboxStore.getState().threads).toHaveLength(0)
     expect(useInboxStore.getState().selectedThreadId).toBeNull()
@@ -239,7 +243,8 @@ describe('archiveThread', () => {
 
   it('does nothing when no thread id', async () => {
     useInboxStore.setState({ selectedThreadId: null })
-    await useInboxStore.getState().archiveThread()
+    useInboxStore.getState().archiveThread()
+    await flush()
     expect(await db.queue.count()).toBe(0)
   })
 })
@@ -251,7 +256,8 @@ describe('deleteThread', () => {
     await db.messages.put(makeMessage('m1', 't1'))
     useInboxStore.setState({ threads: [t1], selectedThreadId: 't1' })
 
-    await useInboxStore.getState().deleteThread('t1')
+    useInboxStore.getState().deleteThread('t1')
+    await flush()
 
     expect(await db.threads.get('t1')).toBeUndefined()
     expect(await db.messages.where('threadId').equals('t1').count()).toBe(0)
@@ -272,7 +278,8 @@ describe('snoozeThread', () => {
     await db.messages.put(makeMessage('m2', 't2'))
     useInboxStore.setState({ threads: [t1, t2], selectedThreadId: 't1' })
 
-    await useInboxStore.getState().snoozeThread('tomorrow')
+    useInboxStore.getState().snoozeThread('tomorrow')
+    await flush()
 
     // Removed from visible threads
     expect(useInboxStore.getState().threads).toHaveLength(1)
@@ -349,6 +356,7 @@ describe('sendReply', () => {
       to: 'sender@example.com',
       subject: 'Re: Subject',
     })
+    await flush()
 
     // Reply mode cleared
     expect(useInboxStore.getState().replyMode).toBeNull()
@@ -374,9 +382,12 @@ describe('sendReply', () => {
 })
 
 describe('undoArchive', () => {
-  it('restores thread and messages, removes archive from queue, enqueues unarchive', async () => {
+  it('restores thread, removes archive from queue, enqueues unarchive', async () => {
     const t1 = makeThread('t1')
     const msg = makeMessage('m1', 't1')
+
+    // Messages stay in DB after archive (only thread record is deleted)
+    await db.messages.put(msg)
 
     // Simulate archived state: thread is not in DB
     await db.queue.add({
@@ -388,9 +399,9 @@ describe('undoArchive', () => {
       retryCount: 0,
     })
 
-    await useInboxStore.getState().undoArchive(t1, [msg])
+    await useInboxStore.getState().undoArchive(t1)
 
-    // Thread and message restored in DB
+    // Thread restored in DB, message was already there
     expect(await db.threads.get('t1')).toBeTruthy()
     expect(await db.messages.get('m1')).toBeTruthy()
 
@@ -405,9 +416,12 @@ describe('undoArchive', () => {
 })
 
 describe('undoDelete', () => {
-  it('restores thread and messages, removes trash from queue', async () => {
+  it('restores thread, removes trash from queue', async () => {
     const t1 = makeThread('t1')
     const msg = makeMessage('m1', 't1')
+
+    // Messages need to be in DB for undo (real code saves them before delete)
+    await db.messages.put(msg)
 
     await db.queue.add({
       type: 'trash',
@@ -418,7 +432,7 @@ describe('undoDelete', () => {
       retryCount: 0,
     })
 
-    await useInboxStore.getState().undoDelete(t1, [msg])
+    await useInboxStore.getState().undoDelete(t1)
 
     expect(await db.threads.get('t1')).toBeTruthy()
     expect(await db.messages.get('m1')).toBeTruthy()

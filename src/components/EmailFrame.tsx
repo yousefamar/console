@@ -50,7 +50,10 @@ export function EmailFrame({ messageId, html, visible }: EmailFrameProps) {
       iframe.src = cached.lightUrl
     } else {
       const sanitized = sanitizeHtml(html)
-      const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="color-scheme" content="only light"><meta name="supported-color-schemes" content="light only"><style>:root{color-scheme:only light}body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.5;word-break:break-word;background:#fff}a{color:#3b82f6}img{max-width:100%;height:auto}blockquote{margin:.5em 0;padding-left:.75em;border-left:2px solid #ccc}</style></head><body>${sanitized}</body></html>`
+      // Replace cid: URLs with a transparent pixel to avoid ERR_UNKNOWN_URL_SCHEME console errors.
+      // The preload step will later replace these with actual blob URLs in the cached version.
+      const withoutCid = sanitized.replace(/cid:[^"'\s)]+/gi, 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==')
+      const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="color-scheme" content="only light"><meta name="supported-color-schemes" content="light only"><style>:root{color-scheme:only light}body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.5;word-break:break-word;background:#fff}a{color:#3b82f6}img{max-width:100%;height:auto}blockquote{margin:.5em 0;padding-left:.75em;border-left:2px solid #ccc}</style></head><body>${withoutCid}</body></html>`
       const blob = new Blob([doc], { type: 'text/html' })
       fallbackUrl = URL.createObjectURL(blob)
       iframe.src = fallbackUrl

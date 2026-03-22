@@ -1,10 +1,13 @@
 import Dexie, { type Table } from 'dexie'
 import type { DbThread, DbMessage, DbAttachmentData, QueuedAction } from '@/gmail/types'
+import type { DbChatRoom, DbChatMessage } from '@/matrix/types'
 
 class ConsoleDatabase extends Dexie {
   threads!: Table<DbThread, string>
   messages!: Table<DbMessage, string>
   attachmentData!: Table<DbAttachmentData, string>
+  chatRooms!: Table<DbChatRoom, string>
+  chatMessages!: Table<DbChatMessage, string>
   queue!: Table<QueuedAction, number>
   meta!: Table<{ key: string; value: string }, string>
 
@@ -34,6 +37,17 @@ class ConsoleDatabase extends Dexie {
       messages: 'id, threadId, date',
       drafts: null,
       attachmentData: 'attachmentId, messageId',
+      queue: '++id, type, status, createdAt',
+      meta: 'key',
+    })
+
+    // v4: Add chat tables (Matrix)
+    this.version(4).stores({
+      threads: 'id, date, snoozedUntil',
+      messages: 'id, threadId, date',
+      attachmentData: 'attachmentId, messageId',
+      chatRooms: '&id, lastMessageTime, snoozedUntil',
+      chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
       queue: '++id, type, status, createdAt',
       meta: 'key',
     })

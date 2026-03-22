@@ -212,6 +212,14 @@ export async function searchThreads(query: string, maxResults = 20): Promise<{ i
   return result.threads ?? []
 }
 
+// Gmail labels (for mapping Label_* IDs to human-readable names)
+export async function getLabels(): Promise<{ id: string; name: string }[]> {
+  const result = await request<{ labels: { id: string; name: string; type: string }[] }>('/labels')
+  return (result.labels ?? [])
+    .filter((l) => l.type === 'user')
+    .map((l) => ({ id: l.id, name: l.name }))
+}
+
 // Send-As aliases
 export async function getSendAsAliases(): Promise<SendAsAlias[]> {
   const result = await request<{ sendAs: GmailSendAs[] }>('/settings/sendAs')

@@ -1,0 +1,25 @@
+{
+  "name": "console-agent-hub",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "console-agent-hub": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.0.18"
+  }
+}

@@ -148,6 +148,11 @@ export type QueueActionType =
   | 'snooze'
   | 'unsnooze'
   | 'send'
+  // Chat (Matrix) actions
+  | 'chatSend'
+  | 'chatMarkRead'
+  | 'chatEdit'
+  | 'chatReact'
 
 export interface QueuedAction {
   id?: number // auto-increment
@@ -155,6 +160,7 @@ export interface QueuedAction {
   threadId?: string
   messageId?: string
   draftId?: string
+  roomId?: string // for chat actions
   payload: Record<string, unknown>
   createdAt: number
   status: 'pending' | 'processing' | 'failed' | 'conflict'

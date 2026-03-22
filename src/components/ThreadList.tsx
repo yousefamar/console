@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { useInboxStore } from '@/store/inbox'
@@ -24,6 +24,12 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
     [showSnoozed],
   )
 
+  const labelMapRaw = useLiveQuery(() => db.meta.get('labelMap'), [])
+  const labelMap = useMemo(
+    () => (labelMapRaw?.value ? JSON.parse(labelMapRaw.value) as Record<string, string> : undefined),
+    [labelMapRaw],
+  )
+
   // Auto-select first thread if none selected (desktop only)
   useEffect(() => {
     if (!isMobile && !selectedThreadId && threads.length > 0) {
@@ -31,12 +37,12 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
     }
   }, [threads, selectedThreadId, selectThread, isMobile])
 
-  // Scroll selected thread into view
+  // Scroll selected thread into view (on selection change or thread reorder)
   useEffect(() => {
     if (!selectedThreadId || !listRef.current) return
     const el = listRef.current.querySelector(`[data-thread-id="${selectedThreadId}"]`)
     el?.scrollIntoView({ block: 'nearest' })
-  }, [selectedThreadId])
+  }, [selectedThreadId, threads])
 
   if (threads.length === 0 && !showSnoozed) {
     return (
@@ -55,8 +61,9 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
               <ThreadListItem
                 thread={thread}
                 isSelected={thread.id === selectedThreadId}
-                onClick={() => selectThread(thread.id)}
+                onSelect={selectThread}
                 snoozed
+                labelMap={labelMap}
               />
             </div>
           ))}
@@ -74,7 +81,8 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
           <ThreadListItem
             thread={thread}
             isSelected={thread.id === selectedThreadId}
-            onClick={() => selectThread(thread.id)}
+            onSelect={selectThread}
+            labelMap={labelMap}
           />
         </div>
       ))}

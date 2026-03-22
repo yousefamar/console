@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useMemo } from 'react'
 import { useInboxStore } from '@/store/inbox'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -10,6 +10,7 @@ export function SnoozePicker() {
   const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
   const isMobile = useIsMobile()
   const dateInputRef = useRef<HTMLInputElement>(null)
+  const laterTodayLabel = useMemo(() => getLaterTodayLabel(), [])
 
   function handleSnooze(option: 'laterToday' | 'tomorrow' | 'nextWeek') {
     snoozeThread(option)
@@ -51,7 +52,7 @@ export function SnoozePicker() {
           <SnoozeOption
             label="Later today"
             shortcut="1"
-            description={getLaterTodayLabel()}
+            description={laterTodayLabel}
             onClick={() => handleSnooze('laterToday')}
           />
           <SnoozeOption
