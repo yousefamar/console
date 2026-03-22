@@ -22,6 +22,7 @@ import { createReadStream } from 'node:fs'
 import { Session, type SessionOptions } from './session.js'
 import type { ClientMessage, HubMessage, PastSession, SessionInfo, ClaudeContentBlock } from './protocol.js'
 import { cwdToProjectDir } from './utils.js'
+import { BookmarkStore } from './bookmarks.js'
 
 // --------------------------------------------------------------------------
 // Session manifest — persists active sessions across hub restarts
@@ -165,6 +166,13 @@ const DEFAULT_PORT = 9877
 const port = getArg('--port', DEFAULT_PORT)
 const host = getArg('--host', 'localhost')
 const cwd = getArg('--cwd', process.cwd())
+const bookmarkVault = getArg('--bookmarks', join(homedir(), 'sync', 'brain', 'root', 'bookmarks'))
+
+// --------------------------------------------------------------------------
+// Bookmark store
+// --------------------------------------------------------------------------
+
+const bookmarkStore = new BookmarkStore(bookmarkVault)
 
 // --------------------------------------------------------------------------
 // Project directory discovery
@@ -311,10 +319,10 @@ function sendTo(ws: WebSocket, msg: HubMessage) {
 // HTTP server + WebSocket
 // --------------------------------------------------------------------------
 
-const httpServer = createServer((req, res) => {
+const httpServer = createServer(async (req, res) => {
   // CORS headers for all requests
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
@@ -323,7 +331,10 @@ const httpServer = createServer((req, res) => {
     return
   }
 
-  if (req.url === '/health') {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+  const path = url.pathname
+
+  if (path === '/health') {
     const sessionList = Array.from(sessions.values()).map((s) => s.getInfo())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
@@ -332,6 +343,102 @@ const httpServer = createServer((req, res) => {
       sessions: sessionList,
       cwd,
     }))
+    return
+  }
+
+  // ------ Bookmark REST API ------
+
+  if (path === '/bookmarks' && req.method === 'GET') {
+    try {
+      const bookmarks = await bookmarkStore.list()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(bookmarks))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path === '/bookmarks/tags' && req.method === 'GET') {
+    try {
+      const tree = await bookmarkStore.getTagTree()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(tree))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  const bookmarkMatch = path.match(/^\/bookmarks\/(.+\.md)$/)
+  if (bookmarkMatch) {
+    const filename = decodeURIComponent(bookmarkMatch[1]!)
+
+    if (req.method === 'GET') {
+      try {
+        const bm = await bookmarkStore.get(filename)
+        if (!bm) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Not found' }))
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(bm))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      }
+      return
+    }
+
+    if (req.method === 'PUT') {
+      try {
+        const body = await readBody(req)
+        const updates = JSON.parse(body)
+        const updated = await bookmarkStore.update(filename, updates)
+        if (!updated) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Not found' }))
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(updated))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      }
+      return
+    }
+
+    if (req.method === 'DELETE') {
+      try {
+        const deleted = await bookmarkStore.delete(filename)
+        if (!deleted) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Not found' }))
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      }
+      return
+    }
+  }
+
+  if (path === '/bookmarks/reload' && req.method === 'POST') {
+    try {
+      await bookmarkStore.reload()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, count: bookmarkStore.size }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
     return
   }
 
@@ -681,6 +788,15 @@ function log(msg: string) {
 
 function truncate(str: string, max: number): string {
   return str.length > max ? str.slice(0, max - 1) + '\u2026' : str
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    req.on('data', (chunk) => { data += chunk })
+    req.on('end', () => resolve(data))
+    req.on('error', reject)
+  })
 }
 
 function getArg(flag: string, fallback: string): string

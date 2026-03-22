@@ -14,8 +14,9 @@ import { incrementalSync, fullSync } from '@/gmail/sync'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, User, Bot } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, User, Bot, Bookmark } from 'lucide-react'
 import { AgentTab } from './AgentTab'
+import { BookmarkTab } from './BookmarkTab'
 
 export function Layout() {
   const threads = useInboxStore((s) => s.threads)
@@ -42,6 +43,7 @@ export function Layout() {
   const [showSnoozed, setShowSnoozed] = useState(false)
   const isEmail = activePane === 'email'
   const isChat = activePane === 'chat'
+  const isBookmarks = activePane === 'bookmarks'
   const isAgents = activePane === 'agents'
   const showDetail = isMobile
     ? (isEmail ? !!selectedThreadId : !!selectedRoomId)
@@ -147,6 +149,15 @@ export function Layout() {
               </button>
             )}
             <button
+              onClick={() => setActivePane('bookmarks')}
+              className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
+                isBookmarks ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              <Bookmark size={11} />
+              <span>Bookmarks</span>
+            </button>
+            <button
               onClick={() => setActivePane('agents')}
               className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
                 isAgents ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
@@ -178,7 +189,7 @@ export function Layout() {
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <SyncStatus />
-          {!isAgents && (
+          {!isAgents && !isBookmarks && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -266,6 +277,11 @@ export function Layout() {
           )}
         </div>
 
+        {/* Bookmarks pane */}
+        <div className={`flex flex-1 min-h-0 ${isBookmarks ? '' : 'hidden'}`}>
+          <BookmarkTab />
+        </div>
+
         {/* Agents pane */}
         <div className={`flex flex-1 min-h-0 ${isAgents ? '' : 'hidden'}`}>
           <AgentTab />
@@ -275,7 +291,7 @@ export function Layout() {
       {/* Bottom action bar */}
       <footer className="flex items-center justify-between border-t border-border px-3 md:px-4 py-1 md:py-1">
         <div className="flex items-center gap-3 md:gap-4">
-          {isAgents ? (
+          {isAgents || isBookmarks ? (
             <></>
           ) : (
             <>
@@ -301,6 +317,14 @@ export function Layout() {
               <>
                 <span><kbd className="font-mono">Esc</kbd> interrupt</span>
                 <span><kbd className="font-mono">Enter</kbd> focus input</span>
+              </>
+            ) : isBookmarks ? (
+              <>
+                <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
+                <span><kbd className="font-mono">e</kbd> keep</span>
+                <span><kbd className="font-mono">d</kbd> delete</span>
+                <span><kbd className="font-mono">o</kbd> open</span>
+                <span><kbd className="font-mono">m</kbd> triage</span>
               </>
             ) : (
               <>

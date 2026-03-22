@@ -20,6 +20,14 @@ const BINDINGS = [
     { key: 'c', action: 'New message' },
     { key: '⌘/Ctrl + ↵', action: 'Send' },
   ]},
+  { section: 'Bookmarks', items: [
+    { key: 'e', action: 'Keep (triage)' },
+    { key: 'd', action: 'Delete bookmark' },
+    { key: 's', action: 'Skip (triage)' },
+    { key: 'o', action: 'Open URL' },
+    { key: 'm', action: 'Toggle triage mode' },
+    { key: 't', action: 'Focus tag input' },
+  ]},
   { section: 'Agents', items: [
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },

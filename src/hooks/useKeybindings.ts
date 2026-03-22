@@ -2,12 +2,14 @@ import { useEffect } from 'react'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useAgentStore } from '@/store/agent'
+import { useBookmarkStore } from '@/store/bookmarks'
 import { useUiStore } from '@/store/ui'
 
 export function useKeybindings() {
   const inbox = useInboxStore
   const chat = useChatStore
   const agent = useAgentStore
+  const bm = useBookmarkStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -17,6 +19,7 @@ export function useKeybindings() {
       const isEditing = tag === 'input' || tag === 'textarea' || target.isContentEditable
       const activePane = ui.getState().activePane
       const isEmail = activePane === 'email'
+      const isBookmarks = activePane === 'bookmarks'
       const isAgents = activePane === 'agents'
 
       // Always active
@@ -34,6 +37,15 @@ export function useKeybindings() {
           ui.getState().setShowMatrixLogin(false)
         } else if (ui.getState().showAccountModal) {
           ui.getState().setShowAccountModal(false)
+        } else if (isBookmarks && isEditing) {
+          ;(target as HTMLElement).blur()
+        } else if (isBookmarks && bm.getState().triageMode) {
+          bm.getState().exitTriageMode()
+        } else if (isBookmarks && bm.getState().searchQuery) {
+          bm.getState().setSearchQuery('')
+          bm.getState().selectTag(null)
+        } else if (isBookmarks && bm.getState().selectedBookmarkId) {
+          bm.getState().selectBookmark(null)
         } else if (isAgents && isEditing) {
           // Agent pane: Esc from input blurs first (vim-like: insert → normal mode)
           ;(target as HTMLElement).blur()
@@ -111,6 +123,70 @@ export function useKeybindings() {
           return
         }
         // Help and dark mode still work
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 't' && e.shiftKey) {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        return // Don't fall through to email/chat bindings
+      }
+
+      // Bookmark-specific keybindings
+      if (isBookmarks) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          bm.getState().selectNextBookmark()
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          bm.getState().selectPrevBookmark()
+          return
+        }
+        if (e.key === 'e') {
+          e.preventDefault()
+          if (bm.getState().triageMode) bm.getState().triageKeep()
+          return
+        }
+        if (e.key === 'd') {
+          e.preventDefault()
+          if (bm.getState().triageMode) bm.getState().triageDelete()
+          else bm.getState().deleteBookmark()
+          return
+        }
+        if (e.key === 's') {
+          e.preventDefault()
+          if (bm.getState().triageMode) bm.getState().triageSkip()
+          return
+        }
+        if (e.key === 'o') {
+          e.preventDefault()
+          bm.getState().openBookmarkUrl()
+          return
+        }
+        if (e.key === 'm') {
+          e.preventDefault()
+          if (bm.getState().triageMode) bm.getState().exitTriageMode()
+          else bm.getState().enterTriageMode()
+          return
+        }
+        if (e.key === 't' && !e.shiftKey) {
+          e.preventDefault()
+          const input = document.querySelector<HTMLInputElement>('[data-bookmark-tag-input]')
+          input?.focus()
+          return
+        }
+        if (e.key === '/') {
+          e.preventDefault()
+          const input = document.querySelector<HTMLInputElement>('[data-bookmark-search]')
+          input?.focus()
+          return
+        }
         if (e.key === '?') {
           e.preventDefault()
           ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)

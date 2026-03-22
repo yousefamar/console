@@ -1,7 +1,7 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center: offline-first Gmail inbox + Matrix chat + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders, no delete — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders — just fast triage.
 
 ## Architecture
 - **Pure web app (PWA-ready)** — works in any browser, including mobile
@@ -17,7 +17,7 @@ React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-mar
 ```
 src/
   main.tsx, App.tsx, index.css
-  __tests__/           — Vitest tests (245 tests, 13 files)
+  __tests__/           — Vitest tests (296 tests, 15 files)
   db/
     index.ts           — Dexie v4: threads, messages, attachmentData, chatRooms, chatMessages, queue, meta
     sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
@@ -38,7 +38,8 @@ src/
     inbox.ts           — Email: thread list, selection, archive, snooze, reply, send, undo
     chat.ts            — Chat: room list, selection, mark read, send, snooze, pagination, undo
     compose.ts         — Email compose/reply state, file attachments (base64), quotedHtml
-    ui.ts              — Modals, dark mode, sync status, active pane (email/chat)
+    bookmarks.ts       — Bookmarks: list, selection, filtering, triage mode, tag editing
+    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/agents)
   hooks/
     useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
     useSync.ts         — Dual sync loop (email + Matrix), live queries, preload chain
@@ -54,6 +55,12 @@ src/
     AgentMessageBlock.tsx — Renders text/thinking/tool_use/tool_result/error/result blocks
     AgentToolApproval.tsx — Tool approval + AskUserQuestion UI (interactive question/answer with options)
     AgentPromptInput.tsx  — Prompt input with send, new session, interrupt
+    BookmarkTab.tsx       — Bookmark tab container (browse/triage modes)
+    BookmarkList.tsx      — Scrollable bookmark list with search + stats
+    BookmarkListItem.tsx  — Single bookmark row (title, domain, tags)
+    BookmarkTagTree.tsx   — Hierarchical tag sidebar with expand/collapse
+    BookmarkDetail.tsx    — Detail view with tag editing + iframe preview
+    BookmarkTriageView.tsx — Tinder-style triage with keep/skip/delete
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
@@ -63,8 +70,9 @@ agent-hub/               — Local Node.js server for Claude Code agent integrat
   src/
     index.ts             — HTTP + WebSocket server (Hono-less, native Node)
     session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
+    bookmarks.ts         — Bookmark file parser, in-memory cache, CRUD operations
     protocol.ts          — Shared types: ClientMessage, HubMessage, Claude NDJSON protocol
-    __tests__/           — Session + protocol tests (61 tests)
+    __tests__/           — Session, protocol, bookmarks tests (84 tests)
 functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
 docs/
   agent-architecture.md  — Full agent system documentation
@@ -155,6 +163,17 @@ docs/
 - Desktop (≥768px): split pane (thread list + detail), keyboard-first
 - Mobile (<768px): single view, tap to navigate. Swipe right = archive/read, left = snooze. Bottom sheets for modals.
 
+## Key Patterns (Bookmarks / Obsidian Vault)
+- **Data source** — 977+ bookmark .md files in `~/sync/brain/root/bookmarks/`, each with YAML frontmatter (title, url, added, archive, description, tags) + optional body
+- **Hub REST API** — `GET /bookmarks`, `GET /bookmarks/:filename`, `PUT /bookmarks/:filename`, `DELETE /bookmarks/:filename`, `GET /bookmarks/tags`, `POST /bookmarks/reload`
+- **In-memory cache** — Hub parses all .md files on first request, caches in memory. Invalidated on write/delete operations.
+- **Hierarchical tags** — Tags use `/` as separator (e.g., `dev/frontend/react`). Tag tree sidebar with expand/collapse. `status/broken` is a special tag with visual indicator.
+- **Two modes** — Browse (tag tree + list + detail split pane) and Triage (Tinder-style card-by-card review with keep/skip/delete)
+- **Tag editing** — Add/remove tags with autocomplete from all existing tags. Changes saved immediately to vault .md file via PUT.
+- **Vault path** — Configurable via `--bookmarks` flag on hub (default: `~/sync/brain/root/bookmarks`)
+- **No IndexedDB** — Bookmarks fetched fresh from hub on tab activation. Vault is the source of truth.
+- **iframe preview** — Detail and triage views embed bookmark URL in sandboxed iframe
+
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
 - **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
@@ -173,7 +192,10 @@ docs/
 - **Health/discovery** — `GET /health` returns hub state; frontend auto-connects on mount, shows setup instructions if hub not running
 
 ## Keybindings (vim-style, desktop only)
-j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/agents)
+j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/agents)
+
+### Bookmark-specific keybindings
+e = keep (triage), d = delete, s = skip (triage), o = open URL, m = toggle triage mode, t = focus tag input, / = search, Esc = clear/deselect/exit triage
 
 ### Agent-specific keybindings
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
@@ -182,7 +204,7 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 - Vitest, 245 tests across 13 files. `fake-indexeddb` for Dexie tests.
 - `.claude/settings.json` hook runs `npm test` on every Stop event.
 - `npm test` (single run), `npm run test:watch` (watch mode)
-- `cd agent-hub && npm test` — hub tests (61 tests, 3 files)
+- `cd agent-hub && npm test` — hub tests (84 tests, 4 files)
 
 ## Commands
 - `npm run dev` — Vite + Cloudflare Functions (port 5173, proxies /api/* to 8788)
