@@ -17,7 +17,7 @@ React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-mar
 ```
 src/
   main.tsx, App.tsx, index.css
-  __tests__/           — Vitest tests (220 tests, 12 files)
+  __tests__/           — Vitest tests (245 tests, 13 files)
   db/
     index.ts           — Dexie v4: threads, messages, attachmentData, chatRooms, chatMessages, queue, meta
     sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
@@ -52,7 +52,7 @@ src/
     AgentTab.tsx          — Agent session list + session view container
     AgentSessionView.tsx  — Message stream, status bar, tool approval, prompt input
     AgentMessageBlock.tsx — Renders text/thinking/tool_use/tool_result/error/result blocks
-    AgentToolApproval.tsx — Bottom sheet for tool approval (Allow/Deny/Allow-all)
+    AgentToolApproval.tsx — Tool approval + AskUserQuestion UI (interactive question/answer with options)
     AgentPromptInput.tsx  — Prompt input with send, new session, interrupt
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
@@ -64,7 +64,7 @@ agent-hub/               — Local Node.js server for Claude Code agent integrat
     index.ts             — HTTP + WebSocket server (Hono-less, native Node)
     session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
     protocol.ts          — Shared types: ClientMessage, HubMessage, Claude NDJSON protocol
-    __tests__/           — Session + protocol tests (45 tests)
+    __tests__/           — Session + protocol tests (61 tests)
 functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
 docs/
   agent-architecture.md  — Full agent system documentation
@@ -109,6 +109,7 @@ docs/
 - **Key backup restore** — SSSS recovery key (base58) → decrypt backup key → download all sessions from `/room_keys/keys` → `importExportedRoomKeys` into OlmMachine. Also imports cross-signing private keys from SSSS and self-signs device. UI in AccountModal. Clears cached messages after import to force re-decryption.
 - **Cross-signing & device verification** — `bootstrapAndVerifyDevice(password)` creates new cross-signing keys, uploads to server via UIA (`keys/device_signing/upload` with `m.login.password`), self-signs this device, and verifies all other user devices. Required for Beeper bridge to accept encrypted messages. UI in AccountModal ("Verify this device"). IMPORTANT: `bootstrapCrossSigning(true)` overwrites server cross-signing keys — always verify ALL devices after bootstrap, otherwise other devices become untrusted. Cross-signing private keys are NOT persisted across page reloads by OlmMachine's IndexedDB store.
 - **Image sending** — paste (Ctrl+V) or file picker. Encrypted rooms: AES-CTR-256 encrypt attachment → upload as `application/octet-stream` → send with `file` field containing key/IV/hash. Caption: `body` = caption text, `filename` = actual filename (bridges use body as caption).
+- **Video rendering** — `m.video` messages rendered with `<video>` element (controls, playsInline). Encrypted videos decrypted via same `decryptAttachment` as images. Caption support same as images.
 - **Send failure visibility** — local echo shows "Sending..." until sync echo confirms delivery. `sendFailed` field on DbChatMessage shows error in red. Queue retries 3 times before marking failed.
 - **Local echo lifecycle** — local echo (ID starts with `~`) kept until server echo arrives via sync (matched by body content). NOT deleted on API success — bridge may reject after Matrix accepts (e.g., untrusted device).
 - **Room hard-reload** — right-click a room in the list to clear its cached messages and re-fetch from server.
@@ -155,14 +156,19 @@ docs/
 - Mobile (<768px): single view, tap to navigate. Swipe right = archive/read, left = snooze. Bottom sheets for modals.
 
 ## Key Patterns (Agents / Claude Code)
-- **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio`. Same approach as Happy Coder and HAPI.
+- **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
 - **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
-- **Tool approval via stdin** — `control_response` with `{ behavior: 'allow' }` or `{ behavior: 'deny' }` written to Claude's stdin
-- **WebSocket relay** — Hub exposes `ws://localhost:9877`, Console frontend connects and exchanges JSON messages
-- **Auto-approve** — per-session allowlist of tool names (set via "Allow all" button), resets on page reload
+- **control_request format** — Claude CLI nests fields: `{ type: 'control_request', request_id, request: { subtype, tool_name, input, tool_use_id } }`. NOT flat.
+- **control_response format** — Double-nested: `{ type: 'control_response', response: { request_id, response: { behavior: 'allow', updatedInput?: {...} } } }`. The inner `response` matches the SDK's `canUseTool` return type. Regular tools auto-approved; AskUserQuestion forwarded to frontend.
+- **AskUserQuestion** — Intercepted via `control_request` where `tool_name === 'AskUserQuestion'`. Hub emits `approval_required` to frontend. Frontend renders interactive UI with options + text input. Answer sent back as `updatedInput: { questions, answers: { "question text": "selected label" } }`.
+- **WebSocket relay** — Hub exposes `ws://localhost:9877` (configurable via `--host`), Console frontend connects and exchanges JSON messages. Hub URL stored in localStorage.
+- **Auto-approve** — Hub auto-approves all tools except AskUserQuestion (replaces `--dangerously-skip-permissions`). Frontend also has per-session allowlist via "Allow all" button.
 - **Streaming** — `text_delta` and `thinking_delta` accumulated in store, flushed on complete message
 - **Multi-session** — Hub manages multiple concurrent Claude subprocesses, each with independent state
-- **Session resume** — `--resume <sessionId>` flag continues a prior Claude session
+- **Session persistence** — Manifest file (`~/.claude/console-hub-sessions.json`) saves active sessions on SIGTERM, restores on startup via `--resume`. Deduplicates by `claudeSessionId` to prevent zombie sessions.
+- **Session survival** — Frontend remaps session IDs via `claudeSessionId` when hub restarts (IDs change). Messages, deltas, and activeSessionId transferred to new IDs.
+- **Message replay** — Hub coalesces text/thinking deltas into complete blocks in a per-session `messageLog`. Late-joining clients receive full replay on WebSocket connect.
+- **Context usage** — `input_tokens + output_tokens` from result message shown as token counts (e.g. "45k / 1M") with color coding. `total_cost_usd` is cumulative (SET not ADD).
 - **Status line** — auto-derived from tool_use events (e.g., "Reading src/App.tsx...", "Running npm test...")
 - **Health/discovery** — `GET /health` returns hub state; frontend auto-connects on mount, shows setup instructions if hub not running
 
@@ -173,10 +179,10 @@ j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply 
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
 
 ## Testing
-- Vitest, 220 tests across 12 files. `fake-indexeddb` for Dexie tests.
+- Vitest, 245 tests across 13 files. `fake-indexeddb` for Dexie tests.
 - `.claude/settings.json` hook runs `npm test` on every Stop event.
 - `npm test` (single run), `npm run test:watch` (watch mode)
-- `cd agent-hub && npm test` — hub tests
+- `cd agent-hub && npm test` — hub tests (61 tests, 3 files)
 
 ## Commands
 - `npm run dev` — Vite + Cloudflare Functions (port 5173, proxies /api/* to 8788)
