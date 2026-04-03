@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { useUiStore } from '@/store/ui'
-import { getConflicts, getPending } from '@/db/sync-queue'
+import { getConflicts, getPending, getQueueCount } from '@/db/sync-queue'
 import { processQueue } from '@/gmail/sync'
 import { processChatQueue } from '@/matrix/sync'
 import type { QueuedAction } from '@/gmail/types'
@@ -12,6 +13,14 @@ export function SyncStatus() {
   const matrixStatus = useUiStore((s) => s.matrixSyncStatus)
   const matrixDetail = useUiStore((s) => s.matrixSyncDetail)
   const queueCount = useUiStore((s) => s.queueCount)
+
+  // Live query for queue count — drives the UI store
+  const liveQueueCount = useLiveQuery(() => getQueueCount(), [])
+  useEffect(() => {
+    if (liveQueueCount !== undefined) {
+      useUiStore.getState().setQueueCount(liveQueueCount)
+    }
+  }, [liveQueueCount])
 
   // Show the worst status across both sync systems
   const statusPriority = { error: 3, offline: 2, syncing: 1, idle: 0 } as const

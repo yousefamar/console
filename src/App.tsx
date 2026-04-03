@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { initAuth, signIn, isSignedIn, onAuthExpired } from '@/gmail/auth'
+import { resetStuckProcessing } from '@/db/sync-queue'
 import { isMatrixConnected } from '@/matrix/auth'
 import { getMeta } from '@/db'
 import { useKeybindings } from '@/hooks/useKeybindings'
 import { useSync } from '@/hooks/useSync'
 import { useUiStore } from '@/store/ui'
+import { useNotesStore } from '@/store/notes'
+import { useInboxStore } from '@/store/inbox'
 import { Layout } from '@/components/Layout'
-import { AuthScreen } from '@/components/AuthScreen'
 import { SnoozePicker } from '@/components/SnoozePicker'
 import { SearchOverlay } from '@/components/SearchOverlay'
 import { KeybindingHelp } from '@/components/KeybindingHelp'
@@ -47,9 +49,35 @@ function ReAuthBanner() {
   )
 }
 
-function AuthenticatedApp() {
+function hasUnsavedWork(): boolean {
+  // Dirty notes
+  const { openFiles } = useNotesStore.getState()
+  for (const file of Object.values(openFiles)) {
+    if (file.content !== file.savedContent) return true
+  }
+  // Open compose or reply
+  if (useUiStore.getState().showCompose) return true
+  if (useInboxStore.getState().replyMode) return true
+  // Pending sync queue
+  if (useUiStore.getState().queueCount > 0) return true
+  return false
+}
+
+function ConsoleApp() {
   useKeybindings()
   useSync()
+
+  // Warn before closing with unsaved work
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedWork()) {
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
 
   const showSearch = useUiStore((s) => s.showSearch)
   const showKeybindingHelp = useUiStore((s) => s.showKeybindingHelp)
@@ -83,34 +111,37 @@ function AuthenticatedApp() {
 }
 
 export function App() {
-  const [authenticated, setAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    async function tryAutoAuth() {
+    async function init() {
+      // Reset any queue items stuck in 'processing' from a previous session
+      resetStuckProcessing()
+
       try {
+        // Try to initialize Gmail auth (non-blocking — app works without it)
         await initAuth()
         if (isSignedIn()) {
           const email = await getMeta('email')
           if (email) {
             useUiStore.getState().setUserEmail(email)
           }
-          // Initialize Matrix user ID if connected
-          if (isMatrixConnected()) {
-            const matrixUserId = localStorage.getItem('matrix_user_id')
-            if (matrixUserId) {
-              useUiStore.getState().setMatrixUserId(matrixUserId)
-            }
-          }
-          setAuthenticated(true)
         }
       } catch {
-        // Auth init failed
-      } finally {
-        setLoading(false)
+        // Gmail auth init failed — app still works for other tabs
       }
+
+      // Initialize Matrix user ID if connected
+      if (isMatrixConnected()) {
+        const matrixUserId = localStorage.getItem('matrix_user_id')
+        if (matrixUserId) {
+          useUiStore.getState().setMatrixUserId(matrixUserId)
+        }
+      }
+
+      setLoading(false)
     }
-    tryAutoAuth()
+    init()
   }, [])
 
   // Listen for auth expiry (refresh token dead — very rare)
@@ -128,9 +159,5 @@ export function App() {
     )
   }
 
-  if (!authenticated) {
-    return <AuthScreen onAuth={() => setAuthenticated(true)} />
-  }
-
-  return <AuthenticatedApp />
+  return <ConsoleApp />
 }

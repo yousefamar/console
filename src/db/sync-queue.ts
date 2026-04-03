@@ -31,7 +31,7 @@ export async function enqueue(
 }
 
 export async function getPending(): Promise<QueuedAction[]> {
-  return db.queue.where('status').equals('pending').sortBy('createdAt')
+  return db.queue.where('status').anyOf('pending', 'processing').sortBy('createdAt')
 }
 
 export async function markProcessing(id: number): Promise<void> {
@@ -70,4 +70,12 @@ export async function getQueueCount(): Promise<number> {
 
 export async function getConflicts(): Promise<QueuedAction[]> {
   return db.queue.where('status').equals('conflict').toArray()
+}
+
+/** Reset any stuck 'processing' items back to 'pending' (e.g. after a crash/reload) */
+export async function resetStuckProcessing(): Promise<void> {
+  const stuck = await db.queue.where('status').equals('processing').toArray()
+  for (const item of stuck) {
+    await db.queue.update(item.id!, { status: 'pending' })
+  }
 }

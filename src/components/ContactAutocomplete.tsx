@@ -17,14 +17,23 @@ interface ContactAutocompleteProps {
   inputRef?: React.RefObject<HTMLInputElement | null>
 }
 
-// Cache local contacts so we don't re-query on every keystroke
+// Cache local contacts — built once, refreshed on sync
 let contactsCache: Contact[] | null = null
 let cacheTime = 0
-const CACHE_TTL = 60_000
+const CACHE_TTL = 10 * 60_000 // 10 minutes — contacts don't change often
+let buildPromise: Promise<Contact[]> | null = null
 
 async function getLocalContacts(): Promise<Contact[]> {
   if (contactsCache && Date.now() - cacheTime < CACHE_TTL) return contactsCache
+  // Deduplicate concurrent calls — don't scan twice
+  if (buildPromise) return buildPromise
+  buildPromise = buildContactsCache()
+  const result = await buildPromise
+  buildPromise = null
+  return result
+}
 
+async function buildContactsCache(): Promise<Contact[]> {
   const seen = new Map<string, Contact>()
 
   function upsert(email: string, name: string, date: number) {
@@ -39,6 +48,10 @@ async function getLocalContacts(): Promise<Contact[]> {
     }
   }
 
+  // Use cursor-based .each() — constant memory, doesn't load all messages at once.
+  // DO NOT use .toArray() — loads every message (with full HTML bodies) into RAM,
+  // causing OOM crashes on large inboxes.
+  // DO NOT use .offset().limit() — O(n²) on IndexedDB.
   await db.messages.each((msg) => {
     if (msg.fromEmail) {
       upsert(msg.fromEmail, msg.from || '', msg.date)
@@ -58,6 +71,13 @@ async function getLocalContacts(): Promise<Contact[]> {
   contactsCache = [...seen.values()].sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
   cacheTime = Date.now()
   return contactsCache
+}
+
+/** Pre-warm contacts cache in background (call after sync) */
+export function preloadContacts() {
+  if (!contactsCache || Date.now() - cacheTime > CACHE_TTL) {
+    getLocalContacts() // fire and forget
+  }
 }
 
 function parseAddresses(raw: string): Contact[] {

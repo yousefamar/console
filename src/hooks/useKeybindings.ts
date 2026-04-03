@@ -3,6 +3,7 @@ import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
+import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
 
 export function useKeybindings() {
@@ -10,6 +11,7 @@ export function useKeybindings() {
   const chat = useChatStore
   const agent = useAgentStore
   const bm = useBookmarkStore
+  const notes = useNotesStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -20,6 +22,7 @@ export function useKeybindings() {
       const activePane = ui.getState().activePane
       const isEmail = activePane === 'email'
       const isBookmarks = activePane === 'bookmarks'
+      const isNotes = activePane === 'notes'
       const isAgents = activePane === 'agents'
 
       // Always active
@@ -46,6 +49,15 @@ export function useKeybindings() {
           bm.getState().selectTag(null)
         } else if (isBookmarks && bm.getState().selectedBookmarkId) {
           bm.getState().selectBookmark(null)
+        } else if (isNotes && notes.getState().commandPaletteOpen) {
+          notes.getState().closeCommandPalette()
+        } else if (isNotes && notes.getState().linkPickerOpen) {
+          notes.getState().closeLinkPicker()
+        } else if (isNotes && notes.getState().quickSwitcherOpen) {
+          notes.getState().closeQuickSwitcher()
+        } else if (isNotes && isEditing) {
+          // Let CodeMirror/vim handle Escape in editor
+          return
         } else if (isAgents && isEditing) {
           // Agent pane: Esc from input blurs first (vim-like: insert → normal mode)
           ;(target as HTMLElement).blur()
@@ -69,6 +81,32 @@ export function useKeybindings() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         // Handled by compose editor / agent prompt input
         return
+      }
+
+      // Notes: Ctrl+Shift+T for reopen closed tab
+      if (isNotes && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault()
+        notes.getState().reopenLastClosedTab()
+        return
+      }
+
+      // Notes: Ctrl+Shift+P for command palette, Ctrl+P for Quick Switcher, Ctrl+Shift+F for content search
+      if (isNotes && (e.ctrlKey || e.metaKey)) {
+        if (e.shiftKey && (e.key === 'p' || e.key === 'P')) {
+          e.preventDefault()
+          notes.getState().openCommandPalette()
+          return
+        }
+        if (e.key === 'p') {
+          e.preventDefault()
+          notes.getState().openQuickSwitcher('filename')
+          return
+        }
+        if (e.key === 'F' || (e.key === 'f' && e.shiftKey)) {
+          e.preventDefault()
+          notes.getState().openQuickSwitcher('content')
+          return
+        }
       }
 
       // Don't intercept when editing text
@@ -200,6 +238,47 @@ export function useKeybindings() {
         return // Don't fall through to email/chat bindings
       }
 
+      // Notes-specific keybindings
+      // When editor (CodeMirror) is focused, it handles its own keys via vim mode.
+      // These only apply when the tree sidebar or other non-editor elements are focused.
+      if (isNotes) {
+        // Ctrl+P / Ctrl+Shift+F — always intercept for quick switcher / search
+        // (handled before the isEditing check below)
+
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 't' && e.shiftKey) {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        if (e.key === '/') {
+          e.preventDefault()
+          notes.getState().openQuickSwitcher()
+          return
+        }
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          notes.getState().nextTab()
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          notes.getState().prevTab()
+          return
+        }
+        if (e.key === 'e') {
+          e.preventDefault()
+          const path = notes.getState().activeFilePath
+          if (path) notes.getState().closeFile(path, false)
+          return
+        }
+        return // Don't fall through to email/chat bindings
+      }
+
       // Navigation — dispatches to email or chat store based on active pane
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault()
@@ -215,6 +294,11 @@ export function useKeybindings() {
       }
 
       // Triage — context-dependent
+      if (e.key === 'E' || (e.key === 'e' && e.shiftKey)) {
+        e.preventDefault()
+        if (!isEmail) chat.getState().markRoomUnread()
+        return
+      }
       if (e.key === 'e') {
         e.preventDefault()
         if (isEmail) inbox.getState().archiveThread()

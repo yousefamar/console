@@ -23,6 +23,7 @@ import { Session, type SessionOptions } from './session.js'
 import type { ClientMessage, HubMessage, PastSession, SessionInfo, ClaudeContentBlock } from './protocol.js'
 import { cwdToProjectDir } from './utils.js'
 import { BookmarkStore } from './bookmarks.js'
+import { NoteStore } from './notes.js'
 
 // --------------------------------------------------------------------------
 // Session manifest — persists active sessions across hub restarts
@@ -167,12 +168,14 @@ const port = getArg('--port', DEFAULT_PORT)
 const host = getArg('--host', 'localhost')
 const cwd = getArg('--cwd', process.cwd())
 const bookmarkVault = getArg('--bookmarks', join(homedir(), 'sync', 'brain', 'root', 'bookmarks'))
+const notesVault = getArg('--notes', join(homedir(), 'sync', 'brain', 'root'))
 
 // --------------------------------------------------------------------------
 // Bookmark store
 // --------------------------------------------------------------------------
 
 const bookmarkStore = new BookmarkStore(bookmarkVault)
+const noteStore = new NoteStore(notesVault)
 
 // --------------------------------------------------------------------------
 // Project directory discovery
@@ -435,6 +438,90 @@ const httpServer = createServer(async (req, res) => {
       await bookmarkStore.reload()
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true, count: bookmarkStore.size }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  // -----------------------------------------------------------------------
+  // Notes API — file browser/editor for Obsidian vault (hub fallback)
+  // -----------------------------------------------------------------------
+
+  if (path === '/notes' && req.method === 'GET') {
+    try {
+      const files = await noteStore.list()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(files))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path.startsWith('/notes/file/') && req.method === 'GET') {
+    const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
+    try {
+      const content = await noteStore.read(filePath)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ content }))
+    } catch (err) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path.startsWith('/notes/file/') && req.method === 'PUT') {
+    const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
+    try {
+      const body = await readBody(req)
+      const { content } = JSON.parse(body)
+      await noteStore.write(filePath, content)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path.startsWith('/notes/file/') && req.method === 'DELETE') {
+    const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
+    try {
+      await noteStore.delete(filePath)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path.startsWith('/notes/mkdir/') && req.method === 'POST') {
+    const dirPath = decodeURIComponent(path.slice('/notes/mkdir/'.length))
+    try {
+      await noteStore.createDir(dirPath)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    }
+    return
+  }
+
+  if (path === '/notes/rename' && req.method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const { from, to } = JSON.parse(body)
+      await noteStore.rename(from, to)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))

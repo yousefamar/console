@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import { useUiStore } from '@/store/ui'
 import { sanitizeHtml, buildDarkModeEmailCss } from '@/utils/email'
 import { getCached, updateHeight } from '@/utils/email-cache'
@@ -11,7 +11,7 @@ interface EmailFrameProps {
 
 const DARK_STYLE_ID = 'console-dark-mode'
 
-export function EmailFrame({ messageId, html, visible }: EmailFrameProps) {
+export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }: EmailFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const emailDarkMode = useUiStore((s) => s.emailDarkMode)
   const darkMode = useUiStore((s) => s.darkMode)
@@ -118,7 +118,7 @@ export function EmailFrame({ messageId, html, visible }: EmailFrameProps) {
       title="Email content"
     />
   )
-}
+})
 
 function toggleDarkInIframe(iframe: HTMLIFrameElement, dark: boolean) {
   try {

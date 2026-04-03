@@ -19,6 +19,40 @@ function esc(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Cached alias loading — avoids querying 500 messages on every ComposeEditor mount
+let aliasCache: SendAsAlias[] | null = null
+let aliasCacheTime = 0
+const ALIAS_CACHE_TTL = 10 * 60_000
+
+async function loadCachedAliases(): Promise<SendAsAlias[]> {
+  if (aliasCache && Date.now() - aliasCacheTime < ALIAS_CACHE_TTL) return aliasCache
+
+  const raw = await getMeta('sendAsAliases')
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as SendAsAlias[]
+    if (parsed.length <= 1) { aliasCache = parsed; aliasCacheTime = Date.now(); return parsed }
+
+    const recency = new Map<string, number>()
+    const msgs = await db.messages.orderBy('date').reverse().limit(500).toArray()
+    for (const msg of msgs) {
+      const recipients = [msg.to, msg.cc].filter(Boolean).join(', ').toLowerCase()
+      for (const alias of parsed) {
+        const email = alias.email.toLowerCase()
+        if (!recency.has(email) && recipients.includes(email)) {
+          recency.set(email, msg.date)
+        }
+      }
+      if (recency.size >= parsed.length) break
+    }
+
+    parsed.sort((a, b) => (recency.get(b.email.toLowerCase()) ?? 0) - (recency.get(a.email.toLowerCase()) ?? 0))
+    aliasCache = parsed
+    aliasCacheTime = Date.now()
+    return parsed
+  } catch { return [] }
+}
+
 interface ComposeEditorProps {
   mode: 'reply' | 'replyAll' | 'forward' | 'compose'
   lastMessage?: DbMessage | null
@@ -83,33 +117,9 @@ export function ComposeEditor({ mode, lastMessage, onClose }: ComposeEditorProps
   const [aliases, setAliases] = useState<SendAsAlias[]>([])
   const [showFromPicker, setShowFromPicker] = useState(false)
 
-  // Load send-as aliases, sorted by most recently received email
+  // Load send-as aliases (cached — expensive recency sort only runs once)
   useEffect(() => {
-    getMeta('sendAsAliases').then(async (raw) => {
-      if (!raw) return
-      try {
-        const parsed = JSON.parse(raw) as SendAsAlias[]
-        if (parsed.length <= 1) { setAliases(parsed); return }
-
-        // Find the most recent message received at each alias
-        const recency = new Map<string, number>()
-        const allMessages = await db.messages.orderBy('date').reverse().limit(500).toArray()
-        for (const msg of allMessages) {
-          const recipients = [msg.to, msg.cc].filter(Boolean).join(', ').toLowerCase()
-          for (const alias of parsed) {
-            const email = alias.email.toLowerCase()
-            if (!recency.has(email) && recipients.includes(email)) {
-              recency.set(email, msg.date)
-            }
-          }
-          // Stop early if all aliases found
-          if (recency.size >= parsed.length) break
-        }
-
-        parsed.sort((a, b) => (recency.get(b.email.toLowerCase()) ?? 0) - (recency.get(a.email.toLowerCase()) ?? 0))
-        setAliases(parsed)
-      } catch { /* ignore */ }
-    })
+    loadCachedAliases().then((a) => { if (a.length) setAliases(a) })
   }, [])
 
   // Set the best "from" address whenever aliases load

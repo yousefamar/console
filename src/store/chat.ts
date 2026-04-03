@@ -287,6 +287,7 @@ interface ChatState {
 
   // Triage (inbox-zero for chat)
   markRoomRead: (roomId?: string) => Promise<void>
+  markRoomUnread: (roomId?: string) => Promise<void>
   snoozeRoom: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => Promise<void>
 
   // Send
@@ -466,6 +467,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         })
     })
+  },
+
+  markRoomUnread: async (roomId) => {
+    const id = roomId ?? get().selectedRoomId
+    if (!id) return
+
+    // Update DB
+    await db.chatRooms.update(id, { isUnread: true, unreadCount: 1 })
+
+    // Optimistic: add back to rooms list if not already there
+    set((s) => {
+      const existing = s.rooms.find((r) => r.id === id)
+      if (existing) {
+        return { rooms: s.rooms.map((r) => r.id === id ? { ...r, isUnread: true, unreadCount: 1 } : r) }
+      }
+      // Room not in list — fetch from DB
+      return s
+    })
+
+    // If room wasn't in the list, the live query will pick it up from DB
   },
 
   snoozeRoom: async (option, customDate) => {

@@ -1,8 +1,6 @@
 import { useEffect, useCallback, useRef } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '@/db'
-import { getQueueCount } from '@/db/sync-queue'
 import { onSyncStatus, startSyncLoop, stopSyncLoop, fullSync } from '@/gmail/sync'
+import { isSignedIn as isGmailSignedIn } from '@/gmail/auth'
 import {
   onMatrixSyncStatus,
   fullMatrixSync,
@@ -14,63 +12,15 @@ import { onEnqueue } from '@/db/sync-queue'
 import { isMatrixConnected, getMatrixUserId, getMatrixDeviceId } from '@/matrix/auth'
 import { preloadAllInbox } from '@/utils/email-cache'
 import { preloadAttachments } from '@/utils/attachment-cache'
-import { useInboxStore } from '@/store/inbox'
+import { preloadContacts } from '@/components/ContactAutocomplete'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
 import { backfillMediaUrls } from '@/matrix/backfill-media'
 import { backfillRoomInfo } from '@/matrix/backfill-rooms'
 
 export function useSync() {
-  const setThreads = useInboxStore((s) => s.setThreads)
-  const setChatRooms = useChatStore((s) => s.setRooms)
   const setSyncStatus = useUiStore((s) => s.setSyncStatus)
   const setMatrixSyncStatus = useUiStore((s) => s.setMatrixSyncStatus)
-  const setQueueCount = useUiStore((s) => s.setQueueCount)
-
-  // Live query for inbox threads (no snooze, in INBOX)
-  const threads = useLiveQuery(
-    () =>
-      db.threads
-        .filter((t) => t.labelIds.includes('INBOX') && !t.snoozedUntil)
-        .reverse()
-        .sortBy('date'),
-    [],
-  )
-
-  // Set threads directly from live query
-  useEffect(() => {
-    if (threads) {
-      setThreads(threads)
-    }
-  }, [threads, setThreads])
-
-  // Live query for chat rooms: unread (inbox) + favourites (always pinned)
-  const chatRooms = useLiveQuery(
-    () =>
-      db.chatRooms
-        .filter((r) => {
-          const isFavourite = r.tags?.includes('m.favourite') ?? false
-          if (isFavourite) return true
-          return r.isUnread && !r.snoozedUntil && !r.isLowPriority
-        })
-        .reverse()
-        .sortBy('lastMessageTime'),
-    [],
-  )
-
-  useEffect(() => {
-    if (chatRooms) {
-      setChatRooms(chatRooms)
-    }
-  }, [chatRooms, setChatRooms])
-
-  // Live query for queue count
-  const queueCountResult = useLiveQuery(() => getQueueCount(), [])
-  useEffect(() => {
-    if (queueCountResult !== undefined) {
-      setQueueCount(queueCountResult)
-    }
-  }, [queueCountResult, setQueueCount])
 
   // Subscribe to sync status changes + preload emails when sync completes
   const prevStatus = useRef<string>('idle')
@@ -80,6 +30,7 @@ export function useSync() {
       // Preload email iframes after sync finishes
       if (prevStatus.current === 'syncing' && status === 'idle') {
         preloadAllInbox().then(() => preloadAttachments())
+        preloadContacts()
       }
       prevStatus.current = status
     })
@@ -94,8 +45,9 @@ export function useSync() {
     return unsub
   }, [setMatrixSyncStatus])
 
-  // Start email sync loop
+  // Start email sync loop (only when Gmail is connected)
   useEffect(() => {
+    if (!isGmailSignedIn()) return
     startSyncLoop()
     return () => stopSyncLoop()
   }, [])
@@ -137,9 +89,6 @@ export function useSync() {
       await backfillRoomInfo().catch(() => {})
 
       // If we have a sync token from a previous session, skip the expensive full sync
-      // (928 rooms @ ~2s each = 30+ min) and go straight to incremental long-polling.
-      // Full sync only needed on first-ever connect.
-      // If we have a sync token from a previous session, skip the expensive full sync
       // (hundreds of rooms) and go straight to incremental long-polling.
       const { getMeta } = await import('@/db')
       const existingToken = await getMeta('matrixSyncToken')
@@ -177,10 +126,8 @@ export function useSync() {
   }, [])
 
   const triggerFullSync = useCallback(async () => {
-    await fullSync()
-    if (isMatrixConnected()) {
-      await fullMatrixSync()
-    }
+    if (isGmailSignedIn()) await fullSync()
+    if (isMatrixConnected()) await fullMatrixSync()
   }, [])
 
   return { triggerFullSync }

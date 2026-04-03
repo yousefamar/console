@@ -28,6 +28,17 @@ const BINDINGS = [
     { key: 'm', action: 'Toggle triage mode' },
     { key: 't', action: 'Focus tag input' },
   ]},
+  { section: 'Notes', items: [
+    { key: 'Ctrl + Shift + P', action: 'Command palette' },
+    { key: 'Ctrl + P', action: 'Find file (Quick Switcher)' },
+    { key: 'Ctrl + K', action: 'Insert link' },
+    { key: '[[', action: 'Insert wiki link (insert mode)' },
+    { key: 'Ctrl + S', action: 'Save file' },
+    { key: ':w', action: 'Save (vim)' },
+    { key: ':q', action: 'Close tab' },
+    { key: ':wq', action: 'Save and close' },
+    { key: 'gt / gT', action: 'Next / prev tab' },
+  ]},
   { section: 'Agents', items: [
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },

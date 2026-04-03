@@ -1,17 +1,20 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders — just fast triage.
 
 ## Architecture
-- **Pure web app (PWA-ready)** — works in any browser, including mobile
+- **Pure web app (PWA)** — installable standalone app, works in any browser including mobile
 - **Offline-first** — all mutations happen locally first, sync when online
 - **Stateless post-sync** — app state derived from synced data + local queue
+- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
+- **Pre-rendered panes** — all email threads and chat rooms mounted with `display:none`, toggled on selection for instant switching. Chat rooms use deferred re-renders (ref for hidden, state for visible).
+- **Live queries in leaves** — Dexie `useLiveQuery` calls live in leaf components (ThreadList, ChatRoomList, SyncStatus), never in parent Layout. ThreadView split into 3 isolated siblings (Header, Messages, Compose).
 - **Cloudflare Pages** — SPA from CDN + two Pages Functions for OAuth token exchange/refresh
 - **No backend** — Gmail API + People API + Matrix CS API directly from browser; Cloudflare Worker only holds `client_secret` for OAuth
 
 ## Tech Stack
-React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, DOMPurify, Tailwind CSS 3, Lucide React, Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits)
+React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, CodeMirror 6 + @replit/codemirror-vim (notes editor), DOMPurify, Tailwind CSS 3, Lucide React, fzf (fuzzy filename search), MiniSearch (full-text search), Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits)
 
 ## Project Structure
 ```
@@ -39,7 +42,8 @@ src/
     chat.ts            — Chat: room list, selection, mark read, send, snooze, pagination, undo
     compose.ts         — Email compose/reply state, file attachments (base64), quotedHtml
     bookmarks.ts       — Bookmarks: list, selection, filtering, triage mode, tag editing
-    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/agents)
+    notes.ts           — Notes: vault adapter, file tree, open files, search, dirty tracking
+    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/agents)
   hooks/
     useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
     useSync.ts         — Dual sync loop (email + Matrix), live queries, preload chain
@@ -61,9 +65,19 @@ src/
     BookmarkTagTree.tsx   — Hierarchical tag sidebar with expand/collapse
     BookmarkDetail.tsx    — Detail view with tag editing + iframe preview
     BookmarkTriageView.tsx — Tinder-style triage with keep/skip/delete
+    NotesTab.tsx          — Notes tab container (vault connection + split pane)
+    NotesFileBrowser.tsx  — Recursive file tree sidebar with expand/collapse
+    NotesEditor.tsx       — Editor with tab bar, dirty indicators, status bar
+    NotesEditorCore.tsx   — CodeMirror 6 wrapper with vim mode + live preview
+    NotesQuickSwitcher.tsx — Fuzzy file finder modal (fzf-powered)
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
+  notes/
+    vault-adapter.ts     — VaultAdapter interface + FSA + Hub implementations
+    search-index.ts      — MiniSearch full-text + fzf filename fuzzy search
+    live-preview.ts      — CM6 ViewPlugin for Obsidian-style live markdown rendering
+    editor-theme.ts      — CM6 theme matching Console design system
   utils/
     email.ts, email-cache.ts, attachment-cache.ts, date.ts, html.ts
 agent-hub/               — Local Node.js server for Claude Code agent integration
@@ -71,8 +85,9 @@ agent-hub/               — Local Node.js server for Claude Code agent integrat
     index.ts             — HTTP + WebSocket server (Hono-less, native Node)
     session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
     bookmarks.ts         — Bookmark file parser, in-memory cache, CRUD operations
+    notes.ts             — Note file server for vault fallback (list, read, write, delete, rename)
     protocol.ts          — Shared types: ClientMessage, HubMessage, Claude NDJSON protocol
-    __tests__/           — Session, protocol, bookmarks tests (84 tests)
+    __tests__/           — Session, protocol, bookmarks, notes tests (102 tests)
 functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
 docs/
   agent-architecture.md  — Full agent system documentation
@@ -172,7 +187,22 @@ docs/
 - **Tag editing** — Add/remove tags with autocomplete from all existing tags. Changes saved immediately to vault .md file via PUT.
 - **Vault path** — Configurable via `--bookmarks` flag on hub (default: `~/sync/brain/root/bookmarks`)
 - **No IndexedDB** — Bookmarks fetched fresh from hub on tab activation. Vault is the source of truth.
-- **iframe preview** — Detail and triage views embed bookmark URL in sandboxed iframe
+- **iframe preview** — Detail and triage views embed bookmark URL in sandboxed iframe. Persistent iframe pool (up to 20) keeps loaded iframes alive — navigation between visited bookmarks is instant CSS `display` toggle. Preloads 2 ahead for smooth j/k navigation.
+
+## Key Patterns (Notes / Vault Editor)
+- **Dual adapter** — Primary: File System Access API (Chrome/Edge, true offline, no server). Fallback: Hub REST API (`/notes/*` endpoints). Both implement `VaultAdapter` interface (including `readFileBinary`/`writeFileBinary` for images). FSA handle persisted in IndexedDB for session reuse.
+- **CodeMirror 6** — Full markdown editor with vim mode (`@replit/codemirror-vim`), syntax highlighting, line numbers, code folding, line wrapping. NOT Tiptap — CM6 keeps markdown as source of truth.
+- **YAML frontmatter** — `yamlFrontmatter({ content: markdown() })` from `@codemirror/lang-yaml` wraps the document so frontmatter is parsed as proper YAML. Live preview renders frontmatter as an Obsidian-style Properties panel (key-value rows with icons, boolean checkboxes, tag pills). Cursor entering the frontmatter reveals raw YAML.
+- **Live preview** — Custom `ViewPlugin` walks lezer syntax tree, creates `Decoration.replace`/`.mark`/`.widget` to render markdown inline (headings, bold, links, images, code blocks, wiki-links `[[page]]`, wiki image embeds `![[image.png]]`, checkboxes). **Cursor-aware**: decorations removed on the cursor's line to reveal raw markdown syntax.
+- **Image support** — Vault-relative image paths resolved to blob URLs via FSA adapter. Both `![alt](path)` and `![[image.png]]` wiki embeds supported. Async loading with placeholder. Blob URL cache prevents re-loading. `Ctrl+V` paste saves images to `assets/images/` in the vault and inserts markdown at cursor.
+- **Vim ex commands** — `:w` save, `:q` close (warns if dirty), `:q!` force close, `:wq` save and close. Registered via `Vim.defineEx()`.
+- **No auto-save** — Explicit save only (`Ctrl+S` or `:w`). Dirty state = `content !== savedContent`. Dot indicator on tab for unsaved changes.
+- **Multi-file tabs** — Multiple files open simultaneously. Tab bar with dirty indicators and close buttons. `gt`/`gT` (vim) or `Ctrl+Tab` to cycle. Open tabs + active tab persisted in localStorage across page refreshes.
+- **File tree sidebar** — Recursive tree view of vault directories. Expand/collapse (top-level auto-expanded on load), directories first, alphabetical sort. Click to open file. New files default to `scratch/` directory.
+- **Quick Switcher** — `Ctrl+P` or `/` opens fuzzy file finder (fzf-for-js). `Ctrl+Shift+F` opens in content search mode. `Tab` toggles between filename and full-text modes. Content results show highlighted snippets.
+- **Full-text search** — MiniSearch inverted index built on vault load. Prefix + fuzzy matching across file contents. Updated incrementally on save. Integrated into Quick Switcher as "Content" tab.
+- **Vault path** — FSA: user picks directory via `showDirectoryPicker()`. Hub fallback: `--notes` CLI flag (default: `~/sync/brain/root`).
+- **Skip directories** — `.obsidian`, `.trash`, `bookmarks`, `bookmarks-meta`, `.git`, `node_modules`, hidden files (`.`-prefixed) excluded from file listing.
 
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
@@ -192,22 +222,39 @@ docs/
 - **Health/discovery** — `GET /health` returns hub state; frontend auto-connects on mount, shows setup instructions if hub not running
 
 ## Keybindings (vim-style, desktop only)
-j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/agents)
+j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/agents)
 
 ### Bookmark-specific keybindings
 e = keep (triage), d = delete, s = skip (triage), o = open URL, m = toggle triage mode, t = focus tag input, / = search, Esc = clear/deselect/exit triage
+
+### Notes-specific keybindings
+j/k = next/prev tab, e = close tab, Ctrl+P = Quick Switcher, Ctrl+Shift+P = command palette, Ctrl+Shift+T = reopen closed tab, Ctrl+K = insert link, [[ = insert wiki link (insert mode), Ctrl+B/I = bold/italic, Ctrl+Shift+X = strikethrough, Ctrl+` = inline code, Ctrl+S = save, Ctrl+N = new note, / = Quick Switcher, vim mode in editor (:w save, :q close, :wq save+close, :link insert link, gt/gT cycle tabs). Right-click files in tree for rename/delete.
 
 ### Agent-specific keybindings
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
 
 ## Testing
-- Vitest, 245 tests across 13 files. `fake-indexeddb` for Dexie tests.
+- Vitest, 335 tests across 17 files. `fake-indexeddb` for Dexie tests.
 - `.claude/settings.json` hook runs `npm test` on every Stop event.
 - `npm test` (single run), `npm run test:watch` (watch mode)
-- `cd agent-hub && npm test` — hub tests (84 tests, 4 files)
+- `cd agent-hub && npm test` — hub tests (102 tests, 5 files)
+
+## Debugging
+- **`window.__console`** — dev-only global (from `src/debug.ts`): exposes all Zustand stores, Dexie db, and perf data. Use via browser console or MCP `javascript_tool`.
+- **`window.__console.stores.inbox.getState()`** — read any store
+- **`window.__console.perf.longTasks`** — array of 50ms+ blocking tasks (PerformanceObserver)
+- **`VITE_STRICT_MODE=false`** in `.env` — disables React StrictMode double-renders for profiling
+- **`Cache-Control: no-store`** in `vite.config.ts` — prevents stale module caching
+- **react-scan** — commented out in `index.html`, causes overhead with large DOM
+
+## PWA
+- `public/manifest.json` — `display: "standalone"`, releases browser shortcuts (Ctrl+Shift+T etc.)
+- `public/sw.js` — service worker for offline app shell (production only, disabled in dev)
+- Install via browser address bar icon or menu
+- `beforeunload` handler warns on unsaved notes, open compose, or pending queue
 
 ## Commands
-- `npm run dev` — Vite + Cloudflare Functions (port 5173, proxies /api/* to 8788)
+- `pm2 start "npm run dev" --name console-dev` — dev server (preferred over bare `npm run dev`)
 - `cd agent-hub && npm run dev` — Agent hub server (port 9877)
 - `npm run build` / `npm run preview` / `npm run deploy`
 - `npm test` / `npm run test:watch`

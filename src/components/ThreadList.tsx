@@ -17,6 +17,22 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
 
+  // Live query for inbox threads — drives the inbox store
+  const liveThreads = useLiveQuery(
+    () =>
+      db.threads
+        .filter((t) => t.labelIds.includes('INBOX') && !t.snoozedUntil)
+        .reverse()
+        .sortBy('date'),
+    [],
+  )
+
+  useEffect(() => {
+    if (liveThreads) {
+      useInboxStore.getState().setThreads(liveThreads)
+    }
+  }, [liveThreads])
+
   const snoozedThreads = useLiveQuery(
     () => showSnoozed
       ? db.threads.filter((t) => !!t.snoozedUntil).sortBy('snoozedUntil')

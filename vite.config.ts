@@ -15,6 +15,7 @@ export default defineConfig({
     exclude: ['@matrix-org/matrix-sdk-crypto-wasm'],
   },
   server: {
+    headers: { 'Cache-Control': 'no-store' },
     proxy: {
       '/api': 'http://localhost:8788',
     },

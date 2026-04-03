@@ -50,7 +50,7 @@ describe('enqueue', () => {
 })
 
 describe('getPending', () => {
-  it('returns only pending actions sorted by createdAt', async () => {
+  it('returns pending and processing actions sorted by createdAt', async () => {
     await enqueue('archive', {}, { threadId: 't1' })
     await enqueue('markRead', {}, { threadId: 't2' })
 
@@ -59,8 +59,9 @@ describe('getPending', () => {
     await markProcessing(all[0]!.id!)
 
     const pending = await getPending()
-    expect(pending).toHaveLength(1)
-    expect(pending[0]!.type).toBe('markRead')
+    expect(pending).toHaveLength(2)
+    const statuses = pending.map((p) => p.status).sort()
+    expect(statuses).toEqual(['pending', 'processing'])
   })
 
   it('returns empty array when no pending actions', async () => {

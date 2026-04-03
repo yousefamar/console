@@ -11,46 +11,27 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import { incrementalSync, fullSync } from '@/gmail/sync'
+import { isSignedIn as isGmailConnected, signIn as gmailSignIn } from '@/gmail/auth'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, User, Bot, Bookmark } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Settings } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { BookmarkTab } from './BookmarkTab'
+import { NotesTab } from './NotesTab'
 
-export function Layout() {
-  const threads = useInboxStore((s) => s.threads)
+// ---------- MailTab (isolates inbox store subscriptions) ----------
+
+function MailTab() {
   const selectedThreadId = useInboxStore((s) => s.selectedThreadId)
-  const selectThread = useInboxStore((s) => s.selectThread)
   const archiveThread = useInboxStore((s) => s.archiveThread)
   const snoozeThread = useInboxStore((s) => s.snoozeThread)
-
-  const chatRooms = useChatStore((s) => s.rooms)
-  const selectedRoomId = useChatStore((s) => s.selectedRoomId)
-  const selectRoom = useChatStore((s) => s.selectRoom)
-  const markRoomRead = useChatStore((s) => s.markRoomRead)
-
-  const activePane = useUiStore((s) => s.activePane)
-  const setActivePane = useUiStore((s) => s.setActivePane)
-  const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
-  const setShowMatrixLogin = useUiStore((s) => s.setShowMatrixLogin)
-  const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
-  const userEmail = useUiStore((s) => s.userEmail)
   const isMobile = useIsMobile()
 
-  const matrixConnected = isMatrixConnected()
-
   const [showSnoozed, setShowSnoozed] = useState(false)
-  const isEmail = activePane === 'email'
-  const isChat = activePane === 'chat'
-  const isBookmarks = activePane === 'bookmarks'
-  const isAgents = activePane === 'agents'
-  const showDetail = isMobile
-    ? (isEmail ? !!selectedThreadId : !!selectedRoomId)
-    : true
-  const showList = isMobile
-    ? (isEmail ? !selectedThreadId : !selectedRoomId)
-    : true
+
+  const showDetail = isMobile ? !!selectedThreadId : true
+  const showList = isMobile ? !selectedThreadId : true
 
   // Snoozed thread count
   const snoozedCount = useLiveQuery(
@@ -62,9 +43,129 @@ export function Layout() {
   const swipeContainerRef = useRef<HTMLDivElement>(null)
   const swipeContentRef = useRef<HTMLDivElement>(null)
   const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
-    onSwipeRight: () => isEmail ? archiveThread() : markRoomRead(),
-    onSwipeLeft: () => isEmail ? snoozeThread('tomorrow') : undefined,
+    onSwipeRight: () => archiveThread(),
+    onSwipeLeft: () => snoozeThread('tomorrow'),
   })
+
+  const gmailConnected = isGmailConnected()
+
+  if (!gmailConnected) {
+    return <MailConnectScreen />
+  }
+
+  return (
+    <>
+      {showList && (
+        <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
+          {!!snoozedCount && (
+            <div className="flex items-center border-b border-border px-3 py-1">
+              <button
+                onClick={() => setShowSnoozed(!showSnoozed)}
+                className={`text-xs transition-colors duration-fast ${showSnoozed ? 'text-text-secondary' : 'text-text-tertiary hover:text-text-secondary'}`}
+                title="Toggle snoozed threads"
+              >
+                {showSnoozed ? 'hide snoozed' : `${snoozedCount} snoozed`}
+              </button>
+            </div>
+          )}
+          <div className="flex-1 overflow-hidden">
+            <ThreadList showSnoozed={showSnoozed} />
+          </div>
+        </div>
+      )}
+      {showDetail && (
+        <div
+          ref={swipeContainerRef}
+          className="flex-1 min-w-0 flex flex-col relative overflow-hidden"
+        >
+          {isMobile ? (
+            <div
+              ref={swipeContentRef}
+              className="flex-1 min-h-0 flex flex-col relative"
+              onTouchStart={swipe.onTouchStart}
+              onTouchMove={swipe.onTouchMove}
+              onTouchEnd={swipe.onTouchEnd}
+            >
+              <ThreadView />
+            </div>
+          ) : (
+            <ThreadView />
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------- ChatTab (isolates chat store subscriptions) ----------
+
+function ChatTab() {
+  const selectedRoomId = useChatStore((s) => s.selectedRoomId)
+  const markRoomRead = useChatStore((s) => s.markRoomRead)
+  const isMobile = useIsMobile()
+
+  const showDetail = isMobile ? !!selectedRoomId : true
+  const showList = isMobile ? !selectedRoomId : true
+
+  // Swipe refs for mobile
+  const swipeContainerRef = useRef<HTMLDivElement>(null)
+  const swipeContentRef = useRef<HTMLDivElement>(null)
+  const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
+    onSwipeRight: () => markRoomRead(),
+  })
+
+  return (
+    <>
+      {showList && (
+        <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
+          <div className="flex-1 overflow-hidden">
+            <ChatRoomList />
+          </div>
+        </div>
+      )}
+      {showDetail && (
+        <div className="flex-1 min-w-0 flex flex-col relative overflow-hidden">
+          {isMobile ? (
+            <div
+              ref={swipeContainerRef}
+              className="flex-1 min-h-0 flex flex-col relative"
+            >
+              <div
+                ref={swipeContentRef}
+                className="flex-1 min-h-0 flex flex-col relative"
+                onTouchStart={swipe.onTouchStart}
+                onTouchMove={swipe.onTouchMove}
+                onTouchEnd={swipe.onTouchEnd}
+              >
+                <ChatRoomView />
+              </div>
+            </div>
+          ) : (
+            <ChatRoomView />
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------- Layout (no inbox/chat store subscriptions) ----------
+
+export function Layout() {
+  const activePane = useUiStore((s) => s.activePane)
+  const setActivePane = useUiStore((s) => s.setActivePane)
+  const setShowMatrixLogin = useUiStore((s) => s.setShowMatrixLogin)
+  const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
+  const isMobile = useIsMobile()
+
+  const gmailConnected = isGmailConnected()
+  const matrixConnected = isMatrixConnected()
+
+  const isEmail = activePane === 'email'
+  const isChat = activePane === 'chat'
+  const isBookmarks = activePane === 'bookmarks'
+  const isNotes = activePane === 'notes'
+  const isAgents = activePane === 'agents'
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -102,43 +203,25 @@ export function Layout() {
       {/* Top bar */}
       <header className="flex items-center justify-between border-b border-border px-3 md:px-4 py-1.5">
         <div className="flex items-center gap-3">
-          <h1
-            className="text-sm font-semibold text-text-primary tracking-tight"
-            onClick={isMobile && (selectedThreadId || selectedRoomId) ? () => {
-              if (isEmail) selectThread(null)
-              else selectRoom(null)
-            } : undefined}
-          >
-            Console
-          </h1>
+          <HeaderTitle isMobile={isMobile} />
 
           {/* Top-level pane tabs */}
           <div className="flex items-center gap-0.5">
-            <button
-              onClick={() => setActivePane('email')}
-              className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
-                isEmail ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-            >
-              <Mail size={11} />
-              <span>Mail</span>
-              {threads.length > 0 && (
-                <span className="text-text-tertiary">({threads.length})</span>
-              )}
-            </button>
-            {matrixConnected ? (
+            {gmailConnected ? (
+              <PaneTab pane="email" icon={<Mail size={11} />} label="Mail" activePane={activePane} setActivePane={setActivePane} />
+            ) : (
               <button
-                onClick={() => setActivePane('chat')}
+                onClick={() => setActivePane('email')}
                 className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
-                  isChat ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
+                  isEmail ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
                 }`}
               >
-                <MessageCircle size={11} />
-                <span>Chat</span>
-                {chatRooms.length > 0 && (
-                  <span className="text-text-tertiary">({chatRooms.length})</span>
-                )}
+                <Mail size={11} />
+                <span>+Mail</span>
               </button>
+            )}
+            {matrixConnected ? (
+              <PaneTab pane="chat" icon={<MessageCircle size={11} />} label="Chat" activePane={activePane} setActivePane={setActivePane} />
             ) : (
               <button
                 onClick={() => setShowMatrixLogin(true)}
@@ -148,48 +231,14 @@ export function Layout() {
                 <span>+Chat</span>
               </button>
             )}
-            <button
-              onClick={() => setActivePane('bookmarks')}
-              className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
-                isBookmarks ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-            >
-              <Bookmark size={11} />
-              <span>Bookmarks</span>
-            </button>
-            <button
-              onClick={() => setActivePane('agents')}
-              className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
-                isAgents ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-            >
-              <Bot size={11} />
-              <span>Agents</span>
-            </button>
+            <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
+            <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
+            <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
           </div>
-
-          {!isMobile && userEmail && (
-            <button
-              onClick={() => setShowAccountModal(true)}
-              className="text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
-              title="Account settings"
-            >
-              {userEmail}
-            </button>
-          )}
-          {isMobile && !(selectedThreadId || selectedRoomId) && (
-            <button
-              onClick={() => setShowAccountModal(true)}
-              className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
-              title="Account"
-            >
-              <User size={13} />
-            </button>
-          )}
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <SyncStatus />
-          {!isAgents && !isBookmarks && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -198,6 +247,13 @@ export function Layout() {
               <RefreshCw size={12} />
             </button>
           )}
+          <button
+            onClick={() => setShowAccountModal(true)}
+            className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+            title="Settings"
+          >
+            <Settings size={13} />
+          </button>
           {!isMobile && (
             <span className="text-xs text-text-tertiary">
               <kbd className="font-mono">?</kbd> help
@@ -210,76 +266,22 @@ export function Layout() {
       <div className="flex flex-1 min-h-0">
         {/* Mail pane */}
         <div className={`flex flex-1 min-h-0 ${isEmail ? '' : 'hidden'}`}>
-          {showList && (
-            <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
-              {!!snoozedCount && (
-                <div className="flex items-center border-b border-border px-3 py-1">
-                  <button
-                    onClick={() => setShowSnoozed(!showSnoozed)}
-                    className={`text-xs transition-colors duration-fast ${showSnoozed ? 'text-text-secondary' : 'text-text-tertiary hover:text-text-secondary'}`}
-                    title="Toggle snoozed threads"
-                  >
-                    {showSnoozed ? 'hide snoozed' : `${snoozedCount} snoozed`}
-                  </button>
-                </div>
-              )}
-              <div className="flex-1 overflow-hidden">
-                <ThreadList showSnoozed={showSnoozed} />
-              </div>
-            </div>
-          )}
-          {showDetail && (
-            <div
-              ref={swipeContainerRef}
-              className="flex-1 min-w-0 flex flex-col relative overflow-hidden"
-            >
-              {isMobile ? (
-                <div
-                  ref={swipeContentRef}
-                  className="flex-1 min-h-0 flex flex-col relative"
-                  onTouchStart={swipe.onTouchStart}
-                  onTouchMove={swipe.onTouchMove}
-                  onTouchEnd={swipe.onTouchEnd}
-                >
-                  <ThreadView />
-                </div>
-              ) : (
-                <ThreadView />
-              )}
-            </div>
-          )}
+          <MailTab />
         </div>
 
         {/* Chat pane */}
         <div className={`flex flex-1 min-h-0 ${isChat ? '' : 'hidden'}`}>
-          {showList && (
-            <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
-              <div className="flex-1 overflow-hidden">
-                <ChatRoomList />
-              </div>
-            </div>
-          )}
-          {showDetail && (
-            <div className="flex-1 min-w-0 flex flex-col relative overflow-hidden">
-              {isMobile ? (
-                <div
-                  className="flex-1 min-h-0 flex flex-col relative"
-                  onTouchStart={swipe.onTouchStart}
-                  onTouchMove={swipe.onTouchMove}
-                  onTouchEnd={swipe.onTouchEnd}
-                >
-                  <ChatRoomView />
-                </div>
-              ) : (
-                <ChatRoomView />
-              )}
-            </div>
-          )}
+          <ChatTab />
         </div>
 
         {/* Bookmarks pane */}
         <div className={`flex flex-1 min-h-0 ${isBookmarks ? '' : 'hidden'}`}>
           <BookmarkTab />
+        </div>
+
+        {/* Notes pane */}
+        <div className={`flex flex-1 min-h-0 ${isNotes ? '' : 'hidden'}`}>
+          <NotesTab />
         </div>
 
         {/* Agents pane */}
@@ -289,53 +291,179 @@ export function Layout() {
       </div>
 
       {/* Bottom action bar */}
-      <footer className="flex items-center justify-between border-t border-border px-3 md:px-4 py-1 md:py-1">
-        <div className="flex items-center gap-3 md:gap-4">
-          {isAgents || isBookmarks ? (
-            <></>
-          ) : (
-            <>
-              <ActionHint
-                keyLabel="e"
-                action={isEmail ? 'Done' : 'Read'}
-                onClick={() => isEmail ? archiveThread() : markRoomRead()}
-                mobile={isMobile}
-              />
-              <ActionHint keyLabel="b" action="Snooze" onClick={() => setShowSnoozePicker(true)} mobile={isMobile} />
-              {!isMobile && isEmail && (
-                <>
-                  <ActionHint keyLabel="r" action="Reply" mobile={false} />
-                  <ActionHint keyLabel="c" action="Compose" mobile={false} />
-                </>
-              )}
-            </>
-          )}
-        </div>
-        {!isMobile && (
-          <div className="flex items-center gap-3 text-xs text-text-tertiary">
-            {isAgents ? (
+      <Footer activePane={activePane} isMobile={isMobile} />
+    </div>
+  )
+}
+
+// ---------- Header title (isolates selectThread/selectRoom for mobile back nav) ----------
+
+function HeaderTitle({ isMobile }: { isMobile: boolean }) {
+  const activePane = useUiStore((s) => s.activePane)
+
+  const handleClick = isMobile ? () => {
+    if (activePane === 'email') {
+      useInboxStore.getState().selectThread(null)
+    } else if (activePane === 'chat') {
+      useChatStore.getState().selectRoom(null)
+    }
+  } : undefined
+
+  return (
+    <h1
+      className="text-sm font-semibold text-text-primary tracking-tight"
+      onClick={handleClick}
+    >
+      Console
+    </h1>
+  )
+}
+
+// ---------- PaneTab with isolated count subscriptions ----------
+
+import type { ActivePane } from '@/store/ui'
+import type { ReactNode } from 'react'
+
+function PaneTab({ pane, icon, label, activePane, setActivePane }: {
+  pane: ActivePane
+  icon: ReactNode
+  label: string
+  activePane: ActivePane
+  setActivePane: (p: ActivePane) => void
+}) {
+  const isActive = activePane === pane
+
+  // Only Mail and Chat tabs show counts — subscribe selectively
+  const count = pane === 'email'
+    ? useInboxStore((s) => s.threads.length)
+    : pane === 'chat'
+      ? useChatStore((s) => s.rooms.length)
+      : 0
+
+  return (
+    <button
+      onClick={() => setActivePane(pane)}
+      className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
+        isActive ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+      {count > 0 && (
+        <span className="text-text-tertiary">({count})</span>
+      )}
+    </button>
+  )
+}
+
+// ---------- Footer (isolates inbox/chat action callbacks) ----------
+
+function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: boolean }) {
+  const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
+  const isEmail = activePane === 'email'
+  const isAgents = activePane === 'agents'
+  const isBookmarks = activePane === 'bookmarks'
+  const isNotes = activePane === 'notes'
+
+  const handleDone = () => {
+    if (isEmail) useInboxStore.getState().archiveThread()
+    else useChatStore.getState().markRoomRead()
+  }
+
+  return (
+    <footer className="flex items-center justify-between border-t border-border px-3 md:px-4 py-1 md:py-1">
+      <div className="flex items-center gap-3 md:gap-4">
+        {isAgents || isBookmarks || isNotes ? (
+          <></>
+        ) : (
+          <>
+            <ActionHint
+              keyLabel="e"
+              action={isEmail ? 'Done' : 'Read'}
+              onClick={handleDone}
+              mobile={isMobile}
+            />
+            <ActionHint keyLabel="b" action="Snooze" onClick={() => setShowSnoozePicker(true)} mobile={isMobile} />
+            {!isMobile && isEmail && (
               <>
-                <span><kbd className="font-mono">Esc</kbd> interrupt</span>
-                <span><kbd className="font-mono">Enter</kbd> focus input</span>
-              </>
-            ) : isBookmarks ? (
-              <>
-                <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
-                <span><kbd className="font-mono">e</kbd> keep</span>
-                <span><kbd className="font-mono">d</kbd> delete</span>
-                <span><kbd className="font-mono">o</kbd> open</span>
-                <span><kbd className="font-mono">m</kbd> triage</span>
-              </>
-            ) : (
-              <>
-                <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
-                <span><kbd className="font-mono">/</kbd> search</span>
+                <ActionHint keyLabel="r" action="Reply" mobile={false} />
+                <ActionHint keyLabel="c" action="Compose" mobile={false} />
               </>
             )}
-            <span><kbd className="font-mono">Tab</kbd> switch pane</span>
-          </div>
+          </>
         )}
-      </footer>
+      </div>
+      {!isMobile && (
+        <div className="flex items-center gap-3 text-xs text-text-tertiary">
+          {isAgents ? (
+            <>
+              <span><kbd className="font-mono">Esc</kbd> interrupt</span>
+              <span><kbd className="font-mono">Enter</kbd> focus input</span>
+            </>
+          ) : isBookmarks ? (
+            <>
+              <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
+              <span><kbd className="font-mono">e</kbd> keep</span>
+              <span><kbd className="font-mono">d</kbd> delete</span>
+              <span><kbd className="font-mono">o</kbd> open</span>
+              <span><kbd className="font-mono">m</kbd> triage</span>
+            </>
+          ) : isNotes ? (
+            <>
+              <span><kbd className="font-mono">Ctrl+P</kbd> find file</span>
+              <span><kbd className="font-mono">Ctrl+K</kbd> link</span>
+              <span><kbd className="font-mono">Ctrl+S</kbd> save</span>
+              <span><kbd className="font-mono">Ctrl+N</kbd> new</span>
+              <span>vim mode</span>
+            </>
+          ) : (
+            <>
+              <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
+              <span><kbd className="font-mono">/</kbd> search</span>
+            </>
+          )}
+          <span><kbd className="font-mono">Tab</kbd> switch pane</span>
+        </div>
+      )}
+    </footer>
+  )
+}
+
+// ---------- Helpers ----------
+
+function MailConnectScreen() {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleConnect = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      await gmailSignIn()
+      // Reload to start sync
+      window.location.reload()
+    } catch (err) {
+      setError('Sign-in cancelled or failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-4">
+      <Mail size={24} className="text-text-tertiary" />
+      <p className="text-sm text-text-secondary">Connect your Gmail</p>
+      <p className="text-xs text-text-tertiary max-w-xs">
+        Sign in with Google to sync your inbox. Your data stays in your browser.
+      </p>
+      <button
+        onClick={handleConnect}
+        disabled={loading}
+        className="mt-1 px-3 py-1.5 text-xs font-medium bg-surface-2 text-text-primary rounded-sm hover:bg-surface-1 border border-border transition-colors disabled:opacity-50"
+      >
+        {loading ? 'Connecting...' : 'Sign in with Google'}
+      </button>
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }

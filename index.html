@@ -6,10 +6,15 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#0a0a0a" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Console</title>
   </head>
   <body>
     <div id="root"></div>
+    <!-- react-scan: uncomment for visual render profiling (causes significant overhead with large DOM) -->
+    <!-- <script src="https://unpkg.com/react-scan/dist/auto.global.js" crossorigin="anonymous"></script> -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

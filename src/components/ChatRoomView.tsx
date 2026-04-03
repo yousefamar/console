@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useMemo, memo } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
+import { liveQuery } from 'dexie'
 import { db } from '@/db'
 import { useChatStore } from '@/store/chat'
 import { ChatMessageBubble, type ReadReceiptEntry } from './ChatMessageBubble'
@@ -142,11 +142,29 @@ const RoomMessages = memo(function RoomMessages({
     return groups
   }, [readReceipts])
 
-  // Each room has its own live query — only the selected room's query matters for perf
-  const messages = useLiveQuery(
-    () => db.chatMessages.where('roomId').equals(roomId).sortBy('timestamp'),
-    [roomId],
-  ) ?? []
+  // Manual liveQuery observable: ref always current, state only updates when visible.
+  // This avoids 30 React re-renders on every Matrix sync — only the visible room re-renders.
+  const messagesRef = useRef<DbChatMessage[]>([])
+  const [messages, setMessages] = useState<DbChatMessage[]>([])
+  const isVisibleRef = useRef(isVisible)
+  isVisibleRef.current = isVisible
+
+  useEffect(() => {
+    const sub = liveQuery(
+      () => db.chatMessages.where('roomId').equals(roomId).sortBy('timestamp')
+    ).subscribe(msgs => {
+      messagesRef.current = msgs
+      if (isVisibleRef.current) setMessages(msgs)
+    })
+    return () => sub.unsubscribe()
+  }, [roomId])
+
+  // When becoming visible, flush ref to state immediately (instant switch, no loading flash)
+  useEffect(() => {
+    if (isVisible && messagesRef.current.length > 0) {
+      setMessages(messagesRef.current)
+    }
+  }, [isVisible])
 
   // Check if user is scrolled near the bottom
   const isNearBottom = useCallback(() => {

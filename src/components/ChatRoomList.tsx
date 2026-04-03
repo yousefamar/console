@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { useChatStore } from '@/store/chat'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { ChatRoomListItem } from './ChatRoomListItem'
@@ -78,6 +79,26 @@ export function ChatRoomList() {
   const selectRoom = useChatStore((s) => s.selectRoom)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+
+  // Live query for chat rooms — drives the chat store
+  const liveChatRooms = useLiveQuery(
+    () =>
+      db.chatRooms
+        .filter((r) => {
+          const isFav = r.tags?.includes('m.favourite') ?? false
+          if (isFav) return true
+          return r.isUnread && !r.snoozedUntil && !r.isLowPriority
+        })
+        .reverse()
+        .sortBy('lastMessageTime'),
+    [],
+  )
+
+  useEffect(() => {
+    if (liveChatRooms) {
+      useChatStore.getState().setRooms(liveChatRooms)
+    }
+  }, [liveChatRooms])
 
   const pinnedRooms = useMemo(() => rooms.filter(isFavourite).sort((a, b) => a.name.localeCompare(b.name)), [rooms])
   const inboxRooms = useMemo(() => rooms.filter((r) => r.isUnread && !r.snoozedUntil), [rooms])
