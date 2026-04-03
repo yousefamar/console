@@ -51,6 +51,11 @@ export interface CalendarEvent {
     overrides?: Array<{ method: string; minutes: number }>
   }
   eventType?: 'default' | 'outOfOffice' | 'focusTime' | 'workingLocation'
+  workingLocationProperties?: {
+    type: 'homeOffice' | 'officeLocation' | 'customLocation'
+    officeLocation?: { buildingId?: string; floorId?: string; label?: string }
+    customLocation?: { label: string }
+  }
   created: string
   updated: string
 }
@@ -101,6 +106,7 @@ export interface DbCalendarEvent {
   hangoutLink?: string
   conferenceDataJson?: string
   eventType?: string
+  workingLocationJson?: string
   created: string
   updated: string
 }

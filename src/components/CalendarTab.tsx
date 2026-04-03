@@ -5,6 +5,7 @@ import { CalendarSidebar } from './CalendarSidebar'
 import { CalendarGrid } from './CalendarGrid'
 import { CalendarEventPopover } from './CalendarEventPopover'
 import { CalendarEventForm } from './CalendarEventForm'
+import { CalendarLocationPicker } from './CalendarLocationPicker'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
 export function CalendarTab() {
@@ -13,6 +14,7 @@ export function CalendarTab() {
   const calendars = useCalendarStore((s) => s.calendars)
   const showEventForm = useCalendarStore((s) => s.showEventForm)
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
+  const locationPickerEvent = useCalendarStore((s) => s.locationPickerEvent)
   const isMobile = useIsMobile()
 
   useEffect(() => {
@@ -57,6 +59,9 @@ export function CalendarTab() {
 
       {/* Event form modal */}
       {showEventForm && <CalendarEventForm />}
+
+      {/* Location picker */}
+      {locationPickerEvent && <CalendarLocationPicker />}
     </div>
   )
 }

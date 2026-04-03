@@ -40,6 +40,7 @@ function toDbEvent(e: CalendarEvent, calendarId: string): DbCalendarEvent {
     hangoutLink: e.hangoutLink,
     conferenceDataJson: e.conferenceData ? JSON.stringify(e.conferenceData) : undefined,
     eventType: e.eventType,
+    workingLocationJson: e.workingLocationProperties ? JSON.stringify(e.workingLocationProperties) : undefined,
     created: e.created,
     updated: e.updated,
   }
@@ -63,6 +64,7 @@ function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
     hangoutLink: d.hangoutLink,
     conferenceData: d.conferenceDataJson ? JSON.parse(d.conferenceDataJson) : undefined,
     eventType: d.eventType as CalendarEvent['eventType'],
+    workingLocationProperties: d.workingLocationJson ? JSON.parse(d.workingLocationJson) : undefined,
     created: d.created,
     updated: d.updated,
   } as CalendarEvent
@@ -100,6 +102,7 @@ interface CalendarState {
   editingEvent: CalendarEvent | null
   newEventStart: Date | null
   newEventEnd: Date | null
+  locationPickerEvent: CalendarEvent | null
 
   visibleCalendarIds: Set<string>
 
@@ -119,6 +122,9 @@ interface CalendarState {
   updateEvent: (calendarId: string, eventId: string, updates: Partial<CalendarEvent>) => Promise<void>
   deleteEvent: (calendarId: string, eventId: string) => Promise<void>
   rsvp: (calendarId: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
+  updateLocation: (calendarId: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
+  openLocationPicker: (event: CalendarEvent) => void
+  closeLocationPicker: () => void
 
   // Event form
   openCreateForm: (start?: Date, end?: Date) => void
@@ -142,6 +148,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   editingEvent: null,
   newEventStart: null,
   newEventEnd: null,
+  locationPickerEvent: null,
 
   visibleCalendarIds: new Set<string>(),
 
@@ -344,6 +351,34 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       console.error('Failed to RSVP:', err)
     }
   },
+
+  // Working location
+  updateLocation: async (calendarId, eventId, locationType, customLabel) => {
+    const props: CalendarEvent['workingLocationProperties'] =
+      locationType === 'homeOffice' ? { type: 'homeOffice' }
+      : locationType === 'officeLocation' ? { type: 'officeLocation', officeLocation: { label: customLabel } }
+      : { type: 'customLocation', customLocation: { label: customLabel || '' } }
+
+    const summary =
+      locationType === 'homeOffice' ? 'Home'
+      : locationType === 'officeLocation' ? (customLabel || 'Office')
+      : (customLabel || 'Custom')
+
+    try {
+      const updated = await api.patchEvent(calendarId, eventId, {
+        summary,
+        workingLocationProperties: props,
+      } as Partial<CalendarEvent>)
+      await db.calendarEvents.put(toDbEvent(updated, calendarId))
+      await get().loadEventsFromDb()
+    } catch (err) {
+      console.error('Failed to update location:', err)
+    }
+    set({ locationPickerEvent: null })
+  },
+
+  openLocationPicker: (event) => set({ locationPickerEvent: event }),
+  closeLocationPicker: () => set({ locationPickerEvent: null }),
 
   // Event form
   openCreateForm: (start, end) => {

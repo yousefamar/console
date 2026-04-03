@@ -107,6 +107,7 @@ export function CalendarGrid() {
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
   const openCreateForm = useCalendarStore((s) => s.openCreateForm)
   const updateEvent = useCalendarStore((s) => s.updateEvent)
+  const openLocationPicker = useCalendarStore((s) => s.openLocationPicker)
 
   const [drag, setDrag] = useState<DragState | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
@@ -385,7 +386,7 @@ export function CalendarGrid() {
               <div key={dayIdx} className="flex-1 border-l border-border px-1 py-0.5">
                 {dayLocation ? (
                   <button
-                    onClick={() => selectEvent(dayLocation.id)}
+                    onClick={() => openLocationPicker(dayLocation)}
                     className="text-[10px] text-text-tertiary hover:text-text-secondary transition-colors truncate block w-full text-left"
                     title="Click to edit location"
                   >
