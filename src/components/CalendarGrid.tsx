@@ -14,8 +14,8 @@ function muteColor(hex: string): { bg: string; border: string; text: string } {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
-  const mix = (c: number) => Math.round(c * 0.3 + 20)
-  const br = (c: number) => Math.round(c * 0.7 + 60)
+  const mix = (c: number) => Math.round(c * 0.35 + 25)
+  const br = (c: number) => Math.round(c * 0.5 + 160)
   return {
     bg: `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`,
     border: hex,
@@ -461,14 +461,14 @@ export function CalendarGrid() {
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
                       onClick={(e) => { e.stopPropagation(); if (!drag) selectEvent(ev.id) }}
-                      className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab border-l-2 ${
+                      className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab border-l-2 border border-black/30 ${
                         selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'
                       } ${isDragging ? 'opacity-40' : ''}`}
                       style={{
-                        top: ev.top,
-                        height: Math.max(ev.height, 18),
+                        top: ev.top + 1,
+                        height: Math.max(ev.height - 2, 16),
                         left: `${ev.left * 100}%`,
-                        width: `calc(${ev.width * 100}% - 2px)`,
+                        width: `calc(${ev.width * 100}% - 3px)`,
                         backgroundColor: muted.bg,
                         borderLeftColor: muted.border,
                       }}
@@ -478,12 +478,12 @@ export function CalendarGrid() {
                           {ev.summary}
                         </div>
                         {ev.height > 30 && (
-                          <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.7 }}>
+                          <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.8 }}>
                             {formatTime(ev.startTime)} – {formatTime(ev.endTime)}
                           </div>
                         )}
                         {ev.height > 50 && ev.location && (
-                          <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.5 }}>
+                          <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.65 }}>
                             {ev.location}
                           </div>
                         )}
