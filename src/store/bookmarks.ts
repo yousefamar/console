@@ -31,7 +31,7 @@ export interface TagTreeNode {
 
 function getHubUrl(): string {
   if (typeof window !== 'undefined') {
-    return localStorage.getItem('agentHubUrl') ?? 'http://localhost:9877'
+    return localStorage.getItem('consoleServerUrl') ?? 'http://localhost:9877'
   }
   return 'http://localhost:9877'
 }

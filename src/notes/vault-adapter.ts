@@ -177,7 +177,7 @@ export class FsaVaultAdapter implements VaultAdapter {
 // ---------------------------------------------------------------------------
 
 function getHubUrl(): string {
-  return (typeof localStorage !== 'undefined' && localStorage.getItem('agentHubUrl')) || 'http://localhost:9877'
+  return (typeof localStorage !== 'undefined' && localStorage.getItem('consoleServerUrl')) || 'http://localhost:9877'
 }
 
 export class HubVaultAdapter implements VaultAdapter {

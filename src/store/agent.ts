@@ -10,7 +10,7 @@ const RECONNECT_DELAY_MS = 3000
 
 function getHubUrl(): string {
   try {
-    return localStorage.getItem('agent-hub-url') || DEFAULT_HUB_URL
+    return localStorage.getItem('console-server-url') || DEFAULT_HUB_URL
   } catch {
     return DEFAULT_HUB_URL
   }
@@ -327,7 +327,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   setHubUrl: (url) => {
-    try { localStorage.setItem('agent-hub-url', url) } catch { /* */ }
+    try { localStorage.setItem('console-server-url', url) } catch { /* */ }
     // Disconnect and reconnect with new URL
     get().disconnect()
     set({ hubUrl: url })
@@ -743,7 +743,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
     }
 
     case 'hub_error': {
-      console.warn('[agent-hub]', msg.message)
+      console.warn('[console-server]', msg.message)
       break
     }
   }

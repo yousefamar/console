@@ -35,10 +35,10 @@ export function BookmarkTab() {
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-4">
         <p className="text-sm text-text-secondary">Bookmarks not available</p>
         <p className="text-xs text-text-tertiary max-w-xs">
-          Start the hub server to browse bookmarks:
+          Start the server to browse bookmarks:
         </p>
         <pre className="text-xs font-mono bg-surface-2 px-3 py-2 rounded-sm text-text-secondary">
-          cd agent-hub && npm run dev
+          cd server && npm run dev
         </pre>
       </div>
     )

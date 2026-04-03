@@ -17,7 +17,7 @@ The agent system has three layers:
                │ WebSocket (ws://localhost:9877)
                ▼
 ┌──────────────────────────────────────────────┐
-│  Agent Hub (agent-hub/)                       │
+│  Agent Hub (server/)                       │
 │  Local Node.js server                         │
 │  - Spawns claude CLI subprocesses             │
 │  - Manages sessions (create/resume/list)      │
@@ -84,7 +84,7 @@ type ContentBlock =
 
 ## Agent Hub
 
-**Location:** `agent-hub/`
+**Location:** `server/`
 
 The hub is a minimal Node.js server (~200 lines) with:
 
@@ -95,7 +95,7 @@ The hub is a minimal Node.js server (~200 lines) with:
 ### Starting the Hub
 
 ```bash
-cd agent-hub
+cd server
 npm install
 npm run dev               # Development (tsx watch)
 npm run dev -- --port 9877  # Custom port
@@ -104,7 +104,7 @@ npm run dev -- --cwd /path  # Custom working directory
 
 ### Hub ↔ Browser Protocol
 
-See `agent-hub/src/protocol.ts` for complete type definitions.
+See `server/src/protocol.ts` for complete type definitions.
 
 **Browser → Hub (ClientMessage):**
 
@@ -215,7 +215,7 @@ Tests the Zustand store with a mock WebSocket:
 npm test  # Runs all tests including agent store
 ```
 
-### Hub tests (`agent-hub/src/__tests__/`)
+### Hub tests (`server/src/__tests__/`)
 
 Tests the Session class with a mock child_process:
 - Spawn arguments (flags, permission mode, resume)
@@ -225,7 +225,7 @@ Tests the Session class with a mock child_process:
 Protocol tests validate type shapes.
 
 ```bash
-cd agent-hub && npm test
+cd server && npm test
 ```
 
 ## Security Considerations
