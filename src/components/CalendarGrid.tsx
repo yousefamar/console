@@ -200,7 +200,7 @@ export function CalendarGrid() {
     const col = colRefs.current[dayIdx]
     if (!col) return
     const rect = col.getBoundingClientRect()
-    const y = e.clientY - rect.top + col.parentElement!.parentElement!.scrollTop
+    const y = e.clientY - rect.top
     const snapped = snapToGrid(y)
     setDrag({ mode: 'create', dayIdx, startY: snapped, currentY: snapped })
     e.preventDefault()
@@ -213,7 +213,7 @@ export function CalendarGrid() {
     const col = colRefs.current[ev.column]
     if (!col) return
     const rect = col.getBoundingClientRect()
-    const y = e.clientY - rect.top + col.parentElement!.parentElement!.scrollTop
+    const y = e.clientY - rect.top
     setDrag({
       mode: 'move', dayIdx: ev.column,
       startY: y, currentY: y,
@@ -230,7 +230,7 @@ export function CalendarGrid() {
     const col = colRefs.current[ev.column]
     if (!col) return
     const rect = col.getBoundingClientRect()
-    const y = e.clientY - rect.top + col.parentElement!.parentElement!.scrollTop
+    const y = e.clientY - rect.top
     setDrag({
       mode: 'resize', dayIdx: ev.column,
       startY: y, currentY: y,
@@ -247,7 +247,7 @@ export function CalendarGrid() {
       const col = colRefs.current[drag.dayIdx]
       if (!col) return
       const rect = col.getBoundingClientRect()
-      const y = e.clientY - rect.top + col.parentElement!.parentElement!.scrollTop
+      const y = e.clientY - rect.top
       setDrag((d) => d ? { ...d, currentY: y } : null)
     }
 
