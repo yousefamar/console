@@ -359,14 +359,10 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       : locationType === 'officeLocation' ? { type: 'officeLocation', officeLocation: { label: customLabel } }
       : { type: 'customLocation', customLocation: { label: customLabel || '' } }
 
-    const summary =
-      locationType === 'homeOffice' ? 'Home'
-      : locationType === 'officeLocation' ? (customLabel || 'Office')
-      : (customLabel || 'Custom')
-
     try {
+      // Working location events: only patch workingLocationProperties.
+      // Summary is auto-derived by Google — setting it directly causes 400.
       const updated = await api.patchEvent(calendarId, eventId, {
-        summary,
         workingLocationProperties: props,
       } as Partial<CalendarEvent>)
       await db.calendarEvents.put(toDbEvent(updated, calendarId))
