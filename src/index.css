@@ -1,6 +1,90 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* ==========================================================================
+   TAILWIND v4 THEME — Design tokens as CSS-first configuration.
+   Replaces tailwind.config.ts. Change anything here and it propagates everywhere.
+   ========================================================================== */
+
+/* Class-based dark mode (replaces darkMode: 'class' from TW3 config) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Scan ilamy calendar for Tailwind classes */
+@source "../node_modules/@ilamy/calendar/dist";
+
+@theme {
+  /* Font families (override defaults) */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Font sizes — custom dense scale */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1.125rem;
+  --text-base: 0.8125rem;
+  --text-base--line-height: 1.25rem;
+  --text-lg: 0.875rem;
+  --text-lg--line-height: 1.375rem;
+  --text-xl: 1rem;
+  --text-xl--line-height: 1.5rem;
+  --text-2xl: 1.25rem;
+  --text-2xl--line-height: 1.75rem;
+
+  /* Colors — mapped from CSS custom properties below */
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-inverse: var(--text-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-muted: var(--accent-muted);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-muted: var(--destructive-muted);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  /* Border radius — custom tight scale */
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-md: 6px;
+
+  /* Transition durations */
+  --transition-duration-fast: 80ms;
+  --transition-duration-DEFAULT: 100ms;
+  --transition-duration-slow: 200ms;
+
+  /* Animations */
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-slide-up: slide-up 150ms ease-out;
+  --animate-slide-down: slide-down 150ms ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 /* ==========================================================================
    DESIGN TOKENS — CSS custom properties for the color system.
