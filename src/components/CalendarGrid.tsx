@@ -40,6 +40,11 @@ function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
+/** Local YYYY-MM-DD (avoids UTC shift from toISOString) */
+function localDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function formatTime(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
 }
@@ -374,7 +379,7 @@ export function CalendarGrid() {
             <MapPin size={10} className="text-text-tertiary" />
           </div>
           {days.map((day, dayIdx) => {
-            const dayStr = day.toISOString().split('T')[0]
+            const dayStr = localDateStr(day)
             const dayLocation = locationEvents.find((e) => dayStr! >= e.start.date! && dayStr! < e.end.date!)
             return (
               <div key={dayIdx} className="flex-1 border-l border-border px-1 py-0.5">
@@ -400,7 +405,7 @@ export function CalendarGrid() {
         <div className="flex border-b border-border flex-shrink-0 min-h-6">
           <div className="w-12 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
           {days.map((day, dayIdx) => {
-            const dayStr = day.toISOString().split('T')[0]
+            const dayStr = localDateStr(day)
             const dayAllDay = allDayEvents.filter((e) => dayStr! >= e.start.date! && dayStr! < e.end.date!)
             return (
               <div key={dayIdx} className="flex-1 border-l border-border px-0.5 py-0.5 space-y-0.5">
