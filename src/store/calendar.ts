@@ -360,11 +360,24 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       : { type: 'customLocation', customLocation: { label: customLabel || '' } }
 
     try {
-      // Working location events: only patch workingLocationProperties.
-      // Summary is auto-derived by Google — setting it directly causes 400.
-      const updated = await api.patchEvent(calendarId, eventId, {
+      // Working location events (often recurring instances) need a full PUT.
+      // First fetch the current event, then update workingLocationProperties.
+      const current = await api.getEvent(calendarId, eventId)
+      const body = {
+        ...current,
         workingLocationProperties: props,
-      } as Partial<CalendarEvent>)
+      }
+      // Remove read-only / server-derived fields that cause 400 on PUT
+      delete (body as Record<string, unknown>).kind
+      delete (body as Record<string, unknown>).etag
+      delete (body as Record<string, unknown>).htmlLink
+      delete (body as Record<string, unknown>).created
+      delete (body as Record<string, unknown>).updated
+      delete (body as Record<string, unknown>).creator
+      delete (body as Record<string, unknown>).organizer
+      delete (body as Record<string, unknown>).iCalUID
+
+      const updated = await api.updateEvent(calendarId, eventId, body)
       await db.calendarEvents.put(toDbEvent(updated, calendarId))
       await get().loadEventsFromDb()
     } catch (err) {

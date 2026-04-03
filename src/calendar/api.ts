@@ -107,6 +107,15 @@ export async function getEvents(
   )
 }
 
+export async function getEvent(
+  calendarId: string,
+  eventId: string,
+): Promise<CalendarEvent> {
+  return request<CalendarEvent>(
+    `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+  )
+}
+
 export async function createEvent(
   calendarId: string,
   event: Partial<CalendarEvent>,
