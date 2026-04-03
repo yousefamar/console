@@ -402,27 +402,13 @@ export function CalendarGrid() {
 
       {/* All-day events bar */}
       {allDayEvents.length > 0 && (
-        <div className="flex border-b border-border flex-shrink-0 min-h-6 pr-1.5">
-          <div className="w-12 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
-          {days.map((day, dayIdx) => {
-            const dayStr = localDateStr(day)
-            const dayAllDay = allDayEvents.filter((e) => dayStr! >= e.start.date! && dayStr! < e.end.date!)
-            return (
-              <div key={dayIdx} className="flex-1 border-l border-border px-0.5 py-0.5 space-y-0.5">
-                {dayAllDay.map((e) => {
-                  const muted = muteColor(calColorMap.get(e.calendarId) || '#3b82f6')
-                  return (
-                    <button key={e.id} onClick={() => selectEvent(e.id)}
-                      className={`w-full text-left px-1 py-0 text-[10px] rounded-sm truncate transition-colors border-l-2 border border-black/30 ${selectedEventId === e.id ? 'ring-1 ring-white/30' : ''}`}
-                      style={{ backgroundColor: muted.bg, borderLeftColor: muted.border, color: muted.text }}>
-                      {e.summary}
-                    </button>
-                  )
-                })}
-              </div>
-            )
-          })}
-        </div>
+        <AllDayBar
+          events={allDayEvents}
+          days={days}
+          calColorMap={calColorMap}
+          selectedEventId={selectedEventId}
+          selectEvent={selectEvent}
+        />
       )}
 
       {/* Time grid */}
@@ -531,6 +517,122 @@ export function CalendarGrid() {
             )
           })}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// AllDayBar — renders multi-day events as spanning rectangles
+// --------------------------------------------------------------------------
+
+import type { CalendarEvent } from '@/calendar/types'
+
+function AllDayBar({ events, days, calColorMap, selectedEventId, selectEvent }: {
+  events: CalendarEvent[]
+  days: Date[]
+  calColorMap: Map<string, string>
+  selectedEventId: string | null
+  selectEvent: (id: string | null) => void
+}) {
+  // Compute layout: each event gets a startCol, spanCols, and row
+  const layout = useMemo(() => {
+    const dayStrs = days.map(localDateStr)
+    const firstDay = dayStrs[0]!
+    const lastDay = dayStrs[dayStrs.length - 1]!
+
+    // Filter to events visible in this week
+    const visible = events.filter((e) => {
+      const eStart = e.start.date!
+      const eEnd = e.end.date!
+      return eEnd > firstDay && eStart <= lastDay
+    })
+
+    // Compute column positions
+    const positioned = visible.map((e) => {
+      const eStart = e.start.date!
+      const eEnd = e.end.date!
+
+      // Find first visible day
+      let startCol = dayStrs.findIndex((d) => d >= eStart)
+      if (startCol < 0) startCol = 0
+
+      // Find last visible day (end date is exclusive in Google Calendar)
+      let endCol = dayStrs.findIndex((d) => d >= eEnd)
+      if (endCol < 0) endCol = days.length
+      // endCol is exclusive, so span = endCol - startCol
+      const span = Math.max(endCol - startCol, 1)
+
+      return { event: e, startCol, span }
+    })
+
+    // Row assignment — greedy: place each event in the first row where it fits
+    const rows: Array<Array<{ startCol: number; endCol: number }>> = []
+    const result: Array<{ event: CalendarEvent; startCol: number; span: number; row: number }> = []
+
+    // Sort by start col, then by longer span first
+    positioned.sort((a, b) => a.startCol - b.startCol || b.span - a.span)
+
+    for (const p of positioned) {
+      const endCol = p.startCol + p.span
+      let placed = false
+      for (let r = 0; r < rows.length; r++) {
+        const conflicts = rows[r]!.some((occ) => p.startCol < occ.endCol && endCol > occ.startCol)
+        if (!conflicts) {
+          rows[r]!.push({ startCol: p.startCol, endCol })
+          result.push({ ...p, row: r })
+          placed = true
+          break
+        }
+      }
+      if (!placed) {
+        rows.push([{ startCol: p.startCol, endCol }])
+        result.push({ ...p, row: rows.length - 1 })
+      }
+    }
+
+    return { items: result, rowCount: rows.length }
+  }, [events, days])
+
+  const ROW_HEIGHT = 18
+  const totalHeight = Math.max(layout.rowCount * (ROW_HEIGHT + 2) + 4, 24)
+  const numDays = days.length
+
+  return (
+    <div className="flex border-b border-border flex-shrink-0 pr-1.5" style={{ height: totalHeight }}>
+      <div className="w-12 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
+      <div className="flex-1 relative">
+        {/* Column borders */}
+        {days.map((_, i) => (
+          <div key={i} className="absolute top-0 bottom-0 border-l border-border" style={{ left: `${(i / numDays) * 100}%` }} />
+        ))}
+        {/* Spanning event blocks */}
+        {layout.items.map(({ event, startCol, span, row }) => {
+          const muted = muteColor(calColorMap.get(event.calendarId) || '#3b82f6')
+          const leftPct = (startCol / numDays) * 100
+          const widthPct = (span / numDays) * 100
+          return (
+            <button
+              key={event.id}
+              onClick={() => selectEvent(event.id)}
+              className={`absolute text-left px-1.5 text-[10px] rounded-sm truncate border-l-2 border border-black/30 transition-colors hover:brightness-125 ${
+                selectedEventId === event.id ? 'ring-1 ring-white/30 brightness-125' : ''
+              }`}
+              style={{
+                top: row * (ROW_HEIGHT + 2) + 2,
+                height: ROW_HEIGHT,
+                left: `calc(${leftPct}% + 2px)`,
+                width: `calc(${widthPct}% - 4px)`,
+                backgroundColor: muted.bg,
+                borderLeftColor: muted.border,
+                color: muted.text,
+                lineHeight: `${ROW_HEIGHT}px`,
+              }}
+            >
+              {event.summary}
+            </button>
+          )
+        })}
       </div>
     </div>
   )
