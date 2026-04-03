@@ -358,8 +358,8 @@ export function CalendarGrid() {
         </button>
       </div>
 
-      {/* Day headers */}
-      <div className="flex border-b border-border flex-shrink-0">
+      {/* Day headers — pr-1.5 matches scrollbar width (6px) in time grid */}
+      <div className="flex border-b border-border flex-shrink-0 pr-1.5">
         <div className="w-12 flex-shrink-0" />
         {days.map((day, i) => {
           const isToday = isSameDay(day, today)
@@ -374,7 +374,7 @@ export function CalendarGrid() {
 
       {/* Working location row */}
       {locationEvents.length > 0 && (
-        <div className="flex border-b border-border flex-shrink-0">
+        <div className="flex border-b border-border flex-shrink-0 pr-1.5">
           <div className="w-12 flex-shrink-0 flex items-center justify-end pr-1">
             <MapPin size={10} className="text-text-tertiary" />
           </div>
@@ -402,7 +402,7 @@ export function CalendarGrid() {
 
       {/* All-day events bar */}
       {allDayEvents.length > 0 && (
-        <div className="flex border-b border-border flex-shrink-0 min-h-6">
+        <div className="flex border-b border-border flex-shrink-0 min-h-6 pr-1.5">
           <div className="w-12 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
           {days.map((day, dayIdx) => {
             const dayStr = localDateStr(day)
