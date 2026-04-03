@@ -39,6 +39,7 @@ function toDbEvent(e: CalendarEvent, calendarId: string): DbCalendarEvent {
     htmlLink: e.htmlLink,
     hangoutLink: e.hangoutLink,
     conferenceDataJson: e.conferenceData ? JSON.stringify(e.conferenceData) : undefined,
+    eventType: e.eventType,
     created: e.created,
     updated: e.updated,
   }
@@ -61,6 +62,7 @@ function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
     htmlLink: d.htmlLink,
     hangoutLink: d.hangoutLink,
     conferenceData: d.conferenceDataJson ? JSON.parse(d.conferenceDataJson) : undefined,
+    eventType: d.eventType as CalendarEvent['eventType'],
     created: d.created,
     updated: d.updated,
   } as CalendarEvent

@@ -50,6 +50,7 @@ export interface CalendarEvent {
     useDefault: boolean
     overrides?: Array<{ method: string; minutes: number }>
   }
+  eventType?: 'default' | 'outOfOffice' | 'focusTime' | 'workingLocation'
   created: string
   updated: string
 }
@@ -99,6 +100,7 @@ export interface DbCalendarEvent {
   htmlLink: string
   hangoutLink?: string
   conferenceDataJson?: string
+  eventType?: string
   created: string
   updated: string
 }

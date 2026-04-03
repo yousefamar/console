@@ -261,12 +261,8 @@ export function CalendarGrid() {
         const bottomPx = Math.max(d.startY, d.currentY)
         const height = bottomPx - topPx
         if (height < SNAP_PX) {
-          // Too small — treat as click, create 1-hour event
-          const minutes = pxToMinutes(snapToGrid(d.startY))
-          const day = days[d.dayIdx]!
-          const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes)
-          const end = new Date(start.getTime() + 3600000)
-          openCreateForm(start, end)
+          // Too small — ignore click, only dragging creates events
+          return
         } else {
           const startMin = pxToMinutes(snapToGrid(topPx))
           const endMin = pxToMinutes(snapToGrid(bottomPx))
@@ -379,10 +375,19 @@ export function CalendarGrid() {
             return (
               <div key={dayIdx} className="flex-1 border-l border-border px-0.5 py-0.5 space-y-0.5">
                 {dayAllDay.map((e) => {
+                  const isLocation = e.eventType === 'workingLocation'
+                  if (isLocation) {
+                    return (
+                      <div key={e.id}
+                        className="w-full text-left px-1 py-0 text-[10px] text-text-tertiary truncate italic">
+                        {e.summary}
+                      </div>
+                    )
+                  }
                   const muted = muteColor(calColorMap.get(e.calendarId) || '#3b82f6')
                   return (
                     <button key={e.id} onClick={() => selectEvent(e.id)}
-                      className={`w-full text-left px-1 py-0 text-[10px] rounded-sm truncate transition-colors border-l-2 ${selectedEventId === e.id ? 'ring-1 ring-white/30' : ''}`}
+                      className={`w-full text-left px-1 py-0 text-[10px] rounded-sm truncate transition-colors border-l-2 border border-black/30 ${selectedEventId === e.id ? 'ring-1 ring-white/30' : ''}`}
                       style={{ backgroundColor: muted.bg, borderLeftColor: muted.border, color: muted.text }}>
                       {e.summary}
                     </button>
