@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import type { DbThread, DbMessage, DbAttachmentData, QueuedAction } from '@/gmail/types'
 import type { DbChatRoom, DbChatMessage } from '@/matrix/types'
+import type { DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 
 export interface DbFeedItem {
   id: string
@@ -28,6 +29,8 @@ class ConsoleDatabase extends Dexie {
   meta!: Table<{ key: string; value: string }, string>
   feedItems!: Table<DbFeedItem, string>
   feedRead!: Table<DbFeedRead, string>
+  calendarList!: Table<DbCalendarInfo, string>
+  calendarEvents!: Table<DbCalendarEvent, string>
 
   constructor() {
     super('console-inbox')
@@ -81,6 +84,21 @@ class ConsoleDatabase extends Dexie {
       meta: 'key',
       feedItems: '&id, feedId, publishedAt, [feedId+publishedAt]',
       feedRead: '&itemId',
+    })
+
+    // v6: Add calendar tables
+    this.version(6).stores({
+      threads: 'id, date, snoozedUntil',
+      messages: 'id, threadId, date',
+      attachmentData: 'attachmentId, messageId',
+      chatRooms: '&id, lastMessageTime, snoozedUntil',
+      chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
+      queue: '++id, type, status, createdAt',
+      meta: 'key',
+      feedItems: '&id, feedId, publishedAt, [feedId+publishedAt]',
+      feedRead: '&itemId',
+      calendarList: '&id',
+      calendarEvents: '&compoundKey, calendarId, startTime',
     })
   }
 }

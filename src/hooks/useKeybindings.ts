@@ -5,6 +5,7 @@ import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
 import { useFeedStore } from '@/store/feeds'
+import { useCalendarStore } from '@/store/calendar'
 import { useUiStore } from '@/store/ui'
 
 export function useKeybindings() {
@@ -14,6 +15,7 @@ export function useKeybindings() {
   const bm = useBookmarkStore
   const notes = useNotesStore
   const feeds = useFeedStore
+  const cal = useCalendarStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -27,6 +29,7 @@ export function useKeybindings() {
       const isNotes = activePane === 'notes'
       const isAgents = activePane === 'agents'
       const isFeeds = activePane === 'feeds'
+      const isCalendar = activePane === 'calendar'
 
       // Always active
       if (e.key === 'Escape') {
@@ -52,6 +55,10 @@ export function useKeybindings() {
           bm.getState().selectTag(null)
         } else if (isBookmarks && bm.getState().selectedBookmarkId) {
           bm.getState().selectBookmark(null)
+        } else if (isCalendar && cal.getState().showEventForm) {
+          cal.getState().closeEventForm()
+        } else if (isCalendar && cal.getState().selectedEventId) {
+          cal.getState().selectEvent(null)
         } else if (isFeeds && feeds.getState().showAddModal) {
           feeds.getState().setShowAddModal(false)
         } else if (isFeeds && isEditing) {
@@ -183,6 +190,51 @@ export function useKeybindings() {
           return
         }
         return // Don't fall through to email/chat bindings
+      }
+
+      // Calendar-specific keybindings
+      if (isCalendar) {
+        if (e.key === 't') {
+          e.preventDefault()
+          cal.getState().navigateToday()
+          return
+        }
+        if (e.key === 'h' || e.key === 'ArrowLeft') {
+          e.preventDefault()
+          cal.getState().navigateWeek(-1)
+          return
+        }
+        if (e.key === 'l' || e.key === 'ArrowRight') {
+          e.preventDefault()
+          cal.getState().navigateWeek(1)
+          return
+        }
+        if (e.key === 'w') {
+          e.preventDefault()
+          cal.getState().setView('week')
+          return
+        }
+        if (e.key === 'd') {
+          e.preventDefault()
+          cal.getState().setView('day')
+          return
+        }
+        if (e.key === 'c') {
+          e.preventDefault()
+          cal.getState().openCreateForm()
+          return
+        }
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 't' && e.shiftKey) {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        return // Don't fall through
       }
 
       // Feed-specific keybindings

@@ -15,11 +15,12 @@ import { isSignedIn as isGmailConnected, signIn as gmailSignIn } from '@/gmail/a
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, Settings } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, Settings } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
+import { CalendarTab } from './CalendarTab'
 import { useFeedStore } from '@/store/feeds'
 
 // ---------- MailTab (isolates inbox store subscriptions) ----------
@@ -169,6 +170,7 @@ export function Layout() {
   const isNotes = activePane === 'notes'
   const isAgents = activePane === 'agents'
   const isFeeds = activePane === 'feeds'
+  const isCalendar = activePane === 'calendar'
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -197,6 +199,15 @@ export function Layout() {
       } else {
         const { useFeedStore } = await import('@/store/feeds')
         await useFeedStore.getState().refreshItems()
+      }
+    } else if (isCalendar) {
+      if (e.ctrlKey || e.metaKey) {
+        await db.calendarEvents.clear()
+        const { useCalendarStore } = await import('@/store/calendar')
+        await useCalendarStore.getState().refreshAll()
+      } else {
+        const { useCalendarStore } = await import('@/store/calendar')
+        await useCalendarStore.getState().refreshAll()
       }
     } else if (isChat && matrixConnected) {
       if (e.ctrlKey || e.metaKey) {
@@ -247,12 +258,13 @@ export function Layout() {
             <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
+            <PaneTab pane="calendar" icon={<CalendarDays size={11} />} label="Calendar" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
           </div>
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds ? true : matrixConnected) && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -301,6 +313,11 @@ export function Layout() {
         {/* Feeds pane */}
         <div className={`flex flex-1 min-h-0 ${isFeeds ? '' : 'hidden'}`}>
           <FeedTab />
+        </div>
+
+        {/* Calendar pane */}
+        <div className={`flex flex-1 min-h-0 ${isCalendar ? '' : 'hidden'}`}>
+          <CalendarTab />
         </div>
 
         {/* Agents pane */}
@@ -386,6 +403,7 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
   const isBookmarks = activePane === 'bookmarks'
   const isNotes = activePane === 'notes'
   const isFeeds = activePane === 'feeds'
+  const isCalendar = activePane === 'calendar'
 
   const handleDone = () => {
     if (isEmail) useInboxStore.getState().archiveThread()
@@ -396,7 +414,7 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
   return (
     <footer className="flex items-center justify-between border-t border-border px-3 md:px-4 py-1 md:py-1">
       <div className="flex items-center gap-3 md:gap-4">
-        {isAgents || isBookmarks || isNotes ? (
+        {isAgents || isBookmarks || isNotes || isCalendar ? (
           <></>
         ) : isFeeds ? (
           <>
@@ -442,6 +460,13 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
               <span><kbd className="font-mono">e</kbd> read</span>
               <span><kbd className="font-mono">o</kbd> open</span>
               <span><kbd className="font-mono">/</kbd> search</span>
+            </>
+          ) : isCalendar ? (
+            <>
+              <span><kbd className="font-mono">h</kbd>/<kbd className="font-mono">l</kbd> navigate</span>
+              <span><kbd className="font-mono">t</kbd> today</span>
+              <span><kbd className="font-mono">w</kbd>/<kbd className="font-mono">d</kbd> view</span>
+              <span><kbd className="font-mono">c</kbd> create</span>
             </>
           ) : isNotes ? (
             <>

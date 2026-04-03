@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
 
-export type ActivePane = 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds'
+export type ActivePane = 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar'
 
 const PANE_PATHS: Record<ActivePane, string> = {
   email: '/mail',
@@ -11,6 +11,7 @@ const PANE_PATHS: Record<ActivePane, string> = {
   notes: '/notes',
   agents: '/agents',
   feeds: '/feeds',
+  calendar: '/calendar',
 }
 
 const PATH_PANES: Record<string, ActivePane> = {
@@ -20,6 +21,7 @@ const PATH_PANES: Record<string, ActivePane> = {
   '/notes': 'notes',
   '/agents': 'agents',
   '/feeds': 'feeds',
+  '/calendar': 'calendar',
 }
 
 function paneFromUrl(): ActivePane {
@@ -101,7 +103,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ activePane: pane })
   },
   toggleActivePane: () => set((s) => {
-    const order: ActivePane[] = ['email', 'chat', 'bookmarks', 'notes', 'feeds', 'agents']
+    const order: ActivePane[] = ['email', 'chat', 'bookmarks', 'notes', 'feeds', 'calendar', 'agents']
     const idx = order.indexOf(s.activePane)
     const next = order[(idx + 1) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])

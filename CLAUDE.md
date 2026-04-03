@@ -1,20 +1,20 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + RSS/Atom feed reader + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Feeds are synced offline with unread tracking and inbox-zero triage. Agent sessions run Claude Code from the browser via a local server. No labels, no folders — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + RSS/Atom feed reader + Google Calendar + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Feeds are synced offline with unread tracking and inbox-zero triage. Calendar shows week/day views with full CRUD, RSVP, and multi-calendar support. Agent sessions run Claude Code from the browser via a local server. No labels, no folders — just fast triage.
 
 ## Architecture
 - **Pure web app (PWA)** — installable standalone app, works in any browser including mobile
 - **Offline-first** — all mutations happen locally first, sync when online
 - **Stateless post-sync** — app state derived from synced data + local queue
-- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, FeedTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
+- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, FeedTab, CalendarTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
 - **Pre-rendered panes** — all email threads and chat rooms mounted with `display:none`, toggled on selection for instant switching. Chat rooms use deferred re-renders (ref for hidden, state for visible).
 - **Live queries in leaves** — Dexie `useLiveQuery` calls live in leaf components (ThreadList, ChatRoomList, SyncStatus), never in parent Layout. ThreadView split into 3 isolated siblings (Header, Messages, Compose).
 - **Cloudflare Pages** — SPA from CDN + two Pages Functions for OAuth token exchange/refresh
 - **No backend** — Gmail API + People API + Matrix CS API directly from browser; Cloudflare Worker only holds `client_secret` for OAuth
 
 ## Tech Stack
-React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, CodeMirror 6 + @replit/codemirror-vim (notes editor), DOMPurify, Tailwind CSS 3, Lucide React, fzf (fuzzy filename search), MiniSearch (full-text search), Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits), rss-parser + fast-xml-parser (feeds), @mozilla/readability + linkedom (full-text extraction)
+React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, CodeMirror 6 + @replit/codemirror-vim (notes editor), DOMPurify, Tailwind CSS 4, Lucide React, Day.js, fzf (fuzzy filename search), MiniSearch (full-text search), Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits), rss-parser + fast-xml-parser (feeds), @mozilla/readability + linkedom (full-text extraction)
 
 ## Project Structure
 ```
@@ -22,7 +22,7 @@ src/
   main.tsx, App.tsx, index.css
   __tests__/           — Vitest tests (335 tests, 17 files)
   db/
-    index.ts           — Dexie v5: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedUnread, queue, meta
+    index.ts           — Dexie v6: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedRead, calendarList, calendarEvents, queue, meta
     sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
   gmail/
     types.ts           — Gmail API + DB types (DbThread, DbMessage, QueuedAction, etc.)
@@ -44,7 +44,8 @@ src/
     bookmarks.ts       — Bookmarks: list, selection, filtering, triage mode, tag editing
     notes.ts           — Notes: vault adapter, file tree, open files, search, dirty tracking
     feeds.ts           — Feeds: subscriptions, items, unread tracking, IndexedDB hydration, hub sync
-    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/feeds/agents)
+    calendar.ts        — Calendar: calendars, events, view state, CRUD, RSVP, optimistic updates
+    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/feeds/calendar/agents)
   hooks/
     useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
     useSync.ts         — Dual sync loop (email + Matrix), live queries, preload chain
@@ -77,9 +78,17 @@ src/
     FeedItemListEntry.tsx — Single feed item row
     FeedItemView.tsx      — Article viewer (DOMPurify HTML + YouTube embeds)
     FeedAddModal.tsx      — Add feed URL or import OPML
+    CalendarTab.tsx       — Calendar tab container (sidebar + grid)
+    CalendarGrid.tsx      — Custom week/day time grid with event rendering and overlap handling
+    CalendarSidebar.tsx   — Mini month picker + calendar list with visibility toggles
+    CalendarEventPopover.tsx — Event detail popover with RSVP, edit, delete
+    CalendarEventForm.tsx — Create/edit event modal
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
+  calendar/
+    types.ts             — CalendarInfo, CalendarEvent, DB types
+    api.ts               — Google Calendar REST API wrapper (same pattern as gmail/api.ts)
   notes/
     vault-adapter.ts     — VaultAdapter interface + FSA + Hub implementations
     search-index.ts      — MiniSearch full-text + fzf filename fuzzy search
@@ -110,7 +119,7 @@ docs/
 ```
 
 ## Design System
-- Tokens in `tailwind.config.ts` (spacing, typography, animations) + `src/index.css` (CSS custom properties)
+- Tokens in `src/index.css` via Tailwind CSS v4 `@theme` block (spacing, typography, animations, colors) + CSS custom properties for light/dark mode
 - Dark mode via `dark` class on `<html>`. Email iframes have separate dark mode toggle (CSS invert filter, no reload).
 - Philosophy: dense, monochrome, minimal. Sharp corners. System fonts. 100ms max transitions.
 
@@ -233,6 +242,17 @@ docs/
 - **Full-text fetching** — Per-feed `fullText` flag. When enabled, server fetches each article URL and extracts content via `@mozilla/readability` + `linkedom` (same as Firefox Reader View). Batched (5 concurrent), 10s timeout. Falls back to RSS content for JS-rendered SPAs.
 - **Feed config** — Stored in `~/.config/console/feeds.json` (subscriptions) and `feed-read.json` (read set). Configurable via `--feeds` server flag.
 
+## Key Patterns (Calendar / Google Calendar)
+- **Google Calendar API** — Direct REST API from browser, same pattern as Gmail. `src/calendar/api.ts` wraps `calendar/v3` endpoints with Bearer token and auto-refresh on 401.
+- **OAuth scope** — `calendar` scope added to existing Gmail+Contacts scopes in `src/gmail/auth.ts`. Same token, same refresh flow. Users must re-consent once for the new scope.
+- **Week/Day view** — Custom-built time grid (no calendar library). 48px per hour, Monday-start weeks. Overlap handling via group-based column layout. All-day events in separate bar above time grid. Current time red indicator line.
+- **Multi-calendar** — Sidebar shows all user calendars with colored checkboxes. Events colored by calendar. Visibility persisted in localStorage.
+- **Full CRUD** — Create (click empty slot or `c` key), edit (popover → Edit), delete (popover → Delete), RSVP (Accept/Maybe/Decline). All mutations go to Google Calendar API with optimistic IDB updates.
+- **Offline caching** — Events stored in IndexedDB (`calendarEvents` table, keyed by `calendarId:eventId`). Calendar list in `calendarList` table. Viewable offline.
+- **Sync strategy** — On mount: fetch calendar list + events for current week ± 1 week. Periodic: 5-minute interval via `useSync.ts`. On navigate: fetch new range. Ctrl+click refresh = clear IDB + full refetch.
+- **Event popover** — Click event shows detail popover: title, time, location, video call link, attendees with status dots, RSVP buttons, edit/delete actions, Google Calendar link.
+- **Mini month picker** — Sidebar mini calendar for quick date navigation. Click date → navigate to that week/day.
+
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
 - **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
@@ -251,7 +271,7 @@ docs/
 - **Health/discovery** — `GET /health` returns server state; frontend auto-connects on mount, shows setup instructions if server not running
 
 ## Keybindings (vim-style, desktop only)
-j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/feeds/agents)
+j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/feeds/calendar/agents)
 
 ### Bookmark-specific keybindings
 e = keep (triage), d = delete, s = skip (triage), o = open URL, m = toggle triage mode, t = focus tag input, / = search, Esc = clear/deselect/exit triage
@@ -261,6 +281,9 @@ j/k = next/prev tab, e = close tab, Ctrl+P = Quick Switcher, Ctrl+Shift+P = comm
 
 ### Feed-specific keybindings
 j/k = navigate items, e = mark read + advance, E = mark feed read, u = mark unread, o = open in browser, a = add feed, d = delete feed, / = search, Esc = deselect/clear
+
+### Calendar-specific keybindings
+h/l or arrows = prev/next week (or day in day view), t = go to today, w = week view, d = day view, c = create event, Esc = close popover/form
 
 ### Agent-specific keybindings
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
@@ -295,7 +318,7 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 - `cd functions && npx tsc --noEmit` — type check Workers
 
 ## Setup
-1. Google Cloud project with Gmail API + People API enabled
+1. Google Cloud project with Gmail API + People API + Google Calendar API v3 enabled
 2. OAuth 2.0 credentials (Web application), add `http://localhost:5173` to origins
 3. `.env` → `VITE_GOOGLE_CLIENT_ID`; `.dev.vars` → `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
 4. `npm install && npm run dev`

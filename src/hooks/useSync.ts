@@ -139,6 +139,20 @@ export function useSync() {
     return () => clearInterval(feedInterval)
   }, [])
 
+  // Calendar refresh: every 5 minutes
+  useEffect(() => {
+    const CAL_INTERVAL = 5 * 60 * 1000
+    const calInterval = setInterval(() => {
+      import('@/store/calendar').then(({ useCalendarStore }) => {
+        if (useCalendarStore.getState().connected) {
+          useCalendarStore.getState().fetchEvents()
+        }
+      })
+    }, CAL_INTERVAL)
+
+    return () => clearInterval(calInterval)
+  }, [])
+
   const triggerFullSync = useCallback(async () => {
     if (isGmailSignedIn()) await fullSync()
     if (isMatrixConnected()) await fullMatrixSync()

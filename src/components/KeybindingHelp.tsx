@@ -47,6 +47,12 @@ const BINDINGS = [
     { key: 'a', action: 'Add feed' },
     { key: 'd', action: 'Delete feed' },
   ]},
+  { section: 'Calendar', items: [
+    { key: 'h / l', action: 'Prev / next week' },
+    { key: 't', action: 'Go to today' },
+    { key: 'w / d', action: 'Week / day view' },
+    { key: 'c', action: 'Create event' },
+  ]},
   { section: 'Agents', items: [
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },
