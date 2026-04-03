@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, MapPin } from 'lucide-react'
 
 // --------------------------------------------------------------------------
 // Constants
@@ -121,14 +121,16 @@ export function CalendarGrid() {
 
   const today = new Date()
 
-  const { allDayEvents, timedEvents } = useMemo(() => {
+  const { locationEvents, allDayEvents, timedEvents } = useMemo(() => {
+    const locations: typeof events = []
     const allDay: typeof events = []
     const timed: typeof events = []
     for (const e of events) {
-      if (e.start.date && !e.start.dateTime) allDay.push(e)
+      if (e.eventType === 'workingLocation') locations.push(e)
+      else if (e.start.date && !e.start.dateTime) allDay.push(e)
       else timed.push(e)
     }
-    return { allDayEvents: allDay, timedEvents: timed }
+    return { locationEvents: locations, allDayEvents: allDay, timedEvents: timed }
   }, [events])
 
   const positionedEvents = useMemo(() => {
@@ -365,6 +367,34 @@ export function CalendarGrid() {
         })}
       </div>
 
+      {/* Working location row */}
+      {locationEvents.length > 0 && (
+        <div className="flex border-b border-border flex-shrink-0">
+          <div className="w-12 flex-shrink-0 flex items-center justify-end pr-1">
+            <MapPin size={10} className="text-text-tertiary" />
+          </div>
+          {days.map((day, dayIdx) => {
+            const dayStr = day.toISOString().split('T')[0]
+            const dayLocation = locationEvents.find((e) => dayStr! >= e.start.date! && dayStr! < e.end.date!)
+            return (
+              <div key={dayIdx} className="flex-1 border-l border-border px-1 py-0.5">
+                {dayLocation ? (
+                  <button
+                    onClick={() => selectEvent(dayLocation.id)}
+                    className="text-[10px] text-text-tertiary hover:text-text-secondary transition-colors truncate block w-full text-left"
+                    title="Click to edit location"
+                  >
+                    {dayLocation.summary}
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-text-tertiary/30">—</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {/* All-day events bar */}
       {allDayEvents.length > 0 && (
         <div className="flex border-b border-border flex-shrink-0 min-h-6">
@@ -375,15 +405,6 @@ export function CalendarGrid() {
             return (
               <div key={dayIdx} className="flex-1 border-l border-border px-0.5 py-0.5 space-y-0.5">
                 {dayAllDay.map((e) => {
-                  const isLocation = e.eventType === 'workingLocation'
-                  if (isLocation) {
-                    return (
-                      <div key={e.id}
-                        className="w-full text-left px-1 py-0 text-[10px] text-text-tertiary truncate italic">
-                        {e.summary}
-                      </div>
-                    )
-                  }
                   const muted = muteColor(calColorMap.get(e.calendarId) || '#3b82f6')
                   return (
                     <button key={e.id} onClick={() => selectEvent(e.id)}
