@@ -1,28 +1,28 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Agent sessions run Claude Code from the browser via a local hub server. No labels, no folders — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + RSS/Atom feed reader + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Feeds are synced offline with unread tracking and inbox-zero triage. Agent sessions run Claude Code from the browser via a local server. No labels, no folders — just fast triage.
 
 ## Architecture
 - **Pure web app (PWA)** — installable standalone app, works in any browser including mobile
 - **Offline-first** — all mutations happen locally first, sync when online
 - **Stateless post-sync** — app state derived from synced data + local queue
-- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
+- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, FeedTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
 - **Pre-rendered panes** — all email threads and chat rooms mounted with `display:none`, toggled on selection for instant switching. Chat rooms use deferred re-renders (ref for hidden, state for visible).
 - **Live queries in leaves** — Dexie `useLiveQuery` calls live in leaf components (ThreadList, ChatRoomList, SyncStatus), never in parent Layout. ThreadView split into 3 isolated siblings (Header, Messages, Compose).
 - **Cloudflare Pages** — SPA from CDN + two Pages Functions for OAuth token exchange/refresh
 - **No backend** — Gmail API + People API + Matrix CS API directly from browser; Cloudflare Worker only holds `client_secret` for OAuth
 
 ## Tech Stack
-React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, CodeMirror 6 + @replit/codemirror-vim (notes editor), DOMPurify, Tailwind CSS 3, Lucide React, fzf (fuzzy filename search), MiniSearch (full-text search), Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits)
+React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-markdown, CodeMirror 6 + @replit/codemirror-vim (notes editor), DOMPurify, Tailwind CSS 3, Lucide React, fzf (fuzzy filename search), MiniSearch (full-text search), Vitest, Cloudflare Pages + Wrangler, @matrix-org/matrix-sdk-crypto-wasm (E2EE), diff (word-level diffs for message edits), rss-parser + fast-xml-parser (feeds), @mozilla/readability + linkedom (full-text extraction)
 
 ## Project Structure
 ```
 src/
   main.tsx, App.tsx, index.css
-  __tests__/           — Vitest tests (296 tests, 15 files)
+  __tests__/           — Vitest tests (335 tests, 17 files)
   db/
-    index.ts           — Dexie v4: threads, messages, attachmentData, chatRooms, chatMessages, queue, meta
+    index.ts           — Dexie v5: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedUnread, queue, meta
     sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
   gmail/
     types.ts           — Gmail API + DB types (DbThread, DbMessage, QueuedAction, etc.)
@@ -43,7 +43,8 @@ src/
     compose.ts         — Email compose/reply state, file attachments (base64), quotedHtml
     bookmarks.ts       — Bookmarks: list, selection, filtering, triage mode, tag editing
     notes.ts           — Notes: vault adapter, file tree, open files, search, dirty tracking
-    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/agents)
+    feeds.ts           — Feeds: subscriptions, items, unread tracking, IndexedDB hydration, hub sync
+    ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/feeds/agents)
   hooks/
     useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
     useSync.ts         — Dual sync loop (email + Matrix), live queries, preload chain
@@ -70,6 +71,12 @@ src/
     NotesEditor.tsx       — Editor with tab bar, dirty indicators, status bar
     NotesEditorCore.tsx   — CodeMirror 6 wrapper with vim mode + live preview
     NotesQuickSwitcher.tsx — Fuzzy file finder modal (fzf-powered)
+    FeedTab.tsx           — Feed reader tab (3-col desktop, single-view mobile)
+    FeedFolderTree.tsx    — Feed folder tree sidebar with unread badges
+    FeedItemList.tsx      — Feed item list with search + unread toggle
+    FeedItemListEntry.tsx — Single feed item row
+    FeedItemView.tsx      — Article viewer (DOMPurify HTML + YouTube embeds)
+    FeedAddModal.tsx      — Add feed URL or import OPML
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
@@ -80,13 +87,22 @@ src/
     editor-theme.ts      — CM6 theme matching Console design system
   utils/
     email.ts, email-cache.ts, attachment-cache.ts, date.ts, html.ts
-agent-hub/               — Local Node.js server for Claude Code agent integration
+server/                  — Local Node.js backend (REST + WebSocket)
   src/
-    index.ts             — HTTP + WebSocket server (Hono-less, native Node)
+    index.ts             — HTTP + WebSocket server setup, route dispatch (~210 lines)
     session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
     bookmarks.ts         — Bookmark file parser, in-memory cache, CRUD operations
+    feeds.ts             — RSS/Atom feed store: config I/O, fetch/parse, OPML import, read tracking, full-text extraction
     notes.ts             — Note file server for vault fallback (list, read, write, delete, rename)
     protocol.ts          — Shared types: ClientMessage, HubMessage, Claude NDJSON protocol
+    manifest.ts          — Session manifest persistence (save/restore across restarts)
+    history.ts           — JSONL session history loader + past session discovery
+    projects.ts          — Claude project directory discovery + path decoding
+    routes/
+      agents.ts          — WebSocket message handler for Claude Code sessions
+      bookmarks.ts       — Bookmark REST endpoint handlers
+      feeds.ts           — Feed REST endpoint handlers
+      notes.ts           — Notes REST endpoint handlers
     __tests__/           — Session, protocol, bookmarks, notes tests (102 tests)
 functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
 docs/
@@ -185,8 +201,8 @@ docs/
 - **Hierarchical tags** — Tags use `/` as separator (e.g., `dev/frontend/react`). Tag tree sidebar with expand/collapse. `status/broken` is a special tag with visual indicator.
 - **Two modes** — Browse (tag tree + list + detail split pane) and Triage (Tinder-style card-by-card review with keep/skip/delete)
 - **Tag editing** — Add/remove tags with autocomplete from all existing tags. Changes saved immediately to vault .md file via PUT.
-- **Vault path** — Configurable via `--bookmarks` flag on hub (default: `~/sync/brain/root/bookmarks`)
-- **No IndexedDB** — Bookmarks fetched fresh from hub on tab activation. Vault is the source of truth.
+- **Vault path** — Configurable via `--bookmarks` flag on server (default: `~/sync/brain/root/bookmarks`)
+- **No IndexedDB** — Bookmarks fetched fresh from server on tab activation. Vault is the source of truth.
 - **iframe preview** — Detail and triage views embed bookmark URL in sandboxed iframe. Persistent iframe pool (up to 20) keeps loaded iframes alive — navigation between visited bookmarks is instant CSS `display` toggle. Preloads 2 ahead for smooth j/k navigation.
 
 ## Key Patterns (Notes / Vault Editor)
@@ -204,6 +220,19 @@ docs/
 - **Vault path** — FSA: user picks directory via `showDirectoryPicker()`. Hub fallback: `--notes` CLI flag (default: `~/sync/brain/root`).
 - **Skip directories** — `.obsidian`, `.trash`, `bookmarks`, `bookmarks-meta`, `.git`, `node_modules`, hidden files (`.`-prefixed) excluded from file listing.
 
+## Key Patterns (Feeds / RSS Reader)
+- **Server-side fetching** — CORS prevents browser-side RSS fetching. Server fetches and parses RSS/Atom feeds using `rss-parser`.
+- **Offline reading** — All article content cached in IndexedDB (`feedItems` table). Fully readable offline.
+- **Read state** — Read item IDs stored on server (`feed-read.json`) for cross-device sync. Client mirrors in IndexedDB (`feedRead` table). An item is unread if it exists but is NOT in the read set. Read set pruned automatically: items that fall off feeds are removed during sync. Bounded by "items currently in feeds that have been read".
+- **OPML import/export** — Import subscriptions from any feed reader. Export for backup. Parsed via `fast-xml-parser`.
+- **Folder grouping** — Feeds organized into folders (from OPML or manual). Folder tree in sidebar with aggregate unread counts.
+- **Inbox-zero semantics** — `showUnreadOnly` defaults to true. `e` marks read + auto-advances. `E` marks entire feed read.
+- **Hub API** — `GET /feeds`, `POST /feeds`, `DELETE /feeds/:id`, `GET /feeds/items?since=ISO`, `GET/PUT /feeds/unread`, `POST /feeds/import-opml`
+- **Retention** — 50 items per feed max in IndexedDB (~8500 total for 170 feeds). Trimmed after each sync.
+- **Periodic refresh** — 15-minute interval via `useSync.ts`. Manual refresh via header button. Ctrl+click for full re-fetch.
+- **Full-text fetching** — Per-feed `fullText` flag. When enabled, server fetches each article URL and extracts content via `@mozilla/readability` + `linkedom` (same as Firefox Reader View). Batched (5 concurrent), 10s timeout. Falls back to RSS content for JS-rendered SPAs.
+- **Feed config** — Stored in `~/.config/console/feeds.json` (subscriptions) and `feed-read.json` (read set). Configurable via `--feeds` server flag.
+
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
 - **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
@@ -215,20 +244,23 @@ docs/
 - **Streaming** — `text_delta` and `thinking_delta` accumulated in store, flushed on complete message
 - **Multi-session** — Hub manages multiple concurrent Claude subprocesses, each with independent state
 - **Session persistence** — Manifest file (`~/.claude/console-hub-sessions.json`) saves active sessions on SIGTERM, restores on startup via `--resume`. Deduplicates by `claudeSessionId` to prevent zombie sessions.
-- **Session survival** — Frontend remaps session IDs via `claudeSessionId` when hub restarts (IDs change). Messages, deltas, and activeSessionId transferred to new IDs.
+- **Session survival** — Frontend remaps session IDs via `claudeSessionId` when server restarts (IDs change). Messages, deltas, and activeSessionId transferred to new IDs.
 - **Message replay** — Hub coalesces text/thinking deltas into complete blocks in a per-session `messageLog`. Late-joining clients receive full replay on WebSocket connect.
 - **Context usage** — `input_tokens + output_tokens` from result message shown as token counts (e.g. "45k / 1M") with color coding. `total_cost_usd` is cumulative (SET not ADD).
 - **Status line** — auto-derived from tool_use events (e.g., "Reading src/App.tsx...", "Running npm test...")
-- **Health/discovery** — `GET /health` returns hub state; frontend auto-connects on mount, shows setup instructions if hub not running
+- **Health/discovery** — `GET /health` returns server state; frontend auto-connects on mount, shows setup instructions if server not running
 
 ## Keybindings (vim-style, desktop only)
-j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/agents)
+j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/feeds/agents)
 
 ### Bookmark-specific keybindings
 e = keep (triage), d = delete, s = skip (triage), o = open URL, m = toggle triage mode, t = focus tag input, / = search, Esc = clear/deselect/exit triage
 
 ### Notes-specific keybindings
 j/k = next/prev tab, e = close tab, Ctrl+P = Quick Switcher, Ctrl+Shift+P = command palette, Ctrl+Shift+T = reopen closed tab, Ctrl+K = insert link, [[ = insert wiki link (insert mode), Ctrl+B/I = bold/italic, Ctrl+Shift+X = strikethrough, Ctrl+` = inline code, Ctrl+S = save, Ctrl+N = new note, / = Quick Switcher, vim mode in editor (:w save, :q close, :wq save+close, :link insert link, gt/gT cycle tabs). Right-click files in tree for rename/delete.
+
+### Feed-specific keybindings
+j/k = navigate items, e = mark read + advance, E = mark feed read, u = mark unread, o = open in browser, a = add feed, d = delete feed, / = search, Esc = deselect/clear
 
 ### Agent-specific keybindings
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
@@ -237,7 +269,7 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 - Vitest, 335 tests across 17 files. `fake-indexeddb` for Dexie tests.
 - `.claude/settings.json` hook runs `npm test` on every Stop event.
 - `npm test` (single run), `npm run test:watch` (watch mode)
-- `cd agent-hub && npm test` — hub tests (102 tests, 5 files)
+- `cd server && npm test` — server tests (102 tests, 5 files)
 
 ## Debugging
 - **`window.__console`** — dev-only global (from `src/debug.ts`): exposes all Zustand stores, Dexie db, and perf data. Use via browser console or MCP `javascript_tool`.
@@ -255,11 +287,11 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 
 ## Commands
 - `pm2 start "npm run dev" --name console-dev` — dev server (preferred over bare `npm run dev`)
-- `cd agent-hub && npm run dev` — Agent hub server (port 9877)
+- `cd server && npm run dev` — Console server (port 9877)
 - `npm run build` / `npm run preview` / `npm run deploy`
 - `npm test` / `npm run test:watch`
 - `npx tsc --noEmit` — type check SPA
-- `cd agent-hub && npx tsc --noEmit` — type check hub
+- `cd server && npx tsc --noEmit` — type check server
 - `cd functions && npx tsc --noEmit` — type check Workers
 
 ## Setup
@@ -268,7 +300,7 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 3. `.env` → `VITE_GOOGLE_CLIENT_ID`; `.dev.vars` → `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
 4. `npm install && npm run dev`
 5. For Matrix chat: click "+Chat" in the app header to connect a Matrix account
-6. For agent sessions: `cd agent-hub && npm install && npm run dev` — then click "Agents" tab in the app
+6. For server features (agents, bookmarks, feeds): `cd server && npm install && npm run dev`
 
 ## UI Actions
 - **Refresh** — click for incremental sync, Ctrl+click for full resync (email: clears all data; chat: clears messages + sync token, keeps room read state)

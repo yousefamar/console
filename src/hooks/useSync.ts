@@ -125,6 +125,20 @@ export function useSync() {
     }
   }, [])
 
+  // Feed refresh: every 15 minutes
+  useEffect(() => {
+    const FEED_INTERVAL = 15 * 60 * 1000
+    const feedInterval = setInterval(() => {
+      import('@/store/feeds').then(({ useFeedStore }) => {
+        if (useFeedStore.getState().connected) {
+          useFeedStore.getState().refreshItems()
+        }
+      })
+    }, FEED_INTERVAL)
+
+    return () => clearInterval(feedInterval)
+  }, [])
+
   const triggerFullSync = useCallback(async () => {
     if (isGmailSignedIn()) await fullSync()
     if (isMatrixConnected()) await fullMatrixSync()

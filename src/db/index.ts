@@ -2,6 +2,22 @@ import Dexie, { type Table } from 'dexie'
 import type { DbThread, DbMessage, DbAttachmentData, QueuedAction } from '@/gmail/types'
 import type { DbChatRoom, DbChatMessage } from '@/matrix/types'
 
+export interface DbFeedItem {
+  id: string
+  feedId: string
+  title: string
+  link: string
+  content: string
+  contentSnippet: string
+  author?: string
+  publishedAt: string
+  imageUrl?: string
+}
+
+export interface DbFeedRead {
+  itemId: string
+}
+
 class ConsoleDatabase extends Dexie {
   threads!: Table<DbThread, string>
   messages!: Table<DbMessage, string>
@@ -10,6 +26,8 @@ class ConsoleDatabase extends Dexie {
   chatMessages!: Table<DbChatMessage, string>
   queue!: Table<QueuedAction, number>
   meta!: Table<{ key: string; value: string }, string>
+  feedItems!: Table<DbFeedItem, string>
+  feedRead!: Table<DbFeedRead, string>
 
   constructor() {
     super('console-inbox')
@@ -50,6 +68,19 @@ class ConsoleDatabase extends Dexie {
       chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
       queue: '++id, type, status, createdAt',
       meta: 'key',
+    })
+
+    // v5: Add feed tables
+    this.version(5).stores({
+      threads: 'id, date, snoozedUntil',
+      messages: 'id, threadId, date',
+      attachmentData: 'attachmentId, messageId',
+      chatRooms: '&id, lastMessageTime, snoozedUntil',
+      chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
+      queue: '++id, type, status, createdAt',
+      meta: 'key',
+      feedItems: '&id, feedId, publishedAt, [feedId+publishedAt]',
+      feedRead: '&itemId',
     })
   }
 }

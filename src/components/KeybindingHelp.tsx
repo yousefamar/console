@@ -39,6 +39,14 @@ const BINDINGS = [
     { key: ':wq', action: 'Save and close' },
     { key: 'gt / gT', action: 'Next / prev tab' },
   ]},
+  { section: 'Feeds', items: [
+    { key: 'e', action: 'Mark read + next' },
+    { key: 'E', action: 'Mark feed read' },
+    { key: 'u', action: 'Mark unread' },
+    { key: 'o', action: 'Open in browser' },
+    { key: 'a', action: 'Add feed' },
+    { key: 'd', action: 'Delete feed' },
+  ]},
   { section: 'Agents', items: [
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },

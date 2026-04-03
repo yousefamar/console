@@ -15,10 +15,12 @@ import { isSignedIn as isGmailConnected, signIn as gmailSignIn } from '@/gmail/a
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Settings } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, Settings } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
+import { FeedTab } from './FeedTab'
+import { useFeedStore } from '@/store/feeds'
 
 // ---------- MailTab (isolates inbox store subscriptions) ----------
 
@@ -166,6 +168,7 @@ export function Layout() {
   const isBookmarks = activePane === 'bookmarks'
   const isNotes = activePane === 'notes'
   const isAgents = activePane === 'agents'
+  const isFeeds = activePane === 'feeds'
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -184,6 +187,16 @@ export function Layout() {
         await fullSync()
       } else {
         await incrementalSync()
+      }
+    } else if (isFeeds) {
+      if (e.ctrlKey || e.metaKey) {
+        await db.feedItems.clear()
+        const { useFeedStore } = await import('@/store/feeds')
+        useFeedStore.setState({ lastSync: null })
+        await useFeedStore.getState().refreshItems()
+      } else {
+        const { useFeedStore } = await import('@/store/feeds')
+        await useFeedStore.getState().refreshItems()
       }
     } else if (isChat && matrixConnected) {
       if (e.ctrlKey || e.metaKey) {
@@ -233,12 +246,13 @@ export function Layout() {
             )}
             <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
+            <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
           </div>
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : matrixConnected) && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -282,6 +296,11 @@ export function Layout() {
         {/* Notes pane */}
         <div className={`flex flex-1 min-h-0 ${isNotes ? '' : 'hidden'}`}>
           <NotesTab />
+        </div>
+
+        {/* Feeds pane */}
+        <div className={`flex flex-1 min-h-0 ${isFeeds ? '' : 'hidden'}`}>
+          <FeedTab />
         </div>
 
         {/* Agents pane */}
@@ -333,12 +352,14 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
 }) {
   const isActive = activePane === pane
 
-  // Only Mail and Chat tabs show counts — subscribe selectively
+  // Only Mail, Chat, and Feeds tabs show counts — subscribe selectively
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'chat'
       ? useChatStore((s) => s.rooms.length)
-      : 0
+      : pane === 'feeds'
+        ? useFeedStore((s) => s.totalUnread)
+        : 0
 
   return (
     <button
@@ -364,9 +385,11 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
   const isAgents = activePane === 'agents'
   const isBookmarks = activePane === 'bookmarks'
   const isNotes = activePane === 'notes'
+  const isFeeds = activePane === 'feeds'
 
   const handleDone = () => {
     if (isEmail) useInboxStore.getState().archiveThread()
+    else if (isFeeds) useFeedStore.getState().markRead()
     else useChatStore.getState().markRoomRead()
   }
 
@@ -375,6 +398,11 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
       <div className="flex items-center gap-3 md:gap-4">
         {isAgents || isBookmarks || isNotes ? (
           <></>
+        ) : isFeeds ? (
+          <>
+            <ActionHint keyLabel="e" action="Read" onClick={handleDone} mobile={isMobile} />
+            <ActionHint keyLabel="o" action="Open" onClick={() => useFeedStore.getState().openItemInBrowser()} mobile={isMobile} />
+          </>
         ) : (
           <>
             <ActionHint
@@ -407,6 +435,13 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
               <span><kbd className="font-mono">d</kbd> delete</span>
               <span><kbd className="font-mono">o</kbd> open</span>
               <span><kbd className="font-mono">m</kbd> triage</span>
+            </>
+          ) : isFeeds ? (
+            <>
+              <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
+              <span><kbd className="font-mono">e</kbd> read</span>
+              <span><kbd className="font-mono">o</kbd> open</span>
+              <span><kbd className="font-mono">/</kbd> search</span>
             </>
           ) : isNotes ? (
             <>

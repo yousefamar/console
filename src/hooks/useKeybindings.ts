@@ -4,6 +4,7 @@ import { useChatStore } from '@/store/chat'
 import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
+import { useFeedStore } from '@/store/feeds'
 import { useUiStore } from '@/store/ui'
 
 export function useKeybindings() {
@@ -12,6 +13,7 @@ export function useKeybindings() {
   const agent = useAgentStore
   const bm = useBookmarkStore
   const notes = useNotesStore
+  const feeds = useFeedStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -24,6 +26,7 @@ export function useKeybindings() {
       const isBookmarks = activePane === 'bookmarks'
       const isNotes = activePane === 'notes'
       const isAgents = activePane === 'agents'
+      const isFeeds = activePane === 'feeds'
 
       // Always active
       if (e.key === 'Escape') {
@@ -49,6 +52,14 @@ export function useKeybindings() {
           bm.getState().selectTag(null)
         } else if (isBookmarks && bm.getState().selectedBookmarkId) {
           bm.getState().selectBookmark(null)
+        } else if (isFeeds && feeds.getState().showAddModal) {
+          feeds.getState().setShowAddModal(false)
+        } else if (isFeeds && isEditing) {
+          ;(target as HTMLElement).blur()
+        } else if (isFeeds && feeds.getState().searchQuery) {
+          feeds.getState().setSearchQuery('')
+        } else if (isFeeds && feeds.getState().selectedItemId) {
+          feeds.getState().selectItem(null)
         } else if (isNotes && notes.getState().commandPaletteOpen) {
           notes.getState().closeCommandPalette()
         } else if (isNotes && notes.getState().linkPickerOpen) {
@@ -172,6 +183,71 @@ export function useKeybindings() {
           return
         }
         return // Don't fall through to email/chat bindings
+      }
+
+      // Feed-specific keybindings
+      if (isFeeds) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          feeds.getState().selectNextItem()
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          feeds.getState().selectPrevItem()
+          return
+        }
+        if (e.key === 'e') {
+          e.preventDefault()
+          feeds.getState().markRead()
+          return
+        }
+        if (e.key === 'E') {
+          e.preventDefault()
+          const { selectedFeedId, selectedFolderId } = feeds.getState()
+          if (selectedFeedId) feeds.getState().markFeedRead(selectedFeedId)
+          else if (selectedFolderId) feeds.getState().markFolderRead(selectedFolderId)
+          return
+        }
+        if (e.key === 'u') {
+          e.preventDefault()
+          const itemId = feeds.getState().selectedItemId
+          if (itemId) feeds.getState().markUnread(itemId)
+          return
+        }
+        if (e.key === 'o') {
+          e.preventDefault()
+          feeds.getState().openItemInBrowser()
+          return
+        }
+        if (e.key === 'a') {
+          e.preventDefault()
+          feeds.getState().setShowAddModal(true)
+          return
+        }
+        if (e.key === 'd') {
+          e.preventDefault()
+          const fid = feeds.getState().selectedFeedId
+          if (fid) feeds.getState().deleteFeed(fid)
+          return
+        }
+        if (e.key === '/') {
+          e.preventDefault()
+          const input = document.querySelector<HTMLInputElement>('[data-feed-search]')
+          input?.focus()
+          return
+        }
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 't' && e.shiftKey) {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        return // Don't fall through
       }
 
       // Bookmark-specific keybindings
