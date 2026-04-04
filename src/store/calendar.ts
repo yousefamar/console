@@ -297,7 +297,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     set({ loading: true })
 
     const rangeStart = start || addDays(weekStart(currentDate), -7)
-    const rangeEnd = end || addDays(weekEnd(currentDate), 7)
+    const rangeEnd = end || addDays(weekEnd(currentDate), 14)
     const timeMin = rangeStart.toISOString()
     const timeMax = rangeEnd.toISOString()
 
@@ -349,7 +349,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const days = view === 'week' ? 7 * delta : delta
     const newDate = addDays(currentDate, days)
     set({ currentDate: newDate, selectedEventId: null })
-    get().fetchEvents(addDays(weekStart(newDate), -7), addDays(weekEnd(newDate), 7))
+    get().fetchEvents(addDays(weekStart(newDate), -7), addDays(weekEnd(newDate), 14))
   },
 
   navigateToday: () => {
@@ -359,7 +359,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   navigateToDate: (date) => {
     set({ currentDate: date, selectedEventId: null })
-    get().fetchEvents(addDays(weekStart(date), -7), addDays(weekEnd(date), 7))
+    get().fetchEvents(addDays(weekStart(date), -7), addDays(weekEnd(date), 14))
   },
 
   setView: (v) => set({ view: v }),
