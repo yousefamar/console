@@ -344,8 +344,9 @@ export function CalendarGrid() {
           const end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, endMin)
           openCreateForm(start, end)
         }
-      } else if (d.mode === 'move' && d.eventId) {
+      } else if (d.mode === 'move' && d.eventId && didDragRef.current) {
         const newTop = snapToGrid(d.eventOrigTop! + (d.currentY - d.startY))
+        if (newTop === d.eventOrigTop) return // no change
         const startMin = pxToMinutes(Math.max(0, newTop))
         const endMin = startMin + pxToMinutes(d.eventOrigHeight!)
         const day = days[d.dayIdx]!
@@ -362,8 +363,9 @@ export function CalendarGrid() {
             })
           }
         }
-      } else if (d.mode === 'resize' && d.eventId) {
+      } else if (d.mode === 'resize' && d.eventId && didDragRef.current) {
         const newHeight = snapToGrid(d.eventOrigHeight! + (d.currentY - d.startY))
+        if (newHeight === d.eventOrigHeight) return // no change
         const endMin = pxToMinutes(d.eventOrigTop!) + pxToMinutes(Math.max(SNAP_PX, newHeight))
         const day = days[d.dayIdx]!
         const posEv = positionedEvents.find((e) => e.id === d.eventId)
