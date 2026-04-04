@@ -93,6 +93,7 @@ interface PositionedEvent {
   column: number
   hangoutLink?: string
   location?: string
+  recurringEventId?: string
   isOwn: boolean       // true if calendarId matches a connected account email
   accepted: boolean  // false = needsAction, tentative, or declined
 }
@@ -108,6 +109,12 @@ interface DragState {
   eventOrigTop?: number
   eventOrigHeight?: number
   offsetY?: number     // mouse offset from event top (for move)
+}
+
+interface PendingRecurringEdit {
+  event: PositionedEvent
+  newStart: Date
+  newEnd: Date
 }
 
 // --------------------------------------------------------------------------
@@ -131,6 +138,7 @@ export function CalendarGrid() {
   const ownCalendarIds = useMemo(() => new Set(accounts.map((a) => a.email)), [accounts])
 
   const [drag, setDrag] = useState<DragState | null>(null)
+  const [pendingEdit, setPendingEdit] = useState<PendingRecurringEdit | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const colRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -185,6 +193,7 @@ export function CalendarGrid() {
             height: (duration / 60) * HOUR_HEIGHT,
             left: 0, width: 1, column: colIdx,
             hangoutLink: e.hangoutLink, location: e.location,
+            recurringEventId: e.recurringEventId,
             isOwn: ownCalendarIds.has(e.calendarId),
             accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
           }
@@ -337,25 +346,35 @@ export function CalendarGrid() {
         const startMin = pxToMinutes(Math.max(0, newTop))
         const endMin = startMin + pxToMinutes(d.eventOrigHeight!)
         const day = days[d.dayIdx]!
-        const ev = events.find((e) => e.id === d.eventId)
-        if (ev) {
+        const posEv = positionedEvents.find((e) => e.id === d.eventId)
+        if (posEv) {
           const newStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, startMin)
           const newEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, endMin)
-          updateEvent(ev.calendarId, ev.accountEmail, ev.id, {
-            start: { dateTime: newStart.toISOString() },
-            end: { dateTime: newEnd.toISOString() },
-          })
+          if (posEv.recurringEventId) {
+            setPendingEdit({ event: posEv, newStart, newEnd })
+          } else {
+            updateEvent(posEv.calendarId, posEv.accountEmail, posEv.id, {
+              start: { dateTime: newStart.toISOString() },
+              end: { dateTime: newEnd.toISOString() },
+            })
+          }
         }
       } else if (d.mode === 'resize' && d.eventId) {
         const newHeight = snapToGrid(d.eventOrigHeight! + (d.currentY - d.startY))
         const endMin = pxToMinutes(d.eventOrigTop!) + pxToMinutes(Math.max(SNAP_PX, newHeight))
         const day = days[d.dayIdx]!
-        const ev = events.find((e) => e.id === d.eventId)
-        if (ev) {
+        const posEv = positionedEvents.find((e) => e.id === d.eventId)
+        if (posEv) {
+          const startMin2 = pxToMinutes(d.eventOrigTop!)
+          const newStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, startMin2)
           const newEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, endMin)
-          updateEvent(ev.calendarId, ev.accountEmail, ev.id, {
-            end: { dateTime: newEnd.toISOString() },
-          })
+          if (posEv.recurringEventId) {
+            setPendingEdit({ event: posEv, newStart, newEnd })
+          } else {
+            updateEvent(posEv.calendarId, posEv.accountEmail, posEv.id, {
+              end: { dateTime: newEnd.toISOString() },
+            })
+          }
         }
       }
     }
@@ -586,6 +605,92 @@ export function CalendarGrid() {
               </div>
             )
           })}
+        </div>
+      </div>
+
+      {/* Recurring event edit dialog */}
+      {pendingEdit && (
+        <RecurringEditDialog
+          pending={pendingEdit}
+          onThisEvent={() => {
+            const { event, newStart, newEnd } = pendingEdit
+            updateEvent(event.calendarId, event.accountEmail, event.id, {
+              start: { dateTime: newStart.toISOString() },
+              end: { dateTime: newEnd.toISOString() },
+            })
+            setPendingEdit(null)
+          }}
+          onAllEvents={() => {
+            const { event, newStart, newEnd } = pendingEdit
+            // Patch the master recurring event
+            updateEvent(event.calendarId, event.accountEmail, event.recurringEventId!, {
+              start: { dateTime: newStart.toISOString() },
+              end: { dateTime: newEnd.toISOString() },
+            })
+            setPendingEdit(null)
+          }}
+          onDiscard={() => setPendingEdit(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// RecurringEditDialog
+// --------------------------------------------------------------------------
+
+function RecurringEditDialog({ pending, onThisEvent, onAllEvents, onDiscard }: {
+  pending: PendingRecurringEdit
+  onThisEvent: () => void
+  onAllEvents: () => void
+  onDiscard: () => void
+}) {
+  const [scope, setScope] = useState<'this' | 'all'>('this')
+  const { event, newStart, newEnd } = pending
+
+  const oldTime = `${formatTime(event.startTime)}\u2013${formatTime(event.endTime)}`
+  const newTime = `${newStart.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}\u2013${newEnd.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}`
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onDiscard}>
+      <div
+        className="bg-surface-0 border border-border rounded-sm shadow-lg w-80 animate-fade-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 pt-3 pb-2">
+          <h3 className="text-sm font-medium text-text-primary">
+            Edit repeat event &ldquo;{event.summary}&rdquo;
+          </h3>
+        </div>
+
+        <div className="px-4 py-2 space-y-1.5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="scope" checked={scope === 'this'} onChange={() => setScope('this')} className="accent-accent" />
+            <span className="text-xs text-text-primary">This event</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="scope" checked={scope === 'all'} onChange={() => setScope('all')} className="accent-accent" />
+            <span className="text-xs text-text-primary">All events</span>
+          </label>
+        </div>
+
+        <div className="px-4 py-2 text-xs text-text-secondary">
+          <div>Time: {oldTime} <span className="text-text-tertiary">&bull;</span></div>
+          <div className="text-accent">{newTime}</div>
+        </div>
+
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+          <button onClick={onDiscard} className="px-2 py-1 text-xs text-red-400 hover:text-red-300 transition-colors">
+            Discard change
+          </button>
+          <div className="flex-1" />
+          <button
+            onClick={scope === 'this' ? onThisEvent : onAllEvents}
+            className="px-3 py-1 text-xs font-medium bg-accent text-white rounded-sm hover:bg-accent-hover transition-colors"
+          >
+            Save event
+          </button>
         </div>
       </div>
     </div>
