@@ -151,16 +151,17 @@ function AlListItem({ session, isActive, onSelect }: {
   isActive: boolean
   onSelect: () => void
 }) {
-  const messages = useAgentStore((s) => s.messagesBySession[session.id] ?? [])
-  // Find last text message for preview
-  const lastText = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const block = messages[i]!.block
-      if (block.type === 'text') return block.content
-      if (block.type === 'user_prompt') return block.content
+  // Extract last text preview directly from store (stable selector — no new array)
+  const lastText = useAgentStore((s) => {
+    const msgs = s.messagesBySession[session.id]
+    if (!msgs) return null
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const block = msgs[i]!.block
+      if (block.type === 'text') return block.content.slice(0, 80)
+      if (block.type === 'user_prompt') return block.content.slice(0, 80)
     }
     return null
-  })()
+  })
 
   return (
     <button
