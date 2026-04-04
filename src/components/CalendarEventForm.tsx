@@ -77,9 +77,9 @@ export function CalendarEventForm() {
       eventData.end = { dateTime: new Date(`${endDate}T${endTime}`).toISOString() }
     }
 
-    // Find the account that owns the selected calendar
+    // Use the API account (the actual owner) for the selected calendar
     const cal = calendars.find((c) => c.id === calendarId)
-    const accountEmail = cal?.accountEmail || ''
+    const accountEmail = cal?.apiAccountEmail || cal?.accountEmail || ''
 
     if (isEdit) {
       await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)

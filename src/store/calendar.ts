@@ -209,18 +209,46 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         })
       )
 
-      // Process accounts in order (primary first) — deduplicate calendars by ID
+      // Collect all calendars per account, then deduplicate.
+      // Display under primary account, but use the owning account's token for API calls.
+      const calsByAccount = new Map<string, CalendarInfo[]>()
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const cals = result.value.items
+            .filter((c) => c.selected !== false)
+            .map((c) => ({ ...c, accountEmail: result.value.accountEmail, apiAccountEmail: result.value.accountEmail }))
+          calsByAccount.set(result.value.accountEmail, cals)
+        }
+      }
+
+      // For each calendar ID, determine the best API account:
+      // prefer the account whose email matches the calendar ID (i.e. the owner),
+      // otherwise prefer owner > writer > reader access role
+      const ACCESS_RANK: Record<string, number> = { owner: 3, writer: 2, reader: 1, freeBusyReader: 0 }
+      const bestApiAccount = new Map<string, string>() // calId -> accountEmail for API
+      for (const [accountEmail, cals] of calsByAccount) {
+        for (const cal of cals) {
+          const existing = bestApiAccount.get(cal.id)
+          if (!existing) {
+            bestApiAccount.set(cal.id, accountEmail)
+          } else if (cal.id === accountEmail) {
+            // Calendar ID matches this account's email — this is the owner
+            bestApiAccount.set(cal.id, accountEmail)
+          } else if (existing && (ACCESS_RANK[cal.accessRole] || 0) > (ACCESS_RANK[calsByAccount.get(existing)?.find(c => c.id === cal.id)?.accessRole || ''] || 0)) {
+            bestApiAccount.set(cal.id, accountEmail)
+          }
+        }
+      }
+
+      // Deduplicate: primary account displays first, but set apiAccountEmail to the best owner
       const seenCalIds = new Set<string>()
       for (const account of accounts) {
-        const result = results.find(
-          (r) => r.status === 'fulfilled' && r.value.accountEmail === account.email
-        )
-        if (result?.status === 'fulfilled') {
-          const cals = result.value.items
-            .filter((c) => c.selected !== false && !seenCalIds.has(c.id))
-            .map((c) => ({ ...c, accountEmail: result.value.accountEmail }))
-          for (const c of cals) seenCalIds.add(c.id)
-          allCalendars.push(...cals)
+        const cals = calsByAccount.get(account.email) || []
+        for (const cal of cals) {
+          if (seenCalIds.has(cal.id)) continue
+          seenCalIds.add(cal.id)
+          cal.apiAccountEmail = bestApiAccount.get(cal.id) || cal.accountEmail
+          allCalendars.push(cal)
         }
       }
 
@@ -276,8 +304,8 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     try {
       const results = await Promise.allSettled(
         visibleCals.map(async (cal) => {
-          const res = await api.getEvents(cal.accountEmail, cal.id, timeMin, timeMax)
-          return { calId: cal.id, accountEmail: cal.accountEmail, items: res.items || [] }
+          const res = await api.getEvents(cal.apiAccountEmail, cal.id, timeMin, timeMax)
+          return { calId: cal.id, accountEmail: cal.apiAccountEmail, items: res.items || [] }
         })
       )
 

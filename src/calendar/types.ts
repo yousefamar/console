@@ -11,7 +11,8 @@ export interface CalendarInfo {
   accessRole: 'owner' | 'writer' | 'reader' | 'freeBusyReader'
   primary?: boolean
   timeZone?: string
-  accountEmail: string          // which Google account owns this calendar
+  accountEmail: string          // which account section to display under
+  apiAccountEmail: string       // which account's token to use for API calls (may differ for subscribed calendars)
 }
 
 export interface CalendarEventTime {
