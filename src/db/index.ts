@@ -100,6 +100,25 @@ class ConsoleDatabase extends Dexie {
       calendarList: '&id',
       calendarEvents: '&compoundKey, calendarId, startTime',
     })
+
+    // v7: Multi-account calendar support — clear old calendar data (compound key format changed)
+    this.version(7).stores({
+      threads: 'id, date, snoozedUntil',
+      messages: 'id, threadId, date',
+      attachmentData: 'attachmentId, messageId',
+      chatRooms: '&id, lastMessageTime, snoozedUntil',
+      chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
+      queue: '++id, type, status, createdAt',
+      meta: 'key',
+      feedItems: '&id, feedId, publishedAt, [feedId+publishedAt]',
+      feedRead: '&itemId',
+      calendarList: '&id, accountEmail',
+      calendarEvents: '&compoundKey, accountEmail, calendarId, startTime',
+    }).upgrade((tx) => {
+      // Clear old calendar data — compound key format changed from calendarId:eventId to accountEmail:calendarId:eventId
+      tx.table('calendarEvents').clear()
+      tx.table('calendarList').clear()
+    })
   }
 }
 

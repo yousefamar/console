@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff } from 'lucide-react'
 
 export function CalendarSidebar() {
   const currentDate = useCalendarStore((s) => s.currentDate)
@@ -11,6 +11,19 @@ export function CalendarSidebar() {
   const navigateToDate = useCalendarStore((s) => s.navigateToDate)
   const setView = useCalendarStore((s) => s.setView)
   const toggleCalendarVisibility = useCalendarStore((s) => s.toggleCalendarVisibility)
+  const addAccount = useCalendarStore((s) => s.addAccount)
+
+  // Group calendars by account
+  const calendarsByAccount = useMemo(() => {
+    const groups = new Map<string, typeof calendars>()
+    for (const cal of calendars) {
+      const key = cal.accountEmail
+      const arr = groups.get(key) || []
+      arr.push(cal)
+      groups.set(key, arr)
+    }
+    return groups
+  }, [calendars])
 
   return (
     <div className="py-2 px-2 space-y-3">
@@ -44,34 +57,62 @@ export function CalendarSidebar() {
       {/* Mini month picker */}
       <MiniMonth currentDate={currentDate} onSelectDate={navigateToDate} />
 
-      {/* Calendar list */}
-      <div>
-        <div className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider px-1 mb-1">
-          Calendars
-        </div>
-        {calendars.map((cal) => (
-          <label
-            key={cal.id}
-            className="flex items-center gap-1.5 px-1 py-0.5 cursor-pointer hover:bg-surface-1 rounded-sm transition-colors"
-          >
-            <input
-              type="checkbox"
-              checked={visibleCalendarIds.has(cal.id)}
-              onChange={() => toggleCalendarVisibility(cal.id)}
-              className="sr-only"
-            />
-            <span
-              className="w-2.5 h-2.5 rounded-sm flex-shrink-0 border"
-              style={{
-                backgroundColor: visibleCalendarIds.has(cal.id) ? cal.backgroundColor : 'transparent',
-                borderColor: cal.backgroundColor,
-              }}
-            />
-            <span className="text-xs text-text-secondary truncate">
-              {cal.summary}
-            </span>
-          </label>
+      {/* Calendar list grouped by account */}
+      <div className="space-y-3">
+        {Array.from(calendarsByAccount.entries()).map(([accountEmail, cals]) => (
+          <div key={accountEmail}>
+            <div className="flex items-center gap-1 px-1 mb-1">
+              <span className="text-[10px] text-text-tertiary truncate flex-1">
+                {accountEmail}
+              </span>
+            </div>
+            {cals.map((cal) => {
+              const isVisible = visibleCalendarIds.has(cal.id)
+              return (
+                <div
+                  key={cal.id}
+                  className="flex items-center gap-1.5 px-1 py-0.5 group hover:bg-surface-1 rounded-sm transition-colors"
+                >
+                  <button
+                    onClick={() => toggleCalendarVisibility(cal.id)}
+                    className="flex items-center gap-1.5 flex-1 min-w-0"
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-sm flex-shrink-0 border"
+                      style={{
+                        backgroundColor: isVisible ? cal.backgroundColor : 'transparent',
+                        borderColor: cal.backgroundColor,
+                      }}
+                    />
+                    <span className={`text-xs truncate ${isVisible ? 'text-text-secondary' : 'text-text-tertiary'}`}>
+                      {cal.summary}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => toggleCalendarVisibility(cal.id)}
+                    className={`flex-shrink-0 transition-opacity ${
+                      isVisible ? 'opacity-0 group-hover:opacity-100' : 'opacity-50'
+                    }`}
+                  >
+                    {isVisible
+                      ? <Eye size={10} className="text-text-tertiary" />
+                      : <EyeOff size={10} className="text-text-tertiary" />
+                    }
+                  </button>
+                </div>
+              )
+            })}
+          </div>
         ))}
+
+        {/* Add calendar account */}
+        <button
+          onClick={addAccount}
+          className="flex items-center gap-1.5 px-1 py-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors w-full"
+        >
+          <Plus size={11} />
+          Add calendar account
+        </button>
       </div>
     </div>
   )
@@ -154,30 +195,25 @@ function useMiniMonth(currentDate: Date) {
     const firstDay = new Date(year, monthIdx, 1)
     const lastDay = new Date(year, monthIdx + 1, 0)
 
-    // Monday-start: 0=Mon, 6=Sun
     let startDow = firstDay.getDay() - 1
     if (startDow < 0) startDow = 6
 
     const days: Array<{ day: number; month: number; year: number }> = []
 
-    // Fill previous month days
     for (let i = startDow - 1; i >= 0; i--) {
       const d = new Date(year, monthIdx, -i)
       days.push({ day: d.getDate(), month: d.getMonth(), year: d.getFullYear() })
     }
 
-    // Current month days
     for (let d = 1; d <= lastDay.getDate(); d++) {
       days.push({ day: d, month: monthIdx, year })
     }
 
-    // Fill remaining to complete 6 rows
     while (days.length < 42) {
       const d = new Date(year, monthIdx + 1, days.length - lastDay.getDate() - startDow + 1)
       days.push({ day: d.getDate(), month: d.getMonth(), year: d.getFullYear() })
     }
 
-    // Split into weeks
     const weeks: typeof days[] = []
     for (let i = 0; i < days.length; i += 7) {
       weeks.push(days.slice(i, i + 7))

@@ -11,6 +11,7 @@ export interface CalendarInfo {
   accessRole: 'owner' | 'writer' | 'reader' | 'freeBusyReader'
   primary?: boolean
   timeZone?: string
+  accountEmail: string          // which Google account owns this calendar
 }
 
 export interface CalendarEventTime {
@@ -30,6 +31,7 @@ export interface CalendarAttendee {
 export interface CalendarEvent {
   id: string
   calendarId: string
+  accountEmail: string
   summary: string
   description?: string
   location?: string
@@ -79,6 +81,7 @@ export interface EventsListResponse {
 // IndexedDB types
 export interface DbCalendarInfo {
   id: string
+  accountEmail: string
   summary: string
   backgroundColor: string
   foregroundColor: string
@@ -91,7 +94,8 @@ export interface DbCalendarInfo {
 export interface DbCalendarEvent {
   id: string
   calendarId: string
-  compoundKey: string    // `${calendarId}:${id}` for unique indexing
+  accountEmail: string
+  compoundKey: string    // `${accountEmail}:${calendarId}:${id}` for unique indexing
   summary: string
   description?: string
   location?: string

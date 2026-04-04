@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { db } from '@/db'
 import * as api from '@/calendar/api'
+import { getAccounts, addCalendarAccount, removeCalendarAccount, type CalendarAccount } from '@/calendar/accounts'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 
 // --------------------------------------------------------------------------
@@ -19,11 +20,16 @@ function isAllDay(e: CalendarEvent): boolean {
   return !e.start.dateTime && !!e.start.date
 }
 
-function toDbEvent(e: CalendarEvent, calendarId: string): DbCalendarEvent {
+function compoundKey(accountEmail: string, calendarId: string, eventId: string): string {
+  return `${accountEmail}:${calendarId}:${eventId}`
+}
+
+function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): DbCalendarEvent {
   return {
     id: e.id,
     calendarId,
-    compoundKey: `${calendarId}:${e.id}`,
+    accountEmail,
+    compoundKey: compoundKey(accountEmail, calendarId, e.id),
     summary: e.summary || '(No title)',
     description: e.description,
     location: e.location,
@@ -50,6 +56,7 @@ function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
   return {
     id: d.id,
     calendarId: d.calendarId,
+    accountEmail: d.accountEmail,
     summary: d.summary,
     description: d.description,
     location: d.location,
@@ -72,7 +79,7 @@ function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
 
 function weekStart(d: Date): Date {
   const day = d.getDay()
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1) // Monday start
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1)
   return new Date(d.getFullYear(), d.getMonth(), diff)
 }
 
@@ -90,6 +97,7 @@ function addDays(d: Date, n: number): Date {
 // --------------------------------------------------------------------------
 
 interface CalendarState {
+  accounts: CalendarAccount[]
   calendars: CalendarInfo[]
   events: CalendarEvent[]
   loading: boolean
@@ -107,6 +115,9 @@ interface CalendarState {
   visibleCalendarIds: Set<string>
 
   // Actions
+  loadAccounts: () => Promise<void>
+  addAccount: () => Promise<void>
+  removeAccount: (email: string) => Promise<void>
   fetchCalendars: () => Promise<void>
   fetchEvents: (start?: Date, end?: Date) => Promise<void>
   refreshAll: () => Promise<void>
@@ -118,24 +129,24 @@ interface CalendarState {
   toggleCalendarVisibility: (calId: string) => void
 
   // CRUD
-  createEvent: (calendarId: string, event: Partial<CalendarEvent>) => Promise<void>
-  updateEvent: (calendarId: string, eventId: string, updates: Partial<CalendarEvent>) => Promise<void>
-  deleteEvent: (calendarId: string, eventId: string) => Promise<void>
-  rsvp: (calendarId: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
-  updateLocation: (calendarId: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
-  openLocationPicker: (event: CalendarEvent) => void
-  closeLocationPicker: () => void
+  createEvent: (calendarId: string, accountEmail: string, event: Partial<CalendarEvent>) => Promise<void>
+  updateEvent: (calendarId: string, accountEmail: string, eventId: string, updates: Partial<CalendarEvent>) => Promise<void>
+  deleteEvent: (calendarId: string, accountEmail: string, eventId: string) => Promise<void>
+  rsvp: (calendarId: string, accountEmail: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
+  updateLocation: (calendarId: string, accountEmail: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
 
   // Event form
   openCreateForm: (start?: Date, end?: Date) => void
   openEditForm: (event: CalendarEvent) => void
   closeEventForm: () => void
+  openLocationPicker: (event: CalendarEvent) => void
+  closeLocationPicker: () => void
 
-  // Load from DB
   loadEventsFromDb: () => Promise<void>
 }
 
 export const useCalendarStore = create<CalendarState>((set, get) => ({
+  accounts: [],
   calendars: [],
   events: [],
   loading: false,
@@ -152,15 +163,67 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   visibleCalendarIds: new Set<string>(),
 
-  fetchCalendars: async () => {
+  // --- Accounts ---
+
+  loadAccounts: async () => {
+    const accounts = await getAccounts()
+    set({ accounts })
+  },
+
+  addAccount: async () => {
     try {
-      const res = await api.getCalendarList()
-      const calendars = res.items.filter((c) => c.selected !== false)
-      calendars.sort((a, b) => (a.primary ? -1 : b.primary ? 1 : a.summary.localeCompare(b.summary)))
+      await addCalendarAccount()
+      const accounts = await getAccounts()
+      set({ accounts })
+      // Fetch calendars for the new account
+      await get().fetchCalendars()
+      await get().fetchEvents()
+    } catch (err) {
+      console.error('Failed to add calendar account:', err)
+    }
+  },
+
+  removeAccount: async (email) => {
+    await removeCalendarAccount(email)
+    const accounts = await getAccounts()
+    set({ accounts })
+    // Reload calendars without the removed account
+    const calendars = get().calendars.filter((c) => c.accountEmail !== email)
+    set({ calendars })
+    await get().loadEventsFromDb()
+  },
+
+  // --- Fetch ---
+
+  fetchCalendars: async () => {
+    const { accounts } = get()
+    if (accounts.length === 0) return
+
+    try {
+      const allCalendars: CalendarInfo[] = []
+
+      const results = await Promise.allSettled(
+        accounts.map(async (account) => {
+          const res = await api.getCalendarList(account.email)
+          return { accountEmail: account.email, items: res.items }
+        })
+      )
+
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          const cals = result.value.items
+            .filter((c) => c.selected !== false)
+            .map((c) => ({ ...c, accountEmail: result.value.accountEmail }))
+          allCalendars.push(...cals)
+        }
+      }
+
+      allCalendars.sort((a, b) => (a.primary ? -1 : b.primary ? 1 : a.summary.localeCompare(b.summary)))
 
       // Persist to IDB
-      const dbItems: DbCalendarInfo[] = calendars.map((c) => ({
+      const dbItems: DbCalendarInfo[] = allCalendars.map((c) => ({
         id: c.id,
+        accountEmail: c.accountEmail,
         summary: c.summary,
         backgroundColor: c.backgroundColor,
         foregroundColor: c.foregroundColor,
@@ -171,22 +234,21 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       }))
       await db.calendarList.bulkPut(dbItems)
 
-      // Initialize visibility: show all calendars that user has selected in Google
+      // Initialize visibility
       const { visibleCalendarIds } = get()
       const savedIds = localStorage.getItem('calendar-visible-ids')
       let newVisible: Set<string>
       if (savedIds) {
         newVisible = new Set(JSON.parse(savedIds) as string[])
       } else if (visibleCalendarIds.size === 0) {
-        newVisible = new Set(calendars.map((c) => c.id))
+        newVisible = new Set(allCalendars.map((c) => c.id))
       } else {
         newVisible = visibleCalendarIds
       }
 
-      set({ calendars, connected: true, visibleCalendarIds: newVisible })
+      set({ calendars: allCalendars, connected: true, visibleCalendarIds: newVisible })
     } catch (err) {
       console.error('Failed to fetch calendars:', err)
-      // Try loading from IDB
       const dbItems = await db.calendarList.toArray()
       if (dbItems.length > 0) {
         set({ calendars: dbItems as CalendarInfo[], connected: false })
@@ -210,8 +272,8 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     try {
       const results = await Promise.allSettled(
         visibleCals.map(async (cal) => {
-          const res = await api.getEvents(cal.id, timeMin, timeMax)
-          return { calId: cal.id, items: res.items || [] }
+          const res = await api.getEvents(cal.accountEmail, cal.id, timeMin, timeMax)
+          return { calId: cal.id, accountEmail: cal.accountEmail, items: res.items || [] }
         })
       )
 
@@ -220,7 +282,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         if (result.status === 'fulfilled') {
           for (const event of result.value.items) {
             if (event.status === 'cancelled') continue
-            dbEvents.push(toDbEvent(event, result.value.calId))
+            dbEvents.push(toDbEvent(event, result.value.calId, result.value.accountEmail))
           }
         }
       }
@@ -239,19 +301,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   refreshAll: async () => {
+    await get().loadAccounts()
     await get().fetchCalendars()
     await get().fetchEvents()
   },
+
+  // --- Navigation ---
 
   navigateWeek: (delta) => {
     const { currentDate, view } = get()
     const days = view === 'week' ? 7 * delta : delta
     const newDate = addDays(currentDate, days)
     set({ currentDate: newDate, selectedEventId: null })
-    get().fetchEvents(
-      addDays(weekStart(newDate), -7),
-      addDays(weekEnd(newDate), 7),
-    )
+    get().fetchEvents(addDays(weekStart(newDate), -7), addDays(weekEnd(newDate), 7))
   },
 
   navigateToday: () => {
@@ -261,14 +323,10 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   navigateToDate: (date) => {
     set({ currentDate: date, selectedEventId: null })
-    get().fetchEvents(
-      addDays(weekStart(date), -7),
-      addDays(weekEnd(date), 7),
-    )
+    get().fetchEvents(addDays(weekStart(date), -7), addDays(weekEnd(date), 7))
   },
 
   setView: (v) => set({ view: v }),
-
   selectEvent: (id) => set({ selectedEventId: id }),
 
   toggleCalendarVisibility: (calId) => {
@@ -282,30 +340,28 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     get().loadEventsFromDb()
   },
 
-  // CRUD
-  createEvent: async (calendarId, event) => {
+  // --- CRUD (all take accountEmail) ---
+
+  createEvent: async (calendarId, accountEmail, event) => {
     try {
-      const created = await api.createEvent(calendarId, event)
-      await db.calendarEvents.put(toDbEvent(created, calendarId))
+      const created = await api.createEvent(accountEmail, calendarId, event)
+      await db.calendarEvents.put(toDbEvent(created, calendarId, accountEmail))
       await get().loadEventsFromDb()
     } catch (err) {
       console.error('Failed to create event:', err)
     }
   },
 
-  updateEvent: async (calendarId, eventId, updates) => {
-    // Optimistic: update in IDB first
-    const compoundKey = `${calendarId}:${eventId}`
-    const existing = await db.calendarEvents.get(compoundKey)
+  updateEvent: async (calendarId, accountEmail, eventId, updates) => {
+    const ck = compoundKey(accountEmail, calendarId, eventId)
+    const existing = await db.calendarEvents.get(ck)
 
     try {
-      // For full update, we need the complete event. Use PATCH for partial updates.
-      const updated = await api.patchEvent(calendarId, eventId, updates)
-      await db.calendarEvents.put(toDbEvent(updated, calendarId))
+      const updated = await api.patchEvent(accountEmail, calendarId, eventId, updates)
+      await db.calendarEvents.put(toDbEvent(updated, calendarId, accountEmail))
       await get().loadEventsFromDb()
     } catch (err) {
       console.error('Failed to update event:', err)
-      // Revert
       if (existing) {
         await db.calendarEvents.put(existing)
         await get().loadEventsFromDb()
@@ -313,19 +369,17 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
   },
 
-  deleteEvent: async (calendarId, eventId) => {
-    const compoundKey = `${calendarId}:${eventId}`
-    const existing = await db.calendarEvents.get(compoundKey)
+  deleteEvent: async (calendarId, accountEmail, eventId) => {
+    const ck = compoundKey(accountEmail, calendarId, eventId)
+    const existing = await db.calendarEvents.get(ck)
 
-    // Optimistic
-    await db.calendarEvents.delete(compoundKey)
+    await db.calendarEvents.delete(ck)
     await get().loadEventsFromDb()
 
     try {
-      await api.deleteEvent(calendarId, eventId)
+      await api.deleteEvent(accountEmail, calendarId, eventId)
     } catch (err) {
       console.error('Failed to delete event:', err)
-      // Revert
       if (existing) {
         await db.calendarEvents.put(existing)
         await get().loadEventsFromDb()
@@ -333,9 +387,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
   },
 
-  rsvp: async (calendarId, eventId, status) => {
-    const compoundKey = `${calendarId}:${eventId}`
-    const existing = await db.calendarEvents.get(compoundKey)
+  rsvp: async (calendarId, accountEmail, eventId, status) => {
+    const ck = compoundKey(accountEmail, calendarId, eventId)
+    const existing = await db.calendarEvents.get(ck)
     if (!existing) return
 
     const event = fromDbEvent(existing)
@@ -344,37 +398,33 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     )
 
     try {
-      const updated = await api.patchEvent(calendarId, eventId, { attendees })
-      await db.calendarEvents.put(toDbEvent(updated, calendarId))
+      const updated = await api.patchEvent(accountEmail, calendarId, eventId, { attendees })
+      await db.calendarEvents.put(toDbEvent(updated, calendarId, accountEmail))
       await get().loadEventsFromDb()
     } catch (err) {
       console.error('Failed to RSVP:', err)
     }
   },
 
-  // Working location
-  updateLocation: async (calendarId, eventId, locationType, customLabel) => {
+  updateLocation: async (calendarId, accountEmail, eventId, locationType, customLabel) => {
     const props: CalendarEvent['workingLocationProperties'] =
       locationType === 'homeOffice' ? { type: 'homeOffice' }
       : locationType === 'officeLocation' ? { type: 'officeLocation', officeLocation: { label: customLabel } }
       : { type: 'customLocation', customLocation: { label: customLabel || '' } }
 
     try {
-      // Working location events are usually recurring instances.
-      // Google rejects PATCH/PUT on recurring working location instances.
-      // Strategy: delete the instance, create a new standalone event.
-      const current = await api.getEvent(calendarId, eventId)
+      const current = await api.getEvent(accountEmail, calendarId, eventId)
 
-      await api.deleteEvent(calendarId, eventId)
-      await db.calendarEvents.delete(`${calendarId}:${eventId}`)
+      await api.deleteEvent(accountEmail, calendarId, eventId)
+      const ck = compoundKey(accountEmail, calendarId, eventId)
+      await db.calendarEvents.delete(ck)
 
-      // Derive summary — Google doesn't auto-set it for API-created events
       const summary =
         locationType === 'homeOffice' ? 'Home'
         : locationType === 'officeLocation' ? (customLabel || 'Office')
         : (customLabel || '')
 
-      const created = await api.createEvent(calendarId, {
+      const created = await api.createEvent(accountEmail, calendarId, {
         summary,
         start: current.start,
         end: current.end,
@@ -384,18 +434,15 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         workingLocationProperties: props,
       } as Partial<CalendarEvent>)
 
-      await db.calendarEvents.put(toDbEvent(created, calendarId))
+      await db.calendarEvents.put(toDbEvent(created, calendarId, accountEmail))
       await get().loadEventsFromDb()
     } catch (err) {
       console.error('Failed to update location:', err)
     }
-    set({ locationPickerEvent: null })
   },
 
-  openLocationPicker: (event) => set({ locationPickerEvent: event }),
-  closeLocationPicker: () => set({ locationPickerEvent: null }),
+  // --- Event form ---
 
-  // Event form
   openCreateForm: (start, end) => {
     const now = new Date()
     const defaultStart = start || new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0)
@@ -403,13 +450,12 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     set({ showEventForm: true, editingEvent: null, newEventStart: defaultStart, newEventEnd: defaultEnd })
   },
 
-  openEditForm: (event) => {
-    set({ showEventForm: true, editingEvent: event })
-  },
+  openEditForm: (event) => set({ showEventForm: true, editingEvent: event }),
+  closeEventForm: () => set({ showEventForm: false, editingEvent: null, newEventStart: null, newEventEnd: null }),
+  openLocationPicker: (event) => set({ locationPickerEvent: event }),
+  closeLocationPicker: () => set({ locationPickerEvent: null }),
 
-  closeEventForm: () => {
-    set({ showEventForm: false, editingEvent: null, newEventStart: null, newEventEnd: null })
-  },
+  // --- Load from DB ---
 
   loadEventsFromDb: async () => {
     const { currentDate, view, visibleCalendarIds } = get()
@@ -429,7 +475,6 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       .between(startStr, endStr, true, true)
       .toArray()
 
-    // Also fetch all-day events (date format YYYY-MM-DD)
     const startDate = rangeStart.toISOString().split('T')[0]!
     const endDate = rangeEnd.toISOString().split('T')[0]!
     const allDayEvents = await db.calendarEvents
@@ -437,7 +482,6 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       .between(startDate, endDate + 'Z', true, true)
       .toArray()
 
-    // Merge and deduplicate
     const seen = new Set<string>()
     const merged: DbCalendarEvent[] = []
     for (const e of [...dbEvents, ...allDayEvents]) {

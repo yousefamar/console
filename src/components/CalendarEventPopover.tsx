@@ -154,19 +154,19 @@ export function CalendarEventPopover() {
                 label="Accept"
                 icon={<Check size={11} />}
                 active={selfAttendee.responseStatus === 'accepted'}
-                onClick={() => rsvp(event.calendarId, event.id, 'accepted')}
+                onClick={() => rsvp(event.calendarId, event.accountEmail, event.id, 'accepted')}
               />
               <RsvpButton
                 label="Maybe"
                 icon={<HelpCircle size={11} />}
                 active={selfAttendee.responseStatus === 'tentative'}
-                onClick={() => rsvp(event.calendarId, event.id, 'tentative')}
+                onClick={() => rsvp(event.calendarId, event.accountEmail, event.id, 'tentative')}
               />
               <RsvpButton
                 label="Decline"
                 icon={<XCircle size={11} />}
                 active={selfAttendee.responseStatus === 'declined'}
-                onClick={() => rsvp(event.calendarId, event.id, 'declined')}
+                onClick={() => rsvp(event.calendarId, event.accountEmail, event.id, 'declined')}
               />
             </div>
           </div>
@@ -186,7 +186,7 @@ export function CalendarEventPopover() {
               <button
                 onClick={() => {
                   if (confirm('Delete this event?')) {
-                    deleteEvent(event.calendarId, event.id)
+                    deleteEvent(event.calendarId, event.accountEmail, event.id)
                     selectEvent(null)
                   }
                 }}

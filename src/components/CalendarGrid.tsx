@@ -303,7 +303,7 @@ export function CalendarGrid() {
         if (ev) {
           const newStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, startMin)
           const newEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, endMin)
-          updateEvent(ev.calendarId, ev.id, {
+          updateEvent(ev.calendarId, ev.accountEmail, ev.id, {
             start: { dateTime: newStart.toISOString() },
             end: { dateTime: newEnd.toISOString() },
           })
@@ -315,7 +315,7 @@ export function CalendarGrid() {
         const ev = events.find((e) => e.id === d.eventId)
         if (ev) {
           const newEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, endMin)
-          updateEvent(ev.calendarId, ev.id, {
+          updateEvent(ev.calendarId, ev.accountEmail, ev.id, {
             end: { dateTime: newEnd.toISOString() },
           })
         }

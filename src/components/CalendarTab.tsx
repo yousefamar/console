@@ -20,7 +20,10 @@ export function CalendarTab() {
   useEffect(() => {
     if (isSignedIn()) {
       const store = useCalendarStore.getState()
-      store.fetchCalendars().then(() => store.fetchEvents())
+      // Load all accounts, then fetch calendars + events for each
+      store.loadAccounts().then(() =>
+        store.fetchCalendars().then(() => store.fetchEvents())
+      )
     }
   }, [])
 
@@ -42,25 +45,18 @@ export function CalendarTab() {
 
   return (
     <div className="flex flex-1 min-h-0">
-      {/* Sidebar — hidden on mobile */}
       {!isMobile && (
         <div className="w-52 flex-shrink-0 border-r border-border overflow-y-auto">
           <CalendarSidebar />
         </div>
       )}
 
-      {/* Calendar grid */}
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
         <CalendarGrid />
       </div>
 
-      {/* Event popover */}
       {selectedEventId && <CalendarEventPopover />}
-
-      {/* Event form modal */}
       {showEventForm && <CalendarEventForm />}
-
-      {/* Location picker */}
       {locationPickerEvent && <CalendarLocationPicker />}
     </div>
   )

@@ -83,7 +83,7 @@ export function CalendarLocationPicker() {
         <div className="py-1">
           {/* Home */}
           <button
-            onClick={() => updateLocation(event.calendarId, event.id, 'homeOffice')}
+            onClick={() => updateLocation(event.calendarId, event.accountEmail, event.id, 'homeOffice')}
             className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors ${
               currentType === 'homeOffice' ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'
             }`}
@@ -96,7 +96,7 @@ export function CalendarLocationPicker() {
           {knownOffices.map((office) => (
             <button
               key={office}
-              onClick={() => updateLocation(event.calendarId, event.id, 'officeLocation', office)}
+              onClick={() => updateLocation(event.calendarId, event.accountEmail, event.id, 'officeLocation', office)}
               className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors ${
                 currentType === 'officeLocation' && currentLabel === office ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'
               }`}
@@ -109,7 +109,7 @@ export function CalendarLocationPicker() {
           {/* If no known offices, show a default "Office" option */}
           {knownOffices.length === 0 && (
             <button
-              onClick={() => updateLocation(event.calendarId, event.id, 'officeLocation', 'Office')}
+              onClick={() => updateLocation(event.calendarId, event.accountEmail, event.id, 'officeLocation', 'Office')}
               className={`flex items-center gap-2 w-full px-3 py-1.5 text-xs transition-colors ${
                 currentType === 'officeLocation' ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1'
               }`}
@@ -130,7 +130,7 @@ export function CalendarLocationPicker() {
                   onChange={(e) => setCustomLabel(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && customLabel.trim()) {
-                      updateLocation(event.calendarId, event.id, 'customLocation', customLabel.trim())
+                      updateLocation(event.calendarId, event.accountEmail, event.id, 'customLocation', customLabel.trim())
                     }
                   }}
                   placeholder="Custom location..."

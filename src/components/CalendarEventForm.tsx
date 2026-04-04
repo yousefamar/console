@@ -77,10 +77,14 @@ export function CalendarEventForm() {
       eventData.end = { dateTime: new Date(`${endDate}T${endTime}`).toISOString() }
     }
 
+    // Find the account that owns the selected calendar
+    const cal = calendars.find((c) => c.id === calendarId)
+    const accountEmail = cal?.accountEmail || ''
+
     if (isEdit) {
-      await updateEvent(calendarId, editingEvent!.id, eventData)
+      await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)
     } else {
-      await createEvent(calendarId, eventData)
+      await createEvent(calendarId, accountEmail, eventData)
     }
 
     setSaving(false)
