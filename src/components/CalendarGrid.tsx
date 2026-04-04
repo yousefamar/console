@@ -192,10 +192,12 @@ export function CalendarGrid() {
         const key = mergeKey(ev)
         const existing = mergeMap.get(key)
         if (existing && existing.calendarId !== ev.calendarId) {
-          // Duplicate from another calendar — merge colors
+          // Duplicate from another calendar — merge colors and accepted status
           if (!existing.colors.includes(ev.color)) {
             existing.colors.push(ev.color)
           }
+          // If any copy is accepted, the merged event is accepted
+          if (ev.accepted) existing.accepted = true
         } else if (!existing) {
           mergeMap.set(key, ev)
           merged.push(ev)
