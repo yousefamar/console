@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff, Rss, User } from 'lucide-react'
 
 export function CalendarSidebar() {
   const currentDate = useCalendarStore((s) => s.currentDate)
@@ -78,12 +78,19 @@ export function CalendarSidebar() {
                     className="flex items-center gap-1.5 flex-1 min-w-0"
                   >
                     <span
-                      className="w-2.5 h-2.5 rounded-sm flex-shrink-0 border"
+                      className="w-3 h-3 rounded-sm flex-shrink-0 border relative flex items-center justify-center"
                       style={{
                         backgroundColor: isVisible ? cal.backgroundColor : 'transparent',
                         borderColor: cal.backgroundColor,
                       }}
-                    />
+                    >
+                      {cal.id.includes('@import.calendar.google.com') && (
+                        <Rss size={7} className="text-white/80" />
+                      )}
+                      {!cal.id.includes('@import.calendar.google.com') && (cal.accessRole === 'reader' || cal.accessRole === 'freeBusyReader') && (
+                        <User size={7} className="text-white/80" />
+                      )}
+                    </span>
                     <span className={`text-xs truncate ${isVisible ? 'text-text-secondary' : 'text-text-tertiary'}`}>
                       {cal.summary}
                     </span>

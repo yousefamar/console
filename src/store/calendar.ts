@@ -264,6 +264,8 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         primary: c.primary,
         timeZone: c.timeZone,
       }))
+      // Replace calendar list — clear first so unsubscribed calendars are removed
+      await db.calendarList.clear()
       await db.calendarList.bulkPut(dbItems)
 
       // Initialize visibility
