@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { ChevronLeft, ChevronRight, Plus, MapPin } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, MapPin, Circle } from 'lucide-react'
 
 // --------------------------------------------------------------------------
 // Constants
@@ -94,6 +94,7 @@ interface PositionedEvent {
   hangoutLink?: string
   location?: string
   recurringEventId?: string
+  isTask: boolean      // no attendees, no meeting link — task-like event
   isOwn: boolean       // true if calendarId matches a connected account email
   accepted: boolean  // false = needsAction, tentative, or declined
 }
@@ -195,6 +196,7 @@ export function CalendarGrid() {
             left: 0, width: 1, column: colIdx,
             hangoutLink: e.hangoutLink, location: e.location,
             recurringEventId: e.recurringEventId,
+            isTask: !e.attendees?.length && !e.hangoutLink,
             isOwn: ownCalendarIds.has(e.calendarId),
             accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
           }
@@ -605,7 +607,8 @@ export function CalendarGrid() {
                         </div>
                       )}
                       <div className="py-0.5 h-full overflow-hidden" style={{ paddingLeft: hasMultipleColors ? totalStripeWidth + 3 : 4 }}>
-                        <div className="text-[10px] font-medium truncate leading-tight" style={{ color: muted.text }}>
+                        <div className="text-[10px] font-medium truncate leading-tight flex items-center gap-0.5" style={{ color: muted.text }}>
+                          {ev.isTask && <Circle size={7} className="flex-shrink-0 opacity-60" />}
                           {ev.summary}
                         </div>
                         {ev.height > 30 && (
