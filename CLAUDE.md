@@ -22,7 +22,7 @@ src/
   main.tsx, App.tsx, index.css
   __tests__/           — Vitest tests (335 tests, 17 files)
   db/
-    index.ts           — Dexie v6: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedRead, calendarList, calendarEvents, queue, meta
+    index.ts           — Dexie v7: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedRead, calendarList, calendarEvents, queue, meta
     sync-queue.ts      — Offline mutation queue (email + chat actions), immediate flush on enqueue
   gmail/
     types.ts           — Gmail API + DB types (DbThread, DbMessage, QueuedAction, etc.)
@@ -83,12 +83,14 @@ src/
     CalendarSidebar.tsx   — Mini month picker + calendar list with visibility toggles
     CalendarEventPopover.tsx — Event detail popover with RSVP, edit, delete
     CalendarEventForm.tsx — Create/edit event modal
+    CalendarLocationPicker.tsx — Working location picker (Home/Office/Custom)
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
   calendar/
     types.ts             — CalendarInfo, CalendarEvent, DB types
-    api.ts               — Google Calendar REST API wrapper (same pattern as gmail/api.ts)
+    api.ts               — Google Calendar REST API wrapper, multi-account (accountEmail param on all calls)
+    accounts.ts          — Multi-account OAuth token manager (primary delegates to gmail/auth, additional accounts have own tokens)
   notes/
     vault-adapter.ts     — VaultAdapter interface + FSA + Hub implementations
     search-index.ts      — MiniSearch full-text + fzf filename fuzzy search
@@ -243,15 +245,23 @@ docs/
 - **Feed config** — Stored in `~/.config/console/feeds.json` (subscriptions) and `feed-read.json` (read set). Configurable via `--feeds` server flag.
 
 ## Key Patterns (Calendar / Google Calendar)
-- **Google Calendar API** — Direct REST API from browser, same pattern as Gmail. `src/calendar/api.ts` wraps `calendar/v3` endpoints with Bearer token and auto-refresh on 401.
-- **OAuth scope** — `calendar` scope added to existing Gmail+Contacts scopes in `src/gmail/auth.ts`. Same token, same refresh flow. Users must re-consent once for the new scope.
-- **Week/Day view** — Custom-built time grid (no calendar library). 48px per hour, Monday-start weeks. Overlap handling via group-based column layout. All-day events in separate bar above time grid. Current time red indicator line.
-- **Multi-calendar** — Sidebar shows all user calendars with colored checkboxes. Events colored by calendar. Visibility persisted in localStorage.
-- **Full CRUD** — Create (click empty slot or `c` key), edit (popover → Edit), delete (popover → Delete), RSVP (Accept/Maybe/Decline). All mutations go to Google Calendar API with optimistic IDB updates.
-- **Offline caching** — Events stored in IndexedDB (`calendarEvents` table, keyed by `calendarId:eventId`). Calendar list in `calendarList` table. Viewable offline.
-- **Sync strategy** — On mount: fetch calendar list + events for current week ± 1 week. Periodic: 5-minute interval via `useSync.ts`. On navigate: fetch new range. Ctrl+click refresh = clear IDB + full refetch.
+- **Google Calendar API** — Direct REST API from browser, same pattern as Gmail. `src/calendar/api.ts` wraps `calendar/v3` endpoints with Bearer token and auto-refresh on 401. All API calls take `accountEmail` to route through the correct account's token.
+- **Multi-account** — `src/calendar/accounts.ts` manages OAuth tokens for multiple Google accounts. Primary Gmail account delegates to `gmail/auth.ts`, additional accounts get their own tokens (localStorage + IDB). "Add calendar account" button in sidebar opens Google OAuth popup.
+- **Calendar deduplication** — Shared calendars (e.g. Artanis subscribed on Gmail) display under the primary account but API calls use the owning account's token (`apiAccountEmail`). Best API account determined by: calendar ID matches account email (owner), then highest access role.
+- **Week/Day view** — Custom-built time grid (no calendar library). 48px per hour, Monday-start weeks. Column-assignment overlap layout (events stack vertically when non-overlapping, side-by-side only when concurrent). All-day events as spanning rectangles. Current time red indicator line.
+- **Event merging** — Duplicate events across visible calendars (same summary + start + end) merge into one block with multi-colored left stripes (one per calendar). User's own copy (calendarId matches account email) drives the block color, popover data, and RSVP.
+- **Working location** — Dedicated row with MapPin icon above all-day bar. Location events (`eventType: 'workingLocation'`) rendered as subtle text labels. Click to open location picker (Home/Office/Custom). Updates use delete + create strategy (Google rejects PATCH on recurring working location instances).
+- **Recurring events** — Drag-move or resize shows a dialog: "This event" (patches the instance) or "All events" (patches the master recurring event). Old→new time shown with strikethrough.
+- **Google Tasks** — Events with `tasks.google.com/task/` in description detected as tasks, shown with empty checkbox icon (☐) before the title.
+- **Unaccepted events** — Events where the user hasn't accepted render with dashed border and transparent background. Accepted events have solid fill.
+- **Muted colors** — Google Calendar colors darkened for dark mode: dark background with colored left stripe, brighter text. `muteColor()` function.
+- **Full CRUD** — Create (drag on empty slot or `c` key), edit (popover → Edit), delete (popover → Delete), RSVP (Accept/Maybe/Decline). All mutations go to Google Calendar API with optimistic IDB updates.
+- **Drag interactions** — Drag-to-create (draw duration on empty slot), drag-to-move (reposition events), drag-to-resize (bottom edge handle). All snap to 15-minute grid.
+- **Offline caching** — Events stored in IndexedDB (`calendarEvents` table, keyed by `accountEmail:calendarId:eventId`). Prefetch -1/+2 weeks for instant navigation. Load from IDB immediately on navigate, API fetch in background.
+- **Sync strategy** — On mount: load accounts → fetch calendar list + events. Periodic: 5-minute interval via `useSync.ts`. On navigate: load from IDB first (instant), then background fetch. Ctrl+click refresh = clear IDB + full refetch (also refreshes calendar list for unsubscribed calendars).
 - **Event popover** — Click event shows detail popover: title, time, location, video call link, attendees with status dots, RSVP buttons, edit/delete actions, Google Calendar link.
 - **Mini month picker** — Sidebar mini calendar for quick date navigation. Click date → navigate to that week/day.
+- **Sidebar** — Calendars grouped by account email. Colored checkboxes with eye icon for visibility. RSS icon for imported feeds, person icon for read-only subscribed calendars. "Add calendar account" at bottom.
 
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
