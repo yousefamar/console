@@ -731,7 +731,10 @@ function handleHubMessage(msg: Record<string, unknown>) {
         content,
         ...(images?.length ? { images } : {}),
       })
-      updateSession(sessionId, { status: 'running' })
+      // Al's session status is managed by sessions_list broadcasts, not user_prompt
+      if (sessionId !== 'al') {
+        updateSession(sessionId, { status: 'running' })
+      }
       break
     }
 

@@ -70,6 +70,8 @@ export class AlBridge {
     this.alWs = ws
     this.connectedAt = Date.now()
     this.status = 'idle'
+    this.messageLog = [] // Fresh session on reconnect
+    this.pendingText = ''
     this.logFn('[al] connected')
 
     // Broadcast updated session list (Al now shows as connected)
