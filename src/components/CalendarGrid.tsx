@@ -139,6 +139,7 @@ export function CalendarGrid() {
 
   const [drag, setDrag] = useState<DragState | null>(null)
   const [pendingEdit, setPendingEdit] = useState<PendingRecurringEdit | null>(null)
+  const didDragRef = useRef(false) // suppresses click after drag
   const gridRef = useRef<HTMLDivElement>(null)
   const colRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -280,6 +281,7 @@ export function CalendarGrid() {
   const handleEventMouseDown = useCallback((e: React.MouseEvent, ev: PositionedEvent) => {
     if (e.button !== 0) return
     e.stopPropagation()
+    didDragRef.current = false
     const col = colRefs.current[ev.column]
     if (!col) return
     const rect = col.getBoundingClientRect()
@@ -318,6 +320,7 @@ export function CalendarGrid() {
       if (!col) return
       const rect = col.getBoundingClientRect()
       const y = e.clientY - rect.top
+      didDragRef.current = true
       setDrag((d) => d ? { ...d, currentY: y } : null)
     }
 
@@ -555,7 +558,7 @@ export function CalendarGrid() {
                     <div
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
-                      onClick={(e) => { e.stopPropagation(); if (!drag) selectEvent(ev.id) }}
+                      onClick={(e) => { e.stopPropagation(); if (!drag && !didDragRef.current) selectEvent(ev.id); didDragRef.current = false }}
                       className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab ${
                         unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
                       } ${
