@@ -299,7 +299,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const timeMin = rangeStart.toISOString()
     const timeMax = rangeEnd.toISOString()
 
-    const visibleCals = calendars.filter((c) => visibleCalendarIds.has(c.id))
+    // Fetch ALL calendars, not just visible — visibility is a display filter only.
+    // This ensures toggling a calendar visible instantly shows its events from IDB.
+    const visibleCals = calendars
 
     try {
       const results = await Promise.allSettled(
