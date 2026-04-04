@@ -24,6 +24,14 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleClientMessage, createSession, type AgentContext } from './routes/agents.js'
+import { AuthStore } from './auth-store.js'
+import { handleAuthRoutes } from './routes/auth.js'
+import { GmailClient } from './gmail-client.js'
+import { handleMailRoutes } from './routes/mail.js'
+import { CalendarClient } from './calendar-client.js'
+import { handleCalendarRoutes } from './routes/calendar.js'
+import { MatrixClient } from './matrix-client.js'
+import { handleMatrixRoutes } from './routes/matrix.js'
 
 // --------------------------------------------------------------------------
 // Configuration
@@ -47,6 +55,10 @@ const feedStore = new FeedStore(
   join(feedsConfigDir, 'feeds.json'),
   join(feedsConfigDir, 'feed-read.json'),
 )
+const authStore = new AuthStore()
+const gmailClient = new GmailClient(authStore)
+const calendarClient = new CalendarClient(authStore)
+const matrixClient = new MatrixClient(authStore)
 
 // --------------------------------------------------------------------------
 // Session registry
@@ -84,6 +96,10 @@ const httpServer = createServer(async (req, res) => {
   }
 
   // Route to handlers — each returns true if it handled the request
+  if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
+  if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
+  if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
+  if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, readBody)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
@@ -179,6 +195,7 @@ process.on('SIGINT', () => {
   log('\nShutting down...')
   saveManifest(sessions)
   for (const session of sessions.values()) session.kill()
+  authStore.destroy()
   httpServer.close()
   process.exit(0)
 })
@@ -186,6 +203,7 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   saveManifest(sessions)
   for (const session of sessions.values()) session.kill()
+  authStore.destroy()
   httpServer.close()
   process.exit(0)
 })

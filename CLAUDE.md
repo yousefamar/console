@@ -100,7 +100,7 @@ src/
     email.ts, email-cache.ts, attachment-cache.ts, date.ts, html.ts
 server/                  — Local Node.js backend (REST + WebSocket)
   src/
-    index.ts             — HTTP + WebSocket server setup, route dispatch (~210 lines)
+    index.ts             — HTTP + WebSocket server setup, route dispatch
     session.ts           — Claude CLI subprocess manager (spawn, stdin/stdout NDJSON)
     bookmarks.ts         — Bookmark file parser, in-memory cache, CRUD operations
     feeds.ts             — RSS/Atom feed store: config I/O, fetch/parse, OPML import, read tracking, full-text extraction
@@ -109,12 +109,42 @@ server/                  — Local Node.js backend (REST + WebSocket)
     manifest.ts          — Session manifest persistence (save/restore across restarts)
     history.ts           — JSONL session history loader + past session discovery
     projects.ts          — Claude project directory discovery + path decoding
+    auth-store.ts        — Multi-account OAuth token manager (~/.config/console/auth.json)
+    gmail-client.ts      — Gmail REST API client (server-side, uses auth-store tokens)
+    calendar-client.ts   — Google Calendar REST API client (server-side, uses auth-store tokens)
+    matrix-client.ts     — Matrix CS API client (server-side, uses auth-store tokens)
     routes/
       agents.ts          — WebSocket message handler for Claude Code sessions
       bookmarks.ts       — Bookmark REST endpoint handlers
       feeds.ts           — Feed REST endpoint handlers
       notes.ts           — Notes REST endpoint handlers
+      auth.ts            — OAuth callback flow + Matrix login + auth status
+      mail.ts            — Gmail proxy routes (threads, send, attachments, contacts)
+      calendar.ts        — Calendar proxy routes (events, RSVP, location, accounts)
+      matrix.ts          — Matrix routes (rooms, messages, send, reactions, receipts)
     __tests__/           — Session, protocol, bookmarks, notes tests (102 tests)
+cli/                     — CLI tool for AI agents and power users
+  src/
+    index.ts             — Entry point: arg parsing, noun-verb dispatch, global flags
+    client.ts            — HTTP client to hub (fetch wrapper)
+    ws-client.ts         — WebSocket client for agent tail/wait, chat tail
+    output.ts            — Envelope formatting, TTY vs JSON, field selection
+    commands/
+      registry.ts        — Command registry (81 commands) for capabilities/schema
+      help.ts            — Help text for all services
+      mail.ts            — Email commands (list, read, archive, send, reply, etc.)
+      chat.ts            — Chat commands (rooms, messages, send, react, tail, etc.)
+      bookmarks.ts       — Bookmark commands (list, get, update, delete, tags)
+      notes.ts           — Notes commands (list, read, write, search, daily)
+      feeds.ts           — Feed commands (items, mark-read, add, import/export)
+      cal.ts             — Calendar commands (events, create, edit, rsvp, location)
+      agent.ts           — Agent commands (create, send, tail, approve/deny, wait)
+      auth.ts            — Auth commands (login google/matrix, status)
+      search.ts          — Cross-service search
+      status.ts          — Hub health + version
+      capabilities.ts    — Self-discovery for AI agents
+      schema.ts          — JSONSchema introspection for any command
+      util.ts            — Flag parsing utilities
 functions/             — Cloudflare Pages Functions: api/auth/exchange.ts, api/auth/refresh.ts
 docs/
   agent-architecture.md  — Full agent system documentation
@@ -325,7 +355,33 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 - `npm test` / `npm run test:watch`
 - `npx tsc --noEmit` — type check SPA
 - `cd server && npx tsc --noEmit` — type check server
+- `cd cli && npx tsc --noEmit` — type check CLI
 - `cd functions && npx tsc --noEmit` — type check Workers
+- `con help` — CLI help (after `cd cli && npm link`)
+- `con <service> <verb> [--flags]` — CLI commands (see below)
+
+## CLI (`con`) — Agent-Accessible Interface
+- **Binary:** `con` (installed globally via `cd cli && npm link`)
+- **Pattern:** `con <noun> <verb> [args] [--flags]` (e.g., `con mail list --max 10`)
+- **Services:** mail, chat, bookmarks, notes, feeds, cal, agent, search, auth
+- **Aliases:** m=mail, c=chat, b=bookmarks, n=notes, f=feeds, a=agent, s=search
+- **Output:** JSON envelope `{success,data,metadata}` when piped or `--json`; human-readable tables on TTY
+- **Agent mode:** `--agent` flag enables JSON output + no-input + structured errors
+- **Self-discovery:** `con capabilities --json` lists all 81 commands with read/write/destructive safety tiers
+- **Schema introspection:** `con schema <cmd>` returns JSONSchema for any command (e.g., `con schema mail.list`)
+- **Exit codes:** 0=OK, 1=ERROR, 2=USAGE, 3=NOT_FOUND, 4=AUTH_REQUIRED, 5=HUB_UNAVAILABLE, 6=RATE_LIMITED, 7=TIMEOUT
+- **Hub dependency:** CLI talks to hub server over HTTP/WebSocket. Hub must be running.
+- **Auth:** `con auth login google` opens browser for OAuth. Tokens stored in `~/.config/console/auth.json` (hub-managed).
+- **Streaming:** `con agent tail <session-id>` and `con chat tail <room-id>` stream via WebSocket as NDJSON.
+
+### Hub Routes (server-side)
+- `/auth/*` — OAuth flow, Matrix login, auth status
+- `/mail/*` — Gmail proxy (threads, send, attachments, contacts, history, labels)
+- `/cal/*` — Calendar proxy (calendars, events, RSVP, location, accounts)
+- `/matrix/*` — Matrix proxy (rooms, messages, send, reactions, receipts)
+- `/bookmarks/*` — Bookmark CRUD (existing)
+- `/feeds/*` — Feed CRUD + items (existing)
+- `/notes/*` — Notes CRUD (existing)
 
 ## Setup
 1. Google Cloud project with Gmail API + People API + Google Calendar API v3 enabled
@@ -333,7 +389,8 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 3. `.env` → `VITE_GOOGLE_CLIENT_ID`; `.dev.vars` → `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
 4. `npm install && npm run dev`
 5. For Matrix chat: click "+Chat" in the app header to connect a Matrix account
-6. For server features (agents, bookmarks, feeds): `cd server && npm install && npm run dev`
+6. For server features (agents, bookmarks, feeds, CLI): `cd server && npm install && npm run dev`
+7. For CLI: `cd cli && npm install && npm link` → `con help`
 
 ## UI Actions
 - **Refresh** — click for incremental sync, Ctrl+click for full resync (email: clears all data; chat: clears messages + sync token, keeps room read state)

@@ -1,0 +1,294 @@
+// Auth store — manages OAuth tokens for Google and Matrix
+// Persists to ~/.config/console/auth.json (mode 0600)
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
+const CONFIG_DIR = join(homedir(), '.config', 'console')
+const AUTH_FILE = join(CONFIG_DIR, 'auth.json')
+
+export interface GoogleAccount {
+  email: string
+  refreshToken: string
+  accessToken?: string
+  accessTokenExpiry?: number
+  scopes: string[]
+  isPrimary?: boolean
+}
+
+export interface AuthConfig {
+  google: {
+    clientId: string
+    clientSecret: string
+    accounts: GoogleAccount[]
+  }
+  matrix?: {
+    homeserver: string
+    userId: string
+    deviceId: string
+    accessToken: string
+  }
+}
+
+const DEFAULT_CONFIG: AuthConfig = {
+  google: { clientId: '', clientSecret: '', accounts: [] },
+}
+
+export class AuthStore {
+  private config: AuthConfig
+  private refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  constructor() {
+    this.config = this.load()
+    // Schedule token refreshes for all accounts with existing tokens
+    for (const account of this.config.google.accounts) {
+      if (account.accessTokenExpiry) {
+        this.scheduleRefresh(account.email)
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Config persistence
+  // --------------------------------------------------------------------------
+
+  private load(): AuthConfig {
+    try {
+      if (existsSync(AUTH_FILE)) {
+        return JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as AuthConfig
+      }
+    } catch {
+      // Corrupted file — start fresh
+    }
+    return { ...DEFAULT_CONFIG }
+  }
+
+  private save(): void {
+    mkdirSync(CONFIG_DIR, { recursive: true })
+    writeFileSync(AUTH_FILE, JSON.stringify(this.config, null, 2), 'utf8')
+    try {
+      chmodSync(AUTH_FILE, 0o600)
+    } catch {
+      // chmod may fail on some platforms
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Google OAuth
+  // --------------------------------------------------------------------------
+
+  getGoogleClientId(): string { return this.config.google.clientId }
+  getGoogleClientSecret(): string { return this.config.google.clientSecret }
+
+  setGoogleCredentials(clientId: string, clientSecret: string): void {
+    this.config.google.clientId = clientId
+    this.config.google.clientSecret = clientSecret
+    this.save()
+  }
+
+  getGoogleAccounts(): GoogleAccount[] {
+    return this.config.google.accounts
+  }
+
+  getPrimaryGoogleAccount(): GoogleAccount | undefined {
+    return this.config.google.accounts.find((a) => a.isPrimary) || this.config.google.accounts[0]
+  }
+
+  getGoogleAccount(email: string): GoogleAccount | undefined {
+    return this.config.google.accounts.find((a) => a.email === email)
+  }
+
+  addGoogleAccount(account: GoogleAccount): void {
+    const existing = this.config.google.accounts.findIndex((a) => a.email === account.email)
+    if (existing >= 0) {
+      this.config.google.accounts[existing] = account
+    } else {
+      // First account is primary
+      if (this.config.google.accounts.length === 0) account.isPrimary = true
+      this.config.google.accounts.push(account)
+    }
+    this.save()
+    this.scheduleRefresh(account.email)
+  }
+
+  removeGoogleAccount(email: string): void {
+    this.config.google.accounts = this.config.google.accounts.filter((a) => a.email !== email)
+    const timer = this.refreshTimers.get(email)
+    if (timer) {
+      clearTimeout(timer)
+      this.refreshTimers.delete(email)
+    }
+    this.save()
+  }
+
+  /**
+   * Get a valid access token for a Google account.
+   * Refreshes automatically if expired or about to expire.
+   */
+  async getGoogleToken(email?: string): Promise<string | null> {
+    const account = email ? this.getGoogleAccount(email) : this.getPrimaryGoogleAccount()
+    if (!account) return null
+
+    // Check if token is still valid (with 5 min buffer)
+    if (account.accessToken && account.accessTokenExpiry) {
+      if (Date.now() < account.accessTokenExpiry - 5 * 60 * 1000) {
+        return account.accessToken
+      }
+    }
+
+    // Refresh the token
+    const refreshed = await this.refreshGoogleToken(account.email)
+    return refreshed ? account.accessToken! : null
+  }
+
+  async refreshGoogleToken(email: string): Promise<boolean> {
+    const account = this.getGoogleAccount(email)
+    if (!account?.refreshToken) return false
+
+    const clientId = this.config.google.clientId
+    const clientSecret = this.config.google.clientSecret
+    if (!clientId || !clientSecret) return false
+
+    try {
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          refresh_token: account.refreshToken,
+          client_id: clientId,
+          client_secret: clientSecret,
+          grant_type: 'refresh_token',
+        }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error(`[auth] Token refresh failed for ${email}: ${res.status} ${text}`)
+        return false
+      }
+
+      const data = await res.json() as { access_token: string; expires_in: number }
+      account.accessToken = data.access_token
+      account.accessTokenExpiry = Date.now() + data.expires_in * 1000
+      this.save()
+      this.scheduleRefresh(email)
+      return true
+    } catch (err) {
+      console.error(`[auth] Token refresh error for ${email}:`, err)
+      return false
+    }
+  }
+
+  private scheduleRefresh(email: string): void {
+    const account = this.getGoogleAccount(email)
+    if (!account?.accessTokenExpiry) return
+
+    const timer = this.refreshTimers.get(email)
+    if (timer) clearTimeout(timer)
+
+    // Refresh 5 minutes before expiry
+    const delay = Math.max(account.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
+    this.refreshTimers.set(email, setTimeout(() => {
+      this.refreshGoogleToken(email)
+    }, delay))
+  }
+
+  /**
+   * Exchange an authorization code for tokens.
+   * Called from the OAuth callback.
+   */
+  async exchangeGoogleCode(code: string, redirectUri: string): Promise<{ email: string; account: GoogleAccount }> {
+    const clientId = this.config.google.clientId
+    const clientSecret = this.config.google.clientSecret
+
+    // Exchange code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    })
+
+    if (!tokenRes.ok) {
+      const text = await tokenRes.text()
+      throw new Error(`Token exchange failed: ${tokenRes.status} ${text}`)
+    }
+
+    const tokenData = await tokenRes.json() as {
+      access_token: string
+      refresh_token: string
+      expires_in: number
+      scope: string
+    }
+
+    // Discover the user's email
+    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    })
+    const userinfo = await userinfoRes.json() as { email: string }
+
+    const account: GoogleAccount = {
+      email: userinfo.email,
+      refreshToken: tokenData.refresh_token,
+      accessToken: tokenData.access_token,
+      accessTokenExpiry: Date.now() + tokenData.expires_in * 1000,
+      scopes: tokenData.scope.split(' '),
+    }
+
+    this.addGoogleAccount(account)
+    return { email: userinfo.email, account }
+  }
+
+  // --------------------------------------------------------------------------
+  // Matrix
+  // --------------------------------------------------------------------------
+
+  getMatrixConfig() {
+    return this.config.matrix
+  }
+
+  setMatrixConfig(config: NonNullable<AuthConfig['matrix']>): void {
+    this.config.matrix = config
+    this.save()
+  }
+
+  clearMatrixConfig(): void {
+    this.config.matrix = undefined
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
+  // Status
+  // --------------------------------------------------------------------------
+
+  getStatus() {
+    return {
+      google: {
+        connected: this.config.google.accounts.length > 0,
+        hasCredentials: !!(this.config.google.clientId && this.config.google.clientSecret),
+        accounts: this.config.google.accounts.map((a) => ({
+          email: a.email,
+          isPrimary: a.isPrimary ?? false,
+          hasToken: !!a.accessToken,
+          tokenExpiry: a.accessTokenExpiry ? new Date(a.accessTokenExpiry).toISOString() : null,
+        })),
+      },
+      matrix: this.config.matrix
+        ? { connected: true, userId: this.config.matrix.userId, homeserver: this.config.matrix.homeserver }
+        : { connected: false },
+    }
+  }
+
+  destroy(): void {
+    for (const timer of this.refreshTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.refreshTimers.clear()
+  }
+}

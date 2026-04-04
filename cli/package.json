@@ -1,0 +1,22 @@
+{
+  "name": "console-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "con": "./bin/con.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3"
+  }
+}
