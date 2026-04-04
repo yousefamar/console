@@ -349,16 +349,20 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const days = view === 'week' ? 7 * delta : delta
     const newDate = addDays(currentDate, days)
     set({ currentDate: newDate, selectedEventId: null })
+    // Load from IDB immediately (prefetched data), then background refresh
+    get().loadEventsFromDb()
     get().fetchEvents(addDays(weekStart(newDate), -7), addDays(weekEnd(newDate), 14))
   },
 
   navigateToday: () => {
     set({ currentDate: new Date(), selectedEventId: null })
+    get().loadEventsFromDb()
     get().fetchEvents()
   },
 
   navigateToDate: (date) => {
     set({ currentDate: date, selectedEventId: null })
+    get().loadEventsFromDb()
     get().fetchEvents(addDays(weekStart(date), -7), addDays(weekEnd(date), 14))
   },
 
