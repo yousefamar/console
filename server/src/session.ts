@@ -87,6 +87,7 @@ export class Session extends EventEmitter {
       '--input-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
+      '--dangerously-skip-permissions',
       '--permission-prompt-tool', 'stdio',
       '--chrome',
     ]
