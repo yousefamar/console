@@ -21,9 +21,9 @@ export function AgentTab() {
   const selectSession = useAgentStore((s) => s.selectSession)
   const isMobile = useIsMobile()
 
-  // Separate Al from regular sessions
-  const alSession = sessions.find((s) => s.isAl)
-  const activeSessions = sessions.filter((s) => s.status !== 'ended' && !s.isAl)
+  // Separate Al from regular sessions — always pinned at top
+  const alSession = sessions.find((s) => s.id === 'al')
+  const activeSessions = sessions.filter((s) => s.status !== 'ended' && s.id !== 'al')
 
   // Auto-connect on mount
   useEffect(() => {
