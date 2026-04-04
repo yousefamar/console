@@ -162,6 +162,8 @@ export class AlBridge {
       case 'al_idle': {
         this.flushPendingText()
         this.status = 'idle'
+        // Clear the "Thinking..." status text
+        this.broadcastFn({ type: 'status', sessionId: AL_SESSION_ID, text: '' })
         this.broadcastSessionUpdate()
         break
       }
