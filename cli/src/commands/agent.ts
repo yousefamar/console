@@ -44,12 +44,16 @@ async function agentCreate(args: string[], flags: GlobalFlags): Promise<void> {
   if (!prompt) exitWithError('USAGE', 'Usage: con agent create <prompt> [--cwd <path>] [--wait]', flags)
   const opts = parseFlags(args.slice(1))
 
+  // Get existing session IDs so we can distinguish replayed session_created from new ones
+  const health = await hubFetch<{ sessions: Array<{ id: string }> }>('/health')
+  const existingIds = new Set((health.sessions || []).map((s) => s.id))
+
   const { sendAndReceive, connectAndStream } = await import('../ws-client.js')
 
-  // Create session
+  // Create session — only match session_created with a NEW ID (not replayed)
   const result = await sendAndReceive(
     { type: 'create_session', prompt, cwd: opts.cwd || process.cwd() },
-    (msg: any) => msg.type === 'session_created',
+    (msg: any) => msg.type === 'session_created' && !existingIds.has(msg.sessionId),
   )
 
   if (!result) exitWithError('ERROR', 'Failed to create session', flags)
