@@ -250,7 +250,7 @@ export function AgentPromptInput() {
 
   if (!connected) return null
 
-  const showDirPicker = !activeSessionId && projectDirs.length > 0
+  const showDirPicker = !activeSessionId && activeSessionId !== 'al' && projectDirs.length > 0
 
   return (
     <div className="border-t border-border px-3 py-2">
@@ -412,7 +412,7 @@ export function AgentPromptInput() {
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           data-agent-input
-          placeholder={activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
+          placeholder={activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
           rows={1}
           className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px]"
           style={{ height: Math.min(120, Math.max(24, text.split('\n').length * 20)) }}

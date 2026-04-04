@@ -61,6 +61,7 @@ export interface SessionInfo {
   contextWindow: number
   contextUsed: number
   statusText?: string
+  isAl?: boolean
 }
 
 export interface PastSession {
@@ -489,11 +490,13 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
       // Merge hub data with local per-session state (model, context, statusText)
       const merged = hubSessions.map((s) => {
+        // Mark Al session
+        const isAl = s.id === 'al'
         // Try direct match first, then remap match
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
         return local
-          ? { ...s, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText }
-          : { ...s, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0 }
+          ? { ...s, isAl, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText }
+          : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0 }
       })
 
       // Remap messagesBySession keys and delta accumulators if hub restarted (IDs changed)

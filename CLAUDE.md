@@ -110,6 +110,7 @@ server/                  — Local Node.js backend (REST + WebSocket)
     history.ts           — JSONL session history loader + past session discovery
     projects.ts          — Claude project directory discovery + path decoding
     auth-store.ts        — Multi-account OAuth token manager (~/.config/console/auth.json)
+    al-bridge.ts         — Al WebSocket bridge (translates Al protocol ↔ HubMessage)
     gmail-client.ts      — Gmail REST API client (server-side, uses auth-store tokens)
     calendar-client.ts   — Google Calendar REST API client (server-side, uses auth-store tokens)
     matrix-client.ts     — Matrix CS API client (server-side, uses auth-store tokens)
@@ -309,6 +310,7 @@ docs/
 - **Context usage** — `input_tokens + output_tokens` from result message shown as token counts (e.g. "45k / 1M") with color coding. `total_cost_usd` is cumulative (SET not ADD).
 - **Status line** — auto-derived from tool_use events (e.g., "Reading src/App.tsx...", "Running npm test...")
 - **Health/discovery** — `GET /health` returns server state; frontend auto-connects on mount, shows setup instructions if server not running
+- **Al integration** — Al (personal AI assistant, separate PM2 process at `/home/amar/proj/code/al`) connects to hub via WebSocket at `ws://localhost:9877/al`. Appears as pinned chat (sessionId `'al'`) at top of Agent tab sidebar with Bot icon. Hub's `AlBridge` (`server/src/al-bridge.ts`) translates between Al's protocol (`al_text`, `al_tool_start`, etc.) and existing HubMessage types. Al streams text deltas and tool events in real-time. Al can delegate to Claude Code agents via `con agent create`.
 
 ## Keybindings (vim-style, desktop only)
 j/k = navigate, e = done (mail) / read (chat), b = snooze, r = reply, R = reply all, f = forward, c = compose, / = search, ? = help, u = undo, Esc = close/interrupt/deselect (chat: drops read non-favourite rooms from list), Shift+T = dark mode, Cmd+Enter = send, Tab = cycle pane (mail/chat/bookmarks/notes/feeds/calendar/agents)

@@ -4,7 +4,7 @@ import { AgentSessionView } from './AgentSessionView'
 import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import clsx from 'clsx'
-import { Circle, Plus } from 'lucide-react'
+import { Bot, Circle, Plus } from 'lucide-react'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -21,8 +21,9 @@ export function AgentTab() {
   const selectSession = useAgentStore((s) => s.selectSession)
   const isMobile = useIsMobile()
 
-  // Filter to only active (non-ended) sessions for the sidebar
-  const activeSessions = sessions.filter((s) => s.status !== 'ended')
+  // Separate Al from regular sessions
+  const alSession = sessions.find((s) => s.isAl)
+  const activeSessions = sessions.filter((s) => s.status !== 'ended' && !s.isAl)
 
   // Auto-connect on mount
   useEffect(() => {
@@ -65,7 +66,29 @@ export function AgentTab() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {activeSessions.length === 0 && connected && (
+          {/* Al — pinned at top */}
+          {alSession && (
+            <button
+              onClick={() => selectSession(alSession.id)}
+              className={clsx(
+                'w-full text-left px-3 py-2 border-b border-border transition-colors duration-fast flex items-center gap-2',
+                alSession.id === activeSessionId ? 'bg-surface-2' : 'hover:bg-surface-1',
+              )}
+            >
+              <Bot size={14} className="text-accent flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-text-primary">Al</span>
+                  <StatusDot status={alSession.status} />
+                </div>
+                <span className="text-[10px] text-text-tertiary">
+                  {alSession.status === 'running' ? 'Thinking...' : 'Assistant'}
+                </span>
+              </div>
+            </button>
+          )}
+
+          {activeSessions.length === 0 && !alSession && connected && (
             <div className="flex h-32 items-center justify-center">
               <p className="text-xs text-text-tertiary">No active sessions</p>
             </div>

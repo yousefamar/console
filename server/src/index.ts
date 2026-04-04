@@ -32,6 +32,7 @@ import { CalendarClient } from './calendar-client.js'
 import { handleCalendarRoutes } from './routes/calendar.js'
 import { MatrixClient } from './matrix-client.js'
 import { handleMatrixRoutes } from './routes/matrix.js'
+import { AlBridge, AL_SESSION_ID } from './al-bridge.js'
 
 // --------------------------------------------------------------------------
 // Configuration
@@ -59,6 +60,15 @@ const authStore = new AuthStore()
 const gmailClient = new GmailClient(authStore)
 const calendarClient = new CalendarClient(authStore)
 const matrixClient = new MatrixClient(authStore)
+const alBridge = new AlBridge({
+  broadcast: (msg: HubMessage) => {
+    const data = JSON.stringify(msg)
+    for (const ws of clients) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+    }
+  },
+  log,
+})
 
 // --------------------------------------------------------------------------
 // Session registry
@@ -90,8 +100,10 @@ const httpServer = createServer(async (req, res) => {
   // Health check
   if (path === '/health') {
     const sessionList = Array.from(sessions.values()).map((s) => s.getInfo())
+    // Include Al in session list if connected
+    if (alBridge.isConnected()) sessionList.unshift(alBridge.getSessionInfo())
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, version: '0.2.0', sessions: sessionList, cwd }))
+    res.end(JSON.stringify({ ok: true, version: '0.3.0', sessions: sessionList, cwd }))
     return
   }
 
@@ -115,6 +127,24 @@ const httpServer = createServer(async (req, res) => {
 const wss = new WebSocketServer({ server: httpServer })
 
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  const urlPath = req.url ?? '/'
+
+  // Al connects on /al path — handle separately from browser clients
+  if (urlPath === '/al') {
+    log('[al] Al connecting...')
+    alBridge.handleAlConnection(ws)
+
+    // Broadcast updated session list to all browser clients
+    const active = Array.from(sessions.values()).map((s) => s.getInfo())
+    if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
+    const listMsg: HubMessage = { type: 'sessions_list', sessions: active }
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(listMsg))
+    }
+    return
+  }
+
+  // Browser client
   clients.add(ws)
   log(`Client connected from ${req.socket.remoteAddress} (${clients.size} total)`)
 
@@ -122,8 +152,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const dirs = discoverProjectDirs()
   sendTo(ws, { type: 'project_dirs', dirs })
 
-  // Send current session list
+  // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
+  if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
   sendTo(ws, { type: 'sessions_list', sessions: active })
 
   // Replay coalesced message logs for all active sessions
@@ -135,6 +166,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
   }
 
+  // Replay Al's message log
+  if (alBridge.isConnected()) {
+    for (const msg of alBridge.getMessageLog()) {
+      sendTo(ws, msg)
+    }
+  }
+
   ws.on('message', (data) => {
     let msg: ClientMessage
     try {
@@ -143,6 +181,20 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       sendTo(ws, { type: 'hub_error', message: 'Invalid JSON' })
       return
     }
+
+    // Route Al-targeted messages to the bridge
+    if ('sessionId' in msg && (msg as { sessionId?: string }).sessionId === AL_SESSION_ID) {
+      const sessionId = (msg as { sessionId: string }).sessionId
+      if (msg.type === 'send_message') {
+        alBridge.handleBrowserMessage('send_message', msg.content, msg.images)
+      } else if (msg.type === 'interrupt') {
+        alBridge.handleBrowserMessage('interrupt')
+      } else if (msg.type === 'kill_session') {
+        alBridge.handleBrowserMessage('clear')
+      }
+      return
+    }
+
     handleClientMessage(agentCtx, ws, msg)
   })
 

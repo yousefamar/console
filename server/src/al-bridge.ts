@@ -1,0 +1,254 @@
+// Al Bridge — manages WebSocket connection between Al and Console hub
+//
+// Al connects as a WebSocket client. The bridge translates between
+// Al's protocol and the existing HubMessage format that the browser renders.
+// Al appears as a virtual session with fixed ID 'al'.
+
+import { WebSocket } from 'ws'
+import type { HubMessage, LoggableHubMessage, SessionInfo, TokenUsage } from './protocol.js'
+
+export const AL_SESSION_ID = 'al'
+
+// --------------------------------------------------------------------------
+// Al → Hub protocol
+// --------------------------------------------------------------------------
+
+export type AlToHubMessage =
+  | { type: 'al_register' }
+  | { type: 'al_text'; text: string }
+  | { type: 'al_text_delta'; text: string }
+  | { type: 'al_tool_start'; id: string; command: string }
+  | { type: 'al_tool_end'; id: string; output: string; exitCode: number }
+  | { type: 'al_status'; text: string }
+  | { type: 'al_idle' }
+
+// --------------------------------------------------------------------------
+// Hub → Al protocol
+// --------------------------------------------------------------------------
+
+export type HubToAlMessage =
+  | { type: 'al_message'; text: string; images?: Array<{ media_type: string; data: string }> }
+  | { type: 'al_clear' }
+  | { type: 'al_interrupt' }
+
+// --------------------------------------------------------------------------
+// Bridge
+// --------------------------------------------------------------------------
+
+export class AlBridge {
+  private alWs: WebSocket | null = null
+  private messageLog: HubMessage[] = []
+  private broadcastFn: (msg: HubMessage) => void
+  private logFn: (msg: string) => void
+  private status: 'idle' | 'running' = 'idle'
+  private connectedAt = 0
+
+  constructor(opts: {
+    broadcast: (msg: HubMessage) => void
+    log: (msg: string) => void
+  }) {
+    this.broadcastFn = opts.broadcast
+    this.logFn = opts.log
+  }
+
+  // --------------------------------------------------------------------------
+  // Al connection management
+  // --------------------------------------------------------------------------
+
+  handleAlConnection(ws: WebSocket): void {
+    // If already connected, close old connection
+    if (this.alWs && this.alWs.readyState === WebSocket.OPEN) {
+      this.logFn('[al] replacing existing connection')
+      this.alWs.close()
+    }
+
+    this.alWs = ws
+    this.connectedAt = Date.now()
+    this.status = 'idle'
+    this.logFn('[al] connected')
+
+    // Broadcast updated session list (Al now shows as connected)
+    this.broadcastSessionUpdate()
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as AlToHubMessage
+        this.handleAlMessage(msg)
+      } catch {
+        this.logFn('[al] invalid message from Al')
+      }
+    })
+
+    ws.on('close', () => {
+      this.logFn('[al] disconnected')
+      this.alWs = null
+      this.status = 'idle'
+      // Broadcast that Al is now disconnected
+      this.broadcastFn({ type: 'session_ended', sessionId: AL_SESSION_ID })
+    })
+
+    ws.on('error', (err) => {
+      this.logFn(`[al] WebSocket error: ${err.message}`)
+    })
+  }
+
+  // --------------------------------------------------------------------------
+  // Handle messages FROM Al
+  // --------------------------------------------------------------------------
+
+  private handleAlMessage(msg: AlToHubMessage): void {
+    switch (msg.type) {
+      case 'al_register':
+        // Already handled in handleAlConnection
+        break
+
+      case 'al_text_delta': {
+        const hubMsg: HubMessage = { type: 'text_delta', sessionId: AL_SESSION_ID, content: msg.text }
+        this.broadcastFn(hubMsg)
+        // Don't log deltas — they're ephemeral
+        break
+      }
+
+      case 'al_text': {
+        const hubMsg: HubMessage = { type: 'text', sessionId: AL_SESSION_ID, content: msg.text }
+        this.broadcastFn(hubMsg)
+        this.logMessage(hubMsg)
+        break
+      }
+
+      case 'al_tool_start': {
+        this.status = 'running'
+        const hubMsg: HubMessage = {
+          type: 'tool_use',
+          sessionId: AL_SESSION_ID,
+          toolUseId: msg.id,
+          toolName: 'exec',
+          input: { command: msg.command },
+        }
+        this.broadcastFn(hubMsg)
+        this.logMessage(hubMsg)
+
+        // Also send status
+        this.broadcastFn({ type: 'status', sessionId: AL_SESSION_ID, text: `Running: ${msg.command}` })
+        break
+      }
+
+      case 'al_tool_end': {
+        const hubMsg: HubMessage = {
+          type: 'tool_result',
+          sessionId: AL_SESSION_ID,
+          toolUseId: msg.id,
+          content: msg.output,
+          isError: msg.exitCode !== 0,
+        }
+        this.broadcastFn(hubMsg)
+        this.logMessage(hubMsg)
+        break
+      }
+
+      case 'al_status': {
+        this.status = 'running'
+        this.broadcastFn({ type: 'status', sessionId: AL_SESSION_ID, text: msg.text })
+        break
+      }
+
+      case 'al_idle': {
+        this.status = 'idle'
+        this.broadcastSessionUpdate()
+        break
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Handle messages FROM browser (for session 'al')
+  // --------------------------------------------------------------------------
+
+  handleBrowserMessage(type: string, content?: string, images?: Array<{ media_type: string; data: string }>): void {
+    if (!this.alWs || this.alWs.readyState !== WebSocket.OPEN) {
+      this.logFn('[al] cannot send — Al not connected')
+      return
+    }
+
+    switch (type) {
+      case 'send_message': {
+        this.status = 'running'
+        this.broadcastSessionUpdate()
+
+        // Log the user prompt
+        const userMsg: HubMessage = {
+          type: 'user_prompt',
+          sessionId: AL_SESSION_ID,
+          content: content || '',
+          ...(images?.length ? { images: images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}),
+        }
+        this.broadcastFn(userMsg)
+        this.logMessage(userMsg)
+
+        // Forward to Al
+        const alMsg: HubToAlMessage = {
+          type: 'al_message',
+          text: content || '',
+          images,
+        }
+        this.alWs.send(JSON.stringify(alMsg))
+        break
+      }
+
+      case 'interrupt': {
+        const alMsg: HubToAlMessage = { type: 'al_interrupt' }
+        this.alWs.send(JSON.stringify(alMsg))
+        break
+      }
+
+      case 'clear': {
+        this.messageLog = []
+        const alMsg: HubToAlMessage = { type: 'al_clear' }
+        this.alWs.send(JSON.stringify(alMsg))
+        break
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Session info
+  // --------------------------------------------------------------------------
+
+  getSessionInfo(): SessionInfo {
+    return {
+      id: AL_SESSION_ID,
+      status: this.alWs ? this.status : 'ended',
+      createdAt: this.connectedAt || Date.now(),
+      prompt: 'Al',
+      cwd: undefined,
+      totalCost: 0,
+      totalTokens: { input: 0, output: 0 },
+    }
+  }
+
+  isConnected(): boolean {
+    return this.alWs !== null && this.alWs.readyState === WebSocket.OPEN
+  }
+
+  getMessageLog(): HubMessage[] {
+    return this.messageLog
+  }
+
+  // --------------------------------------------------------------------------
+  // Internal
+  // --------------------------------------------------------------------------
+
+  private logMessage(msg: HubMessage): void {
+    this.messageLog.push(msg)
+    // Keep last 500 messages
+    if (this.messageLog.length > 500) {
+      this.messageLog = this.messageLog.slice(-500)
+    }
+  }
+
+  private broadcastSessionUpdate(): void {
+    // The main index.ts will handle broadcasting the full session list
+    // We just need to notify it somehow — for now, broadcasting a status message
+    // that the frontend can use to refresh session state
+  }
+}
