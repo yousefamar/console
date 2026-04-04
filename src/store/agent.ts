@@ -488,9 +488,12 @@ function handleHubMessage(msg: Record<string, unknown>) {
         }
       }
 
+      // Preserve Al session if hub list doesn't include it (e.g. list_sessions response)
+      const hasAl = hubSessions.some((s) => s.id === 'al')
+      const existingAl = !hasAl ? existing.find((s) => s.id === 'al') : undefined
+
       // Merge hub data with local per-session state (model, context, statusText)
       const merged = hubSessions.map((s) => {
-        // Mark Al session
         const isAl = s.id === 'al'
         // Try direct match first, then remap match
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
@@ -515,6 +518,9 @@ function handleHubMessage(msg: Record<string, unknown>) {
           if (remappedActiveId === oldId) remappedActiveId = newId
         }
       }
+
+      // Re-add preserved Al session if it was missing from hub list
+      if (existingAl) merged.unshift(existingAl)
 
       // Only include activeSessionId in the update if it actually changed (remap)
       const stateUpdate: Partial<AgentState> = {
