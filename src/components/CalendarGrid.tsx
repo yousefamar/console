@@ -93,6 +93,7 @@ interface PositionedEvent {
   column: number
   hangoutLink?: string
   location?: string
+  hasSelf: boolean     // true if this copy has the user as self attendee
   accepted: boolean  // false = needsAction, tentative, or declined
 }
 
@@ -180,6 +181,7 @@ export function CalendarGrid() {
             height: (duration / 60) * HOUR_HEIGHT,
             left: 0, width: 1, column: colIdx,
             hangoutLink: e.hangoutLink, location: e.location,
+            hasSelf: !e.attendees || !!e.attendees.find(a => a.self),
             accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
           }
         })
@@ -195,6 +197,14 @@ export function CalendarGrid() {
           // Duplicate from another calendar — merge colors and accepted status
           if (!existing.colors.includes(ev.color)) {
             existing.colors.push(ev.color)
+          }
+          // Prefer the user's own copy (has self attendee) for display + popover/RSVP
+          if (ev.hasSelf && !existing.hasSelf) {
+            existing.id = ev.id
+            existing.calendarId = ev.calendarId
+            existing.accountEmail = ev.accountEmail
+            existing.color = ev.color
+            existing.hasSelf = true
           }
           // If any copy is accepted, the merged event is accepted
           if (ev.accepted) existing.accepted = true
