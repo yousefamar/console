@@ -675,9 +675,15 @@ function RecurringEditDialog({ pending, onThisEvent, onAllEvents, onDiscard }: {
           </label>
         </div>
 
-        <div className="px-4 py-2 text-xs text-text-secondary">
-          <div>Time: {oldTime} <span className="text-text-tertiary">&bull;</span></div>
-          <div className="text-accent">{newTime}</div>
+        <div className="px-4 py-2 text-xs">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-text-tertiary">Time</span>
+            <div>
+              <span className="text-text-secondary line-through">{oldTime}</span>
+              <span className="text-text-tertiary mx-1">&rarr;</span>
+              <span className="text-accent font-medium">{newTime}</span>
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
