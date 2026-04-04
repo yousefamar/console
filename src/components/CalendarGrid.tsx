@@ -607,9 +607,9 @@ export function CalendarGrid() {
                         </div>
                       )}
                       <div className="py-0.5 h-full overflow-hidden" style={{ paddingLeft: hasMultipleColors ? totalStripeWidth + 3 : 4 }}>
-                        <div className="text-[10px] font-medium truncate leading-tight flex items-center gap-0.5" style={{ color: muted.text }}>
-                          {ev.isTask && <Square size={7} className="flex-shrink-0 opacity-70" />}
-                          {ev.summary}
+                        <div className="text-[10px] font-medium truncate leading-tight flex items-center gap-1" style={{ color: muted.text }}>
+                          {ev.isTask && <Square size={8} className="flex-shrink-0 opacity-70" strokeWidth={2.5} />}
+                          <span className="truncate">{ev.summary}</span>
                         </div>
                         {ev.height > 30 && (
                           <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.8 }}>
