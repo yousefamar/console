@@ -248,8 +248,11 @@ export class AlBridge {
 
   private flushPendingText(): void {
     if (this.pendingText.trim()) {
-      // Log the coalesced text (for replay) but don't broadcast (browser already has it from deltas)
-      this.logMessage({ type: 'text', sessionId: AL_SESSION_ID, content: this.pendingText })
+      // Broadcast the coalesced text — the frontend needs this to convert
+      // accumulated text_deltas into a proper message block
+      const hubMsg: HubMessage = { type: 'text', sessionId: AL_SESSION_ID, content: this.pendingText }
+      this.broadcastFn(hubMsg)
+      this.logMessage(hubMsg)
     }
     this.pendingText = ''
   }

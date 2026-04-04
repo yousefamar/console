@@ -586,8 +586,16 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'text': {
       const sessionId = msg.sessionId as string
-      // Flush any pending text delta
-      flushPending(sessionId)
+      // Clear any pending deltas (the 'text' message is the authoritative coalesced version)
+      // Don't use flushPending — that would create a duplicate message from the deltas
+      const { pendingTextBySession, pendingThinkingBySession } = useAgentStore.getState()
+      if (pendingTextBySession[sessionId] || pendingThinkingBySession[sessionId]) {
+        const newText = { ...pendingTextBySession }
+        const newThinking = { ...pendingThinkingBySession }
+        delete newText[sessionId]
+        delete newThinking[sessionId]
+        useAgentStore.setState({ pendingTextBySession: newText, pendingThinkingBySession: newThinking })
+      }
       addMessage(sessionId, {
         type: 'text',
         content: msg.content as string,
