@@ -67,6 +67,12 @@ const alBridge = new AlBridge({
       if (ws.readyState === WebSocket.OPEN) ws.send(data)
     }
   },
+  broadcastExcept: (sender: WebSocket, msg: HubMessage) => {
+    const data = JSON.stringify(msg)
+    for (const ws of clients) {
+      if (ws !== sender && ws.readyState === WebSocket.OPEN) ws.send(data)
+    }
+  },
   log,
 })
 
@@ -186,11 +192,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if ('sessionId' in msg && (msg as { sessionId?: string }).sessionId === AL_SESSION_ID) {
       const sessionId = (msg as { sessionId: string }).sessionId
       if (msg.type === 'send_message') {
-        alBridge.handleBrowserMessage('send_message', msg.content, msg.images)
+        alBridge.handleBrowserMessage('send_message', ws, msg.content, msg.images)
       } else if (msg.type === 'interrupt') {
-        alBridge.handleBrowserMessage('interrupt')
+        alBridge.handleBrowserMessage('interrupt', ws)
       } else if (msg.type === 'kill_session') {
-        alBridge.handleBrowserMessage('clear')
+        alBridge.handleBrowserMessage('clear', ws)
       }
       return
     }

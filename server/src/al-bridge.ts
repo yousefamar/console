@@ -44,11 +44,15 @@ export class AlBridge {
   private connectedAt = 0
   private pendingText = '' // accumulates text_delta for logging on idle
 
+  private broadcastExceptFn: (sender: WebSocket, msg: HubMessage) => void
+
   constructor(opts: {
     broadcast: (msg: HubMessage) => void
+    broadcastExcept: (sender: WebSocket, msg: HubMessage) => void
     log: (msg: string) => void
   }) {
     this.broadcastFn = opts.broadcast
+    this.broadcastExceptFn = opts.broadcastExcept
     this.logFn = opts.log
   }
 
@@ -168,7 +172,7 @@ export class AlBridge {
   // Handle messages FROM browser (for session 'al')
   // --------------------------------------------------------------------------
 
-  handleBrowserMessage(type: string, content?: string, images?: Array<{ media_type: string; data: string }>): void {
+  handleBrowserMessage(type: string, senderWs: WebSocket, content?: string, images?: Array<{ media_type: string; data: string }>): void {
     if (!this.alWs || this.alWs.readyState !== WebSocket.OPEN) {
       this.logFn('[al] cannot send — Al not connected')
       return
@@ -179,14 +183,14 @@ export class AlBridge {
         this.status = 'running'
         this.broadcastSessionUpdate()
 
-        // Log the user prompt
+        // Log the user prompt — broadcast to other clients only (sender already shows it locally)
         const userMsg: HubMessage = {
           type: 'user_prompt',
           sessionId: AL_SESSION_ID,
           content: content || '',
           ...(images?.length ? { images: images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}),
         }
-        this.broadcastFn(userMsg)
+        this.broadcastExceptFn(senderWs, userMsg)
         this.logMessage(userMsg)
 
         // Forward to Al
