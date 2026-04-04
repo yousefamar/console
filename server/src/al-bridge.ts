@@ -42,6 +42,7 @@ export class AlBridge {
   private logFn: (msg: string) => void
   private status: 'idle' | 'running' = 'idle'
   private connectedAt = 0
+  private pendingText = '' // accumulates text_delta for logging on idle
 
   constructor(opts: {
     broadcast: (msg: HubMessage) => void
@@ -105,7 +106,7 @@ export class AlBridge {
       case 'al_text_delta': {
         const hubMsg: HubMessage = { type: 'text_delta', sessionId: AL_SESSION_ID, content: msg.text }
         this.broadcastFn(hubMsg)
-        // Don't log deltas — they're ephemeral
+        this.pendingText += msg.text // accumulate for logging on idle
         break
       }
 
@@ -118,6 +119,8 @@ export class AlBridge {
 
       case 'al_tool_start': {
         this.status = 'running'
+        // Flush accumulated text before tool use (for message log)
+        this.flushPendingText()
         const hubMsg: HubMessage = {
           type: 'tool_use',
           sessionId: AL_SESSION_ID,
@@ -153,6 +156,7 @@ export class AlBridge {
       }
 
       case 'al_idle': {
+        this.flushPendingText()
         this.status = 'idle'
         this.broadcastSessionUpdate()
         break
@@ -237,6 +241,14 @@ export class AlBridge {
   // --------------------------------------------------------------------------
   // Internal
   // --------------------------------------------------------------------------
+
+  private flushPendingText(): void {
+    if (this.pendingText.trim()) {
+      // Log the coalesced text (for replay) but don't broadcast (browser already has it from deltas)
+      this.logMessage({ type: 'text', sessionId: AL_SESSION_ID, content: this.pendingText })
+    }
+    this.pendingText = ''
+  }
 
   private logMessage(msg: HubMessage): void {
     this.messageLog.push(msg)
