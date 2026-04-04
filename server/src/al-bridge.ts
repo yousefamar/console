@@ -263,8 +263,11 @@ export class AlBridge {
   }
 
   private broadcastSessionUpdate(): void {
-    // The main index.ts will handle broadcasting the full session list
-    // We just need to notify it somehow — for now, broadcasting a status message
-    // that the frontend can use to refresh session state
+    // Broadcast a sessions_list update so the frontend picks up the status change.
+    // We pass our own session info; the caller in index.ts will merge with agent sessions.
+    if (this.onSessionUpdate) this.onSessionUpdate()
   }
+
+  /** Set by index.ts to trigger a full sessions_list broadcast */
+  onSessionUpdate: (() => void) | null = null
 }

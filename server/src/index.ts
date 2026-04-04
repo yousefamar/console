@@ -85,6 +85,17 @@ const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = { sessions, clients, cwd, log, truncate }
 
+// Wire Al session updates to broadcast full session list
+alBridge.onSessionUpdate = () => {
+  const active = Array.from(sessions.values()).map((s) => s.getInfo())
+  if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
+  const listMsg: HubMessage = { type: 'sessions_list', sessions: active }
+  const data = JSON.stringify(listMsg)
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data)
+  }
+}
+
 // --------------------------------------------------------------------------
 // HTTP server
 // --------------------------------------------------------------------------
