@@ -79,11 +79,13 @@ function formatMinutes(m: number): string {
 interface PositionedEvent {
   id: string
   calendarId: string
+  accountEmail: string
   summary: string
   startTime: Date
   endTime: Date
   allDay: boolean
   color: string
+  colors: string[]     // all calendar colors (for merged duplicates)
   top: number
   height: number
   left: number
@@ -158,7 +160,7 @@ export function CalendarGrid() {
 
     for (let colIdx = 0; colIdx < days.length; colIdx++) {
       const day = days[colIdx]!
-      const dayEvents = timedEvents
+      const rawEvents = timedEvents
         .filter((e) => {
           const start = new Date(e.start.dateTime!)
           return isSameDay(start, day)
@@ -169,10 +171,11 @@ export function CalendarGrid() {
           const startMinutes = start.getHours() * 60 + start.getMinutes()
           const endMinutes = end.getHours() * 60 + end.getMinutes()
           const duration = Math.max(endMinutes - startMinutes, 15)
+          const color = calColorMap.get(e.calendarId) || '#3b82f6'
           return {
-            id: e.id, calendarId: e.calendarId, summary: e.summary,
+            id: e.id, calendarId: e.calendarId, accountEmail: e.accountEmail, summary: e.summary,
             startTime: start, endTime: end, allDay: false,
-            color: calColorMap.get(e.calendarId) || '#3b82f6',
+            color, colors: [color],
             top: (startMinutes / 60) * HOUR_HEIGHT,
             height: (duration / 60) * HOUR_HEIGHT,
             left: 0, width: 1, column: colIdx,
@@ -180,7 +183,26 @@ export function CalendarGrid() {
             accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
           }
         })
-        .sort((a, b) => a.top - b.top || b.height - a.height)
+
+      // Merge duplicate events (same summary + same start/end across different calendars)
+      const merged: PositionedEvent[] = []
+      const mergeKey = (ev: PositionedEvent) => `${ev.startTime.getTime()}_${ev.endTime.getTime()}_${ev.summary}`
+      const mergeMap = new Map<string, PositionedEvent>()
+      for (const ev of rawEvents) {
+        const key = mergeKey(ev)
+        const existing = mergeMap.get(key)
+        if (existing && existing.calendarId !== ev.calendarId) {
+          // Duplicate from another calendar — merge colors
+          if (!existing.colors.includes(ev.color)) {
+            existing.colors.push(ev.color)
+          }
+        } else if (!existing) {
+          mergeMap.set(key, ev)
+          merged.push(ev)
+        }
+      }
+
+      const dayEvents = merged.sort((a, b) => a.top - b.top || b.height - a.height)
 
       const groups: PositionedEvent[][] = []
       for (const ev of dayEvents) {
@@ -490,13 +512,17 @@ export function CalendarGrid() {
                   const isDragging = drag && (drag.mode === 'move' || drag.mode === 'resize') && drag.eventId === ev.id
                   const unaccepted = !ev.accepted
 
+                  const hasMultipleColors = ev.colors.length > 1
+                  const stripeWidth = 3 // px per stripe
+                  const totalStripeWidth = hasMultipleColors ? ev.colors.length * stripeWidth : 0
+
                   return (
                     <div
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
                       onClick={(e) => { e.stopPropagation(); if (!drag) selectEvent(ev.id) }}
                       className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab ${
-                        unaccepted ? 'border-l-2 border border-dashed' : 'border-l-2 border border-black/30'
+                        unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
                       } ${
                         selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'
                       } ${isDragging ? 'opacity-40' : ''}`}
@@ -506,11 +532,19 @@ export function CalendarGrid() {
                         left: `${ev.left * 100}%`,
                         width: `calc(${ev.width * 100}% - 3px)`,
                         backgroundColor: unaccepted ? 'transparent' : muted.bg,
-                        borderLeftColor: muted.border,
+                        borderLeftColor: hasMultipleColors ? undefined : muted.border,
                         borderColor: unaccepted ? muted.border : undefined,
                       }}
                     >
-                      <div className="px-1 py-0.5 h-full overflow-hidden">
+                      {/* Multi-calendar color stripes */}
+                      {hasMultipleColors && (
+                        <div className="absolute left-0 top-0 bottom-0 flex">
+                          {ev.colors.map((c, i) => (
+                            <div key={i} style={{ width: stripeWidth, backgroundColor: c }} />
+                          ))}
+                        </div>
+                      )}
+                      <div className="py-0.5 h-full overflow-hidden" style={{ paddingLeft: hasMultipleColors ? totalStripeWidth + 3 : 4 }}>
                         <div className="text-[10px] font-medium truncate leading-tight" style={{ color: muted.text }}>
                           {ev.summary}
                         </div>

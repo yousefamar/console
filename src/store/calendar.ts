@@ -289,7 +289,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   fetchEvents: async (start?: Date, end?: Date) => {
-    const { calendars, visibleCalendarIds, currentDate } = get()
+    const { calendars, currentDate } = get()
     if (calendars.length === 0) return
 
     set({ loading: true })
