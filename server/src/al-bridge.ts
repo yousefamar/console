@@ -5,6 +5,9 @@
 // Al appears as a virtual session with fixed ID 'al'.
 
 import { WebSocket } from 'ws'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { HubMessage, LoggableHubMessage, SessionInfo, TokenUsage } from './protocol.js'
 
 export const AL_SESSION_ID = 'al'
@@ -35,6 +38,10 @@ export type HubToAlMessage =
 // Bridge
 // --------------------------------------------------------------------------
 
+const LOG_DIR = join(homedir(), '.config', 'console')
+const LOG_FILE = join(LOG_DIR, 'al-messages.json')
+const MAX_MESSAGES = 500
+
 export class AlBridge {
   private alWs: WebSocket | null = null
   private messageLog: HubMessage[] = []
@@ -43,6 +50,7 @@ export class AlBridge {
   private status: 'idle' | 'running' = 'idle'
   private connectedAt = 0
   private pendingText = '' // accumulates text_delta for logging on idle
+  private persistTimer: ReturnType<typeof setTimeout> | null = null
 
   private broadcastExceptFn: (sender: WebSocket, msg: HubMessage) => void
 
@@ -54,6 +62,7 @@ export class AlBridge {
     this.broadcastFn = opts.broadcast
     this.broadcastExceptFn = opts.broadcastExcept
     this.logFn = opts.log
+    this.loadFromDisk()
   }
 
   // --------------------------------------------------------------------------
@@ -214,6 +223,7 @@ export class AlBridge {
 
       case 'clear': {
         this.messageLog = []
+        this.saveToDisk()
         const alMsg: HubToAlMessage = { type: 'al_clear' }
         this.alWs.send(JSON.stringify(alMsg))
         break
@@ -262,9 +272,37 @@ export class AlBridge {
 
   private logMessage(msg: HubMessage): void {
     this.messageLog.push(msg)
-    // Keep last 500 messages
-    if (this.messageLog.length > 500) {
-      this.messageLog = this.messageLog.slice(-500)
+    if (this.messageLog.length > MAX_MESSAGES) {
+      this.messageLog = this.messageLog.slice(-MAX_MESSAGES)
+    }
+    this.schedulePersist()
+  }
+
+  // Debounced disk persistence (don't write on every message)
+  private schedulePersist(): void {
+    if (this.persistTimer) return
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null
+      this.saveToDisk()
+    }, 2000)
+  }
+
+  private saveToDisk(): void {
+    try {
+      mkdirSync(LOG_DIR, { recursive: true })
+      writeFileSync(LOG_FILE, JSON.stringify(this.messageLog), 'utf8')
+    } catch (err) {
+      this.logFn(`[al] failed to persist message log: ${(err as Error).message}`)
+    }
+  }
+
+  private loadFromDisk(): void {
+    try {
+      const data = readFileSync(LOG_FILE, 'utf8')
+      this.messageLog = JSON.parse(data) as HubMessage[]
+      this.logFn(`[al] loaded ${this.messageLog.length} messages from disk`)
+    } catch {
+      // First run or corrupt file
     }
   }
 
