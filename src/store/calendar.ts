@@ -360,25 +360,31 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       : { type: 'customLocation', customLocation: { label: customLabel || '' } }
 
     try {
-      // Working location events (often recurring instances) need a full PUT.
-      // First fetch the current event, then update workingLocationProperties.
+      // Working location events are usually recurring instances.
+      // Google rejects PATCH/PUT on recurring working location instances.
+      // Strategy: delete the instance, create a new standalone event.
       const current = await api.getEvent(calendarId, eventId)
-      const body = {
-        ...current,
-        workingLocationProperties: props,
-      }
-      // Remove read-only / server-derived fields that cause 400 on PUT
-      delete (body as Record<string, unknown>).kind
-      delete (body as Record<string, unknown>).etag
-      delete (body as Record<string, unknown>).htmlLink
-      delete (body as Record<string, unknown>).created
-      delete (body as Record<string, unknown>).updated
-      delete (body as Record<string, unknown>).creator
-      delete (body as Record<string, unknown>).organizer
-      delete (body as Record<string, unknown>).iCalUID
 
-      const updated = await api.updateEvent(calendarId, eventId, body)
-      await db.calendarEvents.put(toDbEvent(updated, calendarId))
+      await api.deleteEvent(calendarId, eventId)
+      await db.calendarEvents.delete(`${calendarId}:${eventId}`)
+
+      // Derive summary — Google doesn't auto-set it for API-created events
+      const summary =
+        locationType === 'homeOffice' ? 'Home'
+        : locationType === 'officeLocation' ? (customLabel || 'Office')
+        : (customLabel || '')
+
+      const created = await api.createEvent(calendarId, {
+        summary,
+        start: current.start,
+        end: current.end,
+        eventType: 'workingLocation',
+        transparency: 'transparent',
+        visibility: 'public',
+        workingLocationProperties: props,
+      } as Partial<CalendarEvent>)
+
+      await db.calendarEvents.put(toDbEvent(created, calendarId))
       await get().loadEventsFromDb()
     } catch (err) {
       console.error('Failed to update location:', err)

@@ -36,6 +36,19 @@ function weekStart(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), diff)
 }
 
+function locationLabel(e: { summary?: string; workingLocationProperties?: { type: string; officeLocation?: { label?: string }; customLocation?: { label?: string } } }): string {
+  const p = e.workingLocationProperties
+  if (p) {
+    if (p.type === 'homeOffice') return 'Home'
+    if (p.type === 'officeLocation') return p.officeLocation?.label || 'Office'
+    if (p.type === 'customLocation') return p.customLocation?.label || 'Custom'
+  }
+  // Fallback to summary if no properties (e.g. stale cache)
+  const s = e.summary
+  if (s && s !== '(No title)') return s
+  return 'Home'
+}
+
 function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
@@ -390,7 +403,7 @@ export function CalendarGrid() {
                     className="text-[10px] text-text-tertiary hover:text-text-secondary transition-colors truncate block w-full text-left"
                     title="Click to edit location"
                   >
-                    {dayLocation.summary}
+                    {locationLabel(dayLocation)}
                   </button>
                 ) : (
                   <span className="text-[10px] text-text-tertiary/30">—</span>

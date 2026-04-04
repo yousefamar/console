@@ -50,6 +50,8 @@ export interface CalendarEvent {
     useDefault: boolean
     overrides?: Array<{ method: string; minutes: number }>
   }
+  transparency?: string
+  visibility?: string
   eventType?: 'default' | 'outOfOffice' | 'focusTime' | 'workingLocation'
   workingLocationProperties?: {
     type: 'homeOffice' | 'officeLocation' | 'customLocation'
