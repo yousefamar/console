@@ -230,28 +230,48 @@ export function CalendarGrid() {
 
       const dayEvents = merged.sort((a, b) => a.top - b.top || b.height - a.height)
 
-      const groups: PositionedEvent[][] = []
+      // Column assignment: place each event in the first column where it doesn't
+      // overlap any existing event. This stacks non-overlapping events vertically
+      // instead of giving every connected event its own column.
+      const columns: PositionedEvent[][] = []
       for (const ev of dayEvents) {
         let placed = false
-        for (const group of groups) {
-          if (group.some((g) => ev.top < g.top + g.height && ev.top + ev.height > g.top)) {
-            group.push(ev); placed = true; break
+        for (let c = 0; c < columns.length; c++) {
+          const overlaps = columns[c]!.some((g) => ev.top < g.top + g.height && ev.top + ev.height > g.top)
+          if (!overlaps) {
+            columns[c]!.push(ev)
+            ev.column = colIdx // day column (unchanged)
+            placed = true
+            break
           }
         }
-        if (!placed) groups.push([ev])
+        if (!placed) {
+          columns.push([ev])
+        }
       }
 
-      for (const group of groups) {
-        const n = group.length
-        for (let i = 0; i < n; i++) {
-          group[i]!.left = i / n
-          group[i]!.width = 1 / n
+      // Assign left/width based on how many columns are needed at each event's position
+      for (let c = 0; c < columns.length; c++) {
+        for (const ev of columns[c]!) {
+          // Count how many columns have events overlapping this event's time range
+          let maxCols = columns.length
+          // Find the actual number of concurrent columns at this event's time
+          let concurrent = 0
+          for (const col of columns) {
+            if (col.some((g) => ev.top < g.top + g.height && ev.top + ev.height > g.top)) {
+              concurrent++
+            }
+          }
+          maxCols = Math.max(concurrent, 1)
+          ev.left = c / maxCols
+          ev.width = 1 / maxCols
         }
-        positioned.push(...group)
       }
+
+      for (const col of columns) positioned.push(...col)
     }
     return positioned
-  }, [timedEvents, days, calColorMap])
+  }, [timedEvents, days, calColorMap, ownCalendarIds])
 
   const headerLabel = useMemo(() => {
     if (view === 'day') {
