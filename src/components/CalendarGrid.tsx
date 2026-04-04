@@ -91,6 +91,7 @@ interface PositionedEvent {
   column: number
   hangoutLink?: string
   location?: string
+  accepted: boolean  // false = needsAction, tentative, or declined
 }
 
 type DragMode = 'create' | 'move' | 'resize'
@@ -176,6 +177,7 @@ export function CalendarGrid() {
             height: (duration / 60) * HOUR_HEIGHT,
             left: 0, width: 1, column: colIdx,
             hangoutLink: e.hangoutLink, location: e.location,
+            accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
           }
         })
         .sort((a, b) => a.top - b.top || b.height - a.height)
@@ -486,13 +488,16 @@ export function CalendarGrid() {
                 {dayEvents.map((ev) => {
                   const muted = muteColor(ev.color)
                   const isDragging = drag && (drag.mode === 'move' || drag.mode === 'resize') && drag.eventId === ev.id
+                  const unaccepted = !ev.accepted
 
                   return (
                     <div
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
                       onClick={(e) => { e.stopPropagation(); if (!drag) selectEvent(ev.id) }}
-                      className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab border-l-2 border border-black/30 ${
+                      className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab ${
+                        unaccepted ? 'border-l-2 border border-dashed' : 'border-l-2 border border-black/30'
+                      } ${
                         selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'
                       } ${isDragging ? 'opacity-40' : ''}`}
                       style={{
@@ -500,8 +505,9 @@ export function CalendarGrid() {
                         height: Math.max(ev.height - 2, 16),
                         left: `${ev.left * 100}%`,
                         width: `calc(${ev.width * 100}% - 3px)`,
-                        backgroundColor: muted.bg,
+                        backgroundColor: unaccepted ? 'transparent' : muted.bg,
                         borderLeftColor: muted.border,
+                        borderColor: unaccepted ? muted.border : undefined,
                       }}
                     >
                       <div className="px-1 py-0.5 h-full overflow-hidden">
