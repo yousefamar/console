@@ -209,16 +209,20 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         })
       )
 
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
+      // Process accounts in order (primary first) — deduplicate calendars by ID
+      const seenCalIds = new Set<string>()
+      for (const account of accounts) {
+        const result = results.find(
+          (r) => r.status === 'fulfilled' && r.value.accountEmail === account.email
+        )
+        if (result?.status === 'fulfilled') {
           const cals = result.value.items
-            .filter((c) => c.selected !== false)
+            .filter((c) => c.selected !== false && !seenCalIds.has(c.id))
             .map((c) => ({ ...c, accountEmail: result.value.accountEmail }))
+          for (const c of cals) seenCalIds.add(c.id)
           allCalendars.push(...cals)
         }
       }
-
-      allCalendars.sort((a, b) => (a.primary ? -1 : b.primary ? 1 : a.summary.localeCompare(b.summary)))
 
       // Persist to IDB
       const dbItems: DbCalendarInfo[] = allCalendars.map((c) => ({
