@@ -134,6 +134,35 @@ const httpServer = createServer(async (req, res) => {
     return
   }
 
+  // Icon proxy — serves remote images as same-origin for notification icons
+  if (path === '/proxy/icon' && req.method === 'GET') {
+    const iconUrl = url.searchParams.get('url')
+    if (!iconUrl) {
+      res.writeHead(400)
+      res.end('Missing url param')
+      return
+    }
+    try {
+      const iconRes = await fetch(iconUrl)
+      if (!iconRes.ok) {
+        res.writeHead(iconRes.status)
+        res.end()
+        return
+      }
+      const contentType = iconRes.headers.get('content-type') || 'image/png'
+      const buffer = Buffer.from(await iconRes.arrayBuffer())
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400',
+      })
+      res.end(buffer)
+    } catch {
+      res.writeHead(502)
+      res.end()
+    }
+    return
+  }
+
   // Route to handlers — each returns true if it handled the request
   if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
@@ -258,6 +287,7 @@ httpServer.listen(port, host, () => {
           cwd: entry.cwd,
           resume: entry.claudeSessionId,
           silent: true,
+          name: entry.name,
         })
         log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
       } catch (err) {

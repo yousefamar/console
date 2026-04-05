@@ -266,8 +266,8 @@ export function FeedFolderTree() {
                     onChange={async (e) => {
                       const val = e.target.checked
                       setFeedInfo({ ...feedInfo, fullText: val })
-                      const hubUrl = localStorage.getItem('consoleServerUrl') ?? 'http://localhost:9877'
-                      await fetch(`${hubUrl}/feeds/${feedInfo.id}`, {
+                      const { getHubUrl } = await import('@/hub')
+                      await fetch(`${getHubUrl()}/feeds/${feedInfo.id}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ fullText: val }),

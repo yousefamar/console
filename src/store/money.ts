@@ -35,7 +35,11 @@ export interface MonzoMerchant {
     longitude: number
     postcode: string
     region: string
+    approximate?: boolean
+    short_formatted?: string
+    formatted?: string
   }
+  metadata?: Record<string, string>
 }
 
 export interface MonzoCounterparty {
@@ -114,22 +118,7 @@ export interface MoneyStatus {
   fullSyncComplete: boolean
 }
 
-// --------------------------------------------------------------------------
-// Hub URL
-// --------------------------------------------------------------------------
-
-function getHubUrl(): string {
-  return localStorage.getItem('console_hub_url') || 'http://localhost:9877'
-}
-
-async function hubFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${getHubUrl()}${path}`, opts)
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`${res.status}: ${text}`)
-  }
-  return res.json() as Promise<T>
-}
+import { hubFetch } from '@/hub'
 
 // --------------------------------------------------------------------------
 // Category definitions

@@ -19,7 +19,7 @@ React 19, TypeScript, Vite, Zustand, Dexie.js (IndexedDB), Tiptap 3 + tiptap-mar
 ## Project Structure
 ```
 src/
-  main.tsx, App.tsx, index.css
+  main.tsx, App.tsx, index.css, hub.ts, notifications.ts
   __tests__/           — Vitest tests (335 tests, 17 files)
   db/
     index.ts           — Dexie v7: threads, messages, attachmentData, chatRooms, chatMessages, feedItems, feedRead, calendarList, calendarEvents, queue, meta
@@ -309,8 +309,11 @@ docs/
 - **Form-encoded writes** — Monzo API uses `application/x-www-form-urlencoded` for POST/PUT/PATCH (not JSON).
 - **Single-use refresh tokens** — each refresh returns a new refresh_token. Must save atomically before using. Mutex prevents concurrent refreshes.
 - **Pot operations** — deposit/withdraw require `dedupe_id` for idempotency (generated as UUID). "Added security" pots cannot be withdrawn via API.
-- **Webhook** — `transaction.created` event pushed via WebSocket to browser. Requires publicly reachable URL (optional, polling works fine).
+- **Webhook** — `transaction.created` event pushed via WebSocket to browser. Exposed at `https://hub.amar.io/money/webhook?secret=xxx` (Caddy proxies only this path). Secret stored in `auth.json.webhookSecret`, auto-generated.
 - **3-column layout** — sidebar (balance, pots, categories, spending) | transaction list (grouped by date) | transaction detail (merchant, notes, metadata).
+- **Push notifications** — browser `Notification` API fires when app not focused. 5 sources: Monzo transactions (merchant logo icon), Matrix messages (avatar icon), new emails (sender + subject), agent approval requests, calendar reminders (5 min before). Click navigates to correct pane + item. Service worker handles clicks when app backgrounded. Deduped by `tag` (tx/room/thread/event ID).
+- **Hub security** — hub runs on `localhost:9877`, no auth needed. `hub.amar.io` Caddy config restricts to `POST /money/webhook` only (everything else → 403).
+- **Centralized hub access** — `src/hub.ts` provides `getHubUrl()`, `hubFetch()`, `hubFetchRaw()`, `getHubWsUrl()`. All stores use this instead of duplicating. Single localStorage key: `console_hub_url`.
 
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.

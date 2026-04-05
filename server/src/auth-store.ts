@@ -2,6 +2,7 @@
 // Persists to ~/.config/console/auth.json (mode 0600)
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -40,6 +41,7 @@ export interface AuthConfig {
     accessToken: string
   }
   monzo?: MonzoAuth
+  webhookSecret?: string
 }
 
 const DEFAULT_CONFIG: AuthConfig = {
@@ -62,6 +64,8 @@ export class AuthStore {
     if (this.config.monzo?.accessTokenExpiry) {
       this.scheduleMonzoRefresh()
     }
+    // Ensure webhook secret exists
+    this.getWebhookSecret()
   }
 
   // --------------------------------------------------------------------------
@@ -445,6 +449,18 @@ export class AuthStore {
     }
     this.config.monzo = undefined
     this.save()
+  }
+
+  // --------------------------------------------------------------------------
+  // Webhook secret
+  // --------------------------------------------------------------------------
+
+  getWebhookSecret(): string {
+    if (!this.config.webhookSecret) {
+      this.config.webhookSecret = randomBytes(16).toString('hex')
+      this.save()
+    }
+    return this.config.webhookSecret
   }
 
   // --------------------------------------------------------------------------

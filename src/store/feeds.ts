@@ -33,16 +33,7 @@ export interface FeedItem {
 // Hub API
 // --------------------------------------------------------------------------
 
-function getHubUrl(): string {
-  if (typeof window !== 'undefined') {
-    return localStorage.getItem('consoleServerUrl') ?? 'http://localhost:9877'
-  }
-  return 'http://localhost:9877'
-}
-
-async function hubFetch(path: string, options?: RequestInit): Promise<Response> {
-  return fetch(`${getHubUrl()}${path}`, options)
-}
+import { hubFetchRaw as hubFetch } from '@/hub'
 
 // --------------------------------------------------------------------------
 // Store

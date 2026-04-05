@@ -67,6 +67,17 @@ function ConsoleApp() {
   useKeybindings()
   useSync()
 
+  // Request notification permission once
+  useEffect(() => {
+    if (!localStorage.getItem('notif_prompted')) {
+      import('@/notifications').then(({ requestPermission }) => {
+        requestPermission().then(() => {
+          localStorage.setItem('notif_prompted', '1')
+        })
+      })
+    }
+  }, [])
+
   // Warn before closing with unsaved work
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {

@@ -302,6 +302,17 @@ export async function incrementalSync(): Promise<void> {
           for (const dbMsg of dbMessages) {
             await db.messages.put(dbMsg)
           }
+          // Notify on new unread threads
+          if (!existing && dbThread.isUnread) {
+            import('@/notifications').then(({ notify }) => {
+              notify({
+                title: dbThread.from || 'New email',
+                body: dbThread.subject || '',
+                tag: `mail-${threadId}`,
+                data: { pane: 'email', itemId: threadId },
+              })
+            })
+          }
         } else if (!pendingThreadIds.has(threadId)) {
           // Thread no longer in inbox and no pending unarchive — check if snoozed before removing
           const existing = await db.threads.get(threadId)

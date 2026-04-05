@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMoneyStore, formatAmount, formatAmountAbs, getDisplayName, getReference, getMerchantEmoji, MONZO_CATEGORIES } from '@/store/money'
+import { getHubUrl, hubFetch } from '@/hub'
 import type { MonzoTransaction, MonzoPot } from '@/store/money'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import {
@@ -94,10 +95,8 @@ function MoneyConnect({ hasCredentials }: { hasCredentials: boolean }) {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
 
-  const hubUrl = localStorage.getItem('console_hub_url') || 'http://localhost:9877'
-
   const saveCredentials = async () => {
-    await fetch(`${hubUrl}/auth/monzo/credentials`, {
+    await hubFetch('/auth/monzo/credentials', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId, clientSecret }),
@@ -106,7 +105,7 @@ function MoneyConnect({ hasCredentials }: { hasCredentials: boolean }) {
   }
 
   const startAuth = () => {
-    window.open(`${hubUrl}/auth/monzo/start`, '_blank')
+    window.open(`${getHubUrl()}/auth/monzo/start`, '_blank')
     // Poll for connection
     const poll = setInterval(async () => {
       await useMoneyStore.getState().fetchStatus()

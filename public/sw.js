@@ -1,4 +1,4 @@
-// Console PWA Service Worker — caches app shell for offline startup
+// Console PWA Service Worker — caches app shell for offline startup + notification clicks
 const CACHE_NAME = 'console-v1'
 
 // Cache app shell on install
@@ -55,6 +55,21 @@ self.addEventListener('fetch', (event) => {
         }
         return response
       })
+    })
+  )
+})
+
+// Handle notification clicks — focus app window and route to correct pane
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      if (clients.length > 0) {
+        clients[0].focus()
+        clients[0].postMessage({ type: 'notification-click', data: event.notification.data })
+      } else {
+        self.clients.openWindow('/')
+      }
     })
   )
 })

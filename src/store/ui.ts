@@ -28,7 +28,10 @@ const PATH_PANES: Record<string, ActivePane> = {
 
 function paneFromUrl(): ActivePane {
   if (typeof window === 'undefined') return 'email'
-  return PATH_PANES[window.location.pathname] ?? 'email'
+  const pane = PATH_PANES[window.location.pathname] ?? 'email'
+  // Initialize notification pane tracking
+  import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(pane)).catch(() => {})
+  return pane
 }
 
 interface UndoAction {
@@ -102,6 +105,7 @@ export const useUiStore = create<UiState>((set) => ({
   activePane: paneFromUrl(),
   setActivePane: (pane) => {
     history.replaceState(null, '', PANE_PATHS[pane])
+    import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(pane))
     set({ activePane: pane })
   },
   toggleActivePane: () => set((s) => {
@@ -109,6 +113,7 @@ export const useUiStore = create<UiState>((set) => ({
     const idx = order.indexOf(s.activePane)
     const next = order[(idx + 1) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])
+    import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(next))
     return { activePane: next }
   }),
 

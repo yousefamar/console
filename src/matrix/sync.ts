@@ -652,6 +652,30 @@ async function processJoinedRoom(
   }
 
   await db.chatRooms.put(dbRoom)
+
+  // Fire notification for new messages from others
+  if (hasNewerMessagesFromOthers && lastMsg && lastMsg.senderId !== myUserId) {
+    import('@/notifications').then(({ notify }) => {
+      const senderName = lastMsg.senderName || lastMsg.senderId
+      const body = lastMsg.body?.slice(0, 100) || 'New message'
+      // Convert mxc:// avatar to HTTP URL
+      let icon: string | undefined
+      if (dbRoom.avatar?.startsWith('mxc://')) {
+        const [server, mediaId] = dbRoom.avatar.slice(6).split('/')
+        const hs = localStorage.getItem('matrix_homeserver') || ''
+        if (hs && server && mediaId) {
+          icon = `${hs}/_matrix/media/v3/thumbnail/${server}/${mediaId}?width=96&height=96&method=crop`
+        }
+      }
+      notify({
+        title: senderName,
+        body,
+        icon,
+        tag: `chat-${roomId}`,
+        data: { pane: 'chat', itemId: roomId },
+      })
+    })
+  }
 }
 
 // --- Sync lock (prevents concurrent syncs) ---

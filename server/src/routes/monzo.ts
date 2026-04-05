@@ -191,8 +191,22 @@ export function handleMonzoRoutes(
     return true
   }
 
-  // POST /money/webhook — receive Monzo webhook
+  // GET /money/webhook-url — returns the public webhook URL with secret
+  if (path === '/money/webhook-url' && req.method === 'GET') {
+    const secret = authStore.getWebhookSecret()
+    json({ url: `https://hub.amar.io/money/webhook?secret=${secret}` })
+    return true
+  }
+
+  // POST /money/webhook — receive Monzo webhook (public endpoint, secret-protected)
   if (path === '/money/webhook' && req.method === 'POST') {
+    // Verify webhook secret
+    const secret = url.searchParams.get('secret')
+    if (secret !== authStore.getWebhookSecret()) {
+      error(403, 'Invalid webhook secret')
+      return true
+    }
+
     readBody(req).then((body) => {
       const payload = JSON.parse(body) as { type: string; data: any }
       if (payload.type === 'transaction.created') {

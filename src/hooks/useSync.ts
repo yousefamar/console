@@ -153,6 +153,45 @@ export function useSync() {
     return () => clearInterval(calInterval)
   }, [])
 
+  // Calendar reminders: check every 60s for events starting within 5 minutes
+  useEffect(() => {
+    const remindedEvents = new Set<string>(
+      JSON.parse(localStorage.getItem('cal_reminded') || '[]'),
+    )
+
+    const checkReminders = () => {
+      import('@/store/calendar').then(({ useCalendarStore }) => {
+        const { events } = useCalendarStore.getState()
+        const now = Date.now()
+        const fiveMin = 5 * 60 * 1000
+
+        for (const event of events) {
+          if (!event.start?.dateTime) continue
+          const startTime = new Date(event.start.dateTime).getTime()
+          const diff = startTime - now
+          if (diff > 0 && diff <= fiveMin && !remindedEvents.has(event.id)) {
+            remindedEvents.add(event.id)
+            localStorage.setItem('cal_reminded', JSON.stringify([...remindedEvents].slice(-200)))
+            import('@/notifications').then(({ notify }) => {
+              const time = new Date(event.start!.dateTime!).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+              notify({
+                title: event.summary || 'Upcoming event',
+                body: `${time}${event.location ? ` · ${event.location}` : ''}`,
+                tag: `cal-${event.id}`,
+                data: { pane: 'calendar' },
+              })
+            })
+          }
+        }
+      })
+    }
+
+    const reminderInterval = setInterval(checkReminders, 60_000)
+    checkReminders() // Check immediately on mount
+
+    return () => clearInterval(reminderInterval)
+  }, [])
+
   const triggerFullSync = useCallback(async () => {
     if (isGmailSignedIn()) await fullSync()
     if (isMatrixConnected()) await fullMatrixSync()

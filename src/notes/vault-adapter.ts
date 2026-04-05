@@ -176,9 +176,7 @@ export class FsaVaultAdapter implements VaultAdapter {
 // Hub REST API adapter (fallback)
 // ---------------------------------------------------------------------------
 
-function getHubUrl(): string {
-  return (typeof localStorage !== 'undefined' && localStorage.getItem('consoleServerUrl')) || 'http://localhost:9877'
-}
+import { getHubUrl } from '@/hub'
 
 export class HubVaultAdapter implements VaultAdapter {
   async listFiles(): Promise<VaultFile[]> {

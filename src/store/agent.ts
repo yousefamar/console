@@ -1,20 +1,12 @@
 import { create } from 'zustand'
+import { getHubWsUrl, setHubUrl as saveHubUrl } from '@/hub'
 
 // ============================================================================
 // Agent Store — manages WebSocket connection to the Console Agent Hub,
 // session state, message streams, and tool approval flow.
 // ============================================================================
 
-const DEFAULT_HUB_URL = 'ws://localhost:9877'
 const RECONNECT_DELAY_MS = 3000
-
-function getHubUrl(): string {
-  try {
-    return localStorage.getItem('console-server-url') || DEFAULT_HUB_URL
-  } catch {
-    return DEFAULT_HUB_URL
-  }
-}
 
 // --------------------------------------------------------------------------
 // Types
@@ -51,6 +43,7 @@ export interface PendingApproval {
 export interface SessionInfo {
   id: string
   claudeSessionId?: string
+  name?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
@@ -129,6 +122,7 @@ interface AgentState {
   selectPrevSession: () => void
   listSessions: () => void
   toggleThinkingCollapsed: (messageId: string) => void
+  renameSession: (sessionId: string, name: string) => void
   resumeSession: (claudeSessionId: string, prompt: string, cwd?: string) => void
   listPastSessions: (cwd: string) => void
   setHubUrl: (url: string) => void
@@ -148,7 +142,7 @@ function nextId(): string {
 export const useAgentStore = create<AgentState>((set, get) => ({
   connected: false,
   connecting: false,
-  hubUrl: getHubUrl(),
+  hubUrl: getHubWsUrl(),
 
   projectDirs: [],
 
@@ -309,6 +303,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })
   },
 
+  renameSession: (sessionId, name) => {
+    sendWs({ type: 'rename_session', sessionId, name })
+    // Optimistic update
+    updateSession(sessionId, { name })
+  },
+
   resumeSession: (claudeSessionId, prompt, cwd) => {
     sendWs({
       type: 'resume_session',
@@ -328,8 +328,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   setHubUrl: (url) => {
-    try { localStorage.setItem('console-server-url', url) } catch { /* */ }
-    // Disconnect and reconnect with new URL
+    saveHubUrl(url.replace(/^ws/, 'http'))
     get().disconnect()
     set({ hubUrl: url })
     get().connect()
@@ -411,6 +410,13 @@ function handleHubMessage(msg: Record<string, unknown>) {
       const prompt = (msg.prompt as string) || useAgentStore.getState().pendingPrompt || ''
       // Only switch to this session if user requested it (pendingSessionActivate set by createSession/resumeSession)
       const shouldActivate = useAgentStore.getState().pendingSessionActivate
+      // Skip if session already exists (e.g. replayed from messageLog after sessions_list)
+      if (useAgentStore.getState().sessions.some((s) => s.id === sessionId)) {
+        if (shouldActivate) {
+          useAgentStore.setState({ activeSessionId: sessionId, pendingPrompt: null, pendingSessionActivate: false, creatingNewSession: false })
+        }
+        break
+      }
       // Don't add initial prompt here — it comes as a separate user_prompt message from the hub
       useAgentStore.setState((s) => ({
         ...(shouldActivate ? { activeSessionId: sessionId } : {}),
@@ -419,6 +425,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         creatingNewSession: false,
         sessions: [...s.sessions, {
           id: sessionId,
+          name: msg.name as string | undefined,
           status: 'running' as const,
           createdAt: Date.now(),
           prompt,
@@ -498,7 +505,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         // Try direct match first, then remap match
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
         return local
-          ? { ...s, isAl, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText }
+          ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText }
           : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0 }
       })
 
@@ -680,6 +687,16 @@ function handleHubMessage(msg: Record<string, unknown>) {
       useAgentStore.setState({
         pendingApproval: { sessionId: approvalSessionId, requestId, toolName, input },
       })
+      // Notify
+      import('@/notifications').then(({ notify }) => {
+        const question = toolName === 'AskUserQuestion' ? (input.question as string || 'Question') : toolName
+        notify({
+          title: 'Claude needs input',
+          body: question.length > 80 ? question.slice(0, 80) + '...' : question,
+          tag: `agent-${requestId}`,
+          data: { pane: 'agents', itemId: approvalSessionId },
+        })
+      })
       break
     }
 
@@ -728,6 +745,12 @@ function handleHubMessage(msg: Record<string, unknown>) {
       break
     }
 
+    case 'session_renamed': {
+      const sessionId = msg.sessionId as string
+      updateSession(sessionId, { name: msg.name as string })
+      break
+    }
+
     case 'user_prompt': {
       const sessionId = msg.sessionId as string
       const content = msg.content as string
@@ -759,6 +782,27 @@ function handleHubMessage(msg: Record<string, unknown>) {
       if (approval && approval.requestId === (msg.requestId as string)) {
         useAgentStore.setState({ pendingApproval: null })
       }
+      break
+    }
+
+    case 'monzo_transaction': {
+      // Real-time transaction from Monzo webhook
+      const tx = msg.transaction as any
+      import('@/store/money').then(({ useMoneyStore, formatAmount }) => {
+        useMoneyStore.getState().handleWebhookTransaction(tx)
+        // Notify
+        const merchant = typeof tx.merchant === 'object' && tx.merchant ? tx.merchant : null
+        const name = merchant?.name || tx.counterparty?.name || tx.description
+        import('@/notifications').then(({ notify }) => {
+          notify({
+            title: name,
+            body: formatAmount(tx.amount),
+            icon: merchant?.logo || undefined,
+            tag: `money-${tx.id}`,
+            data: { pane: 'money', itemId: tx.id },
+          })
+        })
+      })
       break
     }
 
