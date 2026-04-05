@@ -216,7 +216,7 @@ function toolIcon(name: string) {
   }
 }
 
-/** Lightweight markdown: code blocks, inline code, bold, italic */
+/** Lightweight markdown: code blocks, tables, inline code, bold, italic */
 export function renderMarkdownLite(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let key = 0
@@ -227,7 +227,8 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
 
   for (const match of text.matchAll(fenceRegex)) {
     if (match.index > lastIndex) {
-      parts.push(<span key={key++}>{renderInlineMarkdown(text.slice(lastIndex, match.index))}</span>)
+      parts.push(...renderBlockContent(text.slice(lastIndex, match.index), key))
+      key += 100
     }
     const lang = match[1]
     const code = match[2]!.replace(/\n$/, '')
@@ -241,10 +242,89 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
   }
 
   if (lastIndex < text.length) {
-    parts.push(<span key={key++}>{renderInlineMarkdown(text.slice(lastIndex))}</span>)
+    parts.push(...renderBlockContent(text.slice(lastIndex), key))
   }
 
   return parts.length > 0 ? parts : [<span key={0}>{text}</span>]
+}
+
+/** Parse tables and inline markdown from non-code-fence text */
+function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
+  const parts: React.ReactNode[] = []
+  let key = startKey
+
+  // Split into lines to detect tables
+  const lines = text.split('\n')
+  let i = 0
+
+  while (i < lines.length) {
+    // Detect table: line with |, followed by separator line (|---|---|), followed by more | lines
+    if (
+      lines[i]!.includes('|') &&
+      i + 1 < lines.length &&
+      /^\s*\|?\s*[-:]+[-| :]*$/.test(lines[i + 1]!)
+    ) {
+      // Collect all table lines
+      const headerLine = lines[i]!
+      i += 2 // skip header + separator
+      const bodyLines: string[] = []
+      while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim() !== '') {
+        bodyLines.push(lines[i]!)
+        i++
+      }
+
+      const parseRow = (line: string) =>
+        line.split('|').map((c) => c.trim()).filter((c, idx, arr) =>
+          // Filter empty first/last from leading/trailing |
+          !(c === '' && (idx === 0 || idx === arr.length - 1)),
+        )
+
+      const headers = parseRow(headerLine)
+      const rows = bodyLines.map(parseRow)
+
+      parts.push(
+        <div key={key++} className="my-1 overflow-x-auto">
+          <table className="text-[11px] border-collapse">
+            <thead>
+              <tr className="border-b border-border">
+                {headers.map((h, j) => (
+                  <th key={j} className="px-2 py-1 text-left text-text-secondary font-medium whitespace-nowrap">
+                    {renderInlineMarkdown(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-border/50">
+                  {row.map((cell, ci) => (
+                    <td key={ci} className="px-2 py-1 text-text-primary whitespace-nowrap">
+                      {renderInlineMarkdown(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
+    } else {
+      // Non-table line — collect consecutive non-table lines
+      const lineStart = i
+      while (
+        i < lines.length &&
+        !(lines[i]!.includes('|') && i + 1 < lines.length && /^\s*\|?\s*[-:]+[-| :]*$/.test(lines[i + 1]!))
+      ) {
+        i++
+      }
+      const chunk = lines.slice(lineStart, i).join('\n')
+      if (chunk) {
+        parts.push(<span key={key++}>{renderInlineMarkdown(chunk)}</span>)
+      }
+    }
+  }
+
+  return parts
 }
 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
