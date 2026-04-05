@@ -60,6 +60,9 @@ function hasUnsavedWork(): boolean {
   if (useInboxStore.getState().replyMode) return true
   // Pending sync queue
   if (useUiStore.getState().queueCount > 0) return true
+  // Typing in agent prompt input
+  const active = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.value) return true
   return false
 }
 
