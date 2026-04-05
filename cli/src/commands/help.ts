@@ -12,6 +12,7 @@ Services:
   notes        Obsidian vault notes — list, read, write, search, daily
   feeds        RSS/Atom feeds — list, items, mark-read, add, delete
   cal          Google Calendar — events, create, edit, delete, rsvp
+  money        Monzo banking — balance, transactions, pots, spending
   agent        Claude Code sessions — create, send, tail, approve/deny
 
 System:
@@ -35,7 +36,7 @@ Global flags:
   --timeout    Request timeout in ms (default: 30000)
 
 Aliases:
-  m=mail  c=chat  b=bookmarks  n=notes  f=feeds  a=agent  s=search
+  m=mail  c=chat  b=bookmarks  n=notes  f=feeds  mo=money  a=agent  s=search
 
 Examples:
   con mail list --max 10
@@ -180,6 +181,29 @@ Examples:
   con cal events --from today --to +7d
   con cal create --calendar primary --title "Lunch" --start 2026-04-05T12:00 --end 2026-04-05T13:00
   con cal rsvp event123 --calendar primary --status accept
+`.trim(),
+
+  money: `
+con money — Monzo Banking
+
+Commands:
+  status        Connection status
+  accounts      List accounts
+  balance       Current balance
+  transactions  List transactions (cached)
+  get           Transaction detail
+  pots          List pots with balances
+  deposit       Deposit to pot
+  withdraw      Withdraw from pot
+  annotate      Annotate transaction
+  spending      Spending by category
+  sync          Trigger transaction sync
+
+Examples:
+  con money balance
+  con money transactions --category groceries --limit 20
+  con money spending --month 2026-04
+  con money deposit --pot pot_xxx --amount 500
 `.trim(),
 
   agent: `

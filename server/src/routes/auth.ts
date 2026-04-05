@@ -16,6 +16,10 @@ const GOOGLE_SCOPES = [
 let pendingOAuthState: string | null = null
 let lastOAuthResult: { email: string } | null = null
 
+// Monzo OAuth state
+let pendingMonzoState: string | null = null
+let lastMonzoResult: { connected: boolean; scaRequired?: boolean; error?: string } | null = null
+
 export function handleAuthRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -216,6 +220,162 @@ export function handleAuthRoutes(
   // POST /auth/logout/matrix
   if (path === '/auth/logout/matrix' && req.method === 'POST') {
     authStore.clearMatrixConfig()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return true
+  }
+
+  // --------------------------------------------------------------------------
+  // Monzo OAuth
+  // --------------------------------------------------------------------------
+
+  // POST /auth/monzo/credentials — set client_id and client_secret
+  if (path === '/auth/monzo/credentials' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const { clientId, clientSecret } = JSON.parse(body) as { clientId: string; clientSecret: string }
+      authStore.setMonzoCredentials(clientId, clientSecret)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    }).catch((err: Error) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    })
+    return true
+  }
+
+  // GET /auth/monzo/start — initiate Monzo OAuth flow
+  if (path === '/auth/monzo/start' && req.method === 'GET') {
+    const monzo = authStore.getMonzoConfig()
+    if (!monzo?.clientId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Monzo credentials not configured' }))
+      return true
+    }
+
+    pendingMonzoState = Math.random().toString(36).slice(2)
+    lastMonzoResult = null
+
+    const redirectUri = `http://localhost:${hubPort}/auth/monzo/callback`
+    const url = new URL('https://auth.monzo.com/')
+    url.searchParams.set('client_id', monzo.clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('state', pendingMonzoState)
+
+    res.writeHead(302, { Location: url.toString() })
+    res.end()
+    return true
+  }
+
+  // GET /auth/monzo/callback — Monzo OAuth redirect callback
+  if (path.startsWith('/auth/monzo/callback') && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
+    const code = url.searchParams.get('code')
+    const state = url.searchParams.get('state')
+    const error = url.searchParams.get('error')
+
+    if (error) {
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(`<html><body><h2>Monzo auth failed</h2><p>${error}</p></body></html>`)
+      return true
+    }
+
+    if (!code || state !== pendingMonzoState) {
+      res.writeHead(400, { 'Content-Type': 'text/html' })
+      res.end('<html><body><h2>Invalid callback</h2><p>State mismatch or missing code.</p></body></html>')
+      return true
+    }
+
+    pendingMonzoState = null
+
+    const redirectUri = `http://localhost:${hubPort}/auth/monzo/callback`
+    authStore.exchangeMonzoCode(code, redirectUri)
+      .then(() => {
+        lastMonzoResult = { connected: true, scaRequired: true }
+        console.log('[auth] Monzo code exchanged — awaiting SCA approval')
+      })
+      .catch((err: Error) => {
+        console.error('[auth] Monzo code exchange failed:', err.message)
+        lastMonzoResult = { connected: false, error: err.message }
+      })
+
+    res.writeHead(200, { 'Content-Type': 'text/html' })
+    res.end(`
+      <html><body style="font-family: system-ui; text-align: center; padding-top: 80px; max-width: 500px; margin: 0 auto;">
+        <h2>Monzo Connected</h2>
+        <p>Now open the <strong>Monzo app</strong> on your phone and <strong>approve the notification</strong>.</p>
+        <p style="color: #666; font-size: 14px;">Strong Customer Authentication (SCA) is required before the app can access your data.</p>
+        <p id="status" style="margin-top: 30px;">Waiting for approval...</p>
+        <script>
+          async function poll() {
+            try {
+              const res = await fetch('/auth/monzo/poll');
+              const data = await res.json();
+              if (data.scaApproved) {
+                document.getElementById('status').innerHTML = '<span style="color: green; font-size: 18px;">Approved! You can close this tab.</span>';
+                return;
+              }
+              if (data.error) {
+                document.getElementById('status').innerHTML = '<span style="color: red;">' + data.error + '</span>';
+                return;
+              }
+            } catch {}
+            setTimeout(poll, 2000);
+          }
+          poll();
+        </script>
+      </body></html>
+    `)
+    return true
+  }
+
+  // GET /auth/monzo/poll — check Monzo OAuth + SCA status
+  if (path === '/auth/monzo/poll' && req.method === 'GET') {
+    if (lastMonzoResult?.error) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ done: false, error: lastMonzoResult.error }))
+      return true
+    }
+
+    if (!lastMonzoResult?.connected) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ done: false }))
+      return true
+    }
+
+    // Check SCA by calling whoami
+    // Import MonzoClient dynamically isn't ideal, so we use raw fetch
+    const token = authStore.getMonzoConfig()?.accessToken
+    if (!token) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ done: false }))
+      return true
+    }
+
+    fetch('https://api.monzo.com/ping/whoami', {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(async (whoamiRes) => {
+      if (whoamiRes.ok) {
+        const data = await whoamiRes.json() as { authenticated: boolean }
+        if (data.authenticated) {
+          lastMonzoResult = null
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ done: true, scaApproved: true }))
+          return
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ done: false, scaRequired: true }))
+    }).catch(() => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ done: false }))
+    })
+    return true
+  }
+
+  // POST /auth/logout/monzo
+  if (path === '/auth/logout/monzo' && req.method === 'POST') {
+    authStore.clearMonzo()
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true }))
     return true

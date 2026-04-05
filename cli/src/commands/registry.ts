@@ -208,6 +208,28 @@ export const COMMANDS: CommandDef[] = [
   { name: 'auth status', description: 'Show authentication status', safety: 'read' },
   { name: 'auth accounts', description: 'List all connected accounts', safety: 'read' },
 
+  // money
+  { name: 'money status', description: 'Monzo connection status', safety: 'read' },
+  { name: 'money accounts', description: 'List Monzo accounts', safety: 'read' },
+  { name: 'money balance', description: 'Current account balance', safety: 'read' },
+  { name: 'money transactions', description: 'List transactions (cached)', safety: 'read',
+    flags: { since: { type: 'string', description: 'ISO date' }, before: { type: 'string', description: 'ISO date' },
+      category: { type: 'string', description: 'Monzo category' }, search: { type: 'string', description: 'Search text' },
+      limit: { type: 'string', description: 'Max results (default 50)' }, offset: { type: 'string', description: 'Offset' } } },
+  { name: 'money get', description: 'Get single transaction detail', safety: 'read',
+    args: [{ name: 'tx-id', required: true, description: 'Transaction ID' }] },
+  { name: 'money pots', description: 'List pots with balances', safety: 'read' },
+  { name: 'money deposit', description: 'Deposit to pot', safety: 'write',
+    flags: { pot: { type: 'string', description: 'Pot ID (required)' }, amount: { type: 'string', description: 'Amount in pence (required)' } } },
+  { name: 'money withdraw', description: 'Withdraw from pot', safety: 'write',
+    flags: { pot: { type: 'string', description: 'Pot ID (required)' }, amount: { type: 'string', description: 'Amount in pence (required)' } } },
+  { name: 'money annotate', description: 'Annotate transaction metadata', safety: 'write',
+    args: [{ name: 'tx-id', required: true, description: 'Transaction ID' }],
+    flags: { key: { type: 'string', description: 'Metadata key (required)' }, value: { type: 'string', description: 'Metadata value' } } },
+  { name: 'money spending', description: 'Spending breakdown by category', safety: 'read',
+    flags: { month: { type: 'string', description: 'YYYY-MM (default current)' } } },
+  { name: 'money sync', description: 'Trigger transaction sync', safety: 'write' },
+
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
   { name: 'capabilities', description: 'List all commands for agent discovery', safety: 'read' },
@@ -225,4 +247,5 @@ export const ALIASES: Record<string, string> = {
   f: 'feeds',
   a: 'agent',
   s: 'search',
+  mo: 'money',
 }

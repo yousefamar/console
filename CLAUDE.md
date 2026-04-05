@@ -1,13 +1,13 @@
 # Console — Bespoke Command Center
 
 ## What is this?
-A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + RSS/Atom feed reader + Google Calendar + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Feeds are synced offline with unread tracking and inbox-zero triage. Calendar shows week/day views with full CRUD, RSVP, and multi-calendar support. Agent sessions run Claude Code from the browser via a local server. No labels, no folders — just fast triage.
+A personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmark browser + Obsidian vault note editor + RSS/Atom feed reader + Google Calendar + Monzo banking + Claude Code agent sessions, unified under inbox-zero. Every email is triaged (archived, snoozed, or replied to). Every chat with unread messages appears until responded to or marked read. Bookmarks are browsed, searched, and triaged (keep/delete/tag). Notes are edited with vim keybindings and live markdown preview via CodeMirror 6. Feeds are synced offline with unread tracking and inbox-zero triage. Calendar shows week/day views with full CRUD, RSVP, and multi-calendar support. Agent sessions run Claude Code from the browser via a local server. No labels, no folders — just fast triage.
 
 ## Architecture
 - **Pure web app (PWA)** — installable standalone app, works in any browser including mobile
 - **Offline-first** — all mutations happen locally first, sync when online
 - **Stateless post-sync** — app state derived from synced data + local queue
-- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, FeedTab, CalendarTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
+- **Sub-app isolation** — Layout subscribes only to `activePane`. Each pane (MailTab, ChatTab, BookmarkTab, NotesTab, FeedTab, CalendarTab, MoneyTab, AgentTab) owns its own store subscriptions. A chat state change never re-renders the email pane and vice versa.
 - **Pre-rendered panes** — all email threads and chat rooms mounted with `display:none`, toggled on selection for instant switching. Chat rooms use deferred re-renders (ref for hidden, state for visible).
 - **Live queries in leaves** — Dexie `useLiveQuery` calls live in leaf components (ThreadList, ChatRoomList, SyncStatus), never in parent Layout. ThreadView split into 3 isolated siblings (Header, Messages, Compose).
 - **Cloudflare Pages** — SPA from CDN + two Pages Functions for OAuth token exchange/refresh
@@ -45,6 +45,7 @@ src/
     notes.ts           — Notes: vault adapter, file tree, open files, search, dirty tracking
     feeds.ts           — Feeds: subscriptions, items, unread tracking, IndexedDB hydration, hub sync
     calendar.ts        — Calendar: calendars, events, view state, CRUD, RSVP, optimistic updates
+    money.ts           — Money: Monzo banking, balance, transactions, pots, spending
     ui.ts              — Modals, dark mode, sync status, active pane (email/chat/bookmarks/notes/feeds/calendar/agents)
   hooks/
     useKeybindings.ts  — Pane-aware vim-style shortcuts (dispatches to email or chat store)
@@ -86,6 +87,7 @@ src/
     CalendarLocationPicker.tsx — Working location picker (Home/Office/Custom)
     ComposeEditor.tsx, ContactAutocomplete.tsx, AttachmentBar.tsx, CalendarEventCard.tsx
     DateTimePicker.tsx, SearchOverlay.tsx, SnoozePicker.tsx, KeybindingHelp.tsx
+    MoneyTab.tsx          — Monzo banking tab (sidebar + tx list + tx detail)
     EmailFrame.tsx, SyncStatus.tsx, InboxZero.tsx, UndoToast.tsx, AuthScreen.tsx
   calendar/
     types.ts             — CalendarInfo, CalendarEvent, DB types
@@ -113,6 +115,8 @@ server/                  — Local Node.js backend (REST + WebSocket)
     al-bridge.ts         — Al WebSocket bridge (translates Al protocol ↔ HubMessage)
     gmail-client.ts      — Gmail REST API client (server-side, uses auth-store tokens)
     calendar-client.ts   — Google Calendar REST API client (server-side, uses auth-store tokens)
+    monzo-client.ts      — Monzo REST API client (OAuth2, form-encoded, single-use refresh tokens)
+    monzo-store.ts       — Monzo transaction cache (JSON file, full + incremental sync)
     matrix-client.ts     — Matrix CS API client (server-side, uses auth-store tokens)
     routes/
       agents.ts          — WebSocket message handler for Claude Code sessions
@@ -122,6 +126,7 @@ server/                  — Local Node.js backend (REST + WebSocket)
       auth.ts            — OAuth callback flow + Matrix login + auth status
       mail.ts            — Gmail proxy routes (threads, send, attachments, contacts)
       calendar.ts        — Calendar proxy routes (events, RSVP, location, accounts)
+      monzo.ts           — Monzo routes (balance, transactions, pots, spending, webhook)
       matrix.ts          — Matrix routes (rooms, messages, send, reactions, receipts)
     __tests__/           — Session, protocol, bookmarks, notes tests (102 tests)
 cli/                     — CLI tool for AI agents and power users
@@ -139,6 +144,7 @@ cli/                     — CLI tool for AI agents and power users
       notes.ts           — Notes commands (list, read, write, search, daily)
       feeds.ts           — Feed commands (items, mark-read, add, import/export)
       cal.ts             — Calendar commands (events, create, edit, rsvp, location)
+      money.ts           — Money commands (balance, transactions, pots, spending, sync)
       agent.ts           — Agent commands (create, send, tail, approve/deny, wait)
       auth.ts            — Auth commands (login google/matrix, status)
       search.ts          — Cross-service search
@@ -294,6 +300,18 @@ docs/
 - **Mini month picker** — Sidebar mini calendar for quick date navigation. Click date → navigate to that week/day.
 - **Sidebar** — Calendars grouped by account email. Colored checkboxes with eye icon for visibility. RSS icon for imported feeds, person icon for read-only subscribed calendars. "Add calendar account" at bottom.
 
+## Key Patterns (Money / Monzo)
+- **Monzo API** — direct REST API at `api.monzo.com`. Hub is token proxy. Confidential OAuth2 client with single-use refresh tokens.
+- **Strong Customer Authentication (SCA)** — after OAuth code exchange, token has zero permissions until user approves in Monzo app. Hub polls `/ping/whoami` until `authenticated: true`.
+- **90-day transaction limit** — after 5 minutes post-auth, only last 90 days accessible. Full sync fetches ALL history within this window (paginated, 100/request).
+- **Server-side cache** — `~/.config/console/monzo-transactions.json` stores all transactions. Source of truth for browsing. Incremental sync fetches new transactions.
+- **Amounts in minor units** — all monetary values in pennies (int64). Formatted to pounds only in display layer (`formatAmount`, `formatAmountAbs`).
+- **Form-encoded writes** — Monzo API uses `application/x-www-form-urlencoded` for POST/PUT/PATCH (not JSON).
+- **Single-use refresh tokens** — each refresh returns a new refresh_token. Must save atomically before using. Mutex prevents concurrent refreshes.
+- **Pot operations** — deposit/withdraw require `dedupe_id` for idempotency (generated as UUID). "Added security" pots cannot be withdrawn via API.
+- **Webhook** — `transaction.created` event pushed via WebSocket to browser. Requires publicly reachable URL (optional, polling works fine).
+- **3-column layout** — sidebar (balance, pots, categories, spending) | transaction list (grouped by date) | transaction detail (merchant, notes, metadata).
+
 ## Key Patterns (Agents / Claude Code)
 - **CLI subprocess** — Hub spawns `claude` with `--output-format stream-json --input-format stream-json --permission-prompt-tool stdio --chrome`.
 - **NDJSON protocol** — Claude emits one JSON object per stdout line: `system`, `assistant` (text/thinking/tool_use), `user` (tool_result), `result`, `control_request` (tool approval), `stream_event` (deltas)
@@ -326,6 +344,9 @@ j/k = navigate items, e = mark read + advance, E = mark feed read, u = mark unre
 
 ### Calendar-specific keybindings
 h/l or arrows = prev/next week (or day in day view), t = go to today, w = week view, d = day view, c = create event, Esc = close popover/form
+
+### Money-specific keybindings
+j/k = navigate transactions, / = search, n = add note, c = cycle category filter, Esc = clear/deselect
 
 ### Agent-specific keybindings
 y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, Esc = interrupt
@@ -365,8 +386,8 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 ## CLI (`con`) — Agent-Accessible Interface
 - **Binary:** `con` (installed globally via `cd cli && npm link`)
 - **Pattern:** `con <noun> <verb> [args] [--flags]` (e.g., `con mail list --max 10`)
-- **Services:** mail, chat, bookmarks, notes, feeds, cal, agent, search, auth
-- **Aliases:** m=mail, c=chat, b=bookmarks, n=notes, f=feeds, a=agent, s=search
+- **Services:** mail, chat, bookmarks, notes, feeds, cal, money, agent, search, auth
+- **Aliases:** m=mail, c=chat, b=bookmarks, n=notes, f=feeds, mo=money, a=agent, s=search
 - **Output:** JSON envelope `{success,data,metadata}` when piped or `--json`; human-readable tables on TTY
 - **Agent mode:** `--agent` flag enables JSON output + no-input + structured errors
 - **Self-discovery:** `con capabilities --json` lists all 81 commands with read/write/destructive safety tiers
@@ -381,6 +402,7 @@ y = allow tool, n = deny tool, a = allow all (tool type), Enter = focus prompt, 
 - `/mail/*` — Gmail proxy (threads, send, attachments, contacts, history, labels)
 - `/cal/*` — Calendar proxy (calendars, events, RSVP, location, accounts)
 - `/matrix/*` — Matrix proxy (rooms, messages, send, reactions, receipts)
+- `/money/*` — Monzo banking (balance, transactions, pots, spending, sync, webhook)
 - `/bookmarks/*` — Bookmark CRUD (existing)
 - `/feeds/*` — Feed CRUD + items (existing)
 - `/notes/*` — Notes CRUD (existing)

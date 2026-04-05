@@ -33,6 +33,9 @@ import { handleCalendarRoutes } from './routes/calendar.js'
 import { MatrixClient } from './matrix-client.js'
 import { handleMatrixRoutes } from './routes/matrix.js'
 import { AlBridge, AL_SESSION_ID } from './al-bridge.js'
+import { MonzoClient } from './monzo-client.js'
+import { MonzoStore } from './monzo-store.js'
+import { handleMonzoRoutes } from './routes/monzo.js'
 
 // --------------------------------------------------------------------------
 // Configuration
@@ -60,13 +63,20 @@ const authStore = new AuthStore()
 const gmailClient = new GmailClient(authStore)
 const calendarClient = new CalendarClient(authStore)
 const matrixClient = new MatrixClient(authStore)
+const monzoClient = new MonzoClient(authStore)
+const monzoStore = new MonzoStore(
+  join(feedsConfigDir, 'monzo-transactions.json'),
+  monzoClient,
+)
+function broadcast(msg: HubMessage) {
+  const data = JSON.stringify(msg)
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data)
+  }
+}
+
 const alBridge = new AlBridge({
-  broadcast: (msg: HubMessage) => {
-    const data = JSON.stringify(msg)
-    for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data)
-    }
-  },
+  broadcast,
   broadcastExcept: (sender: WebSocket, msg: HubMessage) => {
     const data = JSON.stringify(msg)
     for (const ws of clients) {
@@ -129,6 +139,7 @@ const httpServer = createServer(async (req, res) => {
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, readBody)) return
+  if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return

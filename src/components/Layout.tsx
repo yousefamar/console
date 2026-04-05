@@ -15,12 +15,13 @@ import { isSignedIn as isGmailConnected, signIn as gmailSignIn } from '@/gmail/a
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, Settings } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
 import { CalendarTab } from './CalendarTab'
+import { MoneyTab } from './MoneyTab'
 import { useFeedStore } from '@/store/feeds'
 
 // ---------- MailTab (isolates inbox store subscriptions) ----------
@@ -171,6 +172,7 @@ export function Layout() {
   const isAgents = activePane === 'agents'
   const isFeeds = activePane === 'feeds'
   const isCalendar = activePane === 'calendar'
+  const isMoney = activePane === 'money'
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -209,6 +211,9 @@ export function Layout() {
         const { useCalendarStore } = await import('@/store/calendar')
         await useCalendarStore.getState().refreshAll()
       }
+    } else if (isMoney) {
+      const { useMoneyStore } = await import('@/store/money')
+      await useMoneyStore.getState().refreshSync()
     } else if (isChat && matrixConnected) {
       if (e.ctrlKey || e.metaKey) {
         await db.chatMessages.clear()
@@ -259,12 +264,13 @@ export function Layout() {
             <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="calendar" icon={<CalendarDays size={11} />} label="Calendar" activePane={activePane} setActivePane={setActivePane} />
+            <PaneTab pane="money" icon={<PoundSterling size={11} />} label="Money" activePane={activePane} setActivePane={setActivePane} />
             <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
           </div>
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar ? true : matrixConnected) && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -318,6 +324,11 @@ export function Layout() {
         {/* Calendar pane */}
         <div className={`flex flex-1 min-h-0 ${isCalendar ? '' : 'hidden'}`}>
           <CalendarTab />
+        </div>
+
+        {/* Money pane */}
+        <div className={`flex flex-1 min-h-0 ${isMoney ? '' : 'hidden'}`}>
+          <MoneyTab />
         </div>
 
         {/* Agents pane */}
@@ -404,6 +415,7 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
   const isNotes = activePane === 'notes'
   const isFeeds = activePane === 'feeds'
   const isCalendar = activePane === 'calendar'
+  const isMoney = activePane === 'money'
 
   const handleDone = () => {
     if (isEmail) useInboxStore.getState().archiveThread()
@@ -414,7 +426,7 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
   return (
     <footer className="flex items-center justify-between border-t border-border px-3 md:px-4 py-1 md:py-1">
       <div className="flex items-center gap-3 md:gap-4">
-        {isAgents || isBookmarks || isNotes || isCalendar ? (
+        {isAgents || isBookmarks || isNotes || isCalendar || isMoney ? (
           <></>
         ) : isFeeds ? (
           <>
@@ -467,6 +479,13 @@ function Footer({ activePane, isMobile }: { activePane: ActivePane; isMobile: bo
               <span><kbd className="font-mono">t</kbd> today</span>
               <span><kbd className="font-mono">w</kbd>/<kbd className="font-mono">d</kbd> view</span>
               <span><kbd className="font-mono">c</kbd> create</span>
+            </>
+          ) : isMoney ? (
+            <>
+              <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> navigate</span>
+              <span><kbd className="font-mono">/</kbd> search</span>
+              <span><kbd className="font-mono">n</kbd> note</span>
+              <span><kbd className="font-mono">c</kbd> category</span>
             </>
           ) : isNotes ? (
             <>

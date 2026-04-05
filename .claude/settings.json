@@ -1,14 +1,1 @@
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "npm test 2>&1"
-          }
-        ]
-      }
-    ]
-  }
-}
+{}

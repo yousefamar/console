@@ -53,6 +53,12 @@ const BINDINGS = [
     { key: 'w / d', action: 'Week / day view' },
     { key: 'c', action: 'Create event' },
   ]},
+  { section: 'Money', items: [
+    { key: 'j / k', action: 'Navigate transactions' },
+    { key: '/', action: 'Search transactions' },
+    { key: 'n', action: 'Add note' },
+    { key: 'c', action: 'Cycle category filter' },
+  ]},
   { section: 'Agents', items: [
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },

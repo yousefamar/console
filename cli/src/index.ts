@@ -120,6 +120,11 @@ async function main() {
         await agent(verb, rest, flags)
         break
       }
+      case 'money': {
+        const { money } = await import('./commands/money.js')
+        await money(verb, rest, flags)
+        break
+      }
       case 'search': {
         const { search } = await import('./commands/search.js')
         await search([verb, ...rest].filter(Boolean) as string[], flags)

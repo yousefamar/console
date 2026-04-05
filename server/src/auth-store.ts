@@ -17,6 +17,16 @@ export interface GoogleAccount {
   isPrimary?: boolean
 }
 
+export interface MonzoAuth {
+  clientId: string
+  clientSecret: string
+  accessToken?: string
+  refreshToken?: string
+  accessTokenExpiry?: number
+  accountId?: string
+  userId?: string
+}
+
 export interface AuthConfig {
   google: {
     clientId: string
@@ -29,6 +39,7 @@ export interface AuthConfig {
     deviceId: string
     accessToken: string
   }
+  monzo?: MonzoAuth
 }
 
 const DEFAULT_CONFIG: AuthConfig = {
@@ -46,6 +57,10 @@ export class AuthStore {
       if (account.accessTokenExpiry) {
         this.scheduleRefresh(account.email)
       }
+    }
+    // Schedule Monzo refresh if configured
+    if (this.config.monzo?.accessTokenExpiry) {
+      this.scheduleMonzoRefresh()
     }
   }
 
@@ -264,10 +279,180 @@ export class AuthStore {
   }
 
   // --------------------------------------------------------------------------
+  // Monzo
+  // --------------------------------------------------------------------------
+
+  private monzoRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private monzoRefreshing = false
+
+  getMonzoConfig(): MonzoAuth | undefined {
+    return this.config.monzo
+  }
+
+  setMonzoCredentials(clientId: string, clientSecret: string): void {
+    this.config.monzo = { ...this.config.monzo, clientId, clientSecret } as MonzoAuth
+    this.save()
+  }
+
+  async getMonzoToken(): Promise<string | null> {
+    const monzo = this.config.monzo
+    if (!monzo?.accessToken) return null
+
+    // Check if token is still valid (with 5 min buffer)
+    if (monzo.accessTokenExpiry && Date.now() < monzo.accessTokenExpiry - 5 * 60 * 1000) {
+      return monzo.accessToken
+    }
+
+    // Refresh the token
+    const refreshed = await this.refreshMonzoToken()
+    return refreshed ? this.config.monzo!.accessToken! : null
+  }
+
+  /**
+   * Refresh Monzo token. CRITICAL: Monzo refresh tokens are single-use.
+   * The new refresh token must be saved to disk BEFORE anything else.
+   */
+  async refreshMonzoToken(): Promise<boolean> {
+    if (this.monzoRefreshing) {
+      // Wait for ongoing refresh
+      await new Promise((r) => setTimeout(r, 1000))
+      return !!this.config.monzo?.accessToken
+    }
+    this.monzoRefreshing = true
+
+    const monzo = this.config.monzo
+    if (!monzo?.refreshToken || !monzo.clientId || !monzo.clientSecret) {
+      this.monzoRefreshing = false
+      return false
+    }
+
+    try {
+      const res = await fetch('https://api.monzo.com/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: monzo.clientId,
+          client_secret: monzo.clientSecret,
+          refresh_token: monzo.refreshToken,
+        }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error(`[auth] Monzo token refresh failed: ${res.status} ${text}`)
+        // If refresh token is invalid, clear auth (user must re-auth)
+        if (res.status === 401 || res.status === 400) {
+          monzo.accessToken = undefined
+          monzo.refreshToken = undefined
+          monzo.accessTokenExpiry = undefined
+          this.save()
+        }
+        return false
+      }
+
+      const data = await res.json() as {
+        access_token: string
+        refresh_token: string
+        expires_in: number
+        token_type: string
+        user_id: string
+      }
+
+      // ATOMIC: save new single-use refresh token to disk FIRST
+      monzo.refreshToken = data.refresh_token
+      monzo.accessToken = data.access_token
+      monzo.accessTokenExpiry = Date.now() + data.expires_in * 1000
+      monzo.userId = data.user_id
+      this.save()
+
+      this.scheduleMonzoRefresh()
+      return true
+    } catch (err) {
+      console.error('[auth] Monzo token refresh error:', err)
+      return false
+    } finally {
+      this.monzoRefreshing = false
+    }
+  }
+
+  /**
+   * Exchange a Monzo authorization code for tokens.
+   */
+  async exchangeMonzoCode(code: string, redirectUri: string): Promise<void> {
+    const monzo = this.config.monzo
+    if (!monzo?.clientId || !monzo?.clientSecret) {
+      throw new Error('Monzo credentials not configured')
+    }
+
+    const res = await fetch('https://api.monzo.com/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: monzo.clientId,
+        client_secret: monzo.clientSecret,
+        redirect_uri: redirectUri,
+        code,
+      }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Monzo token exchange failed: ${res.status} ${text}`)
+    }
+
+    const data = await res.json() as {
+      access_token: string
+      refresh_token: string
+      expires_in: number
+      token_type: string
+      user_id: string
+    }
+
+    monzo.accessToken = data.access_token
+    monzo.refreshToken = data.refresh_token
+    monzo.accessTokenExpiry = Date.now() + data.expires_in * 1000
+    monzo.userId = data.user_id
+    this.save()
+
+    this.scheduleMonzoRefresh()
+  }
+
+  private scheduleMonzoRefresh(): void {
+    if (this.monzoRefreshTimer) clearTimeout(this.monzoRefreshTimer)
+    const monzo = this.config.monzo
+    if (!monzo?.accessTokenExpiry) return
+
+    // Refresh 5 minutes before expiry (tokens last 6 hours)
+    const delay = Math.max(monzo.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
+    this.monzoRefreshTimer = setTimeout(() => {
+      this.refreshMonzoToken()
+    }, delay)
+  }
+
+  setMonzoAccountId(accountId: string): void {
+    if (this.config.monzo) {
+      this.config.monzo.accountId = accountId
+      this.save()
+    }
+  }
+
+  clearMonzo(): void {
+    if (this.monzoRefreshTimer) {
+      clearTimeout(this.monzoRefreshTimer)
+      this.monzoRefreshTimer = null
+    }
+    this.config.monzo = undefined
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
   // Status
   // --------------------------------------------------------------------------
 
   getStatus() {
+    const monzo = this.config.monzo
     return {
       google: {
         connected: this.config.google.accounts.length > 0,
@@ -282,6 +467,15 @@ export class AuthStore {
       matrix: this.config.matrix
         ? { connected: true, userId: this.config.matrix.userId, homeserver: this.config.matrix.homeserver }
         : { connected: false },
+      monzo: monzo
+        ? {
+            connected: !!monzo.accessToken,
+            hasCredentials: !!(monzo.clientId && monzo.clientSecret),
+            hasToken: !!monzo.accessToken,
+            accountId: monzo.accountId ?? null,
+            tokenExpiry: monzo.accessTokenExpiry ? new Date(monzo.accessTokenExpiry).toISOString() : null,
+          }
+        : { connected: false, hasCredentials: false },
     }
   }
 
@@ -290,5 +484,9 @@ export class AuthStore {
       clearTimeout(timer)
     }
     this.refreshTimers.clear()
+    if (this.monzoRefreshTimer) {
+      clearTimeout(this.monzoRefreshTimer)
+      this.monzoRefreshTimer = null
+    }
   }
 }

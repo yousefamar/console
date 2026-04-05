@@ -6,6 +6,7 @@ import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
 import { useFeedStore } from '@/store/feeds'
 import { useCalendarStore } from '@/store/calendar'
+import { useMoneyStore } from '@/store/money'
 import { useUiStore } from '@/store/ui'
 
 export function useKeybindings() {
@@ -16,6 +17,7 @@ export function useKeybindings() {
   const notes = useNotesStore
   const feeds = useFeedStore
   const cal = useCalendarStore
+  const money = useMoneyStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -30,6 +32,7 @@ export function useKeybindings() {
       const isAgents = activePane === 'agents'
       const isFeeds = activePane === 'feeds'
       const isCalendar = activePane === 'calendar'
+      const isMoney = activePane === 'money'
 
       // Always active
       if (e.key === 'Escape') {
@@ -76,6 +79,10 @@ export function useKeybindings() {
         } else if (isNotes && isEditing) {
           // Let CodeMirror/vim handle Escape in editor
           return
+        } else if (isMoney && money.getState().selectedTransactionId) {
+          money.getState().selectTransaction(null)
+        } else if (isMoney && money.getState().searchQuery) {
+          money.getState().setSearchQuery('')
         } else if (isAgents && isEditing) {
           // Agent pane: Esc from input blurs first (vim-like: insert → normal mode)
           ;(target as HTMLElement).blur()
@@ -235,6 +242,54 @@ export function useKeybindings() {
           return
         }
         return // Don't fall through
+      }
+
+      // Money-specific keybindings
+      if (isMoney) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          money.getState().selectNextTransaction()
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          money.getState().selectPrevTransaction()
+          return
+        }
+        if (e.key === '/') {
+          e.preventDefault()
+          const input = document.querySelector<HTMLInputElement>('[data-money-search]')
+          input?.focus()
+          return
+        }
+        if (e.key === 'c') {
+          e.preventDefault()
+          // Cycle category filter
+          const cats = Object.keys(money.getState().spendingByCategory)
+          const current = money.getState().categoryFilter
+          if (!current && cats.length > 0) {
+            money.getState().setCategoryFilter(cats[0]!)
+          } else if (current) {
+            const idx = cats.indexOf(current)
+            if (idx < cats.length - 1) {
+              money.getState().setCategoryFilter(cats[idx + 1]!)
+            } else {
+              money.getState().setCategoryFilter(null)
+            }
+          }
+          return
+        }
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 'T') {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        return
       }
 
       // Feed-specific keybindings
