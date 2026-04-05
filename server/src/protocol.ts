@@ -20,6 +20,8 @@ export type ClientMessage =
   | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string }
   | { type: 'list_past_sessions'; cwd: string }
   | { type: 'get_session_history'; sessionId: string }
+  | { type: 'rename_session'; sessionId: string; name: string }
+  | { type: 'generate_title'; sessionId: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -47,6 +49,7 @@ export type HubMessage =
   | { type: 'session_ended'; sessionId: string }
   | { type: 'past_sessions'; sessions: PastSession[] }
   | { type: 'session_history'; sessionId: string; messages: SessionHistoryMessage[] }
+  | { type: 'session_renamed'; sessionId: string; name: string }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */
@@ -64,6 +67,7 @@ export type LoggableHubMessage = Extract<HubMessage,
   | { type: 'tool_denied' }
   | { type: 'error' }
   | { type: 'session_ended' }
+  | { type: 'session_renamed' }
   | { type: 'context_update' }
 >
 
@@ -93,12 +97,15 @@ export interface TokenUsage {
 export interface SessionInfo {
   id: string
   claudeSessionId?: string
+  name?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
   cwd?: string
   totalCost: number
   totalTokens: TokenUsage
+  gitBranch?: string
+  gitDirty?: boolean
 }
 
 // --------------------------------------------------------------------------

@@ -55,6 +55,8 @@ export interface SessionInfo {
   contextUsed: number
   statusText?: string
   isAl?: boolean
+  gitBranch?: string
+  gitDirty?: boolean
 }
 
 export interface PastSession {

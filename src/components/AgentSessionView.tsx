@@ -3,7 +3,7 @@ import { useAgentStore } from '@/store/agent'
 import { AgentMessageBlock, renderMarkdownLite } from './AgentMessageBlock'
 import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
-import { Loader2 } from 'lucide-react'
+import { Loader2, GitBranch } from 'lucide-react'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -133,12 +133,21 @@ export function AgentSessionView() {
       </div>
 
       {/* Status bar */}
-      {(isRunning || statusText || sessionModel) && (
+      {(isRunning || statusText || sessionModel || activeSession?.gitBranch) && (
         <div className="flex items-center border-t border-border/50 px-3 py-1 gap-3">
           {/* Model name */}
           {sessionModel && (
             <span className="text-[10px] text-text-tertiary flex-shrink-0">
               {sessionModel}
+            </span>
+          )}
+
+          {/* Git branch */}
+          {activeSession?.gitBranch && (
+            <span className="text-[10px] text-text-tertiary flex-shrink-0 flex items-center gap-1">
+              <GitBranch size={10} />
+              {activeSession.gitBranch}
+              {activeSession.gitDirty && <span className="text-yellow-400">*</span>}
             </span>
           )}
 

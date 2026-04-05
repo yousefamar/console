@@ -7,7 +7,7 @@
 // internal event emitter interface.
 // ============================================================================
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { createInterface } from 'node:readline'
 import type {
@@ -36,11 +36,14 @@ export interface SessionOptions {
   resume?: string
   /** If true, resume the session but don't send any initial prompt (used for auto-restore on hub restart) */
   silent?: boolean
+  /** Display name for the session (persists across restarts) */
+  name?: string
 }
 
 export class Session extends EventEmitter {
   readonly id: string
   claudeSessionId?: string
+  name?: string
   status: 'running' | 'idle' | 'ended' = 'running'
   readonly createdAt = Date.now()
   readonly initialPrompt: string
@@ -63,6 +66,7 @@ export class Session extends EventEmitter {
     super()
     this.id = `session_${++sessionCounter}_${Date.now()}`
     this.initialPrompt = options.prompt
+    this.name = options.name
     this.cwd = options.cwd || process.cwd()
     // For resumes, set claudeSessionId immediately so list_sessions can match
     // before Claude emits the `system` message
@@ -94,6 +98,10 @@ export class Session extends EventEmitter {
 
     if (options.resume) {
       args.push('--resume', options.resume)
+    }
+
+    if (options.name) {
+      args.push('--name', options.name)
     }
 
     const cwd = this.cwd
@@ -232,17 +240,43 @@ export class Session extends EventEmitter {
     }
   }
 
+  private gitBranch?: string
+  private gitDirty?: boolean
+  private gitCheckedAt = 0
+
+  private checkGit(): void {
+    // Cache for 10 seconds
+    if (Date.now() - this.gitCheckedAt < 10_000) return
+    this.gitCheckedAt = Date.now()
+    try {
+      this.gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+        cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
+      }).toString().trim()
+      const status = execSync('git status --porcelain', {
+        cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
+      }).toString().trim()
+      this.gitDirty = status.length > 0
+    } catch {
+      this.gitBranch = undefined
+      this.gitDirty = undefined
+    }
+  }
+
   /** Get session info for listing */
   getInfo(): SessionInfo {
+    this.checkGit()
     return {
       id: this.id,
       claudeSessionId: this.claudeSessionId,
+      name: this.name,
       status: this.status,
       createdAt: this.createdAt,
       prompt: this.initialPrompt,
       cwd: this.cwd,
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
+      gitBranch: this.gitBranch,
+      gitDirty: this.gitDirty,
     }
   }
 
