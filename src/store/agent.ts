@@ -82,6 +82,7 @@ interface AgentState {
   // Sessions
   sessions: SessionInfo[]
   activeSessionId: string | null
+  generatingTitleFor: Set<string>
 
   // Past sessions (from Claude's own JSONL files)
   pastSessions: PastSession[]
@@ -123,6 +124,7 @@ interface AgentState {
   listSessions: () => void
   toggleThinkingCollapsed: (messageId: string) => void
   renameSession: (sessionId: string, name: string) => void
+  generateTitle: (sessionId: string) => void
   resumeSession: (claudeSessionId: string, prompt: string, cwd?: string) => void
   listPastSessions: (cwd: string) => void
   setHubUrl: (url: string) => void
@@ -148,6 +150,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   sessions: [],
   activeSessionId: null,
+  generatingTitleFor: new Set(),
 
   pastSessions: [],
 
@@ -307,6 +310,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({ type: 'rename_session', sessionId, name })
     // Optimistic update
     updateSession(sessionId, { name })
+  },
+
+  generateTitle: (sessionId) => {
+    sendWs({ type: 'generate_title', sessionId })
+    set((s) => ({ generatingTitleFor: new Set(s.generatingTitleFor).add(sessionId) }))
   },
 
   resumeSession: (claudeSessionId, prompt, cwd) => {
@@ -721,6 +729,18 @@ function handleHubMessage(msg: Record<string, unknown>) {
         // cost from hub is cumulative (total_cost_usd), not per-turn
         totalCost: cost,
       })
+
+      // Notify when agent finishes
+      const session = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
+      const name = session?.name || session?.prompt?.slice(0, 50) || 'Agent'
+      import('@/notifications').then(({ notify }) => {
+        notify({
+          title: `${name} finished`,
+          body: `${(duration / 1000).toFixed(1)}s · $${cost.toFixed(4)}`,
+          tag: `agent-done-${sessionId}`,
+          data: { pane: 'agents', itemId: sessionId },
+        })
+      })
       break
     }
 
@@ -748,6 +768,12 @@ function handleHubMessage(msg: Record<string, unknown>) {
     case 'session_renamed': {
       const sessionId = msg.sessionId as string
       updateSession(sessionId, { name: msg.name as string })
+      const gen = useAgentStore.getState().generatingTitleFor
+      if (gen.has(sessionId)) {
+        const next = new Set(gen)
+        next.delete(sessionId)
+        useAgentStore.setState({ generatingTitleFor: next })
+      }
       break
     }
 
