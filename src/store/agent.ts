@@ -703,6 +703,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         notify({
           title: 'Claude needs input',
           body: question.length > 80 ? question.slice(0, 80) + '...' : question,
+          icon: '/icon-192.png',
           tag: `agent-${requestId}`,
           data: { pane: 'agents', itemId: approvalSessionId },
         })
@@ -739,6 +740,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         notify({
           title: `${name} finished`,
           body: `${(duration / 1000).toFixed(1)}s · $${cost.toFixed(4)}`,
+          icon: '/icon-192.png',
           tag: `agent-done-${sessionId}`,
           data: { pane: 'agents', itemId: sessionId },
         })

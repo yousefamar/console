@@ -308,6 +308,7 @@ export async function incrementalSync(): Promise<void> {
               notify({
                 title: dbThread.from || 'New email',
                 body: dbThread.subject || '',
+                icon: '/icon-192.png',
                 tag: `mail-${threadId}`,
                 data: { pane: 'email', itemId: threadId },
               })

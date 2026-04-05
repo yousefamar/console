@@ -177,6 +177,7 @@ export function useSync() {
               notify({
                 title: event.summary || 'Upcoming event',
                 body: `${time}${event.location ? ` · ${event.location}` : ''}`,
+                icon: '/icon-192.png',
                 tag: `cal-${event.id}`,
                 data: { pane: 'calendar' },
               })
