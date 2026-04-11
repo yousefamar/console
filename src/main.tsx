@@ -1,3 +1,4 @@
+import './debug-agent' // Must be first — installs console/fetch/error hooks before any app code
 import { StrictMode, Fragment } from 'react'
 import { createRoot } from 'react-dom/client'
 import dayjs from 'dayjs'
@@ -13,6 +14,9 @@ dayjs.extend(isSameOrAfter)
 dayjs.extend(isSameOrBefore)
 dayjs.extend(timezone)
 dayjs.extend(utc)
+
+// Build identifier — helps detect stale service worker cache
+console.log(`[console] built ${__BUILD_TIME__}`)
 
 // Debug infrastructure (dev only)
 if (import.meta.env.DEV) {

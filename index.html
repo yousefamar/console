@@ -10,6 +10,11 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Console</title>
+    <script>
+      window.__earlyErrors=[];
+      window.addEventListener('error',function(e){window.__earlyErrors.push({type:'error',message:e.message,filename:e.filename,lineno:e.lineno,colno:e.colno,ts:Date.now()})});
+      window.addEventListener('unhandledrejection',function(e){window.__earlyErrors.push({type:'rejection',reason:String(e.reason),ts:Date.now()})});
+    </script>
   </head>
   <body>
     <div id="root"></div>
