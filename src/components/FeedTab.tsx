@@ -1,17 +1,20 @@
-import { useEffect } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { useFeedStore } from '@/store/feeds'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { useSwipeActions } from '@/hooks/useSwipeActions'
 import { FeedFolderTree } from './FeedFolderTree'
 import { FeedItemList } from './FeedItemList'
 import { FeedItemView } from './FeedItemView'
 import { FeedAddModal } from './FeedAddModal'
-import { Rss } from 'lucide-react'
+import { Rss, Check } from 'lucide-react'
 
-export function FeedTab() {
+export const FeedTab = memo(function FeedTab() {
   const feeds = useFeedStore((s) => s.feeds)
   const loading = useFeedStore((s) => s.loading)
   const connected = useFeedStore((s) => s.connected)
   const selectedItemId = useFeedStore((s) => s.selectedItemId)
+  const selectedFeedId = useFeedStore((s) => s.selectedFeedId)
+  const selectedFolderId = useFeedStore((s) => s.selectedFolderId)
   const showAddModal = useFeedStore((s) => s.showAddModal)
   const fetchFeeds = useFeedStore((s) => s.fetchFeeds)
   const refreshItems = useFeedStore((s) => s.refreshItems)
@@ -57,9 +60,11 @@ export function FeedTab() {
   }
 
   if (isMobile) {
+    // 3-layer mobile nav: folder tree → item list → article view
+    const hasFeedOrFolder = selectedFeedId || selectedFolderId
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        {selectedItemId ? <FeedItemView /> : <FeedItemList />}
+        {selectedItemId ? <MobileFeedDetail /> : hasFeedOrFolder ? <FeedItemList /> : <FeedFolderTree />}
         {showAddModal && <FeedAddModal />}
       </div>
     )
@@ -77,6 +82,34 @@ export function FeedTab() {
         <FeedItemView />
       </div>
       {showAddModal && <FeedAddModal />}
+    </div>
+  )
+})
+
+function MobileFeedDetail() {
+  const markRead = useFeedStore((s) => s.markRead)
+  const swipeContainerRef = useRef<HTMLDivElement>(null)
+  const swipeContentRef = useRef<HTMLDivElement>(null)
+  const swipeIconRef = useRef<HTMLDivElement>(null)
+  const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
+    onSwipeRight: () => markRead(),
+    leftIconRef: swipeIconRef,
+  })
+
+  return (
+    <div ref={swipeContainerRef} className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
+      <div ref={swipeIconRef} className="absolute inset-y-0 left-0 flex items-center pl-6 pointer-events-none z-10" style={{ opacity: 0 }}>
+        <Check size={24} className="text-green-500" />
+      </div>
+      <div
+        ref={swipeContentRef}
+        className="flex-1 min-h-0 flex flex-col relative"
+        onTouchStart={swipe.onTouchStart}
+        onTouchMove={swipe.onTouchMove}
+        onTouchEnd={swipe.onTouchEnd}
+      >
+        <FeedItemView />
+      </div>
     </div>
   )
 }

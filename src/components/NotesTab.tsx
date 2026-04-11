@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { memo, useEffect } from 'react'
 import { useNotesStore } from '@/store/notes'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { NotesFileBrowser } from './NotesFileBrowser'
@@ -6,9 +6,10 @@ import { NotesEditor } from './NotesEditor'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
+import { NewNoteModal } from './NewNoteModal'
 import { FolderOpen } from 'lucide-react'
 
-export function NotesTab() {
+export const NotesTab = memo(function NotesTab() {
   const vaultConnected = useNotesStore((s) => s.vaultConnected)
   const loading = useNotesStore((s) => s.loading)
   const activeFilePath = useNotesStore((s) => s.activeFilePath)
@@ -17,6 +18,7 @@ export function NotesTab() {
   const quickSwitcherOpen = useNotesStore((s) => s.quickSwitcherOpen)
   const linkPickerOpen = useNotesStore((s) => s.linkPickerOpen)
   const commandPaletteOpen = useNotesStore((s) => s.commandPaletteOpen)
+  const newFileFormOpen = useNotesStore((s) => s.newFileFormOpen)
   const isMobile = useIsMobile()
 
   // Try to reconnect on mount (persisted handle or hub)
@@ -60,6 +62,7 @@ export function NotesTab() {
         {quickSwitcherOpen && <NotesQuickSwitcher />}
         {linkPickerOpen && <NotesLinkPicker />}
         {commandPaletteOpen && <NotesCommandPalette />}
+        {newFileFormOpen && <NewNoteModal />}
       </div>
     )
   }
@@ -76,6 +79,7 @@ export function NotesTab() {
       {quickSwitcherOpen && <NotesQuickSwitcher />}
       {linkPickerOpen && <NotesLinkPicker />}
       {commandPaletteOpen && <NotesCommandPalette />}
+      {newFileFormOpen && <NewNoteModal />}
     </div>
   )
-}
+})

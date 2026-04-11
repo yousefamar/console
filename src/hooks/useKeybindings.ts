@@ -88,8 +88,6 @@ export function useKeybindings() {
           ;(target as HTMLElement).blur()
         } else if (isAgents && agent.getState().sessions.find((s) => s.id === agent.getState().activeSessionId)?.status === 'running') {
           agent.getState().interrupt()
-        } else if (isAgents && agent.getState().activeSessionId) {
-          agent.getState().selectSession(null)
         } else if (inbox.getState().replyMode) {
           inbox.getState().setReplyMode(null)
         } else if (isEditing) {
@@ -132,6 +130,18 @@ export function useKeybindings() {
           notes.getState().openQuickSwitcher('content')
           return
         }
+        if (e.key === 'n' && !e.shiftKey) {
+          e.preventDefault()
+          notes.getState().openNewFileForm()
+          return
+        }
+      }
+
+      // Ctrl+Tab / Ctrl+Shift+Tab to switch panes (global, works even when editing)
+      if (e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault()
+        ui.getState().toggleActivePane(e.shiftKey)
+        return
       }
 
       // Don't intercept when editing text
@@ -167,6 +177,16 @@ export function useKeybindings() {
             agent.getState().autoApproveTool(approval.toolName)
             return
           }
+        }
+        if (e.key === 'E' || (e.key === 'e' && e.shiftKey)) {
+          e.preventDefault()
+          agent.getState().markSessionUnread()
+          return
+        }
+        if (e.key === 'e') {
+          e.preventDefault()
+          agent.getState().markSessionRead()
+          return
         }
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault()

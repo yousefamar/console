@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { memo, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { isSignedIn } from '@/gmail/auth'
 import { CalendarSidebar } from './CalendarSidebar'
@@ -8,7 +8,7 @@ import { CalendarEventForm } from './CalendarEventForm'
 import { CalendarLocationPicker } from './CalendarLocationPicker'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
-export function CalendarTab() {
+export const CalendarTab = memo(function CalendarTab() {
   const connected = useCalendarStore((s) => s.connected)
   const loading = useCalendarStore((s) => s.loading)
   const calendars = useCalendarStore((s) => s.calendars)
@@ -60,4 +60,4 @@ export function CalendarTab() {
       {locationPickerEvent && <CalendarLocationPicker />}
     </div>
   )
-}
+})

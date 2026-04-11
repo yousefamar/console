@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { memo, useEffect } from 'react'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { BookmarkList } from './BookmarkList'
 import { BookmarkDetail } from './BookmarkDetail'
@@ -6,7 +6,7 @@ import { BookmarkTriageView } from './BookmarkTriageView'
 import { BookmarkTagTree } from './BookmarkTagTree'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
-export function BookmarkTab() {
+export const BookmarkTab = memo(function BookmarkTab() {
   const connected = useBookmarkStore((s) => s.connected)
   const loading = useBookmarkStore((s) => s.loading)
   const bookmarks = useBookmarkStore((s) => s.bookmarks)
@@ -70,4 +70,4 @@ export function BookmarkTab() {
       </div>
     </div>
   )
-}
+})

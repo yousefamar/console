@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useMoneyStore, formatAmount, formatAmountAbs, getDisplayName, getReference, getMerchantEmoji, MONZO_CATEGORIES } from '@/store/money'
 import { getHubUrl, hubFetch } from '@/hub'
 import type { MonzoTransaction, MonzoPot } from '@/store/money'
@@ -31,7 +31,7 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 // MoneyTab
 // --------------------------------------------------------------------------
 
-export function MoneyTab() {
+export const MoneyTab = memo(function MoneyTab() {
   const status = useMoneyStore((s) => s.status)
   const loading = useMoneyStore((s) => s.loading)
   const fetchStatus = useMoneyStore((s) => s.fetchStatus)
@@ -84,7 +84,7 @@ export function MoneyTab() {
       </div>
     </div>
   )
-}
+})
 
 // --------------------------------------------------------------------------
 // MoneyConnect — connection screen
