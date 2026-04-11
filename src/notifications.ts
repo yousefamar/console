@@ -6,10 +6,19 @@ import { getHubUrl } from '@/hub'
 
 // Track active pane to suppress notifications for the pane user is viewing
 let activePane: ActivePane = 'email'
+// Track active agent session to allow notifications for other sessions
+let activeAgentSessionId: string | null = null
+// Do Not Disturb mode — suppress all notifications
+let dndEnabled = false
 
 /** Called by UI store when pane changes */
 export function setActiveNotificationPane(pane: ActivePane): void {
   activePane = pane
+}
+
+/** Called by agent store when active session changes */
+export function setActiveAgentSession(sessionId: string | null): void {
+  activeAgentSessionId = sessionId
 }
 
 export interface NotifyOptions {
@@ -35,14 +44,27 @@ export async function requestPermission(): Promise<boolean> {
  * - App focused but on a different pane → notify
  * - App focused and on the same pane → suppress
  */
+/** Called by UI store when DND changes */
+export function setDoNotDisturb(enabled: boolean): void {
+  dndEnabled = enabled
+}
+
 export function notify(opts: NotifyOptions): void {
   if (!('Notification' in window)) return
   if (Notification.permission !== 'granted') return
+  if (dndEnabled) return
 
   // Always notify if app doesn't have focus (different workspace, minimized, etc.)
   if (document.hasFocus() && opts.data?.pane) {
-    // App is focused — only notify if user is on a different pane
-    if (activePane === opts.data.pane) return // Same pane, suppress
+    // App is focused on the same pane — suppress unless it's agents pane
+    // (agents pane has multiple sessions; only suppress for the active one)
+    if (activePane === opts.data.pane) {
+      if (opts.data.pane === 'agents' && opts.data.itemId && opts.data.itemId !== activeAgentSessionId) {
+        // Viewing agents pane but a different session — allow notification
+      } else {
+        return // Same pane (and same item for agents), suppress
+      }
+    }
   }
 
   // Proxy remote icons through hub so they're same-origin

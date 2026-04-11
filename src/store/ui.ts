@@ -29,8 +29,11 @@ const PATH_PANES: Record<string, ActivePane> = {
 function paneFromUrl(): ActivePane {
   if (typeof window === 'undefined') return 'email'
   const pane = PATH_PANES[window.location.pathname] ?? 'email'
-  // Initialize notification pane tracking
-  import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(pane)).catch(() => {})
+  // Initialize notification state
+  import('@/notifications').then(({ setActiveNotificationPane, setDoNotDisturb }) => {
+    setActiveNotificationPane(pane)
+    if (localStorage.getItem('console_dnd') === 'true') setDoNotDisturb(true)
+  }).catch(() => {})
   return pane
 }
 
@@ -50,7 +53,7 @@ interface UiState {
   // Active pane (email vs chat)
   activePane: ActivePane
   setActivePane: (pane: ActivePane) => void
-  toggleActivePane: () => void
+  toggleActivePane: (reverse?: boolean) => void
 
   // Panels
   showSearch: boolean
@@ -82,6 +85,10 @@ interface UiState {
   undoAction: UndoAction | null
   setUndoAction: (action: UndoAction | null) => void
 
+  // Notifications
+  doNotDisturb: boolean
+  setDoNotDisturb: (v: boolean) => void
+
   // Auth
   userEmail: string
   setUserEmail: (email: string) => void
@@ -108,10 +115,10 @@ export const useUiStore = create<UiState>((set) => ({
     import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(pane))
     set({ activePane: pane })
   },
-  toggleActivePane: () => set((s) => {
-    const order: ActivePane[] = ['email', 'chat', 'bookmarks', 'notes', 'feeds', 'calendar', 'money', 'agents']
+  toggleActivePane: (reverse) => set((s) => {
+    const order: ActivePane[] = ['email', 'calendar', 'chat', 'agents', 'feeds', 'notes', 'bookmarks', 'money']
     const idx = order.indexOf(s.activePane)
-    const next = order[(idx + 1) % order.length]!
+    const next = order[(idx + (reverse ? order.length - 1 : 1)) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])
     import('@/notifications').then(({ setActiveNotificationPane }) => setActiveNotificationPane(next))
     return { activePane: next }
@@ -143,6 +150,13 @@ export const useUiStore = create<UiState>((set) => ({
 
   undoAction: null,
   setUndoAction: (action) => set({ undoAction: action }),
+
+  doNotDisturb: typeof localStorage !== 'undefined' && localStorage.getItem('console_dnd') === 'true',
+  setDoNotDisturb: (v) => {
+    localStorage.setItem('console_dnd', String(v))
+    import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(v))
+    set({ doNotDisturb: v })
+  },
 
   userEmail: '',
   setUserEmail: (email) => set({ userEmail: email }),
