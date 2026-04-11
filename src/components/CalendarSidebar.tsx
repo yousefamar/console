@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useCalendarStore } from '@/store/calendar'
+import { getHubUrl } from '@/hub'
 import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff, Rss, User } from 'lucide-react'
 
 export function CalendarSidebar() {
@@ -114,7 +115,14 @@ export function CalendarSidebar() {
 
         {/* Add calendar account */}
         <button
-          onClick={addAccount}
+          onClick={() => {
+            const popup = window.open(
+              `${getHubUrl()}/auth/google/start`,
+              'google-auth',
+              'width=500,height=600,menubar=no,toolbar=no',
+            )
+            addAccount(popup)
+          }}
           className="flex items-center gap-1.5 px-1 py-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors w-full"
         >
           <Plus size={11} />

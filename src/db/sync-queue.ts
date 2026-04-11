@@ -12,7 +12,7 @@ export function onEnqueue(fn: () => void): () => void {
 export async function enqueue(
   type: QueueActionType,
   payload: Record<string, unknown>,
-  opts: { threadId?: string; messageId?: string; draftId?: string; roomId?: string } = {},
+  opts: { threadId?: string; messageId?: string; draftId?: string; roomId?: string; eventCompoundKey?: string } = {},
 ): Promise<number> {
   const action: QueuedAction = {
     type,
@@ -21,6 +21,7 @@ export async function enqueue(
     messageId: opts.messageId,
     draftId: opts.draftId,
     roomId: opts.roomId,
+    eventCompoundKey: opts.eventCompoundKey,
     createdAt: Date.now(),
     status: 'pending',
     retryCount: 0,
@@ -58,6 +59,14 @@ export async function markConflict(id: number, error: string): Promise<void> {
 
 export async function removeByThread(threadId: string, type?: QueueActionType): Promise<void> {
   let collection = db.queue.where('status').equals('pending').filter(a => a.threadId === threadId)
+  if (type) {
+    collection = collection.filter(a => a.type === type)
+  }
+  await collection.delete()
+}
+
+export async function removeByEvent(compoundKey: string, type?: QueueActionType): Promise<void> {
+  let collection = db.queue.where('status').equals('pending').filter(a => a.eventCompoundKey === compoundKey)
   if (type) {
     collection = collection.filter(a => a.type === type)
   }

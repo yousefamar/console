@@ -1,81 +1,22 @@
 // ============================================================================
-// Google Calendar REST API wrapper
-// Multi-account: each call takes accountEmail to route to the right token
+// Google Calendar API — proxied through hub server
+// All calls go through the hub which handles tokens server-side.
 // ============================================================================
 
-import { getTokenForAccount } from './accounts'
+import { hubFetch } from '@/hub'
 import type {
   CalendarListResponse,
   CalendarEvent,
   EventsListResponse,
 } from './types'
 
-const BASE = 'https://www.googleapis.com/calendar/v3'
-
-async function request<T>(
-  accountEmail: string,
-  path: string,
-  opts: { method?: string; body?: unknown; params?: Record<string, string> } = {},
-): Promise<T> {
-  const token = await getTokenForAccount(accountEmail)
-  if (!token) {
-    throw new Error(`No token for account ${accountEmail}. Please re-authenticate.`)
-  }
-
-  const url = new URL(`${BASE}${path}`)
-  if (opts.params) {
-    for (const [k, v] of Object.entries(opts.params)) {
-      url.searchParams.set(k, v)
-    }
-  }
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  }
-  const body = opts.body ? JSON.stringify(opts.body) : undefined
-
-  const res = await fetch(url.toString(), {
-    method: opts.method ?? 'GET',
-    headers,
-    body,
-  })
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      // Try refreshing this account's token and retry once
-      const { refreshCalendarToken } = await import('./accounts')
-      const refreshed = await refreshCalendarToken(accountEmail)
-      if (refreshed) {
-        const newToken = await getTokenForAccount(accountEmail)
-        if (newToken) {
-          const retryRes = await fetch(url.toString(), {
-            method: opts.method ?? 'GET',
-            headers: { ...headers, Authorization: `Bearer ${newToken}` },
-            body,
-          })
-          if (retryRes.ok) {
-            if (retryRes.status === 204) return undefined as T
-            return retryRes.json() as Promise<T>
-          }
-        }
-      }
-      throw new Error(`Auth failed for ${accountEmail}. Please re-authenticate.`)
-    }
-    const text = await res.text()
-    throw new Error(`Calendar API ${res.status}: ${text}`)
-  }
-
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
-}
-
 // --------------------------------------------------------------------------
 // Calendar List
 // --------------------------------------------------------------------------
 
 export async function getCalendarList(accountEmail: string): Promise<CalendarListResponse> {
-  return request<CalendarListResponse>(accountEmail, '/users/me/calendarList')
+  const calendars = await hubFetch<any[]>(`/cal/calendars?account=${encodeURIComponent(accountEmail)}`)
+  return { kind: 'calendar#calendarList', items: calendars }
 }
 
 // --------------------------------------------------------------------------
@@ -89,24 +30,18 @@ export async function getEvents(
   timeMax: string,
   syncToken?: string,
 ): Promise<EventsListResponse> {
-  const params: Record<string, string> = {
+  const params = new URLSearchParams({
+    account: accountEmail,
+    calendarId,
     singleEvents: 'true',
-    orderBy: 'startTime',
-    maxResults: '250',
-  }
-
+  })
   if (syncToken) {
-    params.syncToken = syncToken
+    params.set('syncToken', syncToken)
   } else {
-    params.timeMin = timeMin
-    params.timeMax = timeMax
+    params.set('timeMin', timeMin)
+    params.set('timeMax', timeMax)
   }
-
-  return request<EventsListResponse>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events`,
-    { params },
-  )
+  return hubFetch<EventsListResponse>(`/cal/events?${params}`)
 }
 
 export async function getEvent(
@@ -114,10 +49,11 @@ export async function getEvent(
   calendarId: string,
   eventId: string,
 ): Promise<CalendarEvent> {
-  return request<CalendarEvent>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-  )
+  const params = new URLSearchParams({
+    account: accountEmail,
+    calendarId,
+  })
+  return hubFetch<CalendarEvent>(`/cal/events/${encodeURIComponent(eventId)}?${params}`)
 }
 
 export async function createEvent(
@@ -125,11 +61,10 @@ export async function createEvent(
   calendarId: string,
   event: Partial<CalendarEvent>,
 ): Promise<CalendarEvent> {
-  return request<CalendarEvent>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events`,
-    { method: 'POST', body: event },
-  )
+  return hubFetch<CalendarEvent>('/cal/events', {
+    method: 'POST',
+    body: JSON.stringify({ ...event, calendarId, account: accountEmail }),
+  })
 }
 
 export async function updateEvent(
@@ -138,11 +73,10 @@ export async function updateEvent(
   eventId: string,
   updates: Partial<CalendarEvent>,
 ): Promise<CalendarEvent> {
-  return request<CalendarEvent>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-    { method: 'PUT', body: updates },
-  )
+  return hubFetch<CalendarEvent>(`/cal/events/${encodeURIComponent(eventId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ...updates, calendarId, account: accountEmail }),
+  })
 }
 
 export async function patchEvent(
@@ -151,11 +85,10 @@ export async function patchEvent(
   eventId: string,
   updates: Partial<CalendarEvent>,
 ): Promise<CalendarEvent> {
-  return request<CalendarEvent>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-    { method: 'PATCH', body: updates },
-  )
+  return hubFetch<CalendarEvent>(`/cal/events/${encodeURIComponent(eventId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ...updates, calendarId, account: accountEmail }),
+  })
 }
 
 export async function deleteEvent(
@@ -163,9 +96,7 @@ export async function deleteEvent(
   calendarId: string,
   eventId: string,
 ): Promise<void> {
-  await request<void>(
-    accountEmail,
-    `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-    { method: 'DELETE' },
-  )
+  await hubFetch<void>(`/cal/events/${encodeURIComponent(eventId)}?calendarId=${encodeURIComponent(calendarId)}&account=${encodeURIComponent(accountEmail)}`, {
+    method: 'DELETE',
+  })
 }

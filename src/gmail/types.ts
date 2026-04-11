@@ -153,6 +153,13 @@ export type QueueActionType =
   | 'chatMarkRead'
   | 'chatEdit'
   | 'chatReact'
+  // Calendar actions
+  | 'calCreate'
+  | 'calUpdate'
+  | 'calDelete'
+  | 'calRsvp'
+  | 'calReminder'
+  | 'calLocation'
 
 export interface QueuedAction {
   id?: number // auto-increment
@@ -161,6 +168,7 @@ export interface QueuedAction {
   messageId?: string
   draftId?: string
   roomId?: string // for chat actions
+  eventCompoundKey?: string // for calendar actions
   payload: Record<string, unknown>
   createdAt: number
   status: 'pending' | 'processing' | 'failed' | 'conflict'

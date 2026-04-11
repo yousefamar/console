@@ -153,6 +153,31 @@ export function useSync() {
     return () => clearInterval(calInterval)
   }, [])
 
+  // Calendar queue processing: flush on enqueue (500ms debounce) + periodic 5s
+  useEffect(() => {
+    let calFlushTimer: ReturnType<typeof setTimeout> | null = null
+    const unsubCalFlush = onEnqueue(() => {
+      if (calFlushTimer) clearTimeout(calFlushTimer)
+      calFlushTimer = setTimeout(() => {
+        calFlushTimer = null
+        import('@/calendar/sync').then(({ processCalendarQueue }) => {
+          processCalendarQueue().catch(() => {})
+        })
+      }, 500)
+    })
+    const calQueueInterval = setInterval(() => {
+      import('@/calendar/sync').then(({ processCalendarQueue }) => {
+        processCalendarQueue().catch(() => {})
+      })
+    }, 5_000)
+
+    return () => {
+      if (calFlushTimer) clearTimeout(calFlushTimer)
+      clearInterval(calQueueInterval)
+      unsubCalFlush()
+    }
+  }, [])
+
   // Calendar reminders: check every 60s for events starting within 5 minutes
   useEffect(() => {
     const remindedEvents = new Set<string>(
@@ -161,27 +186,49 @@ export function useSync() {
 
     const checkReminders = () => {
       import('@/store/calendar').then(({ useCalendarStore }) => {
-        const { events } = useCalendarStore.getState()
+        const { events, calendars } = useCalendarStore.getState()
         const now = Date.now()
-        const fiveMin = 5 * 60 * 1000
+
+        // Build map of calendar default reminders
+        const calDefaults = new Map<string, number[]>()
+        for (const c of calendars) {
+          calDefaults.set(c.id, (c.defaultReminders || []).map((r) => r.minutes))
+        }
 
         for (const event of events) {
           if (!event.start?.dateTime) continue
+
+          // Resolve reminder minutes for this event
+          let reminderMinutes: number[]
+          if (!event.reminders || event.reminders.useDefault) {
+            reminderMinutes = calDefaults.get(event.calendarId) || []
+          } else {
+            reminderMinutes = (event.reminders.overrides || []).map((r) => r.minutes)
+          }
+          if (reminderMinutes.length === 0) continue
+
           const startTime = new Date(event.start.dateTime).getTime()
-          const diff = startTime - now
-          if (diff > 0 && diff <= fiveMin && !remindedEvents.has(event.id)) {
-            remindedEvents.add(event.id)
-            localStorage.setItem('cal_reminded', JSON.stringify([...remindedEvents].slice(-200)))
-            import('@/notifications').then(({ notify }) => {
-              const time = new Date(event.start!.dateTime!).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-              notify({
-                title: event.summary || 'Upcoming event',
-                body: `${time}${event.location ? ` · ${event.location}` : ''}`,
-                icon: '/icon-192.png',
-                tag: `cal-${event.id}`,
-                data: { pane: 'calendar' },
+
+          for (const mins of reminderMinutes) {
+            const reminderTime = startTime - mins * 60_000
+            const diff = reminderTime - now
+            const key = `${event.id}:${mins}`
+            // Fire if reminder time is within the last 60s (one check interval)
+            if (diff <= 0 && diff > -60_000 && !remindedEvents.has(key)) {
+              remindedEvents.add(key)
+              localStorage.setItem('cal_reminded', JSON.stringify([...remindedEvents].slice(-200)))
+              import('@/notifications').then(({ notify }) => {
+                const time = new Date(event.start!.dateTime!).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+                const label = mins === 0 ? 'Now' : mins < 60 ? `In ${mins} min` : `In ${Math.round(mins / 60)} hr`
+                notify({
+                  title: event.summary || 'Upcoming event',
+                  body: `${label} · ${time}${event.location ? ` · ${event.location}` : ''}`,
+                  icon: '/icon-192.png',
+                  tag: `cal-${event.id}-${mins}`,
+                  data: { pane: 'calendar' },
+                })
               })
-            })
+            }
           }
         }
       })

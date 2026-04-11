@@ -1,7 +1,11 @@
 import { create } from 'zustand'
 import { db } from '@/db'
+import { enqueue } from '@/db/sync-queue'
+import { removeByEvent } from '@/db/sync-queue'
 import * as api from '@/calendar/api'
 import { getAccounts, addCalendarAccount, removeCalendarAccount, type CalendarAccount } from '@/calendar/accounts'
+import { optimisticallyDeleted, pendingTempIds } from '@/calendar/sync'
+import { useUiStore } from '@/store/ui'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 
 // --------------------------------------------------------------------------
@@ -47,6 +51,7 @@ function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): 
     conferenceDataJson: e.conferenceData ? JSON.stringify(e.conferenceData) : undefined,
     eventType: e.eventType,
     workingLocationJson: e.workingLocationProperties ? JSON.stringify(e.workingLocationProperties) : undefined,
+    remindersJson: e.reminders ? JSON.stringify(e.reminders) : undefined,
     created: e.created,
     updated: e.updated,
   }
@@ -72,6 +77,7 @@ function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
     conferenceData: d.conferenceDataJson ? JSON.parse(d.conferenceDataJson) : undefined,
     eventType: d.eventType as CalendarEvent['eventType'],
     workingLocationProperties: d.workingLocationJson ? JSON.parse(d.workingLocationJson) : undefined,
+    reminders: d.remindersJson ? JSON.parse(d.remindersJson) : undefined,
     created: d.created,
     updated: d.updated,
   } as CalendarEvent
@@ -116,7 +122,7 @@ interface CalendarState {
 
   // Actions
   loadAccounts: () => Promise<void>
-  addAccount: () => Promise<void>
+  addAccount: (popup?: Window | null) => Promise<void>
   removeAccount: (email: string) => Promise<void>
   fetchCalendars: () => Promise<void>
   fetchEvents: (start?: Date, end?: Date) => Promise<void>
@@ -133,6 +139,7 @@ interface CalendarState {
   updateEvent: (calendarId: string, accountEmail: string, eventId: string, updates: Partial<CalendarEvent>) => Promise<void>
   deleteEvent: (calendarId: string, accountEmail: string, eventId: string) => Promise<void>
   rsvp: (calendarId: string, accountEmail: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
+  setReminder: (calendarId: string, accountEmail: string, eventId: string, minutes: number | null) => Promise<void>
   updateLocation: (calendarId: string, accountEmail: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
 
   // Event form
@@ -170,9 +177,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     set({ accounts })
   },
 
-  addAccount: async () => {
+  addAccount: async (popup?: Window | null) => {
     try {
-      await addCalendarAccount()
+      await addCalendarAccount(popup)
       const accounts = await getAccounts()
       set({ accounts })
       // Fetch calendars for the new account
@@ -327,6 +334,28 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         await db.calendarEvents.bulkPut(dbEvents)
       }
 
+      // Remove stale events: anything in IDB within the fetched range that
+      // wasn't returned by the API (deleted/cancelled on GCal).
+      // Protect events with pending queue actions (optimistic creates/updates).
+      const pendingActions = await db.queue
+        .where('status').anyOf('pending', 'processing')
+        .filter((a) => a.type.startsWith('cal'))
+        .toArray()
+      const pendingKeys = new Set(pendingActions.map((a) => a.eventCompoundKey).filter(Boolean))
+      for (const k of pendingTempIds.keys()) pendingKeys.add(k)
+
+      const freshKeys = new Set(dbEvents.map((e) => e.compoundKey))
+      const staleInRange = await db.calendarEvents
+        .where('startTime')
+        .between(timeMin, timeMax, true, true)
+        .toArray()
+      const staleKeys = staleInRange
+        .filter((e) => !freshKeys.has(e.compoundKey) && !pendingKeys.has(e.compoundKey))
+        .map((e) => e.compoundKey)
+      if (staleKeys.length > 0) {
+        await db.calendarEvents.bulkDelete(staleKeys)
+      }
+
       set({ loading: false })
       await get().loadEventsFromDb()
     } catch (err) {
@@ -380,51 +409,103 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     get().loadEventsFromDb()
   },
 
-  // --- CRUD (all take accountEmail) ---
+  // --- CRUD (optimistic: IDB first → enqueue → background sync) ---
 
   createEvent: async (calendarId, accountEmail, event) => {
-    try {
-      const created = await api.createEvent(accountEmail, calendarId, event)
-      await db.calendarEvents.put(toDbEvent(created, calendarId, accountEmail))
-      await get().loadEventsFromDb()
-    } catch (err) {
-      console.error('Failed to create event:', err)
+    // Generate temp ID
+    const tempId = `~${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
+    const ck = compoundKey(accountEmail, calendarId, tempId)
+    const now = new Date().toISOString()
+
+    const dbEvent: DbCalendarEvent = {
+      id: tempId,
+      calendarId,
+      accountEmail,
+      compoundKey: ck,
+      summary: (event.summary as string) || '(No title)',
+      description: event.description,
+      location: event.location,
+      startTime: event.start?.dateTime || event.start?.date || now,
+      endTime: event.end?.dateTime || event.end?.date || now,
+      allDay: !event.start?.dateTime && !!event.start?.date,
+      status: 'confirmed',
+      attendeesJson: event.attendees ? JSON.stringify(event.attendees) : undefined,
+      htmlLink: '',
+      eventType: event.eventType,
+      workingLocationJson: event.workingLocationProperties ? JSON.stringify(event.workingLocationProperties) : undefined,
+      remindersJson: event.reminders ? JSON.stringify(event.reminders) : undefined,
+      created: now,
+      updated: now,
     }
+
+    pendingTempIds.set(ck, `${calendarId}:${accountEmail}`)
+    await db.calendarEvents.put(dbEvent)
+    await get().loadEventsFromDb()
+
+    await enqueue('calCreate', {
+      calendarId, accountEmail, event, tempCompoundKey: ck,
+    }, { eventCompoundKey: ck })
   },
 
   updateEvent: async (calendarId, accountEmail, eventId, updates) => {
     const ck = compoundKey(accountEmail, calendarId, eventId)
     const existing = await db.calendarEvents.get(ck)
+    if (!existing) return
 
-    try {
-      const updated = await api.patchEvent(accountEmail, calendarId, eventId, updates)
-      await db.calendarEvents.put(toDbEvent(updated, calendarId, accountEmail))
-      await get().loadEventsFromDb()
-    } catch (err) {
-      console.error('Failed to update event:', err)
-      if (existing) {
-        await db.calendarEvents.put(existing)
-        await get().loadEventsFromDb()
-      }
+    // Optimistic: merge updates into IDB
+    const merged: DbCalendarEvent = { ...existing }
+    if (updates.summary !== undefined) merged.summary = updates.summary || existing.summary
+    if (updates.description !== undefined) merged.description = updates.description
+    if (updates.location !== undefined) merged.location = updates.location
+    if (updates.start) {
+      merged.startTime = updates.start.dateTime || updates.start.date || existing.startTime
+      merged.allDay = !updates.start.dateTime && !!updates.start.date
     }
+    if (updates.end) {
+      merged.endTime = updates.end.dateTime || updates.end.date || existing.endTime
+    }
+    if (updates.status) merged.status = updates.status
+    if (updates.attendees) merged.attendeesJson = JSON.stringify(updates.attendees)
+    if (updates.reminders) merged.remindersJson = JSON.stringify(updates.reminders)
+    merged.updated = new Date().toISOString()
+
+    await db.calendarEvents.put(merged)
+    await get().loadEventsFromDb()
+
+    await enqueue('calUpdate', {
+      calendarId, accountEmail, eventId, updates, rollback: existing,
+    }, { eventCompoundKey: ck })
   },
 
   deleteEvent: async (calendarId, accountEmail, eventId) => {
     const ck = compoundKey(accountEmail, calendarId, eventId)
     const existing = await db.calendarEvents.get(ck)
 
-    await db.calendarEvents.delete(ck)
-    await get().loadEventsFromDb()
+    // Optimistic delete
+    optimisticallyDeleted.add(ck)
+    set((s) => ({ events: s.events.filter((e) => compoundKey(e.accountEmail, e.calendarId, e.id) !== ck) }))
 
-    try {
-      await api.deleteEvent(accountEmail, calendarId, eventId)
-    } catch (err) {
-      console.error('Failed to delete event:', err)
-      if (existing) {
-        await db.calendarEvents.put(existing)
+    // Undo toast
+    useUiStore.getState().setUndoAction({
+      label: 'Deleted',
+      expiresAt: Date.now() + 5000,
+      undo: async () => {
+        optimisticallyDeleted.delete(ck)
+        if (existing) await db.calendarEvents.put(existing)
+        await removeByEvent(ck, 'calDelete')
         await get().loadEventsFromDb()
-      }
+      },
+    })
+
+    // Background: persist + enqueue
+    const bg = async () => {
+      await db.calendarEvents.delete(ck)
+      optimisticallyDeleted.delete(ck)
+      await enqueue('calDelete', {
+        calendarId, accountEmail, eventId, rollback: existing,
+      }, { eventCompoundKey: ck })
     }
+    bg().catch(() => {})
   },
 
   rsvp: async (calendarId, accountEmail, eventId, status) => {
@@ -432,53 +513,93 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const existing = await db.calendarEvents.get(ck)
     if (!existing) return
 
+    // Optimistic: update attendees locally
     const event = fromDbEvent(existing)
     const attendees = event.attendees?.map((a) =>
       a.self ? { ...a, responseStatus: status } : a
     )
+    await db.calendarEvents.put({ ...existing, attendeesJson: attendees ? JSON.stringify(attendees) : existing.attendeesJson })
+    await get().loadEventsFromDb()
 
-    try {
-      const updated = await api.patchEvent(accountEmail, calendarId, eventId, { attendees })
-      await db.calendarEvents.put(toDbEvent(updated, calendarId, accountEmail))
+    await enqueue('calRsvp', {
+      calendarId, accountEmail, eventId, attendees,
+    }, { eventCompoundKey: ck })
+  },
+
+  setReminder: async (calendarId, accountEmail, eventId, minutes) => {
+    const ck = compoundKey(accountEmail, calendarId, eventId)
+    const existing = await db.calendarEvents.get(ck)
+
+    // Optimistic: update reminders locally
+    const reminders = minutes === null
+      ? { useDefault: false, overrides: [] as Array<{ method: string; minutes: number }> }
+      : { useDefault: false, overrides: [{ method: 'popup', minutes }] }
+    if (existing) {
+      await db.calendarEvents.put({ ...existing, remindersJson: JSON.stringify(reminders) })
       await get().loadEventsFromDb()
-    } catch (err) {
-      console.error('Failed to RSVP:', err)
     }
+
+    await enqueue('calReminder', {
+      calendarId, accountEmail, eventId, minutes,
+    }, { eventCompoundKey: ck })
   },
 
   updateLocation: async (calendarId, accountEmail, eventId, locationType, customLabel) => {
+    const oldCk = compoundKey(accountEmail, calendarId, eventId)
+    const existing = await db.calendarEvents.get(oldCk)
+
     const props: CalendarEvent['workingLocationProperties'] =
       locationType === 'homeOffice' ? { type: 'homeOffice' }
       : locationType === 'officeLocation' ? { type: 'officeLocation', officeLocation: { label: customLabel } }
       : { type: 'customLocation', customLocation: { label: customLabel || '' } }
 
-    try {
-      const current = await api.getEvent(accountEmail, calendarId, eventId)
+    const summary =
+      locationType === 'homeOffice' ? 'Home'
+      : locationType === 'officeLocation' ? (customLabel || 'Office')
+      : (customLabel || '')
 
-      await api.deleteEvent(accountEmail, calendarId, eventId)
-      const ck = compoundKey(accountEmail, calendarId, eventId)
-      await db.calendarEvents.delete(ck)
+    // Optimistic: delete old, create new with temp ID
+    optimisticallyDeleted.add(oldCk)
+    await db.calendarEvents.delete(oldCk)
 
-      const summary =
-        locationType === 'homeOffice' ? 'Home'
-        : locationType === 'officeLocation' ? (customLabel || 'Office')
-        : (customLabel || '')
+    const tempId = `~${Date.now()}.${Math.random().toString(36).slice(2, 8)}`
+    const tempCk = compoundKey(accountEmail, calendarId, tempId)
+    const now = new Date().toISOString()
 
-      const created = await api.createEvent(accountEmail, calendarId, {
-        summary,
-        start: current.start,
-        end: current.end,
-        eventType: 'workingLocation',
-        transparency: 'transparent',
-        visibility: 'public',
-        workingLocationProperties: props,
-      } as Partial<CalendarEvent>)
-
-      await db.calendarEvents.put(toDbEvent(created, calendarId, accountEmail))
-      await get().loadEventsFromDb()
-    } catch (err) {
-      console.error('Failed to update location:', err)
+    const newEventData: Partial<CalendarEvent> = {
+      summary,
+      start: existing ? fromDbEvent(existing).start : { date: now.split('T')[0] },
+      end: existing ? fromDbEvent(existing).end : { date: now.split('T')[0] },
+      eventType: 'workingLocation',
+      transparency: 'transparent',
+      visibility: 'public',
+      workingLocationProperties: props,
     }
+
+    const dbEvent: DbCalendarEvent = {
+      id: tempId,
+      calendarId,
+      accountEmail,
+      compoundKey: tempCk,
+      summary,
+      startTime: (newEventData.start?.dateTime || newEventData.start?.date || now),
+      endTime: (newEventData.end?.dateTime || newEventData.end?.date || now),
+      allDay: !newEventData.start?.dateTime && !!newEventData.start?.date,
+      status: 'confirmed',
+      htmlLink: '',
+      eventType: 'workingLocation',
+      workingLocationJson: JSON.stringify(props),
+      created: now,
+      updated: now,
+    }
+
+    pendingTempIds.set(tempCk, `${calendarId}:${accountEmail}`)
+    await db.calendarEvents.put(dbEvent)
+    await get().loadEventsFromDb()
+
+    await enqueue('calLocation', {
+      calendarId, accountEmail, oldEventId: eventId, tempCompoundKey: tempCk, newEventData,
+    }, { eventCompoundKey: tempCk })
   },
 
   // --- Event form ---
@@ -525,7 +646,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const seen = new Set<string>()
     const merged: DbCalendarEvent[] = []
     for (const e of [...dbEvents, ...allDayEvents]) {
-      if (!seen.has(e.compoundKey) && visibleCalendarIds.has(e.calendarId)) {
+      if (!seen.has(e.compoundKey) && visibleCalendarIds.has(e.calendarId) && !optimisticallyDeleted.has(e.compoundKey)) {
         seen.add(e.compoundKey)
         merged.push(e)
       }
