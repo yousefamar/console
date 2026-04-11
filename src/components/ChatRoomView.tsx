@@ -6,6 +6,7 @@ import { ChatMessageBubble, type ReadReceiptEntry } from './ChatMessageBubble'
 import { ChatComposeInput } from './ChatComposeInput'
 import { InboxZero } from './InboxZero'
 import { ImageLightbox } from './ImageLightbox'
+import { ChevronDown } from 'lucide-react'
 import type { DbChatMessage, DbChatRoom } from '@/matrix/types'
 
 export function ChatRoomView() {
@@ -129,6 +130,7 @@ const RoomMessages = memo(function RoomMessages({
   const isLoadingOlder = useRef(false)
   const prevMessageCount = useRef(0)
   const [showLoadingOlder, setShowLoadingOlder] = useState(false)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
   // Group read receipts by eventId for efficient lookup per message
   const receiptsByEventId = useMemo(() => {
@@ -217,6 +219,7 @@ const RoomMessages = memo(function RoomMessages({
     if (!isVisible) {
       didInitialScroll.current = false
       prevMessageCount.current = 0
+      setShowScrollToBottom(false)
     }
   }, [isVisible])
 
@@ -236,8 +239,10 @@ const RoomMessages = memo(function RoomMessages({
   }, [isVisible, messages, roomId, onLoadOlder])
 
   const handleScroll = useCallback(async () => {
-    if (!scrollRef.current || isLoadingOlder.current) return
+    if (!scrollRef.current) return
     const el = scrollRef.current
+    setShowScrollToBottom(el.scrollHeight - el.scrollTop - el.clientHeight > 200)
+    if (isLoadingOlder.current) return
     if (el.scrollTop < 100) {
       isLoadingOlder.current = true
       setShowLoadingOlder(true)
@@ -251,53 +256,68 @@ const RoomMessages = memo(function RoomMessages({
     }
   }, [roomId, onLoadOlder])
 
+  const scrollToBottom = useCallback(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [])
+
   return (
-    <div
-      ref={scrollRef}
-      className="absolute inset-0 overflow-y-auto py-2"
-      style={{ display: isVisible ? 'block' : 'none' }}
-      onScroll={handleScroll}
-    >
-      {showLoadingOlder && (
-        <div className="flex items-center justify-center py-2">
-          <span className="text-[10px] text-text-tertiary">Loading…</span>
-        </div>
+    <>
+      <div
+        ref={scrollRef}
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden py-2"
+        style={{ display: isVisible ? 'block' : 'none' }}
+        onScroll={handleScroll}
+      >
+        {showLoadingOlder && (
+          <div className="flex items-center justify-center py-2">
+            <span className="text-[10px] text-text-tertiary">Loading…</span>
+          </div>
+        )}
+        {messages.length === 0 && !showLoadingOlder ? (
+          <div className="flex h-32 items-center justify-center">
+            <p className="text-sm text-text-tertiary">No messages yet</p>
+          </div>
+        ) : (
+          messages.map((msg, i) => {
+            const prevMsg = i > 0 ? messages[i - 1] : null
+            const showSender = !prevMsg || prevMsg.senderId !== msg.senderId ||
+              msg.timestamp - prevMsg.timestamp > 5 * 60 * 1000
+            const showUnreadDivider = lastReadTs &&
+              prevMsg && prevMsg.timestamp <= lastReadTs &&
+              msg.timestamp > lastReadTs &&
+              msg.senderId !== matrixUserId
+            return (
+              <div key={msg.id}>
+                {showUnreadDivider && (
+                  <div data-unread-divider className="flex items-center gap-3 px-3 my-2">
+                    <div className="flex-1 border-t border-red-500/60" />
+                    <span className="text-[10px] font-medium text-red-400 uppercase tracking-wider">New</span>
+                    <div className="flex-1 border-t border-red-500/60" />
+                  </div>
+                )}
+                <ChatMessageBubble
+                  message={msg}
+                  isOwn={msg.senderId === matrixUserId}
+                  showSender={showSender}
+                  receipts={receiptsByEventId[msg.id]}
+                  onImageClick={onImageClick}
+                  onReply={onReply}
+                  onReact={onReact}
+                />
+              </div>
+            )
+          })
+        )}
+      </div>
+      {isVisible && showScrollToBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 rounded-full bg-bg-tertiary border border-border p-1.5 shadow-md hover:bg-bg-secondary transition-opacity"
+          title="Jump to bottom"
+        >
+          <ChevronDown size={16} className="text-text-secondary" />
+        </button>
       )}
-      {messages.length === 0 && !showLoadingOlder ? (
-        <div className="flex h-32 items-center justify-center">
-          <p className="text-sm text-text-tertiary">No messages yet</p>
-        </div>
-      ) : (
-        messages.map((msg, i) => {
-          const prevMsg = i > 0 ? messages[i - 1] : null
-          const showSender = !prevMsg || prevMsg.senderId !== msg.senderId ||
-            msg.timestamp - prevMsg.timestamp > 5 * 60 * 1000
-          const showUnreadDivider = lastReadTs &&
-            prevMsg && prevMsg.timestamp <= lastReadTs &&
-            msg.timestamp > lastReadTs &&
-            msg.senderId !== matrixUserId
-          return (
-            <div key={msg.id}>
-              {showUnreadDivider && (
-                <div data-unread-divider className="flex items-center gap-3 px-3 my-2">
-                  <div className="flex-1 border-t border-red-500/60" />
-                  <span className="text-[10px] font-medium text-red-400 uppercase tracking-wider">New</span>
-                  <div className="flex-1 border-t border-red-500/60" />
-                </div>
-              )}
-              <ChatMessageBubble
-                message={msg}
-                isOwn={msg.senderId === matrixUserId}
-                showSender={showSender}
-                receipts={receiptsByEventId[msg.id]}
-                onImageClick={onImageClick}
-                onReply={onReply}
-                onReact={onReact}
-              />
-            </div>
-          )
-        })
-      )}
-    </div>
+    </>
   )
 })

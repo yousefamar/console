@@ -117,8 +117,10 @@ export function FeedItemView() {
             <iframe
               src={`https://www.youtube-nocookie.com/embed/${youtubeId}`}
               className="w-full h-full rounded-sm"
+              style={{ pointerEvents: 'auto' }}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
+              title="YouTube video"
             />
           </div>
         )}
@@ -134,7 +136,7 @@ export function FeedItemView() {
 
         {sanitizedContent ? (
           <div
-            className="feed-article-content text-xs text-text-secondary leading-relaxed max-w-2xl [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded-sm [&_a]:text-blue-400 [&_a]:underline [&_a:hover]:text-blue-300 [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_code]:bg-surface-2 [&_code]:px-1 [&_code]:rounded-sm [&_code]:text-[11px] [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-text-tertiary [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:mb-2 [&_li]:mb-0.5 [&_hr]:border-border [&_hr]:my-3 [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold"
+            className="feed-article-content text-xs text-text-secondary leading-relaxed max-w-full overflow-hidden break-words [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded-sm [&_a]:text-blue-400 [&_a]:underline [&_a:hover]:text-blue-300 [&_a]:break-all [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_pre]:max-w-full [&_code]:bg-surface-2 [&_code]:px-1 [&_code]:rounded-sm [&_code]:text-[11px] [&_code]:break-all [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-text-tertiary [&_h1]:text-base [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-4 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-4 [&_ol]:mb-2 [&_li]:mb-0.5 [&_hr]:border-border [&_hr]:my-3 [&_table]:block [&_table]:overflow-x-auto [&_table]:max-w-full [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold"
             dangerouslySetInnerHTML={{ __html: sanitizedContent }}
           />
         ) : item.link ? (

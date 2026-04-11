@@ -3,7 +3,7 @@ import type { AgentMessage } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
-  Pencil, Globe, AlertTriangle,
+  Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft,
 } from 'lucide-react'
 
 // ============================================================================
@@ -26,6 +26,12 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
       return <ThinkingBlock message={message} content={block.content} collapsed={block.collapsed} />
     case 'tool_use': {
       const result = toolResult?.block.type === 'tool_result' ? toolResult.block : undefined
+      if (block.toolName === 'EnterPlanMode') {
+        return <ModeTransitionBlock label="Entered plan mode" />
+      }
+      if (block.toolName === 'ExitPlanMode') {
+        return <PlanResultBlock plan={result?.content} />
+      }
       return <ToolUseBlock toolName={block.toolName} input={block.input} result={result} />
     }
     case 'tool_result':
@@ -102,10 +108,10 @@ function ToolUseBlock({ toolName, input, result }: {
   const Icon = toolIcon(toolName)
 
   return (
-    <div className="px-3 py-1">
+    <div className="px-3 py-1 min-w-0 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className={`flex items-start gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast text-left ${
+        className={`flex items-start gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast text-left max-w-full ${
           result?.isError ? 'text-destructive' : ''
         }`}
       >
@@ -113,7 +119,7 @@ function ToolUseBlock({ toolName, input, result }: {
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Icon size={11} />
         </span>
-        <span className="min-w-0">
+        <span className="min-w-0 overflow-hidden">
           <span className="font-medium text-text-primary">{toolName}</span>{' '}
           <span className="text-text-tertiary"><ToolDetail toolName={toolName} input={input} /></span>
         </span>
@@ -148,7 +154,7 @@ function ToolDetail({ toolName, input }: { toolName: string; input: Record<strin
   )
 
   return (
-    <span className="font-mono">
+    <span className="font-mono break-all">
       {primaryVal !== undefined && String(primaryVal)}
       {rest.length > 0 && (
         <span className="text-text-quaternary">
@@ -156,6 +162,58 @@ function ToolDetail({ toolName, input }: { toolName: string; input: Record<strin
         </span>
       )}
     </span>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Mode transition blocks
+// --------------------------------------------------------------------------
+
+function ModeTransitionBlock({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 px-3 my-2">
+      <div className="flex-1 border-t border-border" />
+      <span className="flex items-center gap-1 text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
+        <ArrowRightLeft size={10} />
+        {label}
+      </span>
+      <div className="flex-1 border-t border-border" />
+    </div>
+  )
+}
+
+function PlanResultBlock({ plan }: { plan?: string }) {
+  const [expanded, setExpanded] = useState(true)
+  const rendered = useMemo(() => plan ? renderMarkdownLite(plan) : null, [plan])
+
+  return (
+    <div className="mx-3 my-2">
+      <div className="flex items-center gap-2 mb-2">
+        <div className="flex-1 border-t border-border" />
+        <span className="flex items-center gap-1 text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
+          <ArrowRightLeft size={10} />
+          Exited plan mode
+        </span>
+        <div className="flex-1 border-t border-border" />
+      </div>
+      {plan && (
+        <div className="border border-border rounded-sm overflow-hidden">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1.5 w-full px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary bg-surface-1 transition-colors duration-fast"
+          >
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            <ClipboardList size={11} />
+            <span>Plan</span>
+          </button>
+          {expanded && (
+            <div className="px-3 py-2 text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed border-t border-border">
+              {rendered}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -233,7 +291,7 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
     const lang = match[1]
     const code = match[2]!.replace(/\n$/, '')
     parts.push(
-      <pre key={key++} className="my-1 p-2 rounded-sm bg-surface-2 text-[11px] font-mono overflow-x-auto">
+      <pre key={key++} className="my-1 p-2 rounded-sm bg-surface-2 text-[11px] font-mono overflow-x-auto max-w-[calc(100vw-24px)]">
         {lang && <span className="text-[9px] text-text-tertiary uppercase tracking-wider">{lang}</span>}
         <code>{code}</code>
       </pre>,
@@ -283,7 +341,7 @@ function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
       const rows = bodyLines.map(parseRow)
 
       parts.push(
-        <div key={key++} className="my-1 overflow-x-auto">
+        <div key={key++} className="my-1 overflow-x-auto max-w-[calc(100vw-24px)]">
           <table className="text-[11px] border-collapse">
             <thead>
               <tr className="border-b border-border">
@@ -343,7 +401,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
     if (match[1] !== undefined) {
       // Inline code
       parts.push(
-        <code key={key++} className="bg-surface-2 px-1 py-0.5 rounded-sm text-[11px] font-mono">
+        <code key={key++} className="bg-surface-2 px-1 py-0.5 rounded-sm text-[11px] font-mono break-all">
           {match[1]}
         </code>,
       )

@@ -9,6 +9,7 @@ import * as matrixApi from '@/matrix/api'
 import { decryptRoomEvent, isCryptoReady, encryptRoomEvent, shareRoomKeys } from '@/matrix/crypto'
 import { encryptAttachment } from '@/matrix/decrypt-media'
 import { buildMessageFromContent } from '@/matrix/sync'
+import { notify } from '@/notifications'
 
 const INITIAL_PAGE_SIZE = 20
 const OLDER_PAGE_SIZE = 30
@@ -616,43 +617,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       let sendResult: { event_id?: string } | undefined
 
+      // Upload raw and send as plaintext — encrypted image attachments fail on
+      // Beeper bridges (key claim rejected → bridge can't decrypt the Megolm event).
+      // Text messages fall back to plaintext automatically; images should too.
+      const mxcUrl = await matrixApi.uploadMedia(data, file.type, file.name)
+      content = {
+        msgtype: 'm.image',
+        body: bodyText,
+        filename: file.name,
+        url: mxcUrl,
+        info: { mimetype: file.type, size: file.size, w: dims.w, h: dims.h },
+      }
+
       if (room?.isEncrypted && isCryptoReady()) {
-        // Encrypt attachment → upload encrypted blob → send encrypted message
-        const { encrypted, file: encFile } = await encryptAttachment(data)
-        const mxcUrl = await matrixApi.uploadMedia(encrypted, 'application/octet-stream', file.name)
-
-        content = {
-          msgtype: 'm.image',
-          body: bodyText,
-          filename: file.name,
-          file: { ...encFile, url: mxcUrl, mimetype: file.type },
-          info: { mimetype: file.type, size: file.size, w: dims.w, h: dims.h },
-        }
-
-        // Share keys + encrypt the event content
-        const members = await matrixApi.getRoomState(roomId)
-        const memberIds = members
-          .filter((e) => e.type === 'm.room.member' && e.content.membership === 'join')
-          .map((e) => e.state_key ?? '')
-          .filter(Boolean)
-        await shareRoomKeys(roomId, memberIds)
-
         const encryptedEvent = await encryptRoomEvent(roomId, 'm.room.message', content)
         if (encryptedEvent) {
           sendResult = await matrixApi.sendEncryptedMessage(roomId, JSON.parse(encryptedEvent))
         } else {
-          throw new Error('Failed to encrypt image event')
+          // Encryption failed — fall back to plaintext (same as text messages)
+          sendResult = await matrixApi.sendRoomEvent(roomId, 'm.room.message', content)
         }
       } else {
-        // Unencrypted: upload raw → send m.image
-        const mxcUrl = await matrixApi.uploadMedia(data, file.type, file.name)
-        content = {
-          msgtype: 'm.image',
-          body: bodyText,
-          filename: file.name,
-          url: mxcUrl,
-          info: { mimetype: file.type, size: file.size, w: dims.w, h: dims.h },
-        }
         sendResult = await matrixApi.sendRoomEvent(roomId, 'm.room.message', content)
       }
 
@@ -677,6 +662,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       await db.chatMessages.update(localId, { sendFailed: message })
+      const room = await db.chatRooms.get(roomId)
+      notify({
+        title: 'Message failed to send',
+        body: room?.name ? `in ${room.name}: ${message}` : message,
+        tag: `send-failed:${localId}`,
+        data: { pane: 'chat', itemId: roomId },
+      })
     }
   },
 

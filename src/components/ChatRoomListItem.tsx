@@ -116,7 +116,7 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
             {room.lastMessageBody}
           </span>
           {room.unreadCount && room.unreadCount > 0 ? (
-            <span className="flex-shrink-0 text-[10px] text-text-tertiary tabular-nums">
+            <span className="flex-shrink-0 text-[10px] text-blue-500 font-medium tabular-nums">
               {room.unreadCount > 99 ? '99+' : room.unreadCount}
             </span>
           ) : null}

@@ -316,6 +316,13 @@ function detectBridgeNetwork(stateEvents: MatrixEvent[]): string | undefined {
 }
 
 function isDirect(stateEvents: MatrixEvent[]): boolean {
+  // A room with an explicit m.room.name is a group/channel, not a DM.
+  // Bridge DMs derive names from members; channels have explicit names.
+  const hasExplicitName = stateEvents.some(
+    (e) => e.type === 'm.room.name' && e.state_key === '' && e.content.name,
+  )
+  if (hasExplicitName) return false
+
   // Heuristic: room with 2 or fewer real (non-bot) joined members
   const realMembers = stateEvents.filter(
     (e) => e.type === 'm.room.member' && e.content.membership === 'join' && !isBridgeBotUser(e.state_key ?? ''),
@@ -607,7 +614,7 @@ async function processJoinedRoom(
       : computedName !== roomId ? computedName
       : roomId,
     avatar: hasFullMembers
-      ? (computedAvatar ?? existing?.avatar)
+      ? (computedAvatar ?? (directRoom ? existing?.avatar : undefined))
       : explicitAvatarEvent?.content.url
         ? (explicitAvatarEvent.content.url as string)
         : existing?.avatar,
@@ -654,7 +661,8 @@ async function processJoinedRoom(
   await db.chatRooms.put(dbRoom)
 
   // Fire notification for new messages from others
-  if (hasNewerMessagesFromOthers && lastMsg && lastMsg.senderId !== myUserId) {
+  // Skip low-priority rooms and rooms the server says have no notifications (muted via push rules)
+  if (hasNewerMessagesFromOthers && lastMsg && lastMsg.senderId !== myUserId && !roomIsLowPriority && serverNotifCount > 0) {
     import('@/notifications').then(({ notify }) => {
       const senderName = lastMsg.senderName || lastMsg.senderId
       const body = lastMsg.body?.slice(0, 100) || 'New message'
@@ -668,7 +676,7 @@ async function processJoinedRoom(
         }
       }
       notify({
-        title: senderName,
+        title: !dbRoom.isDirect && dbRoom.name ? `${senderName} in ${dbRoom.name}` : senderName,
         body,
         icon,
         tag: `chat-${roomId}`,
@@ -947,6 +955,15 @@ export async function processChatQueue(): Promise<void> {
         if (match) {
           await db.chatMessages.update(match.id, { sendFailed: message })
         }
+        const room = await db.chatRooms.get(action.roomId)
+        import('@/notifications').then(({ notify }) => {
+          notify({
+            title: 'Message failed to send',
+            body: room?.name ? `in ${room.name}: ${message}` : message,
+            tag: `send-failed:${match?.id ?? action.id}`,
+            data: { pane: 'chat' as const, itemId: action.roomId! },
+          })
+        })
       }
     }
   }

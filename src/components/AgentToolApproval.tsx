@@ -210,9 +210,9 @@ function ToolInputPreview({ toolName, input }: { toolName: string; input: Record
   switch (toolName) {
     case 'Bash':
       return (
-        <div className="flex items-start gap-1.5 rounded-sm bg-surface-2 px-2 py-1.5">
+        <div className="flex items-start gap-1.5 rounded-sm bg-surface-2 px-2 py-1.5 min-w-0 overflow-hidden">
           <Terminal size={12} className="text-text-tertiary mt-0.5 flex-shrink-0" />
-          <pre className="text-xs font-mono text-text-primary whitespace-pre-wrap break-all">
+          <pre className="text-xs font-mono text-text-primary whitespace-pre-wrap break-all min-w-0">
             {String(input.command ?? '')}
           </pre>
         </div>
@@ -220,15 +220,15 @@ function ToolInputPreview({ toolName, input }: { toolName: string; input: Record
 
     case 'Edit':
       return (
-        <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-            <Pencil size={11} />
-            <span className="font-mono">{String(input.file_path ?? '')}</span>
+        <div className="space-y-1 min-w-0 overflow-hidden">
+          <div className="flex items-center gap-1.5 text-xs text-text-secondary min-w-0">
+            <Pencil size={11} className="flex-shrink-0" />
+            <span className="font-mono break-all min-w-0">{String(input.file_path ?? '')}</span>
           </div>
           {input.old_string != null && (
             <div className="rounded-sm bg-surface-2 px-2 py-1 text-[11px] font-mono overflow-x-auto max-h-24 overflow-y-auto">
-              <div className="text-red-400/80 line-through whitespace-pre-wrap">{String(input.old_string)}</div>
-              <div className="text-success whitespace-pre-wrap mt-0.5">{String(input.new_string ?? '')}</div>
+              <div className="text-red-400/80 line-through whitespace-pre-wrap break-words">{String(input.old_string)}</div>
+              <div className="text-success whitespace-pre-wrap break-words mt-0.5">{String(input.new_string ?? '')}</div>
             </div>
           )}
         </div>
@@ -236,10 +236,10 @@ function ToolInputPreview({ toolName, input }: { toolName: string; input: Record
 
     case 'Write':
       return (
-        <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-          <FileText size={11} />
-          <span className="font-mono">{String(input.file_path ?? '')}</span>
-          <span className="text-text-tertiary">
+        <div className="flex items-center gap-1.5 text-xs text-text-secondary min-w-0">
+          <FileText size={11} className="flex-shrink-0" />
+          <span className="font-mono break-all min-w-0">{String(input.file_path ?? '')}</span>
+          <span className="text-text-tertiary flex-shrink-0">
             ({String(input.content ?? '').length} chars)
           </span>
         </div>
@@ -247,7 +247,7 @@ function ToolInputPreview({ toolName, input }: { toolName: string; input: Record
 
     default:
       return (
-        <pre className="rounded-sm bg-surface-2 px-2 py-1 text-[11px] font-mono text-text-secondary overflow-x-auto max-h-24 overflow-y-auto">
+        <pre className="rounded-sm bg-surface-2 px-2 py-1 text-[11px] font-mono text-text-secondary overflow-x-auto max-h-24 overflow-y-auto max-w-full">
           {JSON.stringify(input, null, 2)}
         </pre>
       )

@@ -87,8 +87,10 @@ export function NotesCommandPalette() {
       id: 'new',
       label: 'New File',
       icon: <FilePlus size={12} />,
-      action: () => {},
-      prompt: { placeholder: 'Filename...' },
+      action: () => {
+        closeCommandPalette()
+        useNotesStore.getState().openNewFileForm()
+      },
     })
 
     if (state.recentlyClosedPaths.length > 0) {
@@ -156,9 +158,6 @@ export function NotesCommandPalette() {
       const dir = activeFilePath.split('/').slice(0, -1).join('/')
       const newPath = dir ? `${dir}/${trimmed}.md` : `${trimmed}.md`
       await state.renameFile(activeFilePath, newPath)
-    } else if (cmd.id === 'new') {
-      const path = `scratch/${trimmed.replace(/\s+/g, '-').toLowerCase()}.md`
-      await state.createFile(path)
     }
 
     closeCommandPalette()

@@ -298,13 +298,26 @@ export async function restoreKeyBackup(
     `/_matrix/client/v3/user/${encodedUser}/account_data/m.megolm_backup.v1`,
   ) as { encrypted: Record<string, { iv: string; ciphertext: string; mac: string }> }
 
-  const encryptedBackupKey = backupSecretData.encrypted[defaultKeyId]
-  if (!encryptedBackupKey) {
-    throw new Error(`No backup key encrypted with SSSS key ${defaultKeyId}`)
+  // Try the default key first, then fall back to any other available key
+  // (handles the case where bootstrap overwrote the default SSSS key but the
+  // backup is still encrypted under the old one)
+  const keyIdsToTry = [defaultKeyId, ...Object.keys(backupSecretData.encrypted).filter(k => k !== defaultKeyId)]
+  let backupKeyBytes: Uint8Array | null = null
+
+  for (const keyId of keyIdsToTry) {
+    const encrypted = backupSecretData.encrypted[keyId]
+    if (!encrypted) continue
+    try {
+      backupKeyBytes = await ssssDecrypt(ssssKey, encrypted, 'm.megolm_backup.v1')
+      break // Decryption succeeded
+    } catch {
+      // Wrong key — try next
+    }
   }
 
-  // 3. Decrypt the backup key using SSSS (stored as base64 string)
-  const backupKeyBytes = await ssssDecrypt(ssssKey, encryptedBackupKey, 'm.megolm_backup.v1')
+  if (!backupKeyBytes) {
+    throw new Error(`Recovery key does not match any SSSS key (tried: ${keyIdsToTry.join(', ')})`)
+  }
   const backupKeyBase64 = new TextDecoder().decode(backupKeyBytes)
   const backupDecryptionKey = BackupDecryptionKey.fromBase64(backupKeyBase64)
 

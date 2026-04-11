@@ -102,6 +102,7 @@ export function AgentPromptInput() {
     sendingRef.current = true
     setText('')
     setImages([])
+    if (inputRef.current) inputRef.current.style.height = '24px'
 
     if (activeSessionId) {
       sendMessage(body || 'What do you see in this image?', imagePayload)
@@ -125,6 +126,7 @@ export function AgentPromptInput() {
     if (!body && !imagePayload) return
     setText('')
     setImages([])
+    if (inputRef.current) inputRef.current.style.height = '24px'
     createSession(body || 'What do you see in this image?', resolvedCwd, imagePayload)
     setSelectedDir(null)
     setDirInput('')
@@ -402,6 +404,8 @@ export function AgentPromptInput() {
           onChange={(e) => {
             const val = e.target.value
             setText(val)
+            e.target.style.height = '24px'
+            e.target.style.height = Math.min(120, e.target.scrollHeight) + 'px'
             if (val.startsWith('/') && slashCommands.length > 0) {
               setSlashOpen(true)
               setSlashIndex(0)
@@ -414,8 +418,7 @@ export function AgentPromptInput() {
           data-agent-input
           placeholder={activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
           rows={1}
-          className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px]"
-          style={{ height: Math.min(120, Math.max(24, text.split('\n').length * 20)) }}
+          className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px] overflow-y-auto"
           disabled={!connected}
         />
 

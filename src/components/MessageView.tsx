@@ -55,7 +55,7 @@ export const MessageView = memo(function MessageView({ message, isLast, visible 
                   &lt;{message.fromEmail}&gt;
                 </span>
               </div>
-              <div className="mt-0.5 text-xs text-text-tertiary">
+              <div className="mt-0.5 text-xs text-text-tertiary break-words">
                 To: {toList.map((a) => a.name || a.email).join(', ')}
                 {ccList.length > 0 && (
                   <> &middot; Cc: {ccList.map((a) => a.name || a.email).join(', ')}</>

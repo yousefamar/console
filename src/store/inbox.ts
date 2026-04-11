@@ -25,7 +25,7 @@ interface InboxState {
   // Triage (synchronous — DB writes happen in background)
   archiveThread: (threadId?: string) => void
   deleteThread: (threadId?: string) => void
-  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => void
+  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date, threadId?: string) => void
   markRead: (threadId?: string) => Promise<void>
 
   // Reply
@@ -232,8 +232,8 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     bg().catch(() => {})
   },
 
-  snoozeThread: (option, customDate) => {
-    const id = get().selectedThreadId
+  snoozeThread: (option, customDate, threadId) => {
+    const id = threadId ?? get().selectedThreadId
     if (!id) return
 
     const snoozedUntil = getSnoozeTime(option, customDate)
@@ -241,13 +241,16 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     optimisticallyRemoved.add(id)
 
     // Optimistic: synchronous set() — instant UI
+    const wasSelected = get().selectedThreadId === id
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
       const currentIdx = s.threads.findIndex((t) => t.id === id)
-      const nextThread = newThreads[Math.min(currentIdx, newThreads.length - 1)]
+      const nextThread = wasSelected
+        ? newThreads[Math.min(currentIdx, newThreads.length - 1)]
+        : null
       return {
         threads: newThreads,
-        selectedThreadId: nextThread?.id ?? null,
+        selectedThreadId: wasSelected ? (nextThread?.id ?? null) : s.selectedThreadId,
       }
     })
 

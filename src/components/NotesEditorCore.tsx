@@ -1,7 +1,7 @@
 import { useEffect, useRef, memo } from 'react'
 import { EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { yamlFrontmatter } from '@codemirror/lang-yaml'
 import { languages } from '@codemirror/language-data'
@@ -121,6 +121,29 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
             useNotesStore.getState().openCommandPalette()
             return true
           }
+          // Ctrl+W → close current tab (matching nvim config)
+          if ((event.ctrlKey || event.metaKey) && event.key === 'w') {
+            event.preventDefault()
+            const state = useNotesStore.getState()
+            if (state.activeFilePath) {
+              const closed = state.closeFile(state.activeFilePath, false)
+              if (!closed) {
+                // File is dirty — ask to save first
+                if (confirm('Save changes before closing?')) {
+                  state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
+                } else {
+                  state.closeFile(state.activeFilePath!, true)
+                }
+              }
+            }
+            return true
+          }
+          // Ctrl+N → new note
+          if ((event.ctrlKey || event.metaKey) && event.key === 'n' && !event.shiftKey) {
+            event.preventDefault()
+            useNotesStore.getState().openNewFileForm()
+            return true
+          }
           // Ctrl+B → bold
           if ((event.ctrlKey || event.metaKey) && event.key === 'b') {
             event.preventDefault()
@@ -190,6 +213,8 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
         ...defaultKeymap,
         ...historyKeymap,
         ...searchKeymap,
+        { key: 'Tab', run: indentMore },
+        { key: 'Shift-Tab', run: indentLess },
         {
           key: 'Mod-s',
           run: () => {
@@ -251,6 +276,24 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
         },
       }),
     ]
+
+    // Vim options (equivalent to nvim's `set clipboard=unnamedplus`)
+    // Map y/d/p to use system clipboard register (+) by default
+    Vim.noremap('y', '"+y', 'normal')
+    Vim.noremap('Y', '"+Y', 'normal')
+    Vim.noremap('y', '"+y', 'visual')
+    Vim.noremap('d', '"+d', 'normal')
+    Vim.noremap('D', '"+D', 'normal')
+    Vim.noremap('d', '"+d', 'visual')
+    Vim.noremap('p', '"+p', 'normal')
+    Vim.noremap('P', '"+P', 'normal')
+    Vim.noremap('p', '"+p', 'visual')
+    // Ctrl+J/K for half-page scroll (matching nvim config)
+    Vim.noremap('<C-j>', '<C-d>', 'normal')
+    Vim.noremap('<C-k>', '<C-u>', 'normal')
+    // j/k navigate wrapped lines (gj/gk)
+    Vim.noremap('j', 'gj', 'normal')
+    Vim.noremap('k', 'gk', 'normal')
 
     // Register :link vim ex command
     Vim.defineEx('link', 'link', () => {

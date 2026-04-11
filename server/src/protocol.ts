@@ -22,6 +22,9 @@ export type ClientMessage =
   | { type: 'get_session_history'; sessionId: string }
   | { type: 'rename_session'; sessionId: string; name: string }
   | { type: 'generate_title'; sessionId: string }
+  | { type: 'fork_session'; sessionId: string; cwd?: string }
+  | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
+  | { type: 'reorder_sessions'; order: string[] }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -29,7 +32,7 @@ export type ClientMessage =
 
 export type HubMessage =
   | { type: 'session_created'; sessionId: string; cwd: string; prompt: string }
-  | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number }
+  | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number; permissionMode?: string }
   | { type: 'context_update'; sessionId: string; used: number; total: number }
   | { type: 'sessions_list'; sessions: SessionInfo[] }
   | { type: 'project_dirs'; dirs: string[] }
@@ -50,6 +53,8 @@ export type HubMessage =
   | { type: 'past_sessions'; sessions: PastSession[] }
   | { type: 'session_history'; sessionId: string; messages: SessionHistoryMessage[] }
   | { type: 'session_renamed'; sessionId: string; name: string }
+  | { type: 'session_order'; order: string[] }
+  | { type: 'older_messages'; sessionId: string; messages: HubMessage[]; hasMore: boolean }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */
@@ -104,8 +109,10 @@ export interface SessionInfo {
   cwd?: string
   totalCost: number
   totalTokens: TokenUsage
+  messageLogLength?: number
   gitBranch?: string
   gitDirty?: boolean
+  gitStats?: { added: number; deleted: number }
 }
 
 // --------------------------------------------------------------------------
@@ -119,6 +126,7 @@ export interface ClaudeSystemMessage {
   tools?: string[]
   model?: string
   slash_commands?: string[]
+  permissionMode?: string
 }
 
 export interface ClaudeAssistantMessage {

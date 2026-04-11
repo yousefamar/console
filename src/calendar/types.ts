@@ -11,6 +11,7 @@ export interface CalendarInfo {
   accessRole: 'owner' | 'writer' | 'reader' | 'freeBusyReader'
   primary?: boolean
   timeZone?: string
+  defaultReminders?: Array<{ method: string; minutes: number }>
   accountEmail: string          // which account section to display under
   apiAccountEmail: string       // which account's token to use for API calls (may differ for subscribed calendars)
 }
@@ -114,6 +115,7 @@ export interface DbCalendarEvent {
   conferenceDataJson?: string
   eventType?: string
   workingLocationJson?: string
+  remindersJson?: string
   created: string
   updated: string
 }

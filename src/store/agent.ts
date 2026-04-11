@@ -54,9 +54,13 @@ export interface SessionInfo {
   contextWindow: number
   contextUsed: number
   statusText?: string
+  permissionMode?: string
+  messageLogLength?: number
+  hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
   gitDirty?: boolean
+  gitStats?: { added: number; deleted: number }
 }
 
 export interface PastSession {
@@ -85,6 +89,8 @@ interface AgentState {
   sessions: SessionInfo[]
   activeSessionId: string | null
   generatingTitleFor: Set<string>
+  /** Custom session ordering — IDs in display order. Sessions not listed fall to the end. */
+  sessionOrder: string[]
 
   // Past sessions (from Claude's own JSONL files)
   pastSessions: PastSession[]
@@ -98,6 +104,16 @@ interface AgentState {
   // Streaming accumulators (for deltas) — per session
   pendingTextBySession: Record<string, string>
   pendingThinkingBySession: Record<string, string>
+
+  // Active sub-agents per session: toolUseId → description (tool_use without matching tool_result)
+  activeSubagentsBySession: Record<string, Map<string, string>>
+
+  // Last-read message timestamp per session (for unread divider)
+  lastReadTsBySession: Record<string, number>
+
+  // Pagination: whether older messages are available per session
+  hasOlderBySession: Record<string, boolean>
+  loadingOlderBySession: Record<string, boolean>
 
   // Pending prompt (for showing user message when session_created arrives)
   pendingPrompt: string | null
@@ -125,6 +141,11 @@ interface AgentState {
   selectPrevSession: () => void
   listSessions: () => void
   toggleThinkingCollapsed: (messageId: string) => void
+  markSessionRead: () => void
+  markSessionUnread: () => void
+  loadOlderMessages: (sessionId: string) => void
+  reorderSession: (fromId: string, toId: string) => void
+  forkSession: (sessionId: string) => void
   renameSession: (sessionId: string, name: string) => void
   generateTitle: (sessionId: string) => void
   resumeSession: (claudeSessionId: string, prompt: string, cwd?: string) => void
@@ -137,6 +158,8 @@ let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts = 0
 let disconnectedManually = false
+/** Suppresses notifications during initial message replay on connect */
+let suppressNotifications = true
 let messageIdCounter = 0
 
 function nextId(): string {
@@ -153,6 +176,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   generatingTitleFor: new Set(),
+  sessionOrder: [],
 
   pastSessions: [],
 
@@ -162,6 +186,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   pendingTextBySession: {},
   pendingThinkingBySession: {},
+
+  activeSubagentsBySession: {},
+
+  lastReadTsBySession: {},
+
+  hasOlderBySession: {},
+  loadingOlderBySession: {},
 
   pendingPrompt: null,
   pendingSessionActivate: false,
@@ -260,7 +291,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   selectSession: (sessionId) => {
+    // Snapshot last-read timestamp for the session we're LEAVING
+    const prevId = get().activeSessionId
+    if (prevId) {
+      const msgs = get().messagesBySession[prevId]
+      const lastTs = msgs?.length ? msgs[msgs.length - 1]!.timestamp : undefined
+      if (lastTs) {
+        set((s) => ({ lastReadTsBySession: { ...s.lastReadTsBySession, [prevId]: lastTs } }))
+      }
+    }
     set({ activeSessionId: sessionId, pendingApproval: null, creatingNewSession: sessionId === null })
+    // Clear unread when viewing a session
+    if (sessionId) {
+      updateSession(sessionId, { hasUnread: false })
+    }
+    import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(sessionId))
     // Request history if we have no messages for this session yet
     if (sessionId && !(get().messagesBySession[sessionId]?.length)) {
       sendWs({ type: 'get_session_history', sessionId })
@@ -273,7 +318,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (active.length === 0) return
     const idx = active.findIndex((s) => s.id === activeSessionId)
     const next = active[Math.min(idx + 1, active.length - 1)]
-    if (next) set({ activeSessionId: next.id, pendingApproval: null })
+    if (next) {
+      set({ activeSessionId: next.id, pendingApproval: null })
+      import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(next.id))
+    }
   },
 
   selectPrevSession: () => {
@@ -282,7 +330,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (active.length === 0) return
     const idx = active.findIndex((s) => s.id === activeSessionId)
     const prev = active[Math.max(idx - 1, 0)]
-    if (prev) set({ activeSessionId: prev.id, pendingApproval: null })
+    if (prev) {
+      set({ activeSessionId: prev.id, pendingApproval: null })
+      import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(prev.id))
+    }
   },
 
   listSessions: () => {
@@ -305,6 +356,69 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ),
         },
       }
+    })
+  },
+
+  markSessionRead: () => {
+    const sessionId = get().activeSessionId
+    if (sessionId) {
+      updateSession(sessionId, { hasUnread: false })
+    }
+  },
+
+  markSessionUnread: () => {
+    const sessionId = get().activeSessionId
+    if (sessionId) {
+      updateSession(sessionId, { hasUnread: true })
+    }
+  },
+
+  loadOlderMessages: (sessionId) => {
+    if (get().loadingOlderBySession[sessionId]) return
+    if (get().hasOlderBySession[sessionId] === false) return
+    // Calculate beforeIndex: total log length minus messages we already have
+    const session = get().sessions.find((s) => s.id === sessionId)
+    const totalLog = session?.messageLogLength ?? 0
+    const currentCount = get().messagesBySession[sessionId]?.length ?? 0
+    const beforeIndex = Math.max(0, totalLog - currentCount)
+    if (beforeIndex <= 0) {
+      set((s) => ({ hasOlderBySession: { ...s.hasOlderBySession, [sessionId]: false } }))
+      return
+    }
+    set((s) => ({ loadingOlderBySession: { ...s.loadingOlderBySession, [sessionId]: true } }))
+    sendWs({ type: 'get_older_messages', sessionId, beforeIndex })
+  },
+
+  reorderSession: (fromId, toId) => {
+    const sessions = get().sessions.filter((s) => s.id !== 'al' && s.status !== 'ended')
+    const currentOrder = get().sessionOrder
+    // Build full order: start from currentOrder, add any missing sessions in default sort
+    const defaultSorted = [...sessions].sort((a, b) => b.createdAt - a.createdAt).map((s) => s.id)
+    const ordered = currentOrder.length > 0
+      ? [...currentOrder.filter((id) => defaultSorted.includes(id)), ...defaultSorted.filter((id) => !currentOrder.includes(id))]
+      : defaultSorted
+    // Move fromId to toId's position
+    const fromIdx = ordered.indexOf(fromId)
+    const toIdx = ordered.indexOf(toId)
+    if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return
+    ordered.splice(fromIdx, 1)
+    ordered.splice(toIdx, 0, fromId)
+    set({ sessionOrder: ordered })
+    sendWs({ type: 'reorder_sessions', order: ordered })
+  },
+
+  forkSession: (sessionId) => {
+    const session = get().sessions.find((s) => s.id === sessionId)
+    if (!session) return
+    sendWs({
+      type: 'fork_session',
+      sessionId,
+      ...(session.cwd ? { cwd: session.cwd } : {}),
+    })
+    set({
+      pendingSessionActivate: true,
+      pendingApproval: null,
+      creatingNewSession: false,
     })
   },
 
@@ -363,8 +477,11 @@ function doConnect() {
 
   ws.onopen = () => {
     reconnectAttempts = 0
+    suppressNotifications = true
     useAgentStore.setState({ connected: true, connecting: false })
-    // Hub sends sessions_list + message replay on connect automatically
+    // Hub sends sessions_list + message replay on connect.
+    // Suppress notifications during replay — re-enable after 2s.
+    setTimeout(() => { suppressNotifications = false }, 2000)
   }
 
   ws.onmessage = (event) => {
@@ -461,6 +578,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         model: msg.model as string,
         contextWindow: msg.contextWindow as number,
         contextUsed: 0,
+        permissionMode: msg.permissionMode as string | undefined,
       })
       // Refresh session list to pick up claudeSessionId from the hub
       sendWs({ type: 'list_sessions' })
@@ -539,12 +657,22 @@ function handleHubMessage(msg: Record<string, unknown>) {
       // Re-add preserved Al session if it was missing from hub list
       if (existingAl) merged.unshift(existingAl)
 
+      // Determine which sessions have older messages available
+      const REPLAY_LIMIT = 50
+      const hasOlder = { ...state.hasOlderBySession }
+      for (const s of merged) {
+        if (s.messageLogLength && s.messageLogLength > REPLAY_LIMIT && hasOlder[s.id] === undefined) {
+          hasOlder[s.id] = true
+        }
+      }
+
       // Only include activeSessionId in the update if it actually changed (remap)
       const stateUpdate: Partial<AgentState> = {
         sessions: merged,
         messagesBySession: newMessages,
         pendingTextBySession: newPendingText,
         pendingThinkingBySession: newPendingThinking,
+        hasOlderBySession: hasOlder,
       }
       if (remappedActiveId !== state.activeSessionId) {
         stateUpdate.activeSessionId = remappedActiveId
@@ -623,6 +751,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'text',
         content: msg.content as string,
       })
+      markUnreadIfNotActive(sessionId)
       break
     }
 
@@ -661,24 +790,52 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'tool_use': {
       const sessionId = msg.sessionId as string
+      const toolName = msg.toolName as string
+      const toolUseId = msg.toolUseId as string
+      const input = msg.input as Record<string, unknown>
       flushPending(sessionId)
       addMessage(sessionId, {
         type: 'tool_use',
-        toolUseId: msg.toolUseId as string,
-        toolName: msg.toolName as string,
-        input: msg.input as Record<string, unknown>,
+        toolUseId,
+        toolName,
+        input,
       })
+      // Track mode changes from plan mode tools
+      if (toolName === 'EnterPlanMode') {
+        updateSession(sessionId, { permissionMode: 'plan' })
+      } else if (toolName === 'ExitPlanMode') {
+        updateSession(sessionId, { permissionMode: 'default' })
+      }
+      // Track sub-agent spawns (tool_use without matching result = running)
+      if (toolName === 'Agent') {
+        const desc = (input.description as string) || (input.prompt as string)?.slice(0, 40) || 'Sub-agent'
+        useAgentStore.setState((s) => {
+          const map = new Map(s.activeSubagentsBySession[sessionId] ?? [])
+          map.set(toolUseId, desc)
+          return { activeSubagentsBySession: { ...s.activeSubagentsBySession, [sessionId]: map } }
+        })
+      }
       break
     }
 
     case 'tool_result': {
       const sessionId = msg.sessionId as string
+      const toolUseId = msg.toolUseId as string
       addMessage(sessionId, {
         type: 'tool_result',
-        toolUseId: msg.toolUseId as string,
+        toolUseId,
         content: msg.content as string,
         isError: msg.isError as boolean,
       })
+      // Clear sub-agent tracking when result arrives
+      const subagents = useAgentStore.getState().activeSubagentsBySession[sessionId]
+      if (subagents?.has(toolUseId)) {
+        useAgentStore.setState((s) => {
+          const map = new Map(s.activeSubagentsBySession[sessionId] ?? [])
+          map.delete(toolUseId)
+          return { activeSubagentsBySession: { ...s.activeSubagentsBySession, [sessionId]: map } }
+        })
+      }
       break
     }
 
@@ -697,7 +854,9 @@ function handleHubMessage(msg: Record<string, unknown>) {
       useAgentStore.setState({
         pendingApproval: { sessionId: approvalSessionId, requestId, toolName, input },
       })
-      // Notify
+      markUnreadIfNotActive(approvalSessionId)
+      // Notify (skip during replay)
+      if (suppressNotifications) break
       import('@/notifications').then(({ notify }) => {
         const question = toolName === 'AskUserQuestion' ? (input.question as string || 'Question') : toolName
         notify({
@@ -717,6 +876,9 @@ function handleHubMessage(msg: Record<string, unknown>) {
       const tokens = msg.tokens as TokenUsage
       const duration = msg.duration as number
 
+      // Check status BEFORE updating to idle (for notification gating)
+      const wasRunning = useAgentStore.getState().sessions.find((s) => s.id === sessionId)?.status === 'running'
+
       flushPending(sessionId)
 
       addMessage(sessionId, {
@@ -733,18 +895,22 @@ function handleHubMessage(msg: Record<string, unknown>) {
         totalCost: cost,
       })
 
-      // Notify when agent finishes
+      markUnreadIfNotActive(sessionId)
+
+      // Notify when agent finishes — skip during replay and when session wasn't running
       const session = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
-      const name = session?.name || session?.prompt?.slice(0, 50) || 'Agent'
-      import('@/notifications').then(({ notify }) => {
-        notify({
-          title: `${name} finished`,
-          body: `${(duration / 1000).toFixed(1)}s · $${cost.toFixed(4)}`,
-          icon: '/icon-192.png',
-          tag: `agent-done-${sessionId}`,
-          data: { pane: 'agents', itemId: sessionId },
+      if (!suppressNotifications && session && wasRunning) {
+        const name = session.name || session.prompt?.slice(0, 50) || 'Agent'
+        import('@/notifications').then(({ notify }) => {
+          notify({
+            title: `${name} finished`,
+            body: `${(duration / 1000).toFixed(1)}s · $${cost.toFixed(4)}`,
+            icon: '/icon-192.png',
+            tag: `agent-done-${sessionId}`,
+            data: { pane: 'agents', itemId: sessionId },
+          })
         })
-      })
+      }
       break
     }
 
@@ -760,6 +926,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'error',
         message: msg.message as string,
       })
+      markUnreadIfNotActive(sessionId)
       break
     }
 
@@ -778,6 +945,11 @@ function handleHubMessage(msg: Record<string, unknown>) {
         next.delete(sessionId)
         useAgentStore.setState({ generatingTitleFor: next })
       }
+      break
+    }
+
+    case 'session_order': {
+      useAgentStore.setState({ sessionOrder: msg.order as string[] })
       break
     }
 
@@ -836,6 +1008,27 @@ function handleHubMessage(msg: Record<string, unknown>) {
       break
     }
 
+    case 'older_messages': {
+      const sessionId = msg.sessionId as string
+      const olderMsgs = msg.messages as Array<Record<string, unknown>>
+      const hasMore = msg.hasMore as boolean
+      // Convert hub messages to AgentMessages and prepend
+      const blocks: AgentMessage[] = []
+      for (const m of olderMsgs) {
+        const block = hubMsgToBlock(m)
+        if (block) blocks.push({ id: nextId(), timestamp: Date.now(), block })
+      }
+      useAgentStore.setState((s) => ({
+        messagesBySession: {
+          ...s.messagesBySession,
+          [sessionId]: [...blocks, ...(s.messagesBySession[sessionId] ?? [])],
+        },
+        hasOlderBySession: { ...s.hasOlderBySession, [sessionId]: hasMore },
+        loadingOlderBySession: { ...s.loadingOlderBySession, [sessionId]: false },
+      }))
+      break
+    }
+
     case 'hub_error': {
       console.warn('[console-server]', msg.message)
       break
@@ -846,6 +1039,29 @@ function handleHubMessage(msg: Record<string, unknown>) {
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+/** Convert a replayed hub message to an AgentMessage block */
+function hubMsgToBlock(m: Record<string, unknown>): AgentMessage['block'] | null {
+  switch (m.type) {
+    case 'text': return { type: 'text', content: m.content as string }
+    case 'thinking': return { type: 'thinking', content: m.content as string, collapsed: true }
+    case 'tool_use': return { type: 'tool_use', toolUseId: m.toolUseId as string, toolName: m.toolName as string, input: m.input as Record<string, unknown> }
+    case 'tool_result': return { type: 'tool_result', toolUseId: m.toolUseId as string, content: m.content as string, isError: m.isError as boolean }
+    case 'user_prompt': return { type: 'user_prompt', content: m.content as string, ...(m.images ? { images: m.images as string[] } : {}) }
+    case 'error': return { type: 'error', message: m.message as string }
+    case 'result': return { type: 'result', cost: m.cost as number, tokens: m.tokens as TokenUsage, duration: m.duration as number }
+    default: return null
+  }
+}
+
+/** Mark a session as unread if it's not the currently viewed session */
+function markUnreadIfNotActive(sessionId: string) {
+  if (suppressNotifications) return // Don't mark unread during replay
+  const state = useAgentStore.getState()
+  if (state.activeSessionId !== sessionId) {
+    updateSession(sessionId, { hasUnread: true })
+  }
+}
 
 function updateSession(sessionId: string, updates: Partial<SessionInfo>) {
   useAgentStore.setState((s) => ({

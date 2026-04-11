@@ -244,6 +244,7 @@ export class AlBridge {
       cwd: undefined,
       totalCost: 0,
       totalTokens: { input: 0, output: 0 },
+      messageLogLength: this.messageLog.length,
     }
   }
 

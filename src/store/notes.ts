@@ -84,6 +84,27 @@ export function slugify(title: string): string {
     .replace(/^-|-$/g, '')
 }
 
+/** Extract unique directories from file list, sorted by most recent mtime. `scratch` always first. */
+export function getDirectoriesByRecency(files: VaultFile[]): string[] {
+  const dirMtime = new Map<string, number>()
+  for (const f of files) {
+    if (!f.dir) continue
+    const cur = dirMtime.get(f.dir) ?? 0
+    if (f.mtime > cur) dirMtime.set(f.dir, f.mtime)
+  }
+  // Always include scratch even if empty
+  if (!dirMtime.has('scratch')) dirMtime.set('scratch', Infinity)
+  const dirs = [...dirMtime.entries()]
+    .sort((a, b) => {
+      // scratch always first
+      if (a[0] === 'scratch') return -1
+      if (b[0] === 'scratch') return 1
+      return b[1] - a[1]
+    })
+    .map(([dir]) => dir)
+  return dirs
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -115,6 +136,10 @@ interface NotesState {
   // Command palette
   commandPaletteOpen: boolean
 
+  // New file form (triggered from Ctrl+N, context menu, sidebar button)
+  newFileFormOpen: boolean
+  newFileFormDir: string  // pre-filled directory
+
   // Link picker
   linkPickerOpen: boolean
   linkPickerContext: { from: number; to: number; selectedText: string; mode: 'wiki' | 'both' } | null
@@ -141,6 +166,8 @@ interface NotesState {
   closeQuickSwitcher: () => void
   openCommandPalette: () => void
   closeCommandPalette: () => void
+  openNewFileForm: (dir?: string) => void
+  closeNewFileForm: () => void
   openLinkPicker: (ctx: { from: number; to: number; selectedText: string; mode: 'wiki' | 'both' }) => void
   closeLinkPicker: () => void
   setEditorView: (view: any | null) => void
@@ -196,6 +223,8 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   quickSwitcherMode: 'filename' as const,
   searchIndex: new NotesSearchIndex(),
   commandPaletteOpen: false,
+  newFileFormOpen: false,
+  newFileFormDir: 'scratch',
   linkPickerOpen: false,
   linkPickerContext: null,
   editorView: null,
@@ -489,6 +518,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette: () => set({ commandPaletteOpen: false }),
+
+  openNewFileForm: (dir = 'scratch') => set({ newFileFormOpen: true, newFileFormDir: dir }),
+  closeNewFileForm: () => set({ newFileFormOpen: false, newFileFormDir: 'scratch' }),
 
   openLinkPicker: (ctx) => set({ linkPickerOpen: true, linkPickerContext: ctx }),
   closeLinkPicker: () => set({ linkPickerOpen: false, linkPickerContext: null }),

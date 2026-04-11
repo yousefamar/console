@@ -102,7 +102,7 @@ export function FeedFolderTree() {
         <Rss size={11} className="flex-shrink-0" />
         <span className="truncate flex-1 text-left">All</span>
         {totalUnread > 0 && (
-          <span className="text-[10px] text-text-tertiary">{totalUnread}</span>
+          <span className="text-[10px] text-blue-500 font-medium">{totalUnread}</span>
         )}
       </button>
 
@@ -131,7 +131,7 @@ export function FeedFolderTree() {
               {expanded ? <FolderOpen size={11} /> : <Folder size={11} />}
               <span className="truncate flex-1 text-left">{folder}</span>
               {unread > 0 && (
-                <span className="text-[10px] text-text-tertiary">{unread}</span>
+                <span className="text-[10px] text-blue-500 font-medium">{unread}</span>
               )}
             </div>
             {expanded && folderFeeds.map((feed) => (
@@ -314,7 +314,7 @@ function FeedEntry({ feed, isSelected, unread, onClick, onContextMenu, indent }:
       <Rss size={9} className="flex-shrink-0 opacity-50" />
       <span className="truncate flex-1 text-left">{feed.title}</span>
       {unread > 0 && (
-        <span className="text-[10px] text-text-tertiary font-medium">{unread}</span>
+        <span className="text-[10px] text-blue-500 font-medium">{unread}</span>
       )}
     </button>
   )

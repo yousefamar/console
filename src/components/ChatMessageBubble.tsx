@@ -188,7 +188,7 @@ function Linkified({ text }: { text: string }) {
             href={part.text}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-blue-400 hover:underline"
+            className="text-blue-400 hover:underline break-all"
           >
             {part.text}
           </a>
@@ -653,7 +653,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
         </div>
       )}
       <div
-        className="flex gap-2 px-3 group relative"
+        className="flex gap-2 px-3 group relative min-w-0"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

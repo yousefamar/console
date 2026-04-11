@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { AgentMessageBlock, renderMarkdownLite } from './AgentMessageBlock'
 import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
-import { Loader2, GitBranch } from 'lucide-react'
+import { Loader2, GitBranch, ChevronDown } from 'lucide-react'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -13,52 +13,71 @@ import { Loader2, GitBranch } from 'lucide-react'
 export function AgentSessionView() {
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const messagesBySession = useAgentStore((s) => s.messagesBySession)
+  const lastReadTs = useAgentStore((s) => s.activeSessionId ? (s.lastReadTsBySession[s.activeSessionId] ?? 0) : 0)
   const pendingApproval = useAgentStore((s) => s.pendingApproval)
   const activeSession = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId))
   const isRunning = activeSession?.status === 'running'
   const statusText = activeSession?.statusText ?? null
   const sessionModel = activeSession?.model ?? null
+  const permissionMode = activeSession?.permissionMode ?? null
   const sessionContextWindow = activeSession?.contextWindow ?? 200_000
   const sessionContextUsed = activeSession?.contextUsed ?? 0
   const pendingText = useAgentStore((s) => s.activeSessionId ? (s.pendingTextBySession[s.activeSessionId] ?? '') : '')
   const pendingThinking = useAgentStore((s) => s.activeSessionId ? (s.pendingThinkingBySession[s.activeSessionId] ?? '') : '')
+  const activeSubagents = useAgentStore((s) => s.activeSessionId ? (s.activeSubagentsBySession[s.activeSessionId] ?? null) : null)
+  const subagentCount = activeSubagents?.size ?? 0
+  const hasOlder = useAgentStore((s) => s.activeSessionId ? (s.hasOlderBySession[s.activeSessionId] ?? false) : false)
+  const loadingOlder = useAgentStore((s) => s.activeSessionId ? (s.loadingOlderBySession[s.activeSessionId] ?? false) : false)
+  const loadOlderMessages = useAgentStore((s) => s.loadOlderMessages)
   const connected = useAgentStore((s) => s.connected)
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  /** Tracks whether user is near bottom — updated on every scroll event, read before auto-scroll */
+  const isNearBottom = useRef(true)
   const messages = useMemo(
     () => activeSessionId ? (messagesBySession[activeSessionId] ?? []) : [],
     [activeSessionId, messagesBySession],
   )
 
-  // Track whether user has scrolled away from bottom
-  const userScrolledUp = useRef(false)
-
-  // Detect manual scroll-away
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const onScroll = () => {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-      userScrolledUp.current = !nearBottom
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [])
-
   // Scroll to bottom on session switch
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-      userScrolledUp.current = false
+      isNearBottom.current = true
+      setShowScrollToBottom(false)
     }
   }, [activeSessionId])
 
-  // Auto-scroll to bottom on new content (unless user scrolled up)
+  // Auto-scroll to bottom on new content — only if user was already near bottom
   useEffect(() => {
-    if (!userScrolledUp.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
+    const el = scrollRef.current
+    if (!el || !isNearBottom.current) return
+    el.scrollTop = el.scrollHeight
   }, [messages.length, pendingText, pendingThinking])
+
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current) return
+    const el = scrollRef.current
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    isNearBottom.current = distFromBottom < 120
+    setShowScrollToBottom(distFromBottom > 200)
+    // Load older messages on scroll near top
+    if (el.scrollTop < 100 && activeSessionId && hasOlder && !loadingOlder) {
+      const prevHeight = el.scrollHeight
+      loadOlderMessages(activeSessionId)
+      // Preserve scroll position after prepend (defer to next frame)
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight - prevHeight
+        }
+      })
+    }
+  }, [activeSessionId, hasOlder, loadingOlder, loadOlderMessages])
+
+  const scrollToBottom = useCallback(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [])
 
   if (!connected) {
     return (
@@ -96,16 +115,42 @@ export function AgentSessionView() {
       <div className="flex-1 overflow-hidden relative">
         <div
           ref={scrollRef}
-          className="absolute inset-0 overflow-y-auto py-2"
+          className="absolute inset-0 overflow-y-auto overflow-x-hidden py-2"
+          onScroll={handleScroll}
         >
+        {/* Loading older messages indicator */}
+        {loadingOlder && (
+          <div className="flex items-center justify-center py-2">
+            <Loader2 size={12} className="animate-spin text-text-tertiary" />
+            <span className="text-[10px] text-text-tertiary ml-1">Loading older messages...</span>
+          </div>
+        )}
+
         {messages.map((msg, i) => {
           // Skip standalone tool_result — it's rendered inside its tool_use block
           if (msg.block.type === 'tool_result') return null
+          // Unread divider: show between last-read message and first new one
+          const prevMsg = i > 0 ? messages[i - 1] : undefined
+          const showUnreadDivider = lastReadTs > 0 &&
+            prevMsg && prevMsg.timestamp <= lastReadTs &&
+            msg.timestamp > lastReadTs &&
+            msg.block.type !== 'user_prompt'
           // Pair tool_use with its following tool_result
           const toolResult = msg.block.type === 'tool_use'
             ? messages.slice(i + 1).find((m) => m.block.type === 'tool_result' && (m.block as { toolUseId: string }).toolUseId === (msg.block as { toolUseId: string }).toolUseId)
             : undefined
-          return <AgentMessageBlock key={msg.id} message={msg} toolResult={toolResult} />
+          return (
+            <div key={msg.id}>
+              {showUnreadDivider && (
+                <div data-unread-divider className="flex items-center gap-3 px-3 my-2">
+                  <div className="flex-1 border-t border-red-500/60" />
+                  <span className="text-[10px] font-medium text-red-400 uppercase tracking-wider">New</span>
+                  <div className="flex-1 border-t border-red-500/60" />
+                </div>
+              )}
+              <AgentMessageBlock message={msg} toolResult={toolResult} />
+            </div>
+          )
         })}
 
         {/* Live streaming deltas */}
@@ -130,24 +175,45 @@ export function AgentSessionView() {
           </div>
         )}
         </div>
+        {showScrollToBottom && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 rounded-full bg-bg-tertiary border border-border p-1.5 shadow-md hover:bg-bg-secondary transition-opacity"
+            title="Jump to bottom"
+          >
+            <ChevronDown size={16} className="text-text-secondary" />
+          </button>
+        )}
       </div>
 
       {/* Status bar */}
-      {(isRunning || statusText || sessionModel || activeSession?.gitBranch) && (
-        <div className="flex items-center border-t border-border/50 px-3 py-1 gap-3">
-          {/* Model name */}
+      {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0) && (
+        <div className="flex items-center border-t border-border/50 px-3 py-1 gap-2 overflow-hidden min-w-0">
+          {/* Model name + mode */}
           {sessionModel && (
             <span className="text-[10px] text-text-tertiary flex-shrink-0">
               {sessionModel}
             </span>
           )}
+          {permissionMode && permissionMode !== 'default' && (
+            <span className="text-[10px] text-warning font-medium flex-shrink-0">
+              {permissionMode}
+            </span>
+          )}
 
           {/* Git branch */}
           {activeSession?.gitBranch && (
-            <span className="text-[10px] text-text-tertiary flex-shrink-0 flex items-center gap-1">
-              <GitBranch size={10} />
-              {activeSession.gitBranch}
-              {activeSession.gitDirty && <span className="text-yellow-400">*</span>}
+            <span className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1">
+              <GitBranch size={10} className="flex-shrink-0" />
+              <span className="truncate">{activeSession.gitBranch}</span>
+              {activeSession.gitStats && (activeSession.gitStats.added > 0 || activeSession.gitStats.deleted > 0) ? (
+                <>
+                  {activeSession.gitStats.added > 0 && <span className="text-green-400">+{activeSession.gitStats.added}</span>}
+                  {activeSession.gitStats.deleted > 0 && <span className="text-red-400">-{activeSession.gitStats.deleted}</span>}
+                </>
+              ) : activeSession.gitDirty ? (
+                <span className="text-yellow-400">*</span>
+              ) : null}
             </span>
           )}
 
@@ -175,11 +241,19 @@ export function AgentSessionView() {
             </div>
           )}
 
+          {/* Active sub-agents */}
+          {subagentCount > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-warning flex-shrink-0" title={Array.from(activeSubagents!.values()).join(', ')}>
+              <Loader2 size={9} className="animate-spin" />
+              <span>{subagentCount} sub-agent{subagentCount > 1 ? 's' : ''}</span>
+            </div>
+          )}
+
           {/* Running status */}
           {(isRunning || statusText) && (
-            <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary min-w-0 flex-shrink-0 ml-auto">
+            <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary min-w-0 ml-auto">
               {isRunning && <Loader2 size={10} className="animate-spin flex-shrink-0" />}
-              <span className="truncate max-w-[200px]">{statusText ?? 'Processing...'}</span>
+              <span className="truncate">{statusText ?? 'Processing...'}</span>
             </div>
           )}
         </div>

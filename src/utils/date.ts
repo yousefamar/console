@@ -39,7 +39,10 @@ export function formatTime(timestamp: number): string {
 export function formatDate(timestamp: number): string {
   const date = new Date(timestamp)
   const now = new Date()
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / DAY)
+  // Compare calendar dates, not elapsed time (11pm yesterday viewed at 1am today should be "Yesterday")
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const diffDays = Math.round((startOfToday - startOfDate) / DAY)
 
   if (diffDays === 0) return `Today at ${formatTime(timestamp)}`
   if (diffDays === 1) return `Yesterday at ${formatTime(timestamp)}`

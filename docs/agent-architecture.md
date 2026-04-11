@@ -117,13 +117,16 @@ See `server/src/protocol.ts` for complete type definitions.
 | `interrupt` | `sessionId` | Cancel current operation (SIGINT) |
 | `list_sessions` | — | Get all sessions |
 | `resume_session` | `sessionId`, `prompt` | Resume a previous Claude session |
+| `rename_session` | `sessionId`, `name` | Set display name for a session |
+| `generate_title` | `sessionId` | AI-generate a title via Haiku |
 
 **Hub → Browser (HubMessage):**
 
 | Type | Fields | Purpose |
 |------|--------|---------|
 | `session_created` | `sessionId` | New session started |
-| `sessions_list` | `sessions[]` | All sessions with metadata |
+| `session_renamed` | `sessionId`, `name` | Session name changed |
+| `sessions_list` | `sessions[]` | All sessions with metadata (includes `name`, `gitBranch`, `gitDirty`, `gitStats`) |
 | `text` | `sessionId`, `content` | Complete text block |
 | `text_delta` | `sessionId`, `content` | Streaming text chunk |
 | `thinking` | `sessionId`, `content` | Complete thinking block |
@@ -239,7 +242,6 @@ cd server && npm test
 ## Future Enhancements
 
 - **Context injection** — "Ask about this email/chat" sends content to agent
-- **Session persistence** — store session IDs in IndexedDB for resume across reloads
 - **Diff viewer** — render Edit tool results as proper diffs
 - **Terminal emulator** — render Bash output in a terminal-styled block
 - **Remote control layer** — optionally connect to Claude's remote control for phone access

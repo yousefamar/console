@@ -1,7 +1,9 @@
 import { useRef, useEffect } from 'react'
 import { useFeedStore } from '@/store/feeds'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 import { FeedItemListEntry } from './FeedItemListEntry'
-import { Search, Eye, EyeOff } from 'lucide-react'
+import { SwipeableRow } from './SwipeableRow'
+import { Search, Eye, EyeOff, Check } from 'lucide-react'
 
 export function FeedItemList() {
   const items = useFeedStore((s) => s.items)
@@ -15,6 +17,8 @@ export function FeedItemList() {
   const selectedFolderId = useFeedStore((s) => s.selectedFolderId)
   const feeds = useFeedStore((s) => s.feeds)
 
+  const markRead = useFeedStore((s) => s.markRead)
+  const isMobile = useIsMobile()
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -72,12 +76,16 @@ export function FeedItemList() {
           </div>
         ) : (
           items.map((item) => (
-            <FeedItemListEntry
-              key={item.id}
-              item={item}
-              isSelected={item.id === selectedItemId}
-              onClick={() => selectItem(item.id)}
-            />
+            isMobile ? (
+              <SwipeableRow
+                key={item.id}
+                right={{ icon: <Check size={20} className="text-green-500" />, color: '34, 197, 94', onTrigger: () => markRead(item.id) }}
+              >
+                <FeedItemListEntry item={item} isSelected={item.id === selectedItemId} onClick={() => selectItem(item.id)} />
+              </SwipeableRow>
+            ) : (
+              <FeedItemListEntry key={item.id} item={item} isSelected={item.id === selectedItemId} onClick={() => selectItem(item.id)} />
+            )
           ))
         )}
       </div>

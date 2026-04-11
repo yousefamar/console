@@ -36,6 +36,8 @@ export interface SessionOptions {
   resume?: string
   /** If true, resume the session but don't send any initial prompt (used for auto-restore on hub restart) */
   silent?: boolean
+  /** If true, fork the resumed session (new session ID, same conversation history) */
+  fork?: boolean
   /** Display name for the session (persists across restarts) */
   name?: string
 }
@@ -68,9 +70,11 @@ export class Session extends EventEmitter {
     this.initialPrompt = options.prompt
     this.name = options.name
     this.cwd = options.cwd || process.cwd()
-    // For resumes, set claudeSessionId immediately so list_sessions can match
-    // before Claude emits the `system` message
-    if (options.resume) {
+    // For resumes (not forks), set claudeSessionId immediately so list_sessions
+    // can match before Claude emits the `system` message.
+    // Forks get a NEW claudeSessionId from Claude — don't pre-set to avoid
+    // manifest dedup collisions with the source session.
+    if (options.resume && !options.fork) {
       this.claudeSessionId = options.resume
     }
     // Silent resumes (hub restart restore) start idle — no prompt will be sent
@@ -98,6 +102,10 @@ export class Session extends EventEmitter {
 
     if (options.resume) {
       args.push('--resume', options.resume)
+    }
+
+    if (options.fork) {
+      args.push('--fork-session')
     }
 
     if (options.name) {
@@ -202,7 +210,7 @@ export class Session extends EventEmitter {
         request_id: requestId,
         response: {
           behavior: 'allow',
-          ...(modifiedInput ? { updatedInput: modifiedInput } : {}),
+          updatedInput: modifiedInput ?? {},
         },
       },
     }
@@ -242,6 +250,7 @@ export class Session extends EventEmitter {
 
   private gitBranch?: string
   private gitDirty?: boolean
+  private gitStats?: { added: number; deleted: number }
   private gitCheckedAt = 0
 
   private checkGit(): void {
@@ -256,9 +265,37 @@ export class Session extends EventEmitter {
         cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
       }).toString().trim()
       this.gitDirty = status.length > 0
+      // Get line-level diff stats: staged + unstaged + count untracked files
+      if (this.gitDirty) {
+        let added = 0, deleted = 0
+        // Staged changes
+        const staged = execSync('git diff --cached --numstat', {
+          cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
+        }).toString().trim()
+        for (const line of staged.split('\n')) {
+          const [a, d] = line.split('\t')
+          if (a && d && a !== '-') { added += parseInt(a, 10); deleted += parseInt(d, 10) }
+        }
+        // Unstaged changes to tracked files
+        const unstaged = execSync('git diff --numstat', {
+          cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
+        }).toString().trim()
+        for (const line of unstaged.split('\n')) {
+          const [a, d] = line.split('\t')
+          if (a && d && a !== '-') { added += parseInt(a, 10); deleted += parseInt(d, 10) }
+        }
+        // Count untracked files as 1 added line each
+        for (const line of status.split('\n')) {
+          if (line.startsWith('?? ')) added += 1
+        }
+        this.gitStats = { added, deleted }
+      } else {
+        this.gitStats = undefined
+      }
     } catch {
       this.gitBranch = undefined
       this.gitDirty = undefined
+      this.gitStats = undefined
     }
   }
 
@@ -275,8 +312,10 @@ export class Session extends EventEmitter {
       cwd: this.cwd,
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
+      messageLogLength: this.messageLog.length,
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
+      gitStats: this.gitStats,
     }
   }
 
@@ -297,6 +336,7 @@ export class Session extends EventEmitter {
           model: displayName,
           slashCommands: msg.slash_commands ?? [],
           contextWindow,
+          permissionMode: msg.permissionMode,
         })
         break
       }
@@ -322,8 +362,8 @@ export class Session extends EventEmitter {
         const input = req.input ?? msg.input ?? {}
 
         if (subtype === 'can_use_tool') {
-          if (toolName === 'AskUserQuestion') {
-            // AskUserQuestion needs user input — forward to frontend
+          if (toolName === 'AskUserQuestion' || toolName === 'ExitPlanMode') {
+            // These tools need user input/approval — forward to frontend
             this.emitHub({
               type: 'approval_required',
               sessionId: this.id,

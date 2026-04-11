@@ -4,6 +4,7 @@ import {
   X, MapPin, Clock, Users, Video,
   ExternalLink, Pencil, Trash2,
   Check, HelpCircle, XCircle,
+  Bell, BellOff,
 } from 'lucide-react'
 
 export function CalendarEventPopover() {
@@ -12,6 +13,7 @@ export function CalendarEventPopover() {
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
   const selectEvent = useCalendarStore((s) => s.selectEvent)
   const rsvp = useCalendarStore((s) => s.rsvp)
+  const setReminder = useCalendarStore((s) => s.setReminder)
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const openEditForm = useCalendarStore((s) => s.openEditForm)
   const ref = useRef<HTMLDivElement>(null)
@@ -54,9 +56,12 @@ export function CalendarEventPopover() {
   const calColor = calendar?.backgroundColor || '#3b82f6'
   const isOwner = calendar?.accessRole === 'owner' || calendar?.accessRole === 'writer'
 
-  // Conference link
-  const meetLink = event.hangoutLink
+  // Conference link — append authuser for Google Meet so it opens with the right account
+  const rawMeetLink = event.hangoutLink
     || event.conferenceData?.entryPoints?.find((ep) => ep.entryPointType === 'video')?.uri
+  const meetLink = rawMeetLink && rawMeetLink.includes('meet.google.com') && event.accountEmail
+    ? `${rawMeetLink}${rawMeetLink.includes('?') ? '&' : '?'}authuser=${encodeURIComponent(event.accountEmail)}`
+    : rawMeetLink
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-20" onClick={() => selectEvent(null)}>
@@ -144,6 +149,15 @@ export function CalendarEventPopover() {
             </div>
           )}
         </div>
+
+        {/* Reminders */}
+        {isOwner && !isAllDay && (
+          <ReminderPicker
+            reminders={event.reminders}
+            defaultReminders={calendar?.defaultReminders}
+            onChange={(minutes) => setReminder(event.calendarId, event.accountEmail, event.id, minutes)}
+          />
+        )}
 
         {/* RSVP buttons */}
         {canRsvp && (
@@ -243,5 +257,53 @@ function RsvpButton({ label, icon, active, onClick }: {
       {icon}
       {label}
     </button>
+  )
+}
+
+const REMINDER_PRESETS = [
+  { minutes: 0, label: 'At start' },
+  { minutes: 5, label: '5 min' },
+  { minutes: 10, label: '10 min' },
+  { minutes: 15, label: '15 min' },
+  { minutes: 30, label: '30 min' },
+  { minutes: 60, label: '1 hr' },
+] as const
+
+function ReminderPicker({ reminders, defaultReminders, onChange }: {
+  reminders?: { useDefault: boolean; overrides?: Array<{ method: string; minutes: number }> }
+  defaultReminders?: Array<{ method: string; minutes: number }>
+  onChange: (minutes: number | null) => void
+}) {
+  // Resolve useDefault to actual reminder minutes
+  const effectiveOverrides = reminders?.useDefault !== false
+    ? defaultReminders
+    : reminders?.overrides
+  const activeMinutes = effectiveOverrides?.[0]?.minutes
+  const hasReminder = !!effectiveOverrides?.length
+
+  return (
+    <div className="px-3 py-2 border-t border-border">
+      <div className="flex items-center gap-1.5 mb-1">
+        {hasReminder
+          ? <Bell size={10} className="text-text-tertiary" />
+          : <BellOff size={10} className="text-text-tertiary" />}
+        <span className="text-[10px] text-text-tertiary uppercase tracking-wider">Reminder</span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {REMINDER_PRESETS.map((p) => (
+          <button
+            key={p.minutes}
+            onClick={() => onChange(activeMinutes === p.minutes ? null : p.minutes)}
+            className={`px-2 py-0.5 text-xs rounded-sm border transition-colors ${
+              activeMinutes === p.minutes
+                ? 'bg-surface-2 border-border-strong text-text-primary'
+                : 'border-border text-text-secondary hover:bg-surface-1'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }

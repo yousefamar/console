@@ -6,6 +6,10 @@ interface SwipeConfig {
   onSwipeStart?: () => void
   onSwipeEnd?: () => void
   threshold?: number
+  /** Ref to left-side icon element (shown when swiping right) */
+  leftIconRef?: RefObject<HTMLDivElement | null>
+  /** Ref to right-side icon element (shown when swiping left) */
+  rightIconRef?: RefObject<HTMLDivElement | null>
 }
 
 interface SwipeState {
@@ -76,8 +80,12 @@ export function useSwipeActions(
     // Show color hints: right = green (archive), left = amber (snooze)
     if (dx > 0) {
       container.style.backgroundColor = `rgba(34, 197, 94, ${progress * 0.3})`
+      if (config.leftIconRef?.current) config.leftIconRef.current.style.opacity = `${progress}`
+      if (config.rightIconRef?.current) config.rightIconRef.current.style.opacity = '0'
     } else {
       container.style.backgroundColor = `rgba(245, 158, 11, ${progress * 0.3})`
+      if (config.rightIconRef?.current) config.rightIconRef.current.style.opacity = `${progress}`
+      if (config.leftIconRef?.current) config.leftIconRef.current.style.opacity = '0'
     }
   }, [contentRef, containerRef, threshold, config])
 
@@ -88,12 +96,18 @@ export function useSwipeActions(
 
     config.onSwipeEnd?.()
 
+    const resetIcons = () => {
+      if (config.leftIconRef?.current) config.leftIconRef.current.style.opacity = '0'
+      if (config.rightIconRef?.current) config.rightIconRef.current.style.opacity = '0'
+    }
+
     if (!s.swiping || !content || !container) {
       if (content) {
         content.style.transform = ''
         content.style.transition = ''
       }
       if (container) container.style.backgroundColor = ''
+      resetIcons()
       return
     }
 
@@ -118,6 +132,7 @@ export function useSwipeActions(
         content.style.transform = ''
         content.style.opacity = ''
         container.style.backgroundColor = ''
+        resetIcons()
         requestAnimationFrame(() => {
           content.style.transition = ''
         })
@@ -127,6 +142,7 @@ export function useSwipeActions(
       content.style.transition = 'transform 150ms ease-out'
       content.style.transform = ''
       container.style.backgroundColor = ''
+      resetIcons()
       setTimeout(() => {
         content.style.transition = ''
       }, 150)

@@ -1,12 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { useNotesStore, type TreeNode, slugify } from '@/store/notes'
-import { ChevronRight, File, Folder, Plus, Search, Trash2, PenLine } from 'lucide-react'
+import { useNotesStore, type TreeNode } from '@/store/notes'
+import { ChevronRight, File, FilePlus, Folder, Plus, Search, Trash2, PenLine } from 'lucide-react'
 
 interface ContextMenu {
   x: number
   y: number
   path: string
   name: string
+  isDir: boolean
 }
 
 export function NotesFileBrowser() {
@@ -19,12 +20,9 @@ export function NotesFileBrowser() {
   const toggleDir = useNotesStore((s) => s.toggleDir)
   const setSelectedPath = useNotesStore((s) => s.setSelectedPath)
   const openQuickSwitcher = useNotesStore((s) => s.openQuickSwitcher)
+  const openNewFileForm = useNotesStore((s) => s.openNewFileForm)
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
-  const [showNewFile, setShowNewFile] = useState(false)
-  const [newFileName, setNewFileName] = useState('')
-  const [newFileDir, setNewFileDir] = useState('scratch')
-  const inputRef = useRef<HTMLInputElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
 
   // Auto-expand parent dirs and scroll active file into view
@@ -47,19 +45,9 @@ export function NotesFileBrowser() {
     })
   }, [activeFilePath])
 
-  const handleCreateFile = useCallback(async () => {
-    if (!newFileName.trim()) return
-    const slug = slugify(newFileName)
-    const path = newFileDir ? `${newFileDir}/${slug}.md` : `${slug}.md`
-    await useNotesStore.getState().createFile(path, `# ${newFileName.trim()}\n\n`)
-    setShowNewFile(false)
-    setNewFileName('')
-    setNewFileDir('scratch')
-  }, [newFileName, newFileDir])
-
-  const handleContextMenu = useCallback((e: React.MouseEvent, path: string, name: string) => {
+  const handleContextMenu = useCallback((e: React.MouseEvent, path: string, name: string, isDir = false) => {
     e.preventDefault()
-    setContextMenu({ x: e.clientX, y: e.clientY, path, name })
+    setContextMenu({ x: e.clientX, y: e.clientY, path, name, isDir })
   }, [])
 
   const handleDelete = useCallback(async (path: string, name: string) => {
@@ -110,42 +98,13 @@ export function NotesFileBrowser() {
           <Search size={12} />
         </button>
         <button
-          onClick={() => { setShowNewFile(!showNewFile); setTimeout(() => inputRef.current?.focus(), 50) }}
+          onClick={() => openNewFileForm()}
           className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
           title="New note (Ctrl+N)"
         >
           <Plus size={12} />
         </button>
       </div>
-
-      {/* New file inline form */}
-      {showNewFile && (
-        <div className="border-b border-border px-2 py-1.5 space-y-1">
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Note title..."
-            value={newFileName}
-            onChange={(e) => setNewFileName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreateFile()
-              if (e.key === 'Escape') { setShowNewFile(false); setNewFileName('') }
-            }}
-            className="w-full px-1.5 py-1 text-xs bg-surface-1 border border-border rounded-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent"
-          />
-          <input
-            type="text"
-            placeholder="Directory (optional)"
-            value={newFileDir}
-            onChange={(e) => setNewFileDir(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreateFile()
-              if (e.key === 'Escape') { setShowNewFile(false); setNewFileDir('') }
-            }}
-            className="w-full px-1.5 py-1 text-[10px] bg-surface-1 border border-border rounded-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent"
-          />
-        </div>
-      )}
 
       {/* File tree */}
       <div ref={treeRef} className="flex-1 overflow-y-auto py-0.5" data-notes-tree>
@@ -181,20 +140,32 @@ export function NotesFileBrowser() {
           className="fixed z-50 bg-surface-0 border border-border rounded-sm shadow-lg py-0.5 min-w-32"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <button
-            onClick={() => handleStartRename(contextMenu.path, contextMenu.name)}
-            className="flex items-center gap-2 w-full px-3 py-1 text-xs text-text-primary hover:bg-surface-1 transition-colors"
-          >
-            <PenLine size={11} className="text-text-tertiary" />
-            Rename
-          </button>
-          <button
-            onClick={() => handleDelete(contextMenu.path, contextMenu.name)}
-            className="flex items-center gap-2 w-full px-3 py-1 text-xs text-red-400 hover:bg-surface-1 transition-colors"
-          >
-            <Trash2 size={11} />
-            Delete
-          </button>
+          {contextMenu.isDir ? (
+            <button
+              onClick={() => { setContextMenu(null); openNewFileForm(contextMenu.path) }}
+              className="flex items-center gap-2 w-full px-3 py-1 text-xs text-text-primary hover:bg-surface-1 transition-colors"
+            >
+              <FilePlus size={11} className="text-text-tertiary" />
+              New Note
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => handleStartRename(contextMenu.path, contextMenu.name)}
+                className="flex items-center gap-2 w-full px-3 py-1 text-xs text-text-primary hover:bg-surface-1 transition-colors"
+              >
+                <PenLine size={11} className="text-text-tertiary" />
+                Rename
+              </button>
+              <button
+                onClick={() => handleDelete(contextMenu.path, contextMenu.name)}
+                className="flex items-center gap-2 w-full px-3 py-1 text-xs text-red-400 hover:bg-surface-1 transition-colors"
+              >
+                <Trash2 size={11} />
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -225,7 +196,7 @@ function TreeNodeItem({
   onToggleDir: (path: string) => void
   onOpenFile: (path: string) => Promise<void>
   onSelect: (path: string | null) => void
-  onContextMenu: (e: React.MouseEvent, path: string, name: string) => void
+  onContextMenu: (e: React.MouseEvent, path: string, name: string, isDir?: boolean) => void
   onRenameChange: (value: string) => void
   onRenameSubmit: () => void
   onRenameCancel: () => void
@@ -241,6 +212,7 @@ function TreeNodeItem({
         <div
           onClick={() => onToggleDir(node.path)}
           onMouseDown={() => onSelect(node.path)}
+          onContextMenu={(e) => onContextMenu(e, node.path, node.name, true)}
           className={`flex items-center gap-1 py-0.5 pr-2 cursor-pointer text-xs transition-colors duration-fast
             ${isSelected ? 'bg-surface-2' : 'hover:bg-surface-1'}
           `}

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { useInboxStore } from '@/store/inbox'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { ThreadListItem } from './ThreadListItem'
+import { SwipeableRow } from './SwipeableRow'
+import { Check, Clock } from 'lucide-react'
 import type { DbThread } from '@/gmail/types'
 
 interface ThreadListProps {
@@ -94,14 +96,40 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
       )}
       {threads.map((thread) => (
         <div key={thread.id} data-thread-id={thread.id}>
-          <ThreadListItem
-            thread={thread}
-            isSelected={thread.id === selectedThreadId}
-            onSelect={selectThread}
-            labelMap={labelMap}
-          />
+          {isMobile ? (
+            <SwipeableThreadItem thread={thread} isSelected={thread.id === selectedThreadId} onSelect={selectThread} labelMap={labelMap} />
+          ) : (
+            <ThreadListItem thread={thread} isSelected={thread.id === selectedThreadId} onSelect={selectThread} labelMap={labelMap} />
+          )}
         </div>
       ))}
     </div>
+  )
+}
+
+function SwipeableThreadItem({ thread, isSelected, onSelect, labelMap }: {
+  thread: DbThread
+  isSelected: boolean
+  onSelect: (id: string) => void
+  labelMap?: Record<string, string>
+}) {
+  const archiveThread = useInboxStore((s) => s.archiveThread)
+  const snoozeThread = useInboxStore((s) => s.snoozeThread)
+
+  const handleArchive = useCallback(() => {
+    archiveThread(thread.id)
+  }, [thread.id, archiveThread])
+
+  const handleSnooze = useCallback(() => {
+    snoozeThread('tomorrow', undefined, thread.id)
+  }, [thread.id, snoozeThread])
+
+  return (
+    <SwipeableRow
+      right={{ icon: <Check size={20} className="text-green-500" />, color: '34, 197, 94', onTrigger: handleArchive }}
+      left={{ icon: <Clock size={20} className="text-amber-500" />, color: '245, 158, 11', onTrigger: handleSnooze }}
+    >
+      <ThreadListItem thread={thread} isSelected={isSelected} onSelect={onSelect} labelMap={labelMap} />
+    </SwipeableRow>
   )
 }

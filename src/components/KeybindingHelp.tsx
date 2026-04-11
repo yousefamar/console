@@ -60,6 +60,8 @@ const BINDINGS = [
     { key: 'c', action: 'Cycle category filter' },
   ]},
   { section: 'Agents', items: [
+    { key: 'e', action: 'Mark read' },
+    { key: 'E', action: 'Mark unread' },
     { key: 'y', action: 'Allow tool' },
     { key: 'n', action: 'Deny tool' },
     { key: 'a', action: 'Allow all (tool type)' },

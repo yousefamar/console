@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { ChevronLeft, ChevronRight, Plus, MapPin, Square } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, MapPin, Square, Bell } from 'lucide-react'
 
 // --------------------------------------------------------------------------
 // Constants
@@ -97,6 +97,7 @@ interface PositionedEvent {
   isTask: boolean      // Google Task (has tasks.google.com link in description)
   isOwn: boolean       // true if calendarId matches a connected account email
   accepted: boolean  // false = needsAction, tentative, or declined
+  hasReminder: boolean // has non-default reminder override
 }
 
 type DragMode = 'create' | 'move' | 'resize'
@@ -104,6 +105,7 @@ type DragMode = 'create' | 'move' | 'resize'
 interface DragState {
   mode: DragMode
   dayIdx: number
+  origDayIdx: number   // day column where drag started (for cross-day detection)
   startY: number       // px position where drag started (grid-relative)
   currentY: number     // current px position
   eventId?: string     // for move/resize
@@ -147,6 +149,12 @@ export function CalendarGrid() {
   const calColorMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const c of calendars) map.set(c.id, c.backgroundColor)
+    return map
+  }, [calendars])
+
+  const calHasDefaultReminders = useMemo(() => {
+    const map = new Map<string, boolean>()
+    for (const c of calendars) map.set(c.id, !!c.defaultReminders?.length)
     return map
   }, [calendars])
 
@@ -199,6 +207,9 @@ export function CalendarGrid() {
             isTask: !!e.description?.includes('tasks.google.com/task/'),
             isOwn: ownCalendarIds.has(e.calendarId),
             accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
+            hasReminder: e.reminders
+              ? (e.reminders.useDefault ? !!calHasDefaultReminders.get(e.calendarId) : !!e.reminders.overrides?.length)
+              : !!calHasDefaultReminders.get(e.calendarId),
           }
         })
 
@@ -295,7 +306,7 @@ export function CalendarGrid() {
     const rect = col.getBoundingClientRect()
     const y = e.clientY - rect.top
     const snapped = snapToGrid(y)
-    setDrag({ mode: 'create', dayIdx, startY: snapped, currentY: snapped })
+    setDrag({ mode: 'create', dayIdx, origDayIdx: dayIdx, startY: snapped, currentY: snapped })
     e.preventDefault()
   }, [])
 
@@ -309,7 +320,7 @@ export function CalendarGrid() {
     const rect = col.getBoundingClientRect()
     const y = e.clientY - rect.top
     setDrag({
-      mode: 'move', dayIdx: ev.column,
+      mode: 'move', dayIdx: ev.column, origDayIdx: ev.column,
       startY: y, currentY: y,
       eventId: ev.id, eventOrigTop: ev.top, eventOrigHeight: ev.height,
       offsetY: y - ev.top,
@@ -326,7 +337,7 @@ export function CalendarGrid() {
     const rect = col.getBoundingClientRect()
     const y = e.clientY - rect.top
     setDrag({
-      mode: 'resize', dayIdx: ev.column,
+      mode: 'resize', dayIdx: ev.column, origDayIdx: ev.column,
       startY: y, currentY: y,
       eventId: ev.id, eventOrigTop: ev.top, eventOrigHeight: ev.height,
     })
@@ -338,12 +349,23 @@ export function CalendarGrid() {
     if (!drag) return
 
     const handleMouseMove = (e: MouseEvent) => {
-      const col = colRefs.current[drag.dayIdx]
+      // Detect which day column the cursor is over
+      let newDayIdx = drag.dayIdx
+      for (let i = 0; i < colRefs.current.length; i++) {
+        const c = colRefs.current[i]
+        if (!c) continue
+        const r = c.getBoundingClientRect()
+        if (e.clientX >= r.left && e.clientX < r.right) {
+          newDayIdx = i
+          break
+        }
+      }
+      const col = colRefs.current[newDayIdx]
       if (!col) return
       const rect = col.getBoundingClientRect()
       const y = e.clientY - rect.top
       didDragRef.current = true
-      setDrag((d) => d ? { ...d, currentY: y } : null)
+      setDrag((d) => d ? { ...d, currentY: y, dayIdx: newDayIdx } : null)
     }
 
     const handleMouseUp = () => {
@@ -368,7 +390,7 @@ export function CalendarGrid() {
         }
       } else if (d.mode === 'move' && d.eventId && didDragRef.current) {
         const newTop = snapToGrid(d.eventOrigTop! + (d.currentY - d.startY))
-        if (newTop === d.eventOrigTop) return // no change
+        if (newTop === d.eventOrigTop && d.dayIdx === d.origDayIdx) return // no change
         const startMin = pxToMinutes(Math.max(0, newTop))
         const endMin = startMin + pxToMinutes(d.eventOrigHeight!)
         const day = days[d.dayIdx]!
@@ -594,8 +616,10 @@ export function CalendarGrid() {
                         left: `${ev.left * 100}%`,
                         width: `calc(${ev.width * 100}% - 3px)`,
                         backgroundColor: unaccepted ? 'transparent' : muted.bg,
-                        borderLeftColor: hasMultipleColors ? undefined : muted.border,
-                        borderColor: unaccepted ? muted.border : undefined,
+                        borderTopColor: unaccepted ? muted.border : undefined,
+                        borderRightColor: unaccepted ? muted.border : undefined,
+                        borderBottomColor: unaccepted ? muted.border : undefined,
+                        borderLeftColor: unaccepted ? muted.border : hasMultipleColors ? undefined : muted.border,
                       }}
                     >
                       {/* Multi-calendar color stripes */}
@@ -609,6 +633,7 @@ export function CalendarGrid() {
                       <div className="py-0.5 h-full overflow-hidden" style={{ paddingLeft: hasMultipleColors ? totalStripeWidth + 3 : 4 }}>
                         <div className="text-[10px] font-medium truncate leading-tight flex items-center gap-1" style={{ color: muted.text }}>
                           {ev.isTask && <Square size={8} className="flex-shrink-0 opacity-70" strokeWidth={2.5} />}
+                          {ev.hasReminder && <Bell size={8} className="flex-shrink-0 opacity-70" />}
                           <span className="truncate">{ev.summary}</span>
                         </div>
                         {ev.height > 30 && (

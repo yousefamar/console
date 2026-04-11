@@ -1,6 +1,6 @@
 // Session manifest — persists active sessions across server restarts
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Session } from './session.js'
@@ -11,9 +11,32 @@ export interface ManifestEntry {
   claudeSessionId: string
   cwd: string
   prompt: string
+  name?: string
 }
 
+/** Debounced manifest saver — coalesces rapid writes into one disk write */
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let pendingSessions: Map<string, Session> | null = null
+
 export function saveManifest(sessions: Map<string, Session>) {
+  pendingSessions = sessions
+  if (!saveTimer) {
+    saveTimer = setTimeout(flushManifest, 500)
+  }
+}
+
+/** Force an immediate save (used on shutdown) */
+export function saveManifestSync(sessions: Map<string, Session>) {
+  pendingSessions = sessions
+  flushManifest()
+}
+
+function flushManifest() {
+  saveTimer = null
+  if (!pendingSessions) return
+  const sessions = pendingSessions
+  pendingSessions = null
+
   const seen = new Set<string>()
   const entries: ManifestEntry[] = []
   for (const session of sessions.values()) {
@@ -23,6 +46,7 @@ export function saveManifest(sessions: Map<string, Session>) {
         claudeSessionId: session.claudeSessionId,
         cwd: session.cwd,
         prompt: session.initialPrompt,
+        name: session.name,
       })
     }
   }
@@ -33,11 +57,10 @@ export function saveManifest(sessions: Map<string, Session>) {
   }
 }
 
-export function loadAndClearManifest(): ManifestEntry[] {
+export function loadManifest(): ManifestEntry[] {
   if (!existsSync(MANIFEST_PATH)) return []
   try {
     const data = readFileSync(MANIFEST_PATH, 'utf-8')
-    unlinkSync(MANIFEST_PATH)
     return JSON.parse(data) as ManifestEntry[]
   } catch {
     return []

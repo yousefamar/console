@@ -11,6 +11,7 @@ export function CalendarEventForm() {
   const closeEventForm = useCalendarStore((s) => s.closeEventForm)
   const createEvent = useCalendarStore((s) => s.createEvent)
   const updateEvent = useCalendarStore((s) => s.updateEvent)
+  const deleteEvent = useCalendarStore((s) => s.deleteEvent)
 
   const isEdit = !!editingEvent
   const writableCalendars = calendars.filter((c) => c.accessRole === 'owner' || c.accessRole === 'writer')
@@ -82,7 +83,15 @@ export function CalendarEventForm() {
     const accountEmail = cal?.apiAccountEmail || cal?.accountEmail || ''
 
     if (isEdit) {
-      await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)
+      if (calendarId !== editingEvent!.calendarId) {
+        // Calendar changed — delete from old, create in new (Google doesn't support calendar change via PATCH)
+        const origCal = calendars.find((c) => c.id === editingEvent!.calendarId)
+        const origAccount = origCal?.apiAccountEmail || origCal?.accountEmail || editingEvent!.accountEmail
+        await deleteEvent(editingEvent!.calendarId, origAccount, editingEvent!.id)
+        await createEvent(calendarId, accountEmail, eventData)
+      } else {
+        await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)
+      }
     } else {
       await createEvent(calendarId, accountEmail, eventData)
     }

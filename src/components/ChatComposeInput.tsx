@@ -89,6 +89,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       const caption = text.trim() || undefined
       clearImage()
       setText('')
+      if (inputRef.current) inputRef.current.style.height = '24px'
       try {
         await sendImage(roomId, file, caption)
       } finally {
@@ -103,6 +104,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
 
     sendingRef.current = true
     setText('')
+    if (inputRef.current) inputRef.current.style.height = '24px'
     try {
       await sendMessage(roomId, body)
     } finally {
@@ -144,12 +146,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     }
   }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji])
 
+  const autoResize = useCallback((el: HTMLTextAreaElement) => {
+    el.style.height = '24px'
+    el.style.height = Math.min(120, el.scrollHeight) + 'px'
+  }, [])
+
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
     setText(value)
+    autoResize(e.target)
     const cursorPos = e.target.selectionStart
     detectEmojiQuery(value, cursorPos)
-  }, [detectEmojiQuery])
+  }, [detectEmojiQuery, autoResize])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Arrow keys move cursor without triggering onChange
@@ -179,7 +187,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   }, [attachImage])
 
   return (
-    <div className="relative border-t border-border">
+    <div className="relative border-t border-border overflow-hidden">
       {/* Emoji autocomplete dropdown */}
       {emojiQuery && emojiResults.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 mb-1 mx-3">
@@ -203,7 +211,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       <div className="px-3 py-2">
         {/* Reply preview */}
         {replyingTo && (
-          <div className="flex items-center justify-between pt-1 pb-1.5">
+          <div className="flex items-center justify-between pt-1 pb-1.5 min-w-0">
             <div className="flex-1 min-w-0 border-l-2 border-text-secondary pl-2">
               <span className="text-xs font-medium text-text-secondary">{replyingTo.senderName}</span>
               <p className="text-xs text-text-tertiary truncate">{replyingTo.body}</p>
@@ -256,8 +264,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
             onPaste={handlePaste}
             placeholder="Message..."
             rows={1}
-            className="flex-1 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px]"
-            style={{ height: Math.min(120, Math.max(24, text.split('\n').length * 20)) }}
+            className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px] overflow-y-auto"
           />
           <button
             onClick={handleSend}
