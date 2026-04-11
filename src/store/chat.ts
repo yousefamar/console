@@ -565,6 +565,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendImage: async (roomId, file, caption) => {
+    const { replyingTo } = get()
     const localId = `~${Date.now()}.${Math.random().toString(36).slice(2)}`
     const userId = localStorage.getItem('matrix_user_id') ?? ''
     const blobUrl = URL.createObjectURL(file)
@@ -591,6 +592,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       mediaUrl: blobUrl,
       isEdited: false,
     }
+
+    if (replyingTo) {
+      localMsg.replyTo = { eventId: replyingTo.eventId, body: replyingTo.body, sender: replyingTo.senderName }
+    }
+    set({ replyingTo: null })
 
     // Mark room read + local echo
     set((s) => ({
@@ -627,6 +633,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         filename: file.name,
         url: mxcUrl,
         info: { mimetype: file.type, size: file.size, w: dims.w, h: dims.h },
+      }
+      if (replyingTo) {
+        content['m.relates_to'] = { 'm.in_reply_to': { event_id: replyingTo.eventId } }
       }
 
       if (room?.isEncrypted && isCryptoReady()) {
