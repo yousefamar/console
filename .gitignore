@@ -5,3 +5,5 @@ dist
 *.local
 .wrangler
 *.tsbuildinfo
+*.crt
+*.key

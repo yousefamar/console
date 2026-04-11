@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n vite,api -c cyan,magenta \"vite\" \"mkdir -p dist && wrangler pages dev dist --port 8788\"",
+    "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "wrangler pages dev dist",
+    "preview": "vite preview",
     "deploy": "wrangler pages deploy dist",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -45,7 +45,6 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.2.1",
     "fake-indexeddb": "^6.2.5",
     "tailwindcss": "^4.2.2",
     "typescript": "^5.7.3",

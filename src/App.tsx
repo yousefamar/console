@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { initAuth, signIn, isSignedIn, onAuthExpired } from '@/gmail/auth'
 import { resetStuckProcessing } from '@/db/sync-queue'
 import { isMatrixConnected } from '@/matrix/auth'
-import { getMeta } from '@/db'
+import { getHubUrl } from '@/hub'
 import { useKeybindings } from '@/hooks/useKeybindings'
 import { useSync } from '@/hooks/useSync'
 import { useUiStore } from '@/store/ui'
@@ -17,16 +17,20 @@ import { ComposeEditor } from '@/components/ComposeEditor'
 import { MatrixLoginModal } from '@/components/MatrixLoginModal'
 import { AccountModal } from '@/components/AccountModal'
 
-// Shown only when the refresh token is dead (rare — user revoked access).
-// Normal token expiry is handled silently via /api/auth/refresh.
+// Shown when hub can't provide a token (rare — user revoked access).
 function ReAuthBanner() {
   const [loading, setLoading] = useState(false)
   const setNeedsReAuth = useUiStore((s) => s.setNeedsReAuth)
 
   async function handleReAuth() {
+    const popup = window.open(
+      `${getHubUrl()}/auth/google/start`,
+      'google-auth',
+      'width=500,height=600,menubar=no,toolbar=no',
+    )
     setLoading(true)
     try {
-      await signIn()
+      await signIn(popup)
       setNeedsReAuth(false)
     } catch {
       // User cancelled the popup
@@ -133,12 +137,21 @@ export function App() {
       resetStuckProcessing()
 
       try {
-        // Try to initialize Gmail auth (non-blocking — app works without it)
+        // Try to initialize Gmail auth via hub (non-blocking — app works without it)
         await initAuth()
         if (isSignedIn()) {
-          const email = await getMeta('email')
-          if (email) {
-            useUiStore.getState().setUserEmail(email)
+          // Fetch email from hub auth status
+          try {
+            const res = await fetch(`${getHubUrl()}/auth/status`)
+            if (res.ok) {
+              const status = await res.json() as { google: { accounts: Array<{ email: string; isPrimary: boolean }> } }
+              const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
+              if (primary) {
+                useUiStore.getState().setUserEmail(primary.email)
+              }
+            }
+          } catch {
+            // Hub not available — email display will be empty
           }
         }
       } catch {

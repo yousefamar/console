@@ -1,7 +1,9 @@
 // Centralized hub access — single source of truth for hub URL and fetch
 
 const HUB_URL_KEY = 'console_hub_url'
-const DEFAULT_HUB_URL = 'http://localhost:9877'
+const DEFAULT_HUB_URL = typeof window !== 'undefined'
+  ? `${window.location.protocol}//${window.location.hostname || 'localhost'}:9877`
+  : 'http://localhost:9877'
 
 // Migrate legacy keys on first access
 let migrated = false

@@ -37,7 +37,10 @@ export function handleCalendarRoutes(
   // GET /cal/calendars
   if (path === '/cal/calendars' && req.method === 'GET') {
     return handleAsync(async () => {
-      const accounts = authStore.getGoogleAccounts()
+      const requestedAccount = url.searchParams.get('account')
+      const accounts = requestedAccount
+        ? authStore.getGoogleAccounts().filter((a) => a.email === requestedAccount)
+        : authStore.getGoogleAccounts()
       const allCalendars: unknown[] = []
 
       for (const acc of accounts) {

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { signIn } from '@/gmail/auth'
 import { useUiStore } from '@/store/ui'
-import { getMeta } from '@/db'
+import { getHubUrl } from '@/hub'
 
 interface AuthScreenProps {
   onAuth: () => void
@@ -12,11 +12,15 @@ export function AuthScreen({ onAuth }: AuthScreenProps) {
   const [error, setError] = useState<string | null>(null)
 
   async function handleSignIn() {
+    const popup = window.open(
+      `${getHubUrl()}/auth/google/start`,
+      'google-auth',
+      'width=500,height=600,menubar=no,toolbar=no',
+    )
     setLoading(true)
     setError(null)
     try {
-      await signIn()
-      const email = await getMeta('email')
+      const email = await signIn(popup)
       if (email) {
         useUiStore.getState().setUserEmail(email)
       }

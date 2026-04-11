@@ -9,7 +9,9 @@
 //   npx tsx server/src/index.ts [--port 9877] [--cwd /path/to/project]
 // ============================================================================
 
-import { createServer, type IncomingMessage } from 'node:http'
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
+import { readFileSync, existsSync } from 'node:fs'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -18,12 +20,12 @@ import type { ClientMessage, HubMessage } from './protocol.js'
 import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
-import { saveManifest, loadAndClearManifest } from './manifest.js'
+import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { discoverProjectDirs } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
-import { handleClientMessage, createSession, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, type AgentContext } from './routes/agents.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { GmailClient } from './gmail-client.js'
@@ -36,6 +38,9 @@ import { AlBridge, AL_SESSION_ID } from './al-bridge.js'
 import { MonzoClient } from './monzo-client.js'
 import { MonzoStore } from './monzo-store.js'
 import { handleMonzoRoutes } from './routes/monzo.js'
+import { DebugLog } from './debug-log.js'
+import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
+import type { DebugClientMessage } from './debug-protocol.js'
 
 // --------------------------------------------------------------------------
 // Configuration
@@ -60,6 +65,8 @@ const feedStore = new FeedStore(
   join(feedsConfigDir, 'feed-read.json'),
 )
 const authStore = new AuthStore()
+const debugLog = new DebugLog(join(feedsConfigDir, 'debug.log'))
+const debugClients = new Set<WebSocket>()
 const gmailClient = new GmailClient(authStore)
 const calendarClient = new CalendarClient(authStore)
 const matrixClient = new MatrixClient(authStore)
@@ -107,12 +114,20 @@ alBridge.onSessionUpdate = () => {
 }
 
 // --------------------------------------------------------------------------
-// HTTP server
+// HTTP/HTTPS server
 // --------------------------------------------------------------------------
 
-const httpServer = createServer(async (req, res) => {
+// Use HTTPS if Tailscale certs are available
+const configDir = join(homedir(), '.config', 'console')
+const tsHost = 'amarhp-lin.rya-yo.ts.net'
+const certPath = join(configDir, `${tsHost}.crt`)
+const keyPath = join(configDir, `${tsHost}.key`)
+const hasTls = existsSync(certPath) && existsSync(keyPath)
+const tlsOpts = hasTls ? { cert: readFileSync(certPath), key: readFileSync(keyPath) } : null
+
+const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
@@ -172,10 +187,15 @@ const httpServer = createServer(async (req, res) => {
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
+  if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
 
   res.writeHead(404)
   res.end('Not found')
-})
+}
+
+const httpServer = tlsOpts
+  ? createHttpsServer(tlsOpts, requestHandler)
+  : createHttpServer(requestHandler)
 
 // --------------------------------------------------------------------------
 // WebSocket server
@@ -201,6 +221,23 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     return
   }
 
+  // Debug agent connects on /debug path
+  if (urlPath === '/debug') {
+    debugClients.add(ws)
+    log(`[debug] Client connected (${debugClients.size} total)`)
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as DebugClientMessage
+        handleDebugClientMessage(msg, debugLog)
+      } catch { /* ignore malformed */ }
+    })
+    ws.on('close', () => {
+      debugClients.delete(ws)
+      log(`[debug] Client disconnected (${debugClients.size} remaining)`)
+    })
+    return
+  }
+
   // Browser client
   clients.add(ws)
   log(`Client connected from ${req.socket.remoteAddress} (${clients.size} total)`)
@@ -214,19 +251,30 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
   sendTo(ws, { type: 'sessions_list', sessions: active })
 
-  // Replay coalesced message logs for all active sessions
+  // Send session order (translated from persisted claudeSessionIds to current hub IDs)
+  const order = loadSessionOrder(sessions)
+  if (order.length > 0) {
+    sendTo(ws, { type: 'session_order', order })
+  }
+
+  // Replay last REPLAY_LIMIT messages per session (older messages loaded on scroll-up)
+  const REPLAY_LIMIT = 50
   for (const session of sessions.values()) {
-    if (session.messageLog.length > 0) {
-      for (const msg of session.messageLog) {
-        sendTo(ws, msg)
+    const log = session.messageLog
+    if (log.length > 0) {
+      const start = Math.max(0, log.length - REPLAY_LIMIT)
+      for (let i = start; i < log.length; i++) {
+        sendTo(ws, log[i]!)
       }
     }
   }
 
-  // Replay Al's message log
+  // Replay last REPLAY_LIMIT Al messages
   if (alBridge.isConnected()) {
-    for (const msg of alBridge.getMessageLog()) {
-      sendTo(ws, msg)
+    const alLog = alBridge.getMessageLog()
+    const start = Math.max(0, alLog.length - REPLAY_LIMIT)
+    for (let i = start; i < alLog.length; i++) {
+      sendTo(ws, alLog[i]!)
     }
   }
 
@@ -236,6 +284,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       msg = JSON.parse(data.toString()) as ClientMessage
     } catch {
       sendTo(ws, { type: 'hub_error', message: 'Invalid JSON' })
+      return
+    }
+
+    // Handle older message pagination (works for both Al and regular sessions)
+    if (msg.type === 'get_older_messages') {
+      const PAGE = (msg as any).limit || 50
+      const beforeIndex = (msg as any).beforeIndex as number
+      const sessionId = (msg as any).sessionId as string
+      const log = sessionId === AL_SESSION_ID
+        ? alBridge.getMessageLog()
+        : sessions.get(sessionId)?.messageLog
+      if (log) {
+        const end = Math.min(beforeIndex, log.length)
+        const start = Math.max(0, end - PAGE)
+        const slice = log.slice(start, end)
+        sendTo(ws, { type: 'older_messages', sessionId, messages: slice, hasMore: start > 0 })
+      } else {
+        sendTo(ws, { type: 'older_messages', sessionId, messages: [], hasMore: false })
+      }
       return
     }
 
@@ -271,13 +338,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 // --------------------------------------------------------------------------
 
 httpServer.listen(port, host, () => {
-  log(`Console Server running on http://${host}:${port}`)
+  const proto = tlsOpts ? 'https' : 'http'
+  const wsproto = tlsOpts ? 'wss' : 'ws'
+  log(`Console Server running on ${proto}://${host}:${port}`)
   log(`Working directory: ${cwd}`)
-  log(`WebSocket: ws://${host}:${port}`)
-  log(`Health check: http://${host}:${port}/health`)
+  log(`WebSocket: ${wsproto}://${host}:${port}`)
+  log(`Health check: ${proto}://${host}:${port}/health`)
+  if (tlsOpts) log(`TLS: using ${certPath}`)
 
   // Restore sessions from manifest
-  const manifest = loadAndClearManifest()
+  const manifest = loadManifest()
   if (manifest.length > 0) {
     log(`Restoring ${manifest.length} session(s) from manifest...`)
     for (const entry of manifest) {
@@ -294,29 +364,26 @@ httpServer.listen(port, host, () => {
         log(`  Failed to resume ${entry.claudeSessionId}: ${(err as Error).message}`)
       }
     }
+    // Save manifest immediately so restored sessions are persisted
+    saveManifest(sessions)
   }
 
   log('')
   log('Waiting for Console to connect...')
 })
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  log('\nShutting down...')
-  saveManifest(sessions)
+// Graceful shutdown — save manifest synchronously before exit
+function shutdown() {
+  log('\nShutting down — saving manifest...')
+  saveManifestSync(sessions)
   for (const session of sessions.values()) session.kill()
   authStore.destroy()
   httpServer.close()
   process.exit(0)
-})
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
 
-process.on('SIGTERM', () => {
-  saveManifest(sessions)
-  for (const session of sessions.values()) session.kill()
-  authStore.destroy()
-  httpServer.close()
-  process.exit(0)
-})
 
 // --------------------------------------------------------------------------
 // Utilities

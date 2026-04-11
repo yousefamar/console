@@ -20,6 +20,13 @@ let lastOAuthResult: { email: string } | null = null
 let pendingMonzoState: string | null = null
 let lastMonzoResult: { connected: boolean; scaRequired?: boolean; error?: string } | null = null
 
+function getBaseUrl(req: IncomingMessage, hubPort: number): string {
+  const host = req.headers.host || `localhost:${hubPort}`
+  // If the connection is TLS (socket has 'encrypted'), use https
+  const proto = (req.socket as any).encrypted ? 'https' : 'http'
+  return `${proto}://${host}`
+}
+
 export function handleAuthRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -36,6 +43,42 @@ export function handleAuthRoutes(
     return true
   }
 
+  // GET /auth/token?email=x — get a fresh access token for a Google account (default: primary)
+  // Used by frontend to bootstrap auth from a different origin (e.g. phone via Tailscale)
+  if (path === '/auth/token' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
+    const requestedEmail = url.searchParams.get('email')
+    const account = requestedEmail
+      ? authStore.getGoogleAccount(requestedEmail)
+      : authStore.getPrimaryGoogleAccount()
+
+    if (!account) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'No Google account configured' }))
+      return true
+    }
+
+    authStore.getGoogleToken(account.email).then((token) => {
+      if (!token) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Token refresh failed' }))
+        return
+      }
+      const fresh = authStore.getGoogleAccount(account.email)!
+      const expiresIn = Math.floor(((fresh.accessTokenExpiry ?? 0) - Date.now()) / 1000)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        access_token: token,
+        expires_in: expiresIn,
+        email: account.email,
+      }))
+    }).catch((err: Error) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    })
+    return true
+  }
+
   // GET /auth/google/start — initiate OAuth flow
   if (path === '/auth/google/start' && req.method === 'GET') {
     const clientId = authStore.getGoogleClientId()
@@ -49,7 +92,7 @@ export function handleAuthRoutes(
     pendingOAuthState = Math.random().toString(36).slice(2)
     lastOAuthResult = null
 
-    const redirectUri = `http://localhost:${hubPort}/auth/google/callback`
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
     url.searchParams.set('client_id', clientId)
     url.searchParams.set('redirect_uri', redirectUri)
@@ -86,7 +129,7 @@ export function handleAuthRoutes(
 
     pendingOAuthState = null
 
-    const redirectUri = `http://localhost:${hubPort}/auth/google/callback`
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
     authStore.exchangeGoogleCode(code, redirectUri)
       .then(({ email }) => {
         lastOAuthResult = { email }
@@ -255,7 +298,7 @@ export function handleAuthRoutes(
     pendingMonzoState = Math.random().toString(36).slice(2)
     lastMonzoResult = null
 
-    const redirectUri = `http://localhost:${hubPort}/auth/monzo/callback`
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/monzo/callback`
     const url = new URL('https://auth.monzo.com/')
     url.searchParams.set('client_id', monzo.clientId)
     url.searchParams.set('redirect_uri', redirectUri)
@@ -288,7 +331,7 @@ export function handleAuthRoutes(
 
     pendingMonzoState = null
 
-    const redirectUri = `http://localhost:${hubPort}/auth/monzo/callback`
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/monzo/callback`
     authStore.exchangeMonzoCode(code, redirectUri)
       .then(() => {
         lastMonzoResult = { connected: true, scaRequired: true }

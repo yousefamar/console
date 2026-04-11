@@ -246,14 +246,14 @@ export class AuthStore {
       scope: string
     }
 
-    // Discover the user's email
-    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v1/userinfo', {
+    // Discover the user's email via Gmail profile (doesn't require openid scope)
+    const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     })
-    const userinfo = await userinfoRes.json() as { email: string }
+    const profile = await profileRes.json() as { emailAddress: string }
 
     const account: GoogleAccount = {
-      email: userinfo.email,
+      email: profile.emailAddress,
       refreshToken: tokenData.refresh_token,
       accessToken: tokenData.access_token,
       accessTokenExpiry: Date.now() + tokenData.expires_in * 1000,
@@ -261,7 +261,7 @@ export class AuthStore {
     }
 
     this.addGoogleAccount(account)
-    return { email: userinfo.email, account }
+    return { email: profile.emailAddress, account }
   }
 
   // --------------------------------------------------------------------------
