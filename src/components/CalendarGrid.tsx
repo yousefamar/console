@@ -206,7 +206,7 @@ export function CalendarGrid() {
             recurringEventId: e.recurringEventId,
             isTask: !!e.description?.includes('tasks.google.com/task/'),
             isOwn: ownCalendarIds.has(e.calendarId),
-            accepted: !e.attendees || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
+            accepted: !e.attendees || e.organizer?.self || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
             hasReminder: e.reminders
               ? (e.reminders.useDefault ? !!calHasDefaultReminders.get(e.calendarId) : !!e.reminders.overrides?.length)
               : !!calHasDefaultReminders.get(e.calendarId),

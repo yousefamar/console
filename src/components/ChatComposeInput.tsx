@@ -187,10 +187,10 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   }, [attachImage])
 
   return (
-    <div className="relative border-t border-border overflow-hidden">
+    <div className="border-t border-border">
       {/* Emoji autocomplete dropdown */}
       {emojiQuery && emojiResults.length > 0 && (
-        <div className="absolute bottom-full left-0 right-0 mb-1 mx-3">
+        <div className="px-3 pt-2">
           <div className="bg-surface-1 border border-border rounded-sm shadow-lg py-1 max-h-48 overflow-y-auto">
             {emojiResults.map((result, i) => (
               <button

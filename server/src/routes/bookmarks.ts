@@ -8,6 +8,52 @@ export function handleBookmarkRoutes(
   bookmarkStore: BookmarkStore,
   readBody: (req: IncomingMessage) => Promise<string>,
 ): boolean {
+  // POST /bookmarks — create a new bookmark from a URL
+  if (path === '/bookmarks' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const { url, title, description, tags } = JSON.parse(body) as {
+        url: string
+        title?: string
+        description?: string
+        tags?: string[]
+      }
+      if (!url) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'url is required' }))
+        return
+      }
+      const bm = await bookmarkStore.create(url, {
+        ...(title && { title }),
+        ...(description && { description }),
+        ...(tags && { tags }),
+      })
+      res.writeHead(201, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(bm))
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
+  // POST /bookmarks/suggest-tags — use LLM to suggest tags for a URL
+  if (path === '/bookmarks/suggest-tags' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const { title, description, url } = JSON.parse(body) as {
+        title: string
+        description: string
+        url: string
+      }
+      const tags = await bookmarkStore.suggestTags(title || '', description || '', url || '')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ tags }))
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
   if (path === '/bookmarks' && req.method === 'GET') {
     bookmarkStore.list().then((bookmarks) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })

@@ -1,7 +1,8 @@
 import { useRef, useEffect, useMemo } from 'react'
 import { useBookmarkStore, filterBookmarks } from '@/store/bookmarks'
 import { BookmarkListItem } from './BookmarkListItem'
-import { Search } from 'lucide-react'
+import { BookmarkAddBar } from './BookmarkAddBar'
+import { Search, Plus } from 'lucide-react'
 
 export function BookmarkList() {
   const bookmarks = useBookmarkStore((s) => s.bookmarks)
@@ -10,6 +11,8 @@ export function BookmarkList() {
   const setSearchQuery = useBookmarkStore((s) => s.setSearchQuery)
   const selectedBookmarkId = useBookmarkStore((s) => s.selectedBookmarkId)
   const enterTriageMode = useBookmarkStore((s) => s.enterTriageMode)
+  const addMode = useBookmarkStore((s) => s.addMode)
+  const enterAddMode = useBookmarkStore((s) => s.enterAddMode)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -27,6 +30,11 @@ export function BookmarkList() {
 
   const brokenCount = filtered.filter((b) => b.tags.includes('status/broken')).length
 
+  // Show add mode UI instead of list
+  if (addMode) {
+    return <BookmarkAddBar />
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Search */}
@@ -41,6 +49,13 @@ export function BookmarkList() {
           onChange={(e) => setSearchQuery(e.target.value)}
           className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-tertiary outline-none"
         />
+        <button
+          onClick={enterAddMode}
+          className="p-0.5 text-text-tertiary hover:text-accent transition-colors"
+          title="Add bookmark (a)"
+        >
+          <Plus size={12} />
+        </button>
       </div>
 
       {/* Stats bar */}

@@ -82,7 +82,15 @@ function FormattedBody({ body, formattedBody }: { body: string; formattedBody?: 
   const html = useMemo(() => {
     if (formattedBody) {
       // Matrix HTML — strip <mx-reply> blocks (quote context already shown separately)
-      let cleaned = formattedBody.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, '')
+      // Strip bridge sender prefix (e.g. <strong data-mx-profile-fallback>name: </strong>)
+      let cleaned = formattedBody
+        .replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, '')
+        .replace(/<strong[^>]*data-mx-profile-fallback[^>]*>[^<]*<\/strong>/gi, '')
+      // Linkify bare URLs not already inside <a> tags
+      cleaned = cleaned.replace(
+        /(^|[^"'>])(https?:\/\/[^\s<>"')\]]+)/g,
+        (_, prefix, url) => `${prefix}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`,
+      )
       return sanitizeHtml(cleaned)
     }
     // Try markdown conversion
@@ -107,9 +115,9 @@ function FormattedBody({ body, formattedBody }: { body: string; formattedBody?: 
 // --- Emoji Picker ---
 
 const EMOJI_GRID = [
-  '\u{1F600}', '\u{1F602}', '\u{1F972}', '\u2764\uFE0F', '\u{1F525}', '\u{1F44D}', '\u{1F44E}', '\u{1F44F}',
-  '\u{1F64F}', '\u{1F60D}', '\u{1F914}', '\u{1F62E}', '\u{1F622}', '\u{1F621}', '\u{1F389}', '\u2705',
-  '\u{1F440}', '\u{1F4AF}', '\u{1F64C}', '\u{1F60A}', '\u{1F91D}', '\u{1F4AA}', '\u2B50', '\u{1FAE1}',
+  '\u{1F600}', '\u{1F602}', '\u{1F972}', '\u2764\uFE0F', '\u{1F525}', '\u{1F44C}', '\u{1F44E}', '\u{1F44F}',
+  '\u{1F64F}', '\u{1F932}', '\u{1F914}', '\u{1F62E}', '\u{1F622}', '\u{1F621}', '\u{1F389}', '\u2705',
+  '\u{1F440}', '\u{1F4AF}', '\u{1F64C}', '\u{1F60A}', '\u{1F91D}', '\u{1F4AA}', '\u{1F605}', '\u{1FAE1}',
 ]
 
 function EmojiButton({ onSelect }: { onSelect: (emoji: string) => void }) {
@@ -299,7 +307,7 @@ function EncryptedImage({ mediaUrl, encryptedFile, alt, onClick }: { mediaUrl?: 
 }
 
 // Renders a file link from either plain mxc:// or encrypted file
-function EncryptedFileLink({ mediaUrl, encryptedFile, label }: { mediaUrl?: string; encryptedFile?: EncryptedFile; label: string }) {
+function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType }: { mediaUrl?: string; encryptedFile?: EncryptedFile; label: string; mimeType?: string }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -317,11 +325,22 @@ function EncryptedFileLink({ mediaUrl, encryptedFile, label }: { mediaUrl?: stri
   }, [encryptedFile?.url])
 
   const href = blobUrl ?? (mediaUrl && !encryptedFile ? (mxcToHttp(mediaUrl) ?? '#') : '#')
-  if (!blobUrl && (!mediaUrl || encryptedFile)) return <span className="text-sm text-text-secondary italic">[File: {label}]</span>
+  // Derive a filename from MIME type when body is empty (e.g. "application/zip" → "file.zip")
+  const MIME_EXT: Record<string, string> = {
+    'application/zip': '.zip', 'application/pdf': '.pdf', 'application/json': '.json',
+    'application/javascript': '.js', 'text/plain': '.txt', 'text/html': '.html',
+    'text/csv': '.csv', 'application/xml': '.xml',
+    'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
+    'audio/mpeg': '.mp3', 'audio/ogg': '.ogg', 'video/mp4': '.mp4', 'video/webm': '.webm',
+  }
+  const ext = mimeType ? (MIME_EXT[mimeType] ?? ('.' + mimeType.split('/')[1])) : ''
+  const filename = label || (ext ? `file${ext}` : 'attachment')
+  const displayLabel = label || (mimeType ? `${mimeType.split('/')[1]}${ext}` : 'attachment')
+  if (!blobUrl && (!mediaUrl || encryptedFile)) return <span className="text-sm text-text-secondary italic">📎 {displayLabel}</span>
 
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-sm text-text-secondary underline" download={label}>
-      {label}
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-sm text-text-secondary underline" download={filename}>
+      📎 {displayLabel}
     </a>
   )
 }
@@ -602,9 +621,17 @@ interface ChatMessageBubbleProps {
 
 export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onReply, onReact }: ChatMessageBubbleProps) {
   const avatarUrl = message.senderAvatar ? mxcToThumbnail(message.senderAvatar, 24, 24) : undefined
+  // Strip bridge sender prefix (e.g. "anko: message" → "message") when it matches the display name
+  const displayBody = useMemo(() => {
+    const name = message.senderName
+    if (name && message.body.startsWith(name + ': ')) {
+      return message.body.slice(name.length + 2)
+    }
+    return message.body
+  }, [message.body, message.senderName])
   const urls = useMemo(
-    () => (message.type === 'text' ? extractUrls(message.body) : []),
-    [message.body, message.type],
+    () => (message.type === 'text' ? extractUrls(displayBody) : []),
+    [displayBody, message.type],
   )
 
   // Swipe-to-reply (mobile)
@@ -653,7 +680,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
         </div>
       )}
       <div
-        className="flex gap-2 px-3 group relative min-w-0"
+        className="flex gap-2 px-3 group relative min-w-0 hover:bg-surface-1 transition-colors duration-fast"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -664,7 +691,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
       >
       {/* Avatar gutter */}
       <div className="w-6 flex-shrink-0">
-        {showSender && !isOwn && (
+        {showSender && (
           avatarUrl ? (
             <img src={avatarUrl} alt="" className="h-6 w-6 rounded-full object-cover mt-0.5" />
           ) : (
@@ -684,7 +711,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
       </div>
 
       {/* Message content */}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 relative">
         {showSender && (
           <div className="flex items-baseline gap-2 mb-0.5">
             <span className={clsx('text-xs font-medium', isOwn ? 'text-text-tertiary' : 'text-text-secondary')}>
@@ -716,19 +743,19 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
         ) : message.type === 'image' ? (
           <div className="mt-1">
             <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} alt={message.body} onClick={onImageClick} />
-            {message.body && !/\.(jpe?g|png|gif|webp|heic|heif|svg|bmp|tiff?)$/i.test(message.body) && (
-              <p className="text-sm text-text-secondary mt-1"><Linkified text={message.body} /></p>
+            {displayBody && !/\.(jpe?g|png|gif|webp|heic|heif|svg|bmp|tiff?)$/i.test(displayBody) && (
+              <p className="text-sm text-text-secondary mt-1"><Linkified text={displayBody} /></p>
             )}
           </div>
         ) : message.type === 'video' ? (
           <div className="mt-1">
-            <EncryptedVideo mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} alt={message.body} onClick={onImageClick} />
-            {message.body && !/\.(mp4|mov|avi|webm|mkv|m4v|3gp|ogv)$/i.test(message.body) && (
-              <p className="text-sm text-text-secondary mt-1"><Linkified text={message.body} /></p>
+            <EncryptedVideo mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} alt={displayBody} onClick={onImageClick} />
+            {displayBody && !/\.(mp4|mov|avi|webm|mkv|m4v|3gp|ogv)$/i.test(displayBody) && (
+              <p className="text-sm text-text-secondary mt-1"><Linkified text={displayBody} /></p>
             )}
           </div>
         ) : message.type === 'file' ? (
-          <EncryptedFileLink mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} label={message.body} />
+          <EncryptedFileLink mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} label={displayBody} mimeType={message.mediaMimeType} />
         ) : message.type === 'audio' ? (
           <AudioPlayer
             mediaUrl={message.mediaUrl}
@@ -738,13 +765,13 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
             isVoiceNote={message.isVoiceNote}
           />
         ) : message.type === 'notice' ? (
-          <p className="text-sm text-text-tertiary italic"><Linkified text={message.body} /></p>
+          <p className="text-sm text-text-tertiary italic"><Linkified text={displayBody} /></p>
         ) : message.type === 'emote' ? (
-          <p className="text-sm text-text-secondary italic">* {message.senderName} <Linkified text={message.body} /></p>
+          <p className="text-sm text-text-secondary italic">* {message.senderName} <Linkified text={displayBody} /></p>
         ) : message.isEdited && message.originalBody ? (
-          <EditDiff originalBody={message.originalBody} newBody={message.body} />
+          <EditDiff originalBody={message.originalBody} newBody={displayBody} />
         ) : (
-          <FormattedBody body={message.body} formattedBody={message.formattedBody} />
+          <FormattedBody body={displayBody} formattedBody={message.formattedBody} />
         )}
 
         {/* URL previews (first URL only to avoid clutter) */}
@@ -786,7 +813,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
 
         {/* Read receipts */}
         {receipts && receipts.length > 0 && (
-          <div className="flex items-center gap-0.5 mt-1 justify-end">
+          <div className="absolute bottom-0 right-0 inline-flex items-center gap-0.5">
             {receipts.slice(0, 5).map((r) => {
               const avatarUrl = r.avatar ? mxcToThumbnail(r.avatar, 16, 16) : undefined
               return (

@@ -1,7 +1,9 @@
-import { useMemo, useEffect, useRef } from 'react'
+import { useMemo, useEffect, useRef, useCallback } from 'react'
 import { useFeedStore } from '@/store/feeds'
+import { useUiStore } from '@/store/ui'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 import DOMPurify from 'dompurify'
-import { ExternalLink, Rss, MessageSquare } from 'lucide-react'
+import { ExternalLink, Rss, MessageSquare, X, Play } from 'lucide-react'
 
 // Make all links open in new tabs after DOMPurify sanitization
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -20,10 +22,165 @@ function isRedditUrl(url: string): boolean {
   return /reddit\.com\/r\//.test(url)
 }
 
+// --- YouTube PiP ---
+// Single iframe that lives at Layout level. Two visual modes:
+// - Inline: overlays a placeholder in FeedItemView (tracked via rAF)
+// - PiP: floats in corner with drag/resize/close chrome
+
+export function YouTubePiP() {
+  const pipVideo = useUiStore((s) => s.pipVideo)
+  const setPipVideo = useUiStore((s) => s.setPipVideo)
+  const activePane = useUiStore((s) => s.activePane)
+  const selectedItemId = useFeedStore((s) => s.selectedItemId)
+  const items = useFeedStore((s) => s.items)
+  const isMobile = useIsMobile()
+  const pipRef = useRef<HTMLDivElement>(null)
+  const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+  const resizeState = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null)
+
+  // Determine if we should overlay the placeholder (inline mode)
+  const selectedItem = items.find((i) => i.id === selectedItemId)
+  const selectedYoutubeId = selectedItem ? extractYoutubeId(selectedItem.link) : null
+  const isInline = activePane === 'feeds' && pipVideo?.youtubeId === selectedYoutubeId
+
+  // Track placeholder position when inline via rAF
+  useEffect(() => {
+    const pip = pipRef.current
+    if (!pip || !isInline) return
+
+    let rafId: number
+    const track = () => {
+      const placeholder = document.querySelector('[data-pip-placeholder]')
+      if (placeholder && pip) {
+        const rect = placeholder.getBoundingClientRect()
+        pip.style.left = `${rect.left}px`
+        pip.style.top = `${rect.top}px`
+        pip.style.width = `${rect.width}px`
+        pip.style.height = `${rect.height}px`
+        pip.style.right = 'auto'
+        pip.style.bottom = 'auto'
+        pip.style.aspectRatio = 'auto'
+        pip.style.borderRadius = '0.125rem'
+      }
+      rafId = requestAnimationFrame(track)
+    }
+    rafId = requestAnimationFrame(track)
+    return () => cancelAnimationFrame(rafId)
+  }, [isInline])
+
+  // Reset to corner position when switching to PiP mode
+  useEffect(() => {
+    const pip = pipRef.current
+    if (!pip || isInline) return
+    pip.style.left = ''
+    pip.style.top = ''
+    pip.style.right = '16px'
+    pip.style.bottom = '80px'
+    pip.style.width = isMobile ? '100%' : '360px'
+    pip.style.height = ''
+    pip.style.aspectRatio = '16/9'
+    pip.style.borderRadius = isMobile ? '0' : '0.5rem'
+    if (isMobile) {
+      pip.style.left = '0'
+      pip.style.right = '0'
+      pip.style.bottom = '56px'
+    }
+  }, [isInline, isMobile])
+
+  const closePip = useCallback(() => setPipVideo(null), [setPipVideo])
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button, iframe')) return
+    const pip = pipRef.current
+    if (!pip) return
+    e.preventDefault()
+    pip.setPointerCapture(e.pointerId)
+    const rect = pip.getBoundingClientRect()
+    dragState.current = { startX: e.clientX, startY: e.clientY, origX: rect.left, origY: rect.top }
+  }, [])
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragState.current) {
+      const pip = pipRef.current
+      if (!pip) return
+      pip.style.left = `${dragState.current.origX + (e.clientX - dragState.current.startX)}px`
+      pip.style.top = `${dragState.current.origY + (e.clientY - dragState.current.startY)}px`
+      pip.style.right = 'auto'
+      pip.style.bottom = 'auto'
+    }
+  }, [])
+
+  const onPointerUp = useCallback(() => {
+    dragState.current = null
+    resizeState.current = null
+  }, [])
+
+  const onResizePointerDown = useCallback((e: React.PointerEvent) => {
+    const pip = pipRef.current
+    if (!pip) return
+    e.preventDefault()
+    e.stopPropagation()
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    resizeState.current = { startX: e.clientX, startY: e.clientY, origW: pip.offsetWidth, origH: pip.offsetHeight }
+  }, [])
+
+  const onResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!resizeState.current) return
+    const pip = pipRef.current
+    if (!pip) return
+    pip.style.width = `${Math.max(240, resizeState.current.origW + (e.clientX - resizeState.current.startX))}px`
+    pip.style.height = `${Math.max(160, resizeState.current.origH + (e.clientY - resizeState.current.startY))}px`
+    pip.style.aspectRatio = 'auto'
+  }, [])
+
+  if (!pipVideo) return null
+
+  return (
+    <div
+      ref={pipRef}
+      className={`fixed z-50 flex flex-col overflow-hidden ${isInline ? '' : 'bg-surface-0 border border-border shadow-2xl'}`}
+      onPointerDown={!isInline && !isMobile ? onPointerDown : undefined}
+      onPointerMove={!isInline && !isMobile ? onPointerMove : undefined}
+      onPointerUp={!isInline ? onPointerUp : undefined}
+    >
+      {/* Chrome: title bar + close — only in PiP mode */}
+      {!isInline && (
+        <div className={`flex items-center justify-between px-2 py-1 bg-surface-1 text-[10px] text-text-secondary select-none ${isMobile ? '' : 'cursor-grab'}`}>
+          <span className="truncate">{pipVideo.title}</span>
+          <button onClick={closePip} className="p-0.5 hover:text-text-primary transition-colors">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+      <iframe
+        src={`https://www.youtube-nocookie.com/embed/${pipVideo.youtubeId}?autoplay=1`}
+        className="w-full flex-1"
+        style={{ pointerEvents: 'auto' }}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowFullScreen
+        title="YouTube video"
+      />
+      {/* Resize handle — PiP desktop only */}
+      {!isInline && !isMobile && (
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onPointerUp}
+        />
+      )}
+    </div>
+  )
+}
+
+// --- Feed Item View ---
+
 export function FeedItemView() {
   const items = useFeedStore((s) => s.items)
   const selectedItemId = useFeedStore((s) => s.selectedItemId)
   const feeds = useFeedStore((s) => s.feeds)
+  const pipVideo = useUiStore((s) => s.pipVideo)
+  const setPipVideo = useUiStore((s) => s.setPipVideo)
   const contentRef = useRef<HTMLDivElement>(null)
 
   const item = items.find((i) => i.id === selectedItemId)
@@ -56,6 +213,7 @@ export function FeedItemView() {
 
   const youtubeId = extractYoutubeId(item.link)
   const isReddit = isRedditUrl(item.link)
+  const isPlayingThis = pipVideo?.youtubeId === youtubeId
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -111,18 +269,46 @@ export function FeedItemView() {
 
       {/* Article content */}
       <div ref={contentRef} className="flex-1 overflow-y-auto px-4 py-3">
-        {/* YouTube embed */}
+        {/* YouTube: placeholder (overlaid by PiP iframe), or thumbnail with play */}
         {youtubeId && (
-          <div className="mb-3 aspect-video w-full max-w-2xl">
-            <iframe
-              src={`https://www.youtube-nocookie.com/embed/${youtubeId}`}
-              className="w-full h-full rounded-sm"
-              style={{ pointerEvents: 'auto' }}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              title="YouTube video"
-            />
-          </div>
+          isPlayingThis ? (
+            // Empty placeholder — YouTubePiP overlays this with the real iframe
+            <div data-pip-placeholder className="mb-3 aspect-video w-full max-w-2xl rounded-sm" />
+          ) : pipVideo ? (
+            // Different video is playing in PiP
+            <button
+              className="mb-3 aspect-video w-full max-w-2xl relative group cursor-pointer rounded-sm overflow-hidden"
+              onClick={() => setPipVideo({ youtubeId, title: item.title })}
+            >
+              <img
+                src={`https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`}
+                alt=""
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-0 bg-black/30 flex items-center justify-center group-hover:bg-black/40 transition-colors">
+                <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center">
+                  <Play size={20} className="text-white ml-0.5" fill="white" />
+                </div>
+              </div>
+            </button>
+          ) : (
+            // Nothing playing — show thumbnail with play
+            <button
+              className="mb-3 aspect-video w-full max-w-2xl relative group cursor-pointer rounded-sm overflow-hidden"
+              onClick={() => setPipVideo({ youtubeId, title: item.title })}
+            >
+              <img
+                src={`https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`}
+                alt=""
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-0 bg-black/30 flex items-center justify-center group-hover:bg-black/40 transition-colors">
+                <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center">
+                  <Play size={20} className="text-white ml-0.5" fill="white" />
+                </div>
+              </div>
+            </button>
+          )
         )}
 
         {/* Thumbnail for items with imageUrl but no YouTube embed */}

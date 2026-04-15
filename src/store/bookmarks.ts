@@ -87,6 +87,14 @@ interface BookmarkState {
   triageMode: boolean
   triageIndex: number
 
+  // Add bookmark
+  addMode: boolean
+  addUrl: string
+  addLoading: boolean
+  addPreview: { title: string; description: string; url: string } | null
+  addSuggestedTags: string[]
+  addSelectedTags: string[]
+
   // Actions
   fetchBookmarks: () => Promise<void>
   selectBookmark: (filename: string | null) => void
@@ -103,6 +111,13 @@ interface BookmarkState {
   triageSkip: () => void
   triageDelete: () => Promise<void>
   openBookmarkUrl: () => void
+  enterAddMode: () => void
+  exitAddMode: () => void
+  setAddUrl: (url: string) => void
+  fetchAddPreview: (url: string) => Promise<void>
+  toggleAddTag: (tag: string) => void
+  addCustomTag: (tag: string) => void
+  saveNewBookmark: () => Promise<void>
 }
 
 export const useBookmarkStore = create<BookmarkState>((set, get) => ({
@@ -117,6 +132,12 @@ export const useBookmarkStore = create<BookmarkState>((set, get) => ({
   expandedTags: new Set<string>(),
   triageMode: false,
   triageIndex: 0,
+  addMode: false,
+  addUrl: '',
+  addLoading: false,
+  addPreview: null,
+  addSuggestedTags: [],
+  addSelectedTags: [],
 
   fetchBookmarks: async () => {
     set({ loading: true })
@@ -341,5 +362,119 @@ export const useBookmarkStore = create<BookmarkState>((set, get) => ({
     if (bm?.url) {
       window.open(bm.url, '_blank')
     }
+  },
+
+  enterAddMode: () => {
+    set({
+      addMode: true,
+      addUrl: '',
+      addLoading: false,
+      addPreview: null,
+      addSuggestedTags: [],
+      addSelectedTags: [],
+    })
+  },
+
+  exitAddMode: () => {
+    set({
+      addMode: false,
+      addUrl: '',
+      addLoading: false,
+      addPreview: null,
+      addSuggestedTags: [],
+      addSelectedTags: [],
+    })
+  },
+
+  setAddUrl: (url) => set({ addUrl: url }),
+
+  fetchAddPreview: async (url) => {
+    set({ addLoading: true, addPreview: null, addSuggestedTags: [], addSelectedTags: [] })
+    try {
+      // Create the bookmark (fetches metadata server-side)
+      const createRes = await hubFetch('/bookmarks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!createRes.ok) {
+        set({ addLoading: false })
+        return
+      }
+      const bm = (await createRes.json()) as Bookmark & { body: string }
+      const preview = { title: bm.title, description: bm.description, url: bm.url }
+      set({ addPreview: preview, addSelectedTags: [...bm.tags] })
+
+      // Add to local bookmarks list immediately
+      set((s) => {
+        const exists = s.bookmarks.some((b) => b.filename === bm.filename)
+        if (exists) return s
+        const bookmarks = [...s.bookmarks, { ...bm }].sort((a, b) => a.title.localeCompare(b.title))
+        return { bookmarks, selectedBookmarkId: bm.filename }
+      })
+
+      // Suggest tags in parallel (non-blocking)
+      hubFetch('/bookmarks/suggest-tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: bm.title, description: bm.description, url: bm.url }),
+      })
+        .then((res) => res.ok ? res.json() : null)
+        .then((data: { tags: string[] } | null) => {
+          if (data?.tags && get().addMode) {
+            set({ addSuggestedTags: data.tags, addSelectedTags: data.tags })
+            // Also update the bookmark file with suggested tags
+            const currentBm = get().bookmarks.find((b) => b.filename === bm.filename)
+            if (currentBm) {
+              get().updateBookmarkTags(bm.filename, data.tags)
+            }
+          }
+        })
+        .catch(() => {})
+
+      set({ addLoading: false })
+    } catch {
+      set({ addLoading: false })
+    }
+  },
+
+  toggleAddTag: (tag) => {
+    set((s) => {
+      const tags = s.addSelectedTags.includes(tag)
+        ? s.addSelectedTags.filter((t) => t !== tag)
+        : [...s.addSelectedTags, tag]
+      return { addSelectedTags: tags }
+    })
+  },
+
+  addCustomTag: (tag) => {
+    if (!tag) return
+    set((s) => ({
+      addSelectedTags: s.addSelectedTags.includes(tag)
+        ? s.addSelectedTags
+        : [...s.addSelectedTags, tag],
+    }))
+  },
+
+  saveNewBookmark: async () => {
+    const { addPreview, addSelectedTags, bookmarks } = get()
+    if (!addPreview) return
+
+    // Find the bookmark that was created and update its tags
+    const bm = bookmarks.find((b) => b.url === addPreview.url)
+    if (bm) {
+      await get().updateBookmarkTags(bm.filename, addSelectedTags)
+    }
+
+    // Refresh tag tree
+    try {
+      const tagRes = await hubFetch('/bookmarks/tags')
+      if (tagRes.ok) {
+        const tagTree = (await tagRes.json()) as TagTreeNode[]
+        set({ tagTree })
+      }
+    } catch {}
+
+    get().exitAddMode()
   },
 }))

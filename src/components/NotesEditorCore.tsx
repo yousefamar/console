@@ -109,6 +109,20 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
             useNotesStore.getState().openQuickSwitcher('content')
             return true
           }
+          // Ctrl+J / Ctrl+K → half-page scroll (clamped, no wrap)
+          if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'j' || event.key === 'k')) {
+            event.preventDefault()
+            const view = useNotesStore.getState().editorView
+            if (view) {
+              const dir = event.key === 'j' ? 1 : -1
+              const halfPage = Math.max(1, Math.floor(view.dom.clientHeight / view.defaultLineHeight / 2))
+              const cur = view.state.doc.lineAt(view.state.selection.main.head)
+              const targetLine = Math.max(1, Math.min(view.state.doc.lines, cur.number + dir * halfPage))
+              const pos = view.state.doc.line(targetLine).from
+              view.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
+            }
+            return true
+          }
           // Ctrl+Shift+T → reopen closed tab
           if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 't' || event.key === 'T')) {
             event.preventDefault()
@@ -168,8 +182,8 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
             wrapSelection(useNotesStore.getState().editorView, '`')
             return true
           }
-          // Ctrl+K → link picker
-          if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+          // Ctrl+Shift+K → link picker
+          if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'k' || event.key === 'K')) {
             event.preventDefault()
             const view = useNotesStore.getState().editorView
             if (view) {
@@ -288,9 +302,6 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
     Vim.noremap('p', '"+p', 'normal')
     Vim.noremap('P', '"+P', 'normal')
     Vim.noremap('p', '"+p', 'visual')
-    // Ctrl+J/K for half-page scroll (matching nvim config)
-    Vim.noremap('<C-j>', '<C-d>', 'normal')
-    Vim.noremap('<C-k>', '<C-u>', 'normal')
     // j/k navigate wrapped lines (gj/gk)
     Vim.noremap('j', 'gj', 'normal')
     Vim.noremap('k', 'gk', 'normal')

@@ -75,7 +75,7 @@ export const FeedTab = memo(function FeedTab() {
       <div className="w-44 flex-shrink-0 border-r border-border overflow-y-auto">
         <FeedFolderTree />
       </div>
-      <div className="w-72 flex-shrink-0 border-r border-border overflow-hidden flex flex-col">
+      <div className="flex-1 border-r border-border overflow-hidden flex flex-col">
         <FeedItemList />
       </div>
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">

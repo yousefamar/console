@@ -89,6 +89,10 @@ interface UiState {
   doNotDisturb: boolean
   setDoNotDisturb: (v: boolean) => void
 
+  // PiP
+  pipVideo: { youtubeId: string; title: string } | null
+  setPipVideo: (v: { youtubeId: string; title: string } | null) => void
+
   // Auth
   userEmail: string
   setUserEmail: (email: string) => void
@@ -97,6 +101,8 @@ interface UiState {
   matrixUserId: string
   setMatrixUserId: (userId: string) => void
 }
+
+// PiP is managed by user action (play/close) — tab switches don't affect it
 
 export const useUiStore = create<UiState>((set) => ({
   darkMode: true,
@@ -150,6 +156,9 @@ export const useUiStore = create<UiState>((set) => ({
 
   undoAction: null,
   setUndoAction: (action) => set({ undoAction: action }),
+
+  pipVideo: null,
+  setPipVideo: (v) => set({ pipVideo: v }),
 
   doNotDisturb: typeof localStorage !== 'undefined' && localStorage.getItem('console_dnd') === 'true',
   setDoNotDisturb: (v) => {

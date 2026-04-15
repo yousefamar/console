@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { X } from 'lucide-react'
-import type { CalendarEvent } from '@/calendar/types'
+import { ContactAutocomplete } from './ContactAutocomplete'
+import { parseAddressList } from '@/utils/email'
+import type { CalendarEvent, CalendarAttendee } from '@/calendar/types'
 
 export function CalendarEventForm() {
   const calendars = useCalendarStore((s) => s.calendars)
@@ -26,6 +28,7 @@ export function CalendarEventForm() {
   const [allDay, setAllDay] = useState(false)
   const [location, setLocation] = useState('')
   const [description, setDescription] = useState('')
+  const [guests, setGuests] = useState('')
   const [saving, setSaving] = useState(false)
 
   // Initialize form values
@@ -35,6 +38,11 @@ export function CalendarEventForm() {
       setCalendarId(editingEvent.calendarId)
       setLocation(editingEvent.location || '')
       setDescription(editingEvent.description || '')
+      // Load existing attendees (exclude self)
+      const existingGuests = (editingEvent.attendees || [])
+        .filter((a) => !a.self)
+        .map((a) => a.displayName ? `${a.displayName} <${a.email}>` : a.email)
+      setGuests(existingGuests.length > 0 ? existingGuests.join(', ') + ', ' : '')
 
       if (editingEvent.start.date) {
         setAllDay(true)
@@ -64,11 +72,36 @@ export function CalendarEventForm() {
     if (!title.trim() || !calendarId) return
     setSaving(true)
 
+    // Resolve the API account for the selected calendar
+    const cal = calendars.find((c) => c.id === calendarId)
+    const accountEmail = cal?.apiAccountEmail || cal?.accountEmail || ''
+
+    // Parse guests string into attendees — include self so organizer shows in attendee list
+    const guestAddresses = parseAddressList(guests).filter((a) => a.email.includes('@'))
+    const attendees: CalendarAttendee[] | undefined = guestAddresses.length > 0
+      ? [
+          { email: accountEmail, responseStatus: 'accepted' as const },
+          ...guestAddresses.map((a) => ({
+            email: a.email,
+            displayName: a.name || undefined,
+            responseStatus: 'needsAction' as const,
+          })),
+        ]
+      : undefined
+
+    // Auto-add Google Meet when there are guests and no existing link
+    const hasExistingMeet = editingEvent?.hangoutLink || editingEvent?.conferenceData?.entryPoints?.length
+    const conferenceData = attendees && !hasExistingMeet
+      ? { createRequest: { requestId: `meet-${Date.now()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } }
+      : undefined
+
     const eventData: Partial<CalendarEvent> = {
       summary: title.trim(),
       location: location.trim() || undefined,
       description: description.trim() || undefined,
-    }
+      attendees,
+      ...(conferenceData ? { conferenceData } : {}),
+    } as Partial<CalendarEvent>
 
     if (allDay) {
       eventData.start = { date: startDate }
@@ -77,10 +110,6 @@ export function CalendarEventForm() {
       eventData.start = { dateTime: new Date(`${startDate}T${startTime}`).toISOString() }
       eventData.end = { dateTime: new Date(`${endDate}T${endTime}`).toISOString() }
     }
-
-    // Use the API account (the actual owner) for the selected calendar
-    const cal = calendars.find((c) => c.id === calendarId)
-    const accountEmail = cal?.apiAccountEmail || cal?.accountEmail || ''
 
     if (isEdit) {
       if (calendarId !== editingEvent!.calendarId) {
@@ -207,6 +236,18 @@ export function CalendarEventForm() {
               placeholder="Add location"
               className="w-full bg-surface-1 border border-border rounded-sm px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary outline-none mt-0.5"
             />
+          </div>
+
+          {/* Guests */}
+          <div>
+            <label className="text-[10px] text-text-tertiary uppercase tracking-wider">Guests</label>
+            <div className="bg-surface-1 border border-border rounded-sm px-2 py-1 mt-0.5">
+              <ContactAutocomplete
+                value={guests}
+                onChange={setGuests}
+                placeholder="Add guests"
+              />
+            </div>
           </div>
 
           {/* Description */}

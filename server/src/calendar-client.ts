@@ -103,16 +103,28 @@ export class CalendarClient {
   }
 
   async createEvent(accountEmail: string, calendarId: string, event: unknown) {
+    const hasConference = !!(event as any)?.conferenceData?.createRequest
+    const hasAttendees = !!((event as any)?.attendees?.length)
     return this.request(accountEmail, `/calendars/${encodeURIComponent(calendarId)}/events`, {
       method: 'POST',
       body: event,
+      params: {
+        ...(hasConference ? { conferenceDataVersion: '1' } : {}),
+        ...(hasAttendees ? { sendUpdates: 'all' } : {}),
+      },
     })
   }
 
   async patchEvent(accountEmail: string, calendarId: string, eventId: string, updates: unknown) {
+    const hasConference = !!(updates as any)?.conferenceData?.createRequest
+    const hasAttendees = !!((updates as any)?.attendees?.length)
     return this.request(accountEmail, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {
       method: 'PATCH',
       body: updates,
+      params: {
+        ...(hasConference ? { conferenceDataVersion: '1' } : {}),
+        ...(hasAttendees ? { sendUpdates: 'all' } : {}),
+      },
     })
   }
 

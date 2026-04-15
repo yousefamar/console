@@ -9,6 +9,8 @@ import { readdir, readFile, writeFile, unlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
+import { Readability } from '@mozilla/readability'
+import { parseHTML } from 'linkedom'
 
 // --------------------------------------------------------------------------
 // Types
@@ -119,6 +121,85 @@ export function buildTagTree(bookmarks: Bookmark[]): TagTreeNode[] {
 }
 
 // --------------------------------------------------------------------------
+// Metadata fetching
+// --------------------------------------------------------------------------
+
+export interface PageMetadata {
+  title: string
+  description: string
+  url: string // canonical or original
+}
+
+/** Fetch a URL and extract title + description via OG tags / Readability */
+export async function fetchPageMetadata(url: string): Promise<PageMetadata> {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Console-Bookmarks/1.0)' },
+    signal: AbortSignal.timeout(15000),
+    redirect: 'follow',
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+  const html = await res.text()
+  const { document } = parseHTML(html)
+
+  // Try OG tags first, then meta tags, then Readability
+  const og = (prop: string) =>
+    document.querySelector(`meta[property="og:${prop}"]`)?.getAttribute('content')
+      ?? document.querySelector(`meta[name="og:${prop}"]`)?.getAttribute('content')
+
+  const metaDesc =
+    document.querySelector('meta[name="description"]')?.getAttribute('content')
+    ?? document.querySelector('meta[property="description"]')?.getAttribute('content')
+
+  const canonical =
+    document.querySelector('link[rel="canonical"]')?.getAttribute('href')
+
+  let title = og('title') ?? document.querySelector('title')?.textContent ?? ''
+  let description = og('description') ?? metaDesc ?? ''
+
+  // Fallback to Readability for title/description if missing
+  if (!title || !description) {
+    try {
+      const reader = new Readability(document as unknown as Document)
+      const article = reader.parse()
+      if (article) {
+        if (!title) title = article.title ?? ''
+        if (!description) description = article.excerpt ?? ''
+      }
+    } catch {
+      // Readability can fail on some pages
+    }
+  }
+
+  return {
+    title: title.trim(),
+    description: description.trim(),
+    url: canonical && canonical.startsWith('http') ? canonical : url,
+  }
+}
+
+/** Turn a title into a safe filename */
+function toFilename(title: string, existingFilenames: Set<string>): string {
+  let name = title
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '') // strip non-word chars
+    .replace(/\s+/g, '-')     // spaces to hyphens
+    .replace(/-+/g, '-')      // collapse hyphens
+    .replace(/^-|-$/g, '')    // trim hyphens
+    .slice(0, 80)             // reasonable length
+
+  if (!name) name = 'bookmark'
+
+  let filename = `${name}.md`
+  let counter = 2
+  while (existingFilenames.has(filename)) {
+    filename = `${name}-${counter}.md`
+    counter++
+  }
+  return filename
+}
+
+// --------------------------------------------------------------------------
 // BookmarkStore — in-memory cache with file I/O
 // --------------------------------------------------------------------------
 
@@ -220,6 +301,114 @@ export class BookmarkStore {
   async getTagTree(): Promise<TagTreeNode[]> {
     await this.ensureLoaded()
     return buildTagTree([...this.cache.values()])
+  }
+
+  /** Create a new bookmark from a URL — fetches metadata automatically */
+  async create(
+    url: string,
+    overrides?: Partial<BookmarkFrontmatter>,
+  ): Promise<BookmarkWithBody> {
+    await this.ensureLoaded()
+
+    // Check for duplicate URL
+    for (const bm of this.cache.values()) {
+      if (bm.url === url) {
+        return bm
+      }
+    }
+
+    // Fetch metadata
+    let meta: PageMetadata
+    try {
+      meta = await fetchPageMetadata(url)
+    } catch {
+      meta = { title: '', description: '', url }
+    }
+
+    const title = overrides?.title || meta.title || new URL(url).hostname
+    const description = overrides?.description || meta.description
+    const tags = overrides?.tags ?? ['status/active']
+    const added = new Date().toISOString().split('T')[0]!
+
+    const filename = toFilename(title, new Set(this.cache.keys()))
+
+    const frontmatter: BookmarkFrontmatter = {
+      title,
+      url: meta.url || url,
+      added,
+      archive: null,
+      description,
+      tags,
+    }
+
+    const yamlContent = stringifyYaml(frontmatter as unknown as Record<string, unknown>)
+    const fileContent = `---\n${yamlContent}---\n`
+    await writeFile(join(this.vaultPath, filename), fileContent, 'utf-8')
+
+    const bm: BookmarkWithBody = { ...frontmatter, filename, body: '' }
+    this.cache.set(filename, bm)
+    return bm
+  }
+
+  /** Suggest tags for a bookmark using Claude API */
+  async suggestTags(
+    title: string,
+    description: string,
+    url: string,
+  ): Promise<string[]> {
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) return []
+
+    // Gather existing tags for context
+    await this.ensureLoaded()
+    const allTags = new Set<string>()
+    for (const bm of this.cache.values()) {
+      for (const tag of bm.tags) {
+        if (tag !== 'status/active') allTags.add(tag)
+      }
+    }
+    const tagList = [...allTags].sort()
+
+    const prompt = `You are a bookmark categorizer. Given a webpage's title, description, and URL, suggest 2-5 tags from the existing tag list below. Only suggest tags that genuinely apply. If none fit well, suggest the closest parent category.
+
+Existing tags (hierarchical, "/" separated):
+${tagList.join('\n')}
+
+Webpage:
+Title: ${title}
+Description: ${description}
+URL: ${url}
+
+Respond with ONLY a JSON array of tag strings, e.g. ["dev/tools", "ai-ml/tools"]. Always include "status/active".`
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 256,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!res.ok) return []
+      const data = await res.json() as { content: Array<{ text: string }> }
+      const text = data.content[0]?.text ?? ''
+      // Extract JSON array from response
+      const match = text.match(/\[[\s\S]*\]/)
+      if (!match) return []
+      const tags = JSON.parse(match[0]) as string[]
+      // Ensure status/active is included
+      if (!tags.includes('status/active')) tags.push('status/active')
+      return tags.filter((t) => typeof t === 'string')
+    } catch {
+      return []
+    }
   }
 
   /** Force reload from disk */

@@ -568,6 +568,44 @@ const livePreviewStyles = EditorView.baseTheme({
 })
 
 // ---------------------------------------------------------------------------
+// List hanging indent — wrapped lines align with text, not the bullet
+// ---------------------------------------------------------------------------
+
+const listLineRegex = /^(\s*)([-*+]|\d+[.)]) /
+
+const listIndentPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+    constructor(view: EditorView) { this.decorations = buildListIndent(view) }
+    update(update: any) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = buildListIndent(update.view)
+      }
+    }
+  },
+  { decorations: (v) => v.decorations },
+)
+
+function buildListIndent(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>()
+  for (const { from, to } of view.visibleRanges) {
+    for (let pos = from; pos <= to;) {
+      const line = view.state.doc.lineAt(pos)
+      const match = line.text.match(listLineRegex)
+      if (match) {
+        // indent = leading whitespace + marker + space
+        const indent = match[0].length
+        builder.add(line.from, line.from, Decoration.line({
+          attributes: { style: `padding-left: ${indent}ch; text-indent: -${indent}ch` },
+        }))
+      }
+      pos = line.to + 1
+    }
+  }
+  return builder.finish()
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -576,6 +614,7 @@ export function livePreview(filePath?: string): Extension {
     filePath ? currentFileFacet.of(filePath) : [],
     frontmatterField,
     livePreviewPlugin,
+    listIndentPlugin,
     livePreviewStyles,
   ]
 }

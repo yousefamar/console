@@ -1,5 +1,6 @@
 import { memo, useEffect } from 'react'
 import { useNotesStore } from '@/store/notes'
+import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { NotesFileBrowser } from './NotesFileBrowser'
 import { NotesEditor } from './NotesEditor'
@@ -26,6 +27,17 @@ export const NotesTab = memo(function NotesTab() {
     if (!vaultConnected) {
       reconnectVault()
     }
+  }, [])
+
+  // Rescan vault when switching to notes tab
+  useEffect(() => {
+    let prev = useUiStore.getState().activePane
+    return useUiStore.subscribe((s) => {
+      if (s.activePane === 'notes' && prev !== 'notes' && useNotesStore.getState().vaultConnected) {
+        useNotesStore.getState().loadVaultFiles()
+      }
+      prev = s.activePane
+    })
   }, [])
 
   if (loading && !vaultConnected) {

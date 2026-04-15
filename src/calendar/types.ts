@@ -108,6 +108,7 @@ export interface DbCalendarEvent {
   attendeesJson?: string // JSON-serialized attendees
   organizerEmail?: string
   organizerName?: string
+  organizerSelf?: boolean
   colorId?: string
   recurringEventId?: string
   htmlLink: string
