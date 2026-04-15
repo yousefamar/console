@@ -258,7 +258,7 @@ export function AgentPromptInput() {
     <div className="border-t border-border px-3 py-2">
       {/* Directory picker — only when no active session */}
       {showDirPicker && (
-        <div className="relative mb-1.5">
+        <div className="mb-1.5">
           <div className="flex items-center gap-1.5">
             <FolderOpen size={12} className="text-text-tertiary flex-shrink-0" />
             <input
@@ -285,7 +285,7 @@ export function AgentPromptInput() {
           {dirOpen && filteredDirs.length > 0 && (
             <div
               ref={listRef}
-              className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
+              className="mb-1 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
             >
               {filteredDirs.map((dir, i) => (
                 <button
@@ -350,11 +350,11 @@ export function AgentPromptInput() {
       )}
 
       {/* Slash command autocomplete */}
-      <div className="relative">
+      <div>
         {slashOpen && filteredSlash.length > 0 && (
           <div
             ref={slashListRef}
-            className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
+            className="mb-1 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
           >
             {filteredSlash.map((cmd, i) => (
               <button
@@ -405,7 +405,8 @@ export function AgentPromptInput() {
             const val = e.target.value
             setText(val)
             e.target.style.height = '24px'
-            e.target.style.height = Math.min(120, e.target.scrollHeight) + 'px'
+            const maxH = Math.floor(window.innerHeight * 0.5)
+            e.target.style.height = Math.min(maxH, e.target.scrollHeight) + 'px'
             if (val.startsWith('/') && slashCommands.length > 0) {
               setSlashOpen(true)
               setSlashIndex(0)
@@ -418,7 +419,7 @@ export function AgentPromptInput() {
           data-agent-input
           placeholder={activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
           rows={1}
-          className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px] overflow-y-auto"
+          className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[50vh] overflow-y-auto"
           disabled={!connected}
         />
 

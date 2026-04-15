@@ -1,9 +1,9 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, useState, useCallback, useRef } from 'react'
 import type { AgentMessage } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
-  Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft,
+  Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft, Volume2, Square,
 } from 'lucide-react'
 
 // ============================================================================
@@ -55,10 +55,76 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
 
 function TextBlock({ content }: { content: string }) {
   const rendered = useMemo(() => renderMarkdownLite(content), [content])
+  const [speaking, setSpeaking] = useState(false)
+
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const toggleSpeak = useCallback(async () => {
+    if (speaking) {
+      speechSynthesis.cancel()
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null }
+      setSpeaking(false)
+      return
+    }
+    const plain = content
+      .replace(/```[\s\S]*?```/g, ' (code block) ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/^#+\s+/gm, '')
+    setSpeaking(true)
+
+    // Try browser speechSynthesis first (works on mobile/macOS/Windows)
+    if (speechSynthesis.getVoices().length > 0) {
+      speechSynthesis.cancel()
+      const chunks = plain.match(/[^.!?\n]+[.!?\n]+|[^.!?\n]+$/g) || [plain]
+      let i = 0
+      const speakNext = () => {
+        if (i >= chunks.length) { setSpeaking(false); return }
+        const u = new SpeechSynthesisUtterance(chunks[i]!.trim())
+        u.onend = () => { i++; speakNext() }
+        u.onerror = () => setSpeaking(false)
+        speechSynthesis.speak(u)
+      }
+      setTimeout(speakNext, 50)
+      return
+    }
+
+    // Fallback: hub-side espeak-ng (Linux without browser voices)
+    try {
+      const { getHubUrl } = await import('@/hub')
+      const res = await fetch(`${getHubUrl()}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: plain }),
+      })
+      if (!res.ok) throw new Error('TTS failed')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onended = () => { setSpeaking(false); URL.revokeObjectURL(url); audioRef.current = null }
+      audio.onerror = () => { setSpeaking(false); URL.revokeObjectURL(url); audioRef.current = null }
+      audio.play()
+    } catch {
+      setSpeaking(false)
+    }
+  }, [content, speaking])
+
   return (
-    <div className="px-3 py-1.5">
+    <div className="group relative px-3 py-1.5 hover:bg-surface-1 transition-colors duration-fast">
       <div className="text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed">
         {rendered}
+      </div>
+      {/* Hover action — floating, no extra vertical space */}
+      <div className={`absolute -top-2 right-2 z-10 ${speaking ? 'flex' : 'hidden group-hover:flex'} items-center bg-surface-1 border border-border rounded-sm shadow-sm px-0.5 py-0.5`}>
+        <button
+          onClick={toggleSpeak}
+          className={`p-1 cursor-pointer ${speaking ? 'text-warning' : 'text-text-tertiary hover:text-text-primary'}`}
+          title={speaking ? 'Stop speaking' : 'Read aloud'}
+        >
+          {speaking ? <Square size={11} /> : <Volume2 size={11} />}
+        </button>
       </div>
     </div>
   )

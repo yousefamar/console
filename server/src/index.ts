@@ -11,7 +11,8 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -146,6 +147,38 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     if (alBridge.isConnected()) sessionList.unshift(alBridge.getSessionInfo())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, version: '0.3.0', sessions: sessionList, cwd }))
+    return
+  }
+
+  // TTS — converts text to speech via espeak-ng, returns WAV audio
+  if (path === '/tts' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      try {
+        const { text } = JSON.parse(body)
+        if (!text) { res.writeHead(400); res.end('Missing text'); return }
+        const voice = 'en-GB-RyanNeural'
+        const tmpFile = `/tmp/tts-${Date.now()}.mp3`
+        execFile('edge-tts', ['--voice', voice, '--text', text.slice(0, 5000), '--write-media', tmpFile], { timeout: 30000 }, (err) => {
+          if (err) {
+            // Fallback to espeak-ng
+            execFile('espeak-ng', ['--stdout', text.slice(0, 5000)], { encoding: 'buffer', maxBuffer: 5 * 1024 * 1024, timeout: 10000 }, (err2, stdout) => {
+              if (err2) { res.writeHead(500); res.end('TTS failed'); return }
+              res.writeHead(200, { 'Content-Type': 'audio/wav' })
+              res.end(stdout)
+            })
+            return
+          }
+          try {
+            const audio = readFileSync(tmpFile)
+            res.writeHead(200, { 'Content-Type': 'audio/mpeg' })
+            res.end(audio)
+            unlinkSync(tmpFile)
+          } catch { res.writeHead(500); res.end('TTS read failed') }
+        })
+      } catch { res.writeHead(400); res.end('Invalid JSON') }
+    })
     return
   }
 

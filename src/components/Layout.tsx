@@ -21,6 +21,7 @@ import { AgentTab } from './AgentTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
+import { YouTubePiP } from './FeedItemView'
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
 import { useFeedStore } from '@/store/feeds'
@@ -69,7 +70,7 @@ const MailTab = memo(function MailTab() {
   return (
     <>
       {showList && (
-        <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
+        <div className={`${isMobile ? 'w-full' : 'flex-1'} border-r border-border overflow-hidden flex flex-col`}>
           {!!snoozedCount && (
             <div className="flex items-center border-b border-border px-3 py-1">
               <button
@@ -361,6 +362,9 @@ export function Layout() {
         </div>
       </div>
 
+      {/* YouTube PiP overlay */}
+      <YouTubePiP />
+
       {/* Bottom bar: mobile tab bar or desktop footer */}
       {isMobile ? (
         <MobileTabBar
@@ -395,12 +399,14 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'chat'
-      ? useChatStore((s) => s.rooms.length)
+      ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
       : pane === 'feeds'
         ? useFeedStore((s) => s.totalUnread)
         : pane === 'agents'
           ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
-          : 0
+          : pane === 'notes'
+            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : 0
 
   return (
     <button
@@ -482,12 +488,14 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'chat'
-      ? useChatStore((s) => s.rooms.length)
+      ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
       : pane === 'feeds'
         ? useFeedStore((s) => s.totalUnread)
         : pane === 'agents'
           ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
-          : 0
+          : pane === 'notes'
+            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : 0
 
   return (
     <button

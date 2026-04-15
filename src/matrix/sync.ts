@@ -88,7 +88,7 @@ export function buildMessageFromContent(
     senderId: event.sender!,
     senderName: event.sender!.split(':')[0]?.slice(1) ?? event.sender!,
     senderAvatar: undefined,
-    body: (content.body as string) ?? '',
+    body: (content.body as string) || (content.filename as string) || '',
     formattedBody: content.format === 'org.matrix.custom.html'
       ? (content.formatted_body as string)
       : undefined,

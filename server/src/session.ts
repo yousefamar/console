@@ -497,6 +497,11 @@ export class Session extends EventEmitter {
     this.messageLog.push(msg)
   }
 
+  /** Clear the message log (e.g. after /clear) */
+  clearLog() {
+    this.messageLog.length = 0
+  }
+
   /** Flush accumulated deltas into coalesced log entries */
   private flushPendingDeltas() {
     if (this.pendingThinking) {

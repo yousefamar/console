@@ -245,6 +245,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     sendWs({ type: 'send_message', sessionId, content, ...(images?.length ? { images } : {}) })
 
+    // /clear — clear this session's chat history in the UI
+    if (content.trim() === '/clear') {
+      const newPending = { ...get().pendingTextBySession }
+      const newThinking = { ...get().pendingThinkingBySession }
+      delete newPending[sessionId]
+      delete newThinking[sessionId]
+      set({
+        messagesBySession: { ...get().messagesBySession, [sessionId]: [] },
+        pendingTextBySession: newPending,
+        pendingThinkingBySession: newThinking,
+      })
+      return
+    }
+
     // Add user message to stream (with data-URL previews for images)
     const imagePreviews = images?.map((img) => `data:${img.media_type};base64,${img.data}`)
     addMessage(sessionId, {

@@ -133,6 +133,10 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
         return
       }
+      // /clear — clear the session's message log so replays start fresh
+      if (msg.content.trim() === '/clear') {
+        session.clearLog()
+      }
       const userMsg = { type: 'user_prompt' as const, sessionId: msg.sessionId, content: msg.content, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
       broadcastExcept(clients, ws, userMsg)
       session.logMessage(userMsg)

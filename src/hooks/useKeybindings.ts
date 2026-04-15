@@ -51,6 +51,8 @@ export function useKeybindings() {
           ui.getState().setShowAccountModal(false)
         } else if (isBookmarks && isEditing) {
           ;(target as HTMLElement).blur()
+        } else if (isBookmarks && bm.getState().addMode) {
+          bm.getState().exitAddMode()
         } else if (isBookmarks && bm.getState().triageMode) {
           bm.getState().exitTriageMode()
         } else if (isBookmarks && bm.getState().searchQuery) {
@@ -133,6 +135,21 @@ export function useKeybindings() {
         if (e.key === 'n' && !e.shiftKey) {
           e.preventDefault()
           notes.getState().openNewFileForm()
+          return
+        }
+        if (e.key === 'w') {
+          e.preventDefault()
+          const state = notes.getState()
+          if (state.activeFilePath) {
+            const closed = state.closeFile(state.activeFilePath, false)
+            if (!closed) {
+              if (confirm('Save changes before closing?')) {
+                state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
+              } else {
+                state.closeFile(state.activeFilePath!, true)
+              }
+            }
+          }
           return
         }
       }
@@ -410,6 +427,12 @@ export function useKeybindings() {
           bm.getState().openBookmarkUrl()
           return
         }
+        if (e.key === 'a') {
+          e.preventDefault()
+          if (bm.getState().addMode) bm.getState().exitAddMode()
+          else bm.getState().enterAddMode()
+          return
+        }
         if (e.key === 'm') {
           e.preventDefault()
           if (bm.getState().triageMode) bm.getState().exitTriageMode()
@@ -456,6 +479,12 @@ export function useKeybindings() {
         if (e.key === 't' && e.shiftKey) {
           e.preventDefault()
           ui.getState().toggleDarkMode()
+          return
+        }
+        if (e.key === 'i') {
+          e.preventDefault()
+          const view = notes.getState().editorView
+          if (view) view.focus()
           return
         }
         if (e.key === '/') {
