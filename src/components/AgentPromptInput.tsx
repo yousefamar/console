@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
-import { Send, Square, Plus, FolderOpen, RotateCcw, X } from 'lucide-react'
+import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
 // ============================================================================
 // AgentPromptInput — text input for sending prompts to the agent.
@@ -27,7 +27,14 @@ export function AgentPromptInput() {
   const dirRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const slashListRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const sendingRef = useRef(false)
+  const [listening, setListening] = useState(false)
+  const [interimText, setInterimText] = useState('')
+  const recognitionRef = useRef<any>(null)
+  const sttWsRef = useRef<WebSocket | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
 
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
@@ -78,6 +85,15 @@ export function AgentPromptInput() {
     el?.scrollIntoView({ block: 'nearest' })
   }, [dirIndex])
 
+  // Auto-resize textarea when interim text or committed text changes
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = '24px'
+    const maxH = Math.floor(window.innerHeight * 0.5)
+    el.style.height = Math.min(maxH, el.scrollHeight) + 'px'
+  }, [interimText, text])
+
   // Fetch past sessions when a directory is selected
   useEffect(() => {
     if (selectedDir && !activeSessionId) {
@@ -96,6 +112,7 @@ export function AgentPromptInput() {
 
   const handleSend = useCallback(() => {
     if (sendingRef.current) return
+    if (listening) stopListening()
     const body = text.trim()
     if (!body && !imagePayload) return
 
@@ -149,6 +166,16 @@ export function AgentPromptInput() {
     }
     reader.readAsDataURL(file)
   }, [])
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files) {
+      for (const file of Array.from(files)) {
+        if (file.type.startsWith('image/')) attachImage(file)
+      }
+    }
+    e.target.value = ''
+  }, [attachImage])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
@@ -249,6 +276,124 @@ export function AgentPromptInput() {
     setDirOpen(true)
     setDirIndex(0)
   }, [])
+
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.stop()
+    recognitionRef.current = null
+    if (sttWsRef.current) { sttWsRef.current.close(); sttWsRef.current = null }
+    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
+    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach((t) => t.stop()); mediaStreamRef.current = null }
+    setListening(false)
+    setInterimText('')
+    inputRef.current?.focus()
+  }, [])
+
+  const startBrowserSTT = useCallback((): boolean => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SR) return false
+    const recognition = new SR()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'en-GB'
+    let finalTranscript = text
+    let failed = false
+    recognition.onresult = (event: any) => {
+      let interim = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript
+        if (event.results[i].isFinal) {
+          finalTranscript += (finalTranscript ? ' ' : '') + t
+          setText(finalTranscript)
+          setInterimText('')
+        } else {
+          interim += t
+        }
+      }
+      if (interim) setInterimText(interim)
+    }
+    recognition.onend = () => {
+      if (!failed) { setListening(false); setInterimText(''); recognitionRef.current = null; inputRef.current?.focus() }
+    }
+    recognition.onerror = (e: any) => {
+      if (e.error === 'network' || e.error === 'service-not-allowed' || e.error === 'not-allowed') {
+        failed = true
+        recognition.stop()
+        // Fall back to OpenAI
+        startOpenAISTT()
+      } else {
+        setListening(false); setInterimText(''); recognitionRef.current = null
+      }
+    }
+    recognitionRef.current = recognition
+    recognition.start()
+    return true
+  }, [text])
+
+  const startOpenAISTT = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStreamRef.current = stream
+      const { getHubWsUrl } = await import('@/hub')
+      const ws = new WebSocket(getHubWsUrl().replace(/\/$/, '') + '/stt')
+      sttWsRef.current = ws
+      let pendingDelta = ''
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'interim') {
+            pendingDelta += msg.text || ''
+            setInterimText(pendingDelta)
+          } else if (msg.type === 'final') {
+            const final = (msg.text || '').trim()
+            if (final) setText((prev) => prev + (prev ? ' ' : '') + final)
+            pendingDelta = ''
+            setInterimText('')
+          } else if (msg.type === 'error') {
+            console.warn('[stt]', msg.message)
+          }
+        } catch { /* ignore */ }
+      }
+
+      ws.onclose = () => { stopListening() }
+      ws.onerror = () => { ws.close() }
+
+      ws.onopen = () => {
+        const audioCtx = new AudioContext({ sampleRate: 24000 })
+        audioContextRef.current = audioCtx
+        const source = audioCtx.createMediaStreamSource(stream)
+        const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+        processor.onaudioprocess = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          const pcm = e.inputBuffer.getChannelData(0)
+          const int16 = new Int16Array(pcm.length)
+          for (let i = 0; i < pcm.length; i++) {
+            int16[i] = Math.max(-32768, Math.min(32767, pcm[i]! * 32768))
+          }
+          const bytes = new Uint8Array(int16.buffer)
+          let binary = ''
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
+          ws.send(JSON.stringify({ type: 'audio', data: btoa(binary) }))
+        }
+        source.connect(processor)
+        processor.connect(audioCtx.destination)
+      }
+    } catch {
+      setListening(false)
+      setInterimText('')
+    }
+  }, [stopListening])
+
+  const toggleListening = useCallback(() => {
+    if (listening) {
+      stopListening()
+      return
+    }
+    setListening(true)
+    if (!startBrowserSTT()) {
+      startOpenAISTT()
+    }
+  }, [listening, stopListening, startBrowserSTT, startOpenAISTT])
 
   if (!connected) return null
 
@@ -398,10 +543,19 @@ export function AgentPromptInput() {
       )}
 
       <div className="flex items-end gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFileSelect}
+          className="hidden"
+        />
         <textarea
           ref={inputRef}
-          value={text}
+          value={interimText ? text + (text ? ' ' : '') + interimText : text}
           onChange={(e) => {
+            if (listening) return
             const val = e.target.value
             setText(val)
             e.target.style.height = '24px'
@@ -433,6 +587,13 @@ export function AgentPromptInput() {
           </button>
         ) : (
           <div className="flex items-center gap-1">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-shrink-0 text-text-tertiary hover:text-text-secondary transition-colors duration-fast p-1"
+              title="Attach image"
+            >
+              <Paperclip size={14} />
+            </button>
             {activeSessionId && (
               <button
                 onClick={handleNewSession}
@@ -443,6 +604,15 @@ export function AgentPromptInput() {
                 <Plus size={14} />
               </button>
             )}
+            <button
+              onClick={toggleListening}
+              className={`flex-shrink-0 transition-colors duration-fast p-1 cursor-pointer ${
+                listening ? 'text-destructive animate-pulse' : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+              title={listening ? 'Stop listening' : 'Voice input'}
+            >
+              <Mic size={14} />
+            </button>
             <button
               onClick={handleSend}
               disabled={!text.trim() && images.length === 0}

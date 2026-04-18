@@ -110,9 +110,9 @@ export function AgentSessionView() {
   }
 
   return (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="flex flex-1 flex-col min-h-0 min-w-0">
       {/* Message stream */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 overflow-hidden relative min-w-0">
         <div
           ref={scrollRef}
           className="absolute inset-0 overflow-y-auto overflow-x-hidden py-2"
@@ -251,16 +251,16 @@ export function AgentSessionView() {
 
           {/* Running status */}
           {(isRunning || statusText) && (
-            <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary min-w-0 ml-auto">
+            <div className="flex items-center justify-end gap-1.5 text-[10px] text-text-tertiary min-w-0 flex-1 ml-auto">
               {isRunning && <Loader2 size={10} className="animate-spin flex-shrink-0" />}
-              <span className="truncate">{statusText ?? 'Processing...'}</span>
+              <span className="truncate min-w-0">{statusText ?? 'Processing...'}</span>
             </div>
           )}
         </div>
       )}
 
       {/* Tool approval */}
-      {pendingApproval && <AgentToolApproval approval={pendingApproval} />}
+      {pendingApproval && pendingApproval.sessionId === activeSessionId && <AgentToolApproval approval={pendingApproval} />}
 
       {/* Prompt input */}
       <AgentPromptInput />

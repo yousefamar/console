@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useAgentStore, type PendingApproval } from '@/store/agent'
-import { ShieldAlert, Terminal, Pencil, FileText, MessageCircleQuestion } from 'lucide-react'
+import { ShieldAlert, Terminal, Pencil, FileText, MessageCircleQuestion, ClipboardList } from 'lucide-react'
+import { renderMarkdownLite } from './AgentMessageBlock'
 
 // ============================================================================
 // AgentToolApproval — bottom sheet that appears when Claude wants to use a
@@ -18,6 +19,9 @@ interface Props {
 export function AgentToolApproval({ approval }: Props) {
   if (approval.toolName === 'AskUserQuestion') {
     return <AskUserQuestionUI approval={approval} />
+  }
+  if (approval.toolName === 'ExitPlanMode') {
+    return <PlanApprovalUI approval={approval} />
   }
   return <ToolPermissionUI approval={approval} />
 }
@@ -139,6 +143,53 @@ function AskUserQuestionUI({ approval }: Props) {
             className="px-3 py-1.5 text-xs font-medium rounded-sm bg-blue-400/20 text-blue-400 hover:bg-blue-400/30 transition-colors duration-fast disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Send
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// ExitPlanMode — shows the plan formatted for review before approval
+// --------------------------------------------------------------------------
+
+function PlanApprovalUI({ approval }: Props) {
+  const approveTool = useAgentStore((s) => s.approveTool)
+  const denyTool = useAgentStore((s) => s.denyTool)
+  const { requestId, input } = approval
+  const plan = String(input.plan ?? '')
+  const rendered = useMemo(() => renderMarkdownLite(plan), [plan])
+
+  return (
+    <div className="border-t border-border bg-surface-1 animate-slide-up">
+      <div className="px-3 py-2">
+        {/* Header */}
+        <div className="flex items-center gap-1.5 mb-2">
+          <ClipboardList size={13} className="text-blue-400" />
+          <span className="text-xs font-medium text-text-primary">Plan ready for review</span>
+        </div>
+
+        {/* Plan content */}
+        <div className="rounded-sm border border-border bg-surface-0 px-3 py-2 max-h-[50vh] overflow-y-auto text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed mb-2">
+          {rendered}
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => approveTool(requestId)}
+            className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-sm bg-success/20 text-success hover:bg-success/30 transition-colors duration-fast"
+          >
+            <span>Approve</span>
+            <kbd className="text-[9px] opacity-60 ml-0.5">y</kbd>
+          </button>
+          <button
+            onClick={() => denyTool(requestId, 'Plan rejected')}
+            className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-sm bg-destructive/20 text-destructive hover:bg-destructive/30 transition-colors duration-fast"
+          >
+            <span>Reject</span>
+            <kbd className="text-[9px] opacity-60 ml-0.5">n</kbd>
           </button>
         </div>
       </div>

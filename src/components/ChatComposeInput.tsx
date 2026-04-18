@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react'
 import { useChatStore } from '@/store/chat'
-import { Send, ImagePlus, X } from 'lucide-react'
+import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
 
 interface ChatComposeInputProps {
@@ -252,7 +252,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary transition-colors duration-fast p-1"
             title="Attach image"
           >
-            <ImagePlus size={14} />
+            <Paperclip size={14} />
           </button>
           <textarea
             ref={inputRef}

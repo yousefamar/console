@@ -174,10 +174,10 @@ function ToolUseBlock({ toolName, input, result }: {
   const Icon = toolIcon(toolName)
 
   return (
-    <div className="px-3 py-1 min-w-0 overflow-hidden">
+    <div className="px-3 py-1 min-w-0 overflow-hidden w-full">
       <button
         onClick={() => setExpanded(!expanded)}
-        className={`flex items-start gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast text-left max-w-full ${
+        className={`flex items-start gap-1.5 text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast text-left w-full min-w-0 ${
           result?.isError ? 'text-destructive' : ''
         }`}
       >
@@ -185,7 +185,7 @@ function ToolUseBlock({ toolName, input, result }: {
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Icon size={11} />
         </span>
-        <span className="min-w-0 overflow-hidden">
+        <span className="flex-1 min-w-0 [overflow-wrap:anywhere] [word-break:break-word]">
           <span className="font-medium text-text-primary">{toolName}</span>{' '}
           <span className="text-text-tertiary"><ToolDetail toolName={toolName} input={input} /></span>
         </span>

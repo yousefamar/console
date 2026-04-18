@@ -21,6 +21,7 @@ export const AgentTab = memo(function AgentTab() {
   const selectSession = useAgentStore((s) => s.selectSession)
   const sessionOrder = useAgentStore((s) => s.sessionOrder)
   const reorderSession = useAgentStore((s) => s.reorderSession)
+  const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top
@@ -35,11 +36,20 @@ export const AgentTab = memo(function AgentTab() {
     }
   }, [connect])
 
-  const showList = isMobile ? !activeSessionId : true
-  const showDetail = isMobile ? !!activeSessionId || !connected : true
+  const handleNewSession = useCallback(() => {
+    selectSession(null)
+    // Focus the prompt input
+    setTimeout(() => {
+      const el = document.querySelector<HTMLTextAreaElement>('[data-agent-input]')
+      el?.focus()
+    }, 50)
+  }, [selectSession])
+
+  const showList = isMobile ? (!activeSessionId && !creatingNewSession) : true
+  const showDetail = isMobile ? (!!activeSessionId || creatingNewSession || !connected) : true
 
   return (
-    <div className="flex flex-1 h-full">
+    <div className="flex flex-1 h-full min-w-0">
       {/* Session sidebar */}
       {showList && (
         <div className={`${isMobile ? 'w-full' : 'w-72'} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
@@ -47,7 +57,7 @@ export const AgentTab = memo(function AgentTab() {
             <span className="text-xs font-medium text-text-primary">Sessions</span>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => useAgentStore.getState().selectSession(null)}
+                onClick={handleNewSession}
                 className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
                 title="New session"
               >
