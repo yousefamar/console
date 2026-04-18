@@ -219,14 +219,16 @@ export class Session extends EventEmitter {
 
   /** Approve a tool use request */
   approveTool(requestId: string, modifiedInput?: Record<string, unknown>) {
+    const inner: Record<string, unknown> = { behavior: 'allow' }
+    // Only include updatedInput when the caller is actually modifying the
+    // tool input (e.g. AskUserQuestion answers). Plain approvals omit it —
+    // cleaner on the wire and matches what the Claude CLI expects.
+    if (modifiedInput !== undefined) inner.updatedInput = modifiedInput
     const response: Record<string, unknown> = {
       type: 'control_response',
       response: {
         request_id: requestId,
-        response: {
-          behavior: 'allow',
-          updatedInput: modifiedInput ?? {},
-        },
+        response: inner,
       },
     }
     this.writeStdin(response as any)

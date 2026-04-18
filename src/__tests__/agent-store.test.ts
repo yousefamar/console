@@ -302,7 +302,11 @@ describe('message handling', () => {
     expect(useAgentStore.getState().pendingTextBySession['sess_1']).toBe('Hello world')
   })
 
-  it('flushes pending text on full text message', async () => {
+  it('clears pending text on full text message (text is coalesced deltas)', async () => {
+    // A `text` event is the authoritative coalesced version of any preceding
+    // `text_delta` events, so the pending buffer is discarded rather than
+    // flushed — otherwise we'd emit the same content twice. See agent.ts
+    // `case 'text'` and commit 5899e4f.
     const ws = await setupSession()
     useAgentStore.setState({ pendingTextBySession: { sess_1: 'partial text' } })
 
@@ -310,11 +314,9 @@ describe('message handling', () => {
 
     const state = useAgentStore.getState()
     expect(state.pendingTextBySession['sess_1'] ?? '').toBe('')
-    // Should have flushed partial + added full
     const msgs = state.messagesBySession['sess_1']!
-    expect(msgs).toHaveLength(2)
-    expect(msgs[0]!.block).toEqual({ type: 'text', content: 'partial text' })
-    expect(msgs[1]!.block).toEqual({ type: 'text', content: 'Full message' })
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.block).toEqual({ type: 'text', content: 'Full message' })
   })
 
   it('accumulates thinking deltas', async () => {
