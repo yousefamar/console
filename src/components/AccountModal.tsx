@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useUiStore } from '@/store/ui'
 import { signOut } from '@/gmail/auth'
 import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
-import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Server } from 'lucide-react'
-import { getHubUrl } from '@/hub'
+import { X, Mail, MessageCircle, LogOut, BellOff, Bell } from 'lucide-react'
 
 export function AccountModal() {
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
@@ -16,17 +15,6 @@ export function AccountModal() {
   const matrixConnected = isMatrixConnected()
 
   const [signingOut, setSigningOut] = useState<'email' | 'matrix' | null>(null)
-
-  // Hub Matrix client status (read-only — login happens via matrixLogin now)
-  const [hubStatus, setHubStatus] = useState<{ cryptoReady: boolean; deviceId?: string } | null>(null)
-
-  useEffect(() => {
-    if (!matrixConnected) return
-    fetch(`${getHubUrl()}/matrix/hub/status`)
-      .then((r) => r.json())
-      .then((s) => setHubStatus(s))
-      .catch(() => {})
-  }, [matrixConnected])
 
   async function handleEmailSignOut() {
     setSigningOut('email')
@@ -138,18 +126,6 @@ export function AccountModal() {
           </div>
 
         </div>
-
-        {/* Hub Matrix client status */}
-        {matrixConnected && hubStatus?.cryptoReady && (
-          <div className="px-3 pb-3">
-            <div className="border-t border-border pt-3">
-              <div className="flex items-center gap-2 text-xs text-green-400">
-                <Server size={11} />
-                <span>Hub Matrix client active ({hubStatus.deviceId})</span>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Build info */}
         <div className="px-4 py-2 border-t border-border">

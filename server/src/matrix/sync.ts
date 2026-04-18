@@ -114,6 +114,33 @@ export class MatrixSync {
     return { ok: true }
   }
 
+  // Full snapshot for a fresh client (e.g. APK first launch): hits /sync with
+  // no `since` token, decrypts the resulting timeline, and broadcasts the
+  // result as 'initial'. Does NOT touch this.state.nextBatch — the main tick
+  // loop keeps its own token untouched. Safe to call concurrently with ticks.
+  async snapshot(): Promise<{ ok: true }> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg || !this.crypto.isReady()) return { ok: true }
+
+    const resp = await this.matrix.sync({ since: undefined, timeout: 0 })
+    // Skip processSyncCrypto — the main loop already handles device lists /
+    // to-device messages on its own token; re-running that machinery here
+    // against unrelated state would just churn. decryptRoomEvent uses the
+    // keys OlmMachine already has.
+    const rooms = await this.decryptJoinedRooms(resp.rooms?.join ?? {})
+    const invites = Object.keys(resp.rooms?.invite ?? {})
+    const leaves = Object.keys(resp.rooms?.leave ?? {})
+    const delta: MatrixDelta = {
+      nextBatch: resp.next_batch,
+      rooms,
+      invites: invites.length ? invites : undefined,
+      leaves: leaves.length ? leaves : undefined,
+    }
+    this.bus.broadcast('matrix', 'initial', delta)
+    this.log(`[matrix-sync] snapshot broadcast: ${Object.keys(rooms).length} rooms`)
+    return { ok: true }
+  }
+
   // -------- Send path (called via SyncBus RPC from browsers) ---------------
   // Unified send: the hub decides encryption vs. plaintext based on the room's
   // m.room.encryption state. This is the single code path for chat sends,
@@ -323,85 +350,7 @@ export class MatrixSync {
       //    Mirror the homeserver's rooms.join shape so the browser can feed each
       //    sub-object straight into its existing processJoinedRoom(roomId, data).
       const isInitial = !this.state.nextBatch
-      const rooms: Record<string, MatrixJoinedRoomDelta> = {}
-      const joined = resp.rooms?.join ?? {}
-      let totalEvents = 0
-      let failedDecrypts = 0
-      for (const [roomId, room] of Object.entries(joined)) {
-        const src = room as {
-          timeline?: { events?: any[]; prev_batch?: string; limited?: boolean }
-          state?: { events?: any[] }
-          ephemeral?: { events?: any[] }
-          account_data?: { events?: any[] }
-          unread_notifications?: { notification_count?: number; highlight_count?: number }
-        }
-
-        // Decrypt timeline events in place
-        const timelineEvents: MatrixEventLike[] = []
-        for (const ev of src.timeline?.events ?? []) {
-          if (ev.type === 'm.room.encrypted') {
-            const decrypted = await this.crypto.decryptRoomEvent(
-              {
-                type: ev.type,
-                content: ev.content,
-                event_id: ev.event_id,
-                sender: ev.sender,
-                origin_server_ts: ev.origin_server_ts,
-                room_id: roomId,
-              },
-              roomId,
-            )
-            totalEvents++
-            if (decrypted) {
-              timelineEvents.push({
-                event_id: ev.event_id,
-                sender: ev.sender,
-                origin_server_ts: ev.origin_server_ts,
-                state_key: ev.state_key,
-                unsigned: ev.unsigned,
-                type: decrypted.type,
-                content: decrypted.content,
-              })
-            } else {
-              failedDecrypts++
-              // Keep the original event (browser can retry after key backup restore)
-              timelineEvents.push({
-                event_id: ev.event_id,
-                sender: ev.sender,
-                origin_server_ts: ev.origin_server_ts,
-                state_key: ev.state_key,
-                unsigned: ev.unsigned,
-                type: ev.type,
-                content: ev.content,
-                _decryptFailed: true,
-              })
-            }
-          } else {
-            totalEvents++
-            timelineEvents.push({
-              event_id: ev.event_id,
-              sender: ev.sender,
-              origin_server_ts: ev.origin_server_ts,
-              state_key: ev.state_key,
-              unsigned: ev.unsigned,
-              type: ev.type,
-              content: ev.content,
-            })
-          }
-        }
-
-        rooms[roomId] = {
-          timeline: src.timeline ? {
-            events: timelineEvents,
-            prev_batch: src.timeline.prev_batch,
-            limited: src.timeline.limited,
-          } : undefined,
-          state: src.state ? { events: src.state.events as MatrixEventLike[] | undefined } : undefined,
-          ephemeral: src.ephemeral ? { events: src.ephemeral.events as MatrixEventLike[] | undefined } : undefined,
-          account_data: src.account_data ? { events: src.account_data.events as MatrixEventLike[] | undefined } : undefined,
-          unread_notifications: src.unread_notifications,
-        }
-      }
+      const { rooms, totalEvents, failedDecrypts } = await this.decryptJoinedRoomsWithCounts(resp.rooms?.join ?? {})
 
       const invites = Object.keys(resp.rooms?.invite ?? {})
       const leaves = Object.keys(resp.rooms?.leave ?? {})
@@ -455,6 +404,94 @@ export class MatrixSync {
     } finally {
       this.inflight = false
     }
+  }
+
+  // Decrypt timeline events across all joined rooms, returning a browser-ready
+  // per-room delta. Shared by the tick loop (with event counts for logging)
+  // and the snapshot RPC (counts discarded).
+  private async decryptJoinedRoomsWithCounts(
+    joined: Record<string, unknown>,
+  ): Promise<{ rooms: Record<string, MatrixJoinedRoomDelta>; totalEvents: number; failedDecrypts: number }> {
+    const rooms: Record<string, MatrixJoinedRoomDelta> = {}
+    let totalEvents = 0
+    let failedDecrypts = 0
+    for (const [roomId, room] of Object.entries(joined)) {
+      const src = room as {
+        timeline?: { events?: any[]; prev_batch?: string; limited?: boolean }
+        state?: { events?: any[] }
+        ephemeral?: { events?: any[] }
+        account_data?: { events?: any[] }
+        unread_notifications?: { notification_count?: number; highlight_count?: number }
+      }
+      const timelineEvents: MatrixEventLike[] = []
+      for (const ev of src.timeline?.events ?? []) {
+        totalEvents++
+        if (ev.type === 'm.room.encrypted') {
+          const decrypted = await this.crypto.decryptRoomEvent(
+            {
+              type: ev.type,
+              content: ev.content,
+              event_id: ev.event_id,
+              sender: ev.sender,
+              origin_server_ts: ev.origin_server_ts,
+              room_id: roomId,
+            },
+            roomId,
+          )
+          if (decrypted) {
+            timelineEvents.push({
+              event_id: ev.event_id,
+              sender: ev.sender,
+              origin_server_ts: ev.origin_server_ts,
+              state_key: ev.state_key,
+              unsigned: ev.unsigned,
+              type: decrypted.type,
+              content: decrypted.content,
+            })
+          } else {
+            failedDecrypts++
+            // Keep the original (browser can retry after key backup restore).
+            timelineEvents.push({
+              event_id: ev.event_id,
+              sender: ev.sender,
+              origin_server_ts: ev.origin_server_ts,
+              state_key: ev.state_key,
+              unsigned: ev.unsigned,
+              type: ev.type,
+              content: ev.content,
+              _decryptFailed: true,
+            })
+          }
+        } else {
+          timelineEvents.push({
+            event_id: ev.event_id,
+            sender: ev.sender,
+            origin_server_ts: ev.origin_server_ts,
+            state_key: ev.state_key,
+            unsigned: ev.unsigned,
+            type: ev.type,
+            content: ev.content,
+          })
+        }
+      }
+      rooms[roomId] = {
+        timeline: src.timeline ? {
+          events: timelineEvents,
+          prev_batch: src.timeline.prev_batch,
+          limited: src.timeline.limited,
+        } : undefined,
+        state: src.state ? { events: src.state.events as MatrixEventLike[] | undefined } : undefined,
+        ephemeral: src.ephemeral ? { events: src.ephemeral.events as MatrixEventLike[] | undefined } : undefined,
+        account_data: src.account_data ? { events: src.account_data.events as MatrixEventLike[] | undefined } : undefined,
+        unread_notifications: src.unread_notifications,
+      }
+    }
+    return { rooms, totalEvents, failedDecrypts }
+  }
+
+  private async decryptJoinedRooms(joined: Record<string, unknown>): Promise<Record<string, MatrixJoinedRoomDelta>> {
+    const { rooms } = await this.decryptJoinedRoomsWithCounts(joined)
+    return rooms
   }
 
   // ---- persistence ----

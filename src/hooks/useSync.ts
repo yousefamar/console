@@ -80,15 +80,14 @@ export function useSync() {
 
       if (stopped) return
 
-      // If this browser has no cached rooms yet, ask the hub to emit a snapshot
-      // (its `initial` broadcast fires the first time the hub boots with no
-      // nextBatch, so restarted browsers won't have triggered it themselves).
+      // If this browser has no cached rooms yet (fresh install, APK first
+      // launch, cleared data), ask the hub for a full snapshot. `syncNow`
+      // wouldn't help — the hub's own `initial` only fires on *its* very
+      // first sync, and subsequent `delta`s only carry new events.
       const { db } = await import('@/db')
       const roomCount = await db.chatRooms.count()
       if (roomCount === 0) {
-        // Ask hub to emit an initial broadcast. If hub is down, the browser
-        // will sit idle until the hub comes back + broadcasts a fresh delta.
-        await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
+        await hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
       }
     }
     startMatrix().catch(() => {})

@@ -166,6 +166,7 @@ const matrixSync = new MatrixSync(
 )
 syncBus.register('matrix', {
   syncNow: async () => matrixSync.syncNow(),
+  snapshot: async () => matrixSync.snapshot(),
   state: async () => matrixSync.getState(),
   // Unified send: hub picks encrypted vs plaintext based on room state
   sendEvent: async (args) => matrixSync.sendRoomEvent(args as { roomId: string; type: string; content: Record<string, unknown> }),
