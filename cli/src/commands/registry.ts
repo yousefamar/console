@@ -230,6 +230,10 @@ export const COMMANDS: CommandDef[] = [
     flags: { month: { type: 'string', description: 'YYYY-MM (default current)' } } },
   { name: 'money sync', description: 'Trigger transaction sync', safety: 'write' },
 
+  // hub lifecycle
+  { name: 'hub restart', description: 'Restart the hub via pm2 (auto-continues in-progress agent sessions)', safety: 'write',
+    examples: ['con hub restart'] },
+
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
   { name: 'capabilities', description: 'List all commands for agent discovery', safety: 'read' },

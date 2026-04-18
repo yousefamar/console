@@ -17,6 +17,7 @@ Services:
 
 System:
   auth         Manage accounts — login, logout, status
+  hub          Hub lifecycle — restart
   status       Hub health and sync status
   search       Cross-service search
   capabilities Self-discovery for AI agents
@@ -240,6 +241,20 @@ Examples:
   con auth login google
   con auth login matrix
   con auth status
+`.trim(),
+
+  hub: `
+con hub — Hub Lifecycle
+
+Commands:
+  restart       Restart the hub via pm2 (controlled)
+
+Notes:
+  Agent sessions that were mid-turn when the hub stopped are auto-resumed
+  with a "hub was restarted, continue" nudge. Idle sessions resume silently.
+
+Examples:
+  con hub restart
 `.trim(),
 }
 

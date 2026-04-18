@@ -12,6 +12,8 @@ export interface ManifestEntry {
   cwd: string
   prompt: string
   name?: string
+  /** True if the session was actively running (mid-turn) when the manifest was last saved. */
+  wasRunning?: boolean
 }
 
 /** Debounced manifest saver — coalesces rapid writes into one disk write */
@@ -47,6 +49,7 @@ function flushManifest() {
         cwd: session.cwd,
         prompt: session.initialPrompt,
         name: session.name,
+        wasRunning: session.status === 'running',
       })
     }
   }

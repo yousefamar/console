@@ -140,6 +140,11 @@ async function main() {
         await status(flags)
         break
       }
+      case 'hub': {
+        const { hub } = await import('./commands/hub.js')
+        await hub(verb, rest, flags)
+        break
+      }
       case 'capabilities': {
         const { capabilities } = await import('./commands/capabilities.js')
         capabilities(flags)

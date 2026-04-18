@@ -90,6 +90,10 @@ export class Session extends EventEmitter {
   }
 
   private spawn(options: SessionOptions) {
+    // Extended thinking moved from prompt-keywords to an explicit CLI flag in
+    // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
+    // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
+    const effort = process.env.CLAUDE_EFFORT || 'high'
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -98,6 +102,7 @@ export class Session extends EventEmitter {
       '--dangerously-skip-permissions',
       '--permission-prompt-tool', 'stdio',
       '--chrome',
+      '--effort', effort,
     ]
 
     if (options.resume) {
@@ -152,8 +157,18 @@ export class Session extends EventEmitter {
     }
 
     this.process.on('exit', (code) => {
-      this.status = 'ended'
       this.stdinReady = false
+      // If process exited after an interrupt and we have a claudeSessionId,
+      // auto-resume instead of ending the session
+      if (this.interrupted && this.claudeSessionId) {
+        this.interrupted = false
+        this.status = 'idle'
+        this.emitHub({ type: 'result', sessionId: this.id, cost: this.totalCost, tokens: { input: 0, output: 0 }, duration: 0, sessionIdClaude: this.claudeSessionId })
+        // Re-spawn with --resume to keep the session alive
+        this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId, silent: true, name: this.name })
+        return
+      }
+      this.status = 'ended'
       this.emitHub({ type: 'session_ended', sessionId: this.id })
       this.emit('exit', code)
     })
@@ -232,9 +247,13 @@ export class Session extends EventEmitter {
     this.writeStdin(response as any)
   }
 
+  /** Set when we send SIGINT so exit handler knows to auto-resume */
+  private interrupted = false
+
   /** Interrupt the current operation (SIGINT) */
   interrupt() {
     if (this.process && this.status === 'running') {
+      this.interrupted = true
       this.process.kill('SIGINT')
     }
   }

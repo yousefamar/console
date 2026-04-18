@@ -141,6 +141,11 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcastExcept(clients, ws, userMsg)
       session.logMessage(userMsg)
       session.sendMessage(msg.content, msg.images)
+      // Capture the idle→running transition in the manifest — sendMessage
+      // flips status without emitting an event, so without this the nudge
+      // on hub restart would miss any mid-turn session whose last persisted
+      // state was idle (from the prior `result`).
+      saveManifest(sessions)
       break
     }
 
@@ -155,6 +160,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcast(clients, approvedMsg)
       session.logMessage(approvedMsg)
       session.approveTool(msg.requestId, msg.modifiedInput)
+      saveManifest(sessions)
       break
     }
 
@@ -168,6 +174,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcast(clients, deniedMsg)
       session.logMessage(deniedMsg)
       session.denyTool(msg.requestId, msg.reason)
+      saveManifest(sessions)
       break
     }
 
