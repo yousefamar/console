@@ -4,10 +4,16 @@
 // Polls each visible calendar for the user's Google accounts every few
 // minutes. Detects new/changed/removed events by diffing the last-seen event
 // set per calendar. Broadcasts deltas so the browser can reconcile its Dexie
-// cache. Fires push notifications for reminders within the next minute.
+// cache. Fires push notifications for per-event reminders.
 //
-// State persisted to ~/.config/console/cal-state.json — one fingerprint per
-// event key so we can emit accurate delta events on next boot.
+// Reminder firing is driven by a separate 30s ticker. Each sync pass caches
+// the minimum reminder data per upcoming event (start time, summary, override
+// minutes) into `upcoming`; the ticker scans that in-memory map, compares
+// `now` against `start - overrideMinutes` windows, and fires once per event.
+//
+// State persisted to ~/.config/console/cal-state.json. `fired` survives hub
+// restarts so we don't re-fire the same reminder on every boot; `upcoming`
+// does not — it's rebuilt from the next sync pass.
 // ============================================================================
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -18,10 +24,20 @@ import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
 
 type EventFingerprint = string // hash of `updated` timestamp + status
+
+/** Minimum data needed to fire a push notification for an event reminder. */
+type ReminderEntry = {
+  calendarId: string
+  summary: string
+  startMs: number
+  /** Override minutes-before-start. Empty array = no per-event reminders configured. */
+  minutesBefore: number[]
+}
+
 type CalendarState = {
   /** calendarId -> (eventId -> fingerprint) */
   events: Record<string, Record<string, EventFingerprint>>
-  /** Fired reminders (eventId -> timestamp) to avoid double-firing. */
+  /** Fired reminders (reminderKey -> timestamp) to avoid double-firing. */
   fired: Record<string, number>
 }
 type CalState = Record<string /* account email */, CalendarState>
@@ -41,9 +57,24 @@ function fpOf(ev: any): EventFingerprint {
 export class CalendarSync {
   private state: CalState = {}
   private timer: ReturnType<typeof setInterval> | null = null
+  private reminderTimer: ReturnType<typeof setInterval> | null = null
   private running = false
   private readonly INTERVAL_MS = 120_000 // 2 min
-  private readonly REMINDER_WINDOW_MS = 60_000 // fire pushes for events starting within 1 min
+  private readonly REMINDER_TICK_MS = 30_000 // scan upcoming every 30s
+  /**
+   * Slack window for reminder firing. A reminder is "due" when
+   *   now ∈ [start - minutesBefore*60s − slack, start - minutesBefore*60s + slack]
+   * — 60s gives us resilience against a tick being a few seconds late without
+   * double-firing (deduped by the `fired` map anyway).
+   */
+  private readonly REMINDER_SLACK_MS = 60_000
+
+  /**
+   * In-memory map of upcoming events with their reminder minutes, keyed by
+   * account+event. Rebuilt from each sync pass. Not persisted — if the hub
+   * restarts we miss any reminders during the downtime, which is acceptable.
+   */
+  private upcoming = new Map<string, ReminderEntry>()
 
   constructor(
     private readonly cal: CalendarClient,
@@ -63,11 +94,18 @@ export class CalendarSync {
     this.timer = setInterval(() => {
       this.tick().catch((e) => this.log(`[cal-sync] tick failed: ${e}`))
     }, this.INTERVAL_MS)
+    // Reminder ticker runs independently so a 5-min override actually fires
+    // close to on time regardless of the sync cadence.
+    this.reminderTimer = setInterval(() => {
+      try { this.checkReminders() } catch (e) { this.log(`[cal-sync] reminder check failed: ${e}`) }
+    }, this.REMINDER_TICK_MS)
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    if (this.reminderTimer) clearInterval(this.reminderTimer)
+    this.reminderTimer = null
   }
 
   async syncNow(): Promise<{ ok: true }> {
@@ -122,12 +160,20 @@ export class CalendarSync {
         nextFps[id] = fp
         if (!(id in prevFps)) added.push(ev)
         else if (prevFps[id] !== fp) updated.push(ev)
+        // Cache reminder info for events within the next 25h. Anything further
+        // out will be picked up by the next sync that brings the start time
+        // inside the window.
+        this.cacheReminder(account, cal.id, ev)
       }
       const removed: string[] = []
       for (const id of Object.keys(prevFps)) {
         if (!(id in nextFps)) removed.push(id)
       }
       accState.events[cal.id] = nextFps
+      // Drop removed events from the upcoming cache so we don't fire for
+      // cancelled items.
+      for (const rid of removed) this.upcoming.delete(`${account}:${rid}`)
+
       if (added.length + updated.length + removed.length > 0) {
         const delta: CalDelta = { account, calendarId: cal.id, added, updated, removed }
         this.bus.broadcast('cal', 'delta', delta)
@@ -137,29 +183,109 @@ export class CalendarSync {
     this.saveState()
   }
 
-  /** Fire push notifications for events whose reminder time is now-ish. */
+  /** Record an event's reminder hints in the in-memory `upcoming` cache. */
+  private cacheReminder(account: string, calendarId: string, ev: any): void {
+    const key = `${account}:${ev.id}`
+    if (ev.status === 'cancelled') { this.upcoming.delete(key); return }
+
+    const startIso: string | undefined = ev.start?.dateTime ?? ev.start?.date
+    if (!startIso) return
+    const startMs = new Date(startIso).getTime()
+    if (!Number.isFinite(startMs)) return
+
+    // Skip events outside the 25h lookahead — no reminder we care about would
+    // fire beyond that, and keeping the map small keeps checkReminders cheap.
+    const now = Date.now()
+    if (startMs < now - 60_000 || startMs - now > 25 * 60 * 60 * 1000) {
+      this.upcoming.delete(key)
+      return
+    }
+
+    // Pull override minutes. If `useDefault` is true Google uses the calendar
+    // default which we don't mirror here — skip (matches v1 scope). Otherwise
+    // use the explicit overrides.
+    const reminders = ev.reminders ?? {}
+    const overrides: Array<{ minutes?: number; method?: string }> = reminders.overrides ?? []
+    const minutesBefore = overrides
+      .filter((o) => typeof o.minutes === 'number' && o.minutes >= 0)
+      .map((o) => o.minutes as number)
+
+    if (minutesBefore.length === 0) { this.upcoming.delete(key); return }
+
+    this.upcoming.set(key, {
+      calendarId,
+      summary: ev.summary || '(No title)',
+      startMs,
+      minutesBefore,
+    })
+  }
+
+  /**
+   * Fire push notifications for events whose reminder time is now-ish.
+   *
+   * A reminder fires when `now` is within ±REMINDER_SLACK_MS of
+   * `start - minutesBefore*60s`. Each (eventId, minutesBefore) pair fires at
+   * most once — tracked in the persisted `fired` map so restarts don't
+   * re-fire. We also skip firing if the target time is already more than
+   * SLACK in the past (missed-window case after a long hub downtime).
+   */
   private checkReminders(): void {
     const now = Date.now()
-    for (const [account, accState] of Object.entries(this.state)) {
-      for (const [calId, evFps] of Object.entries(accState.events)) {
-        void calId
-        for (const eventId of Object.keys(evFps)) {
-          if (accState.fired[eventId]) continue
-          // We don't have the event object handy here without another fetch;
-          // reminders are intentionally best-effort in v1 — the push hint is
-          // "check your calendar" scoped by account. Proper per-event reminder
-          // timing is a follow-up.
-          void eventId
-        }
+    let fired = 0
+    for (const [key, entry] of this.upcoming.entries()) {
+      const colon = key.indexOf(':')
+      const account = key.slice(0, colon)
+      const eventId = key.slice(colon + 1)
+
+      const accState = this.state[account]
+      if (!accState) continue
+
+      // Skip if the event has already passed well beyond its start — clean up
+      // the cache entry while we're here.
+      if (entry.startMs + 60_000 < now) {
+        this.upcoming.delete(key)
+        continue
       }
-      // Prune fired older than 1 day.
+
+      for (const minutes of entry.minutesBefore) {
+        const fireAt = entry.startMs - minutes * 60_000
+        const delta = now - fireAt
+        // Window: fire if now is within slack of the target; skip if we're
+        // still too early, and skip if we missed the window entirely.
+        if (delta < -this.REMINDER_SLACK_MS) continue
+        if (delta > this.REMINDER_SLACK_MS) continue
+
+        const fireKey = `${eventId}:${minutes}`
+        if (accState.fired[fireKey]) continue
+        accState.fired[fireKey] = now
+        fired++
+
+        const whenMsg = minutes === 0
+          ? 'starting now'
+          : minutes < 60
+            ? `in ${minutes} min`
+            : minutes % 60 === 0
+              ? `in ${minutes / 60}h`
+              : `in ${Math.round(minutes / 60)}h`
+
+        this.push.broadcast({
+          type: 'calendar',
+          title: entry.summary,
+          body: `${whenMsg} — ${account}`,
+          pane: 'calendar',
+          id: `cal:${account}:${fireKey}`,
+        })
+      }
+    }
+
+    // Prune fired entries older than 1 day to keep the persisted state small.
+    for (const accState of Object.values(this.state)) {
       for (const [id, ts] of Object.entries(accState.fired)) {
         if (now - ts > 24 * 60 * 60 * 1000) delete accState.fired[id]
       }
     }
-    void this.REMINDER_WINDOW_MS
-    // Intentionally minimal — see comment above. Push fires remain wired so
-    // calling code can emit manually via this.push.broadcast().
+
+    if (fired > 0) this.saveState()
   }
 
   private loadState(): void {
