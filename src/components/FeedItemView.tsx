@@ -1,9 +1,10 @@
-import { useMemo, useEffect, useRef, useCallback } from 'react'
+import { useMemo, useEffect, useRef, useCallback, useState } from 'react'
 import { useFeedStore } from '@/store/feeds'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { getHubUrl } from '@/hub'
 import DOMPurify from 'dompurify'
-import { ExternalLink, Rss, MessageSquare, X, Play } from 'lucide-react'
+import { ExternalLink, Rss, MessageSquare, X, Play, ChevronDown, ChevronRight } from 'lucide-react'
 
 // Make all links open in new tabs after DOMPurify sanitization
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -20,6 +21,102 @@ function extractYoutubeId(url: string): string | null {
 
 function isRedditUrl(url: string): boolean {
   return /reddit\.com\/r\//.test(url)
+}
+
+// --- HN helpers ---
+
+function extractHNItemId(content: string): string | null {
+  const match = content?.match(/news\.ycombinator\.com\/item\?id=(\d+)/)
+  return match?.[1] ?? null
+}
+
+interface HNComment {
+  id: number
+  by?: string
+  text?: string
+  time: number
+  children: HNComment[]
+  kids?: number[]
+  descendants?: number
+  score?: number
+}
+
+function HNCommentThread({ comment, depth = 0 }: { comment: HNComment; depth?: number }) {
+  const [collapsed, setCollapsed] = useState(false)
+  if (!comment.text) return null
+  const sanitized = DOMPurify.sanitize(comment.text)
+  const timeAgo = formatTimeAgo(comment.time)
+
+  return (
+    <div className={depth > 0 ? 'ml-3 border-l border-border pl-3' : ''}>
+      <div className="py-1.5">
+        <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+          <button onClick={() => setCollapsed(!collapsed)} className="hover:text-text-secondary">
+            {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+          </button>
+          <span className="font-medium text-text-secondary">{comment.by}</span>
+          <span>·</span>
+          <span>{timeAgo}</span>
+          {collapsed && comment.children.length > 0 && (
+            <span>({comment.children.length} {comment.children.length === 1 ? 'reply' : 'replies'})</span>
+          )}
+        </div>
+        {!collapsed && (
+          <>
+            <div
+              className="mt-1 text-xs text-text-secondary leading-relaxed [&_a]:text-blue-400 [&_a]:underline [&_p]:mb-1.5 [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_code]:text-[11px]"
+              dangerouslySetInnerHTML={{ __html: sanitized }}
+            />
+            {comment.children.map((child) => (
+              <HNCommentThread key={child.id} comment={child} depth={depth + 1} />
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function formatTimeAgo(unixTime: number): string {
+  const seconds = Math.floor(Date.now() / 1000) - unixTime
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+function HNComments({ itemId }: { itemId: string }) {
+  const [comments, setComments] = useState<HNComment | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    fetch(`${getHubUrl()}/feeds/hn/${itemId}?depth=3`)
+      .then((r) => r.json())
+      .then((data) => { setComments(data); setLoading(false) })
+      .catch((e) => { setError(e.message); setLoading(false) })
+  }, [itemId])
+
+  if (loading) return <div className="text-xs text-text-tertiary py-2">Loading comments...</div>
+  if (error) return <div className="text-xs text-red-400 py-2">Failed to load comments: {error}</div>
+  if (!comments) return null
+
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <h2 className="text-xs font-semibold text-text-primary mb-2">
+        {comments.descendants ?? 0} Comments
+        {comments.score && <span className="font-normal text-text-tertiary ml-2">{comments.score} points</span>}
+      </h2>
+      {comments.children?.map((child) => (
+        <HNCommentThread key={child.id} comment={child} />
+      ))}
+    </div>
+  )
 }
 
 // --- YouTube PiP ---
@@ -213,6 +310,7 @@ export function FeedItemView() {
 
   const youtubeId = extractYoutubeId(item.link)
   const isReddit = isRedditUrl(item.link)
+  const hnItemId = extractHNItemId(item.content)
   const isPlayingThis = pipVideo?.youtubeId === youtubeId
 
   return (
@@ -241,15 +339,15 @@ export function FeedItemView() {
             })}
           </span>
           <span className="flex items-center gap-2 ml-auto">
-            {isReddit && (
+            {(isReddit || hnItemId) && (
               <a
-                href={item.link}
+                href={hnItemId ? `https://news.ycombinator.com/item?id=${hnItemId}` : item.link}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-0.5 text-[10px] text-text-tertiary hover:text-text-secondary transition-colors"
               >
                 <MessageSquare size={10} />
-                <span>Comments</span>
+                <span>{hnItemId ? 'HN' : 'Comments'}</span>
               </a>
             )}
             {item.link && (
@@ -338,6 +436,9 @@ export function FeedItemView() {
             </a>
           </div>
         ) : null}
+
+        {/* HN comments */}
+        {hnItemId && <HNComments itemId={hnItemId} />}
       </div>
     </div>
   )
