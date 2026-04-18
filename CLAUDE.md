@@ -5,6 +5,7 @@ Personal command center: offline-first Gmail inbox + Matrix chat + Obsidian book
 
 ## Architecture
 - **PWA** — installable standalone, works in any browser including mobile
+- **Android APK** (`android/`) — thin native-Kotlin WebView wrapper for the phone (PWA install was flaky). Loads the same tailnet URL as the browser. Routes OAuth into Chrome Custom Tabs, handles `console://` deep links, in-app updater polls the hub.
 - **Offline-first** — all mutations (email, chat, calendar) write to IndexedDB first, sync via queue
 - **Hub server** — Node.js backend (`server/`) proxies all API calls (Gmail, Calendar, Matrix, Monzo), manages OAuth tokens, hosts agent sessions. HTTPS via Tailscale certs.
 - **Sub-app isolation** — Layout subscribes only to `activePane`. Each tab component is `React.memo`'d. A chat state change never re-renders the email pane.
@@ -35,6 +36,16 @@ server/
     debug-protocol.ts — Debug agent protocol types
     routes/          — auth, mail, calendar, matrix, monzo, bookmarks, feeds, notes, agents, debug
 cli/               — `con` CLI tool (81 commands, self-describing)
+android/
+  app/src/main/
+    kotlin/io/amar/console/
+      MainActivity.kt   — WebView + OAuth Custom Tabs + deep links + update banner
+      PushService.kt    — foreground service holding WebSocket to /push, posts system notifications
+      BootReceiver.kt   — restarts PushService after reboot / app upgrade
+    AndroidManifest.xml                     — permissions, console:// intent filter, service, receiver
+    res/                                    — adaptive icon, themes, strings
+  scripts/        — build-debug.sh, build-release.sh, generate-keystore.sh
+  app/build.gradle.kts                      — minSdk 26 / targetSdk 35 / applicationId io.amar.console
 ```
 
 ## Debugging (PRIMARY METHOD)
@@ -131,9 +142,22 @@ The debug agent:
 ## Commands
 - `pm2 start "npm run dev" --name console-dev` — dev server (Vite, HTTPS via Tailscale certs)
 - `cd server && npm run dev` — hub server (port 9877, HTTPS when certs available)
+- `con hub restart` — **canonical way** to restart the hub after `server/src/*` changes. Wraps `pm2 restart console-server`, waits for `/health` to come back, and nudges any agent sessions that were mid-turn with a "hub was restarted, continue" prompt (via `wasRunning` in the session manifest). Idle sessions resume silently.
 - `npm test` / `cd server && npm test` — tests
 - `npx tsc --noEmit` — type check SPA
 - `cd server && npx tsc --noEmit` — type check server
+- `cd cli && npx tsc --noEmit` — type check CLI
+
+### Android APK
+Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26, targetSdk 35. Applicationid `io.amar.console`.
+- `android/scripts/build-debug.sh` — build debug APK → `android/app/build/outputs/apk/debug/app-debug.apk`
+- `android/scripts/generate-keystore.sh` — one-time, create `~/.config/console/console-release.jks` (back it up!)
+- `android/scripts/build-release.sh` — build signed release, copy to `~/.config/console/apk/`, write `latest.json` (reads `~/.config/console/apk-release.env` for passwords)
+- Install on phone: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`
+- The APK loads `https://amarhp-lin.rya-yo.ts.net:5173/` directly — HMR works. Tailscale must be up on the phone.
+- Web side: `isNative()` (from `src/platform.ts`) detects `window.__isConsoleAPK`. Used by `src/gmail/auth.ts` (passes `?callback=app` so hub redirects OAuth to `console://auth/done`) and `src/main.tsx` (requests `navigator.storage.persist()`).
+- Remote debugging: `chrome://inspect` on the laptop while phone is USB-connected (debug builds only; `setWebContentsDebuggingEnabled(BuildConfig.DEBUG)`). The embedded debug agent also works — APK events show in `/debug/log` with UA containing `ConsoleAPK/...`.
+- Push notifications: `PushService` opens a persistent WebSocket to `/push` and posts system notifications even when the WebView is backgrounded. Server sources call `pushServer.broadcast({ type, title, body, pane, id })`. Wired today: Monzo webhook (`money` channel), agent `AskUserQuestion` / `ExitPlanMode` (`agent` channel). CLI/webhooks can emit via `POST /push/send`. Check connected clients: `curl -sk https://localhost:9877/push/status`. Gmail/Matrix/Calendar push needs hub-side polling or Pub/Sub — not yet wired.
 
 ## Setup
 1. Google Cloud project with Gmail + People + Calendar APIs enabled
@@ -152,6 +176,8 @@ The debug agent:
 - `/money/*` — Monzo proxy + webhook
 - `/bookmarks/*`, `/feeds/*`, `/notes/*` — CRUD
 - `/debug/*` — Debug agent log, eval, state, screenshot, toggle
+- `/apk/latest.json`, `/apk/console-<versionCode>.apk` — APK update channel served from `~/.config/console/apk/`
+- `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService
 
 ## Known Issues
 - Matrix E2EE: new device needs key backup restore (Settings → recovery key) before old messages decrypt

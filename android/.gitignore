@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+/build/
+/app/build/
+
+# IDE
+/.idea/
+*.iml
+.cxx/
+
+# Local config (SDK path, signing secrets, keystore)
+local.properties
+*.jks
+*.keystore
+keystore.properties
+
+# APK outputs
+/app/release/
+/captures/

@@ -1,4 +1,5 @@
 import { getHubUrl } from '@/hub'
+import { isNative, onNativeAuthReturn } from '@/platform'
 
 const TOKEN_KEY = 'console_access_token'
 const EXPIRY_KEY = 'console_token_expiry'
@@ -83,11 +84,14 @@ export async function initAuth(): Promise<void> {
  * Opens the hub's /auth/google/start in a popup, polls /auth/google/poll for completion.
  */
 export function signIn(popup?: Window | null): Promise<string> {
+  const native = isNative()
+  const startUrl = `${getHubUrl()}/auth/google/start${native ? '?callback=app' : ''}`
+
   // Popup must be opened by the caller in the click handler to preserve user gesture.
-  // If not provided, try opening here (may be blocked).
+  // In the APK the native shell intercepts window.open and launches Custom Tabs.
   if (popup === undefined) {
     popup = window.open(
-      `${getHubUrl()}/auth/google/start`,
+      startUrl,
       'google-auth',
       'width=500,height=600,menubar=no,toolbar=no',
     )
@@ -95,43 +99,73 @@ export function signIn(popup?: Window | null): Promise<string> {
   return new Promise((resolve, reject) => {
     const hubUrl = getHubUrl()
 
-    if (!popup) {
+    if (!popup && !native) {
       reject(new Error('Popup blocked'))
       return
     }
 
-    const interval = setInterval(async () => {
-      // Check if popup was closed by user
-      if (popup.closed) {
-        clearInterval(interval)
+    let unsubscribeNative: (() => void) | null = null
+    let settled = false
+    let interval: ReturnType<typeof setInterval> | null = null
+    let timeout: ReturnType<typeof setTimeout> | null = null
+
+    const cleanup = () => {
+      settled = true
+      if (interval) clearInterval(interval)
+      if (timeout) clearTimeout(timeout)
+      if (unsubscribeNative) unsubscribeNative()
+      if (popup && !popup.closed) {
+        try { popup.close() } catch { /* ignore */ }
+      }
+    }
+
+    // APK path — native shell dispatches a DOM event after `console://auth/done`.
+    if (native) {
+      unsubscribeNative = onNativeAuthReturn(async () => {
+        if (settled) return
+        try {
+          const res = await fetch(`${hubUrl}/auth/google/poll`)
+          const data = await res.json() as { done: boolean; email?: string }
+          if (data.done && data.email) {
+            cleanup()
+            const refreshed = await refreshAccessToken()
+            if (refreshed) resolve(data.email)
+            else reject(new Error('Token fetch failed after sign-in'))
+          }
+        } catch (err) {
+          cleanup()
+          reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+    }
+
+    // Polling path — also runs in native as a safety net in case the deep link
+    // fires before the listener is attached, or the event is lost on cold start.
+    interval = setInterval(async () => {
+      if (settled) return
+      if (popup && !native && popup.closed) {
+        cleanup()
         reject(new Error('Sign-in cancelled'))
         return
       }
-
       try {
         const res = await fetch(`${hubUrl}/auth/google/poll`)
         if (!res.ok) return
         const data = await res.json() as { done: boolean; email?: string }
         if (data.done && data.email) {
-          clearInterval(interval)
-          popup.close()
-          // Fetch token from hub
+          cleanup()
           const refreshed = await refreshAccessToken()
-          if (refreshed) {
-            resolve(data.email)
-          } else {
-            reject(new Error('Token fetch failed after sign-in'))
-          }
+          if (refreshed) resolve(data.email)
+          else reject(new Error('Token fetch failed after sign-in'))
         }
       } catch {
-        // Network error — keep polling
+        // keep polling
       }
     }, 1000)
 
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      clearInterval(interval)
-      if (!popup.closed) popup.close()
+    timeout = setTimeout(() => {
+      if (settled) return
+      cleanup()
       reject(new Error('Sign-in timed out'))
     }, 5 * 60 * 1000)
   })

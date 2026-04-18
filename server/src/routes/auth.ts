@@ -14,6 +14,9 @@ const GOOGLE_SCOPES = [
 
 // Track pending OAuth flows
 let pendingOAuthState: string | null = null
+// Whether the in-flight OAuth was initiated from the Android APK and should
+// return via a `console://auth/done` deep link instead of the HTML success page.
+let pendingOAuthCallbackApp = false
 let lastOAuthResult: { email: string } | null = null
 
 // Monzo OAuth state
@@ -91,6 +94,11 @@ export function handleAuthRoutes(
     // Generate state for CSRF protection
     pendingOAuthState = Math.random().toString(36).slice(2)
     lastOAuthResult = null
+    // `?callback=app` — caller is the Android APK; finish by redirecting to the
+    // `console://auth/done` custom scheme so the native shell can close the
+    // Custom Tab and notify the WebView.
+    const startUrl = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
+    pendingOAuthCallbackApp = startUrl.searchParams.get('callback') === 'app'
 
     const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
@@ -128,6 +136,8 @@ export function handleAuthRoutes(
     }
 
     pendingOAuthState = null
+    const returnToApp = pendingOAuthCallbackApp
+    pendingOAuthCallbackApp = false
 
     const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
     authStore.exchangeGoogleCode(code, redirectUri)
@@ -138,6 +148,13 @@ export function handleAuthRoutes(
       .catch((err: Error) => {
         console.error('[auth] OAuth exchange failed:', err.message)
       })
+
+    if (returnToApp) {
+      // Redirect Custom Tab back into the APK via the custom scheme.
+      res.writeHead(302, { Location: 'console://auth/done' })
+      res.end()
+      return true
+    }
 
     res.writeHead(200, { 'Content-Type': 'text/html' })
     res.end(`

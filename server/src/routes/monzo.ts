@@ -6,6 +6,7 @@ import type { MonzoClient } from '../monzo-client.js'
 import type { MonzoStore } from '../monzo-store.js'
 import type { AuthStore } from '../auth-store.js'
 import type { HubMessage } from '../protocol.js'
+import type { PushServer } from '../push.js'
 
 export function handleMonzoRoutes(
   req: IncomingMessage,
@@ -17,6 +18,7 @@ export function handleMonzoRoutes(
   authStore: AuthStore,
   readBody: (req: IncomingMessage) => Promise<string>,
   broadcast: (msg: HubMessage) => void,
+  pushServer: PushServer,
 ): boolean {
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -216,6 +218,20 @@ export function handleMonzoRoutes(
           type: 'monzo_transaction',
           transaction: payload.data,
         } as any)
+        // Push a notification to the APK foreground service
+        const tx = payload.data
+        const amountPence = typeof tx.amount === 'number' ? tx.amount : 0
+        const currency = tx.currency || 'GBP'
+        const merchant = tx.merchant?.name || tx.description || 'Transaction'
+        const sign = amountPence < 0 ? '-' : '+'
+        const formatted = `${sign}${currency === 'GBP' ? '£' : ''}${(Math.abs(amountPence) / 100).toFixed(2)}`
+        pushServer.broadcast({
+          type: 'money',
+          title: merchant,
+          body: formatted,
+          pane: 'money',
+          id: `monzo:${tx.id}`,
+        })
         console.log(`[monzo] Webhook: new transaction ${payload.data.id}`)
       }
       json({ ok: true })
