@@ -4,6 +4,10 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MatrixClient } from '../matrix-client.js'
+import type { KeyBackupStore, KeyBackupBlob } from '../matrix/key-backup-store.js'
+import type { HubMatrixCrypto } from '../matrix/crypto.js'
+import type { AuthStore } from '../auth-store.js'
+import { matrixPasswordLogin } from '../matrix/login.js'
 
 export function handleMatrixRoutes(
   req: IncomingMessage,
@@ -11,6 +15,9 @@ export function handleMatrixRoutes(
   path: string,
   url: URL,
   matrix: MatrixClient,
+  keyBackup: KeyBackupStore,
+  hubCrypto: HubMatrixCrypto,
+  authStore: AuthStore,
   readBody: (req: IncomingMessage) => Promise<string>,
 ): boolean {
   const json = (data: unknown, status = 200) => {
@@ -228,6 +235,219 @@ export function handleMatrixRoutes(
   // POST /matrix/undo (client-side state only)
   if (path === '/matrix/undo' && req.method === 'POST') {
     json({ ok: false, message: 'Undo is managed by the client' })
+    return true
+  }
+
+  // --- M0 safety-net key backup ---------------------------------------------
+  // Browser POSTs its OlmMachine room-key export here periodically so the hub
+  // always has a copy needed to decrypt historical encrypted messages.
+
+  // POST /matrix/keys/backup-blob   body: { userId, deviceId, keys (JSON str) }
+  if (path === '/matrix/keys/backup-blob' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const body = JSON.parse(await readBody(req)) as Partial<KeyBackupBlob>
+      if (!body.userId || !body.deviceId || typeof body.keys !== 'string') {
+        return error(400, 'userId, deviceId, keys are required')
+      }
+      // Validate + compute keyCount
+      let keyCount = 0
+      try {
+        const parsed = JSON.parse(body.keys)
+        if (!Array.isArray(parsed)) throw new Error('keys must be a JSON array')
+        keyCount = parsed.length
+      } catch (e) {
+        return error(400, `invalid keys JSON: ${(e as Error).message}`)
+      }
+      keyBackup.save({
+        userId: body.userId,
+        deviceId: body.deviceId,
+        exportedAt: Date.now(),
+        keyCount,
+        keys: body.keys,
+      })
+      json({ ok: true, keyCount })
+    })
+  }
+
+  // GET /matrix/keys/backup-status
+  if (path === '/matrix/keys/backup-status' && req.method === 'GET') {
+    json(keyBackup.status())
+    return true
+  }
+
+  // --- M1 hub-as-Matrix-client ---------------------------------------------
+
+  // POST /matrix/hub/login   body: { homeserver, userId, password }
+  // Logs the hub in as a new device, initializes OlmMachine, imports M0 blob.
+  if (path === '/matrix/hub/login' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const body = JSON.parse(await readBody(req)) as {
+        homeserver?: string
+        userId?: string
+        password?: string
+      }
+      if (!body.homeserver || !body.userId || !body.password) {
+        return error(400, 'homeserver, userId, password required')
+      }
+      // 1. Login → new device_id + access_token
+      const login = await matrixPasswordLogin(body.homeserver, body.userId, body.password)
+
+      // 2. Initialize hub OlmMachine with the new device_id
+      await hubCrypto.init(login.userId, login.deviceId)
+
+      // 3. Persist credentials in auth.json
+      authStore.setMatrixConfig({
+        homeserver: login.homeserver,
+        userId: login.userId,
+        deviceId: login.deviceId,
+        accessToken: login.accessToken,
+      })
+
+      // 4. Import the M0 safety-net room keys (if we have them for this user)
+      const backup = keyBackup.get()
+      let imported = 0
+      let total = 0
+      if (backup && backup.userId === login.userId) {
+        const r = await hubCrypto.importRoomKeys(backup.keys)
+        imported = r.imported
+        total = r.total
+      }
+
+      const identity = hubCrypto.identity()
+      json({
+        ok: true,
+        userId: login.userId,
+        deviceId: login.deviceId,
+        identity,
+        importedRoomKeys: imported,
+        totalRoomKeysInBackup: total,
+      })
+    })
+  }
+
+  // POST /matrix/hub/decrypt-test   body: { roomId, limit? }
+  // Verifies M1 by fetching recent encrypted events as the hub device and
+  // attempting decryption. Returns per-event success flags + a sample plaintext.
+  if (path === '/matrix/hub/decrypt-test' && req.method === 'POST') {
+    return handleAsync(async () => {
+      if (!hubCrypto.isReady()) return error(409, 'hub crypto not initialized — run /matrix/hub/login first')
+      const body = JSON.parse(await readBody(req)) as { roomId?: string; limit?: number }
+      if (!body.roomId) return error(400, 'roomId required')
+      const limit = Math.min(Math.max(body.limit ?? 20, 1), 100)
+
+      const msgs = await matrix.getRoomMessages(body.roomId, { limit, dir: 'b' }) as {
+        chunk: Array<{ event_id: string; type: string; sender: string; origin_server_ts: number; content: Record<string, unknown> }>
+      }
+      const encrypted = msgs.chunk.filter((e) => e.type === 'm.room.encrypted')
+      const results: Array<{ event_id: string; sender: string; success: boolean; type?: string; bodyPreview?: string }> = []
+      let decryptedCount = 0
+      for (const ev of encrypted) {
+        const decrypted = await hubCrypto.decryptRoomEvent(
+          { type: ev.type, content: ev.content, event_id: ev.event_id, sender: ev.sender, origin_server_ts: ev.origin_server_ts, room_id: body.roomId },
+          body.roomId,
+        )
+        if (decrypted) {
+          decryptedCount++
+          const bodyStr = typeof (decrypted.content as { body?: unknown }).body === 'string'
+            ? ((decrypted.content as { body: string }).body).slice(0, 80)
+            : undefined
+          results.push({ event_id: ev.event_id, sender: ev.sender, success: true, type: decrypted.type, bodyPreview: bodyStr })
+        } else {
+          results.push({ event_id: ev.event_id, sender: ev.sender, success: false })
+        }
+      }
+      json({
+        roomId: body.roomId,
+        fetched: msgs.chunk.length,
+        encrypted: encrypted.length,
+        decrypted: decryptedCount,
+        results,
+      })
+    })
+  }
+
+  // POST /matrix/hub/rooms/:id/send   body: { body, html?, dryRun? }
+  // Encrypts via OlmMachine and sends as m.room.encrypted. For M1-verify.
+  const hubSendMatch = path.match(/^\/matrix\/hub\/rooms\/([^/]+)\/send$/)
+  if (hubSendMatch && req.method === 'POST') {
+    return handleAsync(async () => {
+      if (!hubCrypto.isReady()) return error(409, 'hub crypto not initialized — run /matrix/hub/login first')
+      const matrixAuth = authStore.getMatrixConfig()
+      if (!matrixAuth) return error(409, 'no matrix credentials in auth store')
+
+      const roomId = decodeURIComponent(hubSendMatch[1]!)
+      const body = JSON.parse(await readBody(req)) as {
+        body?: string
+        html?: string
+        dryRun?: boolean
+        expectRoomName?: string
+      }
+      if (!body.body) return error(400, 'body (message text) required')
+
+      // Safety: fetch room state, enforce authorized target by room name
+      const state = await matrix.getRoomState(roomId) as Array<{ type: string; content: any }>
+      let roomName = roomId
+      let isEncrypted = false
+      const members: string[] = []
+      for (const ev of state) {
+        if (ev.type === 'm.room.name' && ev.content?.name) roomName = ev.content.name as string
+        if (ev.type === 'm.room.encryption') isEncrypted = true
+        if (ev.type === 'm.room.member' && ev.content?.membership === 'join') {
+          members.push((ev as any).state_key)
+        }
+      }
+      if (body.expectRoomName && roomName !== body.expectRoomName) {
+        return error(412, `room name mismatch: expected "${body.expectRoomName}", got "${roomName}"`)
+      }
+      if (!isEncrypted) return error(400, `room ${roomName} is not encrypted`)
+
+      if (body.dryRun) {
+        json({ ok: true, dryRun: true, roomId, roomName, memberCount: members.length, members })
+        return
+      }
+
+      // 1. Share the Megolm session with all joined members
+      await hubCrypto.shareRoomKeys(roomId, members, matrixAuth.homeserver, matrixAuth.accessToken)
+
+      // 2. Encrypt the content
+      const content: Record<string, unknown> = { msgtype: 'm.text', body: body.body }
+      if (body.html) {
+        content.format = 'org.matrix.custom.html'
+        content.formatted_body = body.html
+      }
+      const encrypted = await hubCrypto.encryptRoomEventForSend(roomId, 'm.room.message', content)
+      if (!encrypted) return error(500, 'encryption failed (see hub logs)')
+
+      // 3. Send as m.room.encrypted
+      const txnId = `hub${Date.now()}.${Math.random().toString(36).slice(2)}`
+      const url = `${matrixAuth.homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.encrypted/${txnId}`
+      const sendRes = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${matrixAuth.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(encrypted),
+      })
+      const respText = await sendRes.text()
+      if (!sendRes.ok) return error(sendRes.status, `send failed: ${respText}`)
+      const parsed = JSON.parse(respText) as { event_id: string }
+      json({ ok: true, roomId, roomName, memberCount: members.length, event_id: parsed.event_id })
+    })
+  }
+
+  // GET /matrix/hub/status
+  if (path === '/matrix/hub/status' && req.method === 'GET') {
+    const identity = hubCrypto.identity()
+    const matrixAuth = authStore.getMatrixConfig()
+    json({
+      cryptoReady: hubCrypto.isReady(),
+      identity,
+      hasCredentials: !!matrixAuth,
+      userId: matrixAuth?.userId,
+      deviceId: matrixAuth?.deviceId,
+      homeserver: matrixAuth?.homeserver,
+    })
     return true
   }
 

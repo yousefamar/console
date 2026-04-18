@@ -22,10 +22,6 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  optimizeDeps: {
-    // Exclude WASM package from dep optimization — it uses import.meta.url for WASM loading
-    exclude: ['@matrix-org/matrix-sdk-crypto-wasm'],
-  },
   server: {
     host: true,
     allowedHosts: true,

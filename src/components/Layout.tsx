@@ -241,12 +241,9 @@ export function Layout() {
       if (e.ctrlKey || e.metaKey) {
         await db.chatMessages.clear()
         await db.meta.delete('matrixSyncToken')
-        const { fullMatrixSync } = await import('@/matrix/sync')
-        await fullMatrixSync()
-      } else {
-        const { incrementalMatrixSync } = await import('@/matrix/sync')
-        await incrementalMatrixSync()
       }
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
     }
   }
 
@@ -638,7 +635,13 @@ function mobileGoBack(pane: ActivePane) {
       break
     }
     case 'money': useMoneyStore.getState().selectTransaction(null); break
-    case 'agents': useAgentStore.getState().selectSession(null); break
+    case 'agents': {
+      const ag = useAgentStore.getState()
+      if (ag.activeSessionId) ag.selectSession(null)
+      // selectSession(null) sets creatingNewSession: true, so always clear it on back
+      useAgentStore.setState({ creatingNewSession: false })
+      break
+    }
   }
 }
 
@@ -653,6 +656,7 @@ function useMobileHasSelection(pane: ActivePane): boolean {
   const folderId = useFeedStore((s) => s.selectedFolderId)
   const txId = useMoneyStore((s) => s.selectedTransactionId)
   const sessionId = useAgentStore((s) => s.activeSessionId)
+  const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
 
   switch (pane) {
     case 'email': return !!threadId
@@ -661,7 +665,7 @@ function useMobileHasSelection(pane: ActivePane): boolean {
     case 'notes': return !!filePath
     case 'feeds': return !!(feedItemId || feedId || folderId)
     case 'money': return !!txId
-    case 'agents': return !!sessionId
+    case 'agents': return !!sessionId || creatingNewSession
     default: return false
   }
 }

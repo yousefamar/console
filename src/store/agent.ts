@@ -669,7 +669,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
       }
 
       // Re-add preserved Al session if it was missing from hub list
-      if (existingAl) merged.unshift(existingAl)
+      if (existingAl) merged.unshift({ ...existingAl, isAl: true })
 
       // Determine which sessions have older messages available
       const REPLAY_LIMIT = 50

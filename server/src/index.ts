@@ -41,6 +41,15 @@ import { MonzoStore } from './monzo-store.js'
 import { handleMonzoRoutes } from './routes/monzo.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
+import { handleApkRoutes } from './routes/apk.js'
+import { PushServer } from './push.js'
+import { handlePushRoutes } from './routes/push.js'
+import { SyncBus } from './sync-bus.js'
+import { MailSync } from './mail/sync.js'
+import { CalendarSync } from './cal/sync.js'
+import { KeyBackupStore } from './matrix/key-backup-store.js'
+import { HubMatrixCrypto } from './matrix/crypto.js'
+import { MatrixSync } from './matrix/sync.js'
 import type { DebugClientMessage } from './debug-protocol.js'
 
 // --------------------------------------------------------------------------
@@ -76,10 +85,111 @@ const monzoStore = new MonzoStore(
   join(feedsConfigDir, 'monzo-transactions.json'),
   monzoClient,
 )
+const pushServer = new PushServer((msg: string) => { log(msg) })
+const syncBus = new SyncBus((msg: string) => { log(msg) })
+const mailSync = new MailSync(
+  gmailClient,
+  authStore,
+  syncBus,
+  pushServer,
+  join(feedsConfigDir, 'mail-state.json'),
+  (msg: string) => { log(msg) },
+)
+syncBus.register('mail', {
+  syncNow: async () => mailSync.syncNow(),
+})
+mailSync.start()
+const calSync = new CalendarSync(
+  calendarClient,
+  authStore,
+  syncBus,
+  pushServer,
+  join(feedsConfigDir, 'cal-state.json'),
+  (msg: string) => { log(msg) },
+)
+syncBus.register('cal', {
+  syncNow: async () => calSync.syncNow(),
+})
+calSync.start()
+const keyBackupStore = new KeyBackupStore(
+  join(feedsConfigDir, 'matrix-key-backup.json'),
+  (msg: string) => { log(msg) },
+)
+const hubMatrixCrypto = new HubMatrixCrypto(
+  join(feedsConfigDir, 'matrix-crypto-snapshot.json'),
+  (msg: string) => { log(msg) },
+)
+// If hub already has Matrix credentials, re-init OlmMachine on boot so
+// decryption capability survives restarts without requiring re-login.
+// When a snapshot exists it's restored first (fast-path: identity preserved).
+// When no snapshot exists (first boot after credentials, or schema-rebuild)
+// we still init with the existing device_id; OlmMachine generates fresh Olm
+// account keys and re-uploads them, then we re-import the M0 key backup so
+// historical room decrypts still work.
+{
+  const existingMatrix = authStore.getMatrixConfig()
+  if (existingMatrix) {
+    const snapshotExists = existsSync(join(feedsConfigDir, 'matrix-crypto-snapshot.json'))
+    ;(async () => {
+      await hubMatrixCrypto.init(existingMatrix.userId, existingMatrix.deviceId)
+      if (snapshotExists) {
+        log('[hub-crypto] re-initialized from snapshot')
+      } else {
+        log('[hub-crypto] re-initialized with existing device_id (fresh Olm account)')
+        // Re-upload device keys + OTKs under the existing access token.
+        await hubMatrixCrypto.processOutgoingRequests(
+          existingMatrix.homeserver,
+          existingMatrix.accessToken,
+        )
+        // Re-import M0 safety-net keys so decrypt still works.
+        const backup = keyBackupStore.get()
+        if (backup && backup.userId === existingMatrix.userId) {
+          const r = await hubMatrixCrypto.importRoomKeys(backup.keys)
+          log(`[hub-crypto] re-imported ${r.imported}/${r.total} room keys from M0 backup`)
+        }
+      }
+    })().catch((e) => log(`[hub-crypto] boot init failed: ${e}`))
+  }
+}
+// Matrix sync loop — starts once crypto is ready (polled).
+const matrixSync = new MatrixSync(
+  matrixClient,
+  hubMatrixCrypto,
+  authStore,
+  syncBus,
+  pushServer,
+  join(feedsConfigDir, 'matrix-sync-state.json'),
+  (msg: string) => { log(msg) },
+)
+syncBus.register('matrix', {
+  syncNow: async () => matrixSync.syncNow(),
+  state: async () => matrixSync.getState(),
+  // Unified send: hub picks encrypted vs plaintext based on room state
+  sendEvent: async (args) => matrixSync.sendRoomEvent(args as { roomId: string; type: string; content: Record<string, unknown> }),
+  redact: async (args) => matrixSync.redactEvent(args as { roomId: string; eventId: string; reason?: string }),
+  markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
+  paginate: async (args) => matrixSync.paginate(args as { roomId: string; from?: string; dir?: 'b' | 'f'; limit?: number }),
+})
+matrixSync.start()
+
 function broadcast(msg: HubMessage) {
   const data = JSON.stringify(msg)
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data)
+  }
+  // Mirror selected events into the push channel so the APK foreground
+  // service can surface them as system notifications when backgrounded.
+  if (msg.type === 'approval_required') {
+    const toolName = (msg as any).toolName as string | undefined
+    const input = (msg as any).input as Record<string, unknown> | undefined
+    const question = typeof input?.question === 'string' ? input.question : ''
+    pushServer.broadcast({
+      type: 'agent',
+      title: toolName === 'AskUserQuestion' ? 'Agent needs your input' : 'Agent needs approval',
+      body: question || toolName || 'Tap to respond',
+      pane: 'agents',
+      id: `approval:${(msg as any).requestId ?? (msg as any).sessionId}`,
+    })
   }
 }
 
@@ -150,6 +260,66 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     return
   }
 
+  // STT — transcribes audio via OpenAI Whisper API
+  if (path === '/stt' && req.method === 'POST') {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+    req.on('end', async () => {
+      try {
+        const body = Buffer.concat(chunks)
+        // Parse multipart form data to extract the audio file
+        const boundary = (req.headers['content-type'] || '').split('boundary=')[1]
+        if (!boundary) { res.writeHead(400); res.end('Missing boundary'); return }
+        const parts = body.toString('binary').split('--' + boundary)
+        let audioData: Buffer | null = null
+        for (const part of parts) {
+          if (part.includes('name="file"')) {
+            const headerEnd = part.indexOf('\r\n\r\n')
+            if (headerEnd !== -1) {
+              audioData = Buffer.from(part.slice(headerEnd + 4).replace(/\r\n$/, ''), 'binary')
+            }
+          }
+        }
+        if (!audioData || audioData.length < 100) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ text: '' })); return }
+
+        // Get OpenAI API key from environment
+        const apiKey = process.env.OPENAI_API_KEY
+        if (!apiKey) { res.writeHead(500); res.end('OPENAI_API_KEY not set'); return }
+
+        // Build multipart form for OpenAI
+        const formBoundary = '----FormBoundary' + Date.now()
+        const formParts = [
+          `--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`,
+          audioData,
+          `\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${formBoundary}--\r\n`,
+        ]
+        const formBody = Buffer.concat([Buffer.from(formParts[0] as string), formParts[1] as Buffer, Buffer.from(formParts[2] as string)])
+
+        const apiRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': `multipart/form-data; boundary=${formBoundary}`,
+          },
+          body: formBody,
+        })
+        if (!apiRes.ok) {
+          const errText = await apiRes.text()
+          log(`[stt] OpenAI error: ${apiRes.status} ${errText.slice(0, 200)}`)
+          res.writeHead(500); res.end('STT failed')
+          return
+        }
+        const result = await apiRes.json() as { text: string }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ text: result.text }))
+      } catch (err) {
+        log(`[stt] Error: ${(err as Error).message}`)
+        res.writeHead(500); res.end('STT error')
+      }
+    })
+    return
+  }
+
   // TTS — converts text to speech via espeak-ng, returns WAV audio
   if (path === '/tts' && req.method === 'POST') {
     let body = ''
@@ -215,12 +385,14 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
-  if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, readBody)) return
-  if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast)) return
+  if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, readBody)) return
+  if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
+  if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
+  if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
 
   res.writeHead(404)
   res.end('Not found')
@@ -254,6 +426,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     return
   }
 
+  // Push clients (Android foreground service) connect on /push path
+  if (urlPath === '/push') {
+    pushServer.attach(ws)
+    return
+  }
+
+  // Sync bus — service event streams + RPC for hub-owned services
+  if (urlPath === '/sync') {
+    syncBus.attach(ws)
+    return
+  }
+
   // Debug agent connects on /debug path
   if (urlPath === '/debug') {
     debugClients.add(ws)
@@ -267,6 +451,72 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     ws.on('close', () => {
       debugClients.delete(ws)
       log(`[debug] Client disconnected (${debugClients.size} remaining)`)
+    })
+    return
+  }
+
+  // STT WebSocket relay — bridges browser audio to OpenAI Realtime Transcription API
+  if (urlPath === '/stt') {
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) {
+      ws.send(JSON.stringify({ type: 'error', message: 'OPENAI_API_KEY not set' }))
+      ws.close()
+      return
+    }
+    log('[stt] Client connected, opening OpenAI realtime transcription...')
+    const openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' },
+    })
+
+    // Periodically commit the audio buffer to force transcription during continuous speech
+    let commitInterval: ReturnType<typeof setInterval> | null = null
+
+    openaiWs.on('open', () => {
+      openaiWs.send(JSON.stringify({
+        type: 'transcription_session.update',
+        session: {
+          input_audio_format: 'pcm16',
+          input_audio_transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
+          turn_detection: { type: 'server_vad', threshold: 0.4, prefix_padding_ms: 200, silence_duration_ms: 300 },
+          input_audio_noise_reduction: { type: 'near_field' },
+        },
+      }))
+    })
+
+    openaiWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString())
+        // Log all event types for debugging (except session updates which are noisy)
+        if (msg.type && !msg.type.startsWith('transcription_session')) {
+          log(`[stt] event: ${msg.type}`)
+        }
+        if (msg.type === 'conversation.item.input_audio_transcription.delta') {
+          ws.send(JSON.stringify({ type: 'interim', text: msg.delta || '' }))
+        } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
+          ws.send(JSON.stringify({ type: 'final', text: msg.transcript || '' }))
+        } else if (msg.type === 'error') {
+          log(`[stt] OpenAI error: ${JSON.stringify(msg.error)}`)
+          ws.send(JSON.stringify({ type: 'error', message: msg.error?.message || 'Transcription error' }))
+        }
+      } catch { /* ignore */ }
+    })
+
+    openaiWs.on('close', () => { if (commitInterval) clearInterval(commitInterval); ws.close() })
+    openaiWs.on('error', () => { if (commitInterval) clearInterval(commitInterval); ws.close() })
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString())
+        if (msg.type === 'audio' && openaiWs.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: msg.data }))
+        }
+      } catch { /* ignore */ }
+    })
+
+    ws.on('close', () => {
+      log('[stt] Client disconnected')
+      if (commitInterval) clearInterval(commitInterval)
+      if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close()
     })
     return
   }
@@ -392,7 +642,24 @@ httpServer.listen(port, host, () => {
           silent: true,
           name: entry.name,
         })
-        log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
+        // If the session was mid-turn when the hub stopped, nudge it to
+        // continue where it left off. Silent resume alone leaves it idle.
+        if (entry.wasRunning) {
+          setTimeout(() => {
+            if (session.status !== 'ended') {
+              const content = 'The hub was restarted, which interrupted you. Continue.'
+              // Mirror the UI send-message path: broadcast + log so the prompt
+              // appears in the conversation view, not just on Claude's stdin.
+              const userMsg = { type: 'user_prompt' as const, sessionId: session.id, content }
+              broadcast(userMsg)
+              session.logMessage(userMsg)
+              session.sendMessage(content)
+            }
+          }, 1_000)
+          log(`  Resumed + continued: ${session.id} (claude: ${entry.claudeSessionId})`)
+        } else {
+          log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
+        }
       } catch (err) {
         log(`  Failed to resume ${entry.claudeSessionId}: ${(err as Error).message}`)
       }

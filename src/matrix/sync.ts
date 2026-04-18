@@ -1,13 +1,5 @@
-import { db, getMeta, setMeta } from '@/db'
-import * as api from './api'
+import { db } from '@/db'
 import { getMatrixUserId, isMatrixConnected } from './auth'
-import {
-  processSyncCrypto,
-  decryptRoomEvent,
-  encryptRoomEvent,
-  shareRoomKeys,
-  isCryptoReady,
-} from './crypto'
 import type {
   MatrixJoinedRoom,
   MatrixEvent,
@@ -31,10 +23,6 @@ export function onMatrixSyncStatus(fn: SyncListener): () => void {
 function setStatus(status: MatrixSyncStatus, detail?: string) {
   currentStatus = status
   for (const fn of listeners) fn(status, detail)
-}
-
-function isNetworkError(message: string): boolean {
-  return message === 'Failed to fetch' || message === 'Load failed' || message === 'NetworkError when attempting to fetch resource.'
 }
 
 // --- Event → DbChatMessage conversion ---
@@ -110,29 +98,11 @@ export function buildMessageFromContent(
 async function eventToMessage(event: MatrixEvent, roomId: string): Promise<DbChatMessage | null> {
   if (!event.event_id || !event.sender) return null
 
-  // Handle encrypted events — attempt decryption
+  // The hub now decrypts Matrix events before broadcasting (type is flipped to
+  // m.room.message/m.sticker/m.reaction/etc. with decrypted content). If we
+  // still see an m.room.encrypted event here, the hub couldn't decrypt it —
+  // show a placeholder so the user at least sees *something* in the timeline.
   if (event.type === 'm.room.encrypted') {
-    if (isCryptoReady()) {
-      const decrypted = await decryptRoomEvent(event, roomId)
-      if (decrypted) {
-        // Expose decrypted type/content so downstream handlers (reactions, edits) can process them
-        event.type = decrypted.type
-        event.content = decrypted.content
-        if (decrypted.type === 'm.room.message') {
-          return buildMessageFromContent(event, roomId, decrypted.content)
-        }
-        if (decrypted.type === 'm.sticker') {
-          return buildMessageFromContent(event, roomId, {
-            ...decrypted.content,
-            msgtype: 'm.image',
-          })
-        }
-        // Non-renderable types (m.reaction, m.room.redaction, etc.)
-        // are handled by processJoinedRoom after this returns null
-        return null
-      }
-    }
-    // Fallback: couldn't decrypt — store original event for retry after key import
     return {
       id: event.event_id,
       roomId,
@@ -453,11 +423,10 @@ async function processJoinedRoom(
         })
       }
     }
-    // Handle edits — store original body for diff view
-    if (event.type === 'm.room.message' || event.type === 'm.room.encrypted') {
-      const content = event.type === 'm.room.encrypted' && isCryptoReady()
-        ? (await decryptRoomEvent(event, roomId))?.content ?? event.content
-        : event.content
+    // Handle edits — store original body for diff view. Hub pre-decrypts so
+    // we only ever see m.room.message here for edit events.
+    if (event.type === 'm.room.message') {
+      const content = event.content
       const relates = content['m.relates_to'] as Record<string, unknown> | undefined
       if (relates?.rel_type === 'm.replace' && relates.event_id) {
         const targetId = relates.event_id as string
@@ -686,136 +655,54 @@ async function processJoinedRoom(
   }
 }
 
-// --- Sync lock (prevents concurrent syncs) ---
+// --- Hub delta ingestion ---
+// The hub owns the Matrix /sync loop (server/src/matrix/sync.ts) and broadcasts
+// decrypted payloads shaped as Matrix rooms.join sub-objects. Browser consumes
+// them here instead of talking to the homeserver directly.
 
-let syncInProgress: Promise<void> | null = null
-
-// --- Full Sync ---
-
-export async function fullMatrixSync(): Promise<void> {
-  if (syncInProgress) await syncInProgress
-  const done = runFullMatrixSync()
-  syncInProgress = done.catch(() => {}).finally(() => { syncInProgress = null })
-  return done
+export type HubMatrixDelta = {
+  nextBatch: string
+  rooms: Record<string, MatrixJoinedRoom>  // same shape as /sync rooms.join
+  invites?: string[]
+  leaves?: string[]
 }
 
-async function runFullMatrixSync(): Promise<void> {
-  if (!isMatrixConnected()) return
-  setStatus('syncing', 'Matrix: full sync...')
+export async function ingestHubDelta(delta: HubMatrixDelta, isInitial = false): Promise<void> {
+  // Process each room independently; a failure in one shouldn't block others.
+  const roomIds = Object.keys(delta.rooms)
+  if (isInitial) setStatus('syncing', `Matrix: hub initial sync (${roomIds.length} rooms)`)
 
-  try {
-    const response = await api.sync({ timeout: 0 })
+  await Promise.all(
+    roomIds.map((roomId) =>
+      processJoinedRoom(roomId, delta.rooms[roomId]!).catch(() => {}),
+    ),
+  )
 
-    // Process crypto first so decryption keys are available for room events
-    if (isCryptoReady()) {
-      await processSyncCrypto(response)
-    }
-
-    // Process all joined rooms
-    const joinedRooms = response.rooms?.join ?? {}
-    const roomIds = Object.keys(joinedRooms)
-
-    for (let i = 0; i < roomIds.length; i++) {
-      const roomId = roomIds[i]!
-      await processJoinedRoom(roomId, joinedRooms[roomId]!)
-      if (i % 10 === 0 && i > 0) {
-        setStatus('syncing', `Matrix: synced ${i}/${roomIds.length} rooms`)
-      }
-    }
-
-    // Save sync token for incremental sync
-    await setMeta('matrixSyncToken', response.next_batch)
-
-    // Remove rooms we've left
-    const leftRooms = Object.keys(response.rooms?.leave ?? {})
-    if (leftRooms.length > 0) {
-      for (const roomId of leftRooms) {
-        await db.chatRooms.delete(roomId)
-        await db.chatMessages.where('roomId').equals(roomId).delete()
-      }
-    }
-
-    setStatus('idle')
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    setStatus(isNetworkError(message) ? 'offline' : 'error', message)
-    throw err
-  }
-}
-
-// --- Incremental Sync ---
-
-export async function incrementalMatrixSync(): Promise<void> {
-  if (syncInProgress) await syncInProgress
-  const done = runIncrementalMatrixSync()
-  syncInProgress = done.catch(() => {}).finally(() => { syncInProgress = null })
-  return done
-}
-
-async function runIncrementalMatrixSync(): Promise<void> {
-  if (!isMatrixConnected()) return
-
-  const syncToken = await getMeta('matrixSyncToken')
-  if (!syncToken) {
-    return runFullMatrixSync()
+  // Handle left rooms — drop them from local cache.
+  for (const roomId of delta.leaves ?? []) {
+    await db.chatRooms.delete(roomId).catch(() => {})
+    await db.chatMessages.where('roomId').equals(roomId).delete().catch(() => {})
   }
 
-  try {
-    const response = await api.sync({ since: syncToken, timeout: 30_000 })
-
-    // Process crypto first so decryption keys are available
-    if (isCryptoReady()) {
-      await processSyncCrypto(response)
-    }
-
-    // Save sync token immediately so next long-poll can start from the right place
-    // even if room processing is slow or partially fails
-    await setMeta('matrixSyncToken', response.next_batch)
-
-    // Process updated rooms concurrently — each room is independent.
-    // Errors are caught per-room so one failure doesn't block others.
-    const joinedRooms = response.rooms?.join ?? {}
-    await Promise.all(
-      Object.entries(joinedRooms).map(([roomId, room]) =>
-        processJoinedRoom(roomId, room).catch(() => {}),
-      ),
-    )
-
-    // Handle left rooms
-    const leftRooms = Object.keys(response.rooms?.leave ?? {})
-    for (const roomId of leftRooms) {
-      await db.chatRooms.delete(roomId)
-      await db.chatMessages.where('roomId').equals(roomId).delete()
-    }
-
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    // Only surface real errors (not transient network blips) to status
-    if (!isNetworkError(message)) {
-      setStatus('error', message)
-    }
-    throw err
-  }
+  if (isInitial) setStatus('idle')
 }
 
-// --- Get room member IDs for key sharing ---
-
-async function getRoomMemberIds(roomId: string): Promise<string[]> {
-  try {
-    const stateEvents = await api.getRoomState(roomId)
-    return stateEvents
-      .filter((e) => e.type === 'm.room.member' && e.content.membership === 'join')
-      .map((e) => e.state_key ?? '')
-      .filter(Boolean)
-  } catch {
-    // Fallback to just our own user
-    return [getMatrixUserId() ?? ''].filter(Boolean)
-  }
-}
+// Note: full/incremental Matrix sync is no longer run on the browser — the hub
+// owns the /sync loop and broadcasts decrypted deltas via SyncBus. See
+// ingestHubDelta above and server/src/matrix/sync.ts.
 
 // --- Process chat queue actions ---
+// All sends go through the hub over SyncBus RPCs. The hub:
+//   - picks encrypted vs plaintext based on room state
+//   - owns the OlmMachine + access token
+//   - performs the actual PUT to the homeserver and returns event_id
 
 let chatQueueLock = false
+
+async function hubRpc<T>(service: string, op: string, args?: unknown): Promise<T> {
+  const { hubBus } = await import('@/sync-bus')
+  return hubBus.rpc<T>(service, op, args)
+}
 
 export async function processChatQueue(): Promise<void> {
   if (!isMatrixConnected()) return
@@ -838,60 +725,24 @@ export async function processChatQueue(): Promise<void> {
       switch (action.type) {
         case 'chatSend': {
           const p = action.payload as { roomId: string; body: string; formattedBody?: string; replyToEventId?: string }
-          const room = await db.chatRooms.get(p.roomId)
-          let sendResult: { event_id?: string } | undefined
 
-          // Build reply relation if replying
-          const replyRelation = p.replyToEventId
-            ? { 'm.in_reply_to': { event_id: p.replyToEventId } }
-            : undefined
-
-          if (room?.isEncrypted && isCryptoReady()) {
-            // Get room members for key sharing
-            const memberIds = await getRoomMemberIds(p.roomId)
-            await shareRoomKeys(p.roomId, memberIds)
-
-            // Build message content
-            const content: Record<string, unknown> = {
-              msgtype: 'm.text',
-              body: p.body,
-            }
-            if (p.formattedBody) {
-              content.format = 'org.matrix.custom.html'
-              content.formatted_body = p.formattedBody
-            }
-            if (replyRelation) {
-              content['m.relates_to'] = replyRelation
-            }
-
-            // Encrypt and send
-            const encrypted = await encryptRoomEvent(p.roomId, 'm.room.message', content)
-            if (encrypted) {
-              sendResult = await api.sendEncryptedMessage(p.roomId, JSON.parse(encrypted))
-            } else {
-              // Encryption failed — fall back to plaintext
-              sendResult = await api.sendMessage(p.roomId, p.body, p.formattedBody)
-            }
-          } else {
-            // Build content with reply relation for unencrypted path
-            if (replyRelation) {
-              const content: Record<string, unknown> = {
-                msgtype: 'm.text',
-                body: p.body,
-                'm.relates_to': replyRelation,
-              }
-              if (p.formattedBody) {
-                content.format = 'org.matrix.custom.html'
-                content.formatted_body = p.formattedBody
-              }
-              sendResult = await api.sendRoomEvent(p.roomId, 'm.room.message', content)
-            } else {
-              sendResult = await api.sendMessage(p.roomId, p.body, p.formattedBody)
-            }
+          const content: Record<string, unknown> = {
+            msgtype: 'm.text',
+            body: p.body,
+          }
+          if (p.formattedBody) {
+            content.format = 'org.matrix.custom.html'
+            content.formatted_body = p.formattedBody
+          }
+          if (p.replyToEventId) {
+            content['m.relates_to'] = { 'm.in_reply_to': { event_id: p.replyToEventId } }
           }
 
+          const sendResult = await hubRpc<{ event_id?: string }>('matrix', 'sendEvent', {
+            roomId: p.roomId, type: 'm.room.message', content,
+          })
+
           // Immediately replace local echo with confirmed message (real event_id).
-          // Don't wait for sync echo — sync loop may be blocked processing other rooms.
           const realEventId = sendResult?.event_id
           if (realEventId) {
             const localEchos = await db.chatMessages
@@ -908,28 +759,16 @@ export async function processChatQueue(): Promise<void> {
         }
         case 'chatMarkRead': {
           const p = action.payload as { roomId: string; eventId: string }
-          await api.setReadMarker(p.roomId, p.eventId)
-          await api.sendReadReceipt(p.roomId, p.eventId)
+          await hubRpc('matrix', 'markRead', { roomId: p.roomId, eventId: p.eventId })
           break
         }
         case 'chatReact': {
           const p = action.payload as { roomId: string; eventId: string; emoji: string }
-          const room = await db.chatRooms.get(p.roomId)
-          if (room?.isEncrypted && isCryptoReady()) {
-            const memberIds = await getRoomMemberIds(p.roomId)
-            await shareRoomKeys(p.roomId, memberIds)
-            const content = {
-              'm.relates_to': { rel_type: 'm.annotation', event_id: p.eventId, key: p.emoji },
-            }
-            const encrypted = await encryptRoomEvent(p.roomId, 'm.reaction', content)
-            if (encrypted) {
-              await api.sendEncryptedMessage(p.roomId, JSON.parse(encrypted))
-            } else {
-              await api.sendReaction(p.roomId, p.eventId, p.emoji)
-            }
-          } else {
-            await api.sendReaction(p.roomId, p.eventId, p.emoji)
-          }
+          await hubRpc<{ event_id?: string }>('matrix', 'sendEvent', {
+            roomId: p.roomId,
+            type: 'm.reaction',
+            content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: p.eventId, key: p.emoji } },
+          })
           break
         }
       }

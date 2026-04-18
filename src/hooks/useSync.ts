@@ -3,13 +3,12 @@ import { onSyncStatus, startSyncLoop, stopSyncLoop, fullSync } from '@/gmail/syn
 import { isSignedIn as isGmailSignedIn } from '@/gmail/auth'
 import {
   onMatrixSyncStatus,
-  fullMatrixSync,
-  incrementalMatrixSync,
+  ingestHubDelta,
   processChatQueue,
   checkChatSnoozes,
 } from '@/matrix/sync'
 import { onEnqueue } from '@/db/sync-queue'
-import { isMatrixConnected, getMatrixUserId, getMatrixDeviceId } from '@/matrix/auth'
+import { isMatrixConnected } from '@/matrix/auth'
 import { preloadAllInbox } from '@/utils/email-cache'
 import { preloadAttachments } from '@/utils/attachment-cache'
 import { preloadContacts } from '@/components/ContactAutocomplete'
@@ -52,52 +51,45 @@ export function useSync() {
     return () => stopSyncLoop()
   }, [])
 
-  // Matrix sync loop (long-polling — server returns immediately on new events)
+  // Matrix sync — the hub owns the Matrix /sync loop and broadcasts decrypted
+  // deltas over SyncBus. Browser is a pure consumer: no direct homeserver calls,
+  // no local crypto. On first load (no cached rooms) we prime with a one-shot
+  // full sync via the hub's syncNow RPC, then live deltas take over.
   useEffect(() => {
     if (!isMatrixConnected()) return
 
     let stopped = false
+    let hubUnsubDelta: (() => void) | null = null
+    let hubUnsubInitial: (() => void) | null = null
 
-    // Continuous long-poll loop: ONLY the sync — no queue processing or snooze
-    // checks in the critical path. The long-poll must restart ASAP after each
-    // response so incoming messages arrive with minimal latency.
-    const syncLoop = async () => {
-      while (!stopped) {
-        try {
-          await incrementalMatrixSync()
-        } catch {
-          // Back off on error to avoid tight retry loops
-          if (!stopped) await new Promise((r) => setTimeout(r, 5_000))
-        }
-      }
-    }
-
-    // Initialize crypto (lazy-loaded) then start sync
     const startMatrix = async () => {
-      const userId = getMatrixUserId()
-      const deviceId = getMatrixDeviceId()
-      if (userId && deviceId) {
-        try {
-          const { initCrypto } = await import('@/matrix/crypto')
-          await initCrypto(userId, deviceId)
-        } catch (err) {
-          console.warn('[crypto] Failed to init crypto, continuing without E2EE:', err)
-        }
-      }
-      // One-time migrations (run before sync, only need auth)
+      // One-time migrations (local cache cleanup — no network needed)
       await backfillMediaUrls().catch(() => {})
       await backfillRoomInfo().catch(() => {})
 
-      // If we have a sync token from a previous session, skip the expensive full sync
-      // (hundreds of rooms) and go straight to incremental long-polling.
-      const { getMeta } = await import('@/db')
-      const existingToken = await getMeta('matrixSyncToken')
-      if (!existingToken) {
-        await fullMatrixSync()
-        // Preload messages for all unread rooms into IndexedDB
-        useChatStore.getState().preloadAllRooms().catch(() => {})
+      // Subscribe BEFORE asking hub to sync, so we don't miss the response.
+      const { hubBus } = await import('@/sync-bus')
+      hubUnsubInitial = hubBus.on('matrix', 'initial', (data: unknown) => {
+        ingestHubDelta(data as Parameters<typeof ingestHubDelta>[0], true)
+          .then(() => useChatStore.getState().preloadAllRooms().catch(() => {}))
+          .catch(() => {})
+      })
+      hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {
+        ingestHubDelta(data as Parameters<typeof ingestHubDelta>[0]).catch(() => {})
+      })
+
+      if (stopped) return
+
+      // If this browser has no cached rooms yet, ask the hub to emit a snapshot
+      // (its `initial` broadcast fires the first time the hub boots with no
+      // nextBatch, so restarted browsers won't have triggered it themselves).
+      const { db } = await import('@/db')
+      const roomCount = await db.chatRooms.count()
+      if (roomCount === 0) {
+        // Ask hub to emit an initial broadcast. If hub is down, the browser
+        // will sit idle until the hub comes back + broadcasts a fresh delta.
+        await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
       }
-      if (!stopped) syncLoop()
     }
     startMatrix().catch(() => {})
 
@@ -111,8 +103,7 @@ export function useSync() {
       }, 500)
     })
 
-    // Periodic queue processing + snooze checks — outside the sync loop
-    // so they never block the long-poll from restarting
+    // Periodic queue processing + snooze checks
     const queueInterval = setInterval(() => processChatQueue().catch(() => {}), 5_000)
     const snoozeInterval = setInterval(() => checkChatSnoozes().catch(() => {}), 60_000)
 
@@ -122,6 +113,8 @@ export function useSync() {
       clearInterval(queueInterval)
       clearInterval(snoozeInterval)
       unsubFlush()
+      hubUnsubDelta?.()
+      hubUnsubInitial?.()
     }
   }, [])
 
@@ -139,18 +132,34 @@ export function useSync() {
     return () => clearInterval(feedInterval)
   }, [])
 
-  // Calendar refresh: every 5 minutes
+  // Calendar refresh: driven by hub sync-bus events. The hub owns the periodic
+  // Google Calendar poll and broadcasts `cal.delta` when anything changes. The
+  // browser fetches fresh events only when something actually changed, plus a
+  // slow 15-min fallback in case the hub /sync channel is down.
   useEffect(() => {
-    const CAL_INTERVAL = 5 * 60 * 1000
-    const calInterval = setInterval(() => {
+    let debounce: ReturnType<typeof setTimeout> | null = null
+    const refetch = () => {
       import('@/store/calendar').then(({ useCalendarStore }) => {
         if (useCalendarStore.getState().connected) {
           useCalendarStore.getState().fetchEvents()
         }
       })
-    }, CAL_INTERVAL)
+    }
+    let unsub: (() => void) | null = null
+    import('@/sync-bus').then(({ hubBus }) => {
+      unsub = hubBus.on('cal', 'delta', () => {
+        if (debounce) clearTimeout(debounce)
+        debounce = setTimeout(() => { debounce = null; refetch() }, 500)
+      })
+    })
+    const FALLBACK_MS = 15 * 60 * 1000
+    const calInterval = setInterval(refetch, FALLBACK_MS)
 
-    return () => clearInterval(calInterval)
+    return () => {
+      clearInterval(calInterval)
+      if (debounce) clearTimeout(debounce)
+      unsub?.()
+    }
   }, [])
 
   // Calendar queue processing: flush on enqueue (500ms debounce) + periodic 5s
@@ -242,7 +251,10 @@ export function useSync() {
 
   const triggerFullSync = useCallback(async () => {
     if (isGmailSignedIn()) await fullSync()
-    if (isMatrixConnected()) await fullMatrixSync()
+    if (isMatrixConnected()) {
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
+    }
   }, [])
 
   return { triggerFullSync }

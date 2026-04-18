@@ -6,8 +6,6 @@ import type { MatrixRoomEvent } from '@/matrix/types'
 import { useUiStore } from './ui'
 import { getSnoozeTime } from '@/utils/date'
 import * as matrixApi from '@/matrix/api'
-import { decryptRoomEvent, isCryptoReady, encryptRoomEvent, shareRoomKeys } from '@/matrix/crypto'
-import { encryptAttachment } from '@/matrix/decrypt-media'
 import { buildMessageFromContent } from '@/matrix/sync'
 import { notify } from '@/notifications'
 
@@ -49,45 +47,22 @@ async function eventsToMessages(
     const senderName = info?.name || event.sender.split(':')[0]?.slice(1) || event.sender
     const senderAvatar = info?.avatar
 
-    // Decrypt encrypted events, exposing type/content for all handlers
+    // Hub delivers already-decrypted events. m.room.encrypted here means the
+    // hub couldn't decrypt it (e.g. missing Megolm session) — render a placeholder.
     if (event.type === 'm.room.encrypted') {
-      if (isCryptoReady()) {
-        const decrypted = await decryptRoomEvent(event, roomId)
-        if (decrypted) {
-          event.type = decrypted.type
-          event.content = decrypted.content
-          // Fall through to handle based on decrypted type
-        } else {
-          // Couldn't decrypt — store for retry
-          messages.push({
-            id: event.event_id,
-            roomId,
-            senderId: event.sender,
-            senderName,
-            senderAvatar,
-            body: '\u{1F512} Encrypted message',
-            timestamp: event.origin_server_ts,
-            type: 'text',
-            isEdited: false,
-            encryptedEvent: JSON.stringify(event),
-          })
-          continue
-        }
-      } else {
-        messages.push({
-          id: event.event_id,
-          roomId,
-          senderId: event.sender,
-          senderName,
-          senderAvatar,
-          body: '\u{1F512} Encrypted message',
-          timestamp: event.origin_server_ts,
-          type: 'text',
-          isEdited: false,
-          encryptedEvent: JSON.stringify(event),
-        })
-        continue
-      }
+      messages.push({
+        id: event.event_id,
+        roomId,
+        senderId: event.sender,
+        senderName,
+        senderAvatar,
+        body: '\u{1F512} Encrypted message',
+        timestamp: event.origin_server_ts,
+        type: 'text',
+        isEdited: false,
+        encryptedEvent: JSON.stringify(event),
+      })
+      continue
     }
 
     // Messages and stickers → chat bubbles
@@ -226,16 +201,18 @@ async function getRoomMemberInfo(roomId: string): Promise<Map<string, { name: st
   return info
 }
 
-// Fetch a page of messages from the server and store in DB
+// Fetch a page of messages via the hub (decrypted server-side) and store in DB.
 async function fetchAndStoreMessages(
   roomId: string,
   opts: { from?: string; limit: number },
 ): Promise<{ messages: DbChatMessage[]; end?: string }> {
-  const response = await matrixApi.getRoomMessages(roomId, {
-    from: opts.from,
-    dir: 'b',
-    limit: opts.limit,
-  })
+  const { hubBus } = await import('@/sync-bus')
+  const response = await hubBus.rpc<{
+    chunk: MatrixRoomEvent[]
+    state?: MatrixRoomEvent[]
+    start?: string
+    end?: string
+  }>('matrix', 'paginate', { roomId, from: opts.from, dir: 'b', limit: opts.limit })
 
   // Build member info: prefer /messages state, fall back to room state
   const memberInfo = new Map<string, { name: string; avatar?: string }>()
@@ -247,7 +224,7 @@ async function fetchAndStoreMessages(
       })
     }
   }
-  // If /messages didn't return member state, fetch room state
+  // If /messages didn't return member state, fetch room state (already cached via hub deltas)
   if (memberInfo.size === 0) {
     const roomInfo = await getRoomMemberInfo(roomId)
     for (const [k, v] of roomInfo) memberInfo.set(k, v)
@@ -616,18 +593,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })
 
     try {
-      const room = await db.chatRooms.get(roomId)
       const data = await file.arrayBuffer()
 
-      let content: Record<string, unknown>
-
-      let sendResult: { event_id?: string } | undefined
-
-      // Upload raw and send as plaintext — encrypted image attachments fail on
-      // Beeper bridges (key claim rejected → bridge can't decrypt the Megolm event).
-      // Text messages fall back to plaintext automatically; images should too.
+      // Upload raw media (unencrypted). Beeper bridges can't decrypt encrypted
+      // attachments, so media bytes stay plaintext — only the m.image event
+      // metadata gets Megolm-encrypted (hub decides based on room state).
       const mxcUrl = await matrixApi.uploadMedia(data, file.type, file.name)
-      content = {
+      const content: Record<string, unknown> = {
         msgtype: 'm.image',
         body: bodyText,
         filename: file.name,
@@ -638,17 +610,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content['m.relates_to'] = { 'm.in_reply_to': { event_id: replyingTo.eventId } }
       }
 
-      if (room?.isEncrypted && isCryptoReady()) {
-        const encryptedEvent = await encryptRoomEvent(roomId, 'm.room.message', content)
-        if (encryptedEvent) {
-          sendResult = await matrixApi.sendEncryptedMessage(roomId, JSON.parse(encryptedEvent))
-        } else {
-          // Encryption failed — fall back to plaintext (same as text messages)
-          sendResult = await matrixApi.sendRoomEvent(roomId, 'm.room.message', content)
-        }
-      } else {
-        sendResult = await matrixApi.sendRoomEvent(roomId, 'm.room.message', content)
-      }
+      const { hubBus } = await import('@/sync-bus')
+      const sendResult = await hubBus.rpc<{ event_id?: string }>('matrix', 'sendEvent', {
+        roomId, type: 'm.room.message', content,
+      })
 
       // Immediately replace local echo with confirmed message (real event_id)
       const realEventId = sendResult?.event_id

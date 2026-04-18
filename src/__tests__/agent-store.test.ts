@@ -358,7 +358,7 @@ describe('tool approvals', () => {
   it('approveTool sends approve_tool message', async () => {
     const ws = await setupSession()
     useAgentStore.setState({
-      pendingApproval: { requestId: 'req_1', toolName: 'Bash', input: {} },
+      pendingApproval: { sessionId: 'sess_1', requestId: 'req_1', toolName: 'Bash', input: {} },
     })
 
     useAgentStore.getState().approveTool('req_1')
@@ -376,7 +376,7 @@ describe('tool approvals', () => {
   it('denyTool sends deny_tool message', async () => {
     const ws = await setupSession()
     useAgentStore.setState({
-      pendingApproval: { requestId: 'req_1', toolName: 'Bash', input: {} },
+      pendingApproval: { sessionId: 'sess_1', requestId: 'req_1', toolName: 'Bash', input: {} },
     })
 
     useAgentStore.getState().denyTool('req_1', 'Not safe')
@@ -395,7 +395,7 @@ describe('tool approvals', () => {
   it('autoApproveTool auto-approves current and future', async () => {
     const ws = await setupSession()
     useAgentStore.setState({
-      pendingApproval: { requestId: 'req_1', toolName: 'Read', input: {} },
+      pendingApproval: { sessionId: 'sess_1', requestId: 'req_1', toolName: 'Read', input: {} },
     })
 
     useAgentStore.getState().autoApproveTool('Read')
