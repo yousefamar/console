@@ -1,7 +1,12 @@
-// Matrix auth — thin browser façade around the hub's `/matrix/hub/login`
-// and `/matrix/hub/logout` endpoints. The hub owns the access token and
-// device_id; the browser only caches identity metadata (user_id, homeserver)
-// in localStorage for display + local-echo ownership checks.
+// Matrix auth — thin browser façade around the hub's `/matrix/hub/login`,
+// `/matrix/hub/logout`, and `/matrix/hub/status` endpoints.
+//
+// The hub owns the access token and device_id. The browser caches identity
+// metadata (user_id, homeserver, device_id) in localStorage for display +
+// local-echo ownership checks, and calls `initMatrixAuth()` on boot to
+// hydrate that cache from the hub — which matters for any fresh localStorage
+// (e.g. APK WebView's first launch, clearing browser data) where the hub
+// might already be signed in but the browser doesn't know yet.
 
 import { db } from '@/db'
 import { hubFetch } from '@/hub'
@@ -125,4 +130,29 @@ export function getMatrixDeviceId(): string | null {
 
 export function isMatrixConnected(): boolean {
   return !!homeserver && !!userId
+}
+
+// Hydrate browser cache from the hub. Call on app boot before using
+// `isMatrixConnected()` — without it, a fresh WebView (APK's first launch,
+// or a cleared browser) would incorrectly think it needs to re-login.
+export async function initMatrixAuth(): Promise<void> {
+  try {
+    const status = await hubFetch<{
+      hasCredentials: boolean
+      userId?: string
+      deviceId?: string
+      homeserver?: string
+    }>('/matrix/hub/status')
+
+    if (status.hasCredentials && status.userId && status.deviceId && status.homeserver) {
+      persistSession(status.userId, status.deviceId, status.homeserver)
+    } else if (!status.hasCredentials && (userId || deviceId || homeserver)) {
+      // Hub says no session — browser had stale metadata. Clear it so the
+      // UI prompts for login rather than silently failing every API call.
+      clearSession()
+    }
+  } catch {
+    // Hub unreachable — leave whatever's in localStorage alone; the UI will
+    // either show as connected (if metadata was cached) or prompt for login.
+  }
 }

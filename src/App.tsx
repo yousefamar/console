@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { initAuth, signIn, isSignedIn, onAuthExpired } from '@/gmail/auth'
 import { resetStuckProcessing } from '@/db/sync-queue'
-import { isMatrixConnected } from '@/matrix/auth'
+import { isMatrixConnected, initMatrixAuth } from '@/matrix/auth'
 import { getHubUrl } from '@/hub'
 import { initPrefs, getPref } from '@/prefs'
 import { useKeybindings } from '@/hooks/useKeybindings'
@@ -167,6 +167,11 @@ export function App() {
       } catch {
         // Gmail auth init failed — app still works for other tabs
       }
+
+      // Hydrate Matrix identity metadata from the hub. Without this, a fresh
+      // WebView/browser with empty localStorage would incorrectly think it
+      // needs to re-login even though the hub already holds the session.
+      await initMatrixAuth()
 
       // Initialize Matrix user ID if connected
       if (isMatrixConnected()) {
