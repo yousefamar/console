@@ -20,6 +20,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private lateinit var fileChooserLauncher: ActivityResultLauncher<Array<String>>
+    private var updateBanner: View? = null
 
     private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
 
@@ -138,6 +140,16 @@ class MainActivity : ComponentActivity() {
         PushService.start(this)
     }
 
+    // --- JS bridge ------------------------------------------------------------
+
+    private inner class ConsoleBridge {
+        /** Web → native: re-run the APK update check (e.g. from the refresh button). */
+        @JavascriptInterface
+        fun checkForUpdate() {
+            checkForUpdateAsync()
+        }
+    }
+
     // --- Update check ---------------------------------------------------------
 
     private fun checkForUpdateAsync() {
@@ -160,6 +172,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showUpdateBanner(apkUrl: String, versionName: String) {
+        // Don't stack if a banner is already showing (e.g. user taps refresh
+        // repeatedly before dismissing the first one).
+        if (updateBanner?.parent != null) return
         val banner = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -185,6 +200,7 @@ class MainActivity : ComponentActivity() {
         banner.addView(text)
         banner.addView(install)
         banner.addView(dismiss)
+        updateBanner = banner
         rootLayout.addView(
             banner,
             FrameLayout.LayoutParams(
@@ -252,6 +268,12 @@ class MainActivity : ComponentActivity() {
             if (BuildConfig.DEBUG) {
                 WebView.setWebContentsDebuggingEnabled(true)
             }
+
+            // JS → native bridge. The web app can call
+            //   window.ConsoleNative.checkForUpdate()
+            // from the refresh button to re-run the APK update check without
+            // waiting for the next cold start.
+            addJavascriptInterface(ConsoleBridge(), "ConsoleNative")
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -411,8 +433,17 @@ class MainActivity : ComponentActivity() {
             }
             host == "pane" -> {
                 val pane = path.trim('/')
+                val roomId = data.getQueryParameter("roomId")
+                // Build detail JSON: always include pane; include itemId if we
+                // have a roomId so the web handler can navigate to the room.
+                val detail = StringBuilder("{ pane: ")
+                    .append(JSONObject.quote(pane))
+                if (!roomId.isNullOrEmpty()) {
+                    detail.append(", itemId: ").append(JSONObject.quote(roomId))
+                }
+                detail.append(" }")
                 webView.evaluateJavascript(
-                    "window.dispatchEvent(new CustomEvent('console:navigate', { detail: { pane: '$pane' } }));",
+                    "window.dispatchEvent(new CustomEvent('console:navigate', { detail: $detail }));",
                     null,
                 )
             }

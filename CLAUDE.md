@@ -1,5 +1,8 @@
 # Console — Bespoke Command Center
 
+## Before committing
+Before running any git commit, check whether anything learned in this session belongs in CLAUDE.md (architecture decisions, new subsystems, non-obvious wiring, hub endpoints, build steps). If yes, update CLAUDE.md in the same commit. Ditto for the `memory/` system when the lesson is user-level or cross-project. Do not skip this step.
+
 ## What is this?
 Personal command center: offline-first Gmail inbox + Matrix chat + Obsidian bookmarks + vault notes editor + RSS/Atom feeds + Google Calendar + Monzo banking + Claude Code agent sessions, unified under inbox-zero. No labels, no folders — just fast triage.
 
@@ -157,7 +160,16 @@ Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26
 - The APK loads `https://amarhp-lin.rya-yo.ts.net:5173/` directly — HMR works. Tailscale must be up on the phone.
 - Web side: `isNative()` (from `src/platform.ts`) detects `window.__isConsoleAPK`. Used by `src/gmail/auth.ts` (passes `?callback=app` so hub redirects OAuth to `console://auth/done`) and `src/main.tsx` (requests `navigator.storage.persist()`).
 - Remote debugging: `chrome://inspect` on the laptop while phone is USB-connected (debug builds only; `setWebContentsDebuggingEnabled(BuildConfig.DEBUG)`). The embedded debug agent also works — APK events show in `/debug/log` with UA containing `ConsoleAPK/...`.
-- Push notifications: `PushService` opens a persistent WebSocket to `/push` and posts system notifications even when the WebView is backgrounded. Server sources call `pushServer.broadcast({ type, title, body, pane, id })`. Wired today: Monzo webhook (`money` channel), agent `AskUserQuestion` / `ExitPlanMode` (`agent` channel), Gmail new mail (`mail/sync.ts` — fires on `messagesAdded` deltas), Matrix room messages (`matrix/sync.ts` — fires on timeline events in rooms with notifications on), Calendar per-event reminders (`cal/sync.ts` — 30s ticker scans upcoming events, fires on `reminders.overrides` minutes-before-start with a 60s slack window, dedupes via persisted `fired` map). CLI/webhooks can emit via `POST /push/send`. Check connected clients: `curl -sk https://localhost:9877/push/status`.
+- Push notifications: `PushService` opens a persistent WebSocket to `/push` and posts system notifications even when the WebView is backgrounded. Server sources call `pushServer.broadcast({ type, title, body, pane, id, ...chatFields })`. Wired today: Monzo webhook (`money` channel), agent `AskUserQuestion` / `ExitPlanMode` (`agent` channel), Gmail new mail (`mail/sync.ts` — fires on `messagesAdded` deltas), Matrix room messages (`matrix/sync.ts` — see below), Calendar per-event reminders (`cal/sync.ts` — 30s ticker scans upcoming events, fires on `reminders.overrides` minutes-before-start with a 60s slack window, dedupes via persisted `fired` map). CLI/webhooks can emit via `POST /push/send`. Check connected clients: `curl -sk https://localhost:9877/push/status`.
+  - Chat push specifics (`server/src/matrix/sync.ts`):
+    - **Mute filtering**: skip rooms where the delta's `unread_notifications.notification_count === 0` (server-side push rules muted it) OR where the room is tagged `m.lowpriority` / `m.archive` with no highlight. Mirrors the browser's unread logic.
+    - **Enrichment**: hub keeps an in-memory `roomState` cache (name, avatar mxc, members with displayname+avatar) + `directRooms` set (from global `m.direct` account_data), updated on every sync tick AND from the `snapshot` RPC. `PushMessage` carries `roomId`, `roomName`, `senderName`, `senderId`, `senderAvatarMxc`, `roomAvatarMxc`, `isDirect`, `timestamp`.
+  - APK rendering (`PushService.kt`):
+    - Chat notifications use `NotificationCompat.MessagingStyle` with `Person` + circular avatar (fetched once via hub's `/matrix/media/thumbnail/...` proxy, cached in-memory). History keeps the last 8 messages per room.
+    - Grouping: `setGroup(CHAT_GROUP_KEY)` + a single summary notification (id 100). Per-room notifId is `roomId.hashCode()` so follow-up messages update the same card.
+    - Vibration debounce: max one vibration per room per 60s — subsequent messages build with `setSilent(true)` + `setOnlyAlertOnce(true)`.
+    - Deep link: `console://pane/chat?roomId=<id>`. `MainActivity.handleDeepLink` parses the query param and dispatches `console:navigate` with `{ pane, itemId }`; `src/notifications.ts` listens for that event and calls `handleNotificationClick` (same path as browser notifications), so tapping a chat notification lands in the right room.
+- APK update check: runs once in `onCreate` (cold start) comparing `/apk/latest.json` versionCode against `BuildConfig.VERSION_CODE`. The refresh button in `src/components/Layout.tsx` also triggers a re-check by calling `window.ConsoleNative.checkForUpdate()` — bridge exposed via `addJavascriptInterface(ConsoleBridge(), "ConsoleNative")` in `MainActivity.buildWebView`. No-op in the browser. `updateBanner` tracked so repeated calls don't stack banners.
 
 ## Setup
 1. Google Cloud project with Gmail + People + Calendar APIs enabled

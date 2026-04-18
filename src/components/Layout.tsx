@@ -123,20 +123,10 @@ const MailTab = memo(function MailTab() {
 
 const ChatTab = memo(function ChatTab() {
   const selectedRoomId = useChatStore((s) => s.selectedRoomId)
-  const markRoomRead = useChatStore((s) => s.markRoomRead)
   const isMobile = useIsMobile()
 
   const showDetail = isMobile ? !!selectedRoomId : true
   const showList = isMobile ? !selectedRoomId : true
-
-  // Swipe refs for mobile
-  const swipeContainerRef = useRef<HTMLDivElement>(null)
-  const swipeContentRef = useRef<HTMLDivElement>(null)
-  const chatSwipeIconRef = useRef<HTMLDivElement>(null)
-  const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
-    onSwipeRight: () => markRoomRead(),
-    leftIconRef: chatSwipeIconRef,
-  })
 
   return (
     <>
@@ -149,27 +139,7 @@ const ChatTab = memo(function ChatTab() {
       )}
       {showDetail && (
         <div className="flex-1 min-w-0 flex flex-col relative overflow-hidden">
-          {isMobile ? (
-            <div
-              ref={swipeContainerRef}
-              className="flex-1 min-h-0 flex flex-col relative"
-            >
-              <div ref={chatSwipeIconRef} className="absolute inset-y-0 left-0 flex items-center pl-6 pointer-events-none z-10" style={{ opacity: 0 }}>
-                <Check size={24} className="text-green-500" />
-              </div>
-              <div
-                ref={swipeContentRef}
-                className="flex-1 min-h-0 flex flex-col relative"
-                onTouchStart={swipe.onTouchStart}
-                onTouchMove={swipe.onTouchMove}
-                onTouchEnd={swipe.onTouchEnd}
-              >
-                <ChatRoomView />
-              </div>
-            </div>
-          ) : (
-            <ChatRoomView />
-          )}
+          <ChatRoomView />
         </div>
       )}
     </>
@@ -200,6 +170,14 @@ export function Layout() {
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
     e.preventDefault()
+
+    // In the APK, also re-poll for an APK update — the native-side check only
+    // runs on cold start otherwise. Safe no-op in the browser.
+    try {
+      const bridge = (window as unknown as { ConsoleNative?: { checkForUpdate?: () => void } }).ConsoleNative
+      bridge?.checkForUpdate?.()
+    } catch { /* ignore */ }
+
     if (isEmail) {
       if (e.ctrlKey || e.metaKey) {
         const snoozed = await db.threads.filter((t) => !!t.snoozedUntil).toArray()

@@ -65,12 +65,27 @@ export type MatrixDelta = {
   leaves?: string[]
 }
 
+// Lightweight server-side cache of room state so push notifications can carry
+// sender display names, avatars, and direct-chat flags without re-fetching
+// state on every message.
+type MemberInfo = { displayname?: string; avatarMxc?: string }
+type RoomStateCache = {
+  name?: string
+  avatarMxc?: string
+  isDirect?: boolean
+  members: Map<string, MemberInfo>
+}
+
 export class MatrixSync {
   private state: MatrixSyncState = {}
   private loopTimer: NodeJS.Timeout | null = null
   private stopped = false
   private inflight = false
   private readonly LONG_POLL_MS = 30_000
+  /** roomId → cached state, built progressively from sync. */
+  private readonly roomState = new Map<string, RoomStateCache>()
+  /** roomIds flagged as DMs in global account_data (`m.direct`). */
+  private directRooms = new Set<string>()
 
   constructor(
     private readonly matrix: MatrixClient,
@@ -128,6 +143,11 @@ export class MatrixSync {
     // against unrelated state would just churn. decryptRoomEvent uses the
     // keys OlmMachine already has.
     const rooms = await this.decryptJoinedRooms(resp.rooms?.join ?? {})
+    // Warm the push-notification state cache from the snapshot too.
+    this.ingestAccountData(resp.account_data)
+    for (const [roomId, r] of Object.entries(rooms)) {
+      this.ingestRoomState(roomId, r)
+    }
     const invites = Object.keys(resp.rooms?.invite ?? {})
     const leaves = Object.keys(resp.rooms?.leave ?? {})
     const delta: MatrixDelta = {
@@ -352,6 +372,13 @@ export class MatrixSync {
       const isInitial = !this.state.nextBatch
       const { rooms, totalEvents, failedDecrypts } = await this.decryptJoinedRoomsWithCounts(resp.rooms?.join ?? {})
 
+      // 2a. Update server-side room-state cache + direct-room set so push
+      //     notifications can be enriched with sender name / avatar / DM flag.
+      this.ingestAccountData(resp.account_data)
+      for (const [roomId, r] of Object.entries(rooms)) {
+        this.ingestRoomState(roomId, r)
+      }
+
       const invites = Object.keys(resp.rooms?.invite ?? {})
       const leaves = Object.keys(resp.rooms?.leave ?? {})
 
@@ -379,30 +406,118 @@ export class MatrixSync {
 
       // 5. Push notifications for new messages from other users (not our own).
       if (!isInitial) {
-        for (const [, r] of Object.entries(rooms)) {
+        for (const [roomId, r] of Object.entries(rooms)) {
           const events = r.timeline?.events ?? []
-          // Derive a room name for the notification (best effort from state)
-          let name: string | undefined
-          for (const e of r.state?.events ?? []) {
-            if (e.type === 'm.room.name' && (e.content as any)?.name) name = (e.content as any).name
-          }
+          if (events.length === 0) continue
+
+          // Mute detection — mirror the browser's logic:
+          //   * server's push rules muted this room → notification_count is 0
+          //   * room tagged m.lowpriority / m.archive → only notify on mentions
+          const notifCount = r.unread_notifications?.notification_count ?? 0
+          const highlightCount = r.unread_notifications?.highlight_count ?? 0
+          if (notifCount === 0) continue
+          const tagEvent = (r.account_data?.events ?? []).find((e) => e.type === 'm.tag')
+          const tags = (tagEvent?.content as any)?.tags as Record<string, unknown> | undefined
+          const isLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive'])
+          if (isLowPriority && highlightCount === 0) continue
+
+          const cache = this.roomState.get(roomId)
+          const isDirect = cache?.isDirect ?? this.directRooms.has(roomId)
+          const roomName = cache?.name
+
           for (const ev of events) {
             if (ev.sender === cfg.userId) continue
             if (ev.type !== 'm.room.message') continue
-            const body = typeof (ev.content as any).body === 'string' ? (ev.content as any).body as string : ''
+            const content = ev.content as any
+            const body = typeof content.body === 'string' ? (content.body as string) : ''
             if (!body) continue
+
+            const member = ev.sender ? cache?.members.get(ev.sender) : undefined
+            const senderName = member?.displayname || ev.sender || 'Unknown'
+            // Display title: DM → sender name; group → room name (fall back to sender)
+            const title = isDirect ? senderName : (roomName || senderName)
+
             this.push.broadcast({
               type: 'chat',
-              title: name ?? 'New message',
-              body: body.slice(0, 140),
+              title,
+              body: body.slice(0, 280),
               pane: 'chat',
               id: `matrix:${ev.event_id}`,
+              roomId,
+              roomName,
+              senderName,
+              senderId: ev.sender,
+              senderAvatarMxc: member?.avatarMxc,
+              roomAvatarMxc: cache?.avatarMxc,
+              isDirect,
+              timestamp: ev.origin_server_ts,
             })
           }
         }
       }
     } finally {
       this.inflight = false
+    }
+  }
+
+  // ---- room-state cache (for push-notification enrichment) ---------------
+
+  /** Update the direct-room set from global `m.direct` account data. */
+  private ingestAccountData(accountData: unknown): void {
+    const events = (accountData as { events?: Array<{ type?: string; content?: any }> })?.events
+    if (!events) return
+    for (const e of events) {
+      if (e.type !== 'm.direct' || !e.content) continue
+      // m.direct content is { userId: [roomId, ...], ... }
+      const next = new Set<string>()
+      for (const rooms of Object.values(e.content as Record<string, unknown>)) {
+        if (!Array.isArray(rooms)) continue
+        for (const r of rooms) if (typeof r === 'string') next.add(r)
+      }
+      this.directRooms = next
+    }
+  }
+
+  /** Merge state events + timeline state into the per-room cache. */
+  private ingestRoomState(roomId: string, r: MatrixJoinedRoomDelta): void {
+    let cache = this.roomState.get(roomId)
+    if (!cache) {
+      cache = { members: new Map() }
+      this.roomState.set(roomId, cache)
+    }
+    const stateEvents = r.state?.events ?? []
+    // Timeline events can carry state-event shapes (e.g. m.room.member set by
+    // the sender for their own join). Matrix lazy-load often only delivers
+    // the sender's member event that way on subsequent syncs.
+    const timelineEvents = r.timeline?.events ?? []
+    for (const src of [stateEvents, timelineEvents]) {
+      for (const e of src) {
+        const content = e.content as any
+        if (!content) continue
+        switch (e.type) {
+          case 'm.room.name':
+            if (typeof content.name === 'string' && content.name) cache.name = content.name
+            break
+          case 'm.room.avatar':
+            if (typeof content.url === 'string') cache.avatarMxc = content.url
+            break
+          case 'm.room.canonical_alias':
+            if (!cache.name && typeof content.alias === 'string') cache.name = content.alias
+            break
+          case 'm.room.member':
+            if (e.state_key) {
+              const info: MemberInfo = {
+                displayname: typeof content.displayname === 'string' ? content.displayname : undefined,
+                avatarMxc: typeof content.avatar_url === 'string' ? content.avatar_url : undefined,
+              }
+              cache.members.set(e.state_key, info)
+            }
+            break
+        }
+      }
+    }
+    if (cache.isDirect === undefined && this.directRooms.has(roomId)) {
+      cache.isDirect = true
     }
   }
 

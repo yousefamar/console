@@ -2,11 +2,14 @@ import { memo, useCallback, useMemo } from 'react'
 import clsx from 'clsx'
 import { relativeTime } from '@/utils/date'
 import type { DbChatRoom } from '@/matrix/types'
-import { Clock, MessageCircle, Pin } from 'lucide-react'
+import { Check, Clock, MessageCircle, Pin } from 'lucide-react'
 import { FaWhatsapp, FaSlack, FaDiscord, FaInstagram, FaTelegram, FaLinkedin, FaFacebook, FaTwitter } from 'react-icons/fa'
 import { SiGooglemessages, SiImessage, SiX, SiGooglechat, SiSignal } from 'react-icons/si'
 import { mxcToThumbnail, getRoomState } from '@/matrix/api'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { SwipeableRow } from './SwipeableRow'
+import { useIsMobile } from '@/hooks/useMediaQuery'
+import { useChatStore } from '@/store/chat'
 import { db } from '@/db'
 
 interface ChatRoomListItemProps {
@@ -45,6 +48,11 @@ function NetworkIcon({ network }: { network: string }) {
 
 function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoomListItemProps) {
   const avatarUrl = room.avatar ? mxcToThumbnail(room.avatar, 32, 32) : undefined
+  const isMobile = useIsMobile()
+
+  const handleMarkRead = useCallback(() => {
+    useChatStore.getState().markRoomRead(room.id)
+  }, [room.id])
 
   const handleReload = useCallback(async () => {
     await db.chatMessages.where('roomId').equals(room.id).delete()
@@ -64,12 +72,11 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
     { label: 'Reload room', onClick: handleReload },
   ], [handleReload])
 
-  return (
-    <ContextMenu items={menuItems}>
+  const button = (
     <button
       onClick={() => onSelect(room.id)}
       className={clsx(
-        'flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors duration-fast border-b border-border',
+        'flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors duration-fast border-b border-border bg-surface-0',
         snoozed && 'opacity-50',
         isSelected
           ? 'bg-surface-2'
@@ -123,8 +130,21 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
         </div>
       </div>
     </button>
-    </ContextMenu>
   )
+
+  const content = isMobile && !snoozed ? (
+    <SwipeableRow
+      right={{
+        icon: <Check size={20} className="text-green-500" />,
+        color: '34, 197, 94',
+        onTrigger: handleMarkRead,
+      }}
+    >
+      {button}
+    </SwipeableRow>
+  ) : button
+
+  return <ContextMenu items={menuItems}>{content}</ContextMenu>
 }
 
 export const ChatRoomListItem = memo(ChatRoomListItemInner)

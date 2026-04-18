@@ -11,8 +11,8 @@ android {
         applicationId = "io.amar.console"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.1.3"
     }
 
     signingConfigs {

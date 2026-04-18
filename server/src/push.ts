@@ -22,6 +22,26 @@ export interface PushMessage {
   id?: string
   /** Optional extra JSON for richer UI (unused by default handler) */
   data?: Record<string, unknown>
+
+  // --- Chat-specific fields (populated for type:'chat') --------------------
+  // The Android PushService uses these to build MessagingStyle notifications
+  // with grouping, sender avatars, and deep-links to the specific room.
+  /** Matrix room ID — stable grouping key + deep-link target */
+  roomId?: string
+  /** Room display name (falls back to title) */
+  roomName?: string
+  /** Sender display name */
+  senderName?: string
+  /** Sender MXID (stable identifier for Person objects) */
+  senderId?: string
+  /** Sender avatar — mxc:// URL (APK resolves via hub thumbnailer) */
+  senderAvatarMxc?: string
+  /** Room avatar — mxc:// URL */
+  roomAvatarMxc?: string
+  /** True if this is a 1:1 DM (drives notification style) */
+  isDirect?: boolean
+  /** Event origin_server_ts — for MessagingStyle message ordering */
+  timestamp?: number
 }
 
 export class PushServer {

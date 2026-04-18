@@ -132,3 +132,17 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     }
   })
 }
+
+// APK push-notification tap → native shell dispatches this event via
+// console://pane/<name>?roomId=... deep-link (see MainActivity.handleDeepLink
+// and PushService). Route the same way notification.onclick does.
+if (typeof window !== 'undefined') {
+  window.addEventListener('console:navigate', (event: Event) => {
+    const detail = (event as CustomEvent).detail as { pane?: string; itemId?: string } | undefined
+    if (!detail?.pane) return
+    handleNotificationClick({
+      pane: detail.pane as ActivePane,
+      itemId: detail.itemId,
+    })
+  })
+}

@@ -223,6 +223,7 @@ export interface MatrixSyncResponse {
   to_device?: { events: unknown[] }
   device_lists?: { changed?: string[]; left?: string[] }
   device_one_time_keys_count?: Record<string, number>
+  account_data?: { events?: MatrixEvent[] }
 }
 
 interface MatrixJoinedRoom {
