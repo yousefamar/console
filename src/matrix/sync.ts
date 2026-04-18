@@ -1,5 +1,6 @@
 import { db } from '@/db'
 import { getMatrixUserId, isMatrixConnected } from './auth'
+import { mxcToThumbnail } from './api'
 import type {
   MatrixJoinedRoom,
   MatrixEvent,
@@ -635,15 +636,9 @@ async function processJoinedRoom(
     import('@/notifications').then(({ notify }) => {
       const senderName = lastMsg.senderName || lastMsg.senderId
       const body = lastMsg.body?.slice(0, 100) || 'New message'
-      // Convert mxc:// avatar to HTTP URL
-      let icon: string | undefined
-      if (dbRoom.avatar?.startsWith('mxc://')) {
-        const [server, mediaId] = dbRoom.avatar.slice(6).split('/')
-        const hs = localStorage.getItem('matrix_homeserver') || ''
-        if (hs && server && mediaId) {
-          icon = `${hs}/_matrix/media/v3/thumbnail/${server}/${mediaId}?width=96&height=96&method=crop`
-        }
-      }
+      // Route through the hub-proxied thumbnailer (same as ChatRoomListItem
+      // and SearchOverlay) — keeps the browser off the homeserver entirely.
+      const icon = dbRoom.avatar ? mxcToThumbnail(dbRoom.avatar, 96, 96) : undefined
       notify({
         title: !dbRoom.isDirect && dbRoom.name ? `${senderName} in ${dbRoom.name}` : senderName,
         body,
