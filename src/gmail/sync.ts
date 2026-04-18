@@ -465,8 +465,24 @@ async function flushQueue(): Promise<void> {
   }
 }
 
-// Start periodic sync
-export function startSyncLoop(intervalMs = 30_000): void {
+// Start the Gmail observer loop.
+//
+// Historically this ran its own 30s polling timer in the browser. With the
+// hub-centric migration, the hub owns the periodic Gmail history-poll and
+// broadcasts deltas on the sync bus (`mail.delta`). The browser:
+//   • Does one initial sync on startup (cold cache hydration).
+//   • Subscribes to `mail.delta` events; each one triggers an incremental
+//     sync so Dexie picks up the new threads.
+//   • Keeps processing the local queue + snoozes on its own slow timer,
+//     because those are browser-local concerns (offline queue, snooze state).
+//
+// If the hub is unreachable the slow fallback timer still wakes things up so
+// mail doesn't go stale when the browser has no live /sync connection.
+import { hubBus } from '@/sync-bus'
+
+let hubUnsub: (() => void) | null = null
+
+export function startSyncLoop(intervalMs = 300_000 /* 5 min fallback */): void {
   if (syncTimer) return
 
   // Flush queue immediately when actions are enqueued
@@ -478,7 +494,6 @@ export function startSyncLoop(intervalMs = 30_000): void {
     }, 500)
   })
 
-  // Initial sync
   const doSync = async () => {
     try {
       await processQueue()
@@ -489,7 +504,18 @@ export function startSyncLoop(intervalMs = 30_000): void {
     }
   }
 
+  // Initial sync on boot.
   doSync()
+
+  // Hub-driven incremental syncs — debounced so a burst of deltas results in
+  // one fetch pass, not one per message.
+  let hubDebounce: ReturnType<typeof setTimeout> | null = null
+  hubUnsub = hubBus.on('mail', 'delta', () => {
+    if (hubDebounce) clearTimeout(hubDebounce)
+    hubDebounce = setTimeout(() => { hubDebounce = null; doSync() }, 300)
+  })
+
+  // Slow fallback in case the hub /sync WebSocket is down.
   syncTimer = setInterval(doSync, intervalMs)
 }
 
@@ -505,5 +531,9 @@ export function stopSyncLoop(): void {
   if (flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = null
+  }
+  if (hubUnsub) {
+    hubUnsub()
+    hubUnsub = null
   }
 }
