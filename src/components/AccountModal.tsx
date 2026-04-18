@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useUiStore } from '@/store/ui'
 import { signOut } from '@/gmail/auth'
-import { matrixLogout, isMatrixConnected, getMatrixHomeserver } from '@/matrix/auth'
+import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
-import { X, Mail, MessageCircle, LogOut, Eye, EyeOff, BellOff, Bell, Server } from 'lucide-react'
+import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Server } from 'lucide-react'
 import { getHubUrl } from '@/hub'
 
 export function AccountModal() {
@@ -17,13 +17,8 @@ export function AccountModal() {
 
   const [signingOut, setSigningOut] = useState<'email' | 'matrix' | null>(null)
 
-  // Hub Matrix client state (hub owns OlmMachine now)
+  // Hub Matrix client status (read-only — login happens via matrixLogin now)
   const [hubStatus, setHubStatus] = useState<{ cryptoReady: boolean; deviceId?: string } | null>(null)
-  const [showHubLogin, setShowHubLogin] = useState(false)
-  const [hubPassword, setHubPassword] = useState('')
-  const [showHubPassword, setShowHubPassword] = useState(false)
-  const [hubLoginStatus, setHubLoginStatus] = useState<'idle' | 'logging-in' | 'done' | 'error'>('idle')
-  const [hubLoginDetail, setHubLoginDetail] = useState('')
 
   useEffect(() => {
     if (!matrixConnected) return
@@ -31,7 +26,7 @@ export function AccountModal() {
       .then((r) => r.json())
       .then((s) => setHubStatus(s))
       .catch(() => {})
-  }, [matrixConnected, hubLoginStatus])
+  }, [matrixConnected])
 
   async function handleEmailSignOut() {
     setSigningOut('email')
@@ -57,34 +52,6 @@ export function AccountModal() {
   function handleConnectMatrix() {
     setShowAccountModal(false)
     setShowMatrixLogin(true)
-  }
-
-  async function handleHubLogin() {
-    if (!hubPassword.trim()) return
-    const hs = getMatrixHomeserver()
-    const mxid = matrixUserId
-    if (!hs || !mxid) {
-      setHubLoginStatus('error')
-      setHubLoginDetail('No Matrix session — connect first')
-      return
-    }
-    setHubLoginStatus('logging-in')
-    setHubLoginDetail('Logging hub into homeserver...')
-    try {
-      const res = await fetch(`${getHubUrl()}/matrix/hub/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ homeserver: hs, userId: mxid, password: hubPassword }),
-      })
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
-      const data = await res.json() as { deviceId: string; importedRoomKeys: number; totalRoomKeysInBackup: number }
-      setHubLoginStatus('done')
-      setHubLoginDetail(`Hub device ${data.deviceId} — imported ${data.importedRoomKeys}/${data.totalRoomKeysInBackup} keys`)
-      setHubPassword('')
-    } catch (err) {
-      setHubLoginStatus('error')
-      setHubLoginDetail(err instanceof Error ? err.message : 'Unknown error')
-    }
   }
 
   return (
@@ -172,63 +139,14 @@ export function AccountModal() {
 
         </div>
 
-        {/* Hub Matrix client */}
-        {matrixConnected && (
+        {/* Hub Matrix client status */}
+        {matrixConnected && hubStatus?.cryptoReady && (
           <div className="px-3 pb-3">
             <div className="border-t border-border pt-3">
-              {hubStatus?.cryptoReady ? (
-                <div className="flex items-center gap-2 text-xs text-green-400">
-                  <Server size={11} />
-                  <span>Hub Matrix client active ({hubStatus.deviceId})</span>
-                </div>
-              ) : !showHubLogin ? (
-                <button
-                  onClick={() => setShowHubLogin(true)}
-                  className="flex items-center gap-2 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
-                >
-                  <Server size={11} />
-                  <span>Migrate Matrix to hub (M1)</span>
-                </button>
-              ) : (
-                <div className="space-y-2">
-                  <label className="block text-xs text-text-tertiary">Matrix password (for hub login)</label>
-                  <div className="relative">
-                    <input
-                      type={showHubPassword ? 'text' : 'password'}
-                      value={hubPassword}
-                      onChange={(e) => setHubPassword(e.target.value)}
-                      placeholder="Password"
-                      disabled={hubLoginStatus === 'logging-in'}
-                      className="w-full rounded-sm border border-border bg-surface-0 px-2 py-1.5 pr-7 text-xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-text-tertiary disabled:opacity-50"
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleHubLogin()
-                        if (e.key === 'Escape') setShowHubLogin(false)
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowHubPassword(!showHubPassword)}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
-                      tabIndex={-1}
-                    >
-                      {showHubPassword ? <EyeOff size={12} /> : <Eye size={12} />}
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className={`text-xs ${hubLoginStatus === 'error' ? 'text-red-400' : hubLoginStatus === 'done' ? 'text-green-400' : 'text-text-tertiary'}`}>
-                      {hubLoginDetail}
-                    </span>
-                    <button
-                      onClick={handleHubLogin}
-                      disabled={hubLoginStatus === 'logging-in' || !hubPassword.trim()}
-                      className="text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast disabled:opacity-50"
-                    >
-                      {hubLoginStatus === 'logging-in' ? 'Logging in...' : 'Log in hub'}
-                    </button>
-                  </div>
-                </div>
-              )}
+              <div className="flex items-center gap-2 text-xs text-green-400">
+                <Server size={11} />
+                <span>Hub Matrix client active ({hubStatus.deviceId})</span>
+              </div>
             </div>
           </div>
         )}

@@ -7,6 +7,7 @@ import type { MatrixClient } from '../matrix-client.js'
 import type { KeyBackupStore, KeyBackupBlob } from '../matrix/key-backup-store.js'
 import type { HubMatrixCrypto } from '../matrix/crypto.js'
 import type { AuthStore } from '../auth-store.js'
+import type { MatrixSync } from '../matrix/sync.js'
 import { matrixPasswordLogin } from '../matrix/login.js'
 
 export function handleMatrixRoutes(
@@ -18,6 +19,7 @@ export function handleMatrixRoutes(
   keyBackup: KeyBackupStore,
   hubCrypto: HubMatrixCrypto,
   authStore: AuthStore,
+  matrixSync: MatrixSync,
   readBody: (req: IncomingMessage) => Promise<string>,
 ): boolean {
   const json = (data: unknown, status = 200) => {
@@ -414,6 +416,9 @@ export function handleMatrixRoutes(
         total = r.total
       }
 
+      // 5. Kick the sync loop so it picks up the new credentials immediately
+      matrixSync.start()
+
       const identity = hubCrypto.identity()
       json({
         ok: true,
@@ -423,6 +428,36 @@ export function handleMatrixRoutes(
         importedRoomKeys: imported,
         totalRoomKeysInBackup: total,
       })
+    })
+  }
+
+  // POST /matrix/hub/logout
+  // Invalidates the homeserver session, tears down OlmMachine + sync loop,
+  // clears credentials from auth.json. Browser calls this instead of hitting
+  // the homeserver directly.
+  if (path === '/matrix/hub/logout' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const cfg = authStore.getMatrixConfig()
+      if (cfg) {
+        // 1. Best-effort homeserver logout
+        try {
+          await fetch(`${cfg.homeserver}/_matrix/client/v3/logout`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${cfg.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          })
+        } catch {
+          // ignore — we're clearing local state anyway
+        }
+      }
+      // 2. Stop sync loop and crypto
+      matrixSync.stop()
+      await hubCrypto.stop()
+      // 3. Clear credentials
+      authStore.clearMatrixConfig()
+      json({ ok: true })
     })
   }
 
