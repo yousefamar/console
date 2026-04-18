@@ -1,44 +1,19 @@
+// Gmail auth — thin façade around the hub's Google OAuth.
+//
+// The hub owns the access token; the browser just asks the hub "am I signed
+// in?" on startup and tracks that in memory. Sign-in opens the hub's
+// /auth/google/start (popup in the browser, Chrome Custom Tabs in the APK)
+// and polls /auth/google/poll for completion. Sign-out POSTs to
+// /auth/logout/google so the hub forgets the credentials.
+
 import { getHubUrl } from '@/hub'
 import { isNative, onNativeAuthReturn } from '@/platform'
 
-const TOKEN_KEY = 'console_access_token'
-const EXPIRY_KEY = 'console_token_expiry'
+let signedIn = false
+let userEmail: string | null = null
 
-let accessToken: string | null = localStorage.getItem(TOKEN_KEY)
-let tokenExpiry: number = parseInt(localStorage.getItem(EXPIRY_KEY) ?? '0')
-let refreshTimer: ReturnType<typeof setTimeout> | null = null
+// --- Auth-state listeners ----------------------------------------------------
 
-function persistToken(token: string, expiresIn: number) {
-  accessToken = token
-  tokenExpiry = Date.now() + expiresIn * 1000
-  localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(EXPIRY_KEY, String(tokenExpiry))
-  scheduleTokenRefresh(expiresIn)
-}
-
-function scheduleTokenRefresh(expiresIn: number) {
-  if (refreshTimer) clearTimeout(refreshTimer)
-  const refreshInMs = Math.max((expiresIn - 300) * 1000, 0)
-  refreshTimer = setTimeout(async () => {
-    const success = await refreshAccessToken()
-    if (!success) {
-      notifyAuthExpired()
-    }
-  }, refreshInMs)
-}
-
-function clearToken() {
-  accessToken = null
-  tokenExpiry = 0
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(EXPIRY_KEY)
-  if (refreshTimer) {
-    clearTimeout(refreshTimer)
-    refreshTimer = null
-  }
-}
-
-// Auth expiry listener — fires when hub can't provide a token
 type AuthExpiredListener = () => void
 let authExpiredListeners: AuthExpiredListener[] = []
 
@@ -48,47 +23,59 @@ export function onAuthExpired(fn: AuthExpiredListener): () => void {
 }
 
 export function notifyAuthExpired() {
-  clearToken()
+  signedIn = false
+  userEmail = null
   for (const fn of authExpiredListeners) fn()
 }
 
-/** Fetch a fresh access token from the hub server */
-export async function refreshAccessToken(): Promise<boolean> {
+// --- Status --------------------------------------------------------------
+
+interface HubStatus {
+  google: {
+    connected: boolean
+    accounts: Array<{ email: string; isPrimary: boolean; hasToken: boolean }>
+  }
+}
+
+async function fetchStatus(): Promise<HubStatus | null> {
   try {
-    const res = await fetch(`${getHubUrl()}/auth/token`)
-    if (!res.ok) return false
-    const data = await res.json() as { access_token: string; expires_in: number; email: string }
-    persistToken(data.access_token, data.expires_in)
-    return true
+    const res = await fetch(`${getHubUrl()}/auth/status`)
+    if (!res.ok) return null
+    return await res.json() as HubStatus
   } catch {
-    return false
+    return null
   }
 }
 
 export async function initAuth(): Promise<void> {
-  if (accessToken && tokenExpiry > Date.now()) {
-    // Valid token — schedule proactive refresh
-    const remainingSecs = Math.floor((tokenExpiry - Date.now()) / 1000)
-    scheduleTokenRefresh(remainingSecs)
-  } else {
-    // Token expired or missing — fetch from hub
-    const refreshed = await refreshAccessToken()
-    if (!refreshed) {
-      clearToken()
-    }
+  const status = await fetchStatus()
+  if (!status) {
+    signedIn = false
+    userEmail = null
+    return
   }
+  const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
+  signedIn = !!primary?.hasToken
+  userEmail = primary?.email ?? null
 }
 
-/**
- * Sign in via hub's Google OAuth flow.
- * Opens the hub's /auth/google/start in a popup, polls /auth/google/poll for completion.
- */
+export function isSignedIn(): boolean {
+  return signedIn
+}
+
+export function getUserEmail(): string | null {
+  return userEmail
+}
+
+// --- Sign-in / sign-out --------------------------------------------------
+
 export function signIn(popup?: Window | null): Promise<string> {
   const native = isNative()
   const startUrl = `${getHubUrl()}/auth/google/start${native ? '?callback=app' : ''}`
 
-  // Popup must be opened by the caller in the click handler to preserve user gesture.
-  // In the APK the native shell intercepts window.open and launches Custom Tabs.
+  // Popup must be opened by the caller in the click handler to preserve user
+  // gesture. In the APK the native shell intercepts window.open and launches
+  // Chrome Custom Tabs.
   if (popup === undefined) {
     popup = window.open(
       startUrl,
@@ -96,6 +83,7 @@ export function signIn(popup?: Window | null): Promise<string> {
       'width=500,height=600,menubar=no,toolbar=no',
     )
   }
+
   return new Promise((resolve, reject) => {
     const hubUrl = getHubUrl()
 
@@ -119,6 +107,12 @@ export function signIn(popup?: Window | null): Promise<string> {
       }
     }
 
+    const finish = async (email: string) => {
+      cleanup()
+      await initAuth()
+      resolve(email)
+    }
+
     // APK path — native shell dispatches a DOM event after `console://auth/done`.
     if (native) {
       unsubscribeNative = onNativeAuthReturn(async () => {
@@ -126,12 +120,7 @@ export function signIn(popup?: Window | null): Promise<string> {
         try {
           const res = await fetch(`${hubUrl}/auth/google/poll`)
           const data = await res.json() as { done: boolean; email?: string }
-          if (data.done && data.email) {
-            cleanup()
-            const refreshed = await refreshAccessToken()
-            if (refreshed) resolve(data.email)
-            else reject(new Error('Token fetch failed after sign-in'))
-          }
+          if (data.done && data.email) await finish(data.email)
         } catch (err) {
           cleanup()
           reject(err instanceof Error ? err : new Error(String(err)))
@@ -139,8 +128,9 @@ export function signIn(popup?: Window | null): Promise<string> {
       })
     }
 
-    // Polling path — also runs in native as a safety net in case the deep link
-    // fires before the listener is attached, or the event is lost on cold start.
+    // Polling path — also runs in native as a safety net in case the deep
+    // link fires before the listener is attached, or the event is lost on
+    // cold start.
     interval = setInterval(async () => {
       if (settled) return
       if (popup && !native && popup.closed) {
@@ -152,12 +142,7 @@ export function signIn(popup?: Window | null): Promise<string> {
         const res = await fetch(`${hubUrl}/auth/google/poll`)
         if (!res.ok) return
         const data = await res.json() as { done: boolean; email?: string }
-        if (data.done && data.email) {
-          cleanup()
-          const refreshed = await refreshAccessToken()
-          if (refreshed) resolve(data.email)
-          else reject(new Error('Token fetch failed after sign-in'))
-        }
+        if (data.done && data.email) await finish(data.email)
       } catch {
         // keep polling
       }
@@ -171,19 +156,17 @@ export function signIn(popup?: Window | null): Promise<string> {
   })
 }
 
-export async function getAccessToken(): Promise<string | null> {
-  if (accessToken && Date.now() < tokenExpiry) {
-    return accessToken
-  }
-  const refreshed = await refreshAccessToken()
-  if (refreshed) return accessToken
-  return null
-}
-
-export function isSignedIn(): boolean {
-  return !!accessToken && Date.now() < tokenExpiry
-}
-
 export async function signOut(): Promise<void> {
-  clearToken()
+  // Tell the hub to drop the primary Google account's refresh + access tokens.
+  try {
+    await fetch(`${getHubUrl()}/auth/logout/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  } catch {
+    // Best effort — we clear local state regardless.
+  }
+  signedIn = false
+  userEmail = null
 }

@@ -2,9 +2,8 @@ import { db, getMeta, setMeta } from '@/db'
 import * as queue from '@/db/sync-queue'
 import { onEnqueue } from '@/db/sync-queue'
 import * as api from './api'
-import type { DbThread, DbMessage } from './types'
+import type { DbThread, DbMessage, GmailThread } from './types'
 import { getHeader, getBodyHtml, getBodyText, parseFrom, getAllHeaders, getAttachments, getCalendarPart, parseCalendarData } from '@/utils/email'
-import { getAccessToken } from './auth'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline'
 
@@ -60,7 +59,7 @@ function gmailMessageToDbThread(thread: Awaited<ReturnType<typeof api.getThread>
   }
 }
 
-async function gmailMessageToDbMessage(msg: Awaited<ReturnType<typeof api.getMessage>>): Promise<DbMessage> {
+async function gmailMessageToDbMessage(msg: GmailThread['messages'][number]): Promise<DbMessage> {
   const from = parseFrom(getHeader(msg, 'From'))
   const attachments = getAttachments(msg)
 
@@ -351,9 +350,6 @@ export async function incrementalSync(): Promise<void> {
 
 // Process the offline queue (email actions only — chat actions handled by matrix/sync.ts)
 export async function processQueue(): Promise<void> {
-  const token = await getAccessToken()
-  if (!token) return // Offline
-
   const pending = await queue.getPending()
   if (pending.length === 0) return
 

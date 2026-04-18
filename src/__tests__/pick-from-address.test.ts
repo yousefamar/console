@@ -11,9 +11,9 @@ vi.hoisted(() => {
 
 // Mock out browser-only modules in the import chain
 vi.mock('@/gmail/auth', () => ({
-  getAccessToken: vi.fn(() => Promise.resolve(null)),
-  refreshAccessToken: vi.fn(() => Promise.resolve(false)),
   notifyAuthExpired: vi.fn(),
+  isSignedIn: vi.fn(() => false),
+  initAuth: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('@/utils/attachment-cache', () => ({

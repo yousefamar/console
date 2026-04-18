@@ -1,6 +1,5 @@
 import { db } from '@/db'
 import { getAttachment } from '@/gmail/api'
-import { getAccessToken } from '@/gmail/auth'
 import type { AttachmentMeta } from '@/gmail/types'
 
 // In-memory blob URL cache for quick access
@@ -34,10 +33,7 @@ export async function getAttachmentBlobUrl(
     return url
   }
 
-  // Fetch from API
-  const token = await getAccessToken()
-  if (!token) return null
-
+  // Fetch from hub
   try {
     const data = await getAttachment(messageId, attachment.attachmentId)
     const blob = base64UrlToBlob(data, attachment.mimeType)
@@ -68,10 +64,7 @@ export async function getAttachmentBlob(
   const stored = await db.attachmentData.get(attachment.attachmentId)
   if (stored) return stored.data
 
-  // Fetch from API
-  const token = await getAccessToken()
-  if (!token) return null
-
+  // Fetch from hub
   try {
     const data = await getAttachment(messageId, attachment.attachmentId)
     const blob = base64UrlToBlob(data, attachment.mimeType)
@@ -97,9 +90,6 @@ export async function preloadAttachments(): Promise<void> {
   if (preloadAbort) preloadAbort.abort()
   preloadAbort = new AbortController()
   const signal = preloadAbort.signal
-
-  const token = await getAccessToken()
-  if (!token) return
 
   const threads = await db.threads
     .filter((t) => t.labelIds.includes('INBOX') && !t.snoozedUntil)
