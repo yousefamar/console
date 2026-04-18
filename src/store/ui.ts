@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
+import { getPref, setPref } from '@/prefs'
 
 export type ActivePane = 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'money'
 
@@ -29,10 +30,10 @@ const PATH_PANES: Record<string, ActivePane> = {
 function paneFromUrl(): ActivePane {
   if (typeof window === 'undefined') return 'email'
   const pane = PATH_PANES[window.location.pathname] ?? 'email'
-  // Initialize notification state
-  import('@/notifications').then(({ setActiveNotificationPane, setDoNotDisturb }) => {
+  // Initialize notification state. DnD is applied in App init once hub prefs
+  // have loaded — don't touch it here, to avoid a race with the async fetch.
+  import('@/notifications').then(({ setActiveNotificationPane }) => {
     setActiveNotificationPane(pane)
-    if (localStorage.getItem('console_dnd') === 'true') setDoNotDisturb(true)
   }).catch(() => {})
   return pane
 }
@@ -160,9 +161,11 @@ export const useUiStore = create<UiState>((set) => ({
   pipVideo: null,
   setPipVideo: (v) => set({ pipVideo: v }),
 
-  doNotDisturb: typeof localStorage !== 'undefined' && localStorage.getItem('console_dnd') === 'true',
+  // Default to the value loaded into hub prefs on boot; App init fetches and
+  // re-applies after initPrefs() resolves.
+  doNotDisturb: getPref<boolean>('dnd', false),
   setDoNotDisturb: (v) => {
-    localStorage.setItem('console_dnd', String(v))
+    setPref('dnd', v)
     import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(v))
     set({ doNotDisturb: v })
   },

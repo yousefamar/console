@@ -6,7 +6,10 @@ import * as api from '@/calendar/api'
 import { getAccounts, addCalendarAccount, removeCalendarAccount, type CalendarAccount } from '@/calendar/accounts'
 import { optimisticallyDeleted, pendingTempIds } from '@/calendar/sync'
 import { useUiStore } from '@/store/ui'
+import { getPref, setPref } from '@/prefs'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
+
+const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -169,7 +172,8 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   newEventEnd: null,
   locationPickerEvent: null,
 
-  visibleCalendarIds: new Set<string>(),
+  // Hydrated from hub prefs on boot (initPrefs() runs before App renders).
+  visibleCalendarIds: new Set<string>(getPref<string[]>(VISIBLE_CAL_IDS_PREF, [])),
 
   // --- Accounts ---
 
@@ -276,14 +280,16 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       await db.calendarList.clear()
       await db.calendarList.bulkPut(dbItems)
 
-      // Initialize visibility
+      // Initialize visibility — use the hub-synced set if present, otherwise
+      // keep whatever is in-memory, otherwise default to all calendars visible.
       const { visibleCalendarIds } = get()
-      const savedIds = localStorage.getItem('calendar-visible-ids')
+      const savedIds = getPref<string[] | null>(VISIBLE_CAL_IDS_PREF, null)
       let newVisible: Set<string>
-      if (savedIds) {
-        newVisible = new Set(JSON.parse(savedIds) as string[])
+      if (savedIds && Array.isArray(savedIds)) {
+        newVisible = new Set(savedIds)
       } else if (visibleCalendarIds.size === 0) {
         newVisible = new Set(allCalendars.map((c) => c.id))
+        setPref(VISIBLE_CAL_IDS_PREF, Array.from(newVisible))
       } else {
         newVisible = visibleCalendarIds
       }
@@ -404,7 +410,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       const next = new Set(s.visibleCalendarIds)
       if (next.has(calId)) next.delete(calId)
       else next.add(calId)
-      localStorage.setItem('calendar-visible-ids', JSON.stringify(Array.from(next)))
+      setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
       return { visibleCalendarIds: next }
     })
     get().loadEventsFromDb()

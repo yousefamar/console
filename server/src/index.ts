@@ -39,6 +39,8 @@ import { AlBridge, AL_SESSION_ID } from './al-bridge.js'
 import { MonzoClient } from './monzo-client.js'
 import { MonzoStore } from './monzo-store.js'
 import { handleMonzoRoutes } from './routes/monzo.js'
+import { PrefsStore } from './prefs-store.js'
+import { handleConfigRoutes } from './routes/config.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -85,6 +87,7 @@ const monzoStore = new MonzoStore(
   join(feedsConfigDir, 'monzo-transactions.json'),
   monzoClient,
 )
+const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const syncBus = new SyncBus((msg: string) => { log(msg) })
 const mailSync = new MailSync(
@@ -393,6 +396,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
+  if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
 
   res.writeHead(404)
   res.end('Not found')

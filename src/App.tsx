@@ -3,6 +3,7 @@ import { initAuth, signIn, isSignedIn, onAuthExpired } from '@/gmail/auth'
 import { resetStuckProcessing } from '@/db/sync-queue'
 import { isMatrixConnected } from '@/matrix/auth'
 import { getHubUrl } from '@/hub'
+import { initPrefs, getPref } from '@/prefs'
 import { useKeybindings } from '@/hooks/useKeybindings'
 import { useSync } from '@/hooks/useSync'
 import { useUiStore } from '@/store/ui'
@@ -135,6 +136,15 @@ export function App() {
     async function init() {
       // Reset any queue items stuck in 'processing' from a previous session
       resetStuckProcessing()
+
+      // Load user preferences from hub before rendering so initial UI state
+      // (DnD, calendar visibility, ...) matches the synced values.
+      await initPrefs()
+      // Apply DnD state that was loaded from the hub
+      if (getPref('dnd', false)) {
+        import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(true))
+        useUiStore.setState({ doNotDisturb: true })
+      }
 
       try {
         // Try to initialize Gmail auth via hub (non-blocking — app works without it)
