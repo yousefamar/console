@@ -224,6 +224,107 @@ export function handleMatrixRoutes(
     })
   }
 
+  // GET /matrix/rooms/:id/state — raw CS-API state events (for the browser's
+  // roomIsEncrypted / member-list checks on the send path).
+  const stateMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/state$/)
+  if (stateMatch && req.method === 'GET') {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(stateMatch[1]!)
+      const state = await matrix.getRoomState(roomId)
+      json(state)
+    })
+  }
+
+  // GET /matrix/rooms/:id/event/:eventId — single event lookup (backfill).
+  const eventMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/event\/([^/]+)$/)
+  if (eventMatch && req.method === 'GET') {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(eventMatch[1]!)
+      const eventId = decodeURIComponent(eventMatch[2]!)
+      const event = await matrix.getEvent(roomId, eventId)
+      json(event)
+    })
+  }
+
+  // GET /matrix/url-preview?url=... — proxy /_matrix/media/v3/preview_url.
+  if (path === '/matrix/url-preview' && req.method === 'GET') {
+    return handleAsync(async () => {
+      const previewUrl = url.searchParams.get('url')
+      if (!previewUrl) return error(400, 'url param required')
+      try {
+        const data = await matrix.urlPreview(previewUrl)
+        json(data)
+      } catch (e) {
+        const err = e as { status?: number; message: string }
+        if (err.status === 404) return json({}) // server doesn't support preview_url
+        throw e
+      }
+    })
+  }
+
+  // POST /matrix/media/upload?filename=... — binary body → mxc://
+  if (path === '/matrix/media/upload' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const filename = url.searchParams.get('filename') ?? undefined
+      const contentType = (req.headers['content-type'] as string | undefined) ?? 'application/octet-stream'
+      // Collect the raw request body as a Buffer (avoid readBody — that assumes text)
+      const chunks: Buffer[] = []
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c: Buffer) => chunks.push(c))
+        req.on('end', () => resolve())
+        req.on('error', reject)
+      })
+      const buf = Buffer.concat(chunks)
+      const result = await matrix.uploadMedia(buf, contentType, filename)
+      json(result)
+    })
+  }
+
+  // GET /matrix/media/download/:server/:mediaId — stream through the homeserver.
+  const dlMatch = path.match(/^\/matrix\/media\/download\/([^/]+)\/([^/?]+)$/)
+  if (dlMatch && req.method === 'GET') {
+    return handleAsync(async () => {
+      const server = decodeURIComponent(dlMatch[1]!)
+      const mediaId = decodeURIComponent(dlMatch[2]!)
+      const resp = await matrix.mediaFetch(`/_matrix/media/v3/download/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}`)
+      if (!resp.ok) return error(resp.status, `media download failed: ${resp.status}`)
+      const headers: Record<string, string> = {}
+      const ct = resp.headers.get('content-type')
+      if (ct) headers['Content-Type'] = ct
+      const cd = resp.headers.get('content-disposition')
+      if (cd) headers['Content-Disposition'] = cd
+      const cl = resp.headers.get('content-length')
+      if (cl) headers['Content-Length'] = cl
+      headers['Cache-Control'] = 'private, max-age=3600'
+      res.writeHead(200, headers)
+      const buf = Buffer.from(await resp.arrayBuffer())
+      res.end(buf)
+    })
+  }
+
+  // GET /matrix/media/thumbnail/:server/:mediaId?width=&height=&method=
+  const thumbMatch = path.match(/^\/matrix\/media\/thumbnail\/([^/]+)\/([^/?]+)$/)
+  if (thumbMatch && req.method === 'GET') {
+    return handleAsync(async () => {
+      const server = decodeURIComponent(thumbMatch[1]!)
+      const mediaId = decodeURIComponent(thumbMatch[2]!)
+      const w = url.searchParams.get('width') ?? '48'
+      const h = url.searchParams.get('height') ?? '48'
+      const method = url.searchParams.get('method') ?? 'crop'
+      const resp = await matrix.mediaFetch(
+        `/_matrix/media/v3/thumbnail/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}?width=${w}&height=${h}&method=${method}`,
+      )
+      if (!resp.ok) return error(resp.status, `thumbnail failed: ${resp.status}`)
+      const headers: Record<string, string> = {}
+      const ct = resp.headers.get('content-type')
+      if (ct) headers['Content-Type'] = ct
+      headers['Cache-Control'] = 'private, max-age=86400'
+      res.writeHead(200, headers)
+      const buf = Buffer.from(await resp.arrayBuffer())
+      res.end(buf)
+    })
+  }
+
   // GET /matrix/whoami
   if (path === '/matrix/whoami' && req.method === 'GET') {
     return handleAsync(async () => {

@@ -154,6 +154,26 @@ export class MatrixClient {
     return this.request<{ joined_rooms: string[] }>('/_matrix/client/v3/joined_rooms')
   }
 
+  async getEvent(roomId: string, eventId: string) {
+    return this.request<Record<string, unknown>>(
+      `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`,
+    )
+  }
+
+  async urlPreview(url: string) {
+    return this.request<Record<string, unknown>>(
+      '/_matrix/media/v3/preview_url',
+      { params: { url, ts: String(Date.now()) } },
+    )
+  }
+
+  /** Proxy a GET request to /_matrix/media/v3/... returning the raw Response. */
+  async mediaFetch(path: string): Promise<Response> {
+    const config = this.getConfig()
+    const url = `${config.homeserver}${path}`
+    return fetch(url, { headers: { Authorization: `Bearer ${config.accessToken}` } })
+  }
+
   // -------------------------------------------------------------------------
   // Media
   // -------------------------------------------------------------------------
