@@ -10,6 +10,7 @@ import { useComposeStore } from '@/store/compose'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useAgentStore } from '@/store/agent'
 import { db } from '@/db'
+import { hubBus as _hubBus } from '@/sync-bus'
 
 interface LongTask {
   duration: number
@@ -34,6 +35,7 @@ declare global {
       }
       db: typeof db
       perf: PerfData
+      hubBus: typeof _hubBus
     }
   }
 }
@@ -55,6 +57,7 @@ window.__console = {
   },
   db,
   perf,
+  hubBus: _hubBus,
 }
 
 // Long task observer — logs any task blocking the main thread for >50ms

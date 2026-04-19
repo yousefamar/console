@@ -17,12 +17,15 @@ const pendingRequests = new Map<string, {
 
 const SCREENSHOT_DIR = join(homedir(), '.config', 'console', 'screenshots')
 
-function sendToFirstClient(clients: Set<WebSocket>, msg: Record<string, unknown>): boolean {
+function sendToFirstClient(clients: Set<WebSocket>, msg: Record<string, unknown>, targetUaSubstr?: string): boolean {
   for (const ws of clients) {
-    if (ws.readyState === 1) { // WebSocket.OPEN
-      ws.send(JSON.stringify(msg))
-      return true
+    if (ws.readyState !== 1) continue // WebSocket.OPEN
+    if (targetUaSubstr) {
+      const ua = ((ws as any).ua as string | undefined) ?? ''
+      if (!ua.toLowerCase().includes(targetUaSubstr.toLowerCase())) continue
     }
+    ws.send(JSON.stringify(msg))
+    return true
   }
   return false
 }
@@ -34,11 +37,11 @@ function broadcastDebug(clients: Set<WebSocket>, msg: Record<string, unknown>): 
   }
 }
 
-function rpcRequest(clients: Set<WebSocket>, msg: Record<string, unknown>, timeoutMs = 10000): Promise<unknown> {
+function rpcRequest(clients: Set<WebSocket>, msg: Record<string, unknown>, timeoutMs = 10000, targetUaSubstr?: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = msg.id as string
-    if (!sendToFirstClient(clients, msg)) {
-      reject(new Error('No debug client connected'))
+    if (!sendToFirstClient(clients, msg, targetUaSubstr)) {
+      reject(new Error(targetUaSubstr ? `No debug client matching UA substring "${targetUaSubstr}"` : 'No debug client connected'))
       return
     }
     const timer = setTimeout(() => {
@@ -131,13 +134,20 @@ export function handleDebugRoutes(
     return true
   }
 
+  // All RPC endpoints accept `?target=<ua-substring>` to pick a specific
+  // connected client by User-Agent substring (case-insensitive). Handy when
+  // both desktop browser and APK WebView are connected, e.g. `?target=apk`
+  // (the APK's UA contains "ConsoleAPK/…") or `?target=firefox`.
+  const target = url.searchParams.get('target') || undefined
+
   // POST /debug/eval — execute JS in browser
   if (path === '/debug/eval' && req.method === 'POST') {
     readBody(req).then(async (body) => {
       try {
         const { code } = JSON.parse(body) as { code: string }
         const id = randomUUID()
-        const result = await rpcRequest(debugClients, { type: 'debug_eval', id, code })
+        const timeoutMs = Number(url.searchParams.get('timeout')) || 10000
+        const result = await rpcRequest(debugClients, { type: 'debug_eval', id, code }, timeoutMs, target)
         json(result)
       } catch (err) {
         json({ error: (err as Error).message }, 500)
@@ -152,7 +162,7 @@ export function handleDebugRoutes(
   if (path === '/debug/state' && req.method === 'GET') {
     const stores = url.searchParams.get('stores')?.split(',')
     const id = randomUUID()
-    rpcRequest(debugClients, { type: 'debug_get_state', id, stores })
+    rpcRequest(debugClients, { type: 'debug_get_state', id, stores }, 10000, target)
       .then((result) => json(result))
       .catch((err) => json({ error: (err as Error).message }, 500))
     return true
@@ -161,7 +171,7 @@ export function handleDebugRoutes(
   // POST /debug/screenshot — capture page screenshot
   if (path === '/debug/screenshot' && req.method === 'POST') {
     const id = randomUUID()
-    rpcRequest(debugClients, { type: 'debug_screenshot', id }, 30000)
+    rpcRequest(debugClients, { type: 'debug_screenshot', id }, 30000, target)
       .then((result) => json(result))
       .catch((err) => json({ error: (err as Error).message }, 500))
     return true
@@ -179,10 +189,18 @@ export function handleDebugRoutes(
     return true
   }
 
-  // GET /debug/status — connection info
+  // GET /debug/status — connection info (includes per-client User-Agent so
+  // callers know what to pass as `?target=` on /debug/eval et al.)
   if (path === '/debug/status' && req.method === 'GET') {
+    const clients: Array<{ ua: string }> = []
+    for (const ws of debugClients) {
+      if (ws.readyState === 1) {
+        clients.push({ ua: ((ws as any).ua as string | undefined) ?? '' })
+      }
+    }
     json({
       clients: debugClients.size,
+      clientList: clients,
       logLines: debugLog.getLineCount(),
       pendingRequests: pendingRequests.size,
     })
