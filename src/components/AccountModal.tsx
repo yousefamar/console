@@ -4,6 +4,8 @@ import { signOut } from '@/gmail/auth'
 import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { X, Mail, MessageCircle, LogOut, BellOff, Bell } from 'lucide-react'
+import { GlassesSettings } from './GlassesSettings'
+import { glassesSupported } from '@/glasses/bridge'
 
 export function AccountModal() {
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
@@ -124,6 +126,13 @@ export function AccountModal() {
               </button>
             )}
           </div>
+
+          {glassesSupported() && (
+            <>
+              <div className="border-t border-border" />
+              <GlassesSettings />
+            </>
+          )}
 
         </div>
 

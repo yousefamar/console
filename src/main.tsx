@@ -9,6 +9,8 @@ import utc from 'dayjs/plugin/utc'
 import { App } from './App'
 import { isNative } from './platform'
 import { hubBus } from './sync-bus'
+import { wireGlassesStore } from './glasses/store'
+import { wireG1Events } from './glasses/events'
 import './index.css'
 
 // Hub sync bus — a single WebSocket carrying service event streams + RPC.
@@ -50,3 +52,10 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 if (isNative() && navigator.storage?.persist) {
   navigator.storage.persist().catch(() => {})
 }
+
+// Subscribe to native glasses state stream (APK only; no-op in the browser).
+wireGlassesStore()
+// Subscribe to native 0xF5 event stream (APK only) — touchbar taps,
+// long-press, head tilts, dashboard show/hide. Also feeds the in-app
+// recent-events debug panel.
+wireG1Events()

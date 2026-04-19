@@ -14,6 +14,7 @@ Services:
   cal          Google Calendar — events, create, edit, delete, rsvp
   money        Monzo banking — balance, transactions, pots, spending
   agent        Claude Code sessions — create, send, tail, approve/deny
+  glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
 
 System:
   auth         Manage accounts — login, logout, status
@@ -205,6 +206,35 @@ Examples:
   con money transactions --category groceries --limit 20
   con money spending --month 2026-04
   con money deposit --pot pot_xxx --amount 500
+`.trim(),
+
+  glasses: `
+con glasses — Even Realities G1 smart glasses
+
+Commands:
+  status       Connection + battery snapshot
+  text         Write a line of text to the display
+  clear        Blank the display (exit current app)
+  bmp          Send a 576x136 1-bpp BMP (heavier — ~400 packets)
+  notify       Push a notification card
+  mic          Toggle the glasses microphone (on|off)
+  disconnect   Drop BLE link but keep pairing (DND-style)
+  scan         Trigger / stop a BLE scan, or dump recent observations
+  research     Reverse-engineering frame log: on|off|tail [N]
+
+Glasses are owned by the phone's APK — the hub talks to it over the push
+WebSocket. If the APK isn't connected you'll get a 503 'APK not connected'.
+
+Examples:
+  con glasses status
+  con glasses text "Hello from the terminal"
+  con glasses notify --title 'Bus' --message '12 arrives in 3min'
+  con glasses bmp ./logo.bmp
+  con glasses mic on
+  con glasses scan start           # trigger phone-side BLE scan
+  con glasses scan observations    # what names were advertising (debug)
+  con glasses research tail 200    # recent frames (jq-friendly NDJSON)
+  con glasses research on          # also log heartbeats
 `.trim(),
 
   agent: `

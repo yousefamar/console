@@ -6,9 +6,11 @@ import {
   ingestHubDelta,
   processChatQueue,
   checkChatSnoozes,
+  getMatrixCursor,
+  type HubMatrixDelta,
 } from '@/matrix/sync'
 import { onEnqueue } from '@/db/sync-queue'
-import { isMatrixConnected } from '@/matrix/auth'
+import { isMatrixConnected, onMatrixAuthChange } from '@/matrix/auth'
 import { preloadAllInbox } from '@/utils/email-cache'
 import { preloadAttachments } from '@/utils/attachment-cache'
 import { preloadContacts } from '@/components/ContactAutocomplete'
@@ -53,76 +55,139 @@ export function useSync() {
 
   // Matrix sync — the hub owns the Matrix /sync loop and broadcasts decrypted
   // deltas over SyncBus. Browser is a pure consumer: no direct homeserver calls,
-  // no local crypto. On first load (no cached rooms) we prime with a one-shot
-  // full sync via the hub's syncNow RPC, then live deltas take over.
+  // no local crypto.
+  //
+  // Reconciliation strategy: the client persists the `next_batch` token from
+  // every ingested delta and hands it back to the hub on any state-change
+  // signal (WS reconnect, visibility restore, network online). The hub calls
+  // `/sync?since=<token>` against the homeserver which replays any missed
+  // events — this is Matrix's native resumable-sync primitive, not a
+  // home-rolled buffer. Covers:
+  //   - APK WebView backgrounded then foregrounded (WS never dropped from
+  //     JS's perspective so `onConnect` doesn't fire — visibility does)
+  //   - WS drop / laptop wake / network flap
+  //   - Hub restart (client's cursor is still valid against the homeserver)
+  //   - Cold start (no cursor → hub does initial sync)
   useEffect(() => {
-    if (!isMatrixConnected()) return
+    // Matrix auth hydrates asynchronously on APK cold boot (hub-backed, not
+    // localStorage). We can't gate on isMatrixConnected() at effect-mount time
+    // — if we bail, this effect never re-runs (empty deps). Instead, wire the
+    // Matrix sync block on every auth transition to "connected", and tear it
+    // down on "disconnected". onMatrixAuthChange fires once synchronously with
+    // the current state, so the common (already-signed-in) case still fires
+    // the block on first render.
+    let teardown: (() => void) | null = null
 
-    let stopped = false
-    let hubUnsubDelta: (() => void) | null = null
-    let hubUnsubInitial: (() => void) | null = null
-    let hubUnsubConnect: (() => void) | null = null
+    const startMatrixBlock = (): (() => void) => {
+      let stopped = false
+      let hubUnsubDelta: (() => void) | null = null
+      let hubUnsubConnect: (() => void) | null = null
+      let reconcileInFlight: Promise<void> | null = null
+      let reconcileDirty = false
+      let reconcileDebounce: ReturnType<typeof setTimeout> | null = null
 
-    const startMatrix = async () => {
-      // One-time migrations (local cache cleanup — no network needed)
-      await backfillMediaUrls().catch(() => {})
-      await backfillRoomInfo().catch(() => {})
+      const runReconcile = async () => {
+        const { hubBus } = await import('@/sync-bus')
+        if (stopped) return
+        const since = await getMatrixCursor()
+        const result = await hubBus.rpc<HubMatrixDelta>('matrix', 'resume', { since })
+        if (stopped || !result) return
+        const isInitial = !since || result.isInitial === true
+        await ingestHubDelta(result, isInitial)
+        if (isInitial) {
+          await useChatStore.getState().preloadAllRooms().catch(() => {})
+        }
+      }
 
-      // Subscribe BEFORE asking hub to sync, so we don't miss the response.
-      const { hubBus } = await import('@/sync-bus')
-      hubUnsubInitial = hubBus.on('matrix', 'initial', (data: unknown) => {
-        ingestHubDelta(data as Parameters<typeof ingestHubDelta>[0], true)
-          .then(() => useChatStore.getState().preloadAllRooms().catch(() => {}))
-          .catch(() => {})
+      const reconcile = () => {
+        // Coalesce bursts of triggers (visibility+onConnect+online can fire
+        // within a single animation frame when a device wakes up).
+        if (reconcileDebounce) clearTimeout(reconcileDebounce)
+        reconcileDebounce = setTimeout(() => {
+          reconcileDebounce = null
+          if (reconcileInFlight) {
+            reconcileDirty = true
+            return
+          }
+          reconcileInFlight = runReconcile()
+            .catch(() => {})
+            .finally(() => {
+              reconcileInFlight = null
+              if (reconcileDirty) {
+                reconcileDirty = false
+                reconcile()
+              }
+            })
+        }, 150)
+      }
+
+      const matrixCleanups: Array<() => void> = []
+
+      const startMatrix = async () => {
+        await backfillMediaUrls().catch(() => {})
+        await backfillRoomInfo().catch(() => {})
+
+        const { hubBus } = await import('@/sync-bus')
+        hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {
+          ingestHubDelta(data as HubMatrixDelta).catch(() => {})
+        })
+
+        if (stopped) return
+
+        hubUnsubConnect = hubBus.onConnect(() => { reconcile() })
+
+        const onVisibility = () => {
+          if (document.visibilityState === 'visible') reconcile()
+        }
+        document.addEventListener('visibilitychange', onVisibility)
+        matrixCleanups.push(() => document.removeEventListener('visibilitychange', onVisibility))
+
+        const onOnline = () => { reconcile() }
+        window.addEventListener('online', onOnline)
+        matrixCleanups.push(() => window.removeEventListener('online', onOnline))
+
+        if (hubBus.connected) reconcile()
+      }
+      startMatrix().catch(() => {})
+
+      let chatFlushTimer: ReturnType<typeof setTimeout> | null = null
+      const unsubFlush = onEnqueue(() => {
+        if (chatFlushTimer) clearTimeout(chatFlushTimer)
+        chatFlushTimer = setTimeout(() => {
+          chatFlushTimer = null
+          processChatQueue().catch(() => {})
+        }, 500)
       })
-      hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {
-        ingestHubDelta(data as Parameters<typeof ingestHubDelta>[0]).catch(() => {})
-      })
 
-      if (stopped) return
+      const queueInterval = setInterval(() => processChatQueue().catch(() => {}), 5_000)
+      const snoozeInterval = setInterval(() => checkChatSnoozes().catch(() => {}), 60_000)
 
-      // Ask for a snapshot on every WS (re)connect. The hub doesn't buffer
-      // missed deltas, so any client that was offline (laptop asleep, APK
-      // backgrounded, brief network drop) has a hole in its timeline until
-      // we reconcile. Snapshot broadcasts a full decrypted `initial` payload
-      // which ingestHubDelta idempotently applies via bulkPut.
-      //
-      // First-connect semantics are unchanged — we always snapshot on boot,
-      // whether IDB is empty or already populated (cheap enough; hub's /sync
-      // with no since returns one window per room).
-      hubUnsubConnect = hubBus.onConnect(() => {
-        hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
-      })
-      // If the bus already opened before we subscribed, kick off one manually.
-      if (hubBus.connected) {
-        hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
+      return () => {
+        stopped = true
+        if (chatFlushTimer) clearTimeout(chatFlushTimer)
+        if (reconcileDebounce) clearTimeout(reconcileDebounce)
+        clearInterval(queueInterval)
+        clearInterval(snoozeInterval)
+        unsubFlush()
+        hubUnsubDelta?.()
+        hubUnsubConnect?.()
+        for (const cleanup of matrixCleanups) cleanup()
       }
     }
-    startMatrix().catch(() => {})
 
-    // Flush chat queue immediately on enqueue (debounced 500ms)
-    let chatFlushTimer: ReturnType<typeof setTimeout> | null = null
-    const unsubFlush = onEnqueue(() => {
-      if (chatFlushTimer) clearTimeout(chatFlushTimer)
-      chatFlushTimer = setTimeout(() => {
-        chatFlushTimer = null
-        processChatQueue().catch(() => {})
-      }, 500)
+    const unsubAuth = onMatrixAuthChange((connected) => {
+      if (connected && !teardown) {
+        teardown = startMatrixBlock()
+      } else if (!connected && teardown) {
+        teardown()
+        teardown = null
+      }
     })
 
-    // Periodic queue processing + snooze checks
-    const queueInterval = setInterval(() => processChatQueue().catch(() => {}), 5_000)
-    const snoozeInterval = setInterval(() => checkChatSnoozes().catch(() => {}), 60_000)
-
     return () => {
-      stopped = true
-      if (chatFlushTimer) clearTimeout(chatFlushTimer)
-      clearInterval(queueInterval)
-      clearInterval(snoozeInterval)
-      unsubFlush()
-      hubUnsubDelta?.()
-      hubUnsubInitial?.()
-      hubUnsubConnect?.()
+      unsubAuth()
+      teardown?.()
+      teardown = null
     }
   }, [])
 

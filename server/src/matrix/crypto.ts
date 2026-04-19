@@ -161,6 +161,68 @@ export class HubMatrixCrypto {
   }
 
   /**
+   * Activate backup UPLOAD for the active server-side backup version. Only
+   * needs the public key, not the decryption key — the hub encrypts received
+   * Megolm sessions to the backup pubkey and uploads them; only devices with
+   * the recovery key can decrypt them back. Call this on every boot so the
+   * OlmMachine resumes queuing KeysBackup requests as new sessions arrive.
+   *
+   * Idempotent: enableBackupV1 with the same version is a no-op.
+   */
+  async activateBackupUpload(homeserver: string, token: string): Promise<{
+    enabled: boolean
+    version?: string
+    reason?: string
+  }> {
+    if (!this.machine || !this.mod) throw new Error('crypto not initialized')
+    let resp: Response
+    try {
+      resp = await fetch(`${homeserver}/_matrix/client/v3/room_keys/version`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch (e) {
+      return { enabled: false, reason: `fetch failed: ${(e as Error).message}` }
+    }
+    if (resp.status === 404) return { enabled: false, reason: 'no backup version on server' }
+    if (!resp.ok) return { enabled: false, reason: `GET /room_keys/version → ${resp.status}` }
+    const version = await resp.json() as { version?: string; auth_data?: { public_key?: string } }
+    const pub = version.auth_data?.public_key
+    const ver = version.version
+    if (!pub || !ver) return { enabled: false, reason: 'version payload missing public_key / version' }
+    await (this.machine as any).enableBackupV1(pub, ver)
+    await this.dumpSnapshot()
+    return { enabled: true, version: ver }
+  }
+
+  /**
+   * Trigger a one-shot upload of any locally-known Megolm sessions that
+   * haven't yet been backed up. Returns the number of sessions packaged into
+   * the request (0 if nothing pending). Subsequent sessions upload
+   * automatically as they arrive via to-device, via processOutgoingRequests.
+   */
+  async backupPendingRoomKeys(homeserver: string, token: string): Promise<number> {
+    if (!this.machine || !this.mod) return 0
+    const req = await (this.machine as any).backupRoomKeys() as
+      { id?: string; type: unknown; body: string; version?: string } | null
+    if (!req) return 0
+    await this.executeRequest(req, homeserver, token)
+    // Drain any follow-up KeysBackup requests the machine may have queued
+    // for remaining sessions.
+    await this.processOutgoingRequests(homeserver, token)
+    try {
+      const parsed = JSON.parse(req.body) as { rooms?: Record<string, { sessions?: Record<string, unknown> }> }
+      let n = 0
+      for (const room of Object.values(parsed.rooms ?? {})) n += Object.keys(room.sessions ?? {}).length
+      return n
+    } catch { return 0 }
+  }
+
+  async isBackupEnabled(): Promise<boolean> {
+    if (!this.machine) return false
+    try { return Boolean(await (this.machine as any).isBackupEnabled()) } catch { return false }
+  }
+
+  /**
    * Import private cross-signing keys (master, self-signing, user-signing) and
    * sign this hub's device with the self-signing key. Uploads the signature to
    * the homeserver via processOutgoingRequests.

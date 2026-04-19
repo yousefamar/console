@@ -42,19 +42,44 @@ export interface PushMessage {
   isDirect?: boolean
   /** Event origin_server_ts — for MessagingStyle message ordering */
   timestamp?: number
+
+  // --- Mail-specific fields (populated for type:'mail') --------------------
+  // Android PushService surfaces an "Archive" action that calls back to
+  // /mail/threads/:id/archive — needs the account + thread IDs to wire up.
+  /** Gmail account (e.g. "user@gmail.com") the delta belongs to */
+  account?: string
+  /** Thread IDs from the delta — Archive action archives all of them */
+  threadIds?: string[]
 }
+
+/** Inbound-from-APK frame handler. Return true if consumed. */
+export type PushInboundHandler = (ws: WebSocket, frame: unknown) => boolean
 
 export class PushServer {
   private readonly clients = new Set<WebSocket>()
+  private readonly inboundHandlers: PushInboundHandler[] = []
   private readonly log: (msg: string) => void
 
   constructor(log: (msg: string) => void) {
     this.log = log
   }
 
+  /** Register a handler for inbound JSON frames from the APK. */
+  onInbound(handler: PushInboundHandler): void {
+    this.inboundHandlers.push(handler)
+  }
+
   attach(ws: WebSocket): void {
     this.clients.add(ws)
     this.log(`[push] Client connected (${this.clients.size} total)`)
+
+    ws.on('message', (data) => {
+      let frame: unknown
+      try { frame = JSON.parse(data.toString()) } catch { return }
+      for (const h of this.inboundHandlers) {
+        try { if (h(ws, frame)) return } catch (e) { this.log(`[push] inbound handler failed: ${(e as Error).message}`) }
+      }
+    })
 
     ws.on('close', () => {
       this.clients.delete(ws)
@@ -75,6 +100,15 @@ export class PushServer {
       try {
         if (ws.readyState === 1 /* OPEN */) ws.send(data)
       } catch { /* ignore — will be cleaned up by close listener */ }
+    }
+  }
+
+  /** Low-level: broadcast a pre-serialized JSON string (for RPC frames). */
+  broadcastRaw(data: string): void {
+    for (const ws of this.clients) {
+      try {
+        if (ws.readyState === 1 /* OPEN */) ws.send(data)
+      } catch { /* ignore */ }
     }
   }
 

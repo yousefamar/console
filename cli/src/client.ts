@@ -1,10 +1,65 @@
 // HTTP client for Console Hub
 // All CLI commands go through this to talk to the hub server.
+//
+// The hub serves HTTPS when Tailscale certs are present (the normal setup;
+// see `server/src/index.ts` — `tlsOpts`), and falls back to plain HTTP when
+// they aren't. The CLI auto-detects the scheme by probing HTTPS first and
+// only falling back to HTTP on a connection-level failure, with the result
+// cached for subsequent calls in the same process.
+//
+// The Tailscale cert is bound to the tailnet hostname (e.g.
+// `amarhp-lin.rya-yo.ts.net`), not `localhost`, so we pass a dedicated
+// undici dispatcher with `rejectUnauthorized: false` on every HTTPS request.
+// Scoped rather than global (which would emit a loud Node warning) and
+// restricted to the CLI, which only talks to the local hub.
 
-const DEFAULT_HUB_URL = 'http://localhost:9877'
+import { Agent } from 'undici'
+
+const insecureDispatcher = new Agent({ connect: { rejectUnauthorized: false } })
+
+const DEFAULT_HUB_PORT = 9877
+const DEFAULT_HUB_HOST = 'localhost'
+
+/** Fetch that ignores self-signed certs but only for HTTPS URLs. */
+function insecureFetch(url: string, init?: RequestInit): Promise<Response> {
+  const isHttps = url.startsWith('https:')
+  const extra = isHttps ? { dispatcher: insecureDispatcher } : {}
+  // `dispatcher` is an undici extension, not in the lib.dom RequestInit type.
+  return fetch(url, { ...init, ...extra } as RequestInit)
+}
+
+let cachedHubUrl: string | null = null
 
 export function getHubUrl(): string {
-  return process.env.CONSOLE_HUB_URL || DEFAULT_HUB_URL
+  if (process.env.CONSOLE_HUB_URL) return process.env.CONSOLE_HUB_URL
+  return cachedHubUrl ?? `https://${DEFAULT_HUB_HOST}:${DEFAULT_HUB_PORT}`
+}
+
+/**
+ * Probe HTTPS then HTTP on the default host/port. Caches the winning URL for
+ * the lifetime of the process. Only runs if `CONSOLE_HUB_URL` isn't set.
+ */
+async function detectHubUrl(): Promise<string> {
+  if (process.env.CONSOLE_HUB_URL) return process.env.CONSOLE_HUB_URL
+  if (cachedHubUrl) return cachedHubUrl
+  for (const proto of ['https', 'http'] as const) {
+    const url = `${proto}://${DEFAULT_HUB_HOST}:${DEFAULT_HUB_PORT}`
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 1500)
+      const res = await insecureFetch(`${url}/health`, { signal: ctrl.signal })
+      clearTimeout(t)
+      if (res.ok) {
+        cachedHubUrl = url
+        return url
+      }
+    } catch {
+      // try next
+    }
+  }
+  // Default to HTTPS if both probes fail — the error will surface cleanly
+  // through the usual HubUnavailableError path.
+  return `https://${DEFAULT_HUB_HOST}:${DEFAULT_HUB_PORT}`
 }
 
 export class HubError extends Error {
@@ -36,7 +91,7 @@ export async function hubFetch<T = unknown>(
     raw?: boolean // return raw response instead of JSON
   } = {},
 ): Promise<T> {
-  const base = opts.hubUrl || getHubUrl()
+  const base = opts.hubUrl || await detectHubUrl()
   const url = new URL(path, base)
 
   if (opts.params) {
@@ -59,7 +114,7 @@ export async function hubFetch<T = unknown>(
 
   let res: Response
   try {
-    res = await fetch(url.toString(), {
+    res = await insecureFetch(url.toString(), {
       method: opts.method ?? 'GET',
       headers,
       body,

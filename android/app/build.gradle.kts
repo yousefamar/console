@@ -11,8 +11,12 @@ android {
         applicationId = "io.amar.console"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        // Keep the patch segment synced to versionCode so the user-visible
+        // string directly reveals the integer version. If you bump one,
+        // bump the other.
+        val vCode = 14
+        versionCode = vCode
+        versionName = "0.1.$vCode"
     }
 
     signingConfigs {

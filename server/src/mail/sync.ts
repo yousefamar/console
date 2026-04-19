@@ -165,6 +165,8 @@ export class MailSync {
           body: account,
           pane: 'mail',
           id: `mail:${account}:${nextHistoryId}`,
+          account,
+          threadIds: Array.from(uniq),
         })
       }
     }

@@ -1,4 +1,4 @@
-import { db } from '@/db'
+import { db, getMeta, setMeta } from '@/db'
 import { getMatrixUserId, isMatrixConnected } from './auth'
 import { mxcToThumbnail } from './api'
 import type {
@@ -101,9 +101,14 @@ async function eventToMessage(event: MatrixEvent, roomId: string): Promise<DbCha
 
   // The hub now decrypts Matrix events before broadcasting (type is flipped to
   // m.room.message/m.sticker/m.reaction/etc. with decrypted content). If we
-  // still see an m.room.encrypted event here, the hub couldn't decrypt it —
-  // show a placeholder so the user at least sees *something* in the timeline.
+  // still see an m.room.encrypted event here, either the hub couldn't decrypt
+  // it (show a placeholder) or it's a redaction tombstone (skip entirely —
+  // Matrix strips content from redacted events, so an m.room.encrypted with
+  // no ciphertext is a deleted message that will be handled by the matching
+  // m.room.redaction event, or simply shouldn't appear in the timeline).
   if (event.type === 'm.room.encrypted') {
+    const hasCiphertext = typeof event.content?.ciphertext === 'string'
+    if (!hasCiphertext) return null
     return {
       id: event.event_id,
       roomId,
@@ -377,8 +382,41 @@ async function processJoinedRoom(
   // Convert timeline events to messages (with decryption)
   const messages: DbChatMessage[] = []
   for (const event of timelineEvents) {
+    // Redaction tombstones for encrypted events (m.room.encrypted with empty
+    // content — Matrix strips ciphertext from redacted events) mean the
+    // message was deleted. Apply the redaction to any existing row so the
+    // user sees "deleted" rather than a stale decrypted body.
+    if (
+      event.type === 'm.room.encrypted'
+      && event.event_id
+      && typeof event.content?.ciphertext !== 'string'
+    ) {
+      const existingMsg = await db.chatMessages.get(event.event_id)
+      if (existingMsg && !existingMsg.isDeleted) {
+        const wasPlaceholder = existingMsg.body === '\u{1F512} Encrypted message'
+        await db.chatMessages.update(event.event_id, {
+          isDeleted: true,
+          deletedBy: event.sender ?? undefined,
+          // If we never decrypted the original, there's no meaningful content
+          // to strike through — blank it so the bubble renders "Message deleted"
+          // rather than a struck-through lock emoji that still reads "encrypted".
+          ...(wasPlaceholder ? { body: '' } : {}),
+        })
+      }
+      continue
+    }
     const msg = await eventToMessage(event, roomId)
     if (msg) {
+      // Guard against decryption regression: if this event is arriving as an
+      // m.room.encrypted placeholder but we already have a successfully
+      // decrypted copy in DB, skip the write. Otherwise bulkPut would
+      // overwrite the good body with "🔒 Encrypted message" — which is what
+      // happens when a cold resume comes back without the Megolm key while
+      // an earlier live delta had decrypted the same event_id.
+      if (event.type === 'm.room.encrypted' && event.event_id) {
+        const existingMsg = await db.chatMessages.get(event.event_id)
+        if (existingMsg && !existingMsg.encryptedEvent) continue
+      }
       // Enrich with sender display name and avatar
       const info = senderInfo.get(msg.senderId)
       if (info) {
@@ -558,26 +596,33 @@ async function processJoinedRoom(
   const roomIsLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive']) || (existing?.isLowPriority ?? false)
 
   // Build/update room record
-  const lastMsg = messages[messages.length - 1]
+  // Pick the latest message by TIMESTAMP, not array order — resume responses
+  // can arrive after a live delta has already advanced the room, and we must
+  // not regress lastMessageBody/Time to an older event.
+  const lastMsg = messages.length > 0
+    ? messages.reduce((best, m) => (m.timestamp > best.timestamp ? m : best))
+    : undefined
   const serverNotifCount = room.unread_notifications?.notification_count ?? 0
   const serverHighlightCount = room.unread_notifications?.highlight_count ?? 0
 
   const hasNewMessages = messages.length > 0
   const hadMessages = !!existing?.lastMessageBody
+  const newestMessageTime = lastMsg?.timestamp ?? 0
+  // Only advance the room preview if the batch's newest message is newer than
+  // what we already have. Prevents out-of-order resume ingestion from rolling
+  // the preview back to an older message.
+  const advancesPreview = newestMessageTime > (existing?.lastMessageTime ?? 0)
   // For existing rooms, only re-unread when genuinely new messages from others arrive —
   // don't let stale server notification_count override local read state.
   // But DO respect server notification_count dropping to 0 (read on another client/platform).
-  const newestMessageTime = hasNewMessages
-    ? Math.max(...messages.map((m) => m.timestamp))
-    : 0
   const hasNewerMessagesFromOthers = existing
-    ? newestMessageTime > (existing.lastMessageTime ?? 0) && messages.some((m) => m.senderId !== myUserId)
+    ? advancesPreview && messages.some((m) => m.senderId !== myUserId)
     : false
   // If the latest message is from me (sent from another device/client), room is handled — mark read
   const latestIsFromMe = lastMsg?.senderId === myUserId
 
   // For lastMessageTime, use: last message timestamp > any timeline event timestamp > existing > 0
-  let lastMessageTime = lastMsg?.timestamp ?? existing?.lastMessageTime ?? 0
+  let lastMessageTime = advancesPreview ? newestMessageTime : (existing?.lastMessageTime ?? 0)
   if (lastMessageTime === 0 && timelineEvents.length > 0) {
     // Fall back to the latest timeline event's origin_server_ts (even non-message events)
     const latestTs = timelineEvents.reduce(
@@ -621,8 +666,8 @@ async function processJoinedRoom(
         : existing?.avatar,
     isDirect: directRoom,
     memberCount: hasFullMembers ? getMemberCount(allStateForRoom) : (existing?.memberCount ?? 2),
-    lastMessageBody: lastMsg?.body ?? existing?.lastMessageBody ?? '',
-    lastMessageSender: lastMsg?.senderName ?? existing?.lastMessageSender ?? '',
+    lastMessageBody: advancesPreview ? (lastMsg?.body ?? '') : (existing?.lastMessageBody ?? ''),
+    lastMessageSender: advancesPreview ? (lastMsg?.senderName ?? '') : (existing?.lastMessageSender ?? ''),
     lastMessageTime,
     isUnread: latestIsFromMe
       ? false
@@ -691,12 +736,30 @@ export type HubMatrixDelta = {
   rooms: Record<string, MatrixJoinedRoom>  // same shape as /sync rooms.join
   invites?: string[]
   leaves?: string[]
+  isInitial?: boolean  // set by hub's resume() when falling back to cold-start
+}
+
+// Persisted client cursor — the `next_batch` from the most recently ingested
+// delta. Sent back to the hub on reconcile() so the homeserver can replay any
+// gaps via Matrix-native incremental /sync?since=... semantics.
+export const MATRIX_CURSOR_KEY = 'matrix:lastBatch'
+
+export async function getMatrixCursor(): Promise<string | undefined> {
+  const v = await getMeta(MATRIX_CURSOR_KEY)
+  return v && v.length > 0 ? v : undefined
 }
 
 export async function ingestHubDelta(delta: HubMatrixDelta, isInitial = false): Promise<void> {
   // Process each room independently; a failure in one shouldn't block others.
   const roomIds = Object.keys(delta.rooms)
-  if (isInitial) setStatus('syncing', `Matrix: hub initial sync (${roomIds.length} rooms)`)
+  const reset = isInitial || delta.isInitial === true
+  // Only show the "initial sync" banner when IDB is truly empty (first-ever
+  // boot). For cursor-less reconciles against a populated cache (version skew,
+  // cursor cleared, etc.) the response is just a merge — suppress the alarming
+  // status so the user doesn't think their data is being rebuilt from scratch.
+  const cachedRoomCount = await db.chatRooms.count().catch(() => 0)
+  const showStatus = reset && cachedRoomCount === 0
+  if (showStatus) setStatus('syncing', `Matrix: hub initial sync (${roomIds.length} rooms)`)
 
   await Promise.all(
     roomIds.map((roomId) =>
@@ -710,7 +773,15 @@ export async function ingestHubDelta(delta: HubMatrixDelta, isInitial = false): 
     await db.chatMessages.where('roomId').equals(roomId).delete().catch(() => {})
   }
 
-  if (isInitial) setStatus('idle')
+  // Advance the persisted cursor AFTER ingestion is fully flushed to IDB so
+  // we never claim progress for data we didn't store. Last-write-wins between
+  // concurrent delta broadcasts and resume responses is fine: tokens are
+  // opaque and the homeserver replays idempotently from any valid point.
+  if (delta.nextBatch) {
+    await setMeta(MATRIX_CURSOR_KEY, delta.nextBatch).catch(() => {})
+  }
+
+  if (showStatus) setStatus('idle')
 }
 
 // Note: full/incremental Matrix sync is no longer run on the browser — the hub

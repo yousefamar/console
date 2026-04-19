@@ -46,6 +46,10 @@ import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
 import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
+import { GlassesHub } from './glasses-hub.js'
+import { handleGlassesRoutes } from './routes/glasses.js'
+import { GlassesResearchLog } from './glasses/research-log.js'
+import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { SyncBus } from './sync-bus.js'
 import { MailSync } from './mail/sync.js'
 import { CalendarSync } from './cal/sync.js'
@@ -89,6 +93,14 @@ const monzoStore = new MonzoStore(
 )
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 const pushServer = new PushServer((msg: string) => { log(msg) })
+const glassesResearchLog = new GlassesResearchLog(
+  join(feedsConfigDir, 'glasses-research.log'),
+)
+const glassesHub = new GlassesHub(pushServer, (msg: string) => { log(msg) }, glassesResearchLog)
+pushServer.onInbound((ws, frame) => glassesHub.handleMessage(ws, frame))
+// Auto-arm mic on right long-press (see docs/g1-mic-stt-recipe.md). Subscriber
+// lives for the process lifetime; no unsubscribe needed.
+wireTouchToMic(glassesHub, (msg: string) => { log(msg) })
 const syncBus = new SyncBus((msg: string) => { log(msg) })
 const mailSync = new MailSync(
   gmailClient,
@@ -151,6 +163,27 @@ const hubMatrixCrypto = new HubMatrixCrypto(
           log(`[hub-crypto] re-imported ${r.imported}/${r.total} room keys from M0 backup`)
         }
       }
+      // Activate server-side key-backup UPLOAD on every boot. Encryption-only
+      // path — uses the backup version's public key, so no recovery key
+      // needed. Ensures every Megolm session the hub receives from here on
+      // flows into /room_keys/keys and survives hub re-login / re-init.
+      const act = await hubMatrixCrypto.activateBackupUpload(
+        existingMatrix.homeserver,
+        existingMatrix.accessToken,
+      ).catch((e): { enabled: boolean; version?: string; reason?: string } =>
+        ({ enabled: false, reason: (e as Error).message }))
+      if (act.enabled) {
+        log(`[hub-crypto] backup upload activated (version ${act.version})`)
+        // Sweep any pre-existing sessions that weren't uploaded (e.g. keys
+        // imported from M0 or received while backup was inactive).
+        hubMatrixCrypto.backupPendingRoomKeys(
+          existingMatrix.homeserver,
+          existingMatrix.accessToken,
+        ).then((n) => { if (n > 0) log(`[hub-crypto] backed up ${n} pending room keys`) })
+          .catch((e) => log(`[hub-crypto] initial backup sweep failed: ${e}`))
+      } else {
+        log(`[hub-crypto] backup upload NOT activated: ${act.reason}`)
+      }
     })().catch((e) => log(`[hub-crypto] boot init failed: ${e}`))
   }
 }
@@ -166,7 +199,11 @@ const matrixSync = new MatrixSync(
 )
 syncBus.register('matrix', {
   syncNow: async () => matrixSync.syncNow(),
-  snapshot: async () => matrixSync.snapshot(),
+  // Point-to-point resume: caller supplies its last-seen `since`; returns the
+  // delta directly instead of broadcasting. Without `since`, behaves like the
+  // old `snapshot` (cold-start initial sync). Response includes `isInitial`
+  // so the client can tell a resume-merge from a cold-start reset.
+  resume: async (args) => matrixSync.resume(args as { since?: string } | undefined),
   state: async () => matrixSync.getState(),
   // Unified send: hub picks encrypted vs plaintext based on room state
   sendEvent: async (args) => matrixSync.sendRoomEvent(args as { roomId: string; type: string; content: Record<string, unknown> }),
@@ -400,6 +437,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
+  if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
 
   res.writeHead(404)
@@ -440,6 +478,32 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     return
   }
 
+  // Glasses raw LC3 audio fanout (typically one subscriber: Al / STT bridge).
+  // Frames: `{type:'audio', seq, lc3b64}`. Each frame is ~200B LC3 at ~50fps.
+  // Decode to PCM happens on the *consumer* — see docs/g1-mic-stt-recipe.md.
+  if (urlPath === '/glasses/mic') {
+    log(`[glasses] audio subscriber connected`)
+    const unsub = glassesHub.onAudio((f) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'audio', seq: f.seq, lc3b64: f.lc3b64 })) } catch { /* ignore */ }
+      }
+    })
+    ws.on('close', () => { unsub(); log(`[glasses] audio subscriber disconnected`) })
+    return
+  }
+
+  // Glasses touchbar events (taps, long-presses, swipes) fanout.
+  if (urlPath === '/glasses/events') {
+    log(`[glasses] event subscriber connected`)
+    const unsubTouch = glassesHub.onTouch((f) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'touch', arm: f.arm, subcmd: f.subcmd })) } catch { /* ignore */ }
+      }
+    })
+    ws.on('close', () => { unsubTouch(); log(`[glasses] event subscriber disconnected`) })
+    return
+  }
+
   // Sync bus — service event streams + RPC for hub-owned services
   if (urlPath === '/sync') {
     syncBus.attach(ws)
@@ -448,8 +512,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   // Debug agent connects on /debug path
   if (urlPath === '/debug') {
+    // Stash the upgrade request's User-Agent on the socket so debug RPCs can
+    // target a specific client (desktop browser vs. APK WebView vs. mobile
+    // browser) by substring. `.ua` is read in handleDebugRoutes via the
+    // `(ws as any).ua` cast.
+    ;(ws as any).ua = (req.headers['user-agent'] as string | undefined) ?? ''
     debugClients.add(ws)
-    log(`[debug] Client connected (${debugClients.size} total)`)
+    log(`[debug] Client connected (${debugClients.size} total): ${(ws as any).ua.slice(0, 80)}`)
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString()) as DebugClientMessage

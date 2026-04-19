@@ -3,10 +3,12 @@ package io.amar.console
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import io.amar.console.glasses.GlassesService
 
 /**
- * Restarts the push WebSocket service after device reboot or app upgrade
- * so notifications keep flowing without the user having to open the app.
+ * Restarts the push + glasses foreground services after device reboot or app
+ * upgrade so notifications keep flowing and the G1 link comes back up without
+ * the user having to open the app.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -14,6 +16,7 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 PushService.start(context)
+                GlassesService.start(context)
             }
         }
     }

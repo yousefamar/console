@@ -18,6 +18,7 @@ import android.os.Message
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -28,6 +29,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.util.Base64
+import io.amar.console.glasses.BleManager
+import io.amar.console.glasses.G1Protocol
+import io.amar.console.glasses.GlassesController
+import io.amar.console.glasses.GlassesService
+import io.amar.console.glasses.GlassesState
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -69,6 +76,30 @@ class MainActivity : ComponentActivity() {
     private var updateBanner: View? = null
 
     private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var blePermissionsLauncher: ActivityResultLauncher<Array<String>>
+
+    private val glassesStateListener: () -> Unit = { emitGlassesState() }
+    private val glassesBleListener = object : BleManager.Listener {
+        override fun onTouch(arm: G1Protocol.Arm, subcmd: Byte) {
+            emitGlassesEvent("touch", JSONObject().apply {
+                put("arm", arm.name.lowercase())
+                put("subcmd", subcmd.toInt() and 0xFF)
+            })
+        }
+        override fun onAudioFrame(seq: Int, lc3Bytes: ByteArray) {
+            // Frame-rate is ~50 fps; we push a base64 blob per frame. Listeners
+            // filter by event name. This is v1 scaffolding — consumers outside
+            // the SPA should use the hub WS `mic.frame` event, not DOM events.
+            emitGlassesEvent("audio", JSONObject().apply {
+                put("seq", seq)
+                put("lc3b64", Base64.encodeToString(lc3Bytes, Base64.NO_WRAP))
+            })
+        }
+        override fun onStateChange() { emitGlassesState() }
+        override fun onError(msg: String) {
+            emitGlassesEvent("error", JSONObject().put("message", msg))
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splash = installSplashScreen()
@@ -89,6 +120,15 @@ class MainActivity : ComponentActivity() {
         notificationPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { /* no-op */ }
+
+        blePermissionsLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { results ->
+            val connect = results[Manifest.permission.BLUETOOTH_CONNECT] == true
+            // Kick the service now that perms exist; it'll auto-reconnect
+            // to the stored pair (if any) and be ready for scan requests.
+            if (connect) GlassesService.start(this)
+        }
 
         rootLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -136,8 +176,32 @@ class MainActivity : ComponentActivity() {
         })
 
         maybeRequestNotificationPermission()
+        maybeRequestBlePermissions()
         checkForUpdateAsync()
         PushService.start(this)
+        GlassesService.start(this)
+
+        GlassesState.addListener(glassesStateListener)
+        attachGlassesBleListener()
+    }
+
+    /** The GlassesService onCreate() runs async from startForegroundService(), so
+     *  poll briefly for BleManager to become available, then subscribe. */
+    private fun attachGlassesBleListener(attempt: Int = 0) {
+        if (GlassesController.isReady()) {
+            try { GlassesController.requireBle().addListener(glassesBleListener) } catch (_: Throwable) {}
+            return
+        }
+        if (attempt >= 50) return // 5s total; BLE sim isn't available, give up.
+        Handler(Looper.getMainLooper()).postDelayed({ attachGlassesBleListener(attempt + 1) }, 100L)
+    }
+
+    override fun onDestroy() {
+        GlassesState.removeListener(glassesStateListener)
+        if (GlassesController.isReady()) {
+            try { GlassesController.requireBle().removeListener(glassesBleListener) } catch (_: Throwable) {}
+        }
+        super.onDestroy()
     }
 
     // --- JS bridge ------------------------------------------------------------
@@ -148,6 +212,159 @@ class MainActivity : ComponentActivity() {
         fun checkForUpdate() {
             checkForUpdateAsync()
         }
+
+        // --- Glasses: status ------------------------------------------------
+
+        /** Returns the current glasses state as a JSON string. */
+        @JavascriptInterface
+        fun glassesStatus(): String = GlassesState.toJson().toString()
+
+        /** Returns current scan candidates as a JSON array string. */
+        @JavascriptInterface
+        fun glassesScanCandidates(): String = GlassesState.scanCandidatesJson().toString()
+
+        // --- Glasses: pairing ----------------------------------------------
+
+        @JavascriptInterface
+        fun glassesScan(durationMs: Long) {
+            if (!maybeRequestBlePermissions()) return
+            if (!GlassesController.isReady()) return
+            GlassesController.scan(if (durationMs <= 0) 15_000L else durationMs)
+        }
+
+        @JavascriptInterface
+        fun glassesStopScan() {
+            if (GlassesController.isReady()) GlassesController.stopScan()
+        }
+
+        @JavascriptInterface
+        fun glassesPair(leftMac: String, rightMac: String, channel: String) {
+            if (!maybeRequestBlePermissions()) return
+            if (!GlassesController.isReady()) return
+            GlassesController.pair(leftMac, rightMac, channel)
+        }
+
+        @JavascriptInterface
+        fun glassesUnpair() {
+            if (GlassesController.isReady()) GlassesController.unpair()
+        }
+
+        @JavascriptInterface
+        fun glassesDisconnect() {
+            if (GlassesController.isReady()) GlassesController.requireBle().disconnect()
+        }
+
+        // --- Glasses: display commands -------------------------------------
+
+        @JavascriptInterface
+        fun glassesSendText(text: String) {
+            if (GlassesController.isReady()) GlassesController.sendText(text)
+        }
+
+        @JavascriptInterface
+        fun glassesClear() {
+            if (GlassesController.isReady()) GlassesController.sendExit()
+        }
+
+        /** `bmpB64` is a standard base64-encoded 1-bit BMP (576×136). */
+        @JavascriptInterface
+        fun glassesSendBmp(bmpB64: String) {
+            if (!GlassesController.isReady()) return
+            try {
+                val bmp = Base64.decode(bmpB64, Base64.DEFAULT)
+                GlassesController.sendBmp(bmp)
+            } catch (_: Throwable) {
+                emitGlassesEvent("error", JSONObject().put("message", "bad bmp base64"))
+            }
+        }
+
+        /** `json` must already be a JSON object shaped like `{ncs_notification:{...}}`. */
+        @JavascriptInterface
+        fun glassesNotify(json: String) {
+            if (!GlassesController.isReady()) return
+            val msgId = (System.currentTimeMillis() and 0xFF).toInt()
+            GlassesController.sendNotification(msgId, json)
+        }
+
+        @JavascriptInterface
+        fun glassesStartMic() {
+            if (GlassesController.isReady()) GlassesController.setMic(true)
+        }
+
+        @JavascriptInterface
+        fun glassesStopMic() {
+            if (GlassesController.isReady()) GlassesController.setMic(false)
+        }
+
+        // --- Notes mirror "stealth screen" ---------------------------------
+        //
+        // When the mirror is on we want the screen to *appear* off (so the
+        // user reads only the glasses) without the OS pausing the Activity
+        // — otherwise HW-keyboard events stop flowing to the WebView. The
+        // trick: hold FLAG_KEEP_SCREEN_ON and drive screenBrightness to
+        // ~0. The panel is effectively black but the Activity keeps
+        // foreground, keyboard input keeps working.
+
+        @JavascriptInterface
+        fun setNotesMirrorDim(enabled: Boolean) {
+            runOnUiThread { applyMirrorDim(enabled) }
+        }
+    }
+
+    /** Toggle "screen appears off but Activity alive" mode. UI thread only. */
+    private fun applyMirrorDim(enabled: Boolean) {
+        val lp = window.attributes
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // 0.01f — lowest non-zero. Exactly 0 can be interpreted as
+            // BRIGHTNESS_OVERRIDE_OFF on some OEM builds which kills the
+            // Activity; 0.01 is visually black on modern panels.
+            lp.screenBrightness = 0.01f
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        window.attributes = lp
+    }
+
+    // --- Glasses bridge: event plumbing --------------------------------------
+
+    private fun emitGlassesState() {
+        runOnUiThread {
+            val json = GlassesState.toJson().toString()
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('console:glasses:state', { detail: $json }));",
+                null,
+            )
+        }
+    }
+
+    private fun emitGlassesEvent(name: String, detail: JSONObject) {
+        runOnUiThread {
+            val envelope = JSONObject().apply {
+                put("name", name)
+                put("detail", detail)
+            }
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('console:glasses:event', { detail: $envelope }));",
+                null,
+            )
+        }
+    }
+
+    /** Returns true if perms are already granted, false if we had to prompt. */
+    private fun maybeRequestBlePermissions(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        val perms = arrayOf(
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN,
+        )
+        val missing = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) return true
+        blePermissionsLauncher.launch(missing.toTypedArray())
+        return false
     }
 
     // --- Update check ---------------------------------------------------------

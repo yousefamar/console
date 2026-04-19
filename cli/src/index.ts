@@ -125,6 +125,11 @@ async function main() {
         await money(verb, rest, flags)
         break
       }
+      case 'glasses': {
+        const { glasses } = await import('./commands/glasses.js')
+        await glasses(verb, rest, flags)
+        break
+      }
       case 'search': {
         const { search } = await import('./commands/search.js')
         await search([verb, ...rest].filter(Boolean) as string[], flags)

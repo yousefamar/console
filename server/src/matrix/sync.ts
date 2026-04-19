@@ -129,36 +129,80 @@ export class MatrixSync {
     return { ok: true }
   }
 
-  // Full snapshot for a fresh client (e.g. APK first launch): hits /sync with
-  // no `since` token, decrypts the resulting timeline, and broadcasts the
-  // result as 'initial'. Does NOT touch this.state.nextBatch — the main tick
-  // loop keeps its own token untouched. Safe to call concurrently with ticks.
-  async snapshot(): Promise<{ ok: true }> {
+  // Point-to-point resume: the caller supplies its own last-seen `since` token
+  // (persisted client-side) and the hub runs `/sync?since=...&timeout=0` on
+  // the homeserver, decrypts the result, and returns it directly. Without a
+  // `since`, this degrades to a cold-start initial sync. If the server rejects
+  // the token (M_UNKNOWN_TOKEN etc.), we transparently fall back to initial
+  // and mark the response as `isInitial` so the client can treat it as a
+  // reset rather than an incremental merge.
+  //
+  // Does NOT touch this.state.nextBatch — the main tick loop keeps its own
+  // cursor untouched. Safe to call concurrently with ticks; `decryptRoomEvent`
+  // uses keys the OlmMachine already has from the main loop.
+  async resume(args?: { since?: string }): Promise<MatrixDelta & { isInitial?: boolean }> {
     const cfg = this.auth.getMatrixConfig()
-    if (!cfg || !this.crypto.isReady()) return { ok: true }
+    if (!cfg || !this.crypto.isReady()) {
+      return { nextBatch: '', rooms: {}, isInitial: !args?.since }
+    }
 
-    const resp = await this.matrix.sync({ since: undefined, timeout: 0 })
-    // Skip processSyncCrypto — the main loop already handles device lists /
-    // to-device messages on its own token; re-running that machinery here
-    // against unrelated state would just churn. decryptRoomEvent uses the
-    // keys OlmMachine already has.
-    const rooms = await this.decryptJoinedRooms(resp.rooms?.join ?? {})
-    // Warm the push-notification state cache from the snapshot too.
+    const wantedSince = args?.since
+    let resp
+    let isInitial = !wantedSince
+    try {
+      resp = await this.matrix.sync({ since: wantedSince, timeout: 0 })
+    } catch (e) {
+      const msg = (e as Error).message
+      if (wantedSince && /M_UNKNOWN_TOKEN|400|invalid/i.test(msg)) {
+        this.log(`[matrix-sync] resume: homeserver rejected since token (${msg}); falling back to initial`)
+        resp = await this.matrix.sync({ since: undefined, timeout: 0 })
+        isInitial = true
+      } else {
+        throw e
+      }
+    }
+    const allRooms = await this.decryptJoinedRooms(resp.rooms?.join ?? {})
     this.ingestAccountData(resp.account_data)
-    for (const [roomId, r] of Object.entries(rooms)) {
+    for (const [roomId, r] of Object.entries(allRooms)) {
       this.ingestRoomState(roomId, r)
     }
+    if (!isInitial) await this.backfillLimitedTimelines(allRooms, 'resume')
+    // Cold-start: cut the 1000+ joined-rooms list down to ones the user is
+    // likely to care about right now — anything with unread notifications, or
+    // any timeline activity in the last 30 days. The rest (dead Beeper bridges,
+    // abandoned DMs) stay invisible until a live delta brings them back to
+    // life, at which point processJoinedRoom creates the room record on demand.
+    // `nextBatch` covers ALL rooms, so subsequent `since` queries still catch
+    // any room that wakes up.
+    const COLD_RECENT_MS = 30 * 24 * 60 * 60 * 1000
+    const cutoff = Date.now() - COLD_RECENT_MS
+    const rooms = isInitial
+      ? Object.fromEntries(
+          Object.entries(allRooms).filter(([, r]) => {
+            const unread = (r.unread_notifications?.notification_count ?? 0)
+              + (r.unread_notifications?.highlight_count ?? 0)
+            if (unread > 0) return true
+            const events = r.timeline?.events ?? []
+            return events.some((e) => (e.origin_server_ts ?? 0) >= cutoff)
+          }),
+        )
+      : allRooms
     const invites = Object.keys(resp.rooms?.invite ?? {})
     const leaves = Object.keys(resp.rooms?.leave ?? {})
-    const delta: MatrixDelta = {
+    const eventCount = Object.values(rooms).reduce(
+      (n, r) => n + (r.timeline?.events?.length ?? 0), 0,
+    )
+    this.log(
+      `[matrix-sync] resume${wantedSince ? ` since=${wantedSince.slice(0, 12)}…` : ' (cold)'}`
+      + `: ${Object.keys(rooms).length}/${Object.keys(allRooms).length} rooms, ${eventCount} events`,
+    )
+    return {
       nextBatch: resp.next_batch,
       rooms,
       invites: invites.length ? invites : undefined,
       leaves: leaves.length ? leaves : undefined,
+      isInitial,
     }
-    this.bus.broadcast('matrix', 'initial', delta)
-    this.log(`[matrix-sync] snapshot broadcast: ${Object.keys(rooms).length} rooms`)
-    return { ok: true }
   }
 
   // -------- Send path (called via SyncBus RPC from browsers) ---------------
@@ -249,6 +293,43 @@ export class MatrixSync {
     const text = await resp.text()
     if (!resp.ok) throw new Error(`redact failed: ${resp.status} ${text}`)
     return JSON.parse(text) as { event_id: string }
+  }
+
+  /**
+   * Close the gap when `/sync` returns `limited: true` for a room. The
+   * homeserver default timeline limit (~10 events/room) means a client that
+   * misses enough messages in one room between two sync points silently
+   * loses everything but the latest 10. Here we paginate backward from
+   * `prev_batch` and prepend the missed events so the browser's idempotent
+   * `bulkPut(event_id)` ingestion picks them up. Runs in parallel across rooms.
+   */
+  private async backfillLimitedTimelines(
+    rooms: Record<string, MatrixJoinedRoomDelta>,
+    source: 'resume' | 'tick',
+  ): Promise<void> {
+    const GAP_LIMIT_PER_ROOM = 100
+    await Promise.all(
+      Object.entries(rooms).map(async ([roomId, r]) => {
+        if (!r.timeline?.limited || !r.timeline.prev_batch) return
+        try {
+          const gap = await this.paginate({
+            roomId,
+            from: r.timeline.prev_batch,
+            dir: 'b',
+            limit: GAP_LIMIT_PER_ROOM,
+          })
+          // /messages with dir=b returns newest-first; reverse to chronological
+          // order before prepending to the existing timeline events.
+          const gapEvents = (gap.chunk ?? []).slice().reverse()
+          r.timeline.events = [...gapEvents, ...(r.timeline.events ?? [])]
+          this.log(
+            `[matrix-sync] ${source}: backfilled ${gapEvents.length} events for ${roomId} (limited gap)`,
+          )
+        } catch (e) {
+          this.log(`[matrix-sync] ${source}: backfill failed for ${roomId}: ${(e as Error).message}`)
+        }
+      }),
+    )
   }
 
   /**
@@ -391,6 +472,11 @@ export class MatrixSync {
       for (const [roomId, r] of Object.entries(rooms)) {
         this.ingestRoomState(roomId, r)
       }
+
+      // 2b. Backfill any rooms whose timeline came back `limited` (gap > ~10
+      //     events in a single tick). Safe because bulkPut on event_id is
+      //     idempotent browser-side.
+      if (!isInitial) await this.backfillLimitedTimelines(rooms, 'tick')
 
       const invites = Object.keys(resp.rooms?.invite ?? {})
       const leaves = Object.keys(resp.rooms?.leave ?? {})
