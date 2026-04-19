@@ -362,9 +362,27 @@ export class Session extends EventEmitter {
         break
       }
 
-      case 'assistant':
+      case 'assistant': {
+        // Synthetic assistant messages (model: "<synthetic>", isApiErrorMessage:
+        // true) carry API-level errors like Usage Policy blocks. No stream_event
+        // partials precede them, so the normal text-block skip in
+        // handleAssistantMessage would silently drop the error text and the
+        // session would look hung. Surface them as explicit errors.
+        const anyMsg = msg as unknown as { isApiErrorMessage?: boolean; message: { model?: string } }
+        const isApiError = anyMsg.isApiErrorMessage || anyMsg.message?.model === '<synthetic>'
+        if (isApiError) {
+          const errText = msg.message.content
+            .map((b) => (b.type === 'text' ? (b as { text: string }).text : ''))
+            .filter(Boolean)
+            .join('\n')
+            .trim()
+          if (errText) {
+            this.emitHub({ type: 'error', sessionId: this.id, message: errText })
+          }
+        }
         this.handleAssistantMessage(msg.message.content, msg.parent_tool_use_id)
         break
+      }
 
       case 'user':
         this.handleUserMessage(msg.message.content)
