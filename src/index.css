@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source(".");
 
 /* ==========================================================================
    TAILWIND v4 THEME — Design tokens as CSS-first configuration.

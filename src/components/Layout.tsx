@@ -414,7 +414,7 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
     { pane: 'email', icon: <Mail size={18} />, label: 'Mail' },
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
-    { pane: 'agents', icon: <Bot size={18} />, label: 'Agent' },
+    { pane: 'agents', icon: <Bot size={18} />, label: 'Agents' },
     { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
     { pane: 'notes', icon: <FileText size={18} />, label: 'Notes' },
     { pane: 'bookmarks', icon: <Bookmark size={18} />, label: 'Marks' },
