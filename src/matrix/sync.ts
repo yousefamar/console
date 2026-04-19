@@ -424,6 +424,37 @@ async function processJoinedRoom(
         })
       }
     }
+    // Beeper bridge surfaces per-message delivery results via
+    // `com.beeper.message_send_status` events that reference the original
+    // encrypted event. FAIL_RETRIABLE/FAIL_PERMANENT means the bridge couldn't
+    // decrypt/forward our message — flag the local echo so the UI shows it.
+    // SUCCESS clears any prior fail marker (bridge eventually retries + wins).
+    if (event.type === 'com.beeper.message_send_status') {
+      const content = event.content as Record<string, unknown>
+      const relates = content['m.relates_to'] as Record<string, unknown> | undefined
+      const targetId = relates?.event_id as string | undefined
+      const status = content.status as string | undefined
+      const reason = (content.reason as string | undefined) ?? (content.error as string | undefined)
+      if (targetId && status) {
+        if (status === 'SUCCESS') {
+          await db.chatMessages.update(targetId, { sendFailed: undefined })
+        } else {
+          // FAIL_RETRIABLE, FAIL_PERMANENT, etc.
+          const msg = `bridge: ${status}${reason ? ` (${reason})` : ''}`
+          await db.chatMessages.update(targetId, { sendFailed: msg })
+          // Fire a notification so the user knows without needing the chat open
+          import('@/notifications').then(({ notify }) => {
+            const room = existing
+            notify({
+              title: 'Message failed to send',
+              body: room?.name ? `in ${room.name}: ${msg}` : msg,
+              tag: `send-failed:${targetId}`,
+              data: { pane: 'chat' as const, itemId: roomId },
+            })
+          }).catch(() => {})
+        }
+      }
+    }
     // Handle edits — store original body for diff view. Hub pre-decrypts so
     // we only ever see m.room.message here for edit events.
     if (event.type === 'm.room.message') {

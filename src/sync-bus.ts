@@ -32,6 +32,8 @@ export class HubSyncBus {
   private reconnectDelayMs = 500
   private readonly MAX_RECONNECT_MS = 30_000
   private stopped = false
+  private connectCount = 0
+  private connectHandlers = new Set<(info: { first: boolean }) => void>()
 
   connect(): void {
     this.stopped = false
@@ -83,6 +85,20 @@ export class HubSyncBus {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
+  /**
+   * Subscribe to WS-open events. Fires on every successful connect, including
+   * reconnects after a drop. `info.first === true` on the very first open of
+   * this bus instance — useful to differentiate cold-start boot from a
+   * recovery after the APK was backgrounded / the laptop went to sleep.
+   *
+   * Callers should use this to trigger catch-up RPCs (e.g. matrix `snapshot`)
+   * since the hub doesn't buffer missed deltas for disconnected clients.
+   */
+  onConnect(handler: (info: { first: boolean }) => void): () => void {
+    this.connectHandlers.add(handler)
+    return () => { this.connectHandlers.delete(handler) }
+  }
+
   // ---- internals ----
 
   private ensureSubscribed(service: string): void {
@@ -109,6 +125,8 @@ export class HubSyncBus {
 
     ws.onopen = () => {
       this.reconnectDelayMs = 500
+      this.connectCount++
+      const first = this.connectCount === 1
       // Re-establish subscriptions
       for (const service of this.subscribedServices) {
         this.sendRaw({ t: 'sub', service })
@@ -117,6 +135,10 @@ export class HubSyncBus {
       // for mutations the caller should include a client-side op id if needed)
       for (const [id, p] of this.pending) {
         this.sendRaw({ t: 'rpc', id, service: p.service, op: p.op, args: p.args })
+      }
+      // Fire connect handlers so callers can trigger catch-up RPCs.
+      for (const fn of this.connectHandlers) {
+        try { fn({ first }) } catch {}
       }
     }
 

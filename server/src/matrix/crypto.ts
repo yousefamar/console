@@ -146,6 +146,109 @@ export class HubMatrixCrypto {
     return { imported, total }
   }
 
+  /**
+   * Save a backup decryption key into the OlmMachine so built-in backup
+   * machinery (isBackupEnabled, automatic room-key uploads) knows about it.
+   * Used by the recovery-key restore flow.
+   */
+  async saveBackupDecryptionKey(
+    key: unknown,
+    backupVersion: string,
+  ): Promise<void> {
+    if (!this.machine || !this.mod) throw new Error('crypto not initialized')
+    await (this.machine as any).saveBackupDecryptionKey(key, backupVersion)
+    await this.dumpSnapshot()
+  }
+
+  /**
+   * Import private cross-signing keys (master, self-signing, user-signing) and
+   * sign this hub's device with the self-signing key. Uploads the signature to
+   * the homeserver via processOutgoingRequests.
+   *
+   * Required after migrating the hub to a new device: Beeper bridges reject
+   * Olm traffic from devices not signed by the user's SSK, so sends silently
+   * fail with com.beeper.undecryptable_event until this is done.
+   *
+   * `reset: false` is important — passing true regenerates public keys on the
+   * server and breaks every other device the user has.
+   */
+  async restoreCrossSigning(
+    masterKey: string,
+    selfSigningKey: string,
+    userSigningKey: string,
+    homeserver: string,
+    token: string,
+  ): Promise<{ status: Record<string, unknown> }> {
+    if (!this.machine || !this.mod) throw new Error('crypto not initialized')
+    const machine = this.machine as any
+    if (typeof machine.importCrossSigningKeys !== 'function') {
+      throw new Error('OlmMachine lacks importCrossSigningKeys — wasm too old?')
+    }
+    await machine.importCrossSigningKeys(masterKey, selfSigningKey, userSigningKey)
+    this.log(`[hub-crypto] imported cross-signing private keys`)
+    // reset=false: do NOT regenerate public keys on the server; just sign our
+    // device with the imported SSK. Returns CrossSigningBootstrapRequests with
+    // three explicit requests (they do NOT flow through outgoingRequests()).
+    const bootstrap = await machine.bootstrapCrossSigning(false) as {
+      uploadKeysRequest?: { id?: string; type: unknown; body: string }
+      uploadSigningKeysRequest?: { body?: string; masterKey?: string; selfSigningKey?: string; userSigningKey?: string }
+      uploadSignaturesRequest?: { id?: string; type: unknown; body: string }
+    }
+    this.log(`[hub-crypto] bootstrapCrossSigning(false) returned: uploadKeys=${!!bootstrap.uploadKeysRequest} uploadSigningKeys=${!!bootstrap.uploadSigningKeysRequest} uploadSignatures=${!!bootstrap.uploadSignaturesRequest}`)
+
+    // 1. Device keys upload (if bootstrap asks for it). Goes through executeRequest
+    //    which calls markRequestAsSent under the hood.
+    if (bootstrap.uploadKeysRequest) {
+      await this.executeRequest(bootstrap.uploadKeysRequest, homeserver, token)
+      this.log(`[hub-crypto] bootstrap: uploadKeys sent`)
+    }
+
+    // 2. Cross-signing public keys upload. POST /keys/device_signing/upload.
+    //    With reset=false on a homeserver that already has these keys, this is
+    //    idempotent. Body is already-serialized JSON of the cross-signing keys.
+    if (bootstrap.uploadSigningKeysRequest) {
+      const r = bootstrap.uploadSigningKeysRequest as any
+      // The wasm class exposes the three keys as separate getters; synthesize
+      // the request body the homeserver expects.
+      const body: Record<string, unknown> = {}
+      if (r.masterKey) body.master_key = JSON.parse(r.masterKey)
+      if (r.selfSigningKey) body.self_signing_key = JSON.parse(r.selfSigningKey)
+      if (r.userSigningKey) body.user_signing_key = JSON.parse(r.userSigningKey)
+      if (Object.keys(body).length > 0) {
+        try {
+          await httpPost(`${homeserver}/_matrix/client/v3/keys/device_signing/upload`, JSON.stringify(body), token)
+          this.log(`[hub-crypto] bootstrap: uploadSigningKeys sent`)
+        } catch (e) {
+          // On reset=false these should already match what's on the server;
+          // a 4xx is expected-and-fine. Bridge sends don't depend on this.
+          this.log(`[hub-crypto] bootstrap: uploadSigningKeys failed (non-fatal): ${(e as Error).message}`)
+        }
+      }
+    }
+
+    // 3. Signature upload — THE critical one. This is what signs BMDGEAGPTK
+    //    with the imported SSK so bridges will accept our Olm traffic.
+    if (bootstrap.uploadSignaturesRequest) {
+      await this.executeRequest(bootstrap.uploadSignaturesRequest, homeserver, token)
+      this.log(`[hub-crypto] bootstrap: uploadSignatures sent`)
+    }
+
+    // Drain any follow-up requests (keys query refresh etc.)
+    await this.processOutgoingRequests(homeserver, token)
+    await this.dumpSnapshot()
+    let status: Record<string, unknown> = {}
+    try {
+      const s = await machine.crossSigningStatus()
+      status = {
+        hasMaster: s?.hasMaster ?? s?.has_master,
+        hasSelfSigning: s?.hasSelfSigning ?? s?.has_self_signing,
+        hasUserSigning: s?.hasUserSigning ?? s?.has_user_signing,
+      }
+    } catch { /* non-fatal */ }
+    this.log(`[hub-crypto] cross-signing status after restore: ${JSON.stringify(status)}`)
+    return { status }
+  }
+
   /** Decrypt a single room event (m.room.encrypted → plaintext). */
   async decryptRoomEvent(event: unknown, roomId: string): Promise<{ type: string; content: Record<string, unknown> } | null> {
     if (!this.machine || !this.mod) return null
@@ -232,9 +335,37 @@ export class HubMatrixCrypto {
   }
 
   /**
+   * Force-rotate the outbound Megolm session for a room. Next shareRoomKeys
+   * call will create a fresh session and re-share with all current members.
+   * Useful after key backup imports or when a bridge reports FAIL_RETRIABLE
+   * (decryption failure) — the safe assumption is that our current session
+   * wasn't reliably delivered and retrying with a fresh session gives the
+   * bridge a clean chance to re-key.
+   */
+  async invalidateRoomKey(roomId: string): Promise<void> {
+    if (!this.machine || !this.mod) return
+    // invalidateGroupSession only touches the in-memory outbound session. After
+    // a hub restart, the session is persisted but not yet loaded; the call
+    // returns false and the stale session stays live. Pre-load it by doing a
+    // no-op shareRoomKey call first (no users → no requests, but the current
+    // outbound session is loaded into memory as a side effect). Then invalidate.
+    try {
+      const settings = new this.mod.EncryptionSettings()
+      try { settings.sharingStrategy = (this.mod.CollectStrategy as any).allDevices() } catch {}
+      await this.machine.shareRoomKey(new this.mod.RoomId(roomId), [], settings)
+    } catch { /* ignore */ }
+    const result = await (this.machine as any).invalidateGroupSession(new this.mod.RoomId(roomId))
+    this.log(`[hub-crypto] invalidated group session for ${roomId} → returned ${JSON.stringify(result)}`)
+  }
+
+  /**
    * Share a Megolm session with the given users in `roomId`. Mirrors the
    * browser implementation closely (track users → drain → claim OTKs →
    * shareRoomKey → drain). Bridge-device errors are swallowed.
+   *
+   * Uses CollectStrategy.allDevices() explicitly so bridge-bot devices
+   * (which are never cross-signed) still receive the room key. The default
+   * strategy in newer wasm builds excludes unverified user identities.
    */
   async shareRoomKeys(
     roomId: string,
@@ -246,13 +377,44 @@ export class HubMatrixCrypto {
     const UserIdCtor = this.mod.UserId
     const RoomIdCtor = this.mod.RoomId
 
-    // 1. Track the users
+    // 1. Track users (first-time call triggers a KeysQuery for unknown users).
     await this.machine.updateTrackedUsers(memberUserIds.map((id) => new UserIdCtor(id)))
 
-    // 2. Drain (fetches device keys)
+    // 2. Drain (fetches device keys for newly-tracked users).
     await this.processOutgoingRequests(homeserver, token)
 
-    // 3. Claim OTKs for missing Olm sessions (best-effort)
+    // 3. Force-refresh device lists for ALL members. updateTrackedUsers
+    //    only queries users it hasn't seen before — so already-tracked users
+    //    with rotated devices (common for bridge bots) won't auto-refresh
+    //    until they appear in /sync's device_lists.changed. That's too slow
+    //    right before a send, so we do an explicit KeysQuery here.
+    try {
+      const queryReq = (this.machine as any).queryKeysForUsers(
+        memberUserIds.map((id) => new UserIdCtor(id)),
+      ) as { id?: string; type: unknown; body: string } | null
+      if (queryReq) {
+        const resp = await httpPost(`${homeserver}/_matrix/client/v3/keys/query`, queryReq.body, token)
+        let devCount = 0
+        try {
+          const parsed = JSON.parse(resp) as { device_keys?: Record<string, Record<string, unknown>> }
+          if (parsed.device_keys) {
+            for (const [, devs] of Object.entries(parsed.device_keys)) devCount += Object.keys(devs).length
+          }
+        } catch { /* ignore */ }
+        if (queryReq.id) {
+          await this.machine.markRequestAsSent(queryReq.id, queryReq.type as any, resp)
+        }
+        this.log(`[hub-crypto] queryKeysForUsers: ${devCount} device(s) across ${memberUserIds.length} user(s)${queryReq.id ? '' : ' (no request id — not marked sent)'}`)
+      } else {
+        this.log(`[hub-crypto] queryKeysForUsers: null request`)
+      }
+    } catch (err) {
+      this.log(`[hub-crypto] queryKeysForUsers failed: ${(err as Error).message}`)
+    }
+    await this.processOutgoingRequests(homeserver, token)
+
+    // 4. Claim OTKs for missing Olm sessions (best-effort — bridge devices
+    //    often have exhausted/empty OTK pools which we silently tolerate).
     let claimFailed = false
     try {
       const claimReq = await this.machine.getMissingSessions(
@@ -261,36 +423,64 @@ export class HubMatrixCrypto {
       if (claimReq) {
         const resp = await httpPost(`${homeserver}/_matrix/client/v3/keys/claim`, claimReq.body, token)
         await this.machine.markRequestAsSent(claimReq.id, claimReq.type, resp)
+        this.log(`[hub-crypto] claimed OTKs for ${memberUserIds.length} user(s)`)
+      } else {
+        this.log(`[hub-crypto] getMissingSessions: no claim needed (already have Olm sessions)`)
       }
     } catch (err) {
       this.log(`[hub-crypto] claim OTKs failed: ${(err as Error).message}`)
       claimFailed = true
     }
 
-    // 4. Drain again
+    // 5. Drain again
     await this.processOutgoingRequests(homeserver, token)
 
     if (claimFailed) return
 
-    // 5. Share the Megolm session
+    // 6. Share the Megolm session — allDevices strategy ensures bridge bots
+    //    (never cross-signed, so not "trusted") still receive the key.
     const settings = new this.mod.EncryptionSettings()
+    try {
+      settings.sharingStrategy = (this.mod.CollectStrategy as any).allDevices()
+    } catch {
+      // Older wasm builds may not expose allDevices() — default strategy is
+      // deviceBasedStrategy(false, false) which is equivalent, so this is fine.
+    }
     const requests = await this.machine.shareRoomKey(
       new RoomIdCtor(roomId),
       memberUserIds.map((id) => new UserIdCtor(id)),
       settings,
     )
+    let shared = 0
+    let shareFailed = 0
+    const targetsSummary: string[] = []
     for (const req of requests) {
       try {
         const r = req as { id?: string; type: unknown; body: string; event_type: string; txn_id: string }
+        // Diagnostic: extract per-user per-device targets from the body
+        try {
+          const parsed = JSON.parse(r.body) as { messages?: Record<string, Record<string, unknown>> }
+          const msgs = parsed.messages ?? {}
+          for (const [uid, devMap] of Object.entries(msgs)) {
+            const devIds = Object.keys(devMap)
+            targetsSummary.push(`${uid}:[${devIds.join(',')}]`)
+          }
+        } catch { /* ignore */ }
         const url = `${homeserver}/_matrix/client/v3/sendToDevice/${encodeURIComponent(r.event_type)}/${encodeURIComponent(r.txn_id)}`
         const resp = await httpPut(url, r.body, token)
         if (r.id) await this.machine.markRequestAsSent(r.id, r.type as any, resp)
+        shared++
       } catch (err) {
         this.log(`[hub-crypto] shareRoomKey to-device failed: ${(err as Error).message}`)
+        shareFailed++
       }
     }
+    this.log(`[hub-crypto] shareRoomKey ${roomId}: ${requests.length} to-device req(s), ${shared} ok${shareFailed ? `, ${shareFailed} failed` : ''} — members=${memberUserIds.length}`)
+    if (targetsSummary.length > 0) {
+      this.log(`[hub-crypto] shareRoomKey targets: ${targetsSummary.join(' ')}`)
+    }
 
-    // 6. Final drain
+    // 7. Final drain
     await this.processOutgoingRequests(homeserver, token)
   }
 

@@ -9,6 +9,7 @@ import type { HubMatrixCrypto } from '../matrix/crypto.js'
 import type { AuthStore } from '../auth-store.js'
 import type { MatrixSync } from '../matrix/sync.js'
 import { matrixPasswordLogin } from '../matrix/login.js'
+import { restoreFromRecoveryKey, restoreCrossSigningFromRecoveryKey } from '../matrix/backup-restore.js'
 
 export function handleMatrixRoutes(
   req: IncomingMessage,
@@ -376,6 +377,90 @@ export function handleMatrixRoutes(
   if (path === '/matrix/keys/backup-status' && req.method === 'GET') {
     json(keyBackup.status())
     return true
+  }
+
+  // POST /matrix/decrypt-event — retry decryption of a previously-undecryptable
+  // event using the hub's current OlmMachine state. Used after a key import
+  // (local backup / recovery-key restore) to resurrect "🔒 Encrypted message"
+  // placeholders in the browser's IDB.
+  if (path === '/matrix/decrypt-event' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const body = JSON.parse(await readBody(req)) as { roomId?: string; event?: unknown; eventId?: string }
+      if (!body.roomId) return error(400, 'roomId required')
+      let ev: any = body.event
+      if (!ev && body.eventId) {
+        ev = await matrix.getEvent(body.roomId, body.eventId)
+      }
+      if (!ev) return error(400, 'event or eventId required')
+      const dec = await hubCrypto.decryptRoomEvent(ev, body.roomId)
+      if (!dec) return error(422, 'still undecryptable (key still missing or wrong session)')
+      json({ ok: true, type: dec.type, content: dec.content })
+    })
+  }
+
+  // POST /matrix/keys/restore-from-recovery-key
+  // Decodes an `EsU…`-style recovery key, fetches the matching server-side
+  // key backup (/room_keys/keys), decrypts every Megolm session, and imports
+  // them into the hub OlmMachine. The recovery key is not persisted.
+  if (path === '/matrix/keys/restore-from-recovery-key' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const cfg = authStore.getMatrixConfig()
+      if (!cfg) return error(400, 'matrix not configured')
+      const body = JSON.parse(await readBody(req)) as { recoveryKey?: string }
+      if (!body.recoveryKey) return error(400, 'recoveryKey required')
+      const result = await restoreFromRecoveryKey({
+        homeserver: cfg.homeserver,
+        accessToken: cfg.accessToken,
+        userId: cfg.userId,
+        recoveryKey: body.recoveryKey,
+        hubCrypto,
+        log: (m) => console.log(m),
+      })
+      json({ ok: true, ...result })
+    })
+  }
+
+  // POST /matrix/keys/restore-cross-signing
+  // Decrypts the three cross-signing private keys (MSK/SSK/USK) from
+  // SSSS-encrypted secrets in account_data using the user-supplied recovery
+  // key, imports them into the hub OlmMachine, and signs this hub device with
+  // the SSK. Required after hub migration — Beeper bridges reject Olm traffic
+  // from uncross-signed devices (CLAUDE.md Known Issues).
+  if (path === '/matrix/keys/restore-cross-signing' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const cfg = authStore.getMatrixConfig()
+      if (!cfg) return error(400, 'matrix not configured')
+      const body = JSON.parse(await readBody(req)) as { recoveryKey?: string }
+      if (!body.recoveryKey) return error(400, 'recoveryKey required')
+      const result = await restoreCrossSigningFromRecoveryKey({
+        homeserver: cfg.homeserver,
+        accessToken: cfg.accessToken,
+        userId: cfg.userId,
+        recoveryKey: body.recoveryKey,
+        hubCrypto,
+        log: (m) => console.log(m),
+      })
+      json({ ok: true, ...result })
+    })
+  }
+
+  // POST /matrix/keys/import-local-backup
+  // Force-imports the on-disk M0 key backup into the hub's current OlmMachine.
+  // Used when the hub was initialized with an existing snapshot but the legacy
+  // browser-exported keys never got merged in (common after the hub-centric
+  // migration — see CLAUDE.md Known Issues).
+  if (path === '/matrix/keys/import-local-backup' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const backup = keyBackup.get()
+      if (!backup) return error(404, 'no local key backup on disk')
+      const cfg = authStore.getMatrixConfig()
+      if (!cfg) return error(400, 'matrix not configured')
+      if (backup.userId !== cfg.userId) {
+        return error(400, `backup is for ${backup.userId} but hub is logged in as ${cfg.userId}`)
+      }
+      const r = await hubCrypto.importRoomKeys(backup.keys)
+      json({ ok: true, imported: r.imported, total: r.total, backupDevice: backup.deviceId, hubDevice: cfg.deviceId })
+    })
   }
 
   // --- M1 hub-as-Matrix-client ---------------------------------------------

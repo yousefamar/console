@@ -173,6 +173,9 @@ syncBus.register('matrix', {
   redact: async (args) => matrixSync.redactEvent(args as { roomId: string; eventId: string; reason?: string }),
   markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
   paginate: async (args) => matrixSync.paginate(args as { roomId: string; from?: string; dir?: 'b' | 'f'; limit?: number }),
+  // Discard the outbound Megolm session for a room so the next send forces
+  // a fresh shareRoomKey round — used when a bridge reports FAIL_RETRIABLE.
+  rotateRoomKey: async (args) => matrixSync.rotateRoomKey(args as { roomId: string }),
 })
 matrixSync.start()
 

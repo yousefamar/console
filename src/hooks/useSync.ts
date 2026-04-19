@@ -61,6 +61,7 @@ export function useSync() {
     let stopped = false
     let hubUnsubDelta: (() => void) | null = null
     let hubUnsubInitial: (() => void) | null = null
+    let hubUnsubConnect: (() => void) | null = null
 
     const startMatrix = async () => {
       // One-time migrations (local cache cleanup — no network needed)
@@ -80,14 +81,21 @@ export function useSync() {
 
       if (stopped) return
 
-      // If this browser has no cached rooms yet (fresh install, APK first
-      // launch, cleared data), ask the hub for a full snapshot. `syncNow`
-      // wouldn't help — the hub's own `initial` only fires on *its* very
-      // first sync, and subsequent `delta`s only carry new events.
-      const { db } = await import('@/db')
-      const roomCount = await db.chatRooms.count()
-      if (roomCount === 0) {
-        await hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
+      // Ask for a snapshot on every WS (re)connect. The hub doesn't buffer
+      // missed deltas, so any client that was offline (laptop asleep, APK
+      // backgrounded, brief network drop) has a hole in its timeline until
+      // we reconcile. Snapshot broadcasts a full decrypted `initial` payload
+      // which ingestHubDelta idempotently applies via bulkPut.
+      //
+      // First-connect semantics are unchanged — we always snapshot on boot,
+      // whether IDB is empty or already populated (cheap enough; hub's /sync
+      // with no since returns one window per room).
+      hubUnsubConnect = hubBus.onConnect(() => {
+        hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
+      })
+      // If the bus already opened before we subscribed, kick off one manually.
+      if (hubBus.connected) {
+        hubBus.rpc('matrix', 'snapshot', {}).catch(() => {})
       }
     }
     startMatrix().catch(() => {})
@@ -114,6 +122,7 @@ export function useSync() {
       unsubFlush()
       hubUnsubDelta?.()
       hubUnsubInitial?.()
+      hubUnsubConnect?.()
     }
   }, [])
 

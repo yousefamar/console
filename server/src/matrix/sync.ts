@@ -221,6 +221,19 @@ export class MatrixSync {
     return JSON.parse(text) as { event_id: string }
   }
 
+  /**
+   * Force-rotate the outbound Megolm session for a room. Next sendRoomEvent
+   * will create a fresh session and re-share with all current members.
+   * Surface-exposed via `matrix.rotateRoomKey` RPC — the UI can call this
+   * on a failed send to recover without waiting for the automatic retry
+   * interval baked into the OlmMachine rotation policy.
+   */
+  async rotateRoomKey(args: { roomId: string }): Promise<{ ok: true }> {
+    if (!args?.roomId) throw new Error('roomId required')
+    await this.crypto.invalidateRoomKey(args.roomId)
+    return { ok: true }
+  }
+
   /** Redact an event (always unencrypted; redactions are never encrypted). */
   async redactEvent(args: { roomId: string; eventId: string; reason?: string }): Promise<{ event_id: string }> {
     const cfg = this.auth.getMatrixConfig()

@@ -107,6 +107,8 @@ The debug agent:
 - Direct REST API (no matrix-js-sdk). E2EE via OlmMachine WASM. Long-polling sync.
 - Local echo with `~timestamp.random` IDs. Bridge detection (WhatsApp, LinkedIn, Slack).
 - Pre-rendered room views. Pinned favourites grid. Edit/delete diffs via `diffWords`.
+- **Send failures surface in the UI**: Beeper bridges emit `com.beeper.message_send_status` events referencing the original encrypted event. Browser-side `src/matrix/sync.ts` flips `sendFailed` on the local echo and fires a notification. SUCCESS status clears any prior fail marker. Root cause of FAIL_RETRIABLE is almost always the hub device not being cross-signed — run `POST /matrix/keys/restore-cross-signing` (see Matrix recovery workflow below).
+- **Force-rotate Megolm**: `matrix.rotateRoomKey({roomId})` RPC (→ `HubMatrixCrypto.invalidateRoomKey`) throws away the outbound session so the next send re-keys from scratch. Useful when a bridge gets into a wedged state. Note: `invalidateGroupSession` only touches the in-memory session, so we pre-load by calling `shareRoomKey(roomId, [], …)` first — otherwise after a hub restart the persisted stale session stays live.
 
 ### Calendar
 - **Hub-proxied** — all API calls go through hub (`/cal/*`), which handles tokens server-side
@@ -192,7 +194,16 @@ Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26
 - `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService
 
 ## Known Issues
-- Matrix E2EE: new device needs key backup restore (Settings → recovery key) before old messages decrypt
-- Matrix E2EE: device verification required before Beeper bridge accepts encrypted messages
-- `bootstrapCrossSigning` overwrites server keys — always restore keys FIRST, then verify device
+- Matrix E2EE: new device needs key backup restore (`POST /matrix/keys/restore-from-recovery-key`) before old messages decrypt
+- Matrix E2EE: hub device must be cross-signed or Beeper bridges silently drop encrypted messages with `com.beeper.undecryptable_event`. Run `POST /matrix/keys/restore-cross-signing` after a hub re-login.
+- `bootstrapCrossSigning(true)` overwrites server keys — always restore keys FIRST (the route above uses `reset:false`)
 - WASM `UserId` objects consumed per call — create fresh instances each time
+
+## Matrix recovery workflow (hub-side)
+The old browser "Settings → recovery key" flow was dropped in the hub-centric migration. Hub-side replacements live in `server/src/matrix/backup-restore.ts` + `secret-storage.ts`, exposed as:
+- `POST /matrix/keys/restore-from-recovery-key {recoveryKey}` — decodes an `EsU…` key; tries direct `BackupDecryptionKey` match first, then SSSS unlock. SSSS path iterates **every** keyId that encrypts `m.megolm_backup.v1` — users often have the current default SSSS key point somewhere new (e.g. `RII4BrO2Ox`) while the backup secret is still encrypted under the previous key (e.g. `bXFaNVGpGwtYSl7WxkfM2aznevIvcl3z`). Decrypts all sessions via `/room_keys/keys` and imports into OlmMachine (+ persists via `saveBackupDecryptionKey`).
+- `POST /matrix/keys/restore-cross-signing {recoveryKey}` — decrypts the three cross-signing private secrets (`m.cross_signing.{master,self_signing,user_signing}`) from account_data, calls `importCrossSigningKeys` then `bootstrapCrossSigning(false)`, and explicitly sends the returned device-signature upload (bootstrap requests do NOT flow through `outgoingRequests()`). Required after any hub re-login — bridges reject Olm from uncross-signed devices. Beeper's current default SSSS key `RII4BrO2Ox` ships with **no `iv`/`mac` verification block**, so the helper skips `verifySsssKey` when those are absent and relies on the secret's own MAC to reject wrong keys.
+- `POST /matrix/keys/import-local-backup` — force-imports the on-disk M0 key backup into the hub's current OlmMachine. Useful after hub migrates to a new deviceId and the legacy browser-exported keys never got merged.
+- `POST /matrix/decrypt-event {roomId, eventId|event}` — fetches raw event from the homeserver (or takes it inline) and decrypts via the hub's OlmMachine. Used to resurrect "🔒 Encrypted message" placeholders that the browser persisted to IDB when the hub couldn't decrypt them at sync time.
+
+Multiple rotations of the recovery key are fine — keep older keys handy because `tryKeyAgainstVersion` walks **all** backup versions and the SSSS loop walks **all** keyIds, so any historical key that unlocks any of them still restores. Beeper's recovery keys (`EsU…` prefix) are SSSS keys, not direct `BackupDecryptionKey` seeds. Cross-signing secrets are often encrypted under a **different** (newer) SSSS key than megolm backup — the two routes accept different recovery keys on the same account.
