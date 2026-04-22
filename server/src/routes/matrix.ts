@@ -657,6 +657,44 @@ export function handleMatrixRoutes(
     })
   }
 
+  // PUT|DELETE /matrix/rooms/:id/tags/:tag — toggle a user-scoped room tag
+  // (e.g. `m.favourite`, `m.lowpriority`). Used by the chat-room context menu
+  // to pin / demote rooms; updates flow back via sync's account_data.
+  const tagMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/tags\/([^/]+)$/)
+  if (tagMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(tagMatch[1]!)
+      const tag = decodeURIComponent(tagMatch[2]!)
+      if (req.method === 'DELETE') {
+        await matrix.deleteRoomTag(roomId, tag)
+      } else {
+        const raw = await readBody(req)
+        const body = raw ? (JSON.parse(raw) as { order?: number }) : {}
+        await matrix.setRoomTag(roomId, tag, body.order)
+      }
+      json({ ok: true })
+    })
+  }
+
+  // PUT|DELETE /matrix/rooms/:id/mute — toggle a `room`-kind push rule with
+  // `dont_notify`. Matches the rule shape Beeper's bridges use for WhatsApp /
+  // Signal mute propagation, so writes round-trip cleanly.
+  const muteMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/mute$/)
+  if (muteMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(muteMatch[1]!)
+      if (req.method === 'DELETE') {
+        await matrix.unsetRoomMuted(roomId)
+      } else {
+        await matrix.setRoomMuted(roomId)
+      }
+      // Nudge sync so the updated push_rules event flows through quickly
+      // instead of waiting for the next long-poll to land.
+      void matrixSync.syncNow().catch(() => {})
+      json({ ok: true })
+    })
+  }
+
   // GET /matrix/hub/status
   if (path === '/matrix/hub/status' && req.method === 'GET') {
     const identity = hubCrypto.identity()

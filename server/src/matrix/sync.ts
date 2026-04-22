@@ -63,6 +63,11 @@ export type MatrixDelta = {
   rooms: Record<string, MatrixJoinedRoomDelta>
   invites?: string[]
   leaves?: string[]
+  // Present on initial sync and any delta where `m.push_rules` arrived in
+  // account_data — reflects the *full* current set of room-scoped muted rooms.
+  // Client treats this as authoritative and resets `isMuted` across all known
+  // rooms whenever the field is defined. Omitted when push rules didn't change.
+  mutedRoomIds?: string[]
 }
 
 // Lightweight server-side cache of room state so push notifications can carry
@@ -86,6 +91,10 @@ export class MatrixSync {
   private readonly roomState = new Map<string, RoomStateCache>()
   /** roomIds flagged as DMs in global account_data (`m.direct`). */
   private directRooms = new Set<string>()
+  /** roomIds with an active `room`-kind push rule set to `dont_notify`. */
+  private mutedRooms = new Set<string>()
+  /** Whether the most recent sync tick carried an `m.push_rules` event. */
+  private pushRulesChangedThisTick = false
 
   constructor(
     private readonly matrix: MatrixClient,
@@ -103,8 +112,29 @@ export class MatrixSync {
     if (this.loopTimer) return
     this.stopped = false
     this.log('[matrix-sync] starting')
+    // One-shot push-rules fetch on boot. Matrix only re-sends m.push_rules in
+    // /sync's account_data when they *change*, so a warm hub restart starts
+    // with an empty mutedRooms set until the next mute edit. Seeding here
+    // keeps `mutedRoomIds` on the next resume() response accurate.
+    this.refreshPushRules().catch((e) => this.log(`[matrix-sync] push-rules seed failed: ${e}`))
     // First tick shortly after boot so the hub doesn't block startup.
     this.loopTimer = setTimeout(() => { this.runLoop().catch((e) => this.log(`[matrix-sync] loop crashed: ${e}`)) }, 5_000)
+  }
+
+  private async refreshPushRules(): Promise<void> {
+    if (!this.auth.getMatrixConfig()) return
+    const rules = await this.matrix.getPushRules()
+    const roomRules = rules.global?.room ?? []
+    const next = new Set<string>()
+    for (const r of roomRules) {
+      if (r.enabled === false) continue
+      const actions = r.actions ?? []
+      const notifies = actions.some((a) => a === 'notify')
+      const mutes = actions.some((a) => a === 'dont_notify')
+      if (mutes && !notifies) next.add(r.rule_id)
+    }
+    this.mutedRooms = next
+    this.log(`[matrix-sync] push rules seeded: ${next.size} muted rooms`)
   }
 
   stop(): void {
@@ -201,6 +231,10 @@ export class MatrixSync {
       rooms,
       invites: invites.length ? invites : undefined,
       leaves: leaves.length ? leaves : undefined,
+      // Always send the full mute set on resume — the client just reconnected
+      // and needs the current state regardless of whether push_rules appeared
+      // in this particular response (they only come in when they change).
+      mutedRoomIds: Array.from(this.mutedRooms),
       isInitial,
     }
   }
@@ -487,13 +521,19 @@ export class MatrixSync {
       this.state.lastSyncMs = Date.now()
       this.saveState()
 
-      // 4. Broadcast.
+      // 4. Broadcast. Only carry `mutedRoomIds` when push rules changed this
+      // tick — clients treat a defined array as authoritative across all
+      // known rooms, so omitting it when unchanged avoids needless IDB writes.
       const delta: MatrixDelta = {
         nextBatch: resp.next_batch,
         rooms,
         invites: invites.length ? invites : undefined,
         leaves: leaves.length ? leaves : undefined,
+        mutedRoomIds: (isInitial || this.pushRulesChangedThisTick)
+          ? Array.from(this.mutedRooms)
+          : undefined,
       }
+      this.pushRulesChangedThisTick = false
       const roomCount = Object.keys(rooms).length
       if (isInitial) {
         this.bus.broadcast('matrix', 'initial', delta)
@@ -566,14 +606,36 @@ export class MatrixSync {
     const events = (accountData as { events?: Array<{ type?: string; content?: any }> })?.events
     if (!events) return
     for (const e of events) {
-      if (e.type !== 'm.direct' || !e.content) continue
-      // m.direct content is { userId: [roomId, ...], ... }
-      const next = new Set<string>()
-      for (const rooms of Object.values(e.content as Record<string, unknown>)) {
-        if (!Array.isArray(rooms)) continue
-        for (const r of rooms) if (typeof r === 'string') next.add(r)
+      if (e.type === 'm.direct' && e.content) {
+        // m.direct content is { userId: [roomId, ...], ... }
+        const next = new Set<string>()
+        for (const rooms of Object.values(e.content as Record<string, unknown>)) {
+          if (!Array.isArray(rooms)) continue
+          for (const r of rooms) if (typeof r === 'string') next.add(r)
+        }
+        this.directRooms = next
+      } else if (e.type === 'm.push_rules' && e.content) {
+        // Top-level m.push_rules event carries the full ruleset on every change.
+        // We only care about the `room` kind (per-room overrides) — Element's
+        // "Mute" uses `override`, but Beeper's bridges use `room`, and the
+        // homeserver's actual notif_count respects both. Reading `room` here
+        // keeps our UI label in sync with whatever WhatsApp/Signal mutes
+        // propagate via Beeper's double-puppet.
+        const global = (e.content as { global?: { room?: unknown[] } }).global
+        const roomRules = Array.isArray(global?.room) ? global.room : []
+        const next = new Set<string>()
+        for (const r of roomRules as Array<{ rule_id?: string; enabled?: boolean; actions?: unknown[] }>) {
+          if (!r.rule_id || r.enabled === false) continue
+          const actions = r.actions ?? []
+          // dont_notify can appear as a bare string or nested object — treat
+          // any actions that don't include `notify` as muted.
+          const notifies = actions.some((a) => a === 'notify' || (typeof a === 'object' && a !== null && (a as { set_tweak?: string }).set_tweak === 'sound'))
+          const mutes = actions.some((a) => a === 'dont_notify')
+          if (mutes && !notifies) next.add(r.rule_id)
+        }
+        this.mutedRooms = next
+        this.pushRulesChangedThisTick = true
       }
-      this.directRooms = next
     }
   }
 

@@ -737,6 +737,11 @@ export type HubMatrixDelta = {
   invites?: string[]
   leaves?: string[]
   isInitial?: boolean  // set by hub's resume() when falling back to cold-start
+  // Full set of `room`-kind push-rule muted rooms. Defined means authoritative
+  // — any known room not in the list should have isMuted cleared. Omitted when
+  // the hub's most recent sync didn't carry a push_rules update (keeps the
+  // existing IDB state).
+  mutedRoomIds?: string[]
 }
 
 // Persisted client cursor — the `next_batch` from the most recently ingested
@@ -766,6 +771,17 @@ export async function ingestHubDelta(delta: HubMatrixDelta, isInitial = false): 
       processJoinedRoom(roomId, delta.rooms[roomId]!).catch(() => {}),
     ),
   )
+
+  // Apply authoritative mute state if the hub carried it on this tick. Runs
+  // AFTER processJoinedRoom so freshly-created room records don't get their
+  // isMuted overwritten by a stale default.
+  if (delta.mutedRoomIds !== undefined) {
+    const muted = new Set(delta.mutedRoomIds)
+    await db.chatRooms.toCollection().modify((r) => {
+      const next = muted.has(r.id)
+      if (r.isMuted !== next) r.isMuted = next
+    }).catch(() => {})
+  }
 
   // Handle left rooms — drop them from local cache.
   for (const roomId of delta.leaves ?? []) {

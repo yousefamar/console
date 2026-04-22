@@ -186,6 +186,54 @@ export class MatrixClient {
     )
   }
 
+  async getPushRules() {
+    return this.request<{
+      global?: {
+        room?: Array<{ rule_id: string; enabled?: boolean; actions?: unknown[] }>
+        override?: Array<{ rule_id: string; enabled?: boolean; actions?: unknown[]; conditions?: unknown[] }>
+      }
+    }>('/_matrix/client/v3/pushrules/')
+  }
+
+  // -------------------------------------------------------------------------
+  // Tags + push rules (room-scoped)
+  // -------------------------------------------------------------------------
+
+  async setRoomTag(roomId: string, tag: string, order?: number) {
+    const { userId } = this.getConfig()
+    const body: Record<string, unknown> = {}
+    if (typeof order === 'number') body.order = order
+    return this.request<Record<string, never>>(
+      `/_matrix/client/v3/user/${encodeURIComponent(userId)}/rooms/${encodeURIComponent(roomId)}/tags/${encodeURIComponent(tag)}`,
+      { method: 'PUT', body },
+    )
+  }
+
+  async deleteRoomTag(roomId: string, tag: string) {
+    const { userId } = this.getConfig()
+    return this.request<Record<string, never>>(
+      `/_matrix/client/v3/user/${encodeURIComponent(userId)}/rooms/${encodeURIComponent(roomId)}/tags/${encodeURIComponent(tag)}`,
+      { method: 'DELETE' },
+    )
+  }
+
+  // Sets a room-kind push rule with `dont_notify` actions — this is the same
+  // shape Beeper's bridges write when a WhatsApp mute propagates, so our
+  // writes round-trip cleanly through the bridge's double-puppet.
+  async setRoomMuted(roomId: string) {
+    return this.request<Record<string, never>>(
+      `/_matrix/client/v3/pushrules/global/room/${encodeURIComponent(roomId)}`,
+      { method: 'PUT', body: { actions: ['dont_notify'] } },
+    )
+  }
+
+  async unsetRoomMuted(roomId: string) {
+    return this.request<Record<string, never>>(
+      `/_matrix/client/v3/pushrules/global/room/${encodeURIComponent(roomId)}`,
+      { method: 'DELETE' },
+    )
+  }
+
   async uploadMedia(data: Buffer, contentType: string, filename?: string) {
     const config = this.getConfig()
     const url = new URL(`${config.homeserver}/_matrix/media/v3/upload`)

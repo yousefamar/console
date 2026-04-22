@@ -10,6 +10,28 @@ function isFavourite(room: DbChatRoom) {
   return room.tags?.includes('m.favourite') ?? false
 }
 
+// Fields ChatRoomListItem actually renders from. If none changed between
+// liveQuery refires we reuse the previous object identity so memo() skips.
+const ROOM_FIELDS: (keyof DbChatRoom)[] = [
+  'id', 'name', 'avatar', 'networkIcon', 'lastMessageTime',
+  'lastMessageSender', 'lastMessageBody', 'isUnread', 'snoozedUntil',
+  'isLowPriority',
+]
+function roomShallowEqual(a: DbChatRoom, b: DbChatRoom) {
+  for (const k of ROOM_FIELDS) if (a[k] !== b[k]) return false
+  const at = a.tags, bt = b.tags
+  if (at === bt) return true
+  if (!at || !bt || at.length !== bt.length) return false
+  for (let i = 0; i < at.length; i++) if (at[i] !== bt[i]) return false
+  return true
+}
+function stabilizeRooms(prev: Map<string, DbChatRoom>, next: DbChatRoom[]): DbChatRoom[] {
+  return next.map((r) => {
+    const p = prev.get(r.id)
+    return p && roomShallowEqual(p, r) ? p : r
+  })
+}
+
 export function ChatRoomList() {
   const selectedRoomId = useChatStore((s) => s.selectedRoomId)
   const selectRoom = useChatStore((s) => s.selectRoom)
@@ -17,18 +39,28 @@ export function ChatRoomList() {
   const isMobile = useIsMobile()
 
   // Live query for chat rooms — drives the chat store
-  const liveChatRooms = useLiveQuery(
+  const liveChatRoomsRaw = useLiveQuery(
     () =>
       db.chatRooms
         .filter((r) => {
           const isFav = r.tags?.includes('m.favourite') ?? false
           if (isFav) return true
-          return r.isUnread && !r.snoozedUntil && !r.isLowPriority
+          return r.isUnread && !r.snoozedUntil && !r.isLowPriority && !r.isMuted
         })
         .reverse()
         .sortBy('lastMessageTime'),
     [],
   )
+
+  // Reuse prior object identity for rooms whose rendered fields didn't change,
+  // so memo'd list items don't re-render on every matrix sync tick.
+  const roomCacheRef = useRef<Map<string, DbChatRoom>>(new Map())
+  const liveChatRooms = useMemo(() => {
+    if (!liveChatRoomsRaw) return undefined
+    const stable = stabilizeRooms(roomCacheRef.current, liveChatRoomsRaw)
+    roomCacheRef.current = new Map(stable.map((r) => [r.id, r]))
+    return stable
+  }, [liveChatRoomsRaw])
 
   // Split into pinned + inbox, then set store in visual order so j/k navigation matches
   const pinnedRooms = useMemo(() =>

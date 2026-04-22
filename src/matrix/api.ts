@@ -79,6 +79,33 @@ export async function getRoomState(roomId: string): Promise<MatrixRoomEvent[]> {
   )
 }
 
+// --- Room tags + mute (context-menu actions) ---
+
+export async function setRoomTag(roomId: string, tag: string, order?: number): Promise<void> {
+  await hubRequest<{ ok: true }>(
+    `/matrix/rooms/${encodeURIComponent(roomId)}/tags/${encodeURIComponent(tag)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(typeof order === 'number' ? { order } : {}),
+    },
+  )
+}
+
+export async function removeRoomTag(roomId: string, tag: string): Promise<void> {
+  await hubRequest<{ ok: true }>(
+    `/matrix/rooms/${encodeURIComponent(roomId)}/tags/${encodeURIComponent(tag)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function setRoomMuted(roomId: string, muted: boolean): Promise<void> {
+  await hubRequest<{ ok: true }>(
+    `/matrix/rooms/${encodeURIComponent(roomId)}/mute`,
+    { method: muted ? 'PUT' : 'DELETE' },
+  )
+}
+
 // --- Upload Media ---
 
 export async function uploadMedia(

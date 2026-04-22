@@ -47,9 +47,31 @@ async function eventsToMessages(
     const senderName = info?.name || event.sender.split(':')[0]?.slice(1) || event.sender
     const senderAvatar = info?.avatar
 
-    // Hub delivers already-decrypted events. m.room.encrypted here means the
-    // hub couldn't decrypt it (e.g. missing Megolm session) — render a placeholder.
+    // Hub delivers already-decrypted events. m.room.encrypted here means
+    // either (a) the hub couldn't decrypt it (missing Megolm session) — render
+    // a placeholder; or (b) it's a redaction tombstone (WhatsApp / Signal
+    // delete), which Matrix strips to `content: {}` with `unsigned.redacted_because`
+    // — render as a deleted message instead of a lock-emoji placeholder.
     if (event.type === 'm.room.encrypted') {
+      const isTombstone = typeof event.content?.ciphertext !== 'string'
+      if (isTombstone) {
+        const redaction = (event.unsigned as Record<string, unknown> | undefined)
+          ?.redacted_because as { sender?: string } | undefined
+        messages.push({
+          id: event.event_id,
+          roomId,
+          senderId: event.sender,
+          senderName,
+          senderAvatar,
+          body: '',
+          timestamp: event.origin_server_ts,
+          type: 'text',
+          isEdited: false,
+          isDeleted: true,
+          deletedBy: redaction?.sender ?? event.sender ?? undefined,
+        })
+        continue
+      }
       messages.push({
         id: event.event_id,
         roomId,
