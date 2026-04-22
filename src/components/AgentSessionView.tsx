@@ -12,7 +12,9 @@ import { Loader2, GitBranch, ChevronDown } from 'lucide-react'
 
 export function AgentSessionView() {
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
-  const messagesBySession = useAgentStore((s) => s.messagesBySession)
+  // Narrow subscription to only the active session's messages so unrelated sessions
+  // don't trigger re-renders here. (Defense in depth against lag during typing.)
+  const activeMessages = useAgentStore((s) => s.activeSessionId ? (s.messagesBySession[s.activeSessionId] ?? null) : null)
   const lastReadTs = useAgentStore((s) => s.activeSessionId ? (s.lastReadTsBySession[s.activeSessionId] ?? 0) : 0)
   const pendingApproval = useAgentStore((s) => s.pendingApproval)
   const activeSession = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId))
@@ -29,16 +31,14 @@ export function AgentSessionView() {
   const hasOlder = useAgentStore((s) => s.activeSessionId ? (s.hasOlderBySession[s.activeSessionId] ?? false) : false)
   const loadingOlder = useAgentStore((s) => s.activeSessionId ? (s.loadingOlderBySession[s.activeSessionId] ?? false) : false)
   const loadOlderMessages = useAgentStore((s) => s.loadOlderMessages)
+  const setTailing = useAgentStore((s) => s.setTailing)
   const connected = useAgentStore((s) => s.connected)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   /** Tracks whether user is near bottom — updated on every scroll event, read before auto-scroll */
   const isNearBottom = useRef(true)
-  const messages = useMemo(
-    () => activeSessionId ? (messagesBySession[activeSessionId] ?? []) : [],
-    [activeSessionId, messagesBySession],
-  )
+  const messages = useMemo(() => activeMessages ?? [], [activeMessages])
 
   // Scroll to bottom on session switch
   useEffect(() => {
@@ -47,7 +47,8 @@ export function AgentSessionView() {
       isNearBottom.current = true
       setShowScrollToBottom(false)
     }
-  }, [activeSessionId])
+    if (activeSessionId) setTailing(activeSessionId, true)
+  }, [activeSessionId, setTailing])
 
   // Auto-scroll to bottom on new content — only if user was already near bottom
   useEffect(() => {
@@ -60,8 +61,11 @@ export function AgentSessionView() {
     if (!scrollRef.current) return
     const el = scrollRef.current
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isNearBottom.current = distFromBottom < 120
+    const nearBottom = distFromBottom < 120
+    isNearBottom.current = nearBottom
     setShowScrollToBottom(distFromBottom > 200)
+    // Only tail (i.e. allow window-cap) when the user is near the bottom.
+    if (activeSessionId) setTailing(activeSessionId, nearBottom)
     // Load older messages on scroll near top
     if (el.scrollTop < 100 && activeSessionId && hasOlder && !loadingOlder) {
       const prevHeight = el.scrollHeight
@@ -73,7 +77,7 @@ export function AgentSessionView() {
         }
       })
     }
-  }, [activeSessionId, hasOlder, loadingOlder, loadOlderMessages])
+  }, [activeSessionId, hasOlder, loadingOlder, loadOlderMessages, setTailing])
 
   const scrollToBottom = useCallback(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })

@@ -8,6 +8,10 @@ import { getHubWsUrl, setHubUrl as saveHubUrl } from '@/hub'
 
 const RECONNECT_DELAY_MS = 3000
 
+/** Cap the in-memory message window per session while the user is tailing (near bottom).
+ *  Older messages remain on the hub and are fetched via loadOlderMessages on scroll-up. */
+const MAX_VISIBLE_MESSAGES = 300
+
 // --------------------------------------------------------------------------
 // Types
 // --------------------------------------------------------------------------
@@ -115,6 +119,10 @@ interface AgentState {
   hasOlderBySession: Record<string, boolean>
   loadingOlderBySession: Record<string, boolean>
 
+  /** True while the user is scrolled near the bottom — allows the store to cap
+   *  the in-memory window. Turned off when they scroll up to view history. */
+  isTailingBySession: Record<string, boolean>
+
   // Pending prompt (for showing user message when session_created arrives)
   pendingPrompt: string | null
   // True when a createSession/resumeSession request is in-flight (session_created should activate)
@@ -144,6 +152,7 @@ interface AgentState {
   markSessionRead: () => void
   markSessionUnread: () => void
   loadOlderMessages: (sessionId: string) => void
+  setTailing: (sessionId: string, tailing: boolean) => void
   reorderSession: (fromId: string, toId: string) => void
   forkSession: (sessionId: string) => void
   renameSession: (sessionId: string, name: string) => void
@@ -193,6 +202,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   hasOlderBySession: {},
   loadingOlderBySession: {},
+
+  isTailingBySession: {},
 
   pendingPrompt: null,
   pendingSessionActivate: false,
@@ -401,6 +412,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
     set((s) => ({ loadingOlderBySession: { ...s.loadingOlderBySession, [sessionId]: true } }))
     sendWs({ type: 'get_older_messages', sessionId, beforeIndex })
+  },
+
+  setTailing: (sessionId, tailing) => {
+    const current = get().isTailingBySession[sessionId]
+    if (current === tailing) return
+    set((s) => ({ isTailingBySession: { ...s.isTailingBySession, [sessionId]: tailing } }))
   },
 
   reorderSession: (fromId, toId) => {
@@ -647,7 +664,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         // Try direct match first, then remap match
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
         return local
-          ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText }
+          ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText, hasUnread: local.hasUnread }
           : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0 }
       })
 
@@ -771,12 +788,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'text_delta': {
       const sessionId = msg.sessionId as string
-      useAgentStore.setState((s) => ({
-        pendingTextBySession: {
-          ...s.pendingTextBySession,
-          [sessionId]: (s.pendingTextBySession[sessionId] ?? '') + (msg.content as string),
-        },
-      }))
+      bufferDelta('text', sessionId, msg.content as string)
       break
     }
 
@@ -793,12 +805,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'thinking_delta': {
       const sessionId = msg.sessionId as string
-      useAgentStore.setState((s) => ({
-        pendingThinkingBySession: {
-          ...s.pendingThinkingBySession,
-          [sessionId]: (s.pendingThinkingBySession[sessionId] ?? '') + (msg.content as string),
-        },
-      }))
+      bufferDelta('thinking', sessionId, msg.content as string)
       break
     }
 
@@ -1088,21 +1095,63 @@ function updateSession(sessionId: string, updates: Partial<SessionInfo>) {
 function addMessage(sessionId: string, block: AgentMessage['block']) {
   useAgentStore.setState((s) => {
     const messages = s.messagesBySession[sessionId] ?? []
-    return {
-      messagesBySession: {
-        ...s.messagesBySession,
-        [sessionId]: [...messages, {
-          id: nextId(),
-          timestamp: Date.now(),
-          block,
-        }],
-      },
+    const newMsg: AgentMessage = { id: nextId(), timestamp: Date.now(), block }
+    const appended = [...messages, newMsg]
+    // Cap the in-memory window when the user is tailing — older entries stay on the hub.
+    const tailing = s.isTailingBySession[sessionId] !== false // default to true if unset
+    if (tailing && appended.length > MAX_VISIBLE_MESSAGES) {
+      const trimmed = appended.slice(appended.length - MAX_VISIBLE_MESSAGES)
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: trimmed },
+        hasOlderBySession: { ...s.hasOlderBySession, [sessionId]: true },
+      }
     }
+    return {
+      messagesBySession: { ...s.messagesBySession, [sessionId]: appended },
+    }
+  })
+}
+
+// Delta batching — stream chunks can fire many times per frame. Each setState
+// creates a new pendingXBySession map and notifies every Zustand subscriber in
+// the app; during bursts this saturates the main thread and delays input events.
+// Accumulate deltas in a plain Map and flush once per animation frame.
+const deltaBuffer = new Map<string, { text: string; thinking: string }>()
+let deltaRafHandle: number | null = null
+
+function bufferDelta(kind: 'text' | 'thinking', sessionId: string, chunk: string) {
+  let entry = deltaBuffer.get(sessionId)
+  if (!entry) {
+    entry = { text: '', thinking: '' }
+    deltaBuffer.set(sessionId, entry)
+  }
+  entry[kind] += chunk
+  if (deltaRafHandle === null) {
+    deltaRafHandle = requestAnimationFrame(drainDeltaBuffer)
+  }
+}
+
+function drainDeltaBuffer() {
+  deltaRafHandle = null
+  if (deltaBuffer.size === 0) return
+  const entries = Array.from(deltaBuffer.entries())
+  deltaBuffer.clear()
+  useAgentStore.setState((s) => {
+    const newText = { ...s.pendingTextBySession }
+    const newThinking = { ...s.pendingThinkingBySession }
+    for (const [sessionId, buf] of entries) {
+      if (buf.text) newText[sessionId] = (newText[sessionId] ?? '') + buf.text
+      if (buf.thinking) newThinking[sessionId] = (newThinking[sessionId] ?? '') + buf.thinking
+    }
+    return { pendingTextBySession: newText, pendingThinkingBySession: newThinking }
   })
 }
 
 /** Flush both accumulators in order (thinking before text) to preserve message ordering */
 function flushPending(sessionId: string) {
+  // Any buffered deltas must land before we read pending*BySession, otherwise
+  // in-flight chunks get dropped when we finalize the message.
+  drainDeltaBuffer()
   const { pendingThinkingBySession, pendingTextBySession } = useAgentStore.getState()
   const pendingThinking = pendingThinkingBySession[sessionId] ?? ''
   const pendingText = pendingTextBySession[sessionId] ?? ''
