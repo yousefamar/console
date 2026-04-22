@@ -10,7 +10,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -30,6 +29,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val ACTION_CHAT_READ = "io.amar.console.action.CHAT_READ"
         const val ACTION_CHAT_REPLY = "io.amar.console.action.CHAT_REPLY"
         const val ACTION_MAIL_ARCHIVE = "io.amar.console.action.MAIL_ARCHIVE"
+        const val ACTION_MAIL_READ = "io.amar.console.action.MAIL_READ"
 
         const val EXTRA_NOTIF_ID = "notifId"
         const val EXTRA_ROOM_ID = "roomId"
@@ -69,13 +69,14 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         // should fall back to opening the app.
                         post("/matrix/rooms/${enc(roomId)}/send", body)
                     }
-                    ACTION_MAIL_ARCHIVE -> {
+                    ACTION_MAIL_ARCHIVE, ACTION_MAIL_READ -> {
                         val account = intent.getStringExtra(EXTRA_ACCOUNT) ?: return@Thread
                         val threadIds = intent.getStringArrayExtra(EXTRA_THREAD_IDS) ?: return@Thread
+                        val op = if (action == ACTION_MAIL_ARCHIVE) "archive" else "read"
                         var allOk = true
                         for (tid in threadIds) {
                             val ok = post(
-                                "/mail/threads/${enc(tid)}/archive?account=${enc(account)}",
+                                "/mail/threads/${enc(tid)}/$op?account=${enc(account)}",
                                 "{}",
                             )
                             if (!ok) allOk = false

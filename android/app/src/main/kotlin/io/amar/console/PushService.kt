@@ -63,6 +63,10 @@ class PushService : Service() {
         const val CHAT_GROUP_KEY = "console.chat"
         const val CHAT_SUMMARY_ID = 100
 
+        /** Summary notification for grouped mail messages. */
+        const val MAIL_GROUP_KEY = "console.mail"
+        const val MAIL_SUMMARY_ID = 101
+
         private const val PUSH_URL = "wss://amarhp-lin.rya-yo.ts.net:9877/push"
         private const val HUB_HTTPS = "https://amarhp-lin.rya-yo.ts.net:9877"
         private const val RECONNECT_MIN_MS = 2_000L
@@ -136,6 +140,8 @@ class PushService : Service() {
     private val roomStates = ConcurrentHashMap<String, RoomState>()
     /** Cache of mxc://... → Bitmap so we don't re-fetch every notification. */
     private val avatarCache = ConcurrentHashMap<String, Bitmap>()
+    /** Global mail-vibrate debounce — one buzz per 60s no matter how many threads land. */
+    @Volatile private var lastMailVibrateMs: Long = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -393,7 +399,127 @@ class PushService : Service() {
             handleChatPush(json)
             return
         }
+        if (type == "mail") {
+            handleMailPush(json)
+            return
+        }
         handleGenericPush(json, type)
+    }
+
+    /**
+     * Gmail-style per-thread notification. One notif per threadId, grouped
+     * under a "Mail" summary. Title = sender name, big-text body = subject +
+     * snippet. Tap opens the mail pane; Archive + Mark-as-Read actions act
+     * on the single thread. Global vibrate debounce prevents rattling on a
+     * batch arrival (e.g. after waking from sleep).
+     */
+    private fun handleMailPush(json: JSONObject) {
+        val account = json.optString("account").takeIf { it.isNotEmpty() } ?: return
+        val threadId = json.optString("threadId").takeIf { it.isNotEmpty() } ?: run {
+            handleGenericPush(json, "mail")
+            return
+        }
+        val subject = json.optString("subject").takeIf { it.isNotEmpty() }
+            ?: json.optString("body").takeIf { it.isNotEmpty() }
+            ?: "(no subject)"
+        val snippet = json.optString("snippet")
+        val fromName = json.optString("fromName").takeIf { it.isNotEmpty() }
+        val fromEmail = json.optString("fromEmail").takeIf { it.isNotEmpty() }
+        val title = fromName ?: fromEmail ?: account
+
+        val now = System.currentTimeMillis()
+        val shouldVibrate = now - lastMailVibrateMs >= VIBRATE_DEBOUNCE_MS
+        if (shouldVibrate) lastMailVibrateMs = now
+
+        val notifId = ("mail:$account:$threadId").hashCode()
+
+        val tapIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            action = Intent.ACTION_VIEW
+            data = Uri.parse("console://pane/mail")
+        }
+        val tapPi = PendingIntent.getActivity(
+            this, notifId, tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val bigText = if (snippet.isNotEmpty()) "$subject\n\n$snippet" else subject
+        val nb = NotificationCompat.Builder(this, CHANNEL_MAIL)
+            .setContentTitle(title)
+            .setContentText(subject)
+            .setSubText(account)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText).setSummaryText(account))
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(tapPi)
+            .setAutoCancel(true)
+            .setWhen(now)
+            .setShowWhen(true)
+            .setGroup(MAIL_GROUP_KEY)
+            .setCategory(NotificationCompat.CATEGORY_EMAIL)
+            .setOnlyAlertOnce(!shouldVibrate)
+            .setSilent(!shouldVibrate)
+            .setPriority(
+                if (shouldVibrate) NotificationCompat.PRIORITY_DEFAULT
+                else NotificationCompat.PRIORITY_LOW
+            )
+
+        // --- Archive action -------------------------------------------------
+        val archiveIntent = Intent(this, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_MAIL_ARCHIVE
+            putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            putExtra(NotificationActionReceiver.EXTRA_ACCOUNT, account)
+            putExtra(
+                NotificationActionReceiver.EXTRA_THREAD_IDS,
+                arrayOf(threadId),
+            )
+        }
+        val archivePi = PendingIntent.getBroadcast(
+            this, notifId, archiveIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val archiveAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_launcher_foreground, "Archive", archivePi,
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_ARCHIVE)
+            .setShowsUserInterface(false)
+            .build()
+
+        // --- Mark as Read action --------------------------------------------
+        val readIntent = Intent(this, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_MAIL_READ
+            putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            putExtra(NotificationActionReceiver.EXTRA_ACCOUNT, account)
+            putExtra(NotificationActionReceiver.EXTRA_THREAD_IDS, arrayOf(threadId))
+        }
+        val readPi = PendingIntent.getBroadcast(
+            // Offset req code so it doesn't collide with the archive PI.
+            this, notifId xor 0x1, readIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val readAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_launcher_foreground, "Mark as Read", readPi,
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
+
+        nb.addAction(archiveAction).addAction(readAction)
+
+        val nm = NotificationManagerCompat.from(this)
+        try {
+            nm.notify(notifId, nb.build())
+            val summary = NotificationCompat.Builder(this, CHANNEL_MAIL)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("Mail")
+                .setGroup(MAIL_GROUP_KEY)
+                .setGroupSummary(true)
+                .setAutoCancel(true)
+                .setSilent(true)
+                .build()
+            nm.notify(MAIL_SUMMARY_ID, summary)
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted; silently skip.
+        }
     }
 
     // --- Hub-originated RPC --------------------------------------------------
@@ -682,41 +808,6 @@ class PushService : Service() {
                     NotificationCompat.PRIORITY_HIGH
                 else NotificationCompat.PRIORITY_DEFAULT
             )
-
-        // Mail: Archive action archives every thread in the delta.
-        if (type == "mail") {
-            val account = json.optString("account").takeIf { it.isNotEmpty() }
-            val threadIdsJson = json.optJSONArray("threadIds")
-            val threadIds = mutableListOf<String>()
-            if (threadIdsJson != null) {
-                for (i in 0 until threadIdsJson.length()) {
-                    val t = threadIdsJson.optString(i).takeIf { it.isNotEmpty() }
-                    if (t != null) threadIds.add(t)
-                }
-            }
-            if (!account.isNullOrEmpty() && threadIds.isNotEmpty()) {
-                val archiveIntent = Intent(this, NotificationActionReceiver::class.java).apply {
-                    action = NotificationActionReceiver.ACTION_MAIL_ARCHIVE
-                    putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
-                    putExtra(NotificationActionReceiver.EXTRA_ACCOUNT, account)
-                    putExtra(
-                        NotificationActionReceiver.EXTRA_THREAD_IDS,
-                        threadIds.toTypedArray(),
-                    )
-                }
-                val archivePi = PendingIntent.getBroadcast(
-                    this, notifId, archiveIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
-                val archiveAction = NotificationCompat.Action.Builder(
-                    R.drawable.ic_launcher_foreground, "Archive", archivePi,
-                )
-                    .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_ARCHIVE)
-                    .setShowsUserInterface(false)
-                    .build()
-                nb.addAction(archiveAction)
-            }
-        }
 
         val nm = NotificationManagerCompat.from(this)
         try {

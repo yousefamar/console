@@ -44,12 +44,23 @@ export interface PushMessage {
   timestamp?: number
 
   // --- Mail-specific fields (populated for type:'mail') --------------------
-  // Android PushService surfaces an "Archive" action that calls back to
-  // /mail/threads/:id/archive — needs the account + thread IDs to wire up.
+  // One push per thread so Android can render Gmail-style per-sender
+  // notifications grouped under a single "Mail" summary. Archive / Mark as
+  // Read actions on the APK call back to /mail/threads/:id/... with these.
   /** Gmail account (e.g. "user@gmail.com") the delta belongs to */
   account?: string
-  /** Thread IDs from the delta — Archive action archives all of them */
-  threadIds?: string[]
+  /** Thread ID — Archive / Mark-as-Read actions act on this thread */
+  threadId?: string
+  /** Message ID (newest in the thread) — reserved for future per-message ops */
+  messageId?: string
+  /** Display name parsed from the `From:` header (falls back to `fromEmail`) */
+  fromName?: string
+  /** Email address parsed from the `From:` header */
+  fromEmail?: string
+  /** `Subject:` header */
+  subject?: string
+  /** Gmail-generated short preview of the message body */
+  snippet?: string
 }
 
 /** Inbound-from-APK frame handler. Return true if consumed. */

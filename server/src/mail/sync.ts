@@ -34,6 +34,16 @@ export type MailDelta = {
   historyId: string
 }
 
+/** Parse an RFC 5322 `From:` header into {name, email}. Tolerant of missing pieces. */
+function parseFrom(raw: string): { name: string; email: string } {
+  if (!raw) return { name: '', email: '' }
+  // "Display Name" <addr@host> — strip the angle-bracketed addr, trim quotes.
+  const m = raw.match(/^\s*(?:"?([^"<]*?)"?)\s*<([^>]+)>\s*$/)
+  if (m) return { name: (m[1] ?? '').trim(), email: (m[2] ?? '').trim() }
+  // Bare address.
+  return { name: '', email: raw.trim() }
+}
+
 export class MailSync {
   private state: MailState = {}
   private timer: ReturnType<typeof setInterval> | null = null
@@ -158,16 +168,51 @@ export class MailSync {
       this.bus.broadcast('mail', 'delta', delta)
       // Fire notification for newly-added messages only (not label changes).
       if (delta.added && delta.added.length > 0) {
-        const uniq = new Set(delta.added.map((x) => x.threadId))
+        await this.pushAddedMessages(account, delta.added)
+      }
+    }
+  }
+
+  /**
+   * Fetch metadata (From/Subject/snippet) for each newly-added message and
+   * emit one push per thread. The most recent message in a thread wins —
+   * subsequent messages in the same sync tick update the same notification
+   * via the shared `id`.
+   */
+  private async pushAddedMessages(
+    account: string,
+    added: Array<{ threadId: string; messageId: string }>,
+  ): Promise<void> {
+    const byThread = new Map<string, string>()
+    for (const a of added) byThread.set(a.threadId, a.messageId)
+
+    for (const [threadId, messageId] of byThread) {
+      try {
+        const msg = await this.gmail.getMessage(messageId, {
+          account,
+          format: 'metadata',
+        }) as { snippet?: string; payload?: { headers?: Array<{ name: string; value: string }> } }
+        const headers = msg.payload?.headers ?? []
+        const from = headers.find((h) => h.name.toLowerCase() === 'from')?.value ?? ''
+        const subject = headers.find((h) => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)'
+        const { name: fromName, email: fromEmail } = parseFrom(from)
+        const snippet = msg.snippet ?? ''
         this.push.broadcast({
           type: 'mail',
-          title: `${uniq.size} new mail${uniq.size === 1 ? '' : 's'}`,
-          body: account,
+          title: fromName || fromEmail || account,
+          body: subject,
           pane: 'mail',
-          id: `mail:${account}:${nextHistoryId}`,
+          id: `mail:${account}:${threadId}`,
           account,
-          threadIds: Array.from(uniq),
+          threadId,
+          messageId,
+          fromName,
+          fromEmail,
+          subject,
+          snippet,
         })
+      } catch (e) {
+        this.log(`[mail-sync] push metadata failed for ${messageId}: ${(e as Error).message}`)
       }
     }
   }
