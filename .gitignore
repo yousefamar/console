@@ -7,3 +7,4 @@ dist
 *.tsbuildinfo
 *.crt
 *.key
+.claude/scheduled_tasks.lock
