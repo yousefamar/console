@@ -22,7 +22,7 @@ const listeners = new Map<string, Set<(value: PrefValue | undefined) => void>>()
 
 export async function initPrefs(): Promise<void> {
   try {
-    cache = await hubFetch<Record<string, PrefValue>>('/config')
+    cache = await hubFetch<Record<string, PrefValue>>('/config', { timeoutMs: 4000 })
   } catch {
     // Hub unavailable — start empty; callers get their defaults until the hub
     // becomes reachable on a later setPref() (which will push cache up).

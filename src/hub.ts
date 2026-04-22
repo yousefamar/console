@@ -33,26 +33,55 @@ export function getHubWsUrl(): string {
   return getHubUrl().replace(/^http/, 'ws')
 }
 
-export async function hubFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${getHubUrl()}${path}`, {
-    ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      ...opts?.headers,
-    },
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new HubError(res.status, text)
+export interface HubFetchOptions extends RequestInit {
+  /** Abort the request after this many ms. Undefined = no timeout. */
+  timeoutMs?: number
+}
+
+/**
+ * Merge a caller-provided AbortSignal with a timeout AbortSignal so whichever
+ * fires first aborts the fetch.
+ */
+function withTimeout(opts?: HubFetchOptions): { signal?: AbortSignal; cleanup: () => void } {
+  if (!opts?.timeoutMs) return { signal: opts?.signal ?? undefined, cleanup: () => {} }
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(new DOMException('hubFetch timeout', 'TimeoutError')), opts.timeoutMs)
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort(opts.signal.reason)
+    else opts.signal.addEventListener('abort', () => ctrl.abort(opts.signal!.reason), { once: true })
   }
-  const text = await res.text()
-  if (!text) return {} as T
-  return JSON.parse(text) as T
+  return { signal: ctrl.signal, cleanup: () => clearTimeout(timer) }
+}
+
+export async function hubFetch<T>(path: string, opts?: HubFetchOptions): Promise<T> {
+  const { signal, cleanup } = withTimeout(opts)
+  try {
+    const res = await fetch(`${getHubUrl()}${path}`, {
+      ...opts,
+      signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...opts?.headers,
+      },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new HubError(res.status, text)
+    }
+    const text = await res.text()
+    if (!text) return {} as T
+    return JSON.parse(text) as T
+  } finally {
+    cleanup()
+  }
 }
 
 /** Raw fetch that returns Response (for stores that need it, e.g. bookmarks/feeds) */
-export function hubFetchRaw(path: string, opts?: RequestInit): Promise<Response> {
-  return fetch(`${getHubUrl()}${path}`, opts)
+export function hubFetchRaw(path: string, opts?: HubFetchOptions): Promise<Response> {
+  const { signal, cleanup } = withTimeout(opts)
+  const promise = fetch(`${getHubUrl()}${path}`, { ...opts, signal })
+  promise.finally(cleanup)
+  return promise
 }
 
 export class HubError extends Error {

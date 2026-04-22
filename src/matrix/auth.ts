@@ -142,7 +142,7 @@ export async function initMatrixAuth(): Promise<void> {
       userId?: string
       deviceId?: string
       homeserver?: string
-    }>('/matrix/hub/status')
+    }>('/matrix/hub/status', { timeoutMs: 4000 })
 
     if (status.hasCredentials && status.userId && status.deviceId && status.homeserver) {
       persistSession(status.userId, status.deviceId, status.homeserver)

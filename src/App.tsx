@@ -134,57 +134,52 @@ export function App() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    async function init() {
-      // Reset any queue items stuck in 'processing' from a previous session
-      resetStuckProcessing()
+    // Reset any queue items stuck in 'processing' from a previous session.
+    resetStuckProcessing()
 
-      // Load user preferences from hub before rendering so initial UI state
-      // (DnD, calendar visibility, ...) matches the synced values.
-      await initPrefs()
-      // Apply DnD state that was loaded from the hub
+    // Hydrate UI state from cached identity metadata synchronously so the
+    // first render already reflects the last-known session. Matrix userId and
+    // Gmail signedIn/email are persisted in localStorage by their respective
+    // auth modules; reading them here is free and offline-safe.
+    const cachedMatrixUserId = localStorage.getItem('matrix_user_id')
+    if (cachedMatrixUserId) {
+      useUiStore.getState().setMatrixUserId(cachedMatrixUserId)
+    }
+
+    // Release the loading screen immediately — offline-first means the UI
+    // must render from IndexedDB without waiting for the hub. All hub calls
+    // below run in the background and update state when (if) they return.
+    setLoading(false)
+
+    // Background refresh: ask the hub for the latest prefs + auth status.
+    // None of these gate rendering; if the hub is unreachable the cached
+    // state (localStorage + IDB) stays in effect.
+    void initPrefs().then(() => {
       if (getPref('dnd', false)) {
-        import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(true))
+        void import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(true))
         useUiStore.setState({ doNotDisturb: true })
       }
+    })
 
-      try {
-        // Try to initialize Gmail auth via hub (non-blocking — app works without it)
-        await initAuth()
-        if (isSignedIn()) {
-          // Fetch email from hub auth status
-          try {
-            const res = await fetch(`${getHubUrl()}/auth/status`)
-            if (res.ok) {
-              const status = await res.json() as { google: { accounts: Array<{ email: string; isPrimary: boolean }> } }
-              const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
-              if (primary) {
-                useUiStore.getState().setUserEmail(primary.email)
-              }
-            }
-          } catch {
-            // Hub not available — email display will be empty
-          }
-        }
-      } catch {
-        // Gmail auth init failed — app still works for other tabs
+    void initAuth().then(() => {
+      if (isSignedIn()) {
+        fetch(`${getHubUrl()}/auth/status`)
+          .then(async (res) => {
+            if (!res.ok) return
+            const status = await res.json() as { google: { accounts: Array<{ email: string; isPrimary: boolean }> } }
+            const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
+            if (primary) useUiStore.getState().setUserEmail(primary.email)
+          })
+          .catch(() => {})
       }
+    }).catch(() => {})
 
-      // Hydrate Matrix identity metadata from the hub. Without this, a fresh
-      // WebView/browser with empty localStorage would incorrectly think it
-      // needs to re-login even though the hub already holds the session.
-      await initMatrixAuth()
-
-      // Initialize Matrix user ID if connected
+    void initMatrixAuth().then(() => {
       if (isMatrixConnected()) {
         const matrixUserId = localStorage.getItem('matrix_user_id')
-        if (matrixUserId) {
-          useUiStore.getState().setMatrixUserId(matrixUserId)
-        }
+        if (matrixUserId) useUiStore.getState().setMatrixUserId(matrixUserId)
       }
-
-      setLoading(false)
-    }
-    init()
+    }).catch(() => {})
   }, [])
 
   // Listen for auth expiry (refresh token dead — very rare)

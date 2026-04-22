@@ -9,8 +9,30 @@
 import { getHubUrl } from '@/hub'
 import { isNative, onNativeAuthReturn } from '@/platform'
 
-let signedIn = false
-let userEmail: string | null = null
+// Persisted across reloads so offline / slow-network boots keep showing the
+// cached inbox instead of the connect screen while the hub is unreachable.
+// The hub remains the source of truth — `initAuth()` re-verifies in the
+// background and clears these on explicit logout / expiry.
+const GMAIL_SIGNED_IN_KEY = 'gmail_signed_in'
+const GMAIL_USER_EMAIL_KEY = 'gmail_user_email'
+
+let signedIn = localStorage.getItem(GMAIL_SIGNED_IN_KEY) === '1'
+let userEmail: string | null = localStorage.getItem(GMAIL_USER_EMAIL_KEY)
+
+function persistAuthCache(nextSignedIn: boolean, nextEmail: string | null) {
+  signedIn = nextSignedIn
+  userEmail = nextEmail
+  if (nextSignedIn) {
+    localStorage.setItem(GMAIL_SIGNED_IN_KEY, '1')
+  } else {
+    localStorage.removeItem(GMAIL_SIGNED_IN_KEY)
+  }
+  if (nextEmail) {
+    localStorage.setItem(GMAIL_USER_EMAIL_KEY, nextEmail)
+  } else {
+    localStorage.removeItem(GMAIL_USER_EMAIL_KEY)
+  }
+}
 
 // --- Auth-state listeners ----------------------------------------------------
 
@@ -23,8 +45,7 @@ export function onAuthExpired(fn: AuthExpiredListener): () => void {
 }
 
 export function notifyAuthExpired() {
-  signedIn = false
-  userEmail = null
+  persistAuthCache(false, null)
   for (const fn of authExpiredListeners) fn()
 }
 
@@ -38,25 +59,29 @@ interface HubStatus {
 }
 
 async function fetchStatus(): Promise<HubStatus | null> {
+  // Short timeout so a bad/absent network doesn't stall boot. The result is
+  // advisory — callers fall back to cached auth state when this returns null.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 4000)
   try {
-    const res = await fetch(`${getHubUrl()}/auth/status`)
+    const res = await fetch(`${getHubUrl()}/auth/status`, { signal: ctrl.signal })
     if (!res.ok) return null
     return await res.json() as HubStatus
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 export async function initAuth(): Promise<void> {
   const status = await fetchStatus()
-  if (!status) {
-    signedIn = false
-    userEmail = null
-    return
-  }
+  // Hub unreachable — keep the cached auth state so the app stays functional
+  // offline. The hub is the source of truth, but we trust the last known
+  // answer until it tells us otherwise (explicit disconnect or expiry).
+  if (!status) return
   const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
-  signedIn = !!primary?.hasToken
-  userEmail = primary?.email ?? null
+  persistAuthCache(!!primary?.hasToken, primary?.email ?? null)
 }
 
 export function isSignedIn(): boolean {
@@ -167,6 +192,5 @@ export async function signOut(): Promise<void> {
   } catch {
     // Best effort — we clear local state regardless.
   }
-  signedIn = false
-  userEmail = null
+  persistAuthCache(false, null)
 }
