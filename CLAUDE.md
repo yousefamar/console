@@ -185,10 +185,10 @@ The debug agent:
 
 ### Android APK
 Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26, targetSdk 35. Applicationid `io.amar.console`.
-- `android/scripts/build-debug.sh` — build debug APK → `android/app/build/outputs/apk/debug/app-debug.apk`
+- **Always build release, never debug.** Single-user software — the in-app updater (`/apk/latest.json`) only serves the release channel, debug builds can't auto-update, and there's no QA/staging lane that benefits from a separate debug variant.
 - `android/scripts/generate-keystore.sh` — one-time, create `~/.config/console/console-release.jks` (back it up!)
-- `android/scripts/build-release.sh` — build signed release, copy to `~/.config/console/apk/`, write `latest.json` (reads `~/.config/console/apk-release.env` for passwords)
-- Install on phone: `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`
+- `android/scripts/build-release.sh` — build signed release, copy to `~/.config/console/apk/`, write `latest.json` (reads `~/.config/console/apk-release.env` for passwords). Phone picks up the update on next launch via the in-app banner.
+- `android/scripts/build-debug.sh` exists but should not be used.
 - The APK loads `https://amarhp-lin.rya-yo.ts.net:5173/` directly — HMR works. Tailscale must be up on the phone.
 - Web side: `isNative()` (from `src/platform.ts`) detects `window.__isConsoleAPK`. Used by `src/gmail/auth.ts` (passes `?callback=app` so hub redirects OAuth to `console://auth/done`) and `src/main.tsx` (requests `navigator.storage.persist()`).
 - Remote debugging: `chrome://inspect` on the laptop while phone is USB-connected (debug builds only; `setWebContentsDebuggingEnabled(BuildConfig.DEBUG)`). The embedded debug agent also works — APK events show in `/debug/log` with UA containing `ConsoleAPK/...`.
