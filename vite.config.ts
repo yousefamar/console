@@ -31,7 +31,12 @@ export default defineConfig({
         key: keyPath,
       },
     }),
-    headers: { 'Cache-Control': 'no-store' },
+    headers: {
+      'Cache-Control': 'no-store',
+      // Opt into the JS Self-Profiling API so we can capture call-stack
+      // samples via `new Profiler(...)` from debug/eval.
+      'Document-Policy': 'js-profiling',
+    },
   },
   test: {
     globals: true,
