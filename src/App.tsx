@@ -75,15 +75,16 @@ function ConsoleApp() {
   useKeybindings()
   useSync()
 
-  // Request notification permission once
+  // Ask for notification permission when needed. requestPermission() no-ops
+  // when the browser has already recorded a decision; it only triggers the
+  // UI prompt while permission is still 'default'. Previously gated by a
+  // localStorage flag that stuck after the browser reset permission (e.g.
+  // Brave's inactivity revocation) — meant we never re-prompted and every
+  // desktop notification was silently dropped.
   useEffect(() => {
-    if (!localStorage.getItem('notif_prompted')) {
-      import('@/notifications').then(({ requestPermission }) => {
-        requestPermission().then(() => {
-          localStorage.setItem('notif_prompted', '1')
-        })
-      })
-    }
+    import('@/notifications').then(({ requestPermission }) => {
+      void requestPermission()
+    })
   }, [])
 
   // Warn before closing with unsaved work
