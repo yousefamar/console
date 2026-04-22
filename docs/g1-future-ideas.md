@@ -22,16 +22,17 @@ pipe (text / BMP / notification / mic / touchbar) exposed to hub, SPA, and
 - **Stopwatch / timer / alarm** — simple HUD utilities.
 - **SSH / terminal mirror** — port `g1-term` ideas in as a Console pane;
   see `docs/g1-ssh-client-recipe.md`.
-- **Notes-on-lenses mode** — *shipped 2026-04-19.* Toggle in Glasses
-  settings ("Mirror Notes to lenses (follows cursor)"). The CM6
-  `updateListener` in `src/components/NotesEditorCore.tsx` fires on doc
-  or selection change, computes a 5-line window (cursor-line = last line
-  if at EOF, else penultimate), and calls `sendText()` in
-  `src/glasses/notes-mirror.ts`, which hits `ConsoleNative.glassesSendText`
-  directly — no hub. 30 ms debounce with coalescing (stale updates
-  dropped). `GlassesService` keeps BLE alive with the phone screen off so
-  HW-keyboard-on-phone typing works with the display off. Persisted via
-  localStorage key `console:glasses:notesMirrorEnabled`.
+- **App-wide mirror** — *generalized 2026-04-22 (v0.1.17).* Single
+  "Mirror current tab" toggle in Glasses settings renders whichever pane
+  is active onto the lenses: row 1 = status (`Pane · focus · meta`),
+  rows 2–5 = per-pane body built by a renderer in
+  `src/glasses/panes/<name>.ts`. Notes keeps the cursor-follow behaviour
+  (line numbers + `|` glyph at the column) shrunk to 4 body rows. Chat
+  and Agents reserve row 5 for a composer echo (`> …|`) driven by
+  `useGlassesStore.composerText`. 30 ms coalescing debounce, same
+  zero-hub path via `ConsoleNative.glassesSendText`. Persisted via
+  localStorage (`console:glasses:mirrorEnabled`; the old
+  `notesMirrorEnabled` key auto-migrates).
 - **Voice → Al → glasses reply** — long-press temple, speak, live STT on
   the lenses, Al answers in-place. Closes the loop.
 - **Live translation / transcription** — STT + translate, shown on the

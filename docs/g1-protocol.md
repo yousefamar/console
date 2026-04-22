@@ -61,10 +61,16 @@ Each arm exposes a Nordic UART Service (NUS). Not Even-specific.
   Symptom: `connected:true` + writes accepted, zero inbound frames, display
   stuck on "Loading".
 - **Post-connect init handshake** (right after CCCD subscribed):
-  - Android: `[0xF4, 0x01]`
-  - iOS: `[0x4D, 0x01]`
-  Without it, glasses stay on the "Loading" screen and silently ignore
-  text/bmp/notify commands even though BLE accepts the writes.
+  - Console (Android): single byte-pair `[0xF4, 0x01]` per arm. Origin is the
+    earlier `g1-term` RE notes; works in practice.
+  - MentraOS (verified reference, `G1.java` lines 680-692): four-frame
+    sequence — `[0x6E, 0x74]` (firmware request), `[0x4D, 0xFB]` (left only),
+    `[0x27, 0x00]` (disable wear detection), `[0x03, 0x0A]` (silent off).
+  - iOS (per community notes): `[0x4D, 0x01]`.
+  Without *some* init, glasses stay on the "Loading" screen and silently
+  ignore text/bmp/notify commands even though BLE accepts the writes. The
+  MentraOS sequence is worth considering if our minimal `0xF4` init ever
+  regresses on a firmware update.
 - Inter-packet delay: **5 ms on Android** (EvenDemoApp's measured value;
   iOS uses 8 ms).
 
@@ -98,11 +104,13 @@ All opcodes are a single leading byte. Response payloads for
 | 0x03 | Silent mode         | → glasses | `[0x03, 0x0A off / 0x0C on]`; see §9 |
 | 0x04 | App whitelist JSON  | → glasses | 176-byte chunks, `[0x04, totalChunks, seq, ...json...]` |
 | 0x06 | Dashboard show      | → glasses | Force dashboard visible. MentraOS constant; untested in Console. |
+| 0x0B | Head-up angle       | → glasses | `[0x0B, angle 0-60]`; configures the pitch threshold that triggers dashboard-on. MentraOS verified. |
 | 0x0E | Mic enable/disable  | → glasses | `[0x0E, 0x01 or 0x00]`, **right arm only** |
 | 0x15 | BMP data packet     | → glasses | 194-byte payload; packet 0 prefixes 4-byte flash address |
 | 0x16 | BMP CRC             | → glasses | `[0x16, crc32_xz, 4 bytes BE]` |
 | 0x18 | Exit feature        | → glasses | Single byte; exits current feature (Transcribe/Teleprompt/AI) back to idle |
 | 0x20 | BMP end marker      | → glasses | Fixed `[0x20, 0x0D, 0x0E]` |
+| 0x21 | QuickNote snapshot  | ← glasses | Unsolicited. Fires on long-press right (QuickNote save). `[0x21, len, 0x00, seq, 0x01, noteCount, ...]` + variable 8-byte metadata records. Not in any public reference — Console finding. See §15. |
 | 0x22 | Dashboard content   | → glasses | Widget/card push (weather/calendar/stocks); payload format **not publicly RE'd** |
 | 0x25 | Heartbeat           | ↔         | Every 8s, both arms |
 | 0x26 | Dashboard position  | → glasses | `[0x26, 0x08, 0x00, ctr, 0x02, 0x01, height(0-8), depth(1-9)]` |
@@ -111,7 +119,7 @@ All opcodes are a single leading byte. Response payloads for
 | 0x34 | Serial number query | → glasses | Response: bytes [2:18] = ASCII serial |
 | 0x4B | Notification push   | → glasses | `[0x4B, msgId, maxSeq, seq, json...]`, 176-byte chunks |
 | 0x4E | Text / AI result    | → glasses | 191-byte chunks; see §6 |
-| 0x56 | Exit dashboard      | → glasses | Force-close dashboard even while glasses awake (distinct from 0x18) |
+| 0x56 | Exit dashboard ⚠    | → glasses | Force-close dashboard while glasses awake (distinct from 0x18). **Unconfirmed:** came from string-mining `com.even.g1`'s `libapp.so`; **not** in MentraOS, EvenDemoApp, or emingenc. Full payload beyond byte[0] unknown. |
 | 0xF1 | Inbound mic audio   | ← glasses | `[0xF1, seq, 200 bytes LC3]`, **must be 202 bytes total** |
 | 0xF4 | Init handshake (Android) | → glasses | `[0xF4, 0x01]` once per arm after CCCD subscribed |
 | 0xF5 | Touchbar / system / case events | ← glasses | Second byte = subcmd; see §8 |
@@ -212,29 +220,40 @@ byte is the subcmd; third byte (when present) is a state payload.
 | 0x01   | Single-tap (documented, inert on current FW) |
 | 0x02   | Head-up (right arm only) |
 | 0x03   | Head-down (right arm only) |
-| 0x04 / 0x05 | Triple-tap → toggle silent mode |
+| 0x04   | Triple-tap → silent mode **on** (direction, not arm variant) |
+| 0x05   | Triple-tap → silent mode **off** |
 | 0x11   | Connected / GATT handshake complete (both arms) |
-| 0x17   | Long-press start (Even AI trigger / QuickNote record) |
-| 0x18   | Long-press release / recording over |
-| 0x1e   | Dashboard shown (both arms; follows 0x02) |
-| 0x1f   | Dashboard hidden (both arms; follows 0x03) |
+| 0x17   | Long-press start (Even AI trigger) — **does not fire on default touchbar mapping**; firmware emits `0x21` (QuickNote snapshot, §15) instead when the default long-press-right feature is QuickNote |
+| 0x18   | Long-press release / recording over — same caveat as 0x17 |
+| 0x1e   | Dashboard shown (both arms; follows 0x02). **Only fires if dashboard has content configured** — on a fresh pair with dashboard disabled, head-up emits only 0x02 with no 0x1e follow-up. |
+| 0x1f   | Dashboard hidden (both arms; follows 0x03). Same "requires content" caveat as 0x1e. |
 | 0x20   | Double-tap when remapped to a feature (e.g. Transcribe in the official app); `0x00` matches as the end-event |
 
-Verified against firmware as of 2026-04-19 using the SPA's "Recent events"
-debug panel (`GlassesSettings`). Head-tilt semantics: the 0x02/0x03 motion
-event fires on the right arm only, followed ~700ms later by a 0x1e/0x1f
-"dashboard shown/hidden" state pair (one per arm). So "tilt up → dashboard
-appears" produces up to three events per action.
+Verified against firmware as of 2026-04-22 using research-mode frame logging
+(`con glasses research on`) cross-referenced with MentraOS `G1.java`.
+Head-tilt semantics: the 0x02/0x03 motion event fires on the right arm
+only, followed ~700ms later by a 0x1e/0x1f "dashboard shown/hidden" state
+pair (one per arm) **if** the dashboard has content — so "tilt up →
+dashboard appears" produces one to three events per action depending on
+configuration.
 
-### 8b. Charging case state (unsolicited)
+Triple-tap direction: `0x04` and `0x05` are **not** left vs right arm —
+they track the new silent-mode state. Firing `0x04` once (silent on) then
+triple-tapping again yields `0x05` (silent off) regardless of which arm
+was tapped.
 
-Per MentraOS `G1.java` lines 573-605. Each case transition fires one event:
+### 8b. Charging / battery state (unsolicited)
+
+Per MentraOS `G1.java` lines 573-605, plus Console findings for 0x09 and
+0x0A (confirmed via research-mode logging against live hardware):
 
 | Subcmd | Payload | Meaning |
 |--------|---------|---------|
 | 0x06   | —       | Glasses removed from case (variant A) |
 | 0x07   | —       | Glasses removed from case (variant B) |
 | 0x08   | —       | Case lid opened |
+| 0x09   | byte[2] | **Per-arm charging-pin contact:** `1` = arm sitting on its case charging pin, `0` = lifted off. Fires on each arm independently. Distinct from 0x0E (whole-case charging state). Not in MentraOS — Console finding. |
+| 0x0A   | byte[2] | **Unsolicited arm battery push (0–100 %).** Fires when the arm docks onto its charging pin — complements the polled `0x2C` reply. Not in MentraOS — Console finding. |
 | 0x0B   | —       | Case lid closed |
 | 0x0E   | byte[2] | Case charging status; `1` = charging, `0` = not |
 | 0x0F   | byte[2] | Case battery level (0–100) |
@@ -243,8 +262,7 @@ Per MentraOS `G1.java` lines 573-605. Each case transition fires one event:
 
 | Subcmd | Status |
 |--------|--------|
-| 0x0a   | Seen in the wild on the right arm, bursts appear after remapping the double-tap feature off in the official app. No reference impl documents it. Possibly "temple function cleared" / "no-op event". TBD. |
-| 0x12   | Seen on the right arm. Not documented in MentraOS or emingenc. TBD. |
+| 0x12   | Seen on right arm when long-press-right is triggered *while the mic is already armed* (e.g. from a prior manual `setMic(true)`). Semantics TBD — possibly "gesture rejected, feature busy". Not in MentraOS or emingenc. |
 
 Note: the `[0x03, 0x0A]` byte sequence is the phone→glasses silent-mode-off
 command (see §9), **not** a `0xF5` subcmd — don't confuse the two when
@@ -324,10 +342,15 @@ Glasses fire unsolicited events when put on / taken off the head:
 [0x27, 0x07]   # taken off
 ```
 
+**Disabled by default on current firmware.** In 5K+ lines of research-mode
+logging across multiple wear/unwear cycles we never observed a `0x27 0x06`
+or `0x27 0x07` push — the detector is silent unless explicitly enabled.
 MentraOS *disables* wear detection at init with `[0x27, 0x00]` because it
-re-uses the `0xF5` case events (§8b) as a proxy. For Console we probably
-want the opposite — leave wear detection on so we can pause Notes-mirror
-when the glasses come off.
+re-uses the `0xF5` case events (§8b) as a proxy; Console does not send
+that disable frame but still sees no events, suggesting the firmware
+default is already off. `GlassesState.worn` therefore stays `null` in
+practice — trust the `0xF5 0x09` per-arm charging-pin signal as the more
+reliable "glasses are not being worn right now" proxy.
 
 ### Case battery & case state
 
@@ -335,9 +358,12 @@ See §8b — charging case events piggy-back on `0xF5` subcmds (0x06-0x0F).
 
 ### Residual unknowns
 
-- `0xF5` subcmds `0x0a`, `0x12` — not documented in any reference impl.
-- Firmware version query — not covered by MentraOS; `0x34` gets the serial
-  but no public reference retrieves firmware version. TBD.
+- `0xF5` subcmd `0x12` — fires on long-press-right when the mic is already
+  armed. Exact semantics TBD.
+- Firmware version query — **G1 doesn't expose one.** MentraOS `G1.java` line
+  1761 explicitly states "G1 doesn't support version info requests"; `0x34`
+  retrieves the serial but that's it. Treat the `firmware` slot on snapshots
+  as permanently null (or drop it — Console dropped it in v0.1.16).
 
 ### In-repo reverse-engineering path
 
@@ -435,6 +461,18 @@ calendar / msg / iOS-mail have dedicated first-class flags.)
 
 Moves the dashboard viewport. Does *not* inject widget content.
 
+### Head-up angle — `0x0B`
+
+```
+[0x0B, angle]
+  angle : 0-60 (degrees)  # clamped MentraOS-side; firmware behaviour outside
+                          # the range is unverified
+```
+
+Configures the pitch threshold (in degrees) at which a right-arm head-up
+tilt triggers the dashboard. Per MentraOS `G1.java` `sendHeadUpAngleCommand`
+(lines 2603-2620). Applied per-arm with the usual L-then-R sequencing.
+
 ### Dashboard content / widgets — `0x22` (not publicly RE'd)
 
 `0x22` is referenced as `DASHBOARD` in `emingenc/even_glasses` but neither
@@ -466,7 +504,39 @@ it (e.g. head still up). MentraOS doesn't wire this; the byte came from
 string-mining the official Even app (`exitDashboardWhileBeAwake----0x56-----`
 in `libapp.so`). Full payload beyond byte[0] is unconfirmed.
 
-## 15. Console's implementation map
+## 15. QuickNote snapshot — `0x21`
+
+Unsolicited frame emitted by the glasses when the user performs a long-press
+on the right temple while QuickNote is the default long-press feature (the
+out-of-box config). Instead of the expected `0xF5 0x17` long-press-start /
+`0xF5 0x18` long-press-end pair, firmware emits a single `0x21` frame
+carrying a snapshot of the on-device saved-notes database.
+
+Not in MentraOS, EvenDemoApp, or any other public reference — Console
+reverse-engineered this by triggering the long-press, reading the
+"QuickNote saved" UI text on the glasses, and diffing research-log frames.
+
+Wire format (observed; field names provisional):
+
+```
+byte 0      : 0x21
+byte 1      : total length (little-endian, single byte observed)
+byte 2      : 0x00  (reserved / padding)
+byte 3      : seq / message id
+byte 4      : 0x01  (fixed marker — "snapshot")
+byte 5      : note count on device
+byte 6+     : variable — 8-byte metadata records per note, each containing
+              a `61 92 65` three-byte signature plus 5 bytes of TBD metadata
+              (likely id + timestamp + length — not yet decoded).
+```
+
+Console **does not parse the payload** today; `BleManager` classifies it
+as `kind: "quicknote"` and forwards it to research logging (via `onFrame`),
+then early-returns without further action. The handler stub lives in
+`BleManager.handleNotification` — the place to add decoding once the
+per-note metadata is fully mapped.
+
+## 16. Console's implementation map
 
 | Concern          | Location                                                           |
 |------------------|--------------------------------------------------------------------|

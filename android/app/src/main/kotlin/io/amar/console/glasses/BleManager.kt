@@ -441,6 +441,7 @@ class BleManager(private val app: Context) {
             op0 == G1Protocol.OP_HEARTBEAT -> "heartbeat"
             op0 == G1Protocol.OP_BATTERY -> "battery"
             op0 == G1Protocol.OP_WEAR_DETECT -> "wear"
+            op0 == G1Protocol.OP_QUICKNOTE_SNAPSHOT -> "quicknote"
             inflightOp != null && inflightOp.expectAckOpcode == op0 -> "ack"
             else -> "unhandled"
         }
@@ -470,6 +471,13 @@ class BleManager(private val app: Context) {
                     G1Protocol.TOUCH_CASE_CHARGING -> {
                         GlassesState.setCaseCharging(data[2] != 0.toByte())
                     }
+                    G1Protocol.TOUCH_ARM_DOCKED -> {
+                        GlassesState.setCharging(arm.side, data[2] != 0.toByte())
+                    }
+                    G1Protocol.TOUCH_BATTERY_PUSH -> {
+                        val pct = data[2].toInt() and 0xFF
+                        if (pct in 0..100) GlassesState.setBattery(arm.side, pct)
+                    }
                 }
                 for (l in listeners) l.onTouch(arm.side, sub)
             }
@@ -498,6 +506,11 @@ class BleManager(private val app: Context) {
             }
             return
         }
+
+        // QuickNote database snapshot (0x21) — fires on long-press-right when
+        // a note is recorded. We surface it to listeners via `onFrame` above
+        // (classified as "quicknote") but don't parse the per-note payload yet.
+        if (op0 == G1Protocol.OP_QUICKNOTE_SNAPSHOT) return
 
         // Ack matching for whatever is in-flight.
         val op = arm.inflight

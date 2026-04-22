@@ -296,15 +296,22 @@ class MainActivity : ComponentActivity() {
             if (GlassesController.isReady()) GlassesController.setMic(false)
         }
 
-        // --- Notes mirror "stealth screen" ---------------------------------
+        // --- Mirror "stealth screen" ---------------------------------------
         //
-        // When the mirror is on we want the screen to *appear* off (so the
-        // user reads only the glasses) without the OS pausing the Activity
-        // — otherwise HW-keyboard events stop flowing to the WebView. The
-        // trick: hold FLAG_KEEP_SCREEN_ON and drive screenBrightness to
-        // ~0. The panel is effectively black but the Activity keeps
-        // foreground, keyboard input keeps working.
+        // When the app-wide glasses mirror is on we want the screen to
+        // *appear* off (so the user reads only the glasses) without the OS
+        // pausing the Activity — otherwise HW-keyboard events stop flowing
+        // to the WebView. The trick: hold FLAG_KEEP_SCREEN_ON and drive
+        // screenBrightness to ~0. The panel is effectively black but the
+        // Activity keeps foreground, keyboard input keeps working.
 
+        @JavascriptInterface
+        fun setMirrorDim(enabled: Boolean) {
+            runOnUiThread { applyMirrorDim(enabled) }
+        }
+
+        /** @deprecated v17: renamed to setMirrorDim. Kept so older SPA
+         *  bundles still work during the rolling upgrade. */
         @JavascriptInterface
         fun setNotesMirrorDim(enabled: Boolean) {
             runOnUiThread { applyMirrorDim(enabled) }

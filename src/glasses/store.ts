@@ -8,28 +8,39 @@ import {
   glassesSupported,
   startScan as bridgeStartScan,
   stopScan as bridgeStopScan,
+  setMirrorDim,
 } from './bridge'
 import {
   loadEnabled as loadMirrorEnabled,
   setEnabled as setMirrorEnabledPersist,
-  pushMirrorNow,
   isEnabled as isMirrorEnabled,
-} from './notes-mirror'
-import { setNotesMirrorDim } from './bridge'
-import { useNotesStore } from '@/store/notes'
+  scheduleFrame,
+  wireMirror,
+} from './mirror'
+
+type ComposerPane = 'chat' | 'agents'
 
 interface GlassesStore {
   supported: boolean
   snapshot: GlassesSnapshot | null
   scanning: boolean
   candidates: ScanCandidate[]
-  notesMirrorEnabled: boolean
+  mirrorEnabled: boolean
+
+  /** Live text the user is typing in the pane composer — mirrored to row 5
+   *  of the glasses for Chat/Agents. Uncontrolled textareas push here on
+   *  every keystroke (the React tree doesn't re-render, just the mirror). */
+  composerText: { chat: string; agents: string }
 
   refresh: () => void
   setScanning: (v: boolean) => void
   startScan: (durationMs?: number) => void
   stopScan: () => void
-  setNotesMirrorEnabled: (v: boolean) => void
+  setMirrorEnabled: (v: boolean) => void
+  setComposerText: (pane: ComposerPane, text: string) => void
+  /** Trigger a mirror re-render when state changed outside Zustand (async
+   *  Dexie fetches, etc.). */
+  bumpMirror: () => void
 }
 
 export const useGlassesStore = create<GlassesStore>((set, get) => ({
@@ -37,7 +48,8 @@ export const useGlassesStore = create<GlassesStore>((set, get) => ({
   snapshot: getStatus(),
   scanning: false,
   candidates: getScanCandidates(),
-  notesMirrorEnabled: loadMirrorEnabled(),
+  mirrorEnabled: loadMirrorEnabled(),
+  composerText: { chat: '', agents: '' },
 
   refresh: () => {
     set({ snapshot: getStatus(), candidates: getScanCandidates() })
@@ -49,12 +61,8 @@ export const useGlassesStore = create<GlassesStore>((set, get) => ({
     if (!get().supported) return
     set({ scanning: true, candidates: [] })
     bridgeStartScan(durationMs)
-    // Auto-clear the flag after duration + 500ms slack. Native side stops
-    // scanning on its own timer.
     window.setTimeout(() => {
-      set({ scanning: false })
-      // Pick up any last-second candidates the native side logged.
-      set({ candidates: getScanCandidates() })
+      set({ scanning: false, candidates: getScanCandidates() })
     }, durationMs + 500)
   },
 
@@ -63,27 +71,31 @@ export const useGlassesStore = create<GlassesStore>((set, get) => ({
     set({ scanning: false })
   },
 
-  setNotesMirrorEnabled: (v) => {
+  setMirrorEnabled: (v) => {
     setMirrorEnabledPersist(v)
-    set({ notesMirrorEnabled: v })
-    // When turning on, immediately push whatever the active editor is
-    // showing so the user sees context without having to type first.
-    if (v) {
-      const view = useNotesStore.getState().editorView
-      if (view) pushMirrorNow(view.state)
-    }
+    set({ mirrorEnabled: v })
+  },
+
+  setComposerText: (pane, text) => {
+    const cur = get().composerText
+    if (cur[pane] === text) return
+    set({ composerText: { ...cur, [pane]: text } })
+  },
+
+  bumpMirror: () => {
+    scheduleFrame()
   },
 }))
 
-// Subscribe once to the native state-change stream. Called from main.tsx.
 let wired = false
 export function wireGlassesStore() {
   if (wired) return
   wired = true
   if (!glassesSupported()) return
-  // Re-apply the persisted notes-mirror dim state so a cold-start with the
-  // toggle already on keeps the screen alive for HW keyboard input.
-  if (isMirrorEnabled()) setNotesMirrorDim(true)
+  // Re-apply the persisted stealth-screen state so a cold-start with the
+  // mirror already on keeps the screen alive for HW keyboard input.
+  if (isMirrorEnabled()) setMirrorDim(true)
+  wireMirror()
   onStateChange((snap) => {
     useGlassesStore.setState({ snapshot: snap, candidates: getScanCandidates() })
   })

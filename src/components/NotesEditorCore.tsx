@@ -12,7 +12,7 @@ import { vim, Vim } from '@replit/codemirror-vim'
 import { consoleEditorTheme } from '@/notes/editor-theme'
 import { livePreview } from '@/notes/live-preview'
 import { useNotesStore } from '@/store/notes'
-import { pushMirror, pushMirrorNow, isEnabled as isMirrorEnabled } from '@/glasses/notes-mirror'
+import { pushFromEditor, pushNow as pushMirrorNow, isEnabled as isMirrorEnabled } from '@/glasses/mirror'
 
 /** Toggle markdown formatting around selection. If already wrapped, unwrap. */
 function wrapSelection(view: EditorView | null, marker: string) {
@@ -255,9 +255,9 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
             }
           }
           // Notes → glasses mirror — push on doc or selection change.
-          // `pushMirror` short-circuits when the toggle is off.
+          // `pushFromEditor` short-circuits when the toggle is off.
           if (update.docChanged || update.selectionSet) {
-            pushMirror(update.state)
+            pushFromEditor(update.state)
           }
         }
       })()),
@@ -336,7 +336,7 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       useNotesStore.getState().setEditorView(view)
       // If the glasses mirror is already on, push the initial window so the
       // user sees the opening context without waiting for a keystroke.
-      if (isMirrorEnabled()) pushMirrorNow(view.state)
+      if (isMirrorEnabled()) pushMirrorNow()
     })
 
     return () => {

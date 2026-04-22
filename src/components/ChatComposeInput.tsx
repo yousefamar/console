@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react'
 import { useChatStore } from '@/store/chat'
+import { useGlassesStore } from '@/glasses/store'
 import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
 
@@ -100,6 +101,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(false)
     setEmojiQuery(null)
     setEmojiResults([])
+    useGlassesStore.getState().setComposerText('chat', '')
   }, [])
 
   const handleSend = useCallback(async () => {
@@ -187,6 +189,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     autoResize()
     const cursorPos = e.target.selectionStart
     detectEmojiQuery(value, cursorPos)
+    useGlassesStore.getState().setComposerText('chat', value)
   }, [detectEmojiQuery, autoResize, hasContent])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {

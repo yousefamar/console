@@ -29,10 +29,18 @@ object GlassesState {
     @Volatile var channel: String? = null
         private set
 
-    /** Battery % 0..100, or null if unknown. Populated from 0x2C poll replies. */
+    /** Battery % 0..100, or null if unknown. Populated from 0x2C poll replies
+     *  (or the unsolicited `0xF5 0x0A` push when the arm is docked). */
     @Volatile var batteryLeft: Int? = null
         private set
     @Volatile var batteryRight: Int? = null
+        private set
+
+    /** Per-arm charging-contact state: true = sitting on the case charging
+     *  pin. Populated from `0xF5 0x09` pushes. Null = unknown. */
+    @Volatile var chargingLeft: Boolean? = null
+        private set
+    @Volatile var chargingRight: Boolean? = null
         private set
 
     /**
@@ -49,11 +57,6 @@ object GlassesState {
 
     /** Case charging state from `0xF5` subcmd `0x0E`. */
     @Volatile var caseCharging: Boolean? = null
-        private set
-
-    @Volatile var firmwareLeft: String? = null
-        private set
-    @Volatile var firmwareRight: String? = null
         private set
 
     @Volatile var serialLeft: String? = null
@@ -85,7 +88,7 @@ object GlassesState {
                 if (mac != null) leftMac = mac
                 if (status == ArmStatus.DISCONNECTED) {
                     batteryLeft = null
-                    firmwareLeft = null
+                    chargingLeft = null
                     serialLeft = null
                 }
             }
@@ -94,7 +97,7 @@ object GlassesState {
                 if (mac != null) rightMac = mac
                 if (status == ArmStatus.DISCONNECTED) {
                     batteryRight = null
-                    firmwareRight = null
+                    chargingRight = null
                     serialRight = null
                 }
             }
@@ -121,6 +124,15 @@ object GlassesState {
         when (arm) {
             G1Protocol.Arm.LEFT -> batteryLeft = percent
             G1Protocol.Arm.RIGHT -> batteryRight = percent
+        }
+        touch()
+    }
+
+    @Synchronized
+    internal fun setCharging(arm: G1Protocol.Arm, docked: Boolean) {
+        when (arm) {
+            G1Protocol.Arm.LEFT -> chargingLeft = docked
+            G1Protocol.Arm.RIGHT -> chargingRight = docked
         }
         touch()
     }
@@ -165,8 +177,8 @@ object GlassesState {
         channel = null
         batteryLeft = null
         batteryRight = null
-        firmwareLeft = null
-        firmwareRight = null
+        chargingLeft = null
+        chargingRight = null
         serialLeft = null
         serialRight = null
         worn = null
@@ -194,14 +206,14 @@ object GlassesState {
             put("status", leftStatus.name.lowercase())
             put("mac", leftMac ?: JSONObject.NULL)
             put("battery", batteryLeft ?: JSONObject.NULL)
-            put("firmware", firmwareLeft ?: JSONObject.NULL)
+            put("charging", chargingLeft ?: JSONObject.NULL)
             put("serial", serialLeft ?: JSONObject.NULL)
         })
         root.put("right", JSONObject().apply {
             put("status", rightStatus.name.lowercase())
             put("mac", rightMac ?: JSONObject.NULL)
             put("battery", batteryRight ?: JSONObject.NULL)
-            put("firmware", firmwareRight ?: JSONObject.NULL)
+            put("charging", chargingRight ?: JSONObject.NULL)
             put("serial", serialRight ?: JSONObject.NULL)
         })
         root.put("channel", channel ?: JSONObject.NULL)

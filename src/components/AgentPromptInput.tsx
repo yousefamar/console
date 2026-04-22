@@ -1,5 +1,6 @@
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
+import { useGlassesStore } from '@/glasses/store'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
 // ============================================================================
@@ -137,6 +138,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     setHasContent(false)
     setSlashOpen(false)
     setSlashQuery('')
+    useGlassesStore.getState().setComposerText('agents', '')
   }, [])
 
   const handleSend = useCallback(() => {
@@ -614,6 +616,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
               setSlashOpen(false)
             }
             resizeTextarea()
+            useGlassesStore.getState().setComposerText('agents', val)
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}

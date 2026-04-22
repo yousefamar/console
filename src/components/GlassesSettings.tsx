@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand } from 'lucide-react'
+import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase } from 'lucide-react'
 import { useGlassesStore } from '@/glasses/store'
 import {
   disconnect as bridgeDisconnect,
@@ -33,8 +33,8 @@ export function GlassesSettings() {
   const [testText, setTestText] = useState('Hello from Console')
   const [eventsOpen, setEventsOpen] = useState(false)
   const [events, setEvents] = useState<readonly RawG1Event[]>(() => getRecentEvents())
-  const notesMirrorEnabled = useGlassesStore((s) => s.notesMirrorEnabled)
-  const setNotesMirrorEnabled = useGlassesStore((s) => s.setNotesMirrorEnabled)
+  const mirrorEnabled = useGlassesStore((s) => s.mirrorEnabled)
+  const setMirrorEnabled = useGlassesStore((s) => s.setMirrorEnabled)
 
   // One-shot refresh on mount — snapshot might be stale if the JS bridge was
   // still booting when the store was first initialized.
@@ -59,6 +59,9 @@ export function GlassesSettings() {
   const paired = !!snap?.channel
   const leftBatt = snap?.left.battery
   const rightBatt = snap?.right.battery
+  const worn = snap?.worn
+  const caseBatt = snap?.caseBattery
+  const caseCharging = snap?.caseCharging
 
   function handlePair(c: ScanCandidate) {
     if (!c.leftMac || !c.rightMac) return
@@ -105,11 +108,30 @@ export function GlassesSettings() {
         )}
       </div>
 
-      {/* Battery + firmware line (only when we know the arms) */}
+      {/* Battery / wear line (only when we know the arms). G1 doesn't
+          expose a firmware query opcode — MentraOS G1.java:1761. */}
       {connected && (
         <div className="ml-[21px] text-[11px] text-text-tertiary">
           L {leftBatt != null ? `${leftBatt}%` : '…'} · R {rightBatt != null ? `${rightBatt}%` : '…'}
+          {worn != null && <span> · {worn ? 'on head' : 'off head'}</span>}
           {snap?.channel && <span> · ch {snap.channel}</span>}
+        </div>
+      )}
+
+      {/* Charging-case state (paired but not necessarily connected — the case
+          sends 0xF5 subcmds even when the arms aren't actively on the face). */}
+      {paired && (caseBatt != null || caseCharging != null) && (
+        <div className="ml-[21px] text-[11px] text-text-tertiary flex items-center gap-1">
+          <Briefcase size={10} />
+          <span>Case</span>
+          {caseBatt != null && (
+            <span>· {caseBatt}%</span>
+          )}
+          {caseCharging != null && (
+            caseCharging
+              ? <BatteryCharging size={10} className="text-green-500" />
+              : <Battery size={10} />
+          )}
         </div>
       )}
 
@@ -140,18 +162,19 @@ export function GlassesSettings() {
         <div className="ml-[21px] text-[11px] text-text-tertiary italic">Scanning… wake the glasses (open + put on).</div>
       )}
 
-      {/* Notes mirror — short-circuits hub; phone → BLE. */}
+      {/* App-wide mirror — whichever pane is active, renders status + body
+          onto the lenses. Short-circuits hub; phone → BLE. */}
       {connected && (
         <div className="ml-[21px] flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <NotebookPen size={13} className="text-text-tertiary flex-shrink-0" />
-            <span className="text-sm text-text-secondary truncate">Mirror Notes to lenses</span>
+            <span className="text-sm text-text-secondary truncate">Mirror current tab</span>
           </div>
           <button
-            onClick={() => setNotesMirrorEnabled(!notesMirrorEnabled)}
-            className={`relative w-7 h-4 rounded-full transition-colors duration-fast flex-shrink-0 ${notesMirrorEnabled ? 'bg-text-secondary' : 'bg-surface-2'}`}
+            onClick={() => setMirrorEnabled(!mirrorEnabled)}
+            className={`relative w-7 h-4 rounded-full transition-colors duration-fast flex-shrink-0 ${mirrorEnabled ? 'bg-text-secondary' : 'bg-surface-2'}`}
           >
-            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-surface-0 transition-transform duration-fast ${notesMirrorEnabled ? 'translate-x-3' : ''}`} />
+            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-surface-0 transition-transform duration-fast ${mirrorEnabled ? 'translate-x-3' : ''}`} />
           </button>
         </div>
       )}

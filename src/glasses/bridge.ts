@@ -24,9 +24,12 @@ declare global {
       /**
        * Toggle "stealth screen" mode: screen appears off (brightness ~0)
        * but Activity stays foreground so HW keyboard events keep flowing.
-       * Used by the Notes → glasses mirror so the user can type with the
-       * phone dark and read only the lenses. APK v12+.
+       * Used by the app-wide mirror so the user can interact with the
+       * phone dark and read only the lenses. APK v17+.
+       * The old `setNotesMirrorDim` name is kept as a fallback for the
+       * brief window while users are still on v12..v16.
        */
+      setMirrorDim?: (enabled: boolean) => void
       setNotesMirrorDim?: (enabled: boolean) => void
     }
   }
@@ -42,7 +45,8 @@ export interface ArmSnapshot {
   status: ArmStatus
   mac: string | null
   battery: number | null
-  firmware: string | null
+  /** True when the arm is sitting on its case charging pin (from `0xF5 0x09`). */
+  charging: boolean | null
   serial: string | null
 }
 
@@ -162,11 +166,14 @@ export function stopMic(): void {
 /**
  * Ask the APK to enter "stealth screen" — keep the Activity alive and
  * receiving HW keyboard input, but set screen brightness to ~0 so the
- * panel is visually dark. Used by the Notes → glasses mirror. No-op on
- * APK < v12 or in the browser.
+ * panel is visually dark. Used by the app-wide mirror. No-op in browser.
+ * Prefers the new `setMirrorDim` bridge (APK v17+) but falls back to
+ * `setNotesMirrorDim` so v12..v16 installs keep working.
  */
-export function setNotesMirrorDim(enabled: boolean): void {
-  bridge()?.setNotesMirrorDim?.(enabled)
+export function setMirrorDim(enabled: boolean): void {
+  const b = bridge()
+  if (b?.setMirrorDim) b.setMirrorDim(enabled)
+  else b?.setNotesMirrorDim?.(enabled)
 }
 
 // --- Native → Web events -----------------------------------------------------

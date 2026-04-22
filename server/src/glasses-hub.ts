@@ -25,7 +25,8 @@ export interface GlassesArmSnapshot {
   status: GlassesArmStatus
   mac: string | null
   battery: number | null
-  firmware: string | null
+  /** True when the arm is sitting on its case charging pin (from `0xF5 0x09`). */
+  charging: boolean | null
   serial: string | null
 }
 

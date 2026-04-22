@@ -20,6 +20,7 @@ object G1Protocol {
     // --- Opcodes ------------------------------------------------------------
 
     const val OP_APP_WHITELIST: Byte = 0x04
+    const val OP_HEADUP_ANGLE: Byte = 0x0B
     const val OP_MIC_CONTROL: Byte = 0x0E
     /**
      * Post-connect init handshake. Android uses `[0xF4, 0x01]`; iOS uses
@@ -36,6 +37,22 @@ object G1Protocol {
     const val OP_WEAR_DETECT: Byte = 0x27
     const val OP_BATTERY: Byte = 0x2C
     const val OP_SERIAL_NUMBER: Byte = 0x34
+    /**
+     * Unsolicited "QuickNote database snapshot" frame. Fires on long-press of
+     * the right temple (default touchbar mapping) after the user records a
+     * voice note. Wire format (empirically, not in any public reference):
+     *   byte[0] = 0x21
+     *   byte[1] = total frame length (incl. header)
+     *   byte[2] = reserved (always 0x00 so far)
+     *   byte[3] = monotonically-increasing request sequence
+     *   byte[4] = reserved (0x01)
+     *   byte[5] = saved-note count
+     *   byte[6..] = variable-length metadata records (8-byte blocks, exact
+     *               structure TBD — each contains the `61 92 65` channel-id
+     *               signature + a timestamp-like prefix).
+     * We classify but don't yet parse the payload.
+     */
+    const val OP_QUICKNOTE_SNAPSHOT: Byte = 0x21
     const val OP_NOTIFICATION: Byte = 0x4B
     const val OP_TEXT: Byte = 0x4E
     const val OP_AUDIO_FRAME: Byte = 0xF1.toByte()
@@ -60,6 +77,8 @@ object G1Protocol {
     const val TOUCH_CASE_REMOVED_A: Byte = 0x06
     const val TOUCH_CASE_REMOVED_B: Byte = 0x07
     const val TOUCH_CASE_OPENED: Byte = 0x08
+    const val TOUCH_ARM_DOCKED: Byte = 0x09      // byte[2] = 1 on charging pin, 0 off
+    const val TOUCH_BATTERY_PUSH: Byte = 0x0A    // byte[2] = arm battery pct 0-100 (unsolicited)
     const val TOUCH_CASE_CLOSED: Byte = 0x0B
     const val TOUCH_CASE_CHARGING: Byte = 0x0E   // byte[2] = 0/1
     const val TOUCH_CASE_BATTERY: Byte = 0x0F    // byte[2] = pct 0-100
@@ -299,6 +318,16 @@ object G1Protocol {
         byteArrayOf(OP_MIC_CONTROL, if (enable) 0x01 else 0x00)
 
     fun encodeExit(): ByteArray = byteArrayOf(OP_EXIT)
+
+    /**
+     * Configure the pitch threshold (degrees) at which a head-up tilt
+     * triggers the dashboard. MentraOS `G1.java` `sendHeadUpAngleCommand`.
+     * Angle is clamped to 0..60. Currently unwired — kept for parity.
+     */
+    fun encodeHeadUpAngle(angle: Int): ByteArray {
+        val clamped = angle.coerceIn(0, 60)
+        return byteArrayOf(OP_HEADUP_ANGLE, clamped.toByte())
+    }
 
     /** Android-specific post-connect init handshake — see [OP_INIT_ANDROID]. */
     fun encodeInitAndroid(): ByteArray = byteArrayOf(OP_INIT_ANDROID, 0x01)
