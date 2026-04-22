@@ -78,7 +78,7 @@ export const AgentTab = memo(function AgentTab() {
 
           <div className="flex-1 overflow-y-auto">
             {/* Al — pinned at top */}
-            {alSession && <AlListItem session={alSession} isActive={alSession.id === activeSessionId} onSelect={() => selectSession(alSession.id)} />}
+            {alSession && <AlListItem session={alSession} isActive={alSession.id === activeSessionId} onSelect={selectSession} />}
 
             {activeSessions.length === 0 && !alSession && connected && (
               <div className="flex h-32 items-center justify-center">
@@ -90,7 +90,7 @@ export const AgentTab = memo(function AgentTab() {
                 key={session.id}
                 session={session}
                 isActive={session.id === activeSessionId}
-                onSelect={() => selectSession(session.id)}
+                onSelect={selectSession}
                 onReorder={reorderSession}
               />
             ))}
@@ -112,10 +112,10 @@ export const AgentTab = memo(function AgentTab() {
 // Session list item with context menu
 // --------------------------------------------------------------------------
 
-function SessionListItem({ session, isActive, onSelect, onReorder }: {
+const SessionListItem = memo(function SessionListItem({ session, isActive, onSelect, onReorder }: {
   session: SessionInfo
   isActive: boolean
-  onSelect: () => void
+  onSelect: (id: string) => void
   onReorder: (fromId: string, toId: string) => void
 }) {
   const killSession = useAgentStore((s) => s.killSession)
@@ -168,7 +168,7 @@ function SessionListItem({ session, isActive, onSelect, onReorder }: {
       <button
         ref={itemRef}
         draggable={!isRenaming}
-        onClick={onSelect}
+        onClick={() => onSelect(session.id)}
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = 'move'
           e.dataTransfer.setData('text/plain', session.id)
@@ -248,16 +248,16 @@ function SessionListItem({ session, isActive, onSelect, onReorder }: {
       </button>
     </ContextMenu>
   )
-}
+})
 
 // --------------------------------------------------------------------------
 // Al pinned entry
 // --------------------------------------------------------------------------
 
-function AlListItem({ session, isActive, onSelect }: {
+const AlListItem = memo(function AlListItem({ session, isActive, onSelect }: {
   session: SessionInfo
   isActive: boolean
-  onSelect: () => void
+  onSelect: (id: string) => void
 }) {
   // Extract last text preview directly from store (stable selector — no new array)
   const lastText = useAgentStore((s) => {
@@ -273,7 +273,7 @@ function AlListItem({ session, isActive, onSelect }: {
 
   return (
     <button
-      onClick={onSelect}
+      onClick={() => onSelect(session.id)}
       className={clsx(
         'w-full text-left px-3 py-2 border-b border-border transition-colors duration-fast',
         isActive ? 'bg-surface-2' : 'hover:bg-surface-1',
@@ -290,7 +290,7 @@ function AlListItem({ session, isActive, onSelect }: {
       )}
     </button>
   )
-}
+})
 
 // --------------------------------------------------------------------------
 // Helpers

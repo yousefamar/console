@@ -8,7 +8,11 @@ interface ChatComposeInputProps {
 }
 
 export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatComposeInputProps) {
-  const [text, setText] = useState('')
+  // Text lives in a ref + the textarea's uncontrolled value, NOT React state.
+  // Typing mutates the DOM directly, triggering zero React renders per keystroke
+  // (except when hasContent flips or emoji autocomplete is active).
+  const textRef = useRef('')
+  const [hasContent, setHasContent] = useState(false)
   const [pendingImage, setPendingImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [emojiQuery, setEmojiQuery] = useState<{ query: string; startIdx: number } | null>(null)
@@ -46,7 +50,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       }
     } else {
       setEmojiQuery(null)
-      setEmojiResults([])
+      setEmojiResults((prev) => prev.length === 0 ? prev : [])
     }
   }, [])
 
@@ -64,10 +68,17 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
 
   const selectEmoji = useCallback((result: { shortcode: string; emoji: string }) => {
     if (!emojiQuery) return
-    const before = text.slice(0, emojiQuery.startIdx)
-    const after = text.slice(emojiQuery.startIdx + emojiQuery.query.length + 1) // +1 for the colon
+    const cur = textRef.current
+    const before = cur.slice(0, emojiQuery.startIdx)
+    const after = cur.slice(emojiQuery.startIdx + emojiQuery.query.length + 1) // +1 for the colon
     const newText = before + result.emoji + after
-    setText(newText)
+    textRef.current = newText
+    if (inputRef.current) {
+      inputRef.current.value = newText
+      inputRef.current.style.height = '24px'
+      inputRef.current.style.height = Math.min(120, inputRef.current.scrollHeight) + 'px'
+    }
+    setHasContent(!!newText.trim())
     setEmojiQuery(null)
     setEmojiResults([])
     requestAnimationFrame(() => {
@@ -78,7 +89,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
         inputRef.current.focus()
       }
     })
-  }, [emojiQuery, text])
+  }, [emojiQuery])
+
+  const clearInput = useCallback(() => {
+    textRef.current = ''
+    if (inputRef.current) {
+      inputRef.current.value = ''
+      inputRef.current.style.height = '24px'
+    }
+    setHasContent(false)
+    setEmojiQuery(null)
+    setEmojiResults([])
+  }, [])
 
   const handleSend = useCallback(async () => {
     if (sendingRef.current) return
@@ -86,10 +108,9 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     if (pendingImage) {
       sendingRef.current = true
       const file = pendingImage
-      const caption = text.trim() || undefined
+      const caption = textRef.current.trim() || undefined
       clearImage()
-      setText('')
-      if (inputRef.current) inputRef.current.style.height = '24px'
+      clearInput()
       try {
         await sendImage(roomId, file, caption)
       } finally {
@@ -99,19 +120,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       return
     }
 
-    const body = text.trim()
+    const body = textRef.current.trim()
     if (!body) return
 
     sendingRef.current = true
-    setText('')
-    if (inputRef.current) inputRef.current.style.height = '24px'
+    clearInput()
     try {
       await sendMessage(roomId, body)
     } finally {
       sendingRef.current = false
     }
     inputRef.current?.focus()
-  }, [text, roomId, sendMessage, sendImage, pendingImage, clearImage])
+  }, [roomId, sendMessage, sendImage, pendingImage, clearImage, clearInput])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Emoji autocomplete keyboard handling
@@ -146,26 +166,36 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     }
   }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji])
 
-  const autoResize = useCallback((el: HTMLTextAreaElement) => {
-    el.style.height = '24px'
-    el.style.height = Math.min(120, el.scrollHeight) + 'px'
+  const resizeScheduledRef = useRef(false)
+  const autoResize = useCallback(() => {
+    if (resizeScheduledRef.current) return
+    resizeScheduledRef.current = true
+    requestAnimationFrame(() => {
+      resizeScheduledRef.current = false
+      const el = inputRef.current
+      if (!el) return
+      el.style.height = '24px'
+      el.style.height = Math.min(120, el.scrollHeight) + 'px'
+    })
   }, [])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
-    setText(value)
-    autoResize(e.target)
+    textRef.current = value
+    const nowHasContent = !!value.trim()
+    if (nowHasContent !== hasContent) setHasContent(nowHasContent)
+    autoResize()
     const cursorPos = e.target.selectionStart
     detectEmojiQuery(value, cursorPos)
-  }, [detectEmojiQuery, autoResize])
+  }, [detectEmojiQuery, autoResize, hasContent])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Arrow keys move cursor without triggering onChange
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
       const cursorPos = e.currentTarget.selectionStart
-      detectEmojiQuery(text, cursorPos)
+      detectEmojiQuery(textRef.current, cursorPos)
     }
-  }, [text, detectEmojiQuery])
+  }, [detectEmojiQuery])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
@@ -257,7 +287,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           <textarea
             ref={inputRef}
             data-chat-input
-            value={text}
+            defaultValue=""
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
@@ -268,7 +298,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           />
           <button
             onClick={handleSend}
-            disabled={!text.trim() && !pendingImage}
+            disabled={!hasContent && !pendingImage}
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
             title="Send (Enter)"
           >

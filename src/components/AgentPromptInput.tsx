@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
@@ -13,8 +13,12 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path
 }
 
-export function AgentPromptInput() {
-  const [text, setText] = useState('')
+export const AgentPromptInput = memo(function AgentPromptInput() {
+  // Text lives in a ref + the textarea's uncontrolled value, NOT React state.
+  // Typing mutates the DOM directly, triggering zero React renders per keystroke.
+  const textRef = useRef('')
+  const [hasContent, setHasContent] = useState(false)
+  const [slashQuery, setSlashQuery] = useState('')
   const [dirInput, setDirInput] = useState('')
   const [selectedDir, setSelectedDir] = useState<string | null>(null)
   const [dirOpen, setDirOpen] = useState(false)
@@ -55,11 +59,10 @@ export function AgentPromptInput() {
       })
     : projectDirs, [dirInput, projectDirs])
 
-  // Slash command filtering
-  const slashQuery = text.startsWith('/') ? text.slice(1).toLowerCase() : ''
-  const filteredSlash = useMemo(() => slashOpen && text.startsWith('/')
+  // Slash command filtering — driven by slashQuery state, updated only in onChange
+  const filteredSlash = useMemo(() => slashOpen
     ? slashCommands.filter((cmd) => cmd.toLowerCase().startsWith(slashQuery))
-    : [], [slashOpen, text, slashCommands, slashQuery])
+    : [], [slashOpen, slashCommands, slashQuery])
 
   // Clamp slash index
   useEffect(() => {
@@ -85,14 +88,29 @@ export function AgentPromptInput() {
     el?.scrollIntoView({ block: 'nearest' })
   }, [dirIndex])
 
-  // Auto-resize textarea when interim text or committed text changes
+  const resizeScheduledRef = useRef(false)
+  const resizeTextarea = useCallback(() => {
+    if (resizeScheduledRef.current) return
+    resizeScheduledRef.current = true
+    requestAnimationFrame(() => {
+      resizeScheduledRef.current = false
+      const el = inputRef.current
+      if (!el) return
+      el.style.height = '24px'
+      const maxH = Math.floor(window.innerHeight * 0.5)
+      el.style.height = Math.min(maxH, el.scrollHeight) + 'px'
+    })
+  }, [])
+
+  // Sync textarea DOM value when interim STT text changes, then resize.
+  // Committed text changes are applied imperatively at their source — no React reactivity.
   useEffect(() => {
     const el = inputRef.current
     if (!el) return
-    el.style.height = '24px'
-    const maxH = Math.floor(window.innerHeight * 0.5)
-    el.style.height = Math.min(maxH, el.scrollHeight) + 'px'
-  }, [interimText, text])
+    const base = textRef.current
+    el.value = interimText ? base + (base ? ' ' : '') + interimText : base
+    resizeTextarea()
+  }, [interimText, resizeTextarea])
 
   // Fetch past sessions when a directory is selected
   useEffect(() => {
@@ -110,16 +128,26 @@ export function AgentPromptInput() {
     ? images.map(({ media_type, data }) => ({ media_type, data }))
     : undefined
 
+  const clearInput = useCallback(() => {
+    textRef.current = ''
+    if (inputRef.current) {
+      inputRef.current.value = ''
+      inputRef.current.style.height = '24px'
+    }
+    setHasContent(false)
+    setSlashOpen(false)
+    setSlashQuery('')
+  }, [])
+
   const handleSend = useCallback(() => {
     if (sendingRef.current) return
     if (listening) stopListening()
-    const body = text.trim()
+    const body = textRef.current.trim()
     if (!body && !imagePayload) return
 
     sendingRef.current = true
-    setText('')
+    clearInput()
     setImages([])
-    if (inputRef.current) inputRef.current.style.height = '24px'
 
     if (activeSessionId) {
       sendMessage(body || 'What do you see in this image?', imagePayload)
@@ -136,19 +164,18 @@ export function AgentPromptInput() {
 
     sendingRef.current = false
     inputRef.current?.focus()
-  }, [text, imagePayload, activeSessionId, sendMessage, createSession, resumeSession, selectedResumeId, resolvedCwd])
+  }, [imagePayload, activeSessionId, sendMessage, createSession, resumeSession, selectedResumeId, resolvedCwd, clearInput])
 
   const handleNewSession = useCallback(() => {
-    const body = text.trim()
+    const body = textRef.current.trim()
     if (!body && !imagePayload) return
-    setText('')
+    clearInput()
     setImages([])
-    if (inputRef.current) inputRef.current.style.height = '24px'
     createSession(body || 'What do you see in this image?', resolvedCwd, imagePayload)
     setSelectedDir(null)
     setDirInput('')
     inputRef.current?.focus()
-  }, [text, imagePayload, createSession, resolvedCwd])
+  }, [imagePayload, createSession, resolvedCwd, clearInput])
 
   const attachImage = useCallback((file: File) => {
     const reader = new FileReader()
@@ -204,8 +231,13 @@ export function AgentPromptInput() {
       } else if (e.key === 'Enter' || e.key === 'Tab') {
         if (filteredSlash[slashIndex]) {
           e.preventDefault()
-          setText('/' + filteredSlash[slashIndex])
+          const full = '/' + filteredSlash[slashIndex]
+          textRef.current = full
+          if (inputRef.current) inputRef.current.value = full
+          setHasContent(true)
           setSlashOpen(false)
+          setSlashQuery('')
+          resizeTextarea()
           return
         }
       } else if (e.key === 'Escape') {
@@ -227,7 +259,7 @@ export function AgentPromptInput() {
       e.preventDefault()
       handleSend()
     }
-  }, [handleSend, handleNewSession, slashOpen, filteredSlash, slashIndex])
+  }, [handleSend, handleNewSession, slashOpen, filteredSlash, slashIndex, resizeTextarea])
 
   const handleDirKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!dirOpen || filteredDirs.length === 0) {
@@ -295,7 +327,7 @@ export function AgentPromptInput() {
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = 'en-GB'
-    let finalTranscript = text
+    let finalTranscript = textRef.current
     let failed = false
     recognition.onresult = (event: any) => {
       let interim = ''
@@ -303,7 +335,9 @@ export function AgentPromptInput() {
         const t = event.results[i][0].transcript
         if (event.results[i].isFinal) {
           finalTranscript += (finalTranscript ? ' ' : '') + t
-          setText(finalTranscript)
+          textRef.current = finalTranscript
+          if (inputRef.current) inputRef.current.value = finalTranscript
+          setHasContent(!!finalTranscript.trim())
           setInterimText('')
         } else {
           interim += t
@@ -327,7 +361,7 @@ export function AgentPromptInput() {
     recognitionRef.current = recognition
     recognition.start()
     return true
-  }, [text])
+  }, [])
 
   const startOpenAISTT = useCallback(async () => {
     try {
@@ -346,7 +380,13 @@ export function AgentPromptInput() {
             setInterimText(pendingDelta)
           } else if (msg.type === 'final') {
             const final = (msg.text || '').trim()
-            if (final) setText((prev) => prev + (prev ? ' ' : '') + final)
+            if (final) {
+              const prev = textRef.current
+              const next = prev + (prev ? ' ' : '') + final
+              textRef.current = next
+              if (inputRef.current) inputRef.current.value = next
+              setHasContent(!!next.trim())
+            }
             pendingDelta = ''
             setInterimText('')
           } else if (msg.type === 'error') {
@@ -506,8 +546,13 @@ export function AgentPromptInput() {
                 key={cmd}
                 onMouseDown={(e) => {
                   e.preventDefault()
-                  setText('/' + cmd)
+                  const full = '/' + cmd
+                  textRef.current = full
+                  if (inputRef.current) inputRef.current.value = full
+                  setHasContent(true)
                   setSlashOpen(false)
+                  setSlashQuery('')
+                  resizeTextarea()
                   inputRef.current?.focus()
                 }}
                 className={`flex w-full items-center px-2.5 py-1 text-left transition-colors duration-fast ${
@@ -553,20 +598,22 @@ export function AgentPromptInput() {
         />
         <textarea
           ref={inputRef}
-          value={interimText ? text + (text ? ' ' : '') + interimText : text}
-          onChange={(e) => {
+          defaultValue=""
+          onInput={(e) => {
             if (listening) return
-            const val = e.target.value
-            setText(val)
-            e.target.style.height = '24px'
-            const maxH = Math.floor(window.innerHeight * 0.5)
-            e.target.style.height = Math.min(maxH, e.target.scrollHeight) + 'px'
-            if (val.startsWith('/') && slashCommands.length > 0) {
-              setSlashOpen(true)
-              setSlashIndex(0)
-            } else {
+            const val = (e.target as HTMLTextAreaElement).value
+            textRef.current = val
+            const nowHasContent = !!val.trim()
+            if (nowHasContent !== hasContent) setHasContent(nowHasContent)
+            const nowSlash = val.startsWith('/')
+            if (nowSlash && slashCommands.length > 0) {
+              if (!slashOpen) { setSlashOpen(true); setSlashIndex(0) }
+              const q = val.slice(1).toLowerCase()
+              if (q !== slashQuery) setSlashQuery(q)
+            } else if (slashOpen) {
               setSlashOpen(false)
             }
+            resizeTextarea()
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
@@ -597,7 +644,7 @@ export function AgentPromptInput() {
             {activeSessionId && (
               <button
                 onClick={handleNewSession}
-                disabled={!text.trim() && images.length === 0}
+                disabled={!hasContent && images.length === 0}
                 className="flex-shrink-0 text-text-tertiary hover:text-text-secondary disabled:opacity-30 transition-colors duration-fast p-1"
                 title="New session (Shift+Cmd+Enter)"
               >
@@ -615,7 +662,7 @@ export function AgentPromptInput() {
             </button>
             <button
               onClick={handleSend}
-              disabled={!text.trim() && images.length === 0}
+              disabled={!hasContent && images.length === 0}
               className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
               title="Send (Enter)"
             >
@@ -626,7 +673,7 @@ export function AgentPromptInput() {
       </div>
     </div>
   )
-}
+})
 
 function formatRelativeDate(timestamp: number): string {
   const now = Date.now()
