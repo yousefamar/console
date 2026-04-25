@@ -8,6 +8,7 @@ import { useFinanceStore, fmtPence, type Stream } from '@/store/finance'
 import { RunwayCard } from './RunwayCard'
 import { ProjectionChart } from './ProjectionChart'
 import { MonthlySpendChart } from './MonthlySpendChart'
+import { SharedTabPanel } from './SharedTabPanel'
 
 export function CashflowView() {
   const settings = useFinanceStore((s) => s.settings)
@@ -53,6 +54,7 @@ export function CashflowView() {
       </div>
 
       <MonthlySpendChart />
+      <SharedTabPanel />
       <StreamsPanel />
       <RecurringSuggestions />
       <EmergencyFundEditor />

@@ -227,6 +227,8 @@ function RuleEditor({ rule, onClose, onSave, onDelete }: {
   const [categoryId, setCategoryId] = useState(rule?.categoryId ?? '')
   const [ignore, setIgnore] = useState(!!rule?.ignore)
   const [asTransfer, setAsTransfer] = useState(!!rule?.asTransfer)
+  const [sharedFraction, setSharedFraction] = useState(rule?.sharedFraction != null ? rule.sharedFraction.toString() : '')
+  const [sharedCounterparty, setSharedCounterparty] = useState(rule?.sharedWithCounterparty ?? '')
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -296,6 +298,24 @@ function RuleEditor({ rule, onClose, onSave, onDelete }: {
             <label className="flex items-center gap-2"><input type="checkbox" checked={ignore} onChange={(e) => setIgnore(e.target.checked)} />Mark as ignored</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={asTransfer} onChange={(e) => setAsTransfer(e.target.checked)} />Treat as transfer</label>
           </div>
+
+          <div className="text-[10px] uppercase tracking-wider text-text-tertiary mt-2">Shared expense</div>
+          <div className="flex gap-2 items-end">
+            <label className="w-32">
+              <div className="text-[10px] text-text-tertiary mb-0.5">Your share (0..1)</div>
+              <input value={sharedFraction} onChange={(e) => setSharedFraction(e.target.value)}
+                type="number" step="0.05" min="0" max="1"
+                placeholder="e.g. 0.5"
+                className="w-full px-2 py-1 bg-surface-2 border border-border rounded-sm text-text-primary" />
+            </label>
+            <label className="flex-1">
+              <div className="text-[10px] text-text-tertiary mb-0.5">Counterparty</div>
+              <input value={sharedCounterparty} onChange={(e) => setSharedCounterparty(e.target.value)}
+                placeholder="e.g. Veronica Nacci"
+                className="w-full px-2 py-1 bg-surface-2 border border-border rounded-sm text-text-primary" />
+            </label>
+          </div>
+          <p className="text-[10px] text-text-tertiary">0.5 = 50/50 split. The counterparty's name is matched against inbound transfer counterparties to net reimbursements off the shared-tab balance.</p>
         </div>
         <div className="flex items-center justify-end gap-2 mt-4">
           <button onClick={onClose} className="px-3 py-1 text-xs bg-surface-2 border border-border rounded-sm">Cancel</button>
@@ -315,6 +335,8 @@ function RuleEditor({ rule, onClose, onSave, onDelete }: {
               categoryId,
               ignore: ignore || undefined,
               asTransfer: asTransfer || undefined,
+              sharedFraction: sharedFraction.trim() === '' ? undefined : Math.max(0, Math.min(1, parseFloat(sharedFraction))),
+              sharedWithCounterparty: sharedCounterparty.trim() || undefined,
             })}
             className="px-3 py-1 text-xs bg-surface-2 border border-border rounded-sm font-medium disabled:opacity-50">Save</button>
         </div>

@@ -21,16 +21,23 @@ import type { MonzoTransaction } from '../monzo-client.js'
  * matching rules in priority order, then falling back to Monzo's category
  * via the default Monzo→user-category mapping (handled by rules), then to
  * 'cat_uncat'.
+ *
+ * Returns the effective shared fraction (0..1) for the transaction. The
+ * variable-spend forecast multiplies tx.amount by this fraction so the
+ * projection reflects the user's *net* cost on shared expenses. Defaults
+ * to 1.0 (fully the user's).
  */
 export function effectiveCategory(
   tx: MonzoTransaction,
   rules: CategoryRule[],
   overrides: TxOverride[],
-): { categoryId: string; ignored: boolean; isTransfer: boolean } {
+): { categoryId: string; ignored: boolean; isTransfer: boolean; sharedFraction: number; sharedWithCounterparty?: string } {
   const override = overrides.find((o) => o.txId === tx.id)
-  if (override?.ignore) return { categoryId: override.categoryId ?? 'cat_uncat', ignored: true, isTransfer: false }
-  if (override?.categoryId) {
-    return { categoryId: override.categoryId, ignored: false, isTransfer: override.categoryId === 'cat_transfer' }
+  // Override fully drops out the rest, but its sharedFraction defaults to 1
+  // unless it explicitly sets one, in which case it always wins.
+  if (override?.ignore) return {
+    categoryId: override.categoryId ?? 'cat_uncat', ignored: true, isTransfer: false,
+    sharedFraction: 1, sharedWithCounterparty: override.sharedWithCounterparty,
   }
 
   const merchantName = typeof tx.merchant === 'object' && tx.merchant ? tx.merchant.name : ''
@@ -38,6 +45,10 @@ export function effectiveCategory(
   const description = tx.description ?? ''
   const amountSign: 'in' | 'out' = tx.amount >= 0 ? 'in' : 'out'
 
+  // Walk rules first to find a baseline classification (so sharedFraction
+  // from a matching rule still applies even when an override only changes
+  // the category).
+  let baseRule: CategoryRule | undefined
   for (const rule of [...rules].sort((a, b) => a.priority - b.priority)) {
     const m = rule.match
     if (m.amountSign && m.amountSign !== amountSign) continue
@@ -45,13 +56,28 @@ export function effectiveCategory(
     if (m.descriptionContains && !description.toLowerCase().includes(m.descriptionContains.toLowerCase())) continue
     if (m.counterpartyContains && !counterparty.toLowerCase().includes(m.counterpartyContains.toLowerCase())) continue
     if (m.monzoCategoryEquals && tx.category !== m.monzoCategoryEquals) continue
+    baseRule = rule; break
+  }
+
+  if (override?.categoryId) {
     return {
-      categoryId: rule.categoryId,
-      ignored: !!rule.ignore,
-      isTransfer: !!rule.asTransfer || rule.categoryId === 'cat_transfer',
+      categoryId: override.categoryId,
+      ignored: false,
+      isTransfer: override.categoryId === 'cat_transfer',
+      sharedFraction: override.sharedFraction ?? baseRule?.sharedFraction ?? 1,
+      sharedWithCounterparty: override.sharedWithCounterparty ?? baseRule?.sharedWithCounterparty,
     }
   }
-  return { categoryId: 'cat_uncat', ignored: false, isTransfer: false }
+  if (baseRule) {
+    return {
+      categoryId: baseRule.categoryId,
+      ignored: !!baseRule.ignore,
+      isTransfer: !!baseRule.asTransfer || baseRule.categoryId === 'cat_transfer',
+      sharedFraction: baseRule.sharedFraction ?? 1,
+      sharedWithCounterparty: baseRule.sharedWithCounterparty,
+    }
+  }
+  return { categoryId: 'cat_uncat', ignored: false, isTransfer: false, sharedFraction: 1 }
 }
 
 // --------------------------------------------------------------------------
@@ -113,8 +139,10 @@ export function aggregateMonthlySpend(
     const month = tx.created.slice(0, 7)
     if (!map.has(month)) map.set(month, {})
     const m = map.get(month)!
-    // Convention: store as positive pence for outflows, negative for inflows
-    const amt = -tx.amount // tx.amount is negative for spend, so flip
+    // Convention: store as positive pence for outflows, negative for inflows.
+    // Apply sharedFraction so shared categories (e.g. groceries split with a
+    // partner) contribute only the user's share to the projection forecast.
+    const amt = Math.round(-tx.amount * eff.sharedFraction)
     m[eff.categoryId] = (m[eff.categoryId] ?? 0) + amt
   }
   return Array.from(map.entries())
@@ -564,6 +592,115 @@ export function budgetStatusForMonth(
       projectedEndOfMonthPence: projected,
     }
   })
+}
+
+// --------------------------------------------------------------------------
+// Shared-tab tracker
+// --------------------------------------------------------------------------
+
+export interface SharedTabBalance {
+  /** Counterparty name (matches sharedWithCounterparty + Monzo counterparty). */
+  counterparty: string
+  /** Sum of `their_share` across shared outgoing transactions (positive = they owe you). */
+  theyOwePence: number
+  /** Sum of inbound transfers from this counterparty (their reimbursements + transfers from them). */
+  theyPaidPence: number
+  /** Net = theyOwePence - theyPaidPence. Positive: they still owe you. Negative: you owe them. */
+  netOwedToYouPence: number
+  /** Earliest unsettled transaction date. */
+  oldestSharedDate: string | null
+  /** Most recent shared activity. */
+  latestSharedDate: string | null
+  /** Sample shared outgoing txns (last 20). */
+  sampleShared: Array<{ id: string; date: string; merchant: string; grossPence: number; theirSharePence: number }>
+  /** Sample inbound reimbursements (last 20). */
+  sampleReimbursements: Array<{ id: string; date: string; amountPence: number; note: string }>
+}
+
+/**
+ * Compute outstanding shared-tab balances per counterparty. The user's net
+ * cost on a shared transaction is `gross * sharedFraction`; the rest is
+ * what the counterparty owes them. Inbound transfers from the same
+ * counterparty are subtracted from that running total.
+ *
+ * Counterparty matching: rule's `sharedWithCounterparty` field (if set) is
+ * the canonical key. Inbound transfers match by Monzo's `counterparty.name`
+ * (case-insensitive, trimmed).
+ */
+export function computeSharedTabBalances(
+  txns: MonzoTransaction[],
+  rules: CategoryRule[],
+  overrides: TxOverride[],
+): SharedTabBalance[] {
+  const balances = new Map<string, SharedTabBalance>()
+  const ensure = (name: string): SharedTabBalance => {
+    const key = name.toLowerCase().trim()
+    let b = balances.get(key)
+    if (!b) {
+      b = {
+        counterparty: name,
+        theyOwePence: 0,
+        theyPaidPence: 0,
+        netOwedToYouPence: 0,
+        oldestSharedDate: null,
+        latestSharedDate: null,
+        sampleShared: [],
+        sampleReimbursements: [],
+      }
+      balances.set(key, b)
+    }
+    return b
+  }
+
+  for (const tx of txns) {
+    if (tx.decline_reason) continue
+    const eff = effectiveCategory(tx, rules, overrides)
+    if (eff.ignored) continue
+
+    const counterparty = (tx as unknown as { counterparty?: { name?: string } }).counterparty?.name ?? ''
+
+    // Inbound reimbursement: positive amount + counterparty matches some
+    // tracked sharedWithCounterparty. Excludes inbound flows already
+    // categorised as a real income stream (e.g. "Veronica's £825/mo rent
+    // share" — that's modelled as cat_other_income elsewhere; counting it
+    // here would double-claim it as a shared-tab settlement).
+    if (tx.amount > 0 && counterparty) {
+      const tracked = [
+        ...rules.filter((r) => r.sharedWithCounterparty?.toLowerCase() === counterparty.toLowerCase()),
+        ...overrides.filter((o) => o.sharedWithCounterparty?.toLowerCase() === counterparty.toLowerCase()),
+      ]
+      const cat = eff.categoryId
+      const isProperIncome = cat === 'cat_salary' || cat === 'cat_other_income'
+      if (tracked.length > 0 && !isProperIncome) {
+        const b = ensure(counterparty)
+        b.theyPaidPence += tx.amount
+        const date = tx.created.slice(0, 10)
+        b.latestSharedDate = b.latestSharedDate && b.latestSharedDate >= date ? b.latestSharedDate : date
+        b.sampleReimbursements.push({ id: tx.id, date, amountPence: tx.amount, note: tx.notes || tx.description || '' })
+      }
+      continue
+    }
+
+    // Shared outgoing: sharedFraction < 1 means part of it is owed back
+    if (eff.sharedFraction < 1 && eff.sharedWithCounterparty && tx.amount < 0) {
+      const b = ensure(eff.sharedWithCounterparty)
+      const gross = -tx.amount
+      const theirShare = Math.round(gross * (1 - eff.sharedFraction))
+      b.theyOwePence += theirShare
+      const date = tx.created.slice(0, 10)
+      if (!b.oldestSharedDate || date < b.oldestSharedDate) b.oldestSharedDate = date
+      if (!b.latestSharedDate || date > b.latestSharedDate) b.latestSharedDate = date
+      const merchant = typeof tx.merchant === 'object' && tx.merchant ? tx.merchant.name : (tx.description || '')
+      b.sampleShared.push({ id: tx.id, date, merchant, grossPence: gross, theirSharePence: theirShare })
+    }
+  }
+
+  for (const b of balances.values()) {
+    b.netOwedToYouPence = b.theyOwePence - b.theyPaidPence
+    b.sampleShared = b.sampleShared.sort((a, c) => c.date.localeCompare(a.date)).slice(0, 20)
+    b.sampleReimbursements = b.sampleReimbursements.sort((a, c) => c.date.localeCompare(a.date)).slice(0, 20)
+  }
+  return Array.from(balances.values()).sort((a, b) => Math.abs(b.netOwedToYouPence) - Math.abs(a.netOwedToYouPence))
 }
 
 // --------------------------------------------------------------------------

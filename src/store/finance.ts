@@ -37,6 +37,10 @@ export interface CategoryRule {
   categoryId: string
   ignore?: boolean
   asTransfer?: boolean
+  /** 0..1 fraction of tx amount that's the user's share. 0.5 = split 50/50. */
+  sharedFraction?: number
+  /** Counterparty splitting it (e.g. "Veronica Nacci"). Powers the shared-tab tracker. */
+  sharedWithCounterparty?: string
 }
 
 export interface BalanceEntry {
@@ -94,6 +98,8 @@ export interface TxOverride {
   categoryId?: string
   ignore?: boolean
   pairedTxId?: string
+  sharedFraction?: number
+  sharedWithCounterparty?: string
 }
 
 export type Delta =
@@ -187,6 +193,19 @@ export interface TxClassification {
   categoryId: string
   ignored: boolean
   isTransfer: boolean
+  sharedFraction: number
+  sharedWithCounterparty?: string
+}
+
+export interface SharedTabBalance {
+  counterparty: string
+  theyOwePence: number
+  theyPaidPence: number
+  netOwedToYouPence: number
+  oldestSharedDate: string | null
+  latestSharedDate: string | null
+  sampleShared: Array<{ id: string; date: string; merchant: string; grossPence: number; theirSharePence: number }>
+  sampleReimbursements: Array<{ id: string; date: string; amountPence: number; note: string }>
 }
 
 // --- Helpers ----------------------------------------------------------------
@@ -246,6 +265,7 @@ interface FinanceState {
   emergencyFundPence: number
   budgetStatus: BudgetStatus[]
   recurringCandidates: RecurringCandidate[]
+  sharedTabBalances: SharedTabBalance[]
 
   // Active scenario for projection viewing
   activeScenarioId: string | null
@@ -318,6 +338,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
   emergencyFundPence: 0,
   budgetStatus: [],
   recurringCandidates: [],
+  sharedTabBalances: [],
 
   activeScenarioId: null,
   setActiveScenario: (id) => {
@@ -360,7 +381,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
     const horizon = settings?.projectionHorizonMonths ?? 24
     const scnQuery = activeScenarioId ? `&scenario=${activeScenarioId}` : ''
     try {
-      const [classifications, monthly, variableForecast, netWorth, projection, budgetStatus, recurringCandidates] = await Promise.all([
+      const [classifications, monthly, variableForecast, netWorth, projection, budgetStatus, recurringCandidates, sharedTabBalances] = await Promise.all([
         hubFetch<Record<string, TxClassification>>('/finance/categorise?limit=2000'),
         hubFetch<CategoryMonthlySpend[]>('/finance/monthly'),
         hubFetch<Record<string, number>>('/finance/variable-forecast?window=3'),
@@ -368,12 +389,13 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
         hubFetch<{ trajectory: MonthlyPoint[]; runway: RunwaySummary; emergencyFundPence: number }>(`/finance/projection?horizon=${horizon}${scnQuery}`),
         hubFetch<BudgetStatus[]>('/finance/budget-status'),
         hubFetch<RecurringCandidate[]>('/finance/recurring/candidates'),
+        hubFetch<SharedTabBalance[]>('/finance/shared-tab'),
       ])
       set({
         classifications, monthly, variableForecast, netWorth,
         trajectory: projection.trajectory, runway: projection.runway,
         emergencyFundPence: projection.emergencyFundPence,
-        budgetStatus, recurringCandidates,
+        budgetStatus, recurringCandidates, sharedTabBalances,
       })
       // History is heavier; fetch separately and don't block first paint.
       hubFetch<NetWorthSnapshot[]>('/finance/networth/history?months=12').then((h) => set({ netWorthHistory: h })).catch(() => {})

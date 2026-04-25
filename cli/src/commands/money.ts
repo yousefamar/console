@@ -189,6 +189,8 @@ async function financeRules(args: string[], flags: GlobalFlags): Promise<void> {
         monzoCategoryEquals: opts['monzo-cat'],
         amountSign: opts.sign as 'in' | 'out' | undefined,
       },
+      sharedFraction: opts.shared !== undefined ? Math.max(0, Math.min(1, parseFloat(opts.shared))) : undefined,
+      sharedWithCounterparty: opts['shared-with'],
     }
     output(await hubFetch('/finance/rules', { method: 'POST', body: body }), flags)
     return

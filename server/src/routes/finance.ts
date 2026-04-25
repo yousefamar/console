@@ -16,6 +16,7 @@ import {
   trailingBurn, project, summariseRunway, computeNetWorthOn, netWorthHistory,
   manualBalanceLookup, currentMonth, emergencyFundPence,
   detectRecurring, findTransferCandidates, budgetStatusForMonth,
+  computeSharedTabBalances,
 } from '../finance/projection.js'
 import { importCsv } from '../finance/csv-import.js'
 import { detectAccountCandidates } from '../finance/account-detect.js'
@@ -311,6 +312,13 @@ export function handleFinanceRoutes(
   if (path === '/finance/transfers/candidates' && req.method === 'GET') {
     const txns = monzoStore.getTransactions({ limit: 100000 })
     json(findTransferCandidates(txns, finance.getOverrides()))
+    return true
+  }
+
+  // ---- Computed: shared-tab balances ------------------------------------
+  if (path === '/finance/shared-tab' && req.method === 'GET') {
+    const txns = monzoStore.getTransactions({ limit: 100000 })
+    json(computeSharedTabBalances(txns, finance.getRules(), finance.getOverrides()))
     return true
   }
 

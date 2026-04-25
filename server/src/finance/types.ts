@@ -40,6 +40,16 @@ export interface CategoryRule {
   /** If set, also marks the transaction with this flag. */
   ignore?: boolean
   asTransfer?: boolean
+  /**
+   * Fraction (0..1) of the transaction amount that is the user's share.
+   * 1.0 (default) = fully theirs. 0.5 = split 50/50 with someone (e.g. shared
+   * groceries with Veronica). The forecast aggregator multiplies tx.amount
+   * by this fraction so projection reflects net cost. Pair with
+   * sharedWithCounterparty to power the shared-tab balance tracker.
+   */
+  sharedFraction?: number
+  /** Free-text label for the counterparty splitting this with the user. */
+  sharedWithCounterparty?: string
 }
 
 export interface BalanceEntry {
@@ -113,6 +123,9 @@ export interface TxOverride {
   ignore?: boolean
   /** Paired-transaction id for transfer detection. */
   pairedTxId?: string
+  /** Per-transaction shared fraction override (beats rule). */
+  sharedFraction?: number
+  sharedWithCounterparty?: string
 }
 
 export type Delta =
