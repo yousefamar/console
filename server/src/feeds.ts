@@ -22,6 +22,7 @@ export interface FeedSubscription {
   folder: string | null
   imageUrl?: string
   fullText?: boolean
+  maxItems?: number
   addedAt: string
 }
 
@@ -219,7 +220,7 @@ export class FeedStore {
     return true
   }
 
-  update(id: string, updates: { title?: string; folder?: string; xmlUrl?: string; fullText?: boolean }): FeedSubscription | null {
+  update(id: string, updates: { title?: string; folder?: string; xmlUrl?: string; fullText?: boolean; maxItems?: number | null }): FeedSubscription | null {
     const config = this.loadConfig()
     const feed = config.feeds.find((f) => f.id === id)
     if (!feed) return null
@@ -232,6 +233,10 @@ export class FeedStore {
     if (updates.fullText !== undefined) {
       feed.fullText = updates.fullText
       this.cache.delete(id) // re-fetch with new mode
+    }
+    if (updates.maxItems !== undefined) {
+      if (updates.maxItems === null) delete feed.maxItems
+      else feed.maxItems = updates.maxItems
     }
     this.saveConfig()
     return feed

@@ -14,6 +14,7 @@ export interface FeedSubscription {
   folder: string | null
   imageUrl?: string
   fullText?: boolean
+  maxItems?: number
   addedAt: string
 }
 
@@ -76,6 +77,7 @@ interface FeedState {
   toggleUnreadOnly: () => void
   setSearchQuery: (q: string) => void
   addFeed: (xmlUrl: string, folder?: string, fullText?: boolean) => Promise<void>
+  updateFeed: (feedId: string, updates: { title?: string; folder?: string; fullText?: boolean; maxItems?: number | null }) => Promise<void>
   deleteFeed: (feedId: string) => Promise<void>
   importOpml: (file: File) => Promise<void>
   openItemInBrowser: () => void
@@ -307,6 +309,26 @@ export const useFeedStore = create<FeedState>((set, get) => ({
     }
   },
 
+  updateFeed: async (feedId, updates) => {
+    try {
+      const res = await hubFetch(`/feeds/${feedId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      })
+      if (!res.ok) return
+      const updated = (await res.json()) as FeedSubscription
+      set((s) => ({ feeds: s.feeds.map((f) => (f.id === feedId ? updated : f)) }))
+      if (updates.maxItems !== undefined) {
+        await trimItems([updated])
+        await get().loadItemsFromDb()
+        await get().computeUnreadCounts()
+      }
+    } catch {
+      // Fail silently
+    }
+  },
+
   deleteFeed: async (feedId) => {
     try {
       const res = await hubFetch(`/feeds/${feedId}`, { method: 'DELETE' })
@@ -422,16 +444,17 @@ export const useFeedStore = create<FeedState>((set, get) => ({
 // --------------------------------------------------------------------------
 
 async function trimItems(feeds: FeedSubscription[]) {
-  const MAX_PER_FEED = 50
+  const DEFAULT_MAX = 50
   for (const feed of feeds) {
+    const cap = feed.maxItems && feed.maxItems > 0 ? feed.maxItems : DEFAULT_MAX
     const items = await db.feedItems
       .where('feedId')
       .equals(feed.id)
       .reverse()
       .sortBy('publishedAt')
 
-    if (items.length > MAX_PER_FEED) {
-      const toDelete = items.slice(MAX_PER_FEED).map((i) => i.id)
+    if (items.length > cap) {
+      const toDelete = items.slice(cap).map((i) => i.id)
       await db.feedItems.bulkDelete(toDelete)
       // Also clean unread for deleted items
       await db.feedRead.bulkDelete(toDelete)

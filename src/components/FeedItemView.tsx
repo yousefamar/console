@@ -4,7 +4,7 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getHubUrl } from '@/hub'
 import DOMPurify from 'dompurify'
-import { ExternalLink, Rss, MessageSquare, X, Play, ChevronDown, ChevronRight } from 'lucide-react'
+import { ExternalLink, Rss, MessageSquare, X, Play, ChevronDown, ChevronRight, MoreHorizontal, Trash2, Check } from 'lucide-react'
 
 // Make all links open in new tabs after DOMPurify sanitization
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -48,8 +48,8 @@ function HNCommentThread({ comment, depth = 0 }: { comment: HNComment; depth?: n
   const timeAgo = formatTimeAgo(comment.time)
 
   return (
-    <div className={depth > 0 ? 'ml-3 border-l border-border pl-3' : ''}>
-      <div className="py-1.5">
+    <div className={depth > 0 ? 'ml-1.5 sm:ml-3 border-l border-border pl-1.5 sm:pl-3 min-w-0' : 'min-w-0'}>
+      <div className="py-1.5 min-w-0">
         <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
           <button onClick={() => setCollapsed(!collapsed)} className="hover:text-text-secondary">
             {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
@@ -64,7 +64,7 @@ function HNCommentThread({ comment, depth = 0 }: { comment: HNComment; depth?: n
         {!collapsed && (
           <>
             <div
-              className="mt-1 text-xs text-text-secondary leading-relaxed [&_a]:text-blue-400 [&_a]:underline [&_p]:mb-1.5 [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_code]:text-[11px]"
+              className="mt-1 text-xs text-text-secondary leading-relaxed min-w-0 max-w-full overflow-hidden break-words [&_a]:text-blue-400 [&_a]:underline [&_a]:break-all [&_p]:mb-1.5 [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_pre]:max-w-full [&_code]:text-[11px] [&_code]:break-all"
               dangerouslySetInnerHTML={{ __html: sanitized }}
             />
             {comment.children.map((child) => (
@@ -107,7 +107,7 @@ function HNComments({ itemId }: { itemId: string }) {
   if (!comments) return null
 
   return (
-    <div className="mt-4 border-t border-border pt-3">
+    <div className="mt-4 border-t border-border pt-3 min-w-0 max-w-full overflow-hidden">
       <h2 className="text-xs font-semibold text-text-primary mb-2">
         {comments.descendants ?? 0} Comments
         {comments.score && <span className="font-normal text-text-tertiary ml-2">{comments.score} points</span>}
@@ -276,9 +276,22 @@ export function FeedItemView() {
   const items = useFeedStore((s) => s.items)
   const selectedItemId = useFeedStore((s) => s.selectedItemId)
   const feeds = useFeedStore((s) => s.feeds)
+  const updateFeed = useFeedStore((s) => s.updateFeed)
+  const deleteFeed = useFeedStore((s) => s.deleteFeed)
   const pipVideo = useUiStore((s) => s.pipVideo)
   const setPipVideo = useUiStore((s) => s.setPipVideo)
   const contentRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [menuOpen])
 
   const item = items.find((i) => i.id === selectedItemId)
   const feed = item ? feeds.find((f) => f.id === item.feedId) : null
@@ -314,7 +327,7 @@ export function FeedItemView() {
   const isPlayingThis = pipVideo?.youtubeId === youtubeId
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1 min-h-0 min-w-0">
       {/* Article header */}
       <div className="px-4 py-3 border-b border-border flex-shrink-0">
         <h1 className="text-sm font-semibold text-text-primary leading-tight">
@@ -361,12 +374,63 @@ export function FeedItemView() {
                 <span>Open</span>
               </a>
             )}
+            {feed && (
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen((v) => !v)}
+                  className="flex items-center text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+                  aria-label="Feed options"
+                >
+                  <MoreHorizontal size={12} />
+                </button>
+                {menuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-20 bg-surface-0 border border-border rounded-sm shadow-lg py-0.5 min-w-44">
+                    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-text-tertiary">
+                      Limit {feed.title}
+                    </div>
+                    {[3, 5, 10, 25, null].map((n) => {
+                      const current = feed.maxItems ?? null
+                      const active = current === n
+                      const label = n === null ? 'Unlimited' : `Top ${n}`
+                      return (
+                        <button
+                          key={String(n)}
+                          onClick={() => {
+                            updateFeed(feed.id, { maxItems: n })
+                            setMenuOpen(false)
+                          }}
+                          className="flex items-center gap-2 w-full px-3 py-1 text-xs text-text-primary hover:bg-surface-1 transition-colors"
+                        >
+                          <span className="w-3 flex-shrink-0">
+                            {active && <Check size={11} className="text-text-tertiary" />}
+                          </span>
+                          {label}
+                        </button>
+                      )
+                    })}
+                    <div className="border-t border-border my-0.5" />
+                    <button
+                      onClick={() => {
+                        if (confirm(`Unsubscribe from ${feed.title}?`)) {
+                          deleteFeed(feed.id)
+                        }
+                        setMenuOpen(false)
+                      }}
+                      className="flex items-center gap-2 w-full px-3 py-1 text-xs text-red-400 hover:bg-surface-1 transition-colors"
+                    >
+                      <Trash2 size={11} />
+                      Unsubscribe
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </span>
         </div>
       </div>
 
       {/* Article content */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto px-4 py-3">
+      <div ref={contentRef} className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 px-4 py-3">
         {/* YouTube: placeholder (overlaid by PiP iframe), or thumbnail with play */}
         {youtubeId && (
           isPlayingThis ? (
