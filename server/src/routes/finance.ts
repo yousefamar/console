@@ -17,6 +17,9 @@ import {
   manualBalanceLookup, currentMonth, emergencyFundPence,
   detectRecurring, findTransferCandidates, budgetStatusForMonth,
 } from '../finance/projection.js'
+import { importCsv } from '../finance/csv-import.js'
+import { detectAccountCandidates } from '../finance/account-detect.js'
+import { readFileSync } from 'node:fs'
 
 export function handleFinanceRoutes(
   req: IncomingMessage,
@@ -308,6 +311,61 @@ export function handleFinanceRoutes(
   if (path === '/finance/transfers/candidates' && req.method === 'GET') {
     const txns = monzoStore.getTransactions({ limit: 100000 })
     json(findTransferCandidates(txns, finance.getOverrides()))
+    return true
+  }
+
+  // ---- CSV import (Monzo data export) -----------------------------------
+  // Two body shapes: { csv: string } (full text) or { path: string } (server-
+  // local path; useful for big files via CLI).
+  if (path === '/finance/import/monzo-csv' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const payload = JSON.parse(body) as { csv?: string; path?: string; overwrite?: boolean }
+      const csvText = payload.csv ?? (payload.path ? readFileSync(payload.path, 'utf8') : '')
+      if (!csvText) return error(400, 'Provide csv (text) or path (server-local)')
+      const monzo = authStore.getMonzoConfig()
+      let accountId = monzo?.accountId
+      if (!accountId) {
+        try {
+          const accounts = await monzoClient.getAccounts('uk_retail')
+          if (accounts.length > 0) accountId = accounts[0]!.id
+        } catch { /* fall through */ }
+      }
+      if (!accountId) accountId = 'csv_import'
+      const { txs, summary } = importCsv(csvText, accountId)
+      const merged = monzoStore.bulkMerge(txs)
+      json({ ...summary, ...merged })
+    }).catch((e) => error(400, (e as Error).message))
+    return true
+  }
+
+  // ---- Account-candidate detection -------------------------------------
+  if (path === '/finance/import/account-candidates' && req.method === 'GET') {
+    const txns = monzoStore.getTransactions({ limit: 1_000_000 })
+    json(detectAccountCandidates(txns))
+    return true
+  }
+
+  // ---- Apply a candidate: create the manual account + ledger entries ----
+  if (path === '/finance/import/apply-candidate' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const input = JSON.parse(body) as {
+        key: string; name: string; liquidity: 'liquid' | 'investment' | 'illiquid';
+        isExternal?: boolean; emoji?: string;
+        ledger: Array<{ date: string; balancePence: number; note?: string }>;
+      }
+      const acc = finance.upsertAccount({
+        name: input.name,
+        type: 'manual',
+        liquidity: input.liquidity,
+        currency: 'GBP',
+        emoji: input.emoji,
+        isExternal: input.isExternal,
+      })
+      for (const e of input.ledger) {
+        finance.addBalanceEntry(acc.id, e)
+      }
+      json({ accountId: acc.id, ledgerEntries: input.ledger.length })
+    }).catch((e) => error(400, (e as Error).message))
     return true
   }
 

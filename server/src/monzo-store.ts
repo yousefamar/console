@@ -267,6 +267,41 @@ export class MonzoStore {
     this.save()
   }
 
+  /**
+   * Bulk merge a batch of transactions (e.g. from a CSV import). Existing IDs
+   * are kept verbatim (the live API record beats the CSV synthetic record);
+   * only new IDs are inserted. Returns inserted/updated counts.
+   */
+  bulkMerge(txs: MonzoTransaction[], opts: { overwrite?: boolean } = {}): { inserted: number; existing: number } {
+    let inserted = 0
+    let existing = 0
+    const idIndex = new Map<string, number>()
+    this.cache.transactions.forEach((t, i) => idIndex.set(t.id, i))
+    for (const tx of txs) {
+      const idx = idIndex.get(tx.id)
+      if (idx == null) {
+        this.cache.transactions.push(tx)
+        idIndex.set(tx.id, this.cache.transactions.length - 1)
+        inserted++
+      } else {
+        existing++
+        if (opts.overwrite) this.cache.transactions[idx] = tx
+      }
+    }
+    this.cache.transactions.sort(
+      (a, b) => new Date(b.created).getTime() - new Date(a.created).getTime(),
+    )
+    if (txs.length > 0) {
+      // CSV imports always pre-date the API window; mark the cache as
+      // "fully synced" so the next /money/sync runs incrementally instead of
+      // re-fetching the 90-day window from scratch.
+      this.cache.fullSyncComplete = true
+      if (!this.cache.accountId && txs[0]) this.cache.accountId = txs[0].account_id
+    }
+    this.save()
+    return { inserted, existing }
+  }
+
   // --------------------------------------------------------------------------
   // Spending breakdown
   // --------------------------------------------------------------------------

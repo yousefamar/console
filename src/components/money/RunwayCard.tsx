@@ -16,12 +16,15 @@ export function RunwayCard() {
 
   const burn = runway.monthlyBurnPence
   const isBurning = burn < 0
+  // monthsToFloor is Infinity when projection never breaches the floor; JSON
+  // serialises that to null. Treat null as ∞ here.
   const months = runway.monthsToFloor
-  const monthsLabel = months === Infinity ? '∞' : Math.floor(months).toString()
+  const neverHitsFloor = months == null || !Number.isFinite(months)
+  const monthsLabel = neverHitsFloor ? '∞' : Math.floor(months as number).toString()
   const floorDate = runway.floorDate
   const dateLabel = floorDate
     ? new Date(floorDate + '-01').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
-    : '—'
+    : neverHitsFloor ? 'never (positive cashflow)' : '—'
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4">
@@ -43,8 +46,8 @@ export function RunwayCard() {
         label="Runway"
         value={`${monthsLabel} mo`}
         hint={dateLabel}
-        valueClass={months === Infinity ? 'text-green-400' : months < 6 ? 'text-red-400' : months < 12 ? 'text-yellow-400' : 'text-text-primary'}
-        icon={months !== Infinity && months < 12 ? <AlertTriangle size={11} /> : undefined}
+        valueClass={neverHitsFloor ? 'text-green-400' : (months as number) < 6 ? 'text-red-400' : (months as number) < 12 ? 'text-yellow-400' : 'text-text-primary'}
+        icon={!neverHitsFloor && (months as number) < 12 ? <AlertTriangle size={11} /> : undefined}
       />
     </div>
   )
