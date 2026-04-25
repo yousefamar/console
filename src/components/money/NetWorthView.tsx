@@ -214,6 +214,7 @@ function AccountEditor({ account, onClose }: { account: Account | null; onClose:
   const [emoji, setEmoji] = useState(account?.emoji ?? '')
   const [isExternal, setIsExternal] = useState(account?.isExternal ?? false)
   const [notes, setNotes] = useState(account?.notes ?? '')
+  const [growth, setGrowth] = useState(account?.growthPctYoy != null ? account.growthPctYoy.toString() : '')
 
   const save = async () => {
     if (!name) return
@@ -224,6 +225,7 @@ function AccountEditor({ account, onClose }: { account: Account | null; onClose:
       emoji: emoji || undefined,
       isExternal,
       notes: notes || undefined,
+      growthPctYoy: growth.trim() === '' ? undefined : parseFloat(growth),
     })
     onClose()
   }
@@ -279,6 +281,15 @@ function AccountEditor({ account, onClose }: { account: Account | null; onClose:
           <label className="flex items-center gap-2 mt-2">
             <input type="checkbox" checked={isExternal} onChange={(e) => setIsExternal(e.target.checked)} />
             <span>Held externally (e.g. someone else holds it for you)</span>
+          </label>
+
+          <label className="block">
+            <div className="text-[10px] uppercase tracking-wider text-text-tertiary mb-0.5">Annual growth %</div>
+            <input value={growth} onChange={(e) => setGrowth(e.target.value)}
+              type="number" step="0.05"
+              placeholder="e.g. 6.5 for equity fund, 3.25 for savings"
+              className="w-full px-2 py-1 bg-surface-2 border border-border rounded-sm text-text-primary" />
+            <div className="text-[10px] text-text-tertiary mt-0.5">Leave blank to use the global default. Liquid current accounts usually 0%.</div>
           </label>
 
           <label className="block">

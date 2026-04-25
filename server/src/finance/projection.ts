@@ -7,7 +7,7 @@
 // could be ported client-side if scenario tweaking ever needs sub-100ms feel.
 
 import type {
-  Account, Budget, Category, CategoryRule, Delta, FinanceSettings,
+  Account, Budget, Category, CategoryRule, Delta, FinanceSettings, Liquidity,
   MonthlyPoint, NetWorthSnapshot, RunwaySummary, Scenario, Stream, TxOverride,
 } from './types.js'
 import type { MonzoTransaction } from '../monzo-client.js'
@@ -299,14 +299,32 @@ export interface ProjectInput {
   /** YYYY-MM of the first projected month (typically current month). */
   startMonth: string
   horizonMonths: number
-  openingLiquidPence: number
-  openingInvestmentPence: number
+  /**
+   * Optional pre-flattened opening balances. If `accounts` is provided, that
+   * takes precedence and per-account growth is tracked individually. These
+   * are kept so legacy callers / tests still work.
+   */
+  openingLiquidPence?: number
+  openingInvestmentPence?: number
+  /**
+   * Per-account opening balances + growth. When provided, the engine tracks
+   * each account separately so a 3.25% savings account and a 6.5% equity
+   * fund grow at their own rates. Liquid accounts grow too (interest), but
+   * spending/income flows always hit a single notional liquid pool.
+   */
+  accounts?: Array<{
+    id: string
+    name: string
+    liquidity: Liquidity
+    balancePence: number
+    growthPctYoy?: number
+  }>
   streams: Stream[]
   /** categoryId → expected monthly outflow pence (positive). */
   variableForecast: Record<string, number>
   categories: Category[]
   emergencyFundPence: number
-  /** Annual % growth on investment-class accounts. 0 disables. */
+  /** Annual % growth fallback for investment accounts without per-account override. 0 disables. */
   investmentGrowthPct: number
   /** Optional scenario to overlay. */
   scenario?: Scenario | null
@@ -316,8 +334,26 @@ export function project(input: ProjectInput): MonthlyPoint[] {
   const months = enumerateMonths(input.startMonth, input.horizonMonths)
   const deltas = input.scenario?.deltas ?? []
   const growthOverride = deltas.find((d) => d.kind === 'investmentGrowth') as { kind: 'investmentGrowth'; annualPct: number } | undefined
-  const annualGrowthPct = growthOverride?.annualPct ?? input.investmentGrowthPct
-  const monthlyInvestmentGrowth = Math.pow(1 + annualGrowthPct / 100, 1 / 12) - 1
+  const fallbackGrowthPct = growthOverride?.annualPct ?? input.investmentGrowthPct
+
+  // Per-account state. Liquid accounts get summed into a single pool that
+  // absorbs cashflow; each gets its own monthly interest. Investment
+  // accounts grow individually. If `accounts` isn't supplied, fall back to
+  // the legacy single-pool model using openingLiquidPence/openingInvestmentPence.
+  interface AcctState { id: string; name: string; liquidity: Liquidity; balance: number; monthlyGrowth: number }
+  const acctStates: AcctState[] = (input.accounts ?? []).map((a) => ({
+    id: a.id, name: a.name, liquidity: a.liquidity,
+    balance: a.balancePence,
+    monthlyGrowth: Math.pow(1 + (a.growthPctYoy ?? (a.liquidity === 'investment' ? fallbackGrowthPct : 0)) / 100, 1 / 12) - 1,
+  }))
+  const usingPerAccount = acctStates.length > 0
+  // Legacy fallback state
+  let legacyLiquid = input.openingLiquidPence ?? 0
+  let legacyInvestment = input.openingInvestmentPence ?? 0
+  const legacyMonthlyGrowth = Math.pow(1 + fallbackGrowthPct / 100, 1 / 12) - 1
+  // Pick the largest liquid account as the cashflow sink (income/expenses).
+  // If none, fall back to legacy.
+  const sinkAccount = acctStates.filter((a) => a.liquidity === 'liquid').sort((a, b) => b.balance - a.balance)[0]
 
   // Pre-compute scenario derivations
   const addedStreams: Stream[] = []
@@ -353,8 +389,6 @@ export function project(input: ProjectInput): MonthlyPoint[] {
   ]
 
   const pts: MonthlyPoint[] = []
-  let liquid = input.openingLiquidPence
-  let investment = input.openingInvestmentPence
 
   for (const month of months) {
     let inflows = 0
@@ -412,8 +446,23 @@ export function project(input: ProjectInput): MonthlyPoint[] {
     }
 
     const net = inflows - outflows + oneOffsNet
-    liquid += net
-    investment = Math.round(investment * (1 + monthlyInvestmentGrowth))
+
+    let liquidTotal: number
+    let investmentTotal: number
+    if (usingPerAccount) {
+      // Cashflow lands in the largest liquid account
+      if (sinkAccount) sinkAccount.balance += net
+      // Apply per-account monthly growth
+      for (const a of acctStates) a.balance = Math.round(a.balance * (1 + a.monthlyGrowth))
+      liquidTotal = acctStates.filter((a) => a.liquidity === 'liquid').reduce((s, a) => s + a.balance, 0)
+      investmentTotal = acctStates.filter((a) => a.liquidity === 'investment').reduce((s, a) => s + a.balance, 0)
+      // Keep an "illiquid" leg out — already 0 in practice
+    } else {
+      legacyLiquid += net
+      legacyInvestment = Math.round(legacyInvestment * (1 + legacyMonthlyGrowth))
+      liquidTotal = legacyLiquid
+      investmentTotal = legacyInvestment
+    }
 
     pts.push({
       month,
@@ -421,10 +470,10 @@ export function project(input: ProjectInput): MonthlyPoint[] {
       outflowsPence: outflows,
       oneOffsPence: oneOffsNet,
       netPence: net,
-      liquidPence: liquid,
-      investmentPence: investment,
-      totalPence: liquid + investment,
-      belowEmergency: liquid < input.emergencyFundPence,
+      liquidPence: liquidTotal,
+      investmentPence: investmentTotal,
+      totalPence: liquidTotal + investmentTotal,
+      belowEmergency: liquidTotal < input.emergencyFundPence,
       inflowBreakdown,
       outflowBreakdown,
     })

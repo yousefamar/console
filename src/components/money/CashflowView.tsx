@@ -7,6 +7,7 @@ import { Plus, Trash2, Zap } from 'lucide-react'
 import { useFinanceStore, fmtPence, type Stream } from '@/store/finance'
 import { RunwayCard } from './RunwayCard'
 import { ProjectionChart } from './ProjectionChart'
+import { MonthlySpendChart } from './MonthlySpendChart'
 
 export function CashflowView() {
   const settings = useFinanceStore((s) => s.settings)
@@ -51,6 +52,7 @@ export function CashflowView() {
         <ProjectionChart />
       </div>
 
+      <MonthlySpendChart />
       <StreamsPanel />
       <RecurringSuggestions />
       <EmergencyFundEditor />

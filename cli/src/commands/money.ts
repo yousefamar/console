@@ -216,8 +216,23 @@ async function financeAccounts(args: string[], flags: GlobalFlags): Promise<void
       emoji: opts.emoji,
       isExternal: opts.external === 'true',
       notes: opts.notes,
+      growthPctYoy: opts.growth ? parseFloat(opts.growth) : undefined,
     }
     output(await hubFetch('/finance/accounts', { method: 'POST', body: body }), flags)
+    return
+  }
+  if (sub === 'patch') {
+    const id = args[1]
+    if (!id) exitWithError('USAGE', 'Usage: con money fin-accounts patch <id> [--growth N --liquidity X --emoji Y --external true ...]', flags)
+    const opts = parseFlags(args.slice(2))
+    const patch: Record<string, unknown> = {}
+    if (opts.name) patch.name = opts.name
+    if (opts.liquidity) patch.liquidity = opts.liquidity
+    if (opts.emoji) patch.emoji = opts.emoji
+    if (opts.external === 'true' || opts.external === 'false') patch.isExternal = opts.external === 'true'
+    if (opts.notes) patch.notes = opts.notes
+    if (opts.growth !== undefined) patch.growthPctYoy = opts.growth === '' ? undefined : parseFloat(opts.growth)
+    output(await hubFetch(`/finance/accounts/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }), flags)
     return
   }
   if (sub === 'delete') {

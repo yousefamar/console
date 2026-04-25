@@ -60,6 +60,8 @@ export interface Account {
   sort?: number
   notes?: string
   archived?: boolean
+  /** Annual % growth assumption used in projection (e.g. 6.5 for the MyMap 8 fund, 3.25 for a savings account). When unset, falls back to global `investmentGrowthPct` for investment accounts and 0% for liquid. */
+  growthPctYoy?: number
 }
 
 export interface Stream {

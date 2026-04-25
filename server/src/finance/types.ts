@@ -68,6 +68,14 @@ export interface Account {
   sort?: number
   notes?: string
   archived?: boolean
+  /**
+   * Annual % growth assumption for projection. Applied monthly compounded.
+   * Used per-account so e.g. a 3.25% AER savings account, a 6.5% equity fund,
+   * and a 0% current account can each grow at their own rate. When unset:
+   * liquid accounts get 0%, investment accounts fall back to the global
+   * `investmentGrowthPct` setting.
+   */
+  growthPctYoy?: number
 }
 
 export interface Stream {

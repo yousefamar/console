@@ -481,13 +481,17 @@ async function runProjection(
   const balanceFor = await buildAccountBalanceFn(finance, monzoStore, monzoClient, authStore)
   const today = new Date().toISOString().slice(0, 10)
   const accounts = finance.getAccounts()
-  let liquid = 0, investment = 0
-  for (const acc of accounts) {
-    if (acc.archived) continue
-    const bal = balanceFor(acc.id, today)
-    if (acc.liquidity === 'liquid') liquid += bal
-    else if (acc.liquidity === 'investment') investment += bal
-  }
+  const projectionAccounts = accounts
+    .filter((a) => !a.archived && a.liquidity !== 'illiquid')
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      liquidity: a.liquidity,
+      balancePence: balanceFor(a.id, today),
+      growthPctYoy: a.growthPctYoy,
+    }))
+  const liquid = projectionAccounts.filter((a) => a.liquidity === 'liquid').reduce((s, a) => s + a.balancePence, 0)
+  const investment = projectionAccounts.filter((a) => a.liquidity === 'investment').reduce((s, a) => s + a.balancePence, 0)
 
   const settings = finance.getSettings()
   const fund = emergencyFundPence(settings, burn)
@@ -495,8 +499,7 @@ async function runProjection(
   const trajectory = project({
     startMonth: currentMonth(),
     horizonMonths: horizon,
-    openingLiquidPence: liquid,
-    openingInvestmentPence: investment,
+    accounts: projectionAccounts,
     streams: finance.getStreams(),
     variableForecast,
     categories: finance.getCategories(),
