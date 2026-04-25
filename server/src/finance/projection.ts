@@ -1,0 +1,600 @@
+// Pure functions for finance computation: rule-based categorisation, monthly
+// aggregation, recurring-stream materialisation, projection engine, runway.
+//
+// All amounts are integer pence. Time granularity is one month: each month is
+// represented as 'YYYY-MM' and the engine emits one MonthlyPoint per month.
+// All inputs are plain data (no I/O), so the same logic works in tests and
+// could be ported client-side if scenario tweaking ever needs sub-100ms feel.
+
+import type {
+  Account, Budget, Category, CategoryRule, Delta, FinanceSettings,
+  MonthlyPoint, NetWorthSnapshot, RunwaySummary, Scenario, Stream, TxOverride,
+} from './types.js'
+import type { MonzoTransaction } from '../monzo-client.js'
+
+// --------------------------------------------------------------------------
+// Categorisation
+// --------------------------------------------------------------------------
+
+/**
+ * Resolve a transaction's effective category by checking overrides, then
+ * matching rules in priority order, then falling back to Monzo's category
+ * via the default Monzo→user-category mapping (handled by rules), then to
+ * 'cat_uncat'.
+ */
+export function effectiveCategory(
+  tx: MonzoTransaction,
+  rules: CategoryRule[],
+  overrides: TxOverride[],
+): { categoryId: string; ignored: boolean; isTransfer: boolean } {
+  const override = overrides.find((o) => o.txId === tx.id)
+  if (override?.ignore) return { categoryId: override.categoryId ?? 'cat_uncat', ignored: true, isTransfer: false }
+  if (override?.categoryId) {
+    return { categoryId: override.categoryId, ignored: false, isTransfer: override.categoryId === 'cat_transfer' }
+  }
+
+  const merchantName = typeof tx.merchant === 'object' && tx.merchant ? tx.merchant.name : ''
+  const counterparty = (tx as unknown as { counterparty?: { name?: string } }).counterparty?.name ?? ''
+  const description = tx.description ?? ''
+  const amountSign: 'in' | 'out' = tx.amount >= 0 ? 'in' : 'out'
+
+  for (const rule of [...rules].sort((a, b) => a.priority - b.priority)) {
+    const m = rule.match
+    if (m.amountSign && m.amountSign !== amountSign) continue
+    if (m.merchantContains && !merchantName.toLowerCase().includes(m.merchantContains.toLowerCase())) continue
+    if (m.descriptionContains && !description.toLowerCase().includes(m.descriptionContains.toLowerCase())) continue
+    if (m.counterpartyContains && !counterparty.toLowerCase().includes(m.counterpartyContains.toLowerCase())) continue
+    if (m.monzoCategoryEquals && tx.category !== m.monzoCategoryEquals) continue
+    return {
+      categoryId: rule.categoryId,
+      ignored: !!rule.ignore,
+      isTransfer: !!rule.asTransfer || rule.categoryId === 'cat_transfer',
+    }
+  }
+  return { categoryId: 'cat_uncat', ignored: false, isTransfer: false }
+}
+
+// --------------------------------------------------------------------------
+// Transfer detection
+// --------------------------------------------------------------------------
+
+/**
+ * Find candidate transfer pairs in Monzo transactions: opposite-sign amounts
+ * within ±2 days that haven't already been overridden. Returns suggestions
+ * the user can confirm — does not mutate the store.
+ */
+export function findTransferCandidates(
+  txns: MonzoTransaction[],
+  overrides: TxOverride[],
+): Array<{ outId: string; inId: string; amountPence: number }> {
+  const seen = new Set(overrides.filter((o) => o.pairedTxId).flatMap((o) => [o.txId, o.pairedTxId!]))
+  const candidates: Array<{ outId: string; inId: string; amountPence: number }> = []
+  const sorted = [...txns].filter((t) => !seen.has(t.id) && !t.decline_reason).sort(
+    (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime(),
+  )
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i]!
+    if (a.amount >= 0) continue
+    const aTime = new Date(a.created).getTime()
+    for (let j = i + 1; j < sorted.length; j++) {
+      const b = sorted[j]!
+      const dt = new Date(b.created).getTime() - aTime
+      if (dt > 3 * 24 * 3600 * 1000) break
+      if (b.amount === -a.amount) {
+        candidates.push({ outId: a.id, inId: b.id, amountPence: -a.amount })
+        break
+      }
+    }
+  }
+  return candidates
+}
+
+// --------------------------------------------------------------------------
+// Monthly aggregation of historical Monzo data
+// --------------------------------------------------------------------------
+
+export interface CategoryMonthlySpend {
+  /** YYYY-MM */
+  month: string
+  /** categoryId → pence (positive for spend, negative for income) */
+  byCategory: Record<string, number>
+}
+
+export function aggregateMonthlySpend(
+  txns: MonzoTransaction[],
+  rules: CategoryRule[],
+  overrides: TxOverride[],
+): CategoryMonthlySpend[] {
+  const map = new Map<string, Record<string, number>>()
+  for (const tx of txns) {
+    if (tx.decline_reason) continue
+    const eff = effectiveCategory(tx, rules, overrides)
+    if (eff.ignored || eff.isTransfer) continue
+    const month = tx.created.slice(0, 7)
+    if (!map.has(month)) map.set(month, {})
+    const m = map.get(month)!
+    // Convention: store as positive pence for outflows, negative for inflows
+    const amt = -tx.amount // tx.amount is negative for spend, so flip
+    m[eff.categoryId] = (m[eff.categoryId] ?? 0) + amt
+  }
+  return Array.from(map.entries())
+    .map(([month, byCategory]) => ({ month, byCategory }))
+    .sort((a, b) => a.month.localeCompare(b.month))
+}
+
+/**
+ * Trailing N-month average outflow per category. Used as the variable-spend
+ * forecast input. Excludes income (negative values) — those are handled by
+ * streams.
+ */
+export function trailingCategoryAverage(
+  monthly: CategoryMonthlySpend[],
+  windowMonths: number,
+): Record<string, number> {
+  if (monthly.length === 0) return {}
+  const window = monthly.slice(-windowMonths)
+  if (window.length === 0) return {}
+  const sums: Record<string, number> = {}
+  for (const m of window) {
+    for (const [catId, pence] of Object.entries(m.byCategory)) {
+      if (pence <= 0) continue
+      sums[catId] = (sums[catId] ?? 0) + pence
+    }
+  }
+  const out: Record<string, number> = {}
+  for (const [catId, total] of Object.entries(sums)) {
+    out[catId] = Math.round(total / window.length)
+  }
+  return out
+}
+
+// --------------------------------------------------------------------------
+// Stream materialisation
+// --------------------------------------------------------------------------
+
+/**
+ * For a given month (YYYY-MM), compute the signed net pence each active stream
+ * contributes. Positive = inflow (income), negative = outflow (expense).
+ */
+export function streamAmountForMonth(stream: Stream, month: string): number {
+  if (stream.archived) return 0
+  const [yearStr, monthStr] = month.split('-')
+  const year = parseInt(yearStr!, 10)
+  const m = parseInt(monthStr!, 10)
+  const monthStart = new Date(Date.UTC(year, m - 1, 1))
+  const monthEnd = new Date(Date.UTC(year, m, 0))
+  const start = new Date(stream.startDate + 'T00:00:00Z')
+  if (start > monthEnd) return 0
+  if (stream.endDate) {
+    const end = new Date(stream.endDate + 'T23:59:59Z')
+    if (end < monthStart) return 0
+  }
+
+  const sign = stream.kind === 'income' ? 1 : -1
+  const yearsSinceStart = year - start.getUTCFullYear() + (m - 1 - start.getUTCMonth()) / 12
+  const growth = stream.growthPctYoy ? Math.pow(1 + stream.growthPctYoy / 100, yearsSinceStart) : 1
+  const amount = stream.amountPence * growth
+
+  switch (stream.cadence) {
+    case 'monthly':
+      return Math.round(sign * amount)
+    case 'yearly':
+      if (stream.monthOfYear && m === stream.monthOfYear) return Math.round(sign * amount)
+      // No monthOfYear set — spread evenly across the year
+      if (!stream.monthOfYear) return Math.round(sign * amount / 12)
+      return 0
+    case 'weekly':
+      // ~4.345 weeks per month
+      return Math.round(sign * amount * 4.345)
+  }
+}
+
+// --------------------------------------------------------------------------
+// Net worth from accounts + Monzo balance + manual ledger
+// --------------------------------------------------------------------------
+
+export interface BalanceLookup {
+  /** Returns balance in pence on a given YYYY-MM-DD (uses latest ≤ date). */
+  on(date: string): number
+}
+
+/**
+ * Build a balance lookup for an account.
+ * - Monzo: uses the live balance for "today" and falls back to historical
+ *   reconstruction from transaction deltas when looking back. The Monzo
+ *   adapter is supplied externally because the store has the authoritative
+ *   transaction list.
+ * - Manual: linear interpolation between adjacent ledger entries; latest
+ *   entry persists forward.
+ */
+export function manualBalanceLookup(account: Account): BalanceLookup {
+  const ledger = (account.ledger ?? []).slice().sort((a, b) => a.date.localeCompare(b.date))
+  return {
+    on(date: string): number {
+      if (ledger.length === 0) return 0
+      // Find the latest entry on or before the requested date
+      let result = 0
+      let found = false
+      for (const e of ledger) {
+        if (e.date <= date) { result = e.balancePence; found = true } else break
+      }
+      // Before the first entry — use the earliest known balance (best we can do).
+      if (!found) return ledger[0]!.balancePence
+      return result
+    },
+  }
+}
+
+export interface NetWorthInput {
+  accounts: Account[]
+  /** Returns current/at-date balance for an account. */
+  balanceFor: (accountId: string, date: string) => number
+}
+
+export function computeNetWorthOn(date: string, input: NetWorthInput): NetWorthSnapshot {
+  let liquid = 0
+  let investment = 0
+  const byAccount: Array<{ accountId: string; balancePence: number }> = []
+  for (const acc of input.accounts) {
+    if (acc.archived) continue
+    const bal = input.balanceFor(acc.id, date)
+    byAccount.push({ accountId: acc.id, balancePence: bal })
+    if (acc.liquidity === 'liquid') liquid += bal
+    else if (acc.liquidity === 'investment') investment += bal
+    // 'illiquid' — counted in total but separated visually elsewhere
+  }
+  return { date, liquidPence: liquid, investmentPence: investment, totalPence: liquid + investment, byAccount }
+}
+
+/**
+ * History snapshot per month. For each month-end date, runs computeNetWorthOn.
+ */
+export function netWorthHistory(months: string[], input: NetWorthInput): NetWorthSnapshot[] {
+  return months.map((m) => {
+    const [y, mm] = m.split('-').map(Number)
+    const lastDay = new Date(Date.UTC(y!, mm!, 0))
+    const date = lastDay.toISOString().slice(0, 10)
+    return computeNetWorthOn(date, input)
+  })
+}
+
+// --------------------------------------------------------------------------
+// Burn rate
+// --------------------------------------------------------------------------
+
+/**
+ * Trailing N-month net cashflow average from Monzo data — signed pence.
+ * Negative = burning money. Excludes ignored and transfer transactions.
+ */
+export function trailingBurn(
+  txns: MonzoTransaction[],
+  rules: CategoryRule[],
+  overrides: TxOverride[],
+  windowMonths: number,
+): number {
+  const cutoff = new Date()
+  cutoff.setMonth(cutoff.getMonth() - windowMonths)
+  cutoff.setDate(1)
+  const cutoffISO = cutoff.toISOString().slice(0, 10)
+
+  let total = 0
+  let monthsSeen = new Set<string>()
+  for (const tx of txns) {
+    if (tx.decline_reason) continue
+    if (tx.created.slice(0, 10) < cutoffISO) continue
+    const eff = effectiveCategory(tx, rules, overrides)
+    if (eff.ignored || eff.isTransfer) continue
+    total += tx.amount // signed: negative for spend
+    monthsSeen.add(tx.created.slice(0, 7))
+  }
+  const months = Math.max(1, monthsSeen.size)
+  return Math.round(total / months)
+}
+
+// --------------------------------------------------------------------------
+// Projection
+// --------------------------------------------------------------------------
+
+export interface ProjectInput {
+  /** YYYY-MM of the first projected month (typically current month). */
+  startMonth: string
+  horizonMonths: number
+  openingLiquidPence: number
+  openingInvestmentPence: number
+  streams: Stream[]
+  /** categoryId → expected monthly outflow pence (positive). */
+  variableForecast: Record<string, number>
+  categories: Category[]
+  emergencyFundPence: number
+  /** Annual % growth on investment-class accounts. 0 disables. */
+  investmentGrowthPct: number
+  /** Optional scenario to overlay. */
+  scenario?: Scenario | null
+}
+
+export function project(input: ProjectInput): MonthlyPoint[] {
+  const months = enumerateMonths(input.startMonth, input.horizonMonths)
+  const deltas = input.scenario?.deltas ?? []
+  const growthOverride = deltas.find((d) => d.kind === 'investmentGrowth') as { kind: 'investmentGrowth'; annualPct: number } | undefined
+  const annualGrowthPct = growthOverride?.annualPct ?? input.investmentGrowthPct
+  const monthlyInvestmentGrowth = Math.pow(1 + annualGrowthPct / 100, 1 / 12) - 1
+
+  // Pre-compute scenario derivations
+  const addedStreams: Stream[] = []
+  const modifiedStreamPatches = new Map<string, Partial<Stream>>()
+  const terminationDates = new Map<string, string>()
+  const oneOffs: Array<{ date: string; amountPence: number; categoryId?: string; note?: string }> = []
+  const categoryAdjusts: Array<{ categoryId: string; multiplier: number; from?: string; until?: string }> = []
+  for (const d of deltas) {
+    if (d.kind === 'addStream') {
+      addedStreams.push({ id: d.tempId, ...d.stream } as Stream)
+    } else if (d.kind === 'modifyStream') {
+      modifiedStreamPatches.set(d.streamId, d.patch)
+    } else if (d.kind === 'terminateStream') {
+      terminationDates.set(d.streamId, d.date)
+    } else if (d.kind === 'oneOff') {
+      oneOffs.push({ date: d.date, amountPence: d.amountPence, categoryId: d.categoryId, note: d.note })
+    } else if (d.kind === 'categoryAdjust') {
+      categoryAdjusts.push({ categoryId: d.categoryId, multiplier: d.multiplier, from: d.from, until: d.until })
+    }
+  }
+
+  const allStreams = [
+    ...input.streams.map((s) => {
+      const patch = modifiedStreamPatches.get(s.id) ?? {}
+      const term = terminationDates.get(s.id)
+      return {
+        ...s,
+        ...patch,
+        endDate: term ?? patch.endDate ?? s.endDate,
+      } as Stream
+    }),
+    ...addedStreams,
+  ]
+
+  const pts: MonthlyPoint[] = []
+  let liquid = input.openingLiquidPence
+  let investment = input.openingInvestmentPence
+
+  for (const month of months) {
+    let inflows = 0
+    let outflows = 0
+    let oneOffsNet = 0
+    const inflowBreakdown: Array<{ label: string; amountPence: number }> = []
+    const outflowBreakdown: Array<{ label: string; amountPence: number; categoryId?: string }> = []
+
+    for (const stream of allStreams) {
+      const v = streamAmountForMonth(stream, month)
+      if (v > 0) {
+        inflows += v
+        inflowBreakdown.push({ label: stream.name, amountPence: v })
+      } else if (v < 0) {
+        outflows += -v
+        outflowBreakdown.push({ label: stream.name, amountPence: -v, categoryId: stream.categoryId })
+      }
+    }
+
+    // Variable spend per category — skip categories already covered by an
+    // active fixed (non-variable) stream this month, otherwise we'd
+    // double-count rent.
+    const coveredCategories = new Set<string>()
+    for (const s of allStreams) {
+      if (s.kind !== 'expense' || !s.categoryId) continue
+      if (streamAmountForMonth(s, month) === 0) continue
+      const cat = input.categories.find((c) => c.id === s.categoryId)
+      if (cat && cat.variable === false) coveredCategories.add(s.categoryId)
+    }
+    for (const [catId, basePence] of Object.entries(input.variableForecast)) {
+      if (coveredCategories.has(catId)) continue
+      let amt = basePence
+      for (const adj of categoryAdjusts) {
+        if (adj.categoryId !== catId) continue
+        if (adj.from && month < adj.from) continue
+        if (adj.until && month > adj.until) continue
+        amt = Math.round(amt * adj.multiplier)
+      }
+      if (amt > 0) {
+        outflows += amt
+        const cat = input.categories.find((c) => c.id === catId)
+        outflowBreakdown.push({ label: cat?.name ?? catId, amountPence: amt, categoryId: catId })
+      }
+    }
+
+    // One-offs
+    for (const o of oneOffs) {
+      if (o.date.slice(0, 7) !== month) continue
+      oneOffsNet += o.amountPence
+      if (o.amountPence >= 0) {
+        inflowBreakdown.push({ label: o.note ?? 'One-off', amountPence: o.amountPence })
+      } else {
+        outflowBreakdown.push({ label: o.note ?? 'One-off', amountPence: -o.amountPence, categoryId: o.categoryId })
+      }
+    }
+
+    const net = inflows - outflows + oneOffsNet
+    liquid += net
+    investment = Math.round(investment * (1 + monthlyInvestmentGrowth))
+
+    pts.push({
+      month,
+      inflowsPence: inflows,
+      outflowsPence: outflows,
+      oneOffsPence: oneOffsNet,
+      netPence: net,
+      liquidPence: liquid,
+      investmentPence: investment,
+      totalPence: liquid + investment,
+      belowEmergency: liquid < input.emergencyFundPence,
+      inflowBreakdown,
+      outflowBreakdown,
+    })
+  }
+
+  return pts
+}
+
+// --------------------------------------------------------------------------
+// Runway
+// --------------------------------------------------------------------------
+
+export function summariseRunway(
+  trajectory: MonthlyPoint[],
+  emergencyFundPence: number,
+  liquidNow: number,
+  investmentNow: number,
+  monthlyBurnPence: number,
+): RunwaySummary {
+  let monthsToFloor = Infinity
+  let floorDate: string | null = null
+  let monthsToZero = Infinity
+  let zeroDate: string | null = null
+
+  for (let i = 0; i < trajectory.length; i++) {
+    const p = trajectory[i]!
+    if (monthsToFloor === Infinity && p.liquidPence < emergencyFundPence) {
+      monthsToFloor = i + 1
+      floorDate = p.month
+    }
+    if (monthsToZero === Infinity && p.liquidPence < 0) {
+      monthsToZero = i + 1
+      zeroDate = p.month
+    }
+  }
+
+  return {
+    liquidPence: liquidNow,
+    investmentPence: investmentNow,
+    totalPence: liquidNow + investmentNow,
+    emergencyFundPence,
+    monthlyBurnPence,
+    monthsToFloor,
+    floorDate,
+    monthsToZero,
+    zeroDate,
+  }
+}
+
+// --------------------------------------------------------------------------
+// Budgets — actual vs target for the current month
+// --------------------------------------------------------------------------
+
+export interface BudgetStatus {
+  budgetId: string
+  categoryId: string
+  monthlyTargetPence: number
+  spentPence: number
+  remainingPence: number
+  /** Fraction of target spent (0..N). */
+  pct: number
+  projectedEndOfMonthPence: number
+}
+
+export function budgetStatusForMonth(
+  budgets: Budget[],
+  monthly: CategoryMonthlySpend[],
+  month: string,
+): BudgetStatus[] {
+  const m = monthly.find((x) => x.month === month)?.byCategory ?? {}
+  const today = new Date()
+  const [y, mm] = month.split('-').map(Number)
+  const daysInMonth = new Date(Date.UTC(y!, mm!, 0)).getUTCDate()
+  const dayOfMonth = (today.getUTCFullYear() === y && today.getUTCMonth() + 1 === mm)
+    ? today.getUTCDate()
+    : daysInMonth
+  const elapsedFraction = dayOfMonth / daysInMonth
+  return budgets.map((b) => {
+    const spent = m[b.categoryId] ?? 0
+    const projected = elapsedFraction > 0 ? Math.round(spent / elapsedFraction) : spent
+    return {
+      budgetId: b.id,
+      categoryId: b.categoryId,
+      monthlyTargetPence: b.monthlyTargetPence,
+      spentPence: spent,
+      remainingPence: b.monthlyTargetPence - spent,
+      pct: b.monthlyTargetPence > 0 ? spent / b.monthlyTargetPence : 0,
+      projectedEndOfMonthPence: projected,
+    }
+  })
+}
+
+// --------------------------------------------------------------------------
+// Recurring detection
+// --------------------------------------------------------------------------
+
+export interface RecurringCandidate {
+  key: string
+  label: string
+  amountPence: number
+  cadence: 'monthly'
+  occurrences: number
+  lastSeen: string
+  sample: { txId: string }
+  suggestedKind: 'income' | 'expense'
+}
+
+/**
+ * Detect transactions that recur monthly with similar amounts. Heuristic:
+ * group by (merchant or counterparty or normalized description, amount-band),
+ * require ≥3 occurrences spread across ≥3 distinct months.
+ */
+export function detectRecurring(txns: MonzoTransaction[]): RecurringCandidate[] {
+  const groups = new Map<string, MonzoTransaction[]>()
+  for (const tx of txns) {
+    if (tx.decline_reason) continue
+    const merchant = typeof tx.merchant === 'object' && tx.merchant ? tx.merchant.name : ''
+    const counterparty = (tx as any).counterparty?.name ?? ''
+    const label = merchant || counterparty || tx.description.replace(/\s+/g, ' ').trim().slice(0, 40)
+    if (!label) continue
+    // Round amount to nearest 50p to group near-identical (subscriptions creep)
+    const band = Math.round(tx.amount / 50) * 50
+    const key = `${label.toLowerCase()}|${band}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(tx)
+  }
+  const out: RecurringCandidate[] = []
+  for (const [key, list] of groups) {
+    if (list.length < 3) continue
+    const months = new Set(list.map((t) => t.created.slice(0, 7)))
+    if (months.size < 3) continue
+    const sample = list[0]!
+    const merchant = typeof sample.merchant === 'object' && sample.merchant ? sample.merchant.name : ''
+    const counterparty = (sample as any).counterparty?.name ?? ''
+    const label = merchant || counterparty || sample.description
+    const amt = Math.round(list.reduce((a, t) => a + t.amount, 0) / list.length)
+    out.push({
+      key,
+      label,
+      amountPence: Math.abs(amt),
+      cadence: 'monthly',
+      occurrences: list.length,
+      lastSeen: list.map((t) => t.created).sort().reverse()[0]!.slice(0, 10),
+      sample: { txId: sample.id },
+      suggestedKind: amt >= 0 ? 'income' : 'expense',
+    })
+  }
+  return out.sort((a, b) => b.occurrences - a.occurrences)
+}
+
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
+
+export function enumerateMonths(startMonth: string, count: number): string[] {
+  const [y, m] = startMonth.split('-').map(Number)
+  const out: string[] = []
+  for (let i = 0; i < count; i++) {
+    const d = new Date(Date.UTC(y!, (m! - 1) + i, 1))
+    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`)
+  }
+  return out
+}
+
+export function currentMonth(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+export function emergencyFundPence(settings: FinanceSettings, monthlyBurnPence: number): number {
+  if (settings.emergencyFund.mode === 'fixed') return settings.emergencyFund.valuePence
+  return Math.round(Math.abs(monthlyBurnPence) * settings.emergencyFund.months)
+}

@@ -137,9 +137,37 @@ The debug agent:
 - Server-side RSS/Atom fetching. Offline reading via IndexedDB. OPML import/export.
 - Optional full-text extraction via Readability. 15-min refresh interval.
 
-### Money (Monzo)
-- Hub proxies Monzo API. Single-use refresh tokens. Server-side transaction cache.
+### Money (Monzo + financial planner)
+- Hub proxies Monzo API. Single-use refresh tokens. Server-side transaction cache (`monzo-transactions.json`, never deleted — Monzo's 90-day API wall is one-time pain at first sync).
 - SCA required after OAuth. Webhook for real-time transaction notifications.
+- **Sub-tabs in `MoneyTab.tsx`** (sub-tab state in `src/store/finance.ts`, persisted to localStorage `console:money:subtab`): `Cashflow | Net worth | Budgets | Scenarios | Categories | Transactions`. Default landing = Cashflow (runway-first); Transactions is the original 3-pane forensic view.
+- **Financial-planning subsystem (`/finance/*`)** — independent from `/money/*`. All data persisted as JSON files under `~/.config/console/`:
+  - `finance-categories.json` — user-defined (income/expense/transfer), seeded with 16 sensible defaults; replaces Monzo's 10 generic ones.
+  - `finance-rules.json` — auto-categorisation: priority-ordered, conditions are AND-ed (`merchantContains`, `descriptionContains`, `counterpartyContains`, `amountSign`, `monzoCategoryEquals`). First match wins. Default rules map Monzo categories onto user categories.
+  - `finance-tx-overrides.json` — per-transaction override (set category, mark ignore, mark transfer). Beats rules.
+  - `finance-accounts.json` — Monzo (auto-balance) + manual accounts. Manual accounts have a balance ledger (`{date, balancePence, note}[]`) — interpolated for "balance on date X". Liquidity tag (liquid|investment|illiquid) gates inclusion in runway. `isExternal: true` = held-by-someone-else (e.g. money in someone else's ISA — counts toward net worth, not directly drawable).
+  - `finance-streams.json` — recurring income/expense (`monthly|yearly|weekly`, optional `dayOfMonth`/`monthOfYear`, `growthPctYoy` for compounding annual growth, `startDate`/`endDate`).
+  - `finance-budgets.json` — per-category monthly target.
+  - `finance-scenarios.json` — what-if editor: baseline + ordered list of `Delta`s (`addStream | modifyStream | terminateStream | oneOff | categoryAdjust | investmentGrowth`).
+  - `finance-settings.json` — emergency fund (`{mode:'fixed'|'months', valuePence|months}`), `projectionHorizonMonths`, `investmentGrowthPct`.
+- **Pure projection engine** (`server/src/finance/projection.ts`):
+  - `effectiveCategory(tx, rules, overrides)` — single source of truth for "what category is this transaction".
+  - `aggregateMonthlySpend()` → per-month `byCategory` (positive = outflow, negative = inflow). Skips ignored + transfers.
+  - `trailingCategoryAverage(monthly, windowMonths=3)` — variable-spend forecast input.
+  - `streamAmountForMonth(stream, 'YYYY-MM')` — handles cadence + compounding growth.
+  - `project({startMonth, horizonMonths, openingLiquid, openingInvestment, streams, variableForecast, categories, emergencyFund, investmentGrowthPct, scenario})` → `MonthlyPoint[]`. Variable spend skips categories already covered by an active fixed (non-variable) stream — prevents double-counting rent.
+  - `summariseRunway()` → `{monthsToFloor, floorDate, monthsToZero, ...}` — walks the trajectory; first month liquid drops below the emergency floor wins.
+  - `detectRecurring(txns)` — clusters by (label, ±50p amount band), requires ≥3 occurrences across ≥3 months. Surfaced in CashflowView as "Detected recurring".
+  - `findTransferCandidates(txns, overrides)` — opposite-sign equal-amount within 3 days; UI for confirmation pending.
+  - `manualBalanceLookup(account)` — latest entry on or before date; before-first-entry returns earliest known.
+- **Routes** (`server/src/routes/finance.ts`):
+  - CRUD: `/finance/{categories,rules,accounts,streams,budgets,scenarios,overrides,settings}` (POST = create, PATCH `/:id` = update, DELETE `/:id`). Manual ledger: `POST /finance/accounts/:id/balance`, `DELETE /finance/accounts/:id/balance/:entryId`.
+  - Computed: `/finance/all`, `/finance/categorise?limit=N`, `/finance/monthly`, `/finance/variable-forecast?window=N`, `/finance/networth[?date=YYYY-MM-DD]`, `/finance/networth/history?months=N`, `/finance/projection?horizon=N&scenario=ID`, `/finance/budget-status?month=YYYY-MM`, `/finance/recurring/candidates`, `/finance/transfers/candidates`.
+- **Net-worth historical reconstruction**: hub takes Monzo's live `total_balance` as "today" and walks cached transactions backward in time to reconstruct past balances (`balance(t-1) = balance(t) - delta`). Manual accounts use the ledger directly.
+- **Investment growth** applies monthly to the investment portion of the projection at the rate from settings (default 5%/yr). A scenario's `investmentGrowth` delta overrides it.
+- **Data-source reality check**: only Monzo is auto-synced. Lloyds/Revolut/S&S ISAs/GIAs/held-by-others are all "manual" accounts — log a balance entry whenever you check (Net worth tab → expand the row → add entry), runway is computed from those. Trading 212 / IBKR have APIs and could be wired later as a third account type if worth the bother; HL doesn't.
+- **Scenario UX**: live in `src/components/money/ScenariosView.tsx` and CashflowView. Comparison chart overlays every saved scenario's liquid trajectory on the baseline. The "active scenario" picker on Cashflow highlights one for focused view; saved scenarios persist independent of active selection.
+- **Charts**: `recharts` (~3.8). Tailwind 4 `var(--color-*)` tokens for axes/grid/tooltip so dark mode just works. `RunwayCard` is a 5-tile metric strip. `ProjectionChart` = liquid+total lines with emergency reference. `NetWorthView` history = stacked area liquid+investment.
 
 ### Agents (Claude Code)
 - Hub spawns `claude` CLI subprocesses. NDJSON protocol over stdin/stdout.

@@ -39,6 +39,8 @@ import { AlBridge, AL_SESSION_ID } from './al-bridge.js'
 import { MonzoClient } from './monzo-client.js'
 import { MonzoStore } from './monzo-store.js'
 import { handleMonzoRoutes } from './routes/monzo.js'
+import { FinanceStore } from './finance/store.js'
+import { handleFinanceRoutes } from './routes/finance.js'
 import { PrefsStore } from './prefs-store.js'
 import { handleConfigRoutes } from './routes/config.js'
 import { DebugLog } from './debug-log.js'
@@ -91,6 +93,7 @@ const monzoStore = new MonzoStore(
   join(feedsConfigDir, 'monzo-transactions.json'),
   monzoClient,
 )
+const financeStore = new FinanceStore(feedsConfigDir)
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const glassesResearchLog = new GlassesResearchLog(
@@ -440,6 +443,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, matrixSync, readBody)) return
   if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
+  if (path.startsWith('/finance') && handleFinanceRoutes(req, res, path, url, financeStore, monzoStore, monzoClient, authStore, readBody)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
