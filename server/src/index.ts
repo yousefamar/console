@@ -234,6 +234,15 @@ function broadcast(msg: HubMessage) {
       pane: 'agents',
       id: `approval:${(msg as any).requestId ?? (msg as any).sessionId}`,
     })
+  } else if (msg.type === 'tool_approved' || msg.type === 'tool_denied') {
+    // Dismiss the phone notification once the question is answered —
+    // whether from the web app, CLI, or another client.
+    const requestId = (msg as any).requestId ?? (msg as any).sessionId
+    pushServer.broadcast({
+      type: 'agent',
+      cancel: true,
+      id: `approval:${requestId}`,
+    })
   }
 }
 

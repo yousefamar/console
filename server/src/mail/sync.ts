@@ -29,8 +29,8 @@ type MailState = Record<string /* account email */, MailAccountState>
 export type MailDelta = {
   account: string
   added?: Array<{ threadId: string; messageId: string }>
-  removed?: Array<{ messageId: string }>
-  labelChanged?: Array<{ messageId: string; addedLabels?: string[]; removedLabels?: string[] }>
+  removed?: Array<{ messageId: string; threadId?: string }>
+  labelChanged?: Array<{ messageId: string; threadId?: string; addedLabels?: string[]; removedLabels?: string[] }>
   historyId: string
 }
 
@@ -143,13 +143,13 @@ export class MailSync {
         }
         for (const d of entry.messagesDeleted ?? []) {
           const m = d.message
-          if (m?.id) delta.removed!.push({ messageId: m.id })
+          if (m?.id) delta.removed!.push({ messageId: m.id, threadId: m.threadId })
         }
         for (const la of entry.labelsAdded ?? []) {
-          delta.labelChanged!.push({ messageId: la.message?.id, addedLabels: la.labelIds })
+          delta.labelChanged!.push({ messageId: la.message?.id, threadId: la.message?.threadId, addedLabels: la.labelIds })
         }
         for (const lr of entry.labelsRemoved ?? []) {
-          delta.labelChanged!.push({ messageId: lr.message?.id, removedLabels: lr.labelIds })
+          delta.labelChanged!.push({ messageId: lr.message?.id, threadId: lr.message?.threadId, removedLabels: lr.labelIds })
         }
       }
       pageToken = resp.nextPageToken
@@ -169,6 +169,26 @@ export class MailSync {
       // Fire notification for newly-added messages only (not label changes).
       if (delta.added && delta.added.length > 0) {
         await this.pushAddedMessages(account, delta.added)
+      }
+      // Dismiss phone notifications for threads that got archived (INBOX
+      // removed) or deleted — covers both in-app actions (browser → hub →
+      // Gmail) and external ones (stock Gmail app). One cancel per unique
+      // threadId; the APK ignores unknown notifIds harmlessly.
+      const handledThreads = new Set<string>()
+      for (const lc of delta.labelChanged ?? []) {
+        if (lc.threadId && lc.removedLabels?.includes('INBOX')) handledThreads.add(lc.threadId)
+      }
+      for (const r of delta.removed ?? []) {
+        if (r.threadId) handledThreads.add(r.threadId)
+      }
+      for (const threadId of handledThreads) {
+        this.push.broadcast({
+          type: 'mail',
+          cancel: true,
+          account,
+          threadId,
+          id: `mail:${account}:${threadId}`,
+        })
       }
     }
   }

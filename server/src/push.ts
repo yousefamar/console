@@ -14,8 +14,12 @@ import type { WebSocket } from 'ws'
 export interface PushMessage {
   /** Notification category — drives channel + default pane routing */
   type: 'mail' | 'chat' | 'calendar' | 'agent' | 'money' | 'generic'
-  title: string
-  body: string
+  /** If true, dismiss the matching notification instead of posting one.
+   *  Match keys are channel-specific (roomId for chat; account+threadId for
+   *  mail; id for agent/money/generic). title/body may be omitted. */
+  cancel?: boolean
+  title?: string
+  body?: string
   /** Optional pane to navigate to when tapped (e.g. "agents", "money") */
   pane?: string
   /** Optional stable ID so repeat pushes update the same notification */

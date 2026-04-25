@@ -95,6 +95,11 @@ export class MatrixSync {
   private mutedRooms = new Set<string>()
   /** Whether the most recent sync tick carried an `m.push_rules` event. */
   private pushRulesChangedThisTick = false
+  /** roomIds with at least one outstanding push notification on the APK.
+   *  In-memory only — on hub restart we forget; stale APK notifs survive
+   *  until tapped. Used to fire a cancel when notification_count drops
+   *  (message read elsewhere). */
+  private readonly pushedRooms = new Set<string>()
 
   constructor(
     private readonly matrix: MatrixClient,
@@ -554,7 +559,15 @@ export class MatrixSync {
           //   * room tagged m.lowpriority / m.archive → only notify on mentions
           const notifCount = r.unread_notifications?.notification_count ?? 0
           const highlightCount = r.unread_notifications?.highlight_count ?? 0
-          if (notifCount === 0) continue
+          if (notifCount === 0) {
+            // Room is caught up (read here or on another client, or
+            // server-side muted). Dismiss any outstanding APK notif so the
+            // phone doesn't keep showing a stale preview.
+            if (this.pushedRooms.delete(roomId)) {
+              this.push.broadcast({ type: 'chat', cancel: true, roomId })
+            }
+            continue
+          }
           const tagEvent = (r.account_data?.events ?? []).find((e) => e.type === 'm.tag')
           const tags = (tagEvent?.content as any)?.tags as Record<string, unknown> | undefined
           const isLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive'])
@@ -591,6 +604,7 @@ export class MatrixSync {
               isDirect,
               timestamp: ev.origin_server_ts,
             })
+            this.pushedRooms.add(roomId)
           }
         }
       }

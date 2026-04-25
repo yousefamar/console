@@ -395,6 +395,10 @@ class PushService : Service() {
             handleHubRpc(json)
             return
         }
+        if (json.optBoolean("cancel", false)) {
+            handleCancelPush(json, type)
+            return
+        }
         if (type == "chat") {
             handleChatPush(json)
             return
@@ -404,6 +408,34 @@ class PushService : Service() {
             return
         }
         handleGenericPush(json, type)
+    }
+
+    /**
+     * Dismiss a previously-posted notification. Match key derivation mirrors
+     * the per-channel post path: chat uses `roomId.hashCode()`, mail uses
+     * `"mail:$account:$threadId".hashCode()`, everything else uses `id`.
+     * Fired by the hub when the underlying item is handled (archived, read,
+     * approval answered) — includes both in-app and external actions (e.g.
+     * stock Gmail app archive) via the normal sync loop.
+     */
+    private fun handleCancelPush(json: JSONObject, type: String) {
+        val nm = NotificationManagerCompat.from(this)
+        when (type) {
+            "chat" -> {
+                val roomId = json.optString("roomId").takeIf { it.isNotEmpty() } ?: return
+                try { nm.cancel(roomId.hashCode()) } catch (_: SecurityException) {}
+                roomStates.remove(roomId)
+            }
+            "mail" -> {
+                val account = json.optString("account").takeIf { it.isNotEmpty() } ?: return
+                val threadId = json.optString("threadId").takeIf { it.isNotEmpty() } ?: return
+                try { nm.cancel(("mail:$account:$threadId").hashCode()) } catch (_: SecurityException) {}
+            }
+            else -> {
+                val idStr = json.optString("id").takeIf { it.isNotEmpty() } ?: return
+                try { nm.cancel(idStr.hashCode()) } catch (_: SecurityException) {}
+            }
+        }
     }
 
     /**
