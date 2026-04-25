@@ -165,13 +165,33 @@ function getRoomName(stateEvents: MatrixEvent[], roomId: string): string {
     return (otherMembers[0]!.content.displayname as string) || otherMembers[0]!.state_key || roomId
   }
   if (otherMembers.length > 1) {
-    return otherMembers
-      .slice(0, 3)
-      .map((m) => (m.content.displayname as string) || m.state_key || '?')
-      .join(', ')
+    // Dedupe by displayname — bridges occasionally report the same ghost under
+    // two state_keys during resync (e.g. WhatsApp re-link transiently joins a
+    // new ghost before the old one leaves). Without this, the room name ends
+    // up as "Alice, Alice", and `existing.name` can preserve that bad value
+    // long after the state settles.
+    const names = otherMembers.map(
+      (m) => (m.content.displayname as string) || m.state_key || '?',
+    )
+    const unique = Array.from(new Set(names))
+    return unique.slice(0, 3).join(', ')
   }
 
   return roomId
+}
+
+/**
+ * Collapses "Name, Name, Name" → "Name". Used by both the fresh name computation
+ * path (via Set dedupe in getRoomName) and the boot migration that heals names
+ * saved before this logic landed.
+ */
+function dedupeCommaJoinedName(name: string): string {
+  if (!name.includes(',')) return name
+  const parts = name.split(', ').map((p) => p.trim()).filter(Boolean)
+  if (parts.length < 2) return name
+  const first = parts[0]!
+  if (parts.every((p) => p === first)) return first
+  return name
 }
 
 // Remove bridge bot display names from room names set by bridges.
@@ -655,7 +675,14 @@ async function processJoinedRoom(
 
   const dbRoom: DbChatRoom = {
     id: roomId,
+    // When we have full member state (initial sync, resume, or a state-
+    // carrying delta), trust the computed name — it's always at least as
+    // authoritative as the last saved `existing.name` and self-heals bad
+    // values saved earlier (e.g. "Alice, Alice" from a re-link transient).
+    // Only fall back to `existing.name` on incremental lazy-load deltas
+    // where the member list is partial and a computed name would regress.
     name: hasExplicitName ? computedName
+      : (hasFullMembers && computedName !== roomId) ? computedName
       : existing?.name ? existing.name
       : computedName !== roomId ? computedName
       : roomId,
@@ -748,6 +775,29 @@ export type HubMatrixDelta = {
 // delta. Sent back to the hub on reconcile() so the homeserver can replay any
 // gaps via Matrix-native incremental /sync?since=... semantics.
 export const MATRIX_CURSOR_KEY = 'matrix:lastBatch'
+
+/**
+ * One-shot migration: scan chatRooms for names like "Alice, Alice" caused by
+ * the pre-dedupe getRoomName bug and rewrite them in place. Idempotent — only
+ * touches rooms whose name actually changes. Safe to run on every boot; the
+ * `console:nameDedupe:v1` meta flag short-circuits subsequent runs so the
+ * full table scan only happens once per client.
+ */
+export async function healDoubledRoomNames(): Promise<void> {
+  const MIGRATION_KEY = 'console:nameDedupe:v1'
+  if (await getMeta(MIGRATION_KEY)) return
+  const rooms = await db.chatRooms.toArray()
+  let fixed = 0
+  for (const r of rooms) {
+    const next = dedupeCommaJoinedName(r.name)
+    if (next !== r.name) {
+      await db.chatRooms.update(r.id, { name: next })
+      fixed++
+    }
+  }
+  await setMeta(MIGRATION_KEY, String(Date.now()))
+  if (fixed > 0) console.log(`[matrix] healed ${fixed} doubled room names`)
+}
 
 export async function getMatrixCursor(): Promise<string | undefined> {
   const v = await getMeta(MATRIX_CURSOR_KEY)

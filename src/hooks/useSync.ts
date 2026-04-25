@@ -7,6 +7,7 @@ import {
   processChatQueue,
   checkChatSnoozes,
   getMatrixCursor,
+  healDoubledRoomNames,
   type HubMatrixDelta,
 } from '@/matrix/sync'
 import { onEnqueue } from '@/db/sync-queue'
@@ -126,6 +127,7 @@ export function useSync() {
       const startMatrix = async () => {
         await backfillMediaUrls().catch(() => {})
         await backfillRoomInfo().catch(() => {})
+        await healDoubledRoomNames().catch(() => {})
 
         const { hubBus } = await import('@/sync-bus')
         hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {
