@@ -5,7 +5,7 @@ import { mxcToThumbnail, mxcToHttp, getUrlPreview, type UrlPreview } from '@/mat
 import { decryptAttachment } from '@/matrix/decrypt-media'
 import { diffWords } from 'diff'
 import DOMPurify from 'dompurify'
-import { Reply, SmilePlus } from 'lucide-react'
+import { Reply, SmilePlus, Clock, AlertCircle } from 'lucide-react'
 import clsx from 'clsx'
 
 // --- Markdown / HTML rendering ---
@@ -633,6 +633,10 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
     () => (message.type === 'text' ? extractUrls(displayBody) : []),
     [displayBody, message.type],
   )
+  // Local-echo id ("~timestamp.random") means we haven't seen the homeserver
+  // ack yet. Carried as a visual signal only — no extra DOM rows — so the
+  // timeline doesn't reflow when the message flips to acked/failed.
+  const isPending = message.id.startsWith('~') && !message.sendFailed
 
   // Swipe-to-reply (mobile)
   const [swipeX, setSwipeX] = useState(0)
@@ -710,8 +714,15 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
         <EmojiButton onSelect={(emoji) => onReact?.(message, emoji)} />
       </div>
 
-      {/* Message content */}
-      <div className="min-w-0 flex-1 relative">
+      {/* Message content. Pending/failed tint the body in place — no extra
+          DOM rows — so the timeline stays stable when state flips. */}
+      <div
+        className={clsx(
+          'min-w-0 flex-1 relative',
+          isPending && 'opacity-60',
+          message.sendFailed && 'text-red-400/90',
+        )}
+      >
         {showSender && (
           <div className="flex items-baseline gap-2 mb-0.5">
             <span className={clsx('text-xs font-medium', isOwn ? 'text-text-tertiary' : 'text-text-secondary')}>
@@ -782,17 +793,19 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
           <span className="text-[10px] text-text-tertiary">(edited)</span>
         )}
 
-        {/* Send failure */}
-        {message.sendFailed && (
-          <div className="flex items-center gap-1 mt-0.5">
-            <span className="text-[10px] text-red-400">Failed to send</span>
-            <span className="text-[10px] text-text-tertiary" title={message.sendFailed}>— {message.sendFailed.slice(0, 80)}</span>
-          </div>
-        )}
-
-        {/* Pending indicator for local echo */}
-        {message.id.startsWith('~') && !message.sendFailed && (
-          <span className="text-[10px] text-text-tertiary">Sending…</span>
+        {/* Send-state indicator (pending/failed) — absolute-positioned so
+            flipping between states doesn't reflow the timeline. The body
+            opacity / hue above does the rest of the visual signalling. */}
+        {(isPending || message.sendFailed) && (
+          <span
+            className={clsx(
+              'absolute bottom-0 right-0 inline-flex items-center',
+              message.sendFailed ? 'text-red-400' : 'text-text-tertiary',
+            )}
+            title={message.sendFailed || 'Sending…'}
+          >
+            {message.sendFailed ? <AlertCircle size={11} /> : <Clock size={10} />}
+          </span>
         )}
 
         {/* Reactions */}
