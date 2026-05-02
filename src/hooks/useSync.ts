@@ -8,6 +8,7 @@ import {
   checkChatSnoozes,
   getMatrixCursor,
   healDoubledRoomNames,
+  healStaleBridgeRoomState,
   type HubMatrixDelta,
 } from '@/matrix/sync'
 import { onEnqueue } from '@/db/sync-queue'
@@ -128,6 +129,9 @@ export function useSync() {
         await backfillMediaUrls().catch(() => {})
         await backfillRoomInfo().catch(() => {})
         await healDoubledRoomNames().catch(() => {})
+        // Run stale-state heal in the background — it makes per-room hub
+        // calls so we don't want to block the main sync wiring on it.
+        void healStaleBridgeRoomState().catch(() => {})
 
         const { hubBus } = await import('@/sync-bus')
         hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {

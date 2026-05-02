@@ -799,6 +799,72 @@ export async function healDoubledRoomNames(): Promise<void> {
   if (fixed > 0) console.log(`[matrix] healed ${fixed} doubled room names`)
 }
 
+/**
+ * One-shot migration: refresh stale room state (memberCount, isDirect, avatar)
+ * for bridge rooms that got mis-classified during a re-link transient.
+ *
+ * The processJoinedRoom path only recomputes these fields when `hasFullMembers`
+ * is true (m.room.create present in the delta) — but after the initial sync,
+ * incremental deltas use lazy_load_members and never carry m.room.create, so
+ * stuck values can't self-heal without an explicit state refresh.
+ *
+ * Strategy: identify likely-stuck bridge rooms (`networkIcon` set, member
+ * count claims >2, no avatar — typical pattern when a transient sync briefly
+ * had two bridge ghosts joined), fetch each room's current state from the
+ * homeserver via the hub, and recompute the derived fields. Throttled so we
+ * don't hammer the hub with hundreds of parallel state fetches.
+ */
+export async function healStaleBridgeRoomState(): Promise<void> {
+  const MIGRATION_KEY = 'console:staleBridgeState:v1'
+  if (await getMeta(MIGRATION_KEY)) return
+  const all = await db.chatRooms.toArray()
+  // Only bridge rooms (other rooms are unaffected) where the cached state
+  // looks suspicious: claims to be a small group (3-6 members) with no avatar.
+  const candidates = all.filter(
+    (r) => !!r.networkIcon
+      && r.memberCount > 2
+      && r.memberCount <= 6
+      && !r.avatar,
+  )
+  if (candidates.length === 0) {
+    await setMeta(MIGRATION_KEY, String(Date.now()))
+    return
+  }
+  console.log(`[matrix] heal-stale: refreshing state for ${candidates.length} bridge rooms`)
+  let fixed = 0
+  let failed = 0
+  // Batch of 5 in flight, 200ms gap — keeps the hub responsive while still
+  // completing ~250 rooms in well under a minute.
+  const BATCH = 5
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const batch = candidates.slice(i, i + BATCH)
+    await Promise.all(batch.map(async (r) => {
+      try {
+        const { getRoomState } = await import('./api')
+        const state = await getRoomState(r.id) as unknown as MatrixEvent[]
+        const directRoom = isDirect(state)
+        const memberCount = getMemberCount(state)
+        const computedName = getRoomName(state, r.id)
+        const avatar = getRoomAvatar(state, directRoom)
+        const updates: Partial<DbChatRoom> = {}
+        if (computedName !== r.id && computedName !== r.name) updates.name = computedName
+        if (directRoom !== r.isDirect) updates.isDirect = directRoom
+        if (memberCount !== r.memberCount) updates.memberCount = memberCount
+        if (avatar && avatar !== r.avatar) updates.avatar = avatar
+        if (Object.keys(updates).length > 0) {
+          await db.chatRooms.update(r.id, updates)
+          fixed++
+        }
+      } catch {
+        failed++
+      }
+    }))
+    if (i + BATCH < candidates.length) await new Promise((res) => setTimeout(res, 200))
+  }
+  console.log(`[matrix] heal-stale: ${fixed} updated, ${failed} failed of ${candidates.length}`)
+  await setMeta(MIGRATION_KEY, String(Date.now()))
+}
+
 export async function getMatrixCursor(): Promise<string | undefined> {
   const v = await getMeta(MATRIX_CURSOR_KEY)
   return v && v.length > 0 ? v : undefined
