@@ -27,6 +27,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, type AgentContext } from './routes/agents.js'
+import { setLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { GmailClient } from './gmail-client.js'
@@ -105,6 +106,7 @@ pushServer.onInbound((ws, frame) => glassesHub.handleMessage(ws, frame))
 // lives for the process lifetime; no unsubscribe needed.
 wireTouchToMic(glassesHub, (msg: string) => { log(msg) })
 const syncBus = new SyncBus((msg: string) => { log(msg) })
+setReadStateLogger((m: string) => { log(m) })
 const mailSync = new MailSync(
   gmailClient,
   authStore,
@@ -218,6 +220,19 @@ syncBus.register('matrix', {
   rotateRoomKey: async (args) => matrixSync.rotateRoomKey(args as { roomId: string }),
 })
 matrixSync.start()
+
+function markAlRead() {
+  const len = alBridge.getMessageLog().length
+  setLastReadIndex(AL_SESSION_ID, len)
+  broadcast({ type: 'session_read_state', sessionId: AL_SESSION_ID, lastReadIndex: len, messageLogLength: len })
+}
+
+function markAlUnread() {
+  const len = alBridge.getMessageLog().length
+  const idx = Math.max(0, len - 1)
+  setLastReadIndex(AL_SESSION_ID, idx)
+  broadcast({ type: 'session_read_state', sessionId: AL_SESSION_ID, lastReadIndex: idx, messageLogLength: len })
+}
 
 function broadcast(msg: HubMessage) {
   const data = JSON.stringify(msg)
@@ -697,13 +712,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
     // Route Al-targeted messages to the bridge
     if ('sessionId' in msg && (msg as { sessionId?: string }).sessionId === AL_SESSION_ID) {
-      const sessionId = (msg as { sessionId: string }).sessionId
       if (msg.type === 'send_message') {
         alBridge.handleBrowserMessage('send_message', ws, msg.content, msg.images)
+        markAlRead()
       } else if (msg.type === 'interrupt') {
         alBridge.handleBrowserMessage('interrupt', ws)
       } else if (msg.type === 'kill_session') {
         alBridge.handleBrowserMessage('clear', ws)
+      } else if (msg.type === 'mark_session_read') {
+        markAlRead()
+      } else if (msg.type === 'mark_session_unread') {
+        markAlUnread()
       }
       return
     }
@@ -782,6 +801,7 @@ httpServer.listen(port, host, () => {
 function shutdown() {
   log('\nShutting down — saving manifest...')
   saveManifestSync(sessions)
+  flushReadState()
   for (const session of sessions.values()) session.kill()
   authStore.destroy()
   httpServer.close()

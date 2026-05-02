@@ -60,6 +60,9 @@ export interface SessionInfo {
   statusText?: string
   permissionMode?: string
   messageLogLength?: number
+  /** Hub-persisted index of the last message marked read.
+   *  hasUnread is derived from `messageLogLength > lastReadIndex`. */
+  lastReadIndex?: number
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
@@ -130,8 +133,15 @@ interface AgentState {
   // True when a createSession/resumeSession request is in-flight (session_created should activate)
   pendingSessionActivate: boolean
 
-  // Pending tool approval
+  /** Pending tool approval for the currently-active session — denormalized
+   *  view of pendingApprovalsBySession[activeSessionId]. UI components subscribe
+   *  to this. Kept in sync by the approval_required / tool_approved /
+   *  tool_denied handlers and by selectSession. */
   pendingApproval: PendingApproval | null
+  /** All outstanding approvals keyed by sessionId. Multiple sessions can be
+   *  blocked on input simultaneously (e.g. parent + fork) — single-slot
+   *  pendingApproval would let later arrivals overwrite earlier ones. */
+  pendingApprovalsBySession: Record<string, PendingApproval>
 
   // Slash commands (from session init, shared across sessions)
   sessionSlashCommands: string[]
@@ -213,6 +223,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   pendingSessionActivate: false,
 
   pendingApproval: null,
+  pendingApprovalsBySession: {},
 
   sessionSlashCommands: [],
 
@@ -260,8 +271,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     sendWs({ type: 'send_message', sessionId, content, ...(images?.length ? { images } : {}) })
 
-    // Replying = read (chat-style)
-    updateSession(sessionId, { hasUnread: false })
+    // Replying = read (chat-style). Optimistic local clear; hub also auto-marks
+    // on receipt of send_message and broadcasts session_read_state for sync.
+    const sess = get().sessions.find((s) => s.id === sessionId)
+    if (sess) updateSession(sessionId, { lastReadIndex: (sess.messageLogLength ?? 0) + 1, hasUnread: false })
     const msgs = get().messagesBySession[sessionId]
     const lastTs = msgs?.length ? msgs[msgs.length - 1]!.timestamp : Date.now()
     set((s) => ({ lastReadTsBySession: { ...s.lastReadTsBySession, [sessionId]: lastTs } }))
@@ -291,11 +304,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   approveTool: (requestId, modifiedInput) => {
-    const approval = get().pendingApproval
+    // Find the approval — prefer per-session map (handles approvals for
+    // sessions other than the active one) before the denormalized view.
+    const map = get().pendingApprovalsBySession
+    const approval = Object.values(map).find((a) => a.requestId === requestId) ?? get().pendingApproval
     const sessionId = approval?.sessionId ?? get().activeSessionId
     if (!sessionId) return
-    sendWs({ type: 'approve_tool', sessionId, requestId, modifiedInput })
-    set({ pendingApproval: null })
+    // Claude CLI requires updatedInput in the approve response. When the caller
+    // doesn't override, pass the original tool input back unchanged.
+    const finalInput = modifiedInput ?? approval?.input ?? {}
+    sendWs({ type: 'approve_tool', sessionId, requestId, modifiedInput: finalInput })
+    clearApprovalByRequestId(requestId)
   },
 
   denyTool: (requestId, reason) => {
@@ -303,7 +322,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const sessionId = approval?.sessionId ?? get().activeSessionId
     if (!sessionId) return
     sendWs({ type: 'deny_tool', sessionId, requestId, reason })
-    set({ pendingApproval: null })
+    clearApprovalByRequestId(requestId)
   },
 
   autoApproveTool: (toolName) => {
@@ -335,7 +354,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         set((s) => ({ lastReadTsBySession: { ...s.lastReadTsBySession, [prevId]: lastTs } }))
       }
     }
-    set({ activeSessionId: sessionId, pendingApproval: null, creatingNewSession: sessionId === null })
+    // Re-project the per-session approval map to the denormalized view for the
+    // newly active session.
+    const activeApproval = sessionId ? (get().pendingApprovalsBySession[sessionId] ?? null) : null
+    set({ activeSessionId: sessionId, pendingApproval: activeApproval, creatingNewSession: sessionId === null })
     // Don't auto-mark read on selection — chat-style: stays unread until the
     // user replies (sendMessage) or explicitly hits `e`.
     import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(sessionId))
@@ -352,7 +374,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const idx = active.findIndex((s) => s.id === activeSessionId)
     const next = active[Math.min(idx + 1, active.length - 1)]
     if (next) {
-      set({ activeSessionId: next.id, pendingApproval: null })
+      const activeApproval = get().pendingApprovalsBySession[next.id] ?? null
+      set({ activeSessionId: next.id, pendingApproval: activeApproval })
       import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(next.id))
     }
   },
@@ -364,7 +387,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const idx = active.findIndex((s) => s.id === activeSessionId)
     const prev = active[Math.max(idx - 1, 0)]
     if (prev) {
-      set({ activeSessionId: prev.id, pendingApproval: null })
+      const activeApproval = get().pendingApprovalsBySession[prev.id] ?? null
+      set({ activeSessionId: prev.id, pendingApproval: activeApproval })
       import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(prev.id))
     }
   },
@@ -394,16 +418,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   markSessionRead: () => {
     const sessionId = get().activeSessionId
-    if (sessionId) {
-      updateSession(sessionId, { hasUnread: false })
-    }
+    if (!sessionId) return
+    // Optimistic local clear; hub broadcasts session_read_state which lands
+    // on every client (including this one) for cross-device sync.
+    const sess = get().sessions.find((s) => s.id === sessionId)
+    if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false })
+    sendWs({ type: 'mark_session_read', sessionId })
   },
 
   markSessionUnread: () => {
     const sessionId = get().activeSessionId
-    if (sessionId) {
-      updateSession(sessionId, { hasUnread: true })
+    if (!sessionId) return
+    const sess = get().sessions.find((s) => s.id === sessionId)
+    if (sess) {
+      const len = sess.messageLogLength ?? 0
+      updateSession(sessionId, { lastReadIndex: Math.max(0, len - 1), hasUnread: len > 0 })
     }
+    sendWs({ type: 'mark_session_unread', sessionId })
   },
 
   loadOlderMessages: (sessionId) => {
@@ -674,14 +705,16 @@ function handleHubMessage(msg: Record<string, unknown>) {
       const hasAl = hubSessions.some((s) => s.id === 'al')
       const existingAl = !hasAl ? existing.find((s) => s.id === 'al') : undefined
 
-      // Merge hub data with local per-session state (model, context, statusText)
+      // Merge hub data with local per-session state (model, context, statusText).
+      // hasUnread is now derived from hub-supplied messageLogLength + lastReadIndex
+      // (no longer preserved from local — hub is source of truth).
       const merged = hubSessions.map((s) => {
         const isAl = s.id === 'al'
-        // Try direct match first, then remap match
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
+        const hasUnread = (s.messageLogLength ?? 0) > (s.lastReadIndex ?? 0)
         return local
-          ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText, hasUnread: local.hasUnread }
-          : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0 }
+          ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText, hasUnread }
+          : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0, hasUnread }
       })
 
       // Remap messagesBySession keys and delta accumulators if hub restarted (IDs changed)
@@ -702,7 +735,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
       }
 
       // Re-add preserved Al session if it was missing from hub list
-      if (existingAl) merged.unshift({ ...existingAl, isAl: true })
+      if (existingAl) merged.unshift({ ...existingAl, isAl: true, hasUnread: existingAl.hasUnread ?? false })
 
       // Determine which sessions have older messages available
       const REPLAY_LIMIT = 50
@@ -798,7 +831,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'text',
         content: msg.content as string,
       })
-      markUnread(sessionId)
+      bumpMessageLog(sessionId)
       break
     }
 
@@ -888,10 +921,13 @@ function handleHubMessage(msg: Record<string, unknown>) {
         return
       }
 
-      useAgentStore.setState({
-        pendingApproval: { sessionId: approvalSessionId, requestId, toolName, input },
-      })
-      markUnread(approvalSessionId)
+      const approval: PendingApproval = { sessionId: approvalSessionId, requestId, toolName, input }
+      useAgentStore.setState((s) => ({
+        pendingApprovalsBySession: { ...s.pendingApprovalsBySession, [approvalSessionId]: approval },
+        // Only surface in the denormalized view when it belongs to the active session
+        ...(s.activeSessionId === approvalSessionId ? { pendingApproval: approval } : {}),
+      }))
+      bumpMessageLog(approvalSessionId)
       // Notify (skip during replay)
       if (suppressNotifications) break
       import('@/notifications').then(({ notify }) => {
@@ -932,7 +968,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         totalCost: cost,
       })
 
-      markUnread(sessionId)
+      bumpMessageLog(sessionId)
 
       // Notify when agent finishes — skip during replay and when session wasn't running
       const session = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
@@ -963,13 +999,16 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'error',
         message: msg.message as string,
       })
-      markUnread(sessionId)
+      bumpMessageLog(sessionId)
       break
     }
 
     case 'session_ended': {
       const sessionId = msg.sessionId as string
       updateSession(sessionId, { status: 'ended', statusText: undefined })
+      // Drop any pending approval for the session — it can't be answered anymore
+      const pending = useAgentStore.getState().pendingApprovalsBySession[sessionId]
+      if (pending) clearApprovalByRequestId(pending.requestId)
       break
     }
 
@@ -995,6 +1034,18 @@ function handleHubMessage(msg: Record<string, unknown>) {
       break
     }
 
+    case 'session_read_state': {
+      const sessionId = msg.sessionId as string
+      const lastReadIndex = msg.lastReadIndex as number
+      const messageLogLength = msg.messageLogLength as number
+      useAgentStore.setState((s) => ({
+        sessions: s.sessions.map((sess) => sess.id === sessionId
+          ? { ...sess, lastReadIndex, messageLogLength: Math.max(sess.messageLogLength ?? 0, messageLogLength), hasUnread: Math.max(sess.messageLogLength ?? 0, messageLogLength) > lastReadIndex }
+          : sess),
+      }))
+      break
+    }
+
     case 'user_prompt': {
       const sessionId = msg.sessionId as string
       const content = msg.content as string
@@ -1011,21 +1062,9 @@ function handleHubMessage(msg: Record<string, unknown>) {
       break
     }
 
-    case 'tool_approved': {
-      // Another client approved the tool — dismiss local approval UI
-      const approval = useAgentStore.getState().pendingApproval
-      if (approval && approval.requestId === (msg.requestId as string)) {
-        useAgentStore.setState({ pendingApproval: null })
-      }
-      break
-    }
-
+    case 'tool_approved':
     case 'tool_denied': {
-      // Another client denied the tool — dismiss local approval UI
-      const approval = useAgentStore.getState().pendingApproval
-      if (approval && approval.requestId === (msg.requestId as string)) {
-        useAgentStore.setState({ pendingApproval: null })
-      }
+      clearApprovalByRequestId(msg.requestId as string)
       break
     }
 
@@ -1096,11 +1135,36 @@ function hubMsgToBlock(m: Record<string, unknown>): AgentMessage['block'] | null
   }
 }
 
-/** Mark a session as unread on new inbound content. Stays unread (chat-style)
- *  even when active — clears only via explicit markSessionRead or sendMessage. */
-function markUnread(sessionId: string) {
-  if (suppressNotifications) return // Don't mark unread during replay
-  updateSession(sessionId, { hasUnread: true })
+/** Increment local messageLogLength on new logged content and re-derive
+ *  hasUnread. Hub is the source of truth for lastReadIndex (synced via
+ *  session_read_state); we only bump our local count of messages so the
+ *  derived flag flips without waiting for a sessions_list refresh. */
+function bumpMessageLog(sessionId: string) {
+  useAgentStore.setState((s) => ({
+    sessions: s.sessions.map((sess) => {
+      if (sess.id !== sessionId) return sess
+      const newLen = (sess.messageLogLength ?? 0) + 1
+      return { ...sess, messageLogLength: newLen, hasUnread: newLen > (sess.lastReadIndex ?? 0) }
+    }),
+  }))
+}
+
+/** Remove an approval from the per-session map (and the denormalized view if it
+ *  matches). Triggered locally on approve/deny and via tool_approved/tool_denied
+ *  broadcasts from other clients. */
+function clearApprovalByRequestId(requestId: string) {
+  useAgentStore.setState((s) => {
+    const map = s.pendingApprovalsBySession
+    let foundSessionId: string | null = null
+    for (const [sid, a] of Object.entries(map)) {
+      if (a.requestId === requestId) { foundSessionId = sid; break }
+    }
+    if (!foundSessionId) return s
+    const next = { ...map }
+    delete next[foundSessionId]
+    const clearView = s.pendingApproval?.requestId === requestId
+    return { pendingApprovalsBySession: next, ...(clearView ? { pendingApproval: null } : {}) }
+  })
 }
 
 function updateSession(sessionId: string, updates: Partial<SessionInfo>) {

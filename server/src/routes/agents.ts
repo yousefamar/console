@@ -9,6 +9,7 @@ import { Session, type SessionOptions } from '../session.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
+import { getLastReadIndex, setLastReadIndex } from '../read-state.js'
 
 // Session order persistence
 const CONFIG_DIR = join(homedir(), '.config', 'console')
@@ -106,6 +107,35 @@ function sendTo(ws: WebSocket, msg: HubMessage) {
   }
 }
 
+/** Bump session's lastReadIndex to the current log length and broadcast.
+ *  Falls back to using the hub session id when claudeSessionId isn't set yet
+ *  (early in session lifetime); that key gets normalized to claudeSessionId
+ *  later via copyReadStateForClaudeId once it arrives. */
+export function markSessionRead(session: Session, clients: Set<WebSocket>) {
+  const key = session.claudeSessionId ?? session.id
+  const idx = session.messageLog.length
+  setLastReadIndex(key, idx)
+  broadcast(clients, {
+    type: 'session_read_state',
+    sessionId: session.id,
+    lastReadIndex: idx,
+    messageLogLength: session.messageLog.length,
+  })
+}
+
+export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
+  const key = session.claudeSessionId ?? session.id
+  // Roll the pointer back so the latest message counts as unread, but no further.
+  const idx = Math.max(0, session.messageLog.length - 1)
+  setLastReadIndex(key, idx)
+  broadcast(clients, {
+    type: 'session_read_state',
+    sessionId: session.id,
+    lastReadIndex: idx,
+    messageLogLength: session.messageLog.length,
+  })
+}
+
 export function createSession(ctx: AgentContext, options: SessionOptions): Session {
   const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
 
@@ -159,11 +189,27 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcastExcept(clients, ws, userMsg)
       session.logMessage(userMsg)
       session.sendMessage(msg.content, msg.images)
+      // Sending a message implicitly marks the session read (chat parity).
+      markSessionRead(session, clients)
       // Capture the idle→running transition in the manifest — sendMessage
       // flips status without emitting an event, so without this the nudge
       // on hub restart would miss any mid-turn session whose last persisted
       // state was idle (from the prior `result`).
       saveManifest(sessions)
+      break
+    }
+
+    case 'mark_session_read': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) return
+      markSessionRead(session, clients)
+      break
+    }
+
+    case 'mark_session_unread': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) return
+      markSessionUnread(session, clients)
       break
     }
 

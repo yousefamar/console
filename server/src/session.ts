@@ -21,6 +21,7 @@ import type {
   SessionInfo,
 } from './protocol.js'
 import { parseModelString } from './utils.js'
+import { getLastReadIndex } from './read-state.js'
 
 let sessionCounter = 0
 
@@ -236,14 +237,12 @@ export class Session extends EventEmitter {
 
   /** Deny a tool use request */
   denyTool(requestId: string, reason?: string) {
+    // Claude CLI requires `message` to be a string (Zod rejects undefined)
     const response: Record<string, unknown> = {
       type: 'control_response',
       response: {
         request_id: requestId,
-        response: {
-          behavior: 'deny',
-          ...(reason ? { message: reason } : {}),
-        },
+        response: { behavior: 'deny', message: reason ?? 'Denied by user' },
       },
     }
     this.writeStdin(response as any)
@@ -334,6 +333,7 @@ export class Session extends EventEmitter {
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
       messageLogLength: this.messageLog.length,
+      lastReadIndex: getLastReadIndex(this.claudeSessionId),
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,

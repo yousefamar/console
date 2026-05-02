@@ -27,6 +27,8 @@ export type ClientMessage =
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
   | { type: 'set_collapsed_groups'; collapsed: string[] }
+  | { type: 'mark_session_read'; sessionId: string }
+  | { type: 'mark_session_unread'; sessionId: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -57,6 +59,7 @@ export type HubMessage =
   | { type: 'session_renamed'; sessionId: string; name: string }
   | { type: 'session_order'; order: string[] }
   | { type: 'collapsed_groups'; collapsed: string[] }
+  | { type: 'session_read_state'; sessionId: string; lastReadIndex: number; messageLogLength: number }
   | { type: 'older_messages'; sessionId: string; messages: HubMessage[]; hasMore: boolean }
   | { type: 'hub_error'; message: string }
 
@@ -113,6 +116,9 @@ export interface SessionInfo {
   totalCost: number
   totalTokens: TokenUsage
   messageLogLength?: number
+  /** Hub-persisted: index of the last message the user has marked read.
+   *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
+  lastReadIndex?: number
   gitBranch?: string
   gitDirty?: boolean
   gitStats?: { added: number; deleted: number }

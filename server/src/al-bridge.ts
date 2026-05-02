@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { HubMessage, LoggableHubMessage, SessionInfo, TokenUsage } from './protocol.js'
+import { getLastReadIndex } from './read-state.js'
 
 export const AL_SESSION_ID = 'al'
 
@@ -245,6 +246,7 @@ export class AlBridge {
       totalCost: 0,
       totalTokens: { input: 0, output: 0 },
       messageLogLength: this.messageLog.length,
+      lastReadIndex: getLastReadIndex(AL_SESSION_ID),
     }
   }
 
