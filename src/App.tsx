@@ -159,6 +159,12 @@ export function App() {
         void import('@/notifications').then(({ setDoNotDisturb }) => setDoNotDisturb(true))
         useUiStore.setState({ doNotDisturb: true })
       }
+      const expandedDirs = getPref<string[]>('notesExpandedDirs', [])
+      if (expandedDirs.length > 0) {
+        void import('@/store/notes').then(({ useNotesStore }) => {
+          useNotesStore.setState({ expandedDirs: new Set(expandedDirs) })
+        })
+      }
     })
 
     void initAuth().then(() => {

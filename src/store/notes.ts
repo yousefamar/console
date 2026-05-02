@@ -8,6 +8,9 @@ import {
   retrieveHandle,
 } from '@/notes/vault-adapter'
 import { NotesSearchIndex, type FilenameResult, type SearchResult } from '@/notes/search-index'
+import { getPref, setPref } from '@/prefs'
+
+const EXPANDED_DIRS_PREF = 'notesExpandedDirs'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -217,7 +220,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   openFiles: {},
   activeFilePath: null,
   recentlyClosedPaths: [],
-  expandedDirs: new Set<string>(),
+  expandedDirs: new Set<string>(getPref<string[]>(EXPANDED_DIRS_PREF, [])),
   selectedPath: null,
   quickSwitcherOpen: false,
   quickSwitcherMode: 'filename' as const,
@@ -286,8 +289,11 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     try {
       const files = await adapter.listFiles()
       const tree = buildFileTree(files)
-      // Auto-expand top-level directories
-      const expanded = new Set(tree.filter((n) => n.isDir).map((n) => n.path))
+      const current = get().expandedDirs
+      // Auto-expand top-level directories on first load (when nothing persisted)
+      const expanded = current.size > 0
+        ? current
+        : new Set(tree.filter((n) => n.isDir).map((n) => n.path))
       set({ files, fileTree: tree, loading: false, expandedDirs: expanded })
 
       // Restore persisted tabs
@@ -498,6 +504,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
       } else {
         next.add(path)
       }
+      setPref(EXPANDED_DIRS_PREF, [...next])
       return { expandedDirs: next }
     })
   },
