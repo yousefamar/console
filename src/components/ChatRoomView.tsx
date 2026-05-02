@@ -14,6 +14,7 @@ export function ChatRoomView() {
   const rooms = useChatStore((s) => s.rooms)
   const setReplyingTo = useChatStore((s) => s.setReplyingTo)
   const sendReaction = useChatStore((s) => s.sendReaction)
+  const setEditingMessage = useChatStore((s) => s.setEditingMessage)
   const matrixUserId = localStorage.getItem('matrix_user_id') ?? ''
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
 
@@ -24,6 +25,10 @@ export function ChatRoomView() {
   const handleReact = useCallback((msg: DbChatMessage, emoji: string) => {
     sendReaction(msg.roomId, msg.id, emoji)
   }, [sendReaction])
+
+  const handleEdit = useCallback((msg: DbChatMessage) => {
+    setEditingMessage(msg)
+  }, [setEditingMessage])
 
   // Stable DOM order: sort by id so rooms.map() never reorders DOM nodes.
   // Reordering absolutely-positioned scrollable divs causes Chrome to reset scrollTop.
@@ -89,6 +94,7 @@ export function ChatRoomView() {
             onImageClick={setLightboxSrc}
             onReply={handleReply}
             onReact={handleReact}
+            onEdit={handleEdit}
           />
         ))}
       </div>
@@ -114,6 +120,7 @@ const RoomMessages = memo(function RoomMessages({
   onImageClick,
   onReply,
   onReact,
+  onEdit,
 }: {
   roomId: string
   isVisible: boolean
@@ -124,6 +131,7 @@ const RoomMessages = memo(function RoomMessages({
   onImageClick: (src: string) => void
   onReply: (msg: DbChatMessage) => void
   onReact: (msg: DbChatMessage, emoji: string) => void
+  onEdit: (msg: DbChatMessage) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const didInitialScroll = useRef(false)
@@ -303,6 +311,7 @@ const RoomMessages = memo(function RoomMessages({
                   onImageClick={onImageClick}
                   onReply={onReply}
                   onReact={onReact}
+                  onEdit={onEdit}
                 />
               </div>
             )

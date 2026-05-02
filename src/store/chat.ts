@@ -275,6 +275,10 @@ interface ChatState {
   rooms: DbChatRoom[]
   selectedRoomId: string | null
   replyingTo: { eventId: string; body: string; senderName: string } | null
+  // The message currently being edited. Compose input pre-fills with `body`
+  // and submits an `m.replace` event referencing `eventId` instead of a new
+  // message. Null when not in edit mode.
+  editingMessage: { eventId: string; body: string; roomId: string } | null
 
   // Actions
   setRooms: (rooms: DbChatRoom[]) => void
@@ -298,6 +302,10 @@ interface ChatState {
   setReplyingTo: (msg: DbChatMessage | null) => void
   sendReaction: (roomId: string, eventId: string, emoji: string) => Promise<void>
 
+  // Edit
+  setEditingMessage: (msg: DbChatMessage | null) => void
+  editMessage: (roomId: string, eventId: string, newBody: string) => Promise<void>
+
   // Undo
   undoMarkRead: (room: DbChatRoom) => Promise<void>
 }
@@ -309,6 +317,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   rooms: [],
   selectedRoomId: null,
   replyingTo: null,
+  editingMessage: null,
 
   setRooms: (rooms) => {
     const filtered = optimisticallyRemoved.size > 0
@@ -700,6 +709,63 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setReplyingTo: (msg) => {
     set({ replyingTo: msg ? { eventId: msg.id, body: msg.body, senderName: msg.senderName } : null })
+  },
+
+  setEditingMessage: (msg) => {
+    set({
+      editingMessage: msg
+        ? { eventId: msg.id, body: msg.body, roomId: msg.roomId }
+        : null,
+    })
+  },
+
+  editMessage: async (roomId, eventId, newBody) => {
+    const trimmed = newBody.trim()
+    if (!trimmed) return
+    // No-op if the body didn't actually change. Avoids an empty edit roundtrip
+    // and the resulting "(edited)" marker on a message that's textually the
+    // same as before.
+    const existing = await db.chatMessages.get(eventId)
+    if (existing && existing.body === trimmed) {
+      set({ editingMessage: null })
+      return
+    }
+    // Optimistic IDB update — the message bubble flips to edited body
+    // immediately. Inbound m.replace processing is idempotent, so when the
+    // homeserver echoes our edit back through sync nothing flickers.
+    if (existing) {
+      await db.chatMessages.update(eventId, {
+        body: trimmed,
+        isEdited: true,
+        originalBody: existing.originalBody ?? existing.body,
+      })
+      // If this was the room's last message, refresh the preview too.
+      const room = await db.chatRooms.get(roomId)
+      if (room?.lastReadEventId === eventId || room?.lastMessageTime === existing.timestamp) {
+        await db.chatRooms.update(roomId, { lastMessageBody: trimmed })
+      }
+    }
+    set({ editingMessage: null })
+    // Build the m.replace content. The outer `body` is a fallback for clients
+    // that don't understand m.new_content (Matrix spec convention prefixes a
+    // " * " so it's still readable raw).
+    const content: Record<string, unknown> = {
+      msgtype: 'm.text',
+      body: ` * ${trimmed}`,
+      'm.new_content': { msgtype: 'm.text', body: trimmed },
+      'm.relates_to': { rel_type: 'm.replace', event_id: eventId },
+    }
+    try {
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('matrix', 'sendEvent', {
+        roomId, type: 'm.room.message', content,
+      })
+    } catch (err) {
+      // Surface failure on the original message bubble — matches the regular
+      // send-failure UX so the user sees the same red alert icon.
+      const message = err instanceof Error ? err.message : 'Edit failed'
+      await db.chatMessages.update(eventId, { sendFailed: message })
+    }
   },
 
   sendReaction: async (roomId, eventId, emoji) => {

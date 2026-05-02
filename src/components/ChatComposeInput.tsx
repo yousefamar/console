@@ -21,8 +21,11 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   const [emojiSelectedIdx, setEmojiSelectedIdx] = useState(0)
   const sendMessage = useChatStore((s) => s.sendMessage)
   const sendImage = useChatStore((s) => s.sendImage)
+  const editMessage = useChatStore((s) => s.editMessage)
   const replyingTo = useChatStore((s) => s.replyingTo)
   const setReplyingTo = useChatStore((s) => s.setReplyingTo)
+  const editingMessage = useChatStore((s) => s.editingMessage)
+  const setEditingMessage = useChatStore((s) => s.setEditingMessage)
   const sendingRef = useRef(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -33,6 +36,25 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       inputRef.current?.focus()
     }
   }, [replyingTo])
+
+  // When the user picks a message to edit (only ones in this room — the store
+  // is room-agnostic), pre-fill the textarea with its current body, place the
+  // cursor at the end, and focus. Cancelling restores empty state.
+  useEffect(() => {
+    if (!editingMessage || editingMessage.roomId !== roomId) return
+    const body = editingMessage.body
+    textRef.current = body
+    setHasContent(!!body.trim())
+    if (inputRef.current) {
+      inputRef.current.value = body
+      inputRef.current.style.height = '24px'
+      inputRef.current.style.height = Math.min(120, inputRef.current.scrollHeight) + 'px'
+      inputRef.current.focus()
+      const pos = body.length
+      inputRef.current.selectionStart = pos
+      inputRef.current.selectionEnd = pos
+    }
+  }, [editingMessage, roomId])
 
   const detectEmojiQuery = useCallback((value: string, cursorPos: number) => {
     const textBefore = value.slice(0, cursorPos)
@@ -107,6 +129,23 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   const handleSend = useCallback(async () => {
     if (sendingRef.current) return
 
+    // Edit mode short-circuits: no image attach, no reply chaining — just
+    // submit the m.replace and clear back to fresh state.
+    if (editingMessage && editingMessage.roomId === roomId) {
+      const body = textRef.current.trim()
+      if (!body) return
+      const targetId = editingMessage.eventId
+      sendingRef.current = true
+      clearInput()
+      try {
+        await editMessage(roomId, targetId, body)
+      } finally {
+        sendingRef.current = false
+      }
+      inputRef.current?.focus()
+      return
+    }
+
     if (pendingImage) {
       sendingRef.current = true
       const file = pendingImage
@@ -133,7 +172,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       sendingRef.current = false
     }
     inputRef.current?.focus()
-  }, [roomId, sendMessage, sendImage, pendingImage, clearImage, clearInput])
+  }, [roomId, sendMessage, sendImage, pendingImage, clearImage, clearInput, editingMessage, editMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Emoji autocomplete keyboard handling
@@ -162,11 +201,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       }
     }
 
+    if (e.key === 'Escape' && editingMessage) {
+      e.preventDefault()
+      setEditingMessage(null)
+      clearInput()
+      return
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
-  }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji])
+  }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji, editingMessage, setEditingMessage, clearInput])
 
   const resizeScheduledRef = useRef(false)
   const autoResize = useCallback(() => {
@@ -243,13 +289,31 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
 
       <div className="px-3 py-2">
         {/* Reply preview */}
-        {replyingTo && (
+        {replyingTo && !editingMessage && (
           <div className="flex items-center justify-between pt-1 pb-1.5 min-w-0">
             <div className="flex-1 min-w-0 border-l-2 border-text-secondary pl-2">
               <span className="text-xs font-medium text-text-secondary">{replyingTo.senderName}</span>
               <p className="text-xs text-text-tertiary truncate">{replyingTo.body}</p>
             </div>
             <button onClick={() => setReplyingTo(null)} className="text-text-tertiary hover:text-text-primary p-1">
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {/* Edit preview — replaces the reply pill while in edit mode. Cancel
+            with the X or by hitting Escape in the textarea. */}
+        {editingMessage && editingMessage.roomId === roomId && (
+          <div className="flex items-center justify-between pt-1 pb-1.5 min-w-0">
+            <div className="flex-1 min-w-0 border-l-2 border-blue-500/60 pl-2">
+              <span className="text-xs font-medium text-blue-400">Editing</span>
+              <p className="text-xs text-text-tertiary truncate">{editingMessage.body}</p>
+            </div>
+            <button
+              onClick={() => { setEditingMessage(null); clearInput() }}
+              className="text-text-tertiary hover:text-text-primary p-1"
+              title="Cancel edit (Esc)"
+            >
               <X size={12} />
             </button>
           </div>

@@ -5,7 +5,7 @@ import { mxcToThumbnail, mxcToHttp, getUrlPreview, type UrlPreview } from '@/mat
 import { decryptAttachment } from '@/matrix/decrypt-media'
 import { diffWords } from 'diff'
 import DOMPurify from 'dompurify'
-import { Reply, SmilePlus, Clock, AlertCircle } from 'lucide-react'
+import { Reply, SmilePlus, Clock, AlertCircle, Pencil } from 'lucide-react'
 import clsx from 'clsx'
 
 // --- Markdown / HTML rendering ---
@@ -617,9 +617,10 @@ interface ChatMessageBubbleProps {
   onImageClick?: (src: string) => void
   onReply?: (msg: DbChatMessage) => void
   onReact?: (msg: DbChatMessage, emoji: string) => void
+  onEdit?: (msg: DbChatMessage) => void
 }
 
-export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onReply, onReact }: ChatMessageBubbleProps) {
+export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onReply, onReact, onEdit }: ChatMessageBubbleProps) {
   const avatarUrl = message.senderAvatar ? mxcToThumbnail(message.senderAvatar, 24, 24) : undefined
   // Strip bridge sender prefix (e.g. "anko: message" → "message") when it matches the display name
   const displayBody = useMemo(() => {
@@ -706,12 +707,18 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
         )}
       </div>
 
-      {/* Hover actions — desktop only */}
+      {/* Hover actions — desktop only. Edit only shown for own non-deleted
+          text messages; bridges don't reliably accept edits to media. */}
       <div className="absolute -top-3 right-2 hidden group-hover:flex items-center gap-0.5 bg-surface-1 border border-border rounded-sm shadow-sm px-0.5 py-0.5 z-10">
         <button onClick={() => onReply?.(message)} className="p-1 text-text-tertiary hover:text-text-primary" title="Reply">
           <Reply size={12} />
         </button>
         <EmojiButton onSelect={(emoji) => onReact?.(message, emoji)} />
+        {isOwn && !message.isDeleted && message.type === 'text' && !message.id.startsWith('~') && (
+          <button onClick={() => onEdit?.(message)} className="p-1 text-text-tertiary hover:text-text-primary" title="Edit">
+            <Pencil size={12} />
+          </button>
+        )}
       </div>
 
       {/* Message content. Pending/failed tint the body in place — no extra
