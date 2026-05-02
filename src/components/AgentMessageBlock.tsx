@@ -455,28 +455,39 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let key = 0
 
-  // Handle inline code, bold, and italic in one pass
-  // Order matters: code first (so **bold** inside backticks stays literal), then bold, then italic
-  const inlineRegex = /`([^`]+)`|\*\*(.+?)\*\*|\*(.+?)\*/g
+  // Handle image, inline code, bold, and italic in one pass.
+  // Image first so its `(...)` URL doesn't collide with later patterns.
+  // Then code (so **bold** inside backticks stays literal), then bold, then italic.
+  const inlineRegex = /!\[([^\]]*)\]\(([^)]+)\)|`([^`]+)`|\*\*(.+?)\*\*|\*(.+?)\*/g
   let lastIndex = 0
 
   for (const match of text.matchAll(inlineRegex)) {
     if (match.index > lastIndex) {
       parts.push(<span key={key++}>{text.slice(lastIndex, match.index)}</span>)
     }
-    if (match[1] !== undefined) {
+    if (match[1] !== undefined && match[2] !== undefined) {
+      // Image
+      parts.push(
+        <img
+          key={key++}
+          alt={match[1]}
+          src={match[2]}
+          className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain"
+        />,
+      )
+    } else if (match[3] !== undefined) {
       // Inline code
       parts.push(
         <code key={key++} className="bg-surface-2 px-1 py-0.5 rounded-sm text-[11px] font-mono break-all">
-          {match[1]}
+          {match[3]}
         </code>,
       )
-    } else if (match[2] !== undefined) {
+    } else if (match[4] !== undefined) {
       // Bold
-      parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>)
-    } else if (match[3] !== undefined) {
+      parts.push(<strong key={key++} className="font-semibold">{match[4]}</strong>)
+    } else if (match[5] !== undefined) {
       // Italic
-      parts.push(<em key={key++}>{match[3]}</em>)
+      parts.push(<em key={key++}>{match[5]}</em>)
     }
     lastIndex = match.index + match[0].length
   }
