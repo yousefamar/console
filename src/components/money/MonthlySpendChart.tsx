@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  Legend,
+  Legend, Brush,
 } from 'recharts'
 import { useFinanceStore, fmtMonth, fmtPence } from '@/store/finance'
 
@@ -112,6 +112,8 @@ export function MonthlySpendChart() {
               <Area key={id} type="monotone" dataKey={id} stackId="1"
                 stroke={colorFor(id)} fill={colorFor(id)} fillOpacity={0.7} name={id} />
             ))}
+            <Brush dataKey="month" height={20} stroke="var(--color-border)"
+              fill="var(--color-surface-1)" travellerWidth={8} tickFormatter={fmtMonth as never} />
           </AreaChart>
         </ResponsiveContainer>
       </div>

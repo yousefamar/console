@@ -7,7 +7,7 @@ import { useState, useEffect } from 'react'
 import { Plus, Trash2, Copy, ChevronRight, ChevronDown } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
-  CartesianGrid, Legend,
+  CartesianGrid, Legend, Brush,
 } from 'recharts'
 import {
   useFinanceStore, fmtPence, fmtMonth, type Scenario, type Delta, type Stream,
@@ -134,6 +134,8 @@ function ComparisonChart({
             <Line key={s.id} type="monotone" dataKey={s.id}
               stroke={SCN_COLORS[(i + 1) % SCN_COLORS.length]} strokeWidth={1.4} dot={false} name={s.id} />
           ))}
+          <Brush dataKey="month" height={20} stroke="var(--color-border)"
+            fill="var(--color-surface-1)" travellerWidth={8} tickFormatter={fmtMonth as never} />
         </LineChart>
       </ResponsiveContainer>
     </div>

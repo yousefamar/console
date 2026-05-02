@@ -4,7 +4,7 @@
 
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
-  CartesianGrid, Legend,
+  CartesianGrid, Legend, Brush,
 } from 'recharts'
 import { useEffect, useState } from 'react'
 import { useFinanceStore, fmtMonth, fmtPence, type MonthlyPoint } from '@/store/finance'
@@ -17,7 +17,7 @@ interface SeriesRow {
   [key: string]: number | string
 }
 
-export function ProjectionChart({ height = 280 }: { height?: number }) {
+export function ProjectionChart({ height = 320 }: { height?: number }) {
   const trajectory = useFinanceStore((s) => s.trajectory)
   const emergency = useFinanceStore((s) => s.emergencyFundPence)
   const scenarios = useFinanceStore((s) => s.scenarios)
@@ -90,6 +90,14 @@ export function ProjectionChart({ height = 280 }: { height?: number }) {
               name={`scn_${s.id}_liquid`}
             />
           ))}
+          <Brush
+            dataKey="month"
+            height={22}
+            stroke="var(--color-border)"
+            fill="var(--color-surface-1)"
+            travellerWidth={8}
+            tickFormatter={fmtMonth as never}
+          />
         </LineChart>
       </ResponsiveContainer>
     </div>

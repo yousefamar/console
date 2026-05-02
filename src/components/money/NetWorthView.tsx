@@ -6,7 +6,7 @@
 import { useState } from 'react'
 import { Plus, Trash2, ChevronRight, ChevronDown } from 'lucide-react'
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Brush,
 } from 'recharts'
 import { useFinanceStore, fmtPence, fmtMonth, type Account } from '@/store/finance'
 
@@ -69,6 +69,8 @@ export function NetWorthView() {
                 />
                 <Area type="monotone" dataKey="investment" stackId="1" stroke="#a78bfa" fill="url(#inv)" />
                 <Area type="monotone" dataKey="liquid" stackId="1" stroke="#3b82f6" fill="url(#liq)" />
+                <Brush dataKey="month" height={20} stroke="var(--color-border)"
+                  fill="var(--color-surface-1)" travellerWidth={8} tickFormatter={fmtMonth as never} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
