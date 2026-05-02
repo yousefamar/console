@@ -541,6 +541,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
         {isAgents ? (
           <>
             <span><kbd className="font-mono">e</kbd> read</span>
+            <span><kbd className="font-mono">E</kbd> unread</span>
             <span><kbd className="font-mono">Esc</kbd> interrupt</span>
             <span><kbd className="font-mono">Enter</kbd> focus input</span>
           </>

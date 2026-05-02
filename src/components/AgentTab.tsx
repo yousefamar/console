@@ -1,10 +1,10 @@
-import { memo, useEffect, useMemo, useState, useRef, useCallback } from 'react'
+import { Fragment, memo, useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { AgentSessionView } from './AgentSessionView'
 import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import clsx from 'clsx'
-import { Circle, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Circle, Folder, FolderOpen, Plus } from 'lucide-react'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -21,6 +21,8 @@ export const AgentTab = memo(function AgentTab() {
   const selectSession = useAgentStore((s) => s.selectSession)
   const sessionOrder = useAgentStore((s) => s.sessionOrder)
   const reorderSession = useAgentStore((s) => s.reorderSession)
+  const collapsedGroups = useAgentStore((s) => s.collapsedGroups)
+  const toggleGroupCollapsed = useAgentStore((s) => s.toggleGroupCollapsed)
   const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
   const isMobile = useIsMobile()
 
@@ -85,15 +87,34 @@ export const AgentTab = memo(function AgentTab() {
                 <p className="text-xs text-text-tertiary">No active sessions</p>
               </div>
             )}
-            {orderedSessions(activeSessions, sessionOrder).map((session) => (
-              <SessionListItem
-                key={session.id}
-                session={session}
-                isActive={session.id === activeSessionId}
-                onSelect={selectSession}
-                onReorder={reorderSession}
-              />
-            ))}
+            {(() => {
+              const { rootSessions, roots } = peelUniversalRoot(buildGroupTree(activeSessions, sessionOrder))
+              return (
+                <>
+                  {rootSessions.map((session) => (
+                    <SessionListItem
+                      key={session.id}
+                      session={session}
+                      isActive={session.id === activeSessionId}
+                      indent={0}
+                      onSelect={selectSession}
+                      onReorder={reorderSession}
+                    />
+                  ))}
+                  {roots.map((node) => (
+                    <GroupSection
+                      key={node.cwd}
+                      node={node}
+                      activeSessionId={activeSessionId}
+                      collapsedGroups={collapsedGroups}
+                      onToggleCollapsed={toggleGroupCollapsed}
+                      onSelect={selectSession}
+                      onReorder={reorderSession}
+                    />
+                  ))}
+                </>
+              )
+            })()}
           </div>
         </div>
       )}
@@ -112,9 +133,10 @@ export const AgentTab = memo(function AgentTab() {
 // Session list item with context menu
 // --------------------------------------------------------------------------
 
-const SessionListItem = memo(function SessionListItem({ session, isActive, onSelect, onReorder }: {
+const SessionListItem = memo(function SessionListItem({ session, isActive, indent, onSelect, onReorder }: {
   session: SessionInfo
   isActive: boolean
+  indent: number
   onSelect: (id: string) => void
   onReorder: (fromId: string, toId: string) => void
 }) {
@@ -123,6 +145,18 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, onSel
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
+  // Latest text/prompt snippet — same pattern as Al, gives a glanceable activity preview
+  const lastText = useAgentStore((s) => {
+    const msgs = s.messagesBySession[session.id]
+    if (!msgs) return null
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const block = msgs[i]!.block
+      if (block.type === 'text') return block.content.slice(0, 100)
+      if (block.type === 'user_prompt') return block.content.slice(0, 100)
+    }
+    return null
+  })
+  const subtitle = session.statusText || lastText
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
@@ -172,8 +206,14 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, onSel
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = 'move'
           e.dataTransfer.setData('text/plain', session.id)
+          e.dataTransfer.setData('application/x-agent-cwd', session.cwd ?? '')
         }}
         onDragOver={(e) => {
+          // Reorder only within the same group (cwd) — cross-group drag is a no-op
+          const fromCwd = e.dataTransfer.types.includes('application/x-agent-cwd')
+            ? e.dataTransfer.getData('application/x-agent-cwd')
+            : null
+          if (fromCwd !== null && fromCwd !== (session.cwd ?? '')) return
           e.preventDefault()
           e.dataTransfer.dropEffect = 'move'
           setIsDragOver(true)
@@ -183,7 +223,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, onSel
           e.preventDefault()
           setIsDragOver(false)
           const fromId = e.dataTransfer.getData('text/plain')
-          if (fromId && fromId !== session.id) {
+          const fromCwd = e.dataTransfer.getData('application/x-agent-cwd')
+          if (fromId && fromId !== session.id && fromCwd === (session.cwd ?? '')) {
             onReorder(fromId, session.id)
           }
         }}
@@ -203,10 +244,11 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, onSel
           }
         }}
         className={clsx(
-          'w-full text-left px-3 py-2 border-b transition-colors duration-fast',
+          'w-full text-left py-1.5 pr-2 border-b transition-colors duration-fast',
           isDragOver ? 'border-t-2 border-t-text-primary border-b-border' : 'border-b-border',
           isActive ? 'bg-surface-2' : 'hover:bg-surface-1',
         )}
+        style={{ paddingLeft: `${8 + indent * 10}px` }}
       >
         {isRenaming ? (
           <input
@@ -232,19 +274,18 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, onSel
               {isGenerating ? 'Generating title…' : displayName}
             </span>
             <div className="flex items-center gap-1.5">
-              {session.hasUnread && !isActive && (
+              {session.hasUnread && (
                 <Circle size={5} className="fill-current text-blue-500 flex-shrink-0" />
               )}
               <StatusDot status={session.status} />
             </div>
           </div>
         )}
-        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-text-tertiary">
-          <span>{formatTime(session.createdAt)}</span>
-          {session.cwd && (
-            <span className="truncate max-w-[100px]">{dirBasename(session.cwd)}</span>
-          )}
-        </div>
+        {subtitle && (
+          <div className="text-[10px] text-text-tertiary truncate mt-0.5">
+            {subtitle}
+          </div>
+        )}
       </button>
     </ContextMenu>
   )
@@ -310,27 +351,189 @@ function StatusDot({ status }: { status: 'running' | 'idle' | 'ended' }) {
   )
 }
 
-function formatTime(timestamp: number): string {
-  const d = new Date(timestamp)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-
 function dirBasename(path: string): string {
   const parts = path.replace(/\/+$/, '').split('/')
   return parts[parts.length - 1] || path
 }
 
-/** Order sessions by custom order (if set), falling back to createdAt desc */
-function orderedSessions<T extends { id: string; status: string; createdAt: number }>(sessions: T[], order: string[]): T[] {
-  if (order.length === 0) {
-    return [...sessions].sort((a, b) => b.createdAt - a.createdAt)
-  }
-  const orderMap = new Map(order.map((id, i) => [id, i]))
-  return [...sessions].sort((a, b) => {
-    const aIdx = orderMap.get(a.id) ?? Infinity
-    const bIdx = orderMap.get(b.id) ?? Infinity
-    if (aIdx !== Infinity || bIdx !== Infinity) return aIdx - bIdx
+// --------------------------------------------------------------------------
+// Group tree — derived from session.cwd at render time.
+// Sessions sharing a cwd form a group; cwds that are subdirectories of
+// another sessioned cwd nest underneath it. Within a group, sessions are
+// ordered by the flat sessionOrder (synced via hub); groups themselves are
+// ordered by the position of their first member in the same flat order.
+// --------------------------------------------------------------------------
+
+interface GroupNode {
+  cwd: string                  // '' = "no directory" bucket
+  label: string                // path segment relative to parent
+  fullPath: string             // for tooltip
+  sessions: SessionInfo[]
+  children: GroupNode[]
+  depth: number
+}
+
+function buildGroupTree(sessions: SessionInfo[], order: string[]): GroupNode[] {
+  const orderIdx = new Map(order.map((id, i) => [id, i]))
+  const sessionKey = (s: SessionInfo) => orderIdx.get(s.id) ?? Number.MAX_SAFE_INTEGER
+  const sortSessions = (a: SessionInfo, b: SessionInfo) => {
+    const ai = sessionKey(a)
+    const bi = sessionKey(b)
+    if (ai !== bi) return ai - bi
     return b.createdAt - a.createdAt
-  })
+  }
+
+  // Bucket by cwd
+  const byCwd = new Map<string, SessionInfo[]>()
+  for (const s of sessions) {
+    const cwd = s.cwd ?? ''
+    const arr = byCwd.get(cwd) ?? []
+    arr.push(s)
+    byCwd.set(cwd, arr)
+  }
+  for (const arr of byCwd.values()) arr.sort(sortSessions)
+
+  // Sort cwds shortest-first so each node's parent already exists when we link
+  const cwds = [...byCwd.keys()].sort((a, b) => a.length - b.length)
+  const nodeByCwd = new Map<string, GroupNode>()
+  for (const cwd of cwds) {
+    nodeByCwd.set(cwd, {
+      cwd,
+      label: cwd ? dirBasename(cwd) : '(no directory)',
+      fullPath: cwd,
+      sessions: byCwd.get(cwd)!,
+      children: [],
+      depth: 0,
+    })
+  }
+
+  const roots: GroupNode[] = []
+  for (const cwd of cwds) {
+    const node = nodeByCwd.get(cwd)!
+    // Find longest *sessioned* cwd that is a strict ancestor
+    let parentCwd: string | null = null
+    if (cwd) {
+      for (const other of cwds) {
+        if (!other || other === cwd) continue
+        if (cwd.startsWith(other + '/') && (parentCwd === null || other.length > parentCwd.length)) {
+          parentCwd = other
+        }
+      }
+    }
+    if (parentCwd !== null) {
+      const parent = nodeByCwd.get(parentCwd)!
+      parent.children.push(node)
+      node.depth = parent.depth + 1
+      node.label = cwd.slice(parentCwd.length + 1)
+    } else {
+      roots.push(node)
+    }
+  }
+
+  // Group sort key: first-member's order index, recursing into children if empty
+  const groupKey = (n: GroupNode): number => {
+    if (n.sessions.length > 0) return sessionKey(n.sessions[0]!)
+    if (n.children.length > 0) return groupKey(n.children[0]!)
+    return Number.MAX_SAFE_INTEGER
+  }
+  const sortGroupsRec = (arr: GroupNode[]) => {
+    arr.sort((a, b) => groupKey(a) - groupKey(b))
+    for (const n of arr) sortGroupsRec(n.children)
+  }
+  sortGroupsRec(roots)
+
+  return roots
+}
+
+/** If the tree has a single root (one cwd shared by everything), drop its
+ *  redundant header — promote its sessions to the top level (alongside Al)
+ *  and its child groups become the new roots. */
+function peelUniversalRoot(roots: GroupNode[]): { rootSessions: SessionInfo[]; roots: GroupNode[] } {
+  if (roots.length !== 1) return { rootSessions: [], roots }
+  const only = roots[0]!
+  const promoted = only.children.map((c) => shiftDepth(c, -1))
+  return { rootSessions: only.sessions, roots: promoted }
+}
+
+function shiftDepth(node: GroupNode, delta: number): GroupNode {
+  return {
+    ...node,
+    depth: node.depth + delta,
+    children: node.children.map((c) => shiftDepth(c, delta)),
+  }
+}
+
+/** Recursively roll up status/unread/count for a group and its descendants. */
+function aggregateGroup(node: GroupNode): { unread: number; running: boolean; total: number } {
+  let unread = node.sessions.reduce((n, s) => n + (s.hasUnread ? 1 : 0), 0)
+  let running = node.sessions.some((s) => s.status === 'running')
+  let total = node.sessions.length
+  for (const c of node.children) {
+    const a = aggregateGroup(c)
+    unread += a.unread
+    running = running || a.running
+    total += a.total
+  }
+  return { unread, running, total }
+}
+
+function GroupSection({ node, activeSessionId, collapsedGroups, onToggleCollapsed, onSelect, onReorder }: {
+  node: GroupNode
+  activeSessionId: string | null
+  collapsedGroups: Set<string>
+  onToggleCollapsed: (cwd: string) => void
+  onSelect: (id: string) => void
+  onReorder: (fromId: string, toId: string) => void
+}) {
+  const collapsed = collapsedGroups.has(node.cwd)
+  const agg = useMemo(() => aggregateGroup(node), [node])
+  const Chevron = collapsed ? ChevronRight : ChevronDown
+  const FolderIcon = collapsed ? Folder : FolderOpen
+
+  return (
+    <Fragment>
+      <button
+        type="button"
+        onClick={() => onToggleCollapsed(node.cwd)}
+        className="w-full flex items-center gap-1 py-1 pr-2 text-xs text-text-secondary hover:bg-surface-1 transition-colors duration-fast"
+        style={{ paddingLeft: `${8 + node.depth * 10}px` }}
+        title={node.fullPath || undefined}
+      >
+        <Chevron size={10} className="flex-shrink-0 opacity-70" />
+        <FolderIcon size={11} className="flex-shrink-0 opacity-70" />
+        <span className="truncate flex-1 text-left">{node.label}</span>
+        {collapsed && agg.running && (
+          <Circle size={6} className="fill-current text-warning flex-shrink-0" />
+        )}
+        {collapsed && agg.unread > 0 && (
+          <span className="text-[10px] text-blue-500 font-medium flex-shrink-0">{agg.unread}</span>
+        )}
+        {collapsed && agg.total > 0 && (
+          <span className="text-[10px] text-text-tertiary flex-shrink-0">{agg.total}</span>
+        )}
+      </button>
+      {!collapsed && node.sessions.map((session) => (
+        <SessionListItem
+          key={session.id}
+          session={session}
+          isActive={session.id === activeSessionId}
+          indent={node.depth + 1}
+          onSelect={onSelect}
+          onReorder={onReorder}
+        />
+      ))}
+      {!collapsed && node.children.map((child) => (
+        <GroupSection
+          key={child.cwd}
+          node={child}
+          activeSessionId={activeSessionId}
+          collapsedGroups={collapsedGroups}
+          onToggleCollapsed={onToggleCollapsed}
+          onSelect={onSelect}
+          onReorder={onReorder}
+        />
+      ))}
+    </Fragment>
+  )
 }
 

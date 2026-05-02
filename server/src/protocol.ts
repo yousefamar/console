@@ -16,6 +16,7 @@ export type ClientMessage =
   | { type: 'deny_tool'; sessionId: string; requestId: string; reason?: string }
   | { type: 'interrupt'; sessionId: string }
   | { type: 'kill_session'; sessionId: string }
+  | { type: 'delete_session'; sessionId: string }
   | { type: 'list_sessions' }
   | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string }
   | { type: 'list_past_sessions'; cwd: string }
@@ -25,6 +26,7 @@ export type ClientMessage =
   | { type: 'fork_session'; sessionId: string; cwd?: string }
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
+  | { type: 'set_collapsed_groups'; collapsed: string[] }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -54,6 +56,7 @@ export type HubMessage =
   | { type: 'session_history'; sessionId: string; messages: SessionHistoryMessage[] }
   | { type: 'session_renamed'; sessionId: string; name: string }
   | { type: 'session_order'; order: string[] }
+  | { type: 'collapsed_groups'; collapsed: string[] }
   | { type: 'older_messages'; sessionId: string; messages: HubMessage[]; hasMore: boolean }
   | { type: 'hub_error'; message: string }
 

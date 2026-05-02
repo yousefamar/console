@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { useGlassesStore } from '@/glasses/store'
+import { getHubUrl } from '@/hub'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
 // ============================================================================
@@ -52,13 +53,43 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const pastSessions = useAgentStore((s) => s.pastSessions)
   const resumeSession = useAgentStore((s) => s.resumeSession)
 
-  // Filter dirs based on input
-  const filteredDirs = useMemo(() => dirInput.trim()
-    ? projectDirs.filter((d) => {
-        const q = dirInput.toLowerCase()
-        return d.toLowerCase().includes(q) || basename(d).toLowerCase().includes(q)
-      })
-    : projectDirs, [dirInput, projectDirs])
+  // Filesystem dir suggestions — fetched from hub when the user types a path-like
+  // string (starts with `/` or `~`). Lets them tab-complete into directories that
+  // aren't existing Claude project dirs.
+  const [fsDirs, setFsDirs] = useState<string[]>([])
+  useEffect(() => {
+    const q = dirInput.trim()
+    if (!q.startsWith('/') && !q.startsWith('~')) {
+      setFsDirs([])
+      return
+    }
+    const ctrl = new AbortController()
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`${getHubUrl()}/agents/list-dirs?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
+        if (!res.ok) return
+        const { dirs } = await res.json() as { dirs: string[] }
+        setFsDirs(dirs)
+      } catch { /* aborted or offline */ }
+    }, 80)
+    return () => { ctrl.abort(); clearTimeout(t) }
+  }, [dirInput])
+
+  // Filter project dirs by substring; merge with filesystem suggestions, dedup.
+  const filteredDirs = useMemo(() => {
+    const q = dirInput.trim()
+    const projects = q
+      ? projectDirs.filter((d) => {
+          const lq = q.toLowerCase()
+          return d.toLowerCase().includes(lq) || basename(d).toLowerCase().includes(lq)
+        })
+      : projectDirs
+    if (fsDirs.length === 0) return projects
+    const seen = new Set(projects)
+    const merged = [...projects]
+    for (const d of fsDirs) if (!seen.has(d)) merged.push(d)
+    return merged
+  }, [dirInput, projectDirs, fsDirs])
 
   // Slash command filtering — driven by slashQuery state, updated only in onChange
   const filteredSlash = useMemo(() => slashOpen
@@ -279,7 +310,12 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setDirIndex((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
+    } else if (e.key === 'Enter') {
+      if (filteredDirs[dirIndex]) {
+        e.preventDefault()
+        selectDir(filteredDirs[dirIndex], { focusPrompt: true })
+      }
+    } else if (e.key === 'Tab') {
       if (filteredDirs[dirIndex]) {
         e.preventDefault()
         selectDir(filteredDirs[dirIndex])
@@ -291,12 +327,22 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     }
   }, [dirOpen, filteredDirs, dirIndex])
 
-  const selectDir = useCallback((dir: string) => {
+  const selectDir = useCallback((dir: string, opts?: { focusPrompt?: boolean }) => {
     setSelectedDir(dir)
     setDirInput(dir)
     setDirOpen(false)
-    // Focus the prompt input after selecting
-    setTimeout(() => inputRef.current?.focus(), 50)
+    if (opts?.focusPrompt) {
+      // Move focus to the prompt textarea (Enter / mouse click path)
+      setTimeout(() => inputRef.current?.focus(), 50)
+    } else {
+      // Tab-complete: stay in the dir input so the user can keep refining the path
+      setTimeout(() => {
+        const el = dirRef.current
+        if (!el) return
+        const len = el.value.length
+        el.setSelectionRange(len, len)
+      }, 0)
+    }
   }, [])
 
   const handleDirChange = useCallback((value: string) => {
@@ -445,7 +491,35 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     <div className="border-t border-border px-3 py-2">
       {/* Directory picker — only when no active session */}
       {showDirPicker && (
-        <div className="mb-1.5">
+        <div className="mb-1.5 relative">
+          {/* Autocomplete dropdown — floats above the input so the input doesn't shift when it opens */}
+          {dirOpen && filteredDirs.length > 0 && (
+            <div
+              ref={listRef}
+              className="absolute bottom-full left-0 right-0 mb-1 max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg z-10"
+            >
+              {filteredDirs.map((dir, i) => (
+                <button
+                  key={dir}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    selectDir(dir, { focusPrompt: true })
+                  }}
+                  className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left transition-colors duration-fast ${
+                    i === dirIndex ? 'bg-surface-2' : 'hover:bg-surface-2'
+                  }`}
+                >
+                  <span className="text-xs font-medium text-text-primary truncate">
+                    {basename(dir)}
+                  </span>
+                  <span className="text-[10px] text-text-tertiary truncate">
+                    {dir}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5">
             <FolderOpen size={12} className="text-text-tertiary flex-shrink-0" />
             <input
@@ -467,34 +541,6 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
               </button>
             )}
           </div>
-
-          {/* Autocomplete dropdown */}
-          {dirOpen && filteredDirs.length > 0 && (
-            <div
-              ref={listRef}
-              className="mb-1 w-full max-h-48 overflow-y-auto border border-border bg-surface-1 py-0.5 shadow-lg"
-            >
-              {filteredDirs.map((dir, i) => (
-                <button
-                  key={dir}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    selectDir(dir)
-                  }}
-                  className={`flex w-full items-baseline gap-2 px-2.5 py-1 text-left transition-colors duration-fast ${
-                    i === dirIndex ? 'bg-surface-2' : 'hover:bg-surface-2'
-                  }`}
-                >
-                  <span className="text-xs font-medium text-text-primary truncate">
-                    {basename(dir)}
-                  </span>
-                  <span className="text-[10px] text-text-tertiary truncate">
-                    {dir}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 

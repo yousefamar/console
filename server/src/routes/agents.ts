@@ -13,6 +13,7 @@ import { saveManifest } from '../manifest.js'
 // Session order persistence
 const CONFIG_DIR = join(homedir(), '.config', 'console')
 const ORDER_FILE = join(CONFIG_DIR, 'agent-session-order.json')
+const COLLAPSED_GROUPS_FILE = join(CONFIG_DIR, 'agent-collapsed-groups.json')
 
 /** Load persisted order (stored as claudeSessionIds for stability across restarts) */
 function loadOrderFromDisk(): string[] {
@@ -28,6 +29,23 @@ function saveOrderToDisk(order: string[]) {
   try {
     mkdirSync(CONFIG_DIR, { recursive: true })
     writeFileSync(ORDER_FILE, JSON.stringify(order))
+  } catch { /* best effort */ }
+}
+
+/** Collapsed group cwds — keyed by absolute cwd path, stable across restarts */
+export function loadCollapsedGroups(): string[] {
+  if (!existsSync(COLLAPSED_GROUPS_FILE)) return []
+  try {
+    return JSON.parse(readFileSync(COLLAPSED_GROUPS_FILE, 'utf-8')) as string[]
+  } catch {
+    return []
+  }
+}
+
+function saveCollapsedGroups(collapsed: string[]) {
+  try {
+    mkdirSync(CONFIG_DIR, { recursive: true })
+    writeFileSync(COLLAPSED_GROUPS_FILE, JSON.stringify(collapsed))
   } catch { /* best effort */ }
 }
 
@@ -199,6 +217,20 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       break
     }
 
+    case 'delete_session': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      try { session.kill() } catch {}
+      sessions.delete(msg.sessionId)
+      const remaining = Array.from(sessions.values()).map((s) => s.getInfo())
+      broadcast(clients, { type: 'sessions_list', sessions: remaining })
+      log(`Session deleted: ${session.id}`)
+      break
+    }
+
     case 'list_sessions': {
       const active = Array.from(sessions.values()).map((s) => s.getInfo())
       sendTo(ws, { type: 'sessions_list', sessions: active })
@@ -271,6 +303,12 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       saveSessionOrder(msg.order, sessions)
       broadcastExcept(clients, ws, { type: 'session_order', order: msg.order })
       log(`Session order updated (${msg.order.length} entries)`)
+      break
+    }
+
+    case 'set_collapsed_groups': {
+      saveCollapsedGroups(msg.collapsed)
+      broadcastExcept(clients, ws, { type: 'collapsed_groups', collapsed: msg.collapsed })
       break
     }
 

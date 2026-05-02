@@ -22,11 +22,11 @@ import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
-import { discoverProjectDirs } from './projects.js'
+import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
-import { handleClientMessage, createSession, loadSessionOrder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, type AgentContext } from './routes/agents.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { GmailClient } from './gmail-client.js'
@@ -313,6 +313,16 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     if (alBridge.isConnected()) sessionList.unshift(alBridge.getSessionInfo())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, version: '0.3.0', sessions: sessionList, cwd }))
+    return
+  }
+
+  // Filesystem directory autocomplete for the agent prompt's "new session" picker.
+  // Returns subdirectories matching `?q=<partial path>`. The prefix is split into
+  // (parent dir, name fragment); we list parent and filter by case-insensitive prefix.
+  if (path === '/agents/list-dirs') {
+    const q = url.searchParams.get('q') ?? ''
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ dirs: listDirectories(q) }))
     return
   }
 
@@ -628,6 +638,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const order = loadSessionOrder(sessions)
   if (order.length > 0) {
     sendTo(ws, { type: 'session_order', order })
+  }
+
+  // Send collapsed-groups state (keyed by cwd, stable across restarts)
+  const collapsed = loadCollapsedGroups()
+  if (collapsed.length > 0) {
+    sendTo(ws, { type: 'collapsed_groups', collapsed })
   }
 
   // Replay last REPLAY_LIMIT messages per session (older messages loaded on scroll-up)

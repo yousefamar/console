@@ -95,6 +95,8 @@ interface AgentState {
   generatingTitleFor: Set<string>
   /** Custom session ordering — IDs in display order. Sessions not listed fall to the end. */
   sessionOrder: string[]
+  /** Collapsed group cwds — used by AgentTab grouping UI. Synced via hub. */
+  collapsedGroups: Set<string>
 
   // Past sessions (from Claude's own JSONL files)
   pastSessions: PastSession[]
@@ -154,6 +156,7 @@ interface AgentState {
   loadOlderMessages: (sessionId: string) => void
   setTailing: (sessionId: string, tailing: boolean) => void
   reorderSession: (fromId: string, toId: string) => void
+  toggleGroupCollapsed: (cwd: string) => void
   forkSession: (sessionId: string) => void
   renameSession: (sessionId: string, name: string) => void
   generateTitle: (sessionId: string) => void
@@ -186,6 +189,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   activeSessionId: null,
   generatingTitleFor: new Set(),
   sessionOrder: [],
+  collapsedGroups: new Set(),
 
   pastSessions: [],
 
@@ -255,6 +259,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (!sessionId) return
 
     sendWs({ type: 'send_message', sessionId, content, ...(images?.length ? { images } : {}) })
+
+    // Replying = read (chat-style)
+    updateSession(sessionId, { hasUnread: false })
+    const msgs = get().messagesBySession[sessionId]
+    const lastTs = msgs?.length ? msgs[msgs.length - 1]!.timestamp : Date.now()
+    set((s) => ({ lastReadTsBySession: { ...s.lastReadTsBySession, [sessionId]: lastTs } }))
 
     // /clear — clear this session's chat history in the UI
     if (content.trim() === '/clear') {
@@ -326,10 +336,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
     }
     set({ activeSessionId: sessionId, pendingApproval: null, creatingNewSession: sessionId === null })
-    // Clear unread when viewing a session
-    if (sessionId) {
-      updateSession(sessionId, { hasUnread: false })
-    }
+    // Don't auto-mark read on selection — chat-style: stays unread until the
+    // user replies (sendMessage) or explicitly hits `e`.
     import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(sessionId))
     // Request history if we have no messages for this session yet
     if (sessionId && !(get().messagesBySession[sessionId]?.length)) {
@@ -418,6 +426,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const current = get().isTailingBySession[sessionId]
     if (current === tailing) return
     set((s) => ({ isTailingBySession: { ...s.isTailingBySession, [sessionId]: tailing } }))
+  },
+
+  toggleGroupCollapsed: (cwd) => {
+    const next = new Set(get().collapsedGroups)
+    if (next.has(cwd)) next.delete(cwd)
+    else next.add(cwd)
+    set({ collapsedGroups: next })
+    sendWs({ type: 'set_collapsed_groups', collapsed: [...next] })
   },
 
   reorderSession: (fromId, toId) => {
@@ -782,7 +798,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'text',
         content: msg.content as string,
       })
-      markUnreadIfNotActive(sessionId)
+      markUnread(sessionId)
       break
     }
 
@@ -875,7 +891,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
       useAgentStore.setState({
         pendingApproval: { sessionId: approvalSessionId, requestId, toolName, input },
       })
-      markUnreadIfNotActive(approvalSessionId)
+      markUnread(approvalSessionId)
       // Notify (skip during replay)
       if (suppressNotifications) break
       import('@/notifications').then(({ notify }) => {
@@ -916,7 +932,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         totalCost: cost,
       })
 
-      markUnreadIfNotActive(sessionId)
+      markUnread(sessionId)
 
       // Notify when agent finishes — skip during replay and when session wasn't running
       const session = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
@@ -947,7 +963,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         type: 'error',
         message: msg.message as string,
       })
-      markUnreadIfNotActive(sessionId)
+      markUnread(sessionId)
       break
     }
 
@@ -971,6 +987,11 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'session_order': {
       useAgentStore.setState({ sessionOrder: msg.order as string[] })
+      break
+    }
+
+    case 'collapsed_groups': {
+      useAgentStore.setState({ collapsedGroups: new Set(msg.collapsed as string[]) })
       break
     }
 
@@ -1075,13 +1096,11 @@ function hubMsgToBlock(m: Record<string, unknown>): AgentMessage['block'] | null
   }
 }
 
-/** Mark a session as unread if it's not the currently viewed session */
-function markUnreadIfNotActive(sessionId: string) {
+/** Mark a session as unread on new inbound content. Stays unread (chat-style)
+ *  even when active — clears only via explicit markSessionRead or sendMessage. */
+function markUnread(sessionId: string) {
   if (suppressNotifications) return // Don't mark unread during replay
-  const state = useAgentStore.getState()
-  if (state.activeSessionId !== sessionId) {
-    updateSession(sessionId, { hasUnread: true })
-  }
+  updateSession(sessionId, { hasUnread: true })
 }
 
 function updateSession(sessionId: string, updates: Partial<SessionInfo>) {

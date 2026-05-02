@@ -1,8 +1,8 @@
 // Project directory discovery — finds Claude project dirs from ~/.claude/projects/
 
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 /**
  * Decode a Claude projects folder name back to a real filesystem path.
@@ -74,6 +74,49 @@ export function discoverProjectDirs(): string[] {
     }
 
     return dirs.sort()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Filesystem-level autocomplete for an absolute or `~`-relative path prefix.
+ * Splits `q` into (parent dir, fragment). Lists `parent`'s subdirectories and
+ * returns those starting with `fragment` (case-insensitive). Hides dotfiles
+ * unless the fragment itself starts with `.`.
+ */
+export function listDirectories(q: string, limit = 50): string[] {
+  if (!q) return []
+  // Expand leading ~
+  let expanded = q
+  if (expanded === '~') expanded = homedir()
+  else if (expanded.startsWith('~/')) expanded = join(homedir(), expanded.slice(2))
+  if (!expanded.startsWith('/')) return []  // Only absolute paths
+
+  // If the input ends in `/`, list children of that exact dir; otherwise treat
+  // the trailing segment as a fragment to filter parent's children by.
+  const endsInSlash = expanded.endsWith('/')
+  const parent = endsInSlash ? expanded.replace(/\/+$/, '') || '/' : dirname(expanded)
+  const fragment = endsInSlash ? '' : expanded.slice(parent.length + (parent === '/' ? 0 : 1))
+
+  if (!existsSync(parent)) return []
+  try {
+    const fragLower = fragment.toLowerCase()
+    const showHidden = fragment.startsWith('.')
+    const out: string[] = []
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (out.length >= limit) break
+      if (!showHidden && entry.name.startsWith('.')) continue
+      // Some entries (symlinks) need stat to confirm directory-ness
+      let isDir = entry.isDirectory()
+      if (!isDir && entry.isSymbolicLink()) {
+        try { isDir = statSync(resolve(parent, entry.name)).isDirectory() } catch { isDir = false }
+      }
+      if (!isDir) continue
+      if (fragment && !entry.name.toLowerCase().startsWith(fragLower)) continue
+      out.push(parent === '/' ? '/' + entry.name : `${parent}/${entry.name}`)
+    }
+    return out.sort()
   } catch {
     return []
   }
