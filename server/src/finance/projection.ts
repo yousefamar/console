@@ -52,7 +52,15 @@ export function effectiveCategory(
   for (const rule of [...rules].sort((a, b) => a.priority - b.priority)) {
     const m = rule.match
     if (m.amountSign && m.amountSign !== amountSign) continue
-    if (m.merchantContains && !merchantName.toLowerCase().includes(m.merchantContains.toLowerCase())) continue
+    // merchantContains is friendly: matches against either the merchant name
+    // (card payments) or the counterparty name (faster payments / direct
+    // debits / Monzo-to-Monzo). Avoids needing a duplicate rule per tx type.
+    if (m.merchantContains) {
+      const needle = m.merchantContains.toLowerCase()
+      const m1 = merchantName.toLowerCase().includes(needle)
+      const m2 = counterparty.toLowerCase().includes(needle)
+      if (!m1 && !m2) continue
+    }
     if (m.descriptionContains && !description.toLowerCase().includes(m.descriptionContains.toLowerCase())) continue
     if (m.counterpartyContains && !counterparty.toLowerCase().includes(m.counterpartyContains.toLowerCase())) continue
     if (m.monzoCategoryEquals && tx.category !== m.monzoCategoryEquals) continue
