@@ -330,7 +330,7 @@ export function FeedItemView() {
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
       {/* Article header */}
       <div className="px-4 py-3 border-b border-border flex-shrink-0">
-        <h1 className="text-sm font-semibold text-text-primary leading-tight">
+        <h1 className="text-sm font-semibold text-text-primary leading-tight break-words">
           {item.title}
         </h1>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">

@@ -63,7 +63,7 @@ export const FeedTab = memo(function FeedTab() {
     // 3-layer mobile nav: folder tree → item list → article view
     const hasFeedOrFolder = selectedFeedId || selectedFolderId
     return (
-      <div className="flex flex-1 min-h-0 flex-col">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col">
         {selectedItemId ? <MobileFeedDetail /> : hasFeedOrFolder ? <FeedItemList /> : <FeedFolderTree />}
         {showAddModal && <FeedAddModal />}
       </div>
@@ -97,13 +97,13 @@ function MobileFeedDetail() {
   })
 
   return (
-    <div ref={swipeContainerRef} className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
+    <div ref={swipeContainerRef} className="flex-1 min-h-0 min-w-0 flex flex-col relative overflow-hidden">
       <div ref={swipeIconRef} className="absolute inset-y-0 left-0 flex items-center pl-6 pointer-events-none z-10" style={{ opacity: 0 }}>
         <Check size={24} className="text-green-500" />
       </div>
       <div
         ref={swipeContentRef}
-        className="flex-1 min-h-0 flex flex-col relative"
+        className="flex-1 min-h-0 min-w-0 flex flex-col relative"
         onTouchStart={swipe.onTouchStart}
         onTouchMove={swipe.onTouchMove}
         onTouchEnd={swipe.onTouchEnd}
