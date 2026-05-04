@@ -9,6 +9,7 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Brush,
 } from 'recharts'
 import { useFinanceStore, fmtPence, fmtMonth, type Account } from '@/store/finance'
+import { showConfirm } from '@/dialog'
 
 export function NetWorthView() {
   const accounts = useFinanceStore((s) => s.accounts)
@@ -238,7 +239,7 @@ function AccountEditor({ account, onClose }: { account: Account | null; onClose:
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium">{account ? 'Edit account' : 'New account'}</h3>
           {account && (
-            <button onClick={async () => { if (confirm('Delete account? Balance history is lost.')) { await deleteAccount(account.id); onClose() } }}
+            <button onClick={async () => { if (await showConfirm('Delete account? Balance history is lost.', { title: 'Delete account', danger: true, confirmLabel: 'Delete' })) { await deleteAccount(account.id); onClose() } }}
               className="text-text-tertiary hover:text-red-400">
               <Trash2 size={14} />
             </button>

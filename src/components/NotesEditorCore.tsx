@@ -8,10 +8,14 @@ import { languages } from '@codemirror/language-data'
 import { syntaxHighlighting, foldGutter, bracketMatching } from '@codemirror/language'
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
+import { autocompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete'
 import { vim, Vim } from '@replit/codemirror-vim'
 import { consoleEditorTheme } from '@/notes/editor-theme'
 import { livePreview } from '@/notes/live-preview'
 import { useNotesStore } from '@/store/notes'
+import { useBlogStore } from '@/store/blog'
+import { useUiStore } from '@/store/ui'
+import { showConfirm } from '@/dialog'
 import { pushFromEditor, pushNow as pushMirrorNow, isEnabled as isMirrorEnabled } from '@/glasses/mirror'
 
 /** Toggle markdown formatting around selection. If already wrapped, unwrap. */
@@ -57,6 +61,55 @@ function wrapSelection(view: EditorView | null, marker: string) {
       changes: { from, to, insert: marker + selected + marker },
       selection: { anchor: from, head: from + len + selected.length + len },
     })
+  }
+}
+
+/**
+ * Tag autocompletion for the YAML frontmatter `tags:` block list. Triggers when
+ * the cursor is on a line that looks like `  - <prefix>` AND the line is inside
+ * an open frontmatter block (between two `---` delimiters at the top of the
+ * file) AND the nearest preceding key line is `tags:`.
+ *
+ * Tags come from `useBlogStore.tags`, which is populated from the hub's scan
+ * of `log/*.md`. Most-used first.
+ */
+function tagCompletion(context: CompletionContext): CompletionResult | null {
+  const line = context.state.doc.lineAt(context.pos)
+  const beforeCursor = line.text.slice(0, context.pos - line.from)
+  // Must be a list item line `  - <prefix>` inside frontmatter
+  const m = beforeCursor.match(/^(\s*-\s)([^,\s]*)$/)
+  if (!m) return null
+
+  // Check we're inside frontmatter and that the closest preceding key is `tags:`
+  const docText = context.state.doc.toString()
+  if (!docText.startsWith('---\n')) return null
+  const fmEnd = docText.indexOf('\n---', 4)
+  if (fmEnd === -1 || context.pos > fmEnd) return null
+
+  // Walk back from the current line to find the most recent `key:` line
+  let foundTags = false
+  for (let n = line.number - 1; n >= 1; n--) {
+    const t = context.state.doc.line(n).text
+    if (t === '---') break
+    const kv = t.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):/)
+    if (kv) {
+      foundTags = kv[1] === 'tags'
+      break
+    }
+  }
+  if (!foundTags) return null
+
+  const prefix = m[2] ?? ''
+  const tags = useBlogStore.getState().tags
+  const filtered = prefix
+    ? tags.filter((t) => t.toLowerCase().includes(prefix.toLowerCase()))
+    : tags
+  if (filtered.length === 0) return null
+
+  return {
+    from: context.pos - prefix.length,
+    options: filtered.slice(0, 30).map((t) => ({ label: t, type: 'keyword' })),
+    validFor: /^[\w-]*$/,
   }
 }
 
@@ -144,11 +197,13 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
               const closed = state.closeFile(state.activeFilePath, false)
               if (!closed) {
                 // File is dirty — ask to save first
-                if (confirm('Save changes before closing?')) {
-                  state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
-                } else {
-                  state.closeFile(state.activeFilePath!, true)
-                }
+                void showConfirm('Save changes before closing?', { title: 'Unsaved changes', confirmLabel: 'Save & close', cancelLabel: 'Discard' }).then((save) => {
+                  if (save) {
+                    state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
+                  } else {
+                    state.closeFile(state.activeFilePath!, true)
+                  }
+                })
               }
             }
             return true
@@ -223,6 +278,7 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
         return false // let the input happen normally
       }),
       EditorView.lineWrapping,
+      autocompletion({ override: [tagCompletion] }),
       consoleEditorTheme,
       keymap.of([
         ...defaultKeymap,
@@ -322,6 +378,44 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
         selectedText: view.state.sliceDoc(sel.from, sel.to),
         mode: 'both',
       })
+    })
+
+    Vim.defineEx('publish', 'publish', async () => {
+      const notes = useNotesStore.getState()
+      const ui = useUiStore.getState()
+      const blog = useBlogStore.getState()
+      const path = notes.activeFilePath
+      if (!path) {
+        ui.pushToast({ kind: 'error', message: 'No file open to publish' })
+        return
+      }
+      // Save first so unsaved changes are included
+      try { await notes.saveFile() } catch {}
+      ui.pushToast({ kind: 'info', message: 'Publishing…', detail: path })
+      const result = await blog.publish(path)
+      if (!result.ok) {
+        ui.pushToast({ kind: 'error', message: 'Publish failed', detail: result.error })
+        return
+      }
+      // Close the (now-deleted) draft tab and refresh tree + drafts list
+      try { notes.closeFile(path, true) } catch {}
+      void notes.loadVaultFiles()
+      void blog.refreshDrafts()
+      void blog.refreshProjects()
+      if (result.rebuildOk) {
+        ui.pushToast({
+          kind: 'success',
+          message: 'Published',
+          detail: result.newPath,
+          href: 'https://yousefamar.com/log/',
+        })
+      } else {
+        ui.pushToast({
+          kind: 'error',
+          message: 'Moved, but rebuild failed',
+          detail: result.rebuildBody?.slice(0, 200) ?? 'no response',
+        })
+      }
     })
 
     // Defer view creation to next frame to ensure DOM is laid out

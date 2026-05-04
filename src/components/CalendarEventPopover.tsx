@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useCalendarStore } from '@/store/calendar'
+import { showConfirm } from '@/dialog'
 import {
   X, MapPin, Clock, Users, Video,
   ExternalLink, Pencil, Trash2,
@@ -198,8 +199,8 @@ export function CalendarEventPopover() {
                 Edit
               </button>
               <button
-                onClick={() => {
-                  if (confirm('Delete this event?')) {
+                onClick={async () => {
+                  if (await showConfirm('Delete this event?', { title: 'Delete event', danger: true, confirmLabel: 'Delete' })) {
                     deleteEvent(event.calendarId, event.accountEmail, event.id)
                     selectEvent(null)
                   }

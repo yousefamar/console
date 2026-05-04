@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNotesStore, type TreeNode } from '@/store/notes'
+import { showConfirm } from '@/dialog'
 import { ChevronRight, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine } from 'lucide-react'
 
 interface ContextMenu {
@@ -52,7 +53,7 @@ export function NotesFileBrowser() {
 
   const handleDelete = useCallback(async (path: string, name: string) => {
     setContextMenu(null)
-    if (confirm(`Delete "${name.replace(/\.md$/, '')}"?`)) {
+    if (await showConfirm(`Delete "${name.replace(/\.md$/, '')}"?`, { title: 'Delete file', danger: true, confirmLabel: 'Delete' })) {
       await useNotesStore.getState().deleteFile(path)
     }
   }, [])

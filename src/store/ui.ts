@@ -3,9 +3,10 @@ import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
 import { getPref, setPref } from '@/prefs'
 
-export type ActivePane = 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'money'
+export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'money'
 
 const PANE_PATHS: Record<ActivePane, string> = {
+  home: '/',
   email: '/mail',
   chat: '/chat',
   bookmarks: '/bookmarks',
@@ -17,6 +18,7 @@ const PANE_PATHS: Record<ActivePane, string> = {
 }
 
 const PATH_PANES: Record<string, ActivePane> = {
+  '/': 'home',
   '/mail': 'email',
   '/chat': 'chat',
   '/bookmarks': 'bookmarks',
@@ -28,8 +30,8 @@ const PATH_PANES: Record<string, ActivePane> = {
 }
 
 function paneFromUrl(): ActivePane {
-  if (typeof window === 'undefined') return 'email'
-  const pane = PATH_PANES[window.location.pathname] ?? 'email'
+  if (typeof window === 'undefined') return 'home'
+  const pane = PATH_PANES[window.location.pathname] ?? 'home'
   // Initialize notification state. DnD is applied in App init once hub prefs
   // have loaded — don't touch it here, to avoid a race with the async fetch.
   import('@/notifications').then(({ setActiveNotificationPane }) => {
@@ -41,6 +43,33 @@ function paneFromUrl(): ActivePane {
 interface UndoAction {
   label: string
   undo: () => Promise<void>
+  expiresAt: number
+}
+
+export interface DialogState {
+  id: number
+  kind: 'alert' | 'confirm' | 'prompt'
+  title?: string
+  message: string
+  /** prompt-only */
+  defaultValue?: string
+  placeholder?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  /** confirm — red OK button */
+  danger?: boolean
+  /** internal: resolve the awaiting promise */
+  resolve: (value: unknown) => void
+}
+
+export interface Toast {
+  id: number
+  kind: 'info' | 'success' | 'error'
+  message: string
+  /** Optional second line / details */
+  detail?: string
+  /** Optional URL to open on click */
+  href?: string
   expiresAt: number
 }
 
@@ -78,13 +107,23 @@ interface UiState {
   matrixSyncStatus: MatrixSyncStatus
   matrixSyncDetail: string
   queueCount: number
+  /** Hub WebSocket connection state. False off-tailnet or while the hub
+   *  process is down. Mutations still enqueue (sync-queue) and flush on
+   *  reconnect; the offline pill in the header surfaces this to the user. */
+  hubOnline: boolean
   setSyncStatus: (status: SyncStatus, detail?: string) => void
   setMatrixSyncStatus: (status: MatrixSyncStatus, detail?: string) => void
   setQueueCount: (count: number) => void
+  setHubOnline: (online: boolean) => void
 
   // Undo
   undoAction: UndoAction | null
   setUndoAction: (action: UndoAction | null) => void
+  toasts: Toast[]
+  pushToast: (toast: Omit<Toast, 'id' | 'expiresAt'> & { ttlMs?: number }) => void
+  dismissToast: (id: number) => void
+  dialog: DialogState | null
+  setDialog: (d: DialogState | null) => void
 
   // Notifications
   doNotDisturb: boolean
@@ -123,7 +162,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ activePane: pane })
   },
   toggleActivePane: (reverse) => set((s) => {
-    const order: ActivePane[] = ['email', 'calendar', 'chat', 'agents', 'feeds', 'notes', 'bookmarks', 'money']
+    const order: ActivePane[] = ['home', 'email', 'calendar', 'chat', 'agents', 'feeds', 'notes', 'bookmarks', 'money']
     const idx = order.indexOf(s.activePane)
     const next = order[(idx + (reverse ? order.length - 1 : 1)) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])
@@ -151,12 +190,33 @@ export const useUiStore = create<UiState>((set) => ({
   matrixSyncStatus: 'idle',
   matrixSyncDetail: '',
   queueCount: 0,
+  // Optimistic default — flips to false on the first onDisconnect, or stays
+  // true once `hubBus.onConnect` fires. The bridge is wired in App init.
+  hubOnline: true,
   setSyncStatus: (status, detail) => set({ syncStatus: status, syncDetail: detail ?? '' }),
   setMatrixSyncStatus: (status, detail) => set({ matrixSyncStatus: status, matrixSyncDetail: detail ?? '' }),
   setQueueCount: (count) => set({ queueCount: count }),
+  setHubOnline: (online) => set({ hubOnline: online }),
 
   undoAction: null,
   setUndoAction: (action) => set({ undoAction: action }),
+  toasts: [],
+  pushToast: (toast) => {
+    const id = Date.now() + Math.floor(Math.random() * 1000)
+    const ttl = toast.ttlMs ?? (toast.kind === 'error' ? 8000 : 4000)
+    const next: Toast = {
+      id,
+      kind: toast.kind,
+      message: toast.message,
+      detail: toast.detail,
+      href: toast.href,
+      expiresAt: Date.now() + ttl,
+    }
+    set((s) => ({ toasts: [...s.toasts, next] }))
+  },
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  dialog: null,
+  setDialog: (d) => set({ dialog: d }),
 
   pipVideo: null,
   setPipVideo: (v) => set({ pipVideo: v }),

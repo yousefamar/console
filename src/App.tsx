@@ -14,6 +14,8 @@ import { SnoozePicker } from '@/components/SnoozePicker'
 import { SearchOverlay } from '@/components/SearchOverlay'
 import { KeybindingHelp } from '@/components/KeybindingHelp'
 import { UndoToast } from '@/components/UndoToast'
+import { Toasts } from '@/components/Toasts'
+import { Dialog } from '@/components/Dialog'
 import { ComposeEditor } from '@/components/ComposeEditor'
 import { MatrixLoginModal } from '@/components/MatrixLoginModal'
 import { AccountModal } from '@/components/AccountModal'
@@ -126,6 +128,8 @@ function ConsoleApp() {
       {showMatrixLogin && <MatrixLoginModal />}
       {showAccountModal && <AccountModal />}
       <UndoToast />
+      <Toasts />
+      <Dialog />
     </>
   )
 }

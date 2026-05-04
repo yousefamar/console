@@ -1,6 +1,7 @@
 import { memo, useEffect } from 'react'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
+import { useBlogStore } from '@/store/blog'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { NotesFileBrowser } from './NotesFileBrowser'
 import { NotesEditor } from './NotesEditor'
@@ -27,6 +28,8 @@ export const NotesTab = memo(function NotesTab() {
     if (!vaultConnected) {
       reconnectVault()
     }
+    // Tag set used by frontmatter autocomplete in the editor
+    void useBlogStore.getState().refreshTags()
   }, [])
 
   // Rescan vault when switching to notes tab

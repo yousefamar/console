@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNotesStore } from '@/store/notes'
-import { Command, Trash2, PenLine, FilePlus, Save, X, XCircle, RotateCcw } from 'lucide-react'
+import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw } from 'lucide-react'
+import { useBlogStore } from '@/store/blog'
+import { useUiStore } from '@/store/ui'
+import { showConfirm } from '@/dialog'
 
 interface CommandItem {
   id: string
@@ -57,7 +60,7 @@ export function NotesCommandPalette() {
         action: async () => {
           const path = activeFilePath!
           const name = path.split('/').pop() || path
-          if (confirm(`Delete "${name}"?`)) {
+          if (await showConfirm(`Delete "${name}"?`, { title: 'Delete file', danger: true, confirmLabel: 'Delete' })) {
             await state.deleteFile(path)
             closeCommandPalette()
           }
@@ -92,6 +95,43 @@ export function NotesCommandPalette() {
         useNotesStore.getState().openNewFileForm()
       },
     })
+
+    if (hasActiveFile && activeFilePath!.startsWith('scratch/blog-drafts/')) {
+      cmds.push({
+        id: 'publish',
+        label: 'Publish Draft',
+        icon: <Send size={12} />,
+        action: async () => {
+          closeCommandPalette()
+          const ui = useUiStore.getState()
+          const blog = useBlogStore.getState()
+          const notes = useNotesStore.getState()
+          const path = activeFilePath!
+          try { await notes.saveFile() } catch {}
+          ui.pushToast({ kind: 'info', message: 'Publishing…', detail: path })
+          const result = await blog.publish(path)
+          if (!result.ok) {
+            ui.pushToast({ kind: 'error', message: 'Publish failed', detail: result.error })
+            return
+          }
+          try { notes.closeFile(path, true) } catch {}
+          void notes.loadVaultFiles()
+          void blog.refreshDrafts()
+          void blog.refreshProjects()
+          if (result.rebuildOk) {
+            ui.pushToast({
+              kind: 'success', message: 'Published',
+              detail: result.newPath, href: 'https://yousefamar.com/log/',
+            })
+          } else {
+            ui.pushToast({
+              kind: 'error', message: 'Moved, but rebuild failed',
+              detail: result.rebuildBody?.slice(0, 200) ?? 'no response',
+            })
+          }
+        },
+      })
+    }
 
     if (state.recentlyClosedPaths.length > 0) {
       cmds.push({

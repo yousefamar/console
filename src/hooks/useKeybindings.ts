@@ -8,6 +8,7 @@ import { useFeedStore } from '@/store/feeds'
 import { useCalendarStore } from '@/store/calendar'
 import { useMoneyStore } from '@/store/money'
 import { useUiStore } from '@/store/ui'
+import { showConfirm } from '@/dialog'
 
 export function useKeybindings() {
   const inbox = useInboxStore
@@ -143,11 +144,13 @@ export function useKeybindings() {
           if (state.activeFilePath) {
             const closed = state.closeFile(state.activeFilePath, false)
             if (!closed) {
-              if (confirm('Save changes before closing?')) {
-                state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
-              } else {
-                state.closeFile(state.activeFilePath!, true)
-              }
+              void showConfirm('Save changes before closing?', { title: 'Unsaved changes', confirmLabel: 'Save & close', cancelLabel: 'Discard' }).then((save) => {
+                if (save) {
+                  state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
+                } else {
+                  state.closeFile(state.activeFilePath!, true)
+                }
+              })
             }
           }
           return

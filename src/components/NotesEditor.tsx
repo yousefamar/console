@@ -1,8 +1,14 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useNotesStore } from '@/store/notes'
+import { useBlogStore, projectSlugFromPath } from '@/store/blog'
 import { NotesEditorCore } from './NotesEditorCore'
+import { ProjectPill } from './notes/ProjectPill'
+import { ProjectPanel } from './notes/ProjectPanel'
 import { X, ChevronLeft } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { showConfirm } from '@/dialog'
+
+const PANEL_TOGGLE_KEY = 'console:notes:projectPanelOpen'
 
 export const NotesEditor = memo(function NotesEditor() {
   const openFiles = useNotesStore((s) => s.openFiles)
@@ -11,6 +17,22 @@ export const NotesEditor = memo(function NotesEditor() {
   const closeFile = useNotesStore((s) => s.closeFile)
   const isFileDirty = useNotesStore((s) => s.isFileDirty)
   const isMobile = useIsMobile()
+
+  // Project panel: only relevant when activeFilePath is a tracked project page.
+  // Detection runs on activeFilePath change only (not on every keystroke).
+  const slug = projectSlugFromPath(activeFilePath)
+  const isTracked = useBlogStore((s) => slug ? s.projects.some((p) => p.slug === slug) : false)
+  // Per-client toggle (localStorage, not synced) — defaults to last user choice.
+  // First-time default: open on desktop, closed on mobile (so it doesn't fill the screen).
+  const [panelOpen, setPanelOpen] = useState<boolean>(() => {
+    if (typeof localStorage === 'undefined') return false
+    const v = localStorage.getItem(PANEL_TOGGLE_KEY)
+    if (v === 'true') return true
+    if (v === 'false') return false
+    return !isMobile  // first-run default
+  })
+  useEffect(() => { localStorage.setItem(PANEL_TOGGLE_KEY, String(panelOpen)) }, [panelOpen])
+  const showPanel = panelOpen && slug !== null && isTracked && !isMobile
 
   const paths = Object.keys(openFiles)
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
@@ -28,11 +50,11 @@ export const NotesEditor = memo(function NotesEditor() {
     )
   }
 
-  const handleClose = (path: string, e?: React.MouseEvent) => {
+  const handleClose = async (path: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
     const dirty = isFileDirty(path)
     if (dirty) {
-      if (!confirm('This file has unsaved changes. Close anyway?')) return
+      if (!(await showConfirm('This file has unsaved changes. Close anyway?', { title: 'Unsaved changes', danger: true, confirmLabel: 'Close' }))) return
     }
     closeFile(path, true)
   }
@@ -83,12 +105,17 @@ export const NotesEditor = memo(function NotesEditor() {
         })}
       </div>
 
-      {/* Editor */}
-      <NotesEditorCore
-        key={activeFilePath!}
-        filePath={activeFilePath!}
-        content={activeFile.content}
-      />
+      {/* Editor + side panel overlay */}
+      <div className="relative flex flex-col flex-1 min-h-0">
+        <NotesEditorCore
+          key={activeFilePath!}
+          filePath={activeFilePath!}
+          content={activeFile.content}
+        />
+        {showPanel && slug && (
+          <ProjectPanel slug={slug} onClose={() => setPanelOpen(false)} />
+        )}
+      </div>
 
       {/* Status bar */}
       <div className="flex items-center justify-between border-t border-border px-3 py-0.5 flex-shrink-0">
@@ -96,6 +123,9 @@ export const NotesEditor = memo(function NotesEditor() {
           {activeFilePath}
         </span>
         <div className="flex items-center gap-2">
+          {slug && isTracked && !isMobile && (
+            <ProjectPill slug={slug} open={panelOpen} onToggle={() => setPanelOpen((v) => !v)} />
+          )}
           {isFileDirty(activeFilePath!) && (
             <span className="text-[10px] text-accent">modified</span>
           )}

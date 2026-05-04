@@ -5,6 +5,7 @@ import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getHubUrl } from '@/hub'
 import DOMPurify from 'dompurify'
 import { ExternalLink, Rss, MessageSquare, X, Play, ChevronDown, ChevronRight, MoreHorizontal, Trash2, Check } from 'lucide-react'
+import { showConfirm } from '@/dialog'
 
 // Make all links open in new tabs after DOMPurify sanitization
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -410,11 +411,11 @@ export function FeedItemView() {
                     })}
                     <div className="border-t border-border my-0.5" />
                     <button
-                      onClick={() => {
-                        if (confirm(`Unsubscribe from ${feed.title}?`)) {
+                      onClick={async () => {
+                        setMenuOpen(false)
+                        if (await showConfirm(`Unsubscribe from ${feed.title}?`, { title: 'Unsubscribe', danger: true, confirmLabel: 'Unsubscribe' })) {
                           deleteFeed(feed.id)
                         }
-                        setMenuOpen(false)
                       }}
                       className="flex items-center gap-2 w-full px-3 py-1 text-xs text-red-400 hover:bg-surface-1 transition-colors"
                     >

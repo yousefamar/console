@@ -14,6 +14,7 @@ import {
   type MonthlyPoint,
 } from '@/store/finance'
 import { hubFetch } from '@/hub'
+import { showConfirm } from '@/dialog'
 
 const SCN_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#84cc16', '#fb7185']
 
@@ -178,7 +179,7 @@ function ScenarioEditor({ scenario }: { scenario: Scenario }) {
         }} className="px-2 py-1 bg-surface-2 border border-border rounded-sm flex items-center gap-1">
           <Copy size={11} />Clone
         </button>
-        <button onClick={async () => { if (confirm('Delete scenario?')) await deleteScenario(scenario.id) }}
+        <button onClick={async () => { if (await showConfirm('Delete scenario?', { title: 'Delete scenario', danger: true, confirmLabel: 'Delete' })) await deleteScenario(scenario.id) }}
           className="px-2 py-1 text-text-tertiary hover:text-red-400">
           <Trash2 size={12} />
         </button>

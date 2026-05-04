@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { Plus, Trash2, ArrowDown } from 'lucide-react'
 import { useFinanceStore, type Category, type CategoryRule } from '@/store/finance'
+import { showConfirm } from '@/dialog'
 
 export function CategoriesView() {
   const [tab, setTab] = useState<'categories' | 'rules'>('categories')
@@ -100,7 +101,7 @@ function CategoryEditor({ category, onClose, onSave, onDelete }: {
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium">{category ? 'Edit category' : 'New category'}</h3>
           {onDelete && (
-            <button onClick={async () => { if (confirm('Delete category? Rules and budgets pointing here will be removed.')) await onDelete() }}
+            <button onClick={async () => { if (await showConfirm('Delete category? Rules and budgets pointing here will be removed.', { title: 'Delete category', danger: true, confirmLabel: 'Delete' })) await onDelete() }}
               className="text-text-tertiary hover:text-red-400">
               <Trash2 size={14} />
             </button>
@@ -236,7 +237,7 @@ function RuleEditor({ rule, onClose, onSave, onDelete }: {
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium">{rule ? 'Edit rule' : 'New rule'}</h3>
           {onDelete && (
-            <button onClick={async () => { if (confirm('Delete rule?')) await onDelete() }}
+            <button onClick={async () => { if (await showConfirm('Delete rule?', { title: 'Delete rule', danger: true, confirmLabel: 'Delete' })) await onDelete() }}
               className="text-text-tertiary hover:text-red-400"><Trash2 size={14} /></button>
           )}
         </div>

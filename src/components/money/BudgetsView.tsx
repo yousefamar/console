@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { useFinanceStore, fmtPence } from '@/store/finance'
+import { showConfirm } from '@/dialog'
 
 export function BudgetsView() {
   const budgets = useFinanceStore((s) => s.budgets)
@@ -87,7 +88,7 @@ export function BudgetsView() {
                   <div className="flex items-center gap-3 text-[11px] tabular-nums">
                     <span className="text-text-secondary">{fmtPence(spent, { abs: true })} / {fmtPence(b.monthlyTargetPence, { abs: true })}</span>
                     <span className={overspending ? 'text-red-400' : 'text-text-tertiary'}>proj. {fmtPence(projected, { abs: true })}</span>
-                    <button onClick={async () => { if (confirm('Delete budget?')) await deleteBudget(b.id) }}
+                    <button onClick={async () => { if (await showConfirm('Delete budget?', { title: 'Delete budget', danger: true, confirmLabel: 'Delete' })) await deleteBudget(b.id) }}
                       className="text-text-tertiary hover:text-red-400">
                       <Trash2 size={11} />
                     </button>

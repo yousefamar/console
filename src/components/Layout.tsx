@@ -16,8 +16,9 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff } from 'lucide-react'
 import { AgentTab } from './AgentTab'
+import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
@@ -158,6 +159,7 @@ export function Layout() {
   const gmailConnected = isGmailConnected()
   const matrixConnected = isMatrixConnected()
 
+  const isHome = activePane === 'home'
   const isEmail = activePane === 'email'
   const isChat = activePane === 'chat'
   const isBookmarks = activePane === 'bookmarks'
@@ -234,6 +236,7 @@ export function Layout() {
           {/* Top-level pane tabs (desktop only — mobile uses bottom tab bar) */}
           {!isMobile && (
             <div className="flex items-center gap-0.5">
+              <PaneTab pane="home" icon={<LayoutDashboard size={11} />} label="Home" activePane={activePane} setActivePane={setActivePane} />
               {gmailConnected ? (
                 <PaneTab pane="email" icon={<Mail size={11} />} label="Mail" activePane={activePane} setActivePane={setActivePane} />
               ) : (
@@ -268,6 +271,7 @@ export function Layout() {
           )}
         </div>
         <div className="flex items-center gap-3 md:gap-4">
+          <HubOfflineIndicator />
           <SyncStatus />
           {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney ? true : matrixConnected) && (
             <button
@@ -296,6 +300,11 @@ export function Layout() {
 
       {/* Main content — all panes always mounted, toggled with display */}
       <div className="flex flex-1 min-h-0">
+        {/* Home pane */}
+        <div className={`flex flex-1 min-h-0 overflow-hidden ${isHome ? '' : 'hidden'}`}>
+          <HomeTab />
+        </div>
+
         {/* Mail pane */}
         <div className={`flex flex-1 min-h-0 overflow-hidden ${isEmail ? '' : 'hidden'}`}>
           <MailTab />
@@ -411,6 +420,7 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
   setShowMatrixLogin: (v: boolean) => void
 }) {
   const tabs: { pane: ActivePane; icon: ReactNode; label: string }[] = [
+    { pane: 'home', icon: <LayoutDashboard size={18} />, label: 'Home' },
     { pane: 'email', icon: <Mail size={18} />, label: 'Mail' },
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
@@ -718,6 +728,22 @@ function DndIndicator() {
     >
       <BellOff size={12} />
     </button>
+  )
+}
+
+// Shows when the hub WebSocket is closed — typically off-tailnet, but also
+// fires when the hub process is restarting. Mutations still queue locally and
+// flush on reconnect; this just lets the user know what they're looking at.
+function HubOfflineIndicator() {
+  const online = useUiStore((s) => s.hubOnline)
+  if (online) return null
+  return (
+    <span
+      className="inline-flex items-center text-text-tertiary"
+      title="Hub unreachable — actions will queue and flush when it's back"
+    >
+      <CloudOff size={12} />
+    </span>
   )
 }
 

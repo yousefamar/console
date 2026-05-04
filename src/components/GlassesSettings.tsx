@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase } from 'lucide-react'
 import { useGlassesStore } from '@/glasses/store'
+import { showConfirm } from '@/dialog'
 import {
   disconnect as bridgeDisconnect,
   pair as bridgePair,
@@ -90,7 +91,7 @@ export function GlassesSettings() {
               </button>
             )}
             <button
-              onClick={() => { if (confirm('Forget these glasses?')) bridgeUnpair() }}
+              onClick={async () => { if (await showConfirm('Forget these glasses?', { title: 'Forget glasses', danger: true, confirmLabel: 'Forget' })) bridgeUnpair() }}
               className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
             >
               <LogOut size={11} />

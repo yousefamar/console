@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { Plus, Trash2, Zap } from 'lucide-react'
 import { useFinanceStore, fmtPence, type Stream } from '@/store/finance'
+import { showConfirm } from '@/dialog'
 import { RunwayCard } from './RunwayCard'
 import { ProjectionChart } from './ProjectionChart'
 import { MonthlySpendChart } from './MonthlySpendChart'
@@ -178,7 +179,7 @@ function StreamEditor({ stream, onClose }: { stream: Stream | null; onClose: () 
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium">{stream ? 'Edit stream' : 'New stream'}</h3>
           {stream && (
-            <button onClick={async () => { if (confirm('Delete stream?')) { await deleteStream(stream.id); onClose() } }}
+            <button onClick={async () => { if (await showConfirm('Delete stream?', { title: 'Delete stream', danger: true, confirmLabel: 'Delete' })) { await deleteStream(stream.id); onClose() } }}
               className="text-text-tertiary hover:text-red-400">
               <Trash2 size={14} />
             </button>

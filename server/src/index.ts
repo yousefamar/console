@@ -11,7 +11,7 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync, watch } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
@@ -26,8 +26,11 @@ import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
+import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, type AgentContext } from './routes/agents.js'
-import { setLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
+import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
+import { HubCronScheduler } from './cron/scheduler.js'
+import { handleCronRoutes } from './routes/cron.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { GmailClient } from './gmail-client.js'
@@ -51,6 +54,8 @@ import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
+import { ServersConfig, CanvasDir } from './dashboard.js'
+import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes } from './routes/dashboard.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
 import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { SyncBus } from './sync-bus.js'
@@ -96,6 +101,8 @@ const monzoStore = new MonzoStore(
 )
 const financeStore = new FinanceStore(feedsConfigDir)
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
+const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
+const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
@@ -107,6 +114,54 @@ pushServer.onInbound((ws, frame) => glassesHub.handleMessage(ws, frame))
 wireTouchToMic(glassesHub, (msg: string) => { log(msg) })
 const syncBus = new SyncBus((msg: string) => { log(msg) })
 setReadStateLogger((m: string) => { log(m) })
+
+// Watch canvas dir + islands subdir as two separate non-recursive watchers
+// because fs.watch with `recursive: true` on Linux silently stops firing
+// for root-level changes once a subdir event has been delivered.
+//
+// On any change we debounce ~200ms then:
+//  - If the islands set has items, recompose index.html (overrides any
+//    direct write to index.html — the islands-mode invariant).
+//  - Broadcast `dashboard.canvas_changed` so the SPA iframe live-reloads.
+{
+  let pending: ReturnType<typeof setTimeout> | null = null
+  // Suppress one self-write echo after the composer rewrites index.html.
+  let justRecomposed = false
+  const schedule = (source: string, filename: string | null) => {
+    // Skip the composer's own echo on index.html.
+    if (source === 'root' && filename === 'index.html' && justRecomposed) {
+      justRecomposed = false
+      return
+    }
+    if (pending) clearTimeout(pending)
+    pending = setTimeout(() => {
+      pending = null
+      // Re-check at tick time, not at event time — event-time hasIslands()
+      // can race with the FS write that triggered the event.
+      if (canvasDir.hasIslands()) {
+        canvasDir.composeIndexHtml()
+        justRecomposed = true
+      }
+      syncBus.broadcast('dashboard', 'canvas_changed', canvasDir.metadata())
+    }, 200)
+  }
+  try {
+    watch(canvasDir.dir, { persistent: false }, (_evt, filename) => {
+      schedule('root', typeof filename === 'string' ? filename : null)
+    })
+    log(`[dashboard] watching canvas root: ${canvasDir.dir}`)
+  } catch (e) {
+    log(`[dashboard] canvas root watch failed: ${(e as Error).message}`)
+  }
+  try {
+    watch(canvasDir.islandsDir, { persistent: false }, (_evt, filename) => {
+      schedule('islands', typeof filename === 'string' ? filename : null)
+    })
+    log(`[dashboard] watching canvas islands: ${canvasDir.islandsDir}`)
+  } catch (e) {
+    log(`[dashboard] canvas islands watch failed: ${(e as Error).message}`)
+  }
+}
 const mailSync = new MailSync(
   gmailClient,
   authStore,
@@ -284,6 +339,14 @@ const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = { sessions, clients, cwd, log, truncate }
 
+const cronScheduler = new HubCronScheduler(
+  join(feedsConfigDir, 'agent-cron.json'),
+  () => sessions,
+  (msg) => broadcast(msg),
+  (m) => log(m),
+)
+cronScheduler.start()
+
 // Wire Al session updates to broadcast full session list
 alBridge.onSessionUpdate = () => {
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
@@ -307,8 +370,30 @@ const keyPath = join(configDir, `${tsHost}.key`)
 const hasTls = existsSync(certPath) && existsSync(keyPath)
 const tlsOpts = hasTls ? { cert: readFileSync(certPath), key: readFileSync(keyPath) } : null
 
+// Browser-origin allow-list. SPA shell goes public via Tailscale Funnel on
+// :8443 (same `*.ts.net` hostname as the tailnet, but reachable from
+// anywhere); hub stays tailnet-only on :9877. Without this lockdown any site
+// you visit while on tailnet could pivot to read your hub. Server-to-server
+// clients (CLI / Al / glasses / Node WS) send no Origin header — handled
+// separately for WS, harmless for HTTP since CORS only matters when a
+// browser is involved.
+const ALLOWED_ORIGINS = new Set([
+  `https://${tsHost}:8443`,    // Funnel (public)
+  `https://${tsHost}:5173`,    // Vite dev (HMR, tailnet)
+  'https://localhost:5173',    // local dev
+  'http://localhost:5173',     // local dev (no certs)
+])
+
+function originAllowed(origin: string | undefined): boolean {
+  return !!origin && ALLOWED_ORIGINS.has(origin)
+}
+
 const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  if (originAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin!)
+    res.setHeader('Vary', 'Origin')
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
@@ -472,11 +557,24 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
+  if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
+  if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+  }, readBody)) return
+  if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+  }, readBody)) return
+  if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+  })) return
+  if ((path === '/cron' || path === '/cron.ics' || path.startsWith('/cron/')) && handleCronRoutes(req, res, path, url, {
+    scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,
+  }, readBody)) return
 
   res.writeHead(404)
   res.end('Not found')
@@ -490,7 +588,13 @@ const httpServer = tlsOpts
 // WebSocket server
 // --------------------------------------------------------------------------
 
-const wss = new WebSocketServer({ server: httpServer })
+// WS Origin gate. Browsers always send `Origin`; Node-side clients (CLI, Al,
+// glasses, debug) don't. Reject browser connections from unknown origins so a
+// malicious site can't bypass CORS via WebSocket.
+const wss = new WebSocketServer({
+  server: httpServer,
+  verifyClient: (info: { origin: string }) => !info.origin || originAllowed(info.origin),
+})
 
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const urlPath = req.url ?? '/'
@@ -802,6 +906,7 @@ function shutdown() {
   log('\nShutting down — saving manifest...')
   saveManifestSync(sessions)
   flushReadState()
+  cronScheduler.flush()
   for (const session of sessions.values()) session.kill()
   authStore.destroy()
   httpServer.close()
