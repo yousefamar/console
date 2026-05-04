@@ -13,6 +13,7 @@ export function SyncStatus() {
   const matrixStatus = useUiStore((s) => s.matrixSyncStatus)
   const matrixDetail = useUiStore((s) => s.matrixSyncDetail)
   const queueCount = useUiStore((s) => s.queueCount)
+  const hubOnline = useUiStore((s) => s.hubOnline)
 
   // Live query for queue count — drives the UI store
   const liveQueueCount = useLiveQuery(() => getQueueCount(), [])
@@ -22,10 +23,14 @@ export function SyncStatus() {
     }
   }, [liveQueueCount])
 
-  // Show the worst status across both sync systems
+  // Hub down → just say "Offline". Per-service statuses are noise — they all
+  // route through the hub, so if the hub WS is closed nothing can succeed.
+  // Show the worst status across both sync systems otherwise.
   const statusPriority = { error: 3, offline: 2, syncing: 1, idle: 0 } as const
-  const syncStatus = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailStatus : matrixStatus
-  const syncDetail = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailDetail : matrixDetail
+  const perServiceStatus = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailStatus : matrixStatus
+  const perServiceDetail = statusPriority[emailStatus] >= statusPriority[matrixStatus] ? emailDetail : matrixDetail
+  const syncStatus = !hubOnline ? 'offline' : perServiceStatus
+  const syncDetail = !hubOnline ? 'Hub unreachable' : perServiceDetail
   const [open, setOpen] = useState(false)
   const [details, setDetails] = useState<{ pending: QueuedAction[]; conflicts: QueuedAction[] } | null>(null)
   const [copied, setCopied] = useState(false)

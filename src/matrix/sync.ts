@@ -935,6 +935,11 @@ async function hubRpc<T>(service: string, op: string, args?: unknown): Promise<T
 
 export async function processChatQueue(): Promise<void> {
   if (!isMatrixConnected()) return
+  // Bail when the hub WS is down (off-tailnet, hub restarting). The queue
+  // entries stay in IDB; the next `hubBus.onConnect` triggers a re-flush via
+  // the wiring in `useSync.ts`.
+  const { hubBus } = await import('@/sync-bus')
+  if (!hubBus.connected) return
   if (chatQueueLock) return
   chatQueueLock = true
 

@@ -64,7 +64,13 @@ import org.json.JSONObject
  */
 class MainActivity : ComponentActivity() {
 
-    private val appUrl = "https://amarhp-lin.rya-yo.ts.net:5173/"
+    // Public URL via Tailscale Funnel on :8443 (same *.ts.net hostname as the
+    // tailnet, reachable from anywhere). Funnel can't use :443 because Caddy
+    // already binds *:443 for the *.amar.io sites; 8443 is the next allowed
+    // Funnel port. Hub on :9877 stays tailnet-only.
+    // Off-tailnet the shell loads, hub calls fail, and the offline queue
+    // accumulates until Tailscale is back up.
+    private val appUrl = "https://amarhp-lin.rya-yo.ts.net:8443/"
 
     private lateinit var webView: WebView
     private lateinit var errorView: LinearLayout

@@ -98,6 +98,14 @@ async function gmailMessageToDbMessage(msg: GmailThread['messages'][number]): Pr
 
 // Full sync: fetch all inbox threads
 export async function fullSync(): Promise<void> {
+  // Don't start a doomed network call when we already know the hub is down.
+  // The status pill and offline indicator handle the UX; no need to trigger
+  // a slow timeout just to learn what we already know.
+  const { hubBus } = await import('@/sync-bus')
+  if (!hubBus.connected) {
+    setStatus('offline', 'Hub unreachable')
+    return
+  }
   setStatus('syncing', 'Full sync...')
 
   try {
@@ -207,6 +215,13 @@ export async function fullSync(): Promise<void> {
 
 // Incremental sync using history API
 export async function incrementalSync(): Promise<void> {
+  // Same offline gate as fullSync — don't burn a 5 s connect-timeout when
+  // the hub WS is already known to be down.
+  const { hubBus } = await import('@/sync-bus')
+  if (!hubBus.connected) {
+    setStatus('offline', 'Hub unreachable')
+    return
+  }
   const historyId = await getMeta('historyId')
   if (!historyId) {
     return fullSync()

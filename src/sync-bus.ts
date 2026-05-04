@@ -21,7 +21,16 @@ type Pending = {
   args: unknown
   resolve: (v: unknown) => void
   reject: (err: Error) => void
+  timeoutHandle?: ReturnType<typeof setTimeout>
 }
+
+export interface RpcOptions {
+  /** Reject with `Error('hub timeout')` after this many ms. Without it the
+   *  promise hangs until the hub eventually responds (or forever). */
+  timeoutMs?: number
+}
+
+const DEFAULT_RPC_TIMEOUT_MS = 30_000
 
 export class HubSyncBus {
   private ws: WebSocket | null = null
@@ -34,6 +43,7 @@ export class HubSyncBus {
   private stopped = false
   private connectCount = 0
   private connectHandlers = new Set<(info: { first: boolean }) => void>()
+  private disconnectHandlers = new Set<() => void>()
 
   connect(): void {
     this.stopped = false
@@ -67,15 +77,23 @@ export class HubSyncBus {
     }
   }
 
-  /** Call an RPC op. Rejects on transport error or hub-returned {ok:false}. */
-  rpc<T = unknown>(service: string, op: string, args?: unknown): Promise<T> {
+  /** Call an RPC op. Rejects on transport error, hub-returned {ok:false}, or
+   *  on timeout if `opts.timeoutMs` is set (defaults to 30 s). */
+  rpc<T = unknown>(service: string, op: string, args?: unknown, opts?: RpcOptions): Promise<T> {
     const id = this.nextId++
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, {
+      const entry: Pending = {
         service, op, args,
         resolve: (v) => resolve(v as T),
         reject,
-      })
+      }
+      if (timeoutMs > 0) {
+        entry.timeoutHandle = setTimeout(() => {
+          if (this.pending.delete(id)) reject(new Error('hub timeout'))
+        }, timeoutMs)
+      }
+      this.pending.set(id, entry)
       this.trySend({ t: 'rpc', id, service, op, args })
     })
   }
@@ -99,6 +117,13 @@ export class HubSyncBus {
     return () => { this.connectHandlers.delete(handler) }
   }
 
+  /** Fires once per actual transition from connected→disconnected. Won't fire
+   *  during the initial connect attempt before `onopen` ever ran. */
+  onDisconnect(handler: () => void): () => void {
+    this.disconnectHandlers.add(handler)
+    return () => { this.disconnectHandlers.delete(handler) }
+  }
+
   // ---- internals ----
 
   private ensureSubscribed(service: string): void {
@@ -117,13 +142,29 @@ export class HubSyncBus {
     this.sendRaw(msg)
   }
 
+  private connectTimeoutHandle: ReturnType<typeof setTimeout> | null = null
+  private readonly CONNECT_TIMEOUT_MS = 5_000
+
   private open(): void {
     if (this.stopped) return
     const url = `${getHubWsUrl()}/sync`
     const ws = new WebSocket(url)
     this.ws = ws
 
+    // Off-tailnet, the OS TCP connect to :9877 silently hangs ~30 s before
+    // the browser surfaces an error. Force-close after 5 s so the offline
+    // pill flips quickly; the reconnect loop keeps retrying.
+    this.connectTimeoutHandle = setTimeout(() => {
+      if (this.ws === ws && ws.readyState !== WebSocket.OPEN) {
+        try { ws.close() } catch {}
+      }
+    }, this.CONNECT_TIMEOUT_MS)
+
     ws.onopen = () => {
+      if (this.connectTimeoutHandle) {
+        clearTimeout(this.connectTimeoutHandle)
+        this.connectTimeoutHandle = null
+      }
       this.reconnectDelayMs = 500
       this.connectCount++
       const first = this.connectCount === 1
@@ -161,6 +202,7 @@ export class HubSyncBus {
           const p = this.pending.get(msg.id)
           if (!p) return
           this.pending.delete(msg.id)
+          if (p.timeoutHandle) clearTimeout(p.timeoutHandle)
           if (msg.ok) p.resolve(msg.result)
           else p.reject(new Error(typeof msg.error === 'string' ? msg.error : 'rpc failed'))
           break
@@ -169,7 +211,14 @@ export class HubSyncBus {
     }
 
     ws.onclose = () => {
+      if (this.connectTimeoutHandle) {
+        clearTimeout(this.connectTimeoutHandle)
+        this.connectTimeoutHandle = null
+      }
       this.ws = null
+      for (const fn of this.disconnectHandlers) {
+        try { fn() } catch {}
+      }
       if (this.stopped) return
       const delay = Math.min(this.reconnectDelayMs, this.MAX_RECONNECT_MS)
       this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.MAX_RECONNECT_MS)

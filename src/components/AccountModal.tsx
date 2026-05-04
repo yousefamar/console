@@ -3,9 +3,10 @@ import { useUiStore } from '@/store/ui'
 import { signOut } from '@/gmail/auth'
 import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
-import { X, Mail, MessageCircle, LogOut, BellOff, Bell } from 'lucide-react'
+import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Download } from 'lucide-react'
 import { GlassesSettings } from './GlassesSettings'
 import { glassesSupported } from '@/glasses/bridge'
+import { importFromOrigin, type MigrationResult } from '@/migration'
 
 export function AccountModal() {
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
@@ -134,6 +135,8 @@ export function AccountModal() {
             </>
           )}
 
+          <div className="border-t border-border" />
+          <MigrationSection />
         </div>
 
         {/* Build info */}
@@ -145,6 +148,80 @@ export function AccountModal() {
       </div>
     </div>
   )
+}
+
+function MigrationSection() {
+  // Default to the alternate port: if we're on 8443, suggest 5173 (and vice
+  // versa). This is the typical "I just moved from Vite-direct to Funnel and
+  // want my chat/mail back" flow.
+  const otherOrigin = computeOtherOrigin()
+  const [origin, setOrigin] = useState(otherOrigin)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<MigrationResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleImport() {
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      const r = await importFromOrigin(origin.trim().replace(/\/+$/, ''))
+      setResult(r)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Download size={13} className="text-text-tertiary" />
+        <span className="text-sm text-text-secondary">Import from another origin</span>
+      </div>
+      <input
+        type="url"
+        value={origin}
+        onChange={(e) => setOrigin(e.target.value)}
+        placeholder="https://amarhp-lin.rya-yo.ts.net:5173"
+        className="w-full bg-surface-2 border border-border rounded-sm px-2 py-1 text-xs text-text-primary"
+        disabled={busy}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-text-tertiary">
+          IDB + localStorage from origin → here. Source must be reachable.
+        </span>
+        <button
+          onClick={handleImport}
+          disabled={busy || !origin}
+          className="text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast disabled:opacity-50"
+        >
+          {busy ? 'Importing…' : 'Import'}
+        </button>
+      </div>
+      {result && (
+        <p className="text-[10px] text-success">
+          Imported {result.rows} rows + {result.lsKeys} prefs in {result.durationMs}ms. Reload to apply.
+        </p>
+      )}
+      {error && (
+        <p className="text-[10px] text-destructive break-all">{error}</p>
+      )}
+    </div>
+  )
+}
+
+function computeOtherOrigin(): string {
+  if (typeof window === 'undefined') return ''
+  const { protocol, hostname, port } = window.location
+  // Heuristic: if we're on the Funnel port, suggest Vite; if on Vite, suggest
+  // Funnel; otherwise leave blank for the user to fill in.
+  let otherPort = ''
+  if (port === '8443') otherPort = '5173'
+  else if (port === '5173') otherPort = '8443'
+  else return ''
+  return `${protocol}//${hostname}:${otherPort}`
 }
 
 function formatBuildAge(iso: string): string {
