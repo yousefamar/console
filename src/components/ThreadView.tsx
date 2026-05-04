@@ -5,6 +5,7 @@ import { useUiStore } from '@/store/ui'
 import { MessageView } from './MessageView'
 import { ComposeEditor } from './ComposeEditor'
 import { InboxZero } from './InboxZero'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 import type { DbMessage } from '@/gmail/types'
 
 export function ThreadView() {
@@ -140,6 +141,7 @@ function ThreadViewCompose() {
   const replyMode = useInboxStore((s) => s.replyMode)
   const replyToMessage = useInboxStore((s) => s.replyToMessage)
   const setReplyMode = useInboxStore((s) => s.setReplyMode)
+  const isMobile = useIsMobile()
 
   if (!selectedThreadId) return null
 
@@ -162,19 +164,19 @@ function ThreadViewCompose() {
               onClick={() => setReplyMode('reply')}
               className="text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast"
             >
-              <span className="text-text-tertiary mr-1">r</span> Reply
+              {!isMobile && <span className="text-text-tertiary mr-1">r</span>}Reply
             </button>
             <button
               onClick={() => setReplyMode('replyAll')}
               className="text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast"
             >
-              <span className="text-text-tertiary mr-1">R</span> Reply all
+              {!isMobile && <span className="text-text-tertiary mr-1">R</span>}Reply all
             </button>
             <button
               onClick={() => setReplyMode('forward')}
               className="text-xs text-text-secondary hover:text-text-primary transition-colors duration-fast"
             >
-              <span className="text-text-tertiary mr-1">f</span> Forward
+              {!isMobile && <span className="text-text-tertiary mr-1">f</span>}Forward
             </button>
           </div>
         </div>

@@ -26,13 +26,13 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     if (!iframe) return
     try {
       const body = iframe.contentDocument?.body
-      if (body) {
-        const h = body.scrollHeight + 16
-        if (h > 16) {
-          setHeight(h)
-          updateHeight(messageId, h)
-          measured.current = true
-        }
+      if (!body) return
+      fitBodyToWidth(iframe)
+      const h = body.getBoundingClientRect().height + 16
+      if (h > 16) {
+        setHeight(h)
+        updateHeight(messageId, h)
+        measured.current = true
       }
     } catch {
       // Cross-origin, ignore
@@ -109,6 +109,18 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     }
   }, [visible, measure])
 
+  // Re-measure (and re-fit width) when iframe size changes — orientation,
+  // sidebar toggle, etc.
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (loaded.current) measure()
+    })
+    ro.observe(iframe)
+    return () => ro.disconnect()
+  }, [measure])
+
   return (
     <iframe
       ref={iframeRef}
@@ -119,6 +131,35 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     />
   )
 })
+
+const FIT_STYLE_ID = 'console-fit-width'
+
+function fitBodyToWidth(iframe: HTMLIFrameElement) {
+  const doc = iframe.contentDocument
+  if (!doc) return
+  const iframeW = iframe.clientWidth
+  if (iframeW <= 0) return
+  // Replace if present so HMR / rule changes take effect on existing iframes.
+  doc.getElementById(FIT_STYLE_ID)?.remove()
+  const style = doc.createElement('style')
+  style.id = FIT_STYLE_ID
+  style.textContent = `
+    html, body { max-width: 100% !important; overflow-x: hidden !important; }
+    body * { max-width: 100% !important; }
+    /* Marketing emails use fixed-width <table> for layout. Force linear flow
+       so text wraps to the viewport instead of getting clipped. */
+    table, tbody, thead, tfoot, tr, td, th {
+      display: block !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      box-sizing: border-box !important;
+    }
+    td, th { word-break: break-word; overflow-wrap: anywhere; }
+    img, video, iframe { height: auto !important; }
+    pre { white-space: pre-wrap !important; word-break: break-word; }
+  `
+  doc.head.appendChild(style)
+}
 
 function toggleDarkInIframe(iframe: HTMLIFrameElement, dark: boolean) {
   try {
