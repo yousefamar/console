@@ -30,6 +30,7 @@ import { useFeedStore } from '@/store/feeds'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useMoneyStore } from '@/store/money'
 import { useNotesStore } from '@/store/notes'
+import { useDashboardStore } from '@/store/dashboard'
 import { renderNotes } from './panes/notes'
 import { renderChat } from './panes/chat'
 import { renderAgents } from './panes/agents'
@@ -38,6 +39,7 @@ import { renderCalendar } from './panes/calendar'
 import { renderFeeds } from './panes/feeds'
 import { renderBookmarks } from './panes/bookmarks'
 import { renderMoney } from './panes/money'
+import { renderHome } from './panes/home'
 
 /**
  * Pessimistic-but-safe text width per row. G1 uses a proportional font,
@@ -64,6 +66,7 @@ export interface MirrorFrame {
 type PaneRenderer = () => MirrorFrame | null
 
 const renderers: Record<ActivePane, PaneRenderer> = {
+  home: renderHome,
   notes: renderNotes,
   chat: renderChat,
   agents: renderAgents,
@@ -286,6 +289,7 @@ export function wireMirror() {
   useBookmarkStore.subscribe(() => scheduleFrame())
   useMoneyStore.subscribe(() => scheduleFrame())
   useNotesStore.subscribe(() => scheduleFrame())
+  useDashboardStore.subscribe(() => scheduleFrame())
 
   // Glasses store carries composerText + bumpMirror — imported lazily to
   // avoid the circular: ./store → ./mirror → ./store.

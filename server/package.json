@@ -15,8 +15,10 @@
   "dependencies": {
     "@matrix-org/matrix-sdk-crypto-wasm": "^17.1.0",
     "@mozilla/readability": "^0.6.0",
+    "croner": "^10.0.1",
     "fake-indexeddb": "^6.2.5",
     "fast-xml-parser": "^5.5.10",
+    "ical-generator": "^10.2.0",
     "linkedom": "^0.18.12",
     "rss-parser": "^3.13.0",
     "ws": "^8.18.0",

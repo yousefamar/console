@@ -150,6 +150,16 @@ async function main() {
         await hub(verb, rest, flags)
         break
       }
+      case 'dashboard': {
+        const { dashboard } = await import('./commands/dashboard.js')
+        await dashboard(verb, rest, flags)
+        break
+      }
+      case 'cron': {
+        const { cron } = await import('./commands/cron.js')
+        await cron(verb, rest, flags)
+        break
+      }
       case 'capabilities': {
         const { capabilities } = await import('./commands/capabilities.js')
         capabilities(flags)

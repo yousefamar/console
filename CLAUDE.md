@@ -169,11 +169,31 @@ The debug agent:
 - **Scenario UX**: live in `src/components/money/ScenariosView.tsx` and CashflowView. Comparison chart overlays every saved scenario's liquid trajectory on the baseline. The "active scenario" picker on Cashflow highlights one for focused view; saved scenarios persist independent of active selection.
 - **Charts**: `recharts` (~3.8). Tailwind 4 `var(--color-*)` tokens for axes/grid/tooltip so dark mode just works. `RunwayCard` is a 5-tile metric strip. `ProjectionChart` = liquid+total lines with emergency reference. `NetWorthView` history = stacked area liquid+investment.
 
+### Home / Dashboard
+- First pane (slot 0). Three sections: **Servers** (hub + Tailscale peers + PM2 processes + user-listed external URLs), **Alerts** (pending agent AskUserQuestions, calendar events starting in next 30 min, recent errors from `/debug/log`), **AI agent canvas** (sandboxed iframe).
+- Snapshot poll: 30s. Alerts poll: 15s. Server-side helpers in `server/src/dashboard.ts` shell out to `tailscale status --json` and `pm2 jlist` per request — no caching, no daemon.
+- External URL list at `~/.config/console/dashboard-servers.json`. CRUD via `con dashboard servers {list,add,remove}` or `POST/DELETE /dashboard/servers[/:id]`.
+- Calendar upcoming pulls from `CalendarSync.getUpcomingWithin(windowMs)` — backed by an in-memory `upcomingAll` map populated during the cal sync loop.
+- Pending approvals derived by scanning each non-ended session's `messageLog` for `approval_required` entries with no later matching `tool_approved` / `tool_denied`.
+
 ### Agents (Claude Code)
 - Hub spawns `claude` CLI subprocesses. NDJSON protocol over stdin/stdout.
 - WebSocket relay to browser. Auto-approve all tools except AskUserQuestion.
 - Session persistence across hub restarts. Message replay for late-joining clients.
 - Al (personal AI) connects on `/al` WebSocket path.
+
+### Hub-side agent cron (`/cron/*`)
+Claude Code's built-in `/loop` / `CronCreate` is session-scoped and DOES NOT survive hub restarts under our SDK transport (`--input-format stream-json`) — empirically verified, matches Anthropic bugs [#40228](https://github.com/anthropics/claude-code/issues/40228) (`durable: true` doesn't persist) and [#40081](https://github.com/anthropics/claude-code/issues/40081) (sessions with cron tasks vanish from `/resume`). So the hub runs its own.
+- **Scheduler**: `server/src/cron/scheduler.ts` (Croner + debounced JSON persist to `~/.config/console/agent-cron.json`). Tasks keyed by `claudeSessionId` (stable across restarts; hub session ids are rejected). Forks get a new claudeSessionId so they inherit zero tasks. Fires by mirroring the post-restart "Continue." nudge path: `broadcast(user_prompt) + session.logMessage + session.sendMessage`. Auto-disables a task after 10 consecutive misses (session not found / ended). One-shot tasks self-remove after firing. Croner `protect: true` prevents overlapping fires when Claude takes longer than the cron interval to respond.
+- **Routes** (`server/src/routes/cron.ts`): `GET /cron[?session=…]`, `POST /cron`, `DELETE /cron/:id`, `POST /cron/:id/run`, `GET /cron/upcoming?n=N`, `GET /cron/ics-token` (returns `{token, publicUrl}`), `GET /cron.ics?token=…` (constant-time compare; 403 on bad token; `Cache-Control: max-age=300`).
+- **ICS**: `server/src/cron/ics.ts` expands each task into discrete VEVENTs (next 50 firings, 30-day window) via `Croner.nextRun()` — avoids the lossy cron→RRULE conversion. UTC timestamps, RFC5545 line folding + escaping. Calendar clients re-fetch periodically.
+- **CLI**: `con cron list/add/remove/run/upcoming/ics-url`. `--trigger` accepts a 5-field cron, ISO datetime, or `+30m`/`+2h`/`+1d` (CLI resolves relative to ISO). `--once` flips recurring=false (implied for ISO/relative).
+- **SPA**: `src/components/agent/CronPill.tsx` (status-bar chip) + `CronPanel.tsx` (side panel: list, run-now/delete, recurring/one-shot create form with live validation, ICS subscription URL with copy). Backed by `src/store/cron.ts` (polled, no WS sync in v1).
+- **Public exposure for GCal**: hub serves the ICS on tailnet-only `:9877` by default. To make it reachable by Google Calendar, a Tailscale Funnel path mapping forwards the public origin's `/cron.ics` to the hub:
+  ```
+  tailscale funnel --bg --https=8443 --set-path=/cron.ics https+insecure://localhost:9877/cron.ics
+  ```
+  This adds a more-specific path on top of the existing `/ → :8080` SPA mapping (Funnel persists across reboots; check with `tailscale funnel status`). `getPublicIcsBase()` in the scheduler shells out to `tailscale funnel status --json`, finds a handler whose `Proxy` contains `localhost:9877`, and returns `https://<funnel-host>` (5-min cache). The CLI/SPA prefer this over the local URL when present. Token query string is the only auth — don't share it.
 
 ### Glasses (G1)
 - **Native Kotlin BLE**, not Web Bluetooth. APK-only. See `docs/g1-protocol.md` for the wire protocol (NUS UUIDs, opcodes `0x4E` text / `0x15+0x20+0x16` BMP / `0x25` heartbeat / `0x0E` mic / `0xF5` touchbar / `0xF1` audio / `0x4B` notification).
@@ -251,6 +271,8 @@ Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26
 - `/apk/latest.json`, `/apk/console-<versionCode>.apk` — APK update channel served from `~/.config/console/apk/`
 - `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService. Also carries glasses WS RPC framing (see Glasses section).
 - `/glasses/*` — low-level dumb pipe proxied to the APK's GlassesService over the `/push` WS: `GET /status`, `POST /text`, `POST /bmp`, `POST /clear`, `POST /notify`, `POST /mic/start|stop`, `POST /scan`, `POST /pair`, `POST /disconnect`, `GET /events` (SSE).
+- `/dashboard/snapshot`, `/dashboard/alerts`, `/dashboard/servers` — Home pane data sources. `POST /dashboard/servers` adds an external probe; `DELETE /dashboard/servers/:id` removes one.
+- `/canvas/*` — static file serve from `~/.config/console/canvas/` (the AI agent canvas dir). `DELETE /canvas` wipes + re-seeds the placeholder. fs.watch broadcasts `dashboard.canvas_changed` on the SyncBus.
 
 ## Known Issues
 - Matrix E2EE: new device needs key backup restore (`POST /matrix/keys/restore-from-recovery-key`) before old messages decrypt

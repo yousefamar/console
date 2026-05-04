@@ -76,6 +76,14 @@ export class CalendarSync {
    */
   private upcoming = new Map<string, ReminderEntry>()
 
+  /**
+   * Broader cache of all upcoming events (regardless of reminder config) so
+   * the dashboard can show "next event in N min". Keyed by account+event.
+   * Rebuilt from each sync pass; entries past their start are pruned by
+   * `getUpcomingWithin`.
+   */
+  private upcomingAll = new Map<string, { calendarId: string; summary: string; startMs: number }>()
+
   constructor(
     private readonly cal: CalendarClient,
     private readonly auth: AuthStore,
@@ -111,6 +119,22 @@ export class CalendarSync {
   async syncNow(): Promise<{ ok: true }> {
     await this.tick()
     return { ok: true }
+  }
+
+  /**
+   * Events starting within `windowMs` from now (or already started within
+   * the last minute, so a meeting that just kicked off still appears).
+   * Sorted by start time ascending. Used by the dashboard alerts tile.
+   */
+  getUpcomingWithin(windowMs: number): Array<{ calendarId: string; summary: string; startMs: number }> {
+    const now = Date.now()
+    const upper = now + windowMs
+    const out: Array<{ calendarId: string; summary: string; startMs: number }> = []
+    for (const [key, entry] of this.upcomingAll) {
+      if (entry.startMs < now - 60_000) { this.upcomingAll.delete(key); continue }
+      if (entry.startMs <= upper) out.push(entry)
+    }
+    return out.sort((a, b) => a.startMs - b.startMs)
   }
 
   // ---- internals ----
@@ -172,7 +196,10 @@ export class CalendarSync {
       accState.events[cal.id] = nextFps
       // Drop removed events from the upcoming cache so we don't fire for
       // cancelled items.
-      for (const rid of removed) this.upcoming.delete(`${account}:${rid}`)
+      for (const rid of removed) {
+        this.upcoming.delete(`${account}:${rid}`)
+        this.upcomingAll.delete(`${account}:${rid}`)
+      }
 
       if (added.length + updated.length + removed.length > 0) {
         const delta: CalDelta = { account, calendarId: cal.id, added, updated, removed }
@@ -186,20 +213,26 @@ export class CalendarSync {
   /** Record an event's reminder hints in the in-memory `upcoming` cache. */
   private cacheReminder(account: string, calendarId: string, ev: any): void {
     const key = `${account}:${ev.id}`
-    if (ev.status === 'cancelled') { this.upcoming.delete(key); return }
+    if (ev.status === 'cancelled') {
+      this.upcoming.delete(key)
+      this.upcomingAll.delete(key)
+      return
+    }
 
     const startIso: string | undefined = ev.start?.dateTime ?? ev.start?.date
     if (!startIso) return
     const startMs = new Date(startIso).getTime()
     if (!Number.isFinite(startMs)) return
 
-    // Skip events outside the 25h lookahead — no reminder we care about would
-    // fire beyond that, and keeping the map small keeps checkReminders cheap.
+    // Cache for the dashboard's broader "next event" view — independent of
+    // whether the event has reminder overrides. Same 25h window.
     const now = Date.now()
     if (startMs < now - 60_000 || startMs - now > 25 * 60 * 60 * 1000) {
       this.upcoming.delete(key)
+      this.upcomingAll.delete(key)
       return
     }
+    this.upcomingAll.set(key, { calendarId, summary: ev.summary || '(No title)', startMs })
 
     // Pull override minutes. If `useDefault` is true Google uses the calendar
     // default which we don't mirror here — skip (matches v1 scope). Otherwise

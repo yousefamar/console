@@ -328,6 +328,64 @@ export const COMMANDS: CommandDef[] = [
   { name: 'hub restart', description: 'Restart the hub via pm2 (auto-continues in-progress agent sessions)', safety: 'write',
     examples: ['con hub restart'] },
 
+  // dashboard
+  { name: 'dashboard status', description: 'Server snapshot (hub, tailscale, pm2, external URLs)', safety: 'read' },
+  { name: 'dashboard alerts', description: 'Aggregated alerts: pending agent approvals, upcoming events, recent errors', safety: 'read' },
+  { name: 'dashboard servers', description: 'Manage external URL probes shown on the dashboard',
+    safety: 'write',
+    args: [{ name: 'sub', required: false, description: 'list (default) | add | remove' }],
+    flags: {
+      name: { type: 'string', description: 'Display name (add)' },
+      url: { type: 'string', description: 'URL to probe (add)' },
+      'expect-status': { type: 'string', description: 'HTTP status that means healthy (add)' },
+    },
+    examples: ['con dashboard servers list', 'con dashboard servers add --name vps --url https://example.com', 'con dashboard servers remove srv_abc'] },
+  { name: 'dashboard canvas', description: 'Collaborate on the agent canvas via islands. Multiple agents can each own a slug; hub composes them into a grid. Falls back to direct index.html writes for full takeover.',
+    safety: 'write',
+    args: [{ name: 'sub', required: false, description: 'list (default) | add | remove | clear | reset' }],
+    flags: {
+      title: { type: 'string', description: 'Island header title (add)' },
+      by: { type: 'string', description: 'Author tag shown in island header (add). Note: cannot use --agent — it is a global flag.' },
+      accent: { type: 'string', description: 'Header accent CSS color (add)' },
+      weight: { type: 'string', description: 'Grid column span 1..3 (add)' },
+      'expires-in': { type: 'string', description: 'Auto-prune after duration like 30m, 2h, 1d (add)' },
+      file: { type: 'string', description: 'Read island HTML from file instead of stdin (add)' },
+    },
+    examples: [
+      'con dashboard canvas list',
+      "echo '<h1>Hi</h1>' | con dashboard canvas add greeting --title 'Hello' --by claude",
+      'con dashboard canvas add chart --file chart.html --weight 2 --expires-in 1h',
+      'con dashboard canvas remove greeting',
+      'con dashboard canvas clear',
+      'con dashboard canvas reset',
+    ] },
+
+  // cron — hub-side scheduler that fires user_prompts into agent sessions.
+  // Survives hub restarts (unlike Claude Code's session-scoped /loop / CronCreate).
+  { name: 'cron list', description: 'List scheduled tasks (optionally filtered by session)', safety: 'read',
+    flags: { session: { type: 'string', description: 'Filter to one claudeSessionId' } },
+    examples: ['con cron list', 'con cron list --session 78cf31f5-b0e0-4f2a-8f70-4dc407ed7793'] },
+  { name: 'cron add', description: 'Schedule a prompt to fire into a session. Trigger is a 5-field cron, ISO datetime, or relative shorthand (+30m). One-shot if ISO/relative, recurring if cron (override with --once).',
+    safety: 'write',
+    flags: {
+      session: { type: 'string', description: 'REQUIRED. claudeSessionId (UUID) from `con agent list --json`. Hub session ids rejected.' },
+      trigger: { type: 'string', description: 'REQUIRED. Cron expression OR ISO datetime OR +30m / +2h / +1d' },
+      prompt:  { type: 'string', description: 'REQUIRED. Prompt text sent verbatim into the session on each fire' },
+      once:    { type: 'boolean', description: 'Force one-shot even for cron expressions' },
+    },
+    examples: [
+      'con cron add --session $UUID --trigger "*/5 * * * *" --prompt "check CI"',
+      'con cron add --session $UUID --trigger "+30m" --prompt "remind me to push the release branch"',
+      'con cron add --session $UUID --trigger "2026-05-04T09:00:00" --prompt "stand-up notes"',
+    ] },
+  { name: 'cron remove', description: 'Delete a scheduled task by id', safety: 'destructive',
+    args: [{ name: 'task-id', required: true, description: '8-char id from `con cron list`' }] },
+  { name: 'cron run', description: 'Fire a task immediately (does not affect its schedule)', safety: 'write',
+    args: [{ name: 'task-id', required: true, description: '8-char id from `con cron list`' }] },
+  { name: 'cron upcoming', description: 'Preview the next firings across all tasks', safety: 'read',
+    flags: { n: { type: 'string', description: 'Max firings per task (default 20)' } } },
+  { name: 'cron ics-url', description: 'Print the calendar subscription URL (token-protected) for the hub schedule', safety: 'read' },
+
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
   { name: 'capabilities', description: 'List all commands for agent discovery', safety: 'read' },
