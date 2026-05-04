@@ -3,8 +3,9 @@ import { useAgentStore } from '@/store/agent'
 import { AgentSessionView } from './AgentSessionView'
 import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { ChevronDown, ChevronRight, Circle, Folder, FolderOpen, Plus } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Circle, Folder, FolderOpen, Plus } from 'lucide-react'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -144,7 +145,9 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const forkSession = useAgentStore((s) => s.forkSession)
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
+  const markSessionRead = useAgentStore((s) => s.markSessionRead)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
+  const isMobile = useIsMobile()
   // Latest text/prompt snippet — same pattern as Al, gives a glanceable activity preview
   const lastText = useAgentStore((s) => {
     const msgs = s.messagesBySession[session.id]
@@ -163,6 +166,17 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const inputRef = useRef<HTMLInputElement>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout>>(null)
   const itemRef = useRef<HTMLButtonElement>(null)
+  // Mobile-only: per-row swipe-right marks the session read (mirrors the
+  // session-view swipe). Coexists with the long-press-to-drag-reorder timer
+  // by clearing the timer the moment the swipe hook decides direction.
+  const swipeContainerRef = useRef<HTMLDivElement>(null)
+  const swipeContentRef = useRef<HTMLDivElement>(null)
+  const swipeIconRef = useRef<HTMLDivElement>(null)
+  const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
+    onSwipeStart: () => { if (longPressTimer.current) clearTimeout(longPressTimer.current) },
+    onSwipeRight: () => markSessionRead(session.id),
+    leftIconRef: swipeIconRef,
+  })
 
   const displayName = session.name || session.prompt || session.id
 
@@ -199,6 +213,20 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
 
   return (
     <ContextMenu items={menuItems}>
+      <div ref={swipeContainerRef} className="relative">
+        {isMobile && (
+          <div
+            ref={swipeIconRef}
+            className="absolute inset-y-0 left-0 flex items-center pl-4 pointer-events-none z-10"
+            style={{ opacity: 0 }}
+          >
+            <Check size={16} className="text-green-500" />
+          </div>
+        )}
+        <div
+          ref={isMobile ? swipeContentRef : null}
+          {...(isMobile ? { onTouchStart: swipe.onTouchStart, onTouchMove: swipe.onTouchMove, onTouchEnd: swipe.onTouchEnd } : {})}
+        >
       <button
         ref={itemRef}
         draggable={!isRenaming}
@@ -287,6 +315,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
           </div>
         )}
       </button>
+        </div>
+      </div>
     </ContextMenu>
   )
 })

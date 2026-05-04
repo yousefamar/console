@@ -157,12 +157,15 @@ interface AgentState {
   interrupt: () => void
   killSession: (sessionId: string) => void
   selectSession: (sessionId: string | null) => void
+  /** Pop back to the session list on mobile — clears active session WITHOUT
+   *  entering "creating new session" mode (which selectSession(null) does). */
+  goToSessionList: () => void
   selectNextSession: () => void
   selectPrevSession: () => void
   listSessions: () => void
   toggleThinkingCollapsed: (messageId: string) => void
-  markSessionRead: () => void
-  markSessionUnread: () => void
+  markSessionRead: (id?: string) => void
+  markSessionUnread: (id?: string) => void
   loadOlderMessages: (sessionId: string) => void
   setTailing: (sessionId: string, tailing: boolean) => void
   reorderSession: (fromId: string, toId: string) => void
@@ -344,6 +347,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({ type: 'kill_session', sessionId })
   },
 
+  goToSessionList: () => {
+    set({ activeSessionId: null, pendingApproval: null, creatingNewSession: false })
+    import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(null))
+  },
+
   selectSession: (sessionId) => {
     // Snapshot last-read timestamp for the session we're LEAVING
     const prevId = get().activeSessionId
@@ -416,8 +424,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })
   },
 
-  markSessionRead: () => {
-    const sessionId = get().activeSessionId
+  markSessionRead: (id) => {
+    const sessionId = id ?? get().activeSessionId
     if (!sessionId) return
     // Optimistic local clear; hub broadcasts session_read_state which lands
     // on every client (including this one) for cross-device sync.
@@ -426,8 +434,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({ type: 'mark_session_read', sessionId })
   },
 
-  markSessionUnread: () => {
-    const sessionId = get().activeSessionId
+  markSessionUnread: (id) => {
+    const sessionId = id ?? get().activeSessionId
     if (!sessionId) return
     const sess = get().sessions.find((s) => s.id === sessionId)
     if (sess) {

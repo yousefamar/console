@@ -3,7 +3,12 @@ import { useAgentStore } from '@/store/agent'
 import { AgentMessageBlock, renderMarkdownLite } from './AgentMessageBlock'
 import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
-import { Loader2, GitBranch, ChevronDown } from 'lucide-react'
+import { CronPill } from './agent/CronPill'
+import { CronPanel } from './agent/CronPanel'
+import { useCronStore } from '@/store/cron'
+import { useIsMobile } from '@/hooks/useMediaQuery'
+import { useSwipeActions } from '@/hooks/useSwipeActions'
+import { Loader2, GitBranch, ChevronDown, Check } from 'lucide-react'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -33,9 +38,28 @@ export function AgentSessionView() {
   const loadOlderMessages = useAgentStore((s) => s.loadOlderMessages)
   const setTailing = useAgentStore((s) => s.setTailing)
   const connected = useAgentStore((s) => s.connected)
+  const claudeSessionId = activeSession?.claudeSessionId
+  // Subscribed for the status-bar visibility check; CronPill renders the actual count.
+  const hasCron = useCronStore((s) =>
+    claudeSessionId ? (s.tasksBySession[claudeSessionId]?.some((t) => !t.disabledAt) ?? false) : false,
+  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [showCronPanel, setShowCronPanel] = useState(false)
+
+  // Mobile-only: swipe right on the message stream to mark read + back to list
+  // (mirrors mail's swipe-to-archive UX).
+  const isMobile = useIsMobile()
+  const markSessionRead = useAgentStore((s) => s.markSessionRead)
+  const goToSessionList = useAgentStore((s) => s.goToSessionList)
+  const swipeContainerRef = useRef<HTMLDivElement>(null)
+  const swipeContentRef = useRef<HTMLDivElement>(null)
+  const swipeReadIconRef = useRef<HTMLDivElement>(null)
+  const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
+    onSwipeRight: () => { markSessionRead(); goToSessionList() },
+    leftIconRef: swipeReadIconRef,
+  })
   /** Tracks whether user is near bottom — updated on every scroll event, read before auto-scroll */
   const isNearBottom = useRef(true)
   const messages = useMemo(() => activeMessages ?? [], [activeMessages])
@@ -50,12 +74,21 @@ export function AgentSessionView() {
     if (activeSessionId) setTailing(activeSessionId, true)
   }, [activeSessionId, setTailing])
 
-  // Auto-scroll to bottom on new content — only if user was already near bottom
+  // Auto-scroll to bottom on new content — only if user was already near bottom,
+  // EXCEPT when the user just sent a prompt: that's explicit intent to see the
+  // response, so force-scroll and re-arm the near-bottom flag regardless.
   useEffect(() => {
     const el = scrollRef.current
-    if (!el || !isNearBottom.current) return
+    if (!el) return
+    const last = messages[messages.length - 1]
+    const justSent = last?.block.type === 'user_prompt'
+    if (!isNearBottom.current && !justSent) return
     el.scrollTop = el.scrollHeight
-  }, [messages.length, pendingText, pendingThinking])
+    if (justSent) {
+      isNearBottom.current = true
+      setShowScrollToBottom(false)
+    }
+  }, [messages, pendingText, pendingThinking])
 
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return
@@ -114,9 +147,26 @@ export function AgentSessionView() {
   }
 
   return (
-    <div className="flex flex-1 flex-col min-h-0 min-w-0">
+    <div className="flex flex-1 flex-col min-h-0 min-w-0 relative">
       {/* Message stream */}
-      <div className="flex-1 overflow-hidden relative min-w-0">
+      <div
+        ref={swipeContainerRef}
+        className="flex-1 overflow-hidden relative min-w-0"
+      >
+        {isMobile && (
+          <div
+            ref={swipeReadIconRef}
+            className="absolute inset-y-0 left-0 flex items-center pl-6 pointer-events-none z-10"
+            style={{ opacity: 0 }}
+          >
+            <Check size={24} className="text-green-500" />
+          </div>
+        )}
+        <div
+          ref={isMobile ? swipeContentRef : null}
+          {...(isMobile ? { onTouchStart: swipe.onTouchStart, onTouchMove: swipe.onTouchMove, onTouchEnd: swipe.onTouchEnd } : {})}
+          className="absolute inset-0"
+        >
         <div
           ref={scrollRef}
           className="absolute inset-0 overflow-y-auto overflow-x-hidden py-2"
@@ -179,6 +229,7 @@ export function AgentSessionView() {
           </div>
         )}
         </div>
+        </div>
         {showScrollToBottom && (
           <button
             onClick={scrollToBottom}
@@ -191,7 +242,7 @@ export function AgentSessionView() {
       </div>
 
       {/* Status bar */}
-      {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0) && (
+      {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (
         <div className="flex items-center border-t border-border/50 px-3 py-1 gap-2 overflow-hidden min-w-0">
           {/* Model name + mode */}
           {sessionModel && (
@@ -253,6 +304,9 @@ export function AgentSessionView() {
             </div>
           )}
 
+          {/* Hub-side scheduled prompts */}
+          <CronPill claudeSessionId={claudeSessionId} onOpen={() => setShowCronPanel(true)} />
+
           {/* Running status */}
           {(isRunning || statusText) && (
             <div className="flex items-center justify-end gap-1.5 text-[10px] text-text-tertiary min-w-0 flex-1 ml-auto">
@@ -268,6 +322,11 @@ export function AgentSessionView() {
 
       {/* Prompt input */}
       <AgentPromptInput />
+
+      {/* Hub-side cron management panel */}
+      {showCronPanel && (
+        <CronPanel claudeSessionId={claudeSessionId} onClose={() => setShowCronPanel(false)} />
+      )}
     </div>
   )
 }
