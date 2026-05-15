@@ -56,7 +56,10 @@ export const COMMANDS: CommandDef[] = [
 
   // chat
   { name: 'chat rooms', description: 'List chat rooms', safety: 'read',
-    flags: { filter: { type: 'string', description: 'Filter: unread, all, favourites, snoozed', default: 'unread' } } },
+    flags: {
+      filter: { type: 'string', description: 'Filter: unread, all, favourites, snoozed', default: 'unread' },
+      network: { type: 'string', description: 'Bridge network: linkedin, whatsapp, signal, telegram, slack, discord, instagram, facebook, twitter, googlechat, gmessages, imessage' },
+    } },
   { name: 'chat messages', description: 'Read messages in a room', safety: 'read',
     args: [{ name: 'room-id', required: true, description: 'Matrix room ID' }],
     flags: { limit: { type: 'number', description: 'Max messages', default: 50 }, before: { type: 'string', description: 'Pagination token' } } },

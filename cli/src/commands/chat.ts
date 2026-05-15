@@ -22,7 +22,9 @@ export async function chat(verb: string | undefined, args: string[], flags: Glob
 
 async function chatRooms(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
-  const data = await hubFetch('/matrix/rooms', { params: { filter: opts.filter } })
+  const data = await hubFetch('/matrix/rooms', {
+    params: { filter: opts.filter, network: opts.network },
+  })
   output(data, flags)
 }
 

@@ -11,6 +11,68 @@ import type { MatrixSync } from '../matrix/sync.js'
 import { matrixPasswordLogin } from '../matrix/login.js'
 import { restoreFromRecoveryKey, restoreCrossSigningFromRecoveryKey } from '../matrix/backup-restore.js'
 
+// Bridge detection — mirrored from src/matrix/sync.ts (browser side). Looks
+// at joined ghost user IDs first, then bridge-bot IDs as a fallback for
+// channels/broadcasts that have no ghost members. Returns a normalized
+// network slug (`linkedin`, `whatsapp`, `slack`, etc.) or undefined.
+const GHOST_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)_/i
+const BOT_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)bot:/i
+
+function networkFromUserId(userId: string, re: RegExp): string | undefined {
+  const m = userId.match(re)
+  if (!m) return undefined
+  const raw = m[1]!.toLowerCase()
+  if (raw === 'imessagecloud') return 'imessage'
+  return raw.replace(/go$/, '')
+}
+
+function detectBridgeNetwork(stateEvents: any[]): string | undefined {
+  const joined = stateEvents.filter(
+    (e) => e.type === 'm.room.member' && e.content?.membership === 'join',
+  )
+  let botNetwork: string | undefined
+  for (const ev of joined) {
+    const uid = (ev.state_key as string) ?? ''
+    const ghost = networkFromUserId(uid, GHOST_RE)
+    if (ghost) return ghost
+    if (!botNetwork) botNetwork = networkFromUserId(uid, BOT_RE)
+  }
+  return botNetwork
+}
+
+function isBridgeBot(userId: string): boolean {
+  return BOT_RE.test(userId)
+}
+
+// Compute a human room name. Mirrors src/matrix/sync.ts:getRoomName — uses
+// m.room.name when set, else canonical_alias, else falls back to joined
+// non-self / non-bot member display names (deduped). Returns the roomId only
+// when no usable signal exists.
+function computeRoomName(stateEvents: any[], roomId: string, myUserId: string): string {
+  for (const e of stateEvents) {
+    if (e.type === 'm.room.name' && e.state_key === '' && e.content?.name) {
+      return e.content.name as string
+    }
+  }
+  for (const e of stateEvents) {
+    if (e.type === 'm.room.canonical_alias' && e.state_key === '' && e.content?.alias) {
+      return e.content.alias as string
+    }
+  }
+  const joined = stateEvents.filter(
+    (e) => e.type === 'm.room.member' && e.content?.membership === 'join',
+  )
+  const others = joined.filter((e) => {
+    const uid = (e.state_key as string) ?? ''
+    return uid !== myUserId && !isBridgeBot(uid)
+  })
+  if (others.length === 0) return roomId
+  const names = Array.from(new Set(
+    others.map((e) => (e.content?.displayname as string) || (e.state_key as string) || '?'),
+  ))
+  return names.slice(0, 3).join(', ')
+}
+
 export function handleMatrixRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -45,30 +107,30 @@ export function handleMatrixRoutes(
   if (path === '/matrix/rooms' && req.method === 'GET') {
     return handleAsync(async () => {
       const filter = url.searchParams.get('filter') || 'all'
+      const networkFilter = url.searchParams.get('network')?.toLowerCase()
 
       // Do a sync with timeout=0 to get current room state
       const syncData = await matrix.sync({ timeout: 0 })
       const rooms: Array<Record<string, unknown>> = []
 
+      const myUserId = authStore.getMatrixConfig()?.userId ?? ''
       const joinedRooms = syncData.rooms?.join || {}
       for (const [roomId, room] of Object.entries(joinedRooms)) {
         const stateEvents = [...(room as any).state.events, ...(room as any).timeline.events.filter((e: any) => e.state_key !== undefined)]
 
-        // Extract room name
-        let name = roomId
-        for (const e of stateEvents) {
-          if (e.type === 'm.room.name' && e.content.name) name = e.content.name as string
-        }
-
+        const name = computeRoomName(stateEvents, roomId, myUserId)
         const unread = (room as any).unread_notifications?.notification_count || 0
         const memberCount = (room as any).summary?.['m.joined_member_count'] || 0
+        const network = detectBridgeNetwork(stateEvents)
 
-        // Apply filter
+        // Apply filters
         if (filter === 'unread' && unread === 0) continue
+        if (networkFilter && network !== networkFilter) continue
 
         rooms.push({
           id: roomId,
           name,
+          network,
           unreadCount: unread,
           memberCount,
           lastActivity: (room as any).timeline.events.at(-1)?.origin_server_ts,
@@ -91,18 +153,45 @@ export function handleMatrixRoutes(
 
       const data = await matrix.getRoomMessages(roomId, { from: before, limit })
 
-      // Convert to simpler format
-      const messages = (data as any).chunk
-        .filter((e: any) => e.type === 'm.room.message' || e.type === 'm.room.encrypted')
-        .map((e: any) => ({
-          id: e.event_id,
-          sender: e.sender,
-          timestamp: e.origin_server_ts,
-          type: e.type,
-          content: e.content,
-          // Note: encrypted messages won't be decrypted here yet
-          // Full E2E support requires the hub's OlmMachine (Phase 4 future)
-        }))
+      // Decrypt encrypted events through the hub's OlmMachine. Anything that
+      // can't be decrypted (key still missing, etc.) falls through to its
+      // raw form so callers see at least the event id + timestamp; the CLI
+      // marker `decryptFailed: true` lets consumers tell ciphertext apart
+      // from genuine plaintext events.
+      const cryptoReady = hubCrypto.isReady()
+      const messages = await Promise.all(
+        (data as any).chunk
+          .filter((e: any) => e.type === 'm.room.message' || e.type === 'm.room.encrypted')
+          .map(async (e: any) => {
+            if (e.type === 'm.room.encrypted' && cryptoReady) {
+              const dec = await hubCrypto.decryptRoomEvent(e, roomId)
+              if (dec) {
+                return {
+                  id: e.event_id,
+                  sender: e.sender,
+                  timestamp: e.origin_server_ts,
+                  type: dec.type,
+                  content: dec.content,
+                }
+              }
+              return {
+                id: e.event_id,
+                sender: e.sender,
+                timestamp: e.origin_server_ts,
+                type: e.type,
+                content: e.content,
+                decryptFailed: true,
+              }
+            }
+            return {
+              id: e.event_id,
+              sender: e.sender,
+              timestamp: e.origin_server_ts,
+              type: e.type,
+              content: e.content,
+            }
+          }),
+      )
 
       json({
         messages,
