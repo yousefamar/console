@@ -297,6 +297,7 @@ interface ChatState {
   // Send
   sendMessage: (roomId: string, body: string, formattedBody?: string) => Promise<void>
   sendImage: (roomId: string, file: File, caption?: string) => Promise<void>
+  sendFile: (roomId: string, file: File, caption?: string) => Promise<void>
 
   // Reply & React
   setReplyingTo: (msg: DbChatMessage | null) => void
@@ -657,6 +658,116 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       // Send read receipt
+      const msgs = await db.chatMessages
+        .where('roomId').equals(roomId)
+        .reverse().sortBy('timestamp')
+      const lastReal = msgs.find((m) => !m.id.startsWith('~'))
+      if (lastReal) {
+        await enqueue('chatMarkRead', { roomId, eventId: lastReal.id }, { roomId })
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      await db.chatMessages.update(localId, { sendFailed: message })
+      const room = await db.chatRooms.get(roomId)
+      notify({
+        title: 'Message failed to send',
+        body: room?.name ? `in ${room.name}: ${message}` : message,
+        tag: `send-failed:${localId}`,
+        data: { pane: 'chat', itemId: roomId },
+      })
+    }
+  },
+
+  // Generic file send — videos, audio, documents, anything not an image.
+  // Mirrors sendImage's local-echo + raw-upload-then-Megolm-event flow so
+  // bridges (which can't decrypt encrypted attachments) can still read the
+  // file URL. The msgtype is chosen from the file's MIME so receivers render
+  // the right widget (`m.video`, `m.audio`, `m.file`).
+  sendFile: async (roomId, file, caption) => {
+    const { replyingTo } = get()
+    const localId = `~${Date.now()}.${Math.random().toString(36).slice(2)}`
+    const userId = localStorage.getItem('matrix_user_id') ?? ''
+    const blobUrl = URL.createObjectURL(file)
+
+    const bodyText = caption || file.name
+    let msgtype: 'm.video' | 'm.audio' | 'm.file' = 'm.file'
+    let localType: DbChatMessage['type'] = 'file'
+    if (file.type.startsWith('video/')) { msgtype = 'm.video'; localType = 'video' }
+    else if (file.type.startsWith('audio/')) {
+      // WhatsApp-bridge voice notes require Opus/MP3/M4A — sending WAV/AIFF/
+      // FLAC as m.audio gets bounced with `com.beeper.unsupported_event`.
+      // Demote those to m.file so the attachment still goes through (renders
+      // as a downloadable file on the other end instead of an inline player).
+      const VOICE_NOTE_OK = /^audio\/(ogg|mp4|mpeg|aac|m4a|webm)/i
+      if (VOICE_NOTE_OK.test(file.type)) {
+        msgtype = 'm.audio'
+        localType = 'audio'
+      }
+    }
+
+    const localMsg: DbChatMessage = {
+      id: localId,
+      roomId,
+      senderId: userId,
+      senderName: userId.split(':')[0]?.slice(1) ?? 'You',
+      body: bodyText,
+      timestamp: Date.now(),
+      type: localType,
+      mediaUrl: blobUrl,
+      mediaMimeType: file.type || undefined,
+      isEdited: false,
+    }
+
+    if (replyingTo) {
+      localMsg.replyTo = { eventId: replyingTo.eventId, body: replyingTo.body, sender: replyingTo.senderName }
+    }
+    set({ replyingTo: null })
+
+    set((s) => ({
+      rooms: s.rooms.map((r) =>
+        r.id === roomId ? { ...r, isUnread: false, unreadCount: 0 } : r,
+      ),
+    }))
+    await db.chatMessages.put(localMsg)
+    const previewIcon = msgtype === 'm.video' ? '🎬' : msgtype === 'm.audio' ? '🎵' : '📎'
+    await db.chatRooms.update(roomId, {
+      lastMessageBody: caption ? `${previewIcon} ${caption}` : `${previewIcon} ${file.name}`,
+      lastMessageSender: localMsg.senderName,
+      lastMessageTime: localMsg.timestamp,
+      isUnread: false,
+      unreadCount: 0,
+      lastReadEventId: localId,
+      lastReadTs: localMsg.timestamp,
+    })
+
+    try {
+      const data = await file.arrayBuffer()
+      const mxcUrl = await matrixApi.uploadMedia(data, file.type, file.name)
+      const content: Record<string, unknown> = {
+        msgtype,
+        body: bodyText,
+        filename: file.name,
+        url: mxcUrl,
+        info: { mimetype: file.type, size: file.size },
+      }
+      if (replyingTo) {
+        content['m.relates_to'] = { 'm.in_reply_to': { event_id: replyingTo.eventId } }
+      }
+
+      const { hubBus } = await import('@/sync-bus')
+      const sendResult = await hubBus.rpc<{ event_id?: string }>('matrix', 'sendEvent', {
+        roomId, type: 'm.room.message', content,
+      })
+
+      const realEventId = sendResult?.event_id
+      if (realEventId) {
+        const echo = await db.chatMessages.get(localId)
+        if (echo) {
+          await db.chatMessages.delete(localId)
+          await db.chatMessages.put({ ...echo, id: realEventId })
+        }
+      }
+
       const msgs = await db.chatMessages
         .where('roomId').equals(roomId)
         .reverse().sortBy('timestamp')

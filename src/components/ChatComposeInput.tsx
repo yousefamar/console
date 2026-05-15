@@ -14,13 +14,16 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   // (except when hasContent flips or emoji autocomplete is active).
   const textRef = useRef('')
   const [hasContent, setHasContent] = useState(false)
-  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  // Preview is only generated for images so we can render a thumbnail in the
+  // compose UI; non-image attachments show a filename chip instead.
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [emojiQuery, setEmojiQuery] = useState<{ query: string; startIdx: number } | null>(null)
   const [emojiResults, setEmojiResults] = useState<{ shortcode: string; emoji: string }[]>([])
   const [emojiSelectedIdx, setEmojiSelectedIdx] = useState(0)
   const sendMessage = useChatStore((s) => s.sendMessage)
   const sendImage = useChatStore((s) => s.sendImage)
+  const sendFile = useChatStore((s) => s.sendFile)
   const editMessage = useChatStore((s) => s.editMessage)
   const replyingTo = useChatStore((s) => s.replyingTo)
   const setReplyingTo = useChatStore((s) => s.setReplyingTo)
@@ -77,15 +80,14 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     }
   }, [])
 
-  const attachImage = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) return
-    setPendingImage(file)
-    setImagePreview(URL.createObjectURL(file))
+  const attachFile = useCallback((file: File) => {
+    setPendingFile(file)
+    setImagePreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null)
   }, [])
 
-  const clearImage = useCallback(() => {
+  const clearAttachment = useCallback(() => {
     if (imagePreview) URL.revokeObjectURL(imagePreview)
-    setPendingImage(null)
+    setPendingFile(null)
     setImagePreview(null)
   }, [imagePreview])
 
@@ -146,14 +148,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       return
     }
 
-    if (pendingImage) {
+    if (pendingFile) {
       sendingRef.current = true
-      const file = pendingImage
+      const file = pendingFile
       const caption = textRef.current.trim() || undefined
-      clearImage()
+      clearAttachment()
       clearInput()
       try {
-        await sendImage(roomId, file, caption)
+        if (file.type.startsWith('image/')) {
+          await sendImage(roomId, file, caption)
+        } else {
+          await sendFile(roomId, file, caption)
+        }
       } finally {
         sendingRef.current = false
       }
@@ -172,7 +178,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       sendingRef.current = false
     }
     inputRef.current?.focus()
-  }, [roomId, sendMessage, sendImage, pendingImage, clearImage, clearInput, editingMessage, editMessage])
+  }, [roomId, sendMessage, sendImage, sendFile, pendingFile, clearAttachment, clearInput, editingMessage, editMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Emoji autocomplete keyboard handling
@@ -249,21 +255,23 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
     if (!items) return
+    // Paste prioritises images (the common case — screenshots etc); pasted
+    // arbitrary files are rare and the file-picker handles them.
     for (const item of items) {
       if (item.type.startsWith('image/')) {
         e.preventDefault()
         const file = item.getAsFile()
-        if (file) attachImage(file)
+        if (file) attachFile(file)
         return
       }
     }
-  }, [attachImage])
+  }, [attachFile])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) attachImage(file)
+    if (file) attachFile(file)
     e.target.value = ''
-  }, [attachImage])
+  }, [attachFile])
 
   return (
     <div className="border-t border-border">
@@ -319,8 +327,9 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           </div>
         )}
 
-        {/* Image preview */}
-        {imagePreview && (
+        {/* Attachment preview — thumbnail for images, filename chip for
+            everything else. Either renders only while a file is pending. */}
+        {pendingFile && imagePreview && (
           <div className="relative inline-block mb-2">
             <img
               src={imagePreview}
@@ -328,10 +337,24 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
               className="max-h-32 max-w-48 rounded-sm border border-border"
             />
             <button
-              onClick={clearImage}
+              onClick={clearAttachment}
               className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-2 border border-border p-0.5 text-text-tertiary hover:text-text-primary"
             >
               <X size={10} />
+            </button>
+          </div>
+        )}
+        {pendingFile && !imagePreview && (
+          <div className="inline-flex items-center gap-2 mb-2 rounded-sm border border-border bg-surface-1 px-2 py-1 text-xs text-text-secondary">
+            <Paperclip size={12} className="text-text-tertiary" />
+            <span className="truncate max-w-[200px]">{pendingFile.name}</span>
+            <span className="text-text-tertiary tabular-nums">
+              {pendingFile.size < 1024 ? `${pendingFile.size}B`
+                : pendingFile.size < 1024 * 1024 ? `${Math.round(pendingFile.size / 1024)}KB`
+                : `${(pendingFile.size / 1024 / 1024).toFixed(1)}MB`}
+            </span>
+            <button onClick={clearAttachment} className="text-text-tertiary hover:text-text-primary" title="Remove">
+              <X size={12} />
             </button>
           </div>
         )}
@@ -340,14 +363,13 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
             onChange={handleFileSelect}
             className="hidden"
           />
           <button
             onClick={() => fileInputRef.current?.click()}
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary transition-colors duration-fast p-1"
-            title="Attach image"
+            title="Attach file"
           >
             <Paperclip size={14} />
           </button>
@@ -365,7 +387,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           />
           <button
             onClick={handleSend}
-            disabled={!hasContent && !pendingImage}
+            disabled={!hasContent && !pendingFile}
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
             title="Send (Enter)"
           >
