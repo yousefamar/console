@@ -306,8 +306,10 @@ function EncryptedImage({ mediaUrl, encryptedFile, alt, onClick }: { mediaUrl?: 
   )
 }
 
-// Renders a file link from either plain mxc:// or encrypted file
-function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType }: { mediaUrl?: string; encryptedFile?: EncryptedFile; label: string; mimeType?: string }) {
+// Renders a file link from either plain mxc:// or encrypted file. PDFs get a
+// click handler so the parent can open them in PdfLightbox; everything else
+// stays a plain download link.
+function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType, onPdfClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; label: string; mimeType?: string; onPdfClick?: (src: string, filename: string) => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -337,6 +339,19 @@ function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType }: { media
   const filename = label || (ext ? `file${ext}` : 'attachment')
   const displayLabel = label || (mimeType ? `${mimeType.split('/')[1]}${ext}` : 'attachment')
   if (!blobUrl && (!mediaUrl || encryptedFile)) return <span className="text-sm text-text-secondary italic">📎 {displayLabel}</span>
+
+  const isPdf = mimeType === 'application/pdf' || /\.pdf$/i.test(filename)
+  if (isPdf && onPdfClick && href !== '#') {
+    return (
+      <button
+        type="button"
+        onClick={() => onPdfClick(href, filename)}
+        className="text-sm text-text-secondary underline cursor-pointer"
+      >
+        📄 {displayLabel}
+      </button>
+    )
+  }
 
   return (
     <a href={href} target="_blank" rel="noopener noreferrer" className="text-sm text-text-secondary underline" download={filename}>
@@ -615,12 +630,13 @@ interface ChatMessageBubbleProps {
   showSender: boolean // false when same sender as previous message
   receipts?: ReadReceiptEntry[]
   onImageClick?: (src: string) => void
+  onPdfClick?: (src: string, filename: string) => void
   onReply?: (msg: DbChatMessage) => void
   onReact?: (msg: DbChatMessage, emoji: string) => void
   onEdit?: (msg: DbChatMessage) => void
 }
 
-export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onReply, onReact, onEdit }: ChatMessageBubbleProps) {
+export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onPdfClick, onReply, onReact, onEdit }: ChatMessageBubbleProps) {
   const avatarUrl = message.senderAvatar ? mxcToThumbnail(message.senderAvatar, 24, 24) : undefined
   // Strip bridge sender prefix (e.g. "anko: message" → "message") when it matches the display name
   const displayBody = useMemo(() => {
@@ -773,7 +789,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
             )}
           </div>
         ) : message.type === 'file' ? (
-          <EncryptedFileLink mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} label={displayBody} mimeType={message.mediaMimeType} />
+          <EncryptedFileLink mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} label={displayBody} mimeType={message.mediaMimeType} onPdfClick={onPdfClick} />
         ) : message.type === 'audio' ? (
           <AudioPlayer
             mediaUrl={message.mediaUrl}

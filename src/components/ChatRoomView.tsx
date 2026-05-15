@@ -6,6 +6,7 @@ import { ChatMessageBubble, type ReadReceiptEntry } from './ChatMessageBubble'
 import { ChatComposeInput } from './ChatComposeInput'
 import { InboxZero } from './InboxZero'
 import { ImageLightbox } from './ImageLightbox'
+import { PdfLightbox } from './PdfLightbox'
 import { ChevronDown } from 'lucide-react'
 import type { DbChatMessage, DbChatRoom } from '@/matrix/types'
 
@@ -17,6 +18,7 @@ export function ChatRoomView() {
   const setEditingMessage = useChatStore((s) => s.setEditingMessage)
   const matrixUserId = localStorage.getItem('matrix_user_id') ?? ''
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [pdfLightbox, setPdfLightbox] = useState<{ src: string; filename: string } | null>(null)
 
   const handleReply = useCallback((msg: DbChatMessage) => {
     setReplyingTo(msg)
@@ -92,6 +94,7 @@ export function ChatRoomView() {
             readReceipts={room.readReceipts}
             onLoadOlder={loadOlderMessages}
             onImageClick={setLightboxSrc}
+            onPdfClick={(src, filename) => setPdfLightbox({ src, filename })}
             onReply={handleReply}
             onReact={handleReact}
             onEdit={handleEdit}
@@ -106,6 +109,15 @@ export function ChatRoomView() {
       {lightboxSrc && (
         <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
       )}
+
+      {/* PDF lightbox */}
+      {pdfLightbox && (
+        <PdfLightbox
+          src={pdfLightbox.src}
+          filename={pdfLightbox.filename}
+          onClose={() => setPdfLightbox(null)}
+        />
+      )}
     </div>
   )
 }
@@ -118,6 +130,7 @@ const RoomMessages = memo(function RoomMessages({
   readReceipts,
   onLoadOlder,
   onImageClick,
+  onPdfClick,
   onReply,
   onReact,
   onEdit,
@@ -129,6 +142,7 @@ const RoomMessages = memo(function RoomMessages({
   readReceipts?: DbChatRoom['readReceipts']
   onLoadOlder: (roomId: string) => Promise<boolean>
   onImageClick: (src: string) => void
+  onPdfClick: (src: string, filename: string) => void
   onReply: (msg: DbChatMessage) => void
   onReact: (msg: DbChatMessage, emoji: string) => void
   onEdit: (msg: DbChatMessage) => void
@@ -309,6 +323,7 @@ const RoomMessages = memo(function RoomMessages({
                   showSender={showSender}
                   receipts={receiptsByEventId[msg.id]}
                   onImageClick={onImageClick}
+                  onPdfClick={onPdfClick}
                   onReply={onReply}
                   onReact={onReact}
                   onEdit={onEdit}
