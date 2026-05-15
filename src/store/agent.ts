@@ -1167,10 +1167,15 @@ function clearApprovalByRequestId(requestId: string) {
     for (const [sid, a] of Object.entries(map)) {
       if (a.requestId === requestId) { foundSessionId = sid; break }
     }
-    if (!foundSessionId) return s
+    const clearView = s.pendingApproval?.requestId === requestId
+    // Always honour clearView even when the per-session map has no matching
+    // entry — the denormalized view is the truth UI components subscribe to,
+    // and approve/deny on the active session must clear it deterministically.
+    if (!foundSessionId) {
+      return clearView ? { pendingApproval: null } : s
+    }
     const next = { ...map }
     delete next[foundSessionId]
-    const clearView = s.pendingApproval?.requestId === requestId
     return { pendingApprovalsBySession: next, ...(clearView ? { pendingApproval: null } : {}) }
   })
 }

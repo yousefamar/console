@@ -219,17 +219,27 @@ export function useSync() {
     let debounce: ReturnType<typeof setTimeout> | null = null
     const refetch = () => {
       import('@/store/calendar').then(({ useCalendarStore }) => {
-        if (useCalendarStore.getState().connected) {
-          useCalendarStore.getState().fetchEvents()
+        const s = useCalendarStore.getState()
+        if (s.connected) {
+          s.fetchEvents()
+        } else {
+          // Initial boot failed (hub was down) — retry the full chain so the
+          // pane recovers without a page reload.
+          s.loadAccounts()
+            .then(() => useCalendarStore.getState().fetchCalendars())
+            .then(() => useCalendarStore.getState().fetchEvents())
+            .catch(() => {})
         }
       })
     }
-    let unsub: (() => void) | null = null
+    let unsubBus: (() => void) | null = null
+    let unsubConnect: (() => void) | null = null
     import('@/sync-bus').then(({ hubBus }) => {
-      unsub = hubBus.on('cal', 'delta', () => {
+      unsubBus = hubBus.on('cal', 'delta', () => {
         if (debounce) clearTimeout(debounce)
         debounce = setTimeout(() => { debounce = null; refetch() }, 500)
       })
+      unsubConnect = hubBus.onConnect(() => { refetch() })
     })
     const FALLBACK_MS = 15 * 60 * 1000
     const calInterval = setInterval(refetch, FALLBACK_MS)
@@ -237,7 +247,8 @@ export function useSync() {
     return () => {
       clearInterval(calInterval)
       if (debounce) clearTimeout(debounce)
-      unsub?.()
+      unsubBus?.()
+      unsubConnect?.()
     }
   }, [])
 

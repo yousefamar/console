@@ -209,7 +209,14 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   fetchCalendars: async () => {
     const { accounts } = get()
-    if (accounts.length === 0) return
+    if (accounts.length === 0) {
+      // Hub unreachable / no accounts loaded yet — hydrate from IDB so we
+      // don't get stuck on "Loading calendars..." when offline or the hub
+      // briefly failed at boot. A later hubBus.onConnect retries the chain.
+      const dbItems = await db.calendarList.toArray()
+      if (dbItems.length > 0) set({ calendars: dbItems as CalendarInfo[] })
+      return
+    }
 
     try {
       const allCalendars: CalendarInfo[] = []

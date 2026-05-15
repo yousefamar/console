@@ -80,12 +80,25 @@ beforeEach(() => {
     pendingThinkingBySession: {},
     pendingPrompt: null,
     pendingApproval: null,
+    pendingApprovalsBySession: {},
     sessionSlashCommands: [],
   })
 })
 
-// Flush microtasks (WebSocket onopen fires via setTimeout)
-const flush = () => new Promise((r) => setTimeout(r, 10))
+// Provide a requestAnimationFrame polyfill — vitest's node env doesn't ship
+// one, but agent.ts's delta batching uses it.
+if (typeof globalThis.requestAnimationFrame === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 0)
+}
+
+// Flush microtasks + a requestAnimationFrame cycle. Streaming deltas (text /
+// thinking) are batched per-RAF in agent.ts (see `bufferDelta` /
+// `drainDeltaBuffer`) — without this RAF tick, tests that check the post-delta
+// pending state see undefined.
+const flush = () => new Promise<void>((r) => {
+  setTimeout(() => requestAnimationFrame(() => r()), 10)
+})
 
 // --------------------------------------------------------------------------
 // Tests
@@ -298,6 +311,7 @@ describe('message handling', () => {
     const ws = await setupSession()
     ws.receiveMessage({ type: 'text_delta', sessionId: 'sess_1', content: 'Hello ' })
     ws.receiveMessage({ type: 'text_delta', sessionId: 'sess_1', content: 'world' })
+    await flush() // deltas are RAF-batched in agent.ts
 
     expect(useAgentStore.getState().pendingTextBySession['sess_1']).toBe('Hello world')
   })
@@ -323,6 +337,7 @@ describe('message handling', () => {
     const ws = await setupSession()
     ws.receiveMessage({ type: 'thinking_delta', sessionId: 'sess_1', content: 'Let me ' })
     ws.receiveMessage({ type: 'thinking_delta', sessionId: 'sess_1', content: 'think' })
+    await flush() // deltas are RAF-batched in agent.ts
 
     expect(useAgentStore.getState().pendingThinkingBySession['sess_1']).toBe('Let me think')
   })
@@ -367,10 +382,13 @@ describe('tool approvals', () => {
 
     const msgs = ws.sentMessages.map((m) => JSON.parse(m))
     const approveMsg = msgs.find((m: Record<string, unknown>) => m.type === 'approve_tool')
+    // approveTool always echoes input back as modifiedInput — Claude CLI's
+    // allow-branch schema requires it (see #40228 / commit 043e620).
     expect(approveMsg).toEqual({
       type: 'approve_tool',
       sessionId: 'sess_1',
       requestId: 'req_1',
+      modifiedInput: {},
     })
     expect(useAgentStore.getState().pendingApproval).toBeNull()
   })
