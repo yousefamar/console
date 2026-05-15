@@ -274,13 +274,13 @@ function LinkPreview({ url }: { url: string }) {
 }
 
 // Renders an image from either plain mxc:// or encrypted file
-function EncryptedImage({ mediaUrl, encryptedFile, alt, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; alt: string; onClick?: (src: string) => void }) {
+function EncryptedImage({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; mimeType?: string; alt: string; onClick?: (src: string) => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   useEffect(() => {
     if (!encryptedFile) return
     let revoked = false
-    decryptAttachment(encryptedFile)
+    decryptAttachment(encryptedFile, mimeType)
       .then((blob) => {
         if (!revoked) setBlobUrl(URL.createObjectURL(blob))
       })
@@ -315,7 +315,7 @@ function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType, onPdfClic
   useEffect(() => {
     if (!encryptedFile) return
     let revoked = false
-    decryptAttachment(encryptedFile)
+    decryptAttachment(encryptedFile, mimeType)
       .then((blob) => {
         if (!revoked) setBlobUrl(URL.createObjectURL(blob))
       })
@@ -361,13 +361,13 @@ function EncryptedFileLink({ mediaUrl, encryptedFile, label, mimeType, onPdfClic
 }
 
 // Renders a video from either plain mxc:// or encrypted file
-function EncryptedVideo({ mediaUrl, encryptedFile, alt, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; alt: string; onClick?: (src: string) => void }) {
+function EncryptedVideo({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; mimeType?: string; alt: string; onClick?: (src: string) => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   useEffect(() => {
     if (!encryptedFile) return
     let revoked = false
-    decryptAttachment(encryptedFile)
+    decryptAttachment(encryptedFile, mimeType)
       .then((blob) => {
         if (!revoked) setBlobUrl(URL.createObjectURL(blob))
       })
@@ -776,14 +776,14 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
           </div>
         ) : message.type === 'image' ? (
           <div className="mt-1">
-            <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} alt={message.body} onClick={onImageClick} />
+            <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} mimeType={message.mediaMimeType} alt={message.body} onClick={onImageClick} />
             {displayBody && !/\.(jpe?g|png|gif|webp|heic|heif|svg|bmp|tiff?)$/i.test(displayBody) && (
               <p className="text-sm text-text-secondary mt-1"><Linkified text={displayBody} /></p>
             )}
           </div>
         ) : message.type === 'video' ? (
           <div className="mt-1">
-            <EncryptedVideo mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} alt={displayBody} onClick={onImageClick} />
+            <EncryptedVideo mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} mimeType={message.mediaMimeType} alt={displayBody} onClick={onImageClick} />
             {displayBody && !/\.(mp4|mov|avi|webm|mkv|m4v|3gp|ogv)$/i.test(displayBody) && (
               <p className="text-sm text-text-secondary mt-1"><Linkified text={displayBody} /></p>
             )}

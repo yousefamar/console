@@ -54,7 +54,7 @@ export async function encryptAttachment(data: ArrayBuffer): Promise<{ encrypted:
 
 // Decrypt an encrypted Matrix attachment (AES-CTR-256)
 // See: https://spec.matrix.org/v1.6/client-server-api/#extensions-to-mroommessage-msgtypes
-export async function decryptAttachment(file: EncryptedFile): Promise<Blob> {
+export async function decryptAttachment(file: EncryptedFile, mimeType?: string): Promise<Blob> {
   const httpUrl = mxcToHttp(file.url)
   if (!httpUrl) throw new Error('Cannot convert mxc URL')
 
@@ -88,5 +88,9 @@ export async function decryptAttachment(file: EncryptedFile): Promise<Blob> {
     encrypted,
   )
 
-  return new Blob([decrypted])
+  // Setting the MIME type matters for iframe rendering (PDFs) and `<img>` /
+  // `<video>` (which sniff but some browsers fall back to download on
+  // octet-stream). Passing the original Matrix-supplied mime through is
+  // safer than re-sniffing here.
+  return new Blob([decrypted], mimeType ? { type: mimeType } : undefined)
 }
