@@ -328,7 +328,7 @@ export class FeedStore {
     }
   }
 
-  async fetchAllSince(since?: string): Promise<{ items: FeedItem[]; readIds: string[] }> {
+  async fetchAllSince(since?: string): Promise<{ items: FeedItem[]; readIds: string[]; currentItemIds: string[] }> {
     const config = this.loadConfig()
     const sinceDate = since ? new Date(since).getTime() : 0
     const read = this.loadRead()
@@ -364,7 +364,7 @@ export class FeedStore {
     }
 
     this.saveRead()
-    return { items: filtered, readIds: Array.from(read) }
+    return { items: filtered, readIds: Array.from(read), currentItemIds: Array.from(allItemIds) }
   }
 
   // --- Read state ---

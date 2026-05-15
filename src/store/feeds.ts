@@ -131,7 +131,7 @@ export const useFeedStore = create<FeedState>((set, get) => ({
       const res = await hubFetch(`/feeds/items${params}`)
       if (!res.ok) return
 
-      const data = await res.json() as { items: FeedItem[]; readIds: string[] }
+      const data = await res.json() as { items: FeedItem[]; readIds: string[]; currentItemIds?: string[] }
 
       // Store items in IndexedDB
       if (data.items.length > 0) {
@@ -149,7 +149,20 @@ export const useFeedStore = create<FeedState>((set, get) => ({
         await db.feedItems.bulkPut(dbItems)
       }
 
-      // Sync read state from hub (cross-device sync)
+      // Reconcile: hub is source of truth for the current item set.
+      // Drop local items the hub no longer surfaces (rolled off the source feed).
+      if (data.currentItemIds) {
+        const hubSet = new Set(data.currentItemIds)
+        const localIds = (await db.feedItems.toCollection().primaryKeys()) as string[]
+        const orphans = localIds.filter((id) => !hubSet.has(id))
+        if (orphans.length > 0) {
+          await db.feedItems.bulkDelete(orphans)
+          await db.feedRead.bulkDelete(orphans)
+        }
+      }
+
+      // Sync read state from hub (cross-device sync, additive — markRead's
+      // optimistic local write may be ahead of the in-flight hub PUT)
       if (data.readIds.length > 0) {
         const readEntries: DbFeedRead[] = data.readIds.map((id) => ({ itemId: id }))
         await db.feedRead.bulkPut(readEntries)
@@ -157,7 +170,7 @@ export const useFeedStore = create<FeedState>((set, get) => ({
 
       set({ lastSync: new Date().toISOString() })
 
-      // Trim old items: keep max 50 per feed
+      // Apply per-feed cap on top of hub set
       await trimItems(get().feeds)
 
       // Reload view
