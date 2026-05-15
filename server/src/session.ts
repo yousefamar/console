@@ -363,21 +363,29 @@ export class Session extends EventEmitter {
       }
 
       case 'assistant': {
-        // Synthetic assistant messages (model: "<synthetic>", isApiErrorMessage:
-        // true) carry API-level errors like Usage Policy blocks. No stream_event
-        // partials precede them, so the normal text-block skip in
-        // handleAssistantMessage would silently drop the error text and the
-        // session would look hung. Surface them as explicit errors.
+        // Synthetic assistant messages (`model: "<synthetic>"`) come from the
+        // CLI itself, not from the model. Two flavours:
+        //   1. `isApiErrorMessage: true` — Usage Policy blocks, rate-limit
+        //      kicks, etc. Render as error.
+        //   2. Slash commands like /context, /usage, /help — markdown content
+        //      (tables, headings). Render as plain text.
+        // Both flavours arrive with NO preceding stream_event partials, so
+        // handleAssistantMessage's text-block skip would drop them silently.
+        // We emit text/error explicitly here based on the flag.
         const anyMsg = msg as unknown as { isApiErrorMessage?: boolean; message: { model?: string } }
-        const isApiError = anyMsg.isApiErrorMessage || anyMsg.message?.model === '<synthetic>'
-        if (isApiError) {
-          const errText = msg.message.content
+        const isSynthetic = anyMsg.message?.model === '<synthetic>'
+        if (isSynthetic) {
+          const text = msg.message.content
             .map((b) => (b.type === 'text' ? (b as { text: string }).text : ''))
             .filter(Boolean)
             .join('\n')
             .trim()
-          if (errText) {
-            this.emitHub({ type: 'error', sessionId: this.id, message: errText })
+          if (text) {
+            if (anyMsg.isApiErrorMessage) {
+              this.emitHub({ type: 'error', sessionId: this.id, message: text })
+            } else {
+              this.emitHub({ type: 'text', sessionId: this.id, content: text })
+            }
           }
         }
         this.handleAssistantMessage(msg.message.content, msg.parent_tool_use_id)
