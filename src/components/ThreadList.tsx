@@ -3,6 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db'
 import { useInboxStore } from '@/store/inbox'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { usePullToRefresh } from '@/hooks/usePullToRefresh'
+import { incrementalSync } from '@/gmail/sync'
 import { ThreadListItem } from './ThreadListItem'
 import { SwipeableRow } from './SwipeableRow'
 import { Check, Clock } from 'lucide-react'
@@ -18,6 +20,8 @@ export function ThreadList({ showSnoozed }: ThreadListProps) {
   const selectThread = useInboxStore((s) => s.selectThread)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+
+  usePullToRefresh(listRef, incrementalSync, isMobile)
 
   // Live query for inbox threads — drives the inbox store
   const liveThreads = useLiveQuery(

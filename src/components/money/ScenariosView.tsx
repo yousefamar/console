@@ -15,6 +15,7 @@ import {
 } from '@/store/finance'
 import { hubFetch } from '@/hub'
 import { showConfirm } from '@/dialog'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 const SCN_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#84cc16', '#fb7185']
 
@@ -44,7 +45,7 @@ export function ScenariosView() {
   }, [scenarios, horizon])
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    <MoneyScrollPane>
       <div className="border-b border-border p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs uppercase tracking-wider text-text-tertiary">Comparison</h3>
@@ -89,7 +90,7 @@ export function ScenariosView() {
           )
         })}
       </div>
-    </div>
+    </MoneyScrollPane>
   )
 }
 

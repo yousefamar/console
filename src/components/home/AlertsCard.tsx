@@ -2,6 +2,7 @@ import { CalendarClock, ShieldQuestion, AlertTriangle } from 'lucide-react'
 import { useDashboardStore, type DashboardAlert } from '@/store/dashboard'
 import { useUiStore } from '@/store/ui'
 import { useAgentStore } from '@/store/agent'
+import { HomeScrollPane } from './HomeScrollPane'
 
 export function AlertsCard() {
   const alerts = useDashboardStore((s) => s.alerts)
@@ -13,14 +14,14 @@ export function AlertsCard() {
         <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">Alerts</h2>
         <span className="text-[10px] text-text-tertiary">{alerts.length}</span>
       </header>
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <HomeScrollPane>
         {alerts.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-tertiary">{loading ? 'Loading…' : 'Nothing pressing.'}</div>
         )}
         <ul className="divide-y divide-border">
           {alerts.map((a, i) => <Item key={`${a.kind}-${i}`} alert={a} />)}
         </ul>
-      </div>
+      </HomeScrollPane>
     </section>
   )
 }

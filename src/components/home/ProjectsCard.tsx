@@ -4,6 +4,7 @@ import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
 import { useNotesStore } from '@/store/notes'
 import { showAlert, showPrompt } from '@/dialog'
+import { HomeScrollPane } from './HomeScrollPane'
 
 export function ProjectsCard() {
   const projects = useBlogStore((s) => s.projects)
@@ -38,7 +39,7 @@ export function ProjectsCard() {
         <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">Active projects</h2>
         <span className="text-[10px] text-text-tertiary">{active.length}</span>
       </header>
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <HomeScrollPane>
         {active.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-tertiary">{loading ? 'Loading…' : 'No active projects.'}</div>
         )}
@@ -72,7 +73,7 @@ export function ProjectsCard() {
             )
           })}
         </ul>
-      </div>
+      </HomeScrollPane>
     </section>
   )
 }

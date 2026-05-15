@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { useFeedStore } from '@/store/feeds'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { FeedItemListEntry } from './FeedItemListEntry'
 import { SwipeableRow } from './SwipeableRow'
 import { Search, Eye, EyeOff, Check } from 'lucide-react'
@@ -21,6 +22,8 @@ export function FeedItemList() {
   const isMobile = useIsMobile()
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  usePullToRefresh(listRef, () => useFeedStore.getState().refreshItems(), isMobile)
 
   // Scroll selected item into view
   useEffect(() => {

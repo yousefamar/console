@@ -179,9 +179,13 @@ body {
   overscroll-behavior: none;
 }
 
-/* Mobile: disable iframe touch capture so swipe gestures work */
+/* Mobile: opt-in pointer-events:none for iframes whose host wants touch
+   gestures to bubble to a parent swipe handler. Currently used by
+   EmailFrame (same-origin iframe inside the swipeable ThreadView).
+   Cross-origin iframes (canvas, etc.) must NOT inherit this — they
+   need touch to scroll their own document. */
 @media (max-width: 767px) {
-  iframe {
+  iframe.iframe-passive {
     pointer-events: none;
   }
 }

@@ -16,6 +16,7 @@ import {
 } from '@/store/money'
 import { useFinanceStore, fmtPence } from '@/store/finance'
 import { hubFetch } from '@/hub'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   general: <Circle size={12} />,
@@ -222,7 +223,7 @@ function TransactionList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <MoneyScrollPane className="flex-1 overflow-y-auto">
         {transactions.length === 0 && (
           <div className="flex items-center justify-center h-full text-xs text-text-tertiary">
             {searchQuery ? 'No matching transactions' : 'No transactions'}
@@ -241,7 +242,7 @@ function TransactionList() {
             ))}
           </div>
         ))}
-      </div>
+      </MoneyScrollPane>
     </div>
   )
 }

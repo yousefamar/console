@@ -4,6 +4,7 @@ import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
 import { useNotesStore } from '@/store/notes'
 import { showAlert, showPrompt } from '@/dialog'
+import { HomeScrollPane } from './HomeScrollPane'
 
 export function BlogDraftsCard() {
   const drafts = useBlogStore((s) => s.drafts)
@@ -45,7 +46,7 @@ export function BlogDraftsCard() {
           </button>
         </div>
       </header>
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <HomeScrollPane>
         {drafts.length === 0 && (
           <div className="px-3 py-4 text-xs text-text-tertiary">{loading ? 'Loading…' : 'No drafts. Write something.'}</div>
         )}
@@ -69,7 +70,7 @@ export function BlogDraftsCard() {
             )
           })}
         </ul>
-      </div>
+      </HomeScrollPane>
     </section>
   )
 }

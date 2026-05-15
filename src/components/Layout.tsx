@@ -23,6 +23,7 @@ import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
 import { YouTubePiP } from './FeedItemView'
+import { PullIndicator } from './PullIndicator'
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
 import { useFeedStore } from '@/store/feeds'
@@ -348,6 +349,9 @@ export function Layout() {
 
       {/* YouTube PiP overlay */}
       <YouTubePiP />
+
+      {/* Pull-to-refresh indicator (mobile) */}
+      {isMobile && <PullIndicator />}
 
       {/* Bottom bar: mobile tab bar or desktop footer */}
       {isMobile ? (

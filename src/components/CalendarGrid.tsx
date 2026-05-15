@@ -1,5 +1,7 @@
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
+import { useIsMobile } from '@/hooks/useMediaQuery'
+import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { ChevronLeft, ChevronRight, Plus, MapPin, Square, Bell } from 'lucide-react'
 
 // --------------------------------------------------------------------------
@@ -145,6 +147,9 @@ export function CalendarGrid() {
   const didDragRef = useRef(false) // suppresses click after drag
   const gridRef = useRef<HTMLDivElement>(null)
   const colRefs = useRef<(HTMLDivElement | null)[]>([])
+  const isMobile = useIsMobile()
+
+  usePullToRefresh(gridRef, () => useCalendarStore.getState().refreshAll(), isMobile)
 
   const calColorMap = useMemo(() => {
     const map = new Map<string, string>()

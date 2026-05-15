@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Plus, Trash2, ArrowDown } from 'lucide-react'
 import { useFinanceStore, type Category, type CategoryRule } from '@/store/finance'
 import { showConfirm } from '@/dialog'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 export function CategoriesView() {
   const [tab, setTab] = useState<'categories' | 'rules'>('categories')
@@ -21,9 +22,9 @@ export function CategoriesView() {
           </button>
         ))}
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto p-4">
+      <MoneyScrollPane className="flex-1 min-h-0 overflow-y-auto p-4">
         {tab === 'categories' ? <CategoriesPanel /> : <RulesPanel />}
-      </div>
+      </MoneyScrollPane>
     </div>
   )
 }

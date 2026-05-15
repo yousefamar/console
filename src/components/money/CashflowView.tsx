@@ -10,6 +10,7 @@ import { RunwayCard } from './RunwayCard'
 import { ProjectionChart } from './ProjectionChart'
 import { MonthlySpendChart } from './MonthlySpendChart'
 import { SharedTabPanel } from './SharedTabPanel'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 export function CashflowView() {
   const settings = useFinanceStore((s) => s.settings)
@@ -19,7 +20,7 @@ export function CashflowView() {
   const setActiveScenario = useFinanceStore((s) => s.setActiveScenario)
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    <MoneyScrollPane>
       <div className="border-b border-border">
         <RunwayCard />
       </div>
@@ -59,7 +60,7 @@ export function CashflowView() {
       <StreamsPanel />
       <RecurringSuggestions />
       <EmergencyFundEditor />
-    </div>
+    </MoneyScrollPane>
   )
 }
 

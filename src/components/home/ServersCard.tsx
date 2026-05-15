@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CheckCircle2, XCircle, Trash2, Plus } from 'lucide-react'
 import { useDashboardStore, type ProbeResult, type DashboardSnapshot } from '@/store/dashboard'
+import { HomeScrollPane } from './HomeScrollPane'
 
 export function ServersCard() {
   const snapshot = useDashboardStore((s) => s.snapshot)
@@ -66,7 +67,7 @@ export function ServersCard() {
         </form>
       )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <HomeScrollPane>
         {!snapshot && loading && (
           <div className="px-3 py-4 text-xs text-text-tertiary">Loading…</div>
         )}
@@ -74,7 +75,7 @@ export function ServersCard() {
           <div className="px-3 py-4 text-xs text-red-400">{error}</div>
         )}
         {snapshot && <SnapshotRows snapshot={snapshot} onRemove={removeServer} />}
-      </div>
+      </HomeScrollPane>
     </section>
   )
 }

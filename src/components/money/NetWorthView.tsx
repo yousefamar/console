@@ -10,6 +10,7 @@ import {
 } from 'recharts'
 import { useFinanceStore, fmtPence, fmtMonth, type Account } from '@/store/finance'
 import { showConfirm } from '@/dialog'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 export function NetWorthView() {
   const accounts = useFinanceStore((s) => s.accounts)
@@ -23,7 +24,7 @@ export function NetWorthView() {
   const illiquid = accounts.filter((a) => a.liquidity === 'illiquid' && !a.archived)
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
+    <MoneyScrollPane>
       {/* Headline */}
       <div className="border-b border-border p-4">
         <div className="grid grid-cols-3 gap-3">
@@ -93,7 +94,7 @@ export function NetWorthView() {
       </div>
 
       {editing && <AccountEditor account={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
-    </div>
+    </MoneyScrollPane>
   )
 }
 

@@ -125,7 +125,7 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     <iframe
       ref={iframeRef}
       sandbox="allow-same-origin allow-popups"
-      className="w-full border-none"
+      className="iframe-passive w-full border-none"
       style={{ height: height > 0 ? `${height}px` : '80vh' }}
       title="Email content"
     />

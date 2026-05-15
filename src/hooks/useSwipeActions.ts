@@ -18,6 +18,28 @@ interface SwipeState {
   currentX: number
   swiping: boolean
   direction: 'horizontal' | 'vertical' | null
+  /** True when the touch began inside a horizontally-scrollable element (or
+   *  one explicitly opted out via data-no-swipe). Suppresses swipe entirely so
+   *  the inner scroller can handle the gesture. */
+  suppressed: boolean
+}
+
+/** Walk up from `el` looking for an ancestor that has either:
+ *   - `data-no-swipe` attribute (explicit opt-out), or
+ *   - actual horizontal overflow (scrollWidth > clientWidth) AND a CSS
+ *     overflow-x of auto/scroll.
+ *  Stops at `boundary` (typically the swipe content element). */
+function startsInsideHScroller(el: EventTarget | null, boundary: HTMLElement | null): boolean {
+  let node = el as HTMLElement | null
+  while (node && node !== boundary) {
+    if (node.dataset?.noSwipe !== undefined) return true
+    if (node.scrollWidth > node.clientWidth) {
+      const ox = getComputedStyle(node).overflowX
+      if (ox === 'auto' || ox === 'scroll') return true
+    }
+    node = node.parentElement
+  }
+  return false
 }
 
 export function useSwipeActions(
@@ -31,24 +53,30 @@ export function useSwipeActions(
     currentX: 0,
     swiping: false,
     direction: null,
+    suppressed: false,
   })
 
   const threshold = config.threshold ?? 120
 
   const onTouchStart = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0]!
+    // If the touch started inside a horizontal scroller (e.g. wide markdown
+    // table, code block with overflow-x:auto), let that scroller win.
+    const suppressed = startsInsideHScroller(e.target, contentRef.current)
     state.current = {
       startX: touch.clientX,
       startY: touch.clientY,
       currentX: touch.clientX,
       swiping: false,
       direction: null,
+      suppressed,
     }
-  }, [])
+  }, [contentRef])
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0]!
     const s = state.current
+    if (s.suppressed) return
     const dx = touch.clientX - s.startX
     const dy = touch.clientY - s.startY
 

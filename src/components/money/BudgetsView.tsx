@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { useFinanceStore, fmtPence } from '@/store/finance'
 import { showConfirm } from '@/dialog'
+import { MoneyScrollPane } from './MoneyScrollPane'
 
 export function BudgetsView() {
   const budgets = useFinanceStore((s) => s.budgets)
@@ -21,7 +22,7 @@ export function BudgetsView() {
   const totalProjected = status.reduce((a, s) => a + s.projectedEndOfMonthPence, 0)
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-4">
+    <MoneyScrollPane className="flex-1 min-h-0 overflow-y-auto p-4">
       <div className="border border-border rounded-sm mb-4 grid grid-cols-3 divide-x divide-border">
         <Tile label="Total target" value={fmtPence(totalTarget, { abs: true })} />
         <Tile label="Spent so far" value={fmtPence(totalSpent, { abs: true })} />
@@ -109,7 +110,7 @@ export function BudgetsView() {
           })}
         </div>
       )}
-    </div>
+    </MoneyScrollPane>
   )
 }
 

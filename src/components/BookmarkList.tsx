@@ -1,5 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react'
 import { useBookmarkStore, filterBookmarks } from '@/store/bookmarks'
+import { useIsMobile } from '@/hooks/useMediaQuery'
+import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { BookmarkListItem } from './BookmarkListItem'
 import { BookmarkAddBar } from './BookmarkAddBar'
 import { Search, Plus } from 'lucide-react'
@@ -15,6 +17,9 @@ export function BookmarkList() {
   const enterAddMode = useBookmarkStore((s) => s.enterAddMode)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const isMobile = useIsMobile()
+
+  usePullToRefresh(listRef, () => useBookmarkStore.getState().fetchBookmarks(), isMobile)
 
   const filtered = useMemo(
     () => filterBookmarks(bookmarks, searchQuery, selectedTag),

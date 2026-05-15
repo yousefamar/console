@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useChatStore } from '@/store/chat'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { usePullToRefresh } from '@/hooks/usePullToRefresh'
+import { hubBus } from '@/sync-bus'
 import { ChatRoomListItem } from './ChatRoomListItem'
 import { db } from '@/db'
 import type { DbChatRoom } from '@/matrix/types'
@@ -37,6 +39,8 @@ export function ChatRoomList() {
   const selectRoom = useChatStore((s) => s.selectRoom)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+
+  usePullToRefresh(listRef, () => hubBus.rpc('matrix', 'syncNow', {}), isMobile)
 
   // Live query for chat rooms — drives the chat store
   const liveChatRoomsRaw = useLiveQuery(
