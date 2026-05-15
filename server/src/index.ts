@@ -683,7 +683,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return
     }
     log('[stt] Client connected, opening OpenAI realtime transcription...')
-    const openaiWs = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
+    // gpt-realtime-whisper streams transcript deltas word-by-word as audio
+    // arrives (vs gpt-4o-mini-transcribe's bursty sentence-boundary commits).
+    // Session payload shape changed in the May 2026 voice-intelligence drop —
+    // nested under `audio.input.*` and the message type is now `session.update`,
+    // not `transcription_session.update`.
+    const openaiWs = new WebSocket('wss://api.openai.com/v1/realtime/transcription', {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' },
     })
 
@@ -692,12 +697,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
     openaiWs.on('open', () => {
       openaiWs.send(JSON.stringify({
-        type: 'transcription_session.update',
+        type: 'session.update',
         session: {
-          input_audio_format: 'pcm16',
-          input_audio_transcription: { model: 'gpt-4o-mini-transcribe', language: 'en' },
-          turn_detection: { type: 'server_vad', threshold: 0.4, prefix_padding_ms: 200, silence_duration_ms: 300 },
-          input_audio_noise_reduction: { type: 'near_field' },
+          type: 'transcription',
+          audio: {
+            input: {
+              // Client (AgentPromptInput) captures via AudioContext at 24000 Hz
+              // mono PCM16; keep these in sync if either side changes.
+              format: { type: 'audio/pcm', rate: 24000 },
+              transcription: { model: 'gpt-realtime-whisper', language: 'en' },
+              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
+              noise_reduction: { type: 'near_field' },
+            },
+          },
         },
       }))
     })
@@ -713,6 +725,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           ws.send(JSON.stringify({ type: 'interim', text: msg.delta || '' }))
         } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
           ws.send(JSON.stringify({ type: 'final', text: msg.transcript || '' }))
+        } else if (msg.type === 'conversation.item.input_audio_transcription.failed') {
+          // Log the full failure payload — OpenAI puts the reason inside `error`
+          log(`[stt] transcription failed: ${JSON.stringify(msg).slice(0, 500)}`)
+          ws.send(JSON.stringify({ type: 'error', message: msg.error?.message || 'Transcription failed' }))
         } else if (msg.type === 'error') {
           log(`[stt] OpenAI error: ${JSON.stringify(msg.error)}`)
           ws.send(JSON.stringify({ type: 'error', message: msg.error?.message || 'Transcription error' }))
@@ -720,8 +736,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } catch { /* ignore */ }
     })
 
-    openaiWs.on('close', () => { if (commitInterval) clearInterval(commitInterval); ws.close() })
-    openaiWs.on('error', () => { if (commitInterval) clearInterval(commitInterval); ws.close() })
+    openaiWs.on('close', (code, reason) => {
+      log(`[stt] OpenAI WS closed code=${code} reason=${reason?.toString().slice(0, 200) || '(none)'}`)
+      if (commitInterval) clearInterval(commitInterval)
+      ws.close()
+    })
+    openaiWs.on('error', (err) => {
+      log(`[stt] OpenAI WS error: ${(err as Error).message}`)
+      if (commitInterval) clearInterval(commitInterval)
+      ws.close()
+    })
+    openaiWs.on('unexpected-response', (_req, res) => {
+      log(`[stt] OpenAI WS handshake failed: HTTP ${res.statusCode} ${res.statusMessage}`)
+    })
 
     ws.on('message', (data) => {
       try {
