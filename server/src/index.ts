@@ -72,7 +72,10 @@ import type { DebugClientMessage } from './debug-protocol.js'
 
 const DEFAULT_PORT = 9877
 const port = getArg('--port', DEFAULT_PORT)
-const host = getArg('--host', 'localhost')
+// Bind all interfaces by default so the tailnet hostname can reach the hub.
+// The whole point of the hub is to be the central agent / sync target for
+// every client device on the tailnet — `localhost` is useless here.
+const host = getArg('--host', '0.0.0.0')
 const cwd = getArg('--cwd', process.cwd())
 const bookmarkVault = getArg('--bookmarks', join(homedir(), 'sync', 'brain', 'root', 'bookmarks'))
 const notesVault = getArg('--notes', join(homedir(), 'sync', 'brain', 'root'))

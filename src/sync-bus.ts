@@ -143,7 +143,13 @@ export class HubSyncBus {
   }
 
   private connectTimeoutHandle: ReturnType<typeof setTimeout> | null = null
-  private readonly CONNECT_TIMEOUT_MS = 5_000
+  // Initial-connect HINT (not force-close). Off-tailnet, the OS hangs the TCP
+  // connect ~30 s before surfacing an error; this fires the disconnect
+  // handlers at 5 s so the offline pill shows quickly. The WS itself keeps
+  // trying — important on slow Tailscale-over-cellular paths where a real
+  // connect can legitimately take 10–20 s. When it opens, onConnect fires
+  // and flips the UI back to online.
+  private readonly CONNECT_HINT_MS = 5_000
 
   private open(): void {
     if (this.stopped) return
@@ -151,14 +157,13 @@ export class HubSyncBus {
     const ws = new WebSocket(url)
     this.ws = ws
 
-    // Off-tailnet, the OS TCP connect to :9877 silently hangs ~30 s before
-    // the browser surfaces an error. Force-close after 5 s so the offline
-    // pill flips quickly; the reconnect loop keeps retrying.
     this.connectTimeoutHandle = setTimeout(() => {
       if (this.ws === ws && ws.readyState !== WebSocket.OPEN) {
-        try { ws.close() } catch {}
+        for (const fn of this.disconnectHandlers) {
+          try { fn() } catch {}
+        }
       }
-    }, this.CONNECT_TIMEOUT_MS)
+    }, this.CONNECT_HINT_MS)
 
     ws.onopen = () => {
       if (this.connectTimeoutHandle) {
