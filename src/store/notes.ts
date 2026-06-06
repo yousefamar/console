@@ -11,6 +11,9 @@ import { NotesSearchIndex, type FilenameResult, type SearchResult } from '@/note
 import { getPref, setPref } from '@/prefs'
 
 const EXPANDED_DIRS_PREF = 'notesExpandedDirs'
+const VIEW_MODE_PREF = 'notesViewMode'
+
+export type NotesViewMode = 'tree' | 'circles'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -130,6 +133,7 @@ interface NotesState {
   // File browser
   expandedDirs: Set<string>
   selectedPath: string | null
+  viewMode: NotesViewMode
 
   // Search
   quickSwitcherOpen: boolean
@@ -164,6 +168,7 @@ interface NotesState {
   prevTab: () => void
   toggleDir: (path: string) => void
   setSelectedPath: (path: string | null) => void
+  setViewMode: (mode: NotesViewMode) => void
   reopenLastClosedTab: () => void
   openQuickSwitcher: (mode?: 'filename' | 'content') => void
   closeQuickSwitcher: () => void
@@ -222,6 +227,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   recentlyClosedPaths: [],
   expandedDirs: new Set<string>(getPref<string[]>(EXPANDED_DIRS_PREF, [])),
   selectedPath: null,
+  viewMode: getPref<NotesViewMode>(VIEW_MODE_PREF, 'tree'),
   quickSwitcherOpen: false,
   quickSwitcherMode: 'filename' as const,
   searchIndex: new NotesSearchIndex(),
@@ -510,6 +516,11 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   },
 
   setSelectedPath: (path) => set({ selectedPath: path }),
+
+  setViewMode: (mode) => {
+    setPref(VIEW_MODE_PREF, mode)
+    set({ viewMode: mode })
+  },
 
   reopenLastClosedTab: async () => {
     const { recentlyClosedPaths, openFiles } = get()

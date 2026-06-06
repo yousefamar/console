@@ -9,10 +9,10 @@ import type { VaultFile } from '@/notes/vault-adapter'
 describe('buildFileTree', () => {
   it('builds a tree from flat file list', () => {
     const files: VaultFile[] = [
-      { path: 'notes/guides/foo.md', name: 'foo.md', dir: 'notes/guides', mtime: 1 },
-      { path: 'notes/guides/bar.md', name: 'bar.md', dir: 'notes/guides', mtime: 2 },
-      { path: 'notes/maxims/baz.md', name: 'baz.md', dir: 'notes/maxims', mtime: 3 },
-      { path: 'root-file.md', name: 'root-file.md', dir: '', mtime: 4 },
+      { path: 'notes/guides/foo.md', name: 'foo.md', dir: 'notes/guides', mtime: 1, size: 0 },
+      { path: 'notes/guides/bar.md', name: 'bar.md', dir: 'notes/guides', mtime: 2, size: 0 },
+      { path: 'notes/maxims/baz.md', name: 'baz.md', dir: 'notes/maxims', mtime: 3, size: 0 },
+      { path: 'root-file.md', name: 'root-file.md', dir: '', mtime: 4, size: 0 },
     ]
     const tree = buildFileTree(files)
 
@@ -30,8 +30,8 @@ describe('buildFileTree', () => {
 
   it('sorts directories before files', () => {
     const files: VaultFile[] = [
-      { path: 'a-file.md', name: 'a-file.md', dir: '', mtime: 1 },
-      { path: 'b-dir/child.md', name: 'child.md', dir: 'b-dir', mtime: 2 },
+      { path: 'a-file.md', name: 'a-file.md', dir: '', mtime: 1, size: 0 },
+      { path: 'b-dir/child.md', name: 'child.md', dir: 'b-dir', mtime: 2, size: 0 },
     ]
     const tree = buildFileTree(files)
     expect(tree[0]!.name).toBe('b-dir') // dir first
@@ -44,7 +44,7 @@ describe('buildFileTree', () => {
 
   it('handles deeply nested files', () => {
     const files: VaultFile[] = [
-      { path: 'a/b/c/d.md', name: 'd.md', dir: 'a/b/c', mtime: 1 },
+      { path: 'a/b/c/d.md', name: 'd.md', dir: 'a/b/c', mtime: 1, size: 0 },
     ]
     const tree = buildFileTree(files)
     expect(tree[0]!.name).toBe('a')

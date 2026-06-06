@@ -266,6 +266,11 @@ export function useKeybindings() {
           cal.getState().setView('day')
           return
         }
+        if (e.key === 'm') {
+          e.preventDefault()
+          cal.getState().setView('month')
+          return
+        }
         if (e.key === 'c') {
           e.preventDefault()
           cal.getState().openCreateForm()
@@ -612,7 +617,29 @@ export function useKeybindings() {
       }
     }
 
+    // Capture-phase handler for Notes tab nav. Ctrl+H = prev, Ctrl+L = next.
+    // Both are "unreserved" in Chromium so preventDefault on a cancelable
+    // event stops Brave's history/URL-bar accelerators. Runs at capture
+    // phase so CodeMirror's editor keymap (which would otherwise see Ctrl+H
+    // as cursor-left in vim normal mode) never gets the event.
+    const notesTabNav = (e: KeyboardEvent) => {
+      if (ui.getState().activePane !== 'notes') return
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      if (e.key === 'h' || e.key === 'H') {
+        e.preventDefault()
+        e.stopPropagation()
+        notes.getState().prevTab()
+      } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault()
+        e.stopPropagation()
+        notes.getState().nextTab()
+      }
+    }
+    window.addEventListener('keydown', notesTabNav, true)
     window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    return () => {
+      window.removeEventListener('keydown', notesTabNav, true)
+      window.removeEventListener('keydown', handler)
+    }
   }, [])
 }

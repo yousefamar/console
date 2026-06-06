@@ -9,6 +9,7 @@ import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
 import { NewNoteModal } from './NewNoteModal'
+import { CirclesView } from './notes/CirclesView'
 import { FolderOpen } from 'lucide-react'
 
 export const NotesTab = memo(function NotesTab() {
@@ -21,6 +22,7 @@ export const NotesTab = memo(function NotesTab() {
   const linkPickerOpen = useNotesStore((s) => s.linkPickerOpen)
   const commandPaletteOpen = useNotesStore((s) => s.commandPaletteOpen)
   const newFileFormOpen = useNotesStore((s) => s.newFileFormOpen)
+  const viewMode = useNotesStore((s) => s.viewMode)
   const isMobile = useIsMobile()
 
   // Try to reconnect on mount (persisted handle or hub)
@@ -69,11 +71,13 @@ export const NotesTab = memo(function NotesTab() {
     )
   }
 
-  // Mobile: show tree or editor, not both
+  // Mobile: show browser/circles or editor, not both
   if (isMobile) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        {activeFilePath ? <NotesEditor /> : <NotesFileBrowser />}
+        {activeFilePath
+          ? <NotesEditor />
+          : (viewMode === 'circles' ? <CirclesView /> : <NotesFileBrowser />)}
         {quickSwitcherOpen && <NotesQuickSwitcher />}
         {linkPickerOpen && <NotesLinkPicker />}
         {commandPaletteOpen && <NotesCommandPalette />}
@@ -82,11 +86,12 @@ export const NotesTab = memo(function NotesTab() {
     )
   }
 
-  // Desktop: sidebar + editor
+  // Desktop: sidebar + editor. Circles view replaces the narrow tree with a wider pane.
+  const sidebarWidthClass = viewMode === 'circles' ? 'w-[40%] min-w-[320px] max-w-[640px]' : 'w-56'
   return (
     <div className="flex flex-1 min-h-0">
-      <div className="w-56 flex-shrink-0 border-r border-border overflow-hidden flex flex-col">
-        <NotesFileBrowser />
+      <div className={`${sidebarWidthClass} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
+        {viewMode === 'circles' ? <CirclesView /> : <NotesFileBrowser />}
       </div>
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
         <NotesEditor />

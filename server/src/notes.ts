@@ -8,6 +8,7 @@ export interface NoteFile {
   name: string    // filename
   dir: string     // directory relative to vault root
   mtime: number   // last modified timestamp (ms)
+  size: number    // file size in bytes
 }
 
 // Directories to skip when listing
@@ -48,6 +49,7 @@ export class NoteStore {
             name: entry.name,
             dir: relDir,
             mtime: st.mtimeMs,
+            size: st.size,
           })
         } catch {
           // Skip files we can't stat

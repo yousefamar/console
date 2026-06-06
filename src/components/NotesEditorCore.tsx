@@ -1,6 +1,6 @@
 import { useEffect, useRef, memo } from 'react'
-import { EditorState, Prec } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine } from '@codemirror/view'
+import { EditorState, Prec, RangeSetBuilder } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers, drawSelection, Decoration, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { yamlFrontmatter } from '@codemirror/lang-yaml'
@@ -17,6 +17,35 @@ import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
 import { showConfirm } from '@/dialog'
 import { pushFromEditor, pushNow as pushMirrorNow, isEnabled as isMirrorEnabled } from '@/glasses/mirror'
+
+/**
+ * Active-line highlight that skips itself whenever the main selection has
+ * extent (visual mode, mouse selection, etc.). CM6's built-in
+ * `highlightActiveLine` always paints the line background, which sits above
+ * the selection layer and washes the selection out. Suppressing the
+ * decoration during a selection lets the selection background show clearly.
+ */
+const activeLineWhenCollapsed = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+    constructor(view: EditorView) { this.decorations = this.compute(view) }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        this.decorations = this.compute(update.view)
+      }
+    }
+    compute(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>()
+      const sel = view.state.selection.main
+      if (sel.empty) {
+        const line = view.state.doc.lineAt(sel.head)
+        builder.add(line.from, line.from, Decoration.line({ class: 'cm-activeLine' }))
+      }
+      return builder.finish()
+    }
+  },
+  { decorations: (v) => v.decorations },
+)
 
 /** Toggle markdown formatting around selection. If already wrapped, unwrap. */
 function wrapSelection(view: EditorView | null, marker: string) {
@@ -256,7 +285,7 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       })),
       vim(),
       lineNumbers(),
-      highlightActiveLine(),
+      activeLineWhenCollapsed,
       drawSelection(),
       foldGutter(),
       bracketMatching(),

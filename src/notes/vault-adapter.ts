@@ -7,6 +7,7 @@ export interface VaultFile {
   name: string      // filename, e.g. "foo.md"
   dir: string       // directory, e.g. "notes/guides"
   mtime: number     // last modified timestamp (ms)
+  size: number      // file size in bytes
 }
 
 export interface VaultAdapter {
@@ -97,6 +98,7 @@ export class FsaVaultAdapter implements VaultAdapter {
           name,
           dir: prefix,
           mtime: file.lastModified,
+          size: file.size,
         })
       }
     }
