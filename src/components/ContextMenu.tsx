@@ -24,6 +24,9 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Touch start position — used to cancel the long-press timer if the finger
+   *  moves enough to look like a swipe instead of a deliberate hold. */
+  const touchStartPos = useRef<{ x: number; y: number } | null>(null)
 
   // Right-click
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -38,17 +41,33 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (items.length === 0) return
     const touch = e.touches[0]!
+    touchStartPos.current = { x: touch.clientX, y: touch.clientY }
     longPressTimer.current = setTimeout(() => {
       setPos({ x: touch.clientX, y: touch.clientY })
       setOpen(true)
     }, 500)
   }, [items.length])
 
+  // If the finger moves > ~10px before the 500 ms long-press timer fires, the
+  // user is swiping (matches the swipe hook's direction threshold). Cancel the
+  // timer so the context menu doesn't pop up mid-swipe.
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!longPressTimer.current || !touchStartPos.current) return
+    const touch = e.touches[0]!
+    const dx = touch.clientX - touchStartPos.current.x
+    const dy = touch.clientY - touchStartPos.current.y
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }, [])
+
   const handleTouchEnd = useCallback(() => {
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current)
       longPressTimer.current = null
     }
+    touchStartPos.current = null
   }, [])
 
   // Close on outside click or scroll
@@ -83,6 +102,7 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
       <div
         onContextMenu={handleContextMenu}
         onTouchStart={isMobile ? handleTouchStart : undefined}
+        onTouchMove={isMobile ? handleTouchMove : undefined}
         onTouchEnd={isMobile ? handleTouchEnd : undefined}
         onTouchCancel={isMobile ? handleTouchEnd : undefined}
         className={className}

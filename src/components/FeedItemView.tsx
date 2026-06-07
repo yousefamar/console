@@ -48,31 +48,39 @@ function HNCommentThread({ comment, depth = 0 }: { comment: HNComment; depth?: n
   const sanitized = DOMPurify.sanitize(comment.text)
   const timeAgo = formatTimeAgo(comment.time)
 
+  const onToggle = (e: React.MouseEvent) => {
+    // Don't toggle when clicking a link
+    if ((e.target as HTMLElement).closest('a')) return
+    // Don't toggle when the user is selecting text (drag-to-highlight)
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed && sel.toString().length > 0) return
+    e.stopPropagation()
+    setCollapsed((c) => !c)
+  }
+
   return (
     <div className={depth > 0 ? 'ml-1.5 sm:ml-3 border-l border-border pl-1.5 sm:pl-3 min-w-0' : 'min-w-0'}>
       <div className="py-1.5 min-w-0">
-        <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
-          <button onClick={() => setCollapsed(!collapsed)} className="hover:text-text-secondary">
+        <div onClick={onToggle} className="cursor-pointer">
+          <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
             {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
-          </button>
-          <span className="font-medium text-text-secondary">{comment.by}</span>
-          <span>·</span>
-          <span>{timeAgo}</span>
-          {collapsed && comment.children.length > 0 && (
-            <span>({comment.children.length} {comment.children.length === 1 ? 'reply' : 'replies'})</span>
-          )}
-        </div>
-        {!collapsed && (
-          <>
+            <span className="font-medium text-text-secondary">{comment.by}</span>
+            <span>·</span>
+            <span>{timeAgo}</span>
+            {collapsed && comment.children.length > 0 && (
+              <span>({comment.children.length} {comment.children.length === 1 ? 'reply' : 'replies'})</span>
+            )}
+          </div>
+          {!collapsed && (
             <div
               className="mt-1 text-xs text-text-secondary leading-relaxed min-w-0 max-w-full overflow-hidden break-words [&_a]:text-blue-400 [&_a]:underline [&_a]:break-all [&_p]:mb-1.5 [&_pre]:bg-surface-2 [&_pre]:p-2 [&_pre]:rounded-sm [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_pre]:max-w-full [&_code]:text-[11px] [&_code]:break-all"
               dangerouslySetInnerHTML={{ __html: sanitized }}
             />
-            {comment.children.map((child) => (
-              <HNCommentThread key={child.id} comment={child} depth={depth + 1} />
-            ))}
-          </>
-        )}
+          )}
+        </div>
+        {!collapsed && comment.children.map((child) => (
+          <HNCommentThread key={child.id} comment={child} depth={depth + 1} />
+        ))}
       </div>
     </div>
   )
