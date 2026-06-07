@@ -60,7 +60,18 @@ export function ProjectPanel({ slug, onClose }: Props) {
     void refreshPosts(slug)
   }, [slug, refreshPosts])
 
-  if (!project) return null
+  // Untracked project directories (no index.md / log:true) still get the panel
+  // for the agent-session affordance. Title falls back to a humanised slug.
+  const title = project?.title ?? humaniseSlug(slug)
+  const isUntracked = !project
+
+  function humaniseSlug(s: string): string {
+    return s
+      .split('-')
+      .filter(Boolean)
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(' ')
+  }
 
   const setStatus = async (status: Status) => {
     setStatusOpen(false)
@@ -74,29 +85,28 @@ export function ProjectPanel({ slug, onClose }: Props) {
   }
 
   const newPost = async () => {
-    const title = await showPrompt(`Title for the post about ${project.title}:`, {
-      title: `New post — ${project.title}`,
+    const postTitle = await showPrompt(`Title for the post about ${title}:`, {
+      title: `New post — ${title}`,
       confirmLabel: 'Create',
     })
-    if (!title || !title.trim()) return
-    const r = await createDraft({ title, project: slug })
+    if (!postTitle || !postTitle.trim()) return
+    const r = await createDraft({ title: postTitle, project: slug })
     if (!r.ok) await showAlert(`Failed to create draft: ${r.error}`, { title: 'Error' })
   }
 
   const startAgent = async () => {
-    if (!project) return
     if (!vaultPath) {
       await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
       return
     }
-    const prompt = await showPrompt(`First message for the new ${project.title} agent:`, {
-      title: `Start agent — ${project.title}`,
+    const prompt = await showPrompt(`First message for the new ${title} agent:`, {
+      title: `Start agent — ${title}`,
       placeholder: 'e.g. Help me plan the next iteration',
       confirmLabel: 'Start',
     })
     if (!prompt || !prompt.trim()) return
     const cwd = `${vaultPath}/projects/${slug}`
-    useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, project.title)
+    useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, title)
     useUiStore.getState().setActivePane('agents')
   }
 
@@ -122,8 +132,10 @@ export function ProjectPanel({ slug, onClose }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <div className="flex flex-col min-w-0">
-          <span className="text-xs font-medium text-text-primary truncate">{project.title}</span>
-          <span className="text-[10px] text-text-tertiary truncate">{slug}</span>
+          <span className="text-xs font-medium text-text-primary truncate">{title}</span>
+          <span className="text-[10px] text-text-tertiary truncate">
+            {slug}{isUntracked && ' · untracked'}
+          </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button

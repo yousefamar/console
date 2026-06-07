@@ -32,6 +32,10 @@ export const NotesTab = memo(function NotesTab() {
     }
     // Tag set used by frontmatter autocomplete in the editor
     void useBlogStore.getState().refreshTags()
+    // Projects: needed to resolve titles + status for the project pill/panel.
+    // Without this, opening Console straight into Notes leaves projects=[]
+    // and the pill never appears.
+    void useBlogStore.getState().refreshProjects()
   }, [])
 
   // Rescan vault when switching to notes tab

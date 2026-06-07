@@ -24,10 +24,11 @@ export const NotesEditor = memo(function NotesEditor() {
   const isFileDirty = useNotesStore((s) => s.isFileDirty)
   const isMobile = useIsMobile()
 
-  // Project panel: relevant for ANY file under projects/<slug>/, not just the
-  // index page. Detection runs on activeFilePath change only.
+  // Project panel: relevant for ANY file under projects/<slug>/, even when
+  // that project isn't tracked by the blog tooling (no index.md / log:true).
+  // The agent affordance still applies — the directory IS the project as
+  // far as the spawned agent is concerned.
   const slug = enclosingProjectSlug(activeFilePath)
-  const isTracked = useBlogStore((s) => slug ? s.projects.some((p) => p.slug === slug) : false)
   // Per-client toggle (localStorage, not synced) — defaults to last user choice.
   // First-time default: open on desktop, closed on mobile (so it doesn't fill the screen).
   const [panelOpen, setPanelOpen] = useState<boolean>(() => {
@@ -38,7 +39,7 @@ export const NotesEditor = memo(function NotesEditor() {
     return !isMobile  // first-run default
   })
   useEffect(() => { localStorage.setItem(PANEL_TOGGLE_KEY, String(panelOpen)) }, [panelOpen])
-  const showPanel = panelOpen && slug !== null && isTracked && !isMobile
+  const showPanel = panelOpen && slug !== null && !isMobile
 
   const paths = Object.keys(openFiles)
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
@@ -167,7 +168,7 @@ export const NotesEditor = memo(function NotesEditor() {
               publish
             </button>
           )}
-          {slug && isTracked && !isMobile && (
+          {slug && !isMobile && (
             <ProjectPill slug={slug} open={panelOpen} onToggle={() => setPanelOpen((v) => !v)} />
           )}
           {isFileDirty(activeFilePath!) && (

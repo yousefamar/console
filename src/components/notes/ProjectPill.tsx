@@ -32,13 +32,16 @@ export function ProjectPill({ slug, open, onToggle }: Props) {
     }).length
   }, [agentSessions, slug])
 
-  if (!project) return null
-
-  const status = project.status
+  // Fall back to a humanised slug when the project isn't tracked
+  // (no index.md / log:true). The directory is still the project for
+  // agent-session purposes.
+  const title = project?.title ?? humaniseSlug(slug)
+  const status = project?.status
   const statusColor =
     status === 'complete' ? 'text-text-tertiary' :
     status === 'dormant' ? 'text-yellow-400' :
-    'text-green-400'
+    status === 'active' ? 'text-green-400' :
+    'text-text-tertiary'
 
   return (
     <button
@@ -51,14 +54,23 @@ export function ProjectPill({ slug, open, onToggle }: Props) {
       title={open ? 'Hide project panel' : 'Show project panel'}
     >
       <Folder size={10} />
-      <span>{project.title}</span>
-      {posts && <span className="text-text-tertiary">· {posts.length} {posts.length === 1 ? 'post' : 'posts'}</span>}
+      <span>{title}</span>
+      {project && posts && <span className="text-text-tertiary">· {posts.length} {posts.length === 1 ? 'post' : 'posts'}</span>}
       {sessionCount > 0 && (
         <span className="flex items-center gap-0.5 text-green-400" title={`${sessionCount} active agent session${sessionCount === 1 ? '' : 's'}`}>
           · <Bot size={9} />{sessionCount}
         </span>
       )}
-      <span className={statusColor}>· {status}</span>
+      {status && <span className={statusColor}>· {status}</span>}
+      {!project && <span className="text-text-tertiary italic">· untracked</span>}
     </button>
   )
+}
+
+function humaniseSlug(slug: string): string {
+  return slug
+    .split('-')
+    .filter(Boolean)
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(' ')
 }
