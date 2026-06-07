@@ -343,10 +343,13 @@ export async function createProject(
     return { ok: false, error: `Project '${finalSlug}' already exists` }
   }
 
+  // New projects are directory-based: projects/<slug>/index.md.
+  // This matches the migrated convention so each project can host attachments,
+  // sub-notes, etc. alongside its index without a separate top-level file.
   const body = `---\ntitle: ${cleanTitle}\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
   try {
-    await store.write(flatPath, body)
-    return { ok: true, path: flatPath, slug: finalSlug }
+    await store.write(indexPath, body)
+    return { ok: true, path: indexPath, slug: finalSlug }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
