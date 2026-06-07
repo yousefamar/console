@@ -201,36 +201,56 @@ export function handleMatrixRoutes(
   }
 
   // POST /matrix/rooms/:id/send
+  // Routes through matrixSync.sendRoomEvent so encryption is auto-detected
+  // from the room's m.room.encryption state — the CLI used to always send
+  // plaintext m.room.message which Beeper bridges reject in encrypted rooms.
   const sendMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/send$/)
   if (sendMatch && req.method === 'POST') {
     return handleAsync(async () => {
       const roomId = decodeURIComponent(sendMatch[1]!)
-      const body = JSON.parse(await readBody(req))
-
-      const result = await matrix.sendMessage(
-        roomId,
-        body.body,
-        body.html ? body.body : undefined,
-      )
-
+      const body = JSON.parse(await readBody(req)) as {
+        body?: string
+        html?: boolean | string
+        replyTo?: string
+      }
+      if (!body.body) return error(400, 'body required')
+      const content: Record<string, unknown> = { msgtype: 'm.text', body: body.body }
+      if (body.html) {
+        content.format = 'org.matrix.custom.html'
+        // The CLI passes `html: true|"true"` to indicate `body` is HTML; mirror
+        // sendMessage's prior behaviour and reuse body as the formatted_body.
+        content.formatted_body = body.body
+      }
+      if (body.replyTo) {
+        content['m.relates_to'] = { 'm.in_reply_to': { event_id: body.replyTo } }
+      }
+      const result = await matrixSync.sendRoomEvent({
+        roomId, type: 'm.room.message', content,
+      })
       json(result)
     })
   }
 
   // POST /matrix/rooms/:id/send-file
+  // Uploads media raw (per bridge-attachment workaround — Beeper bridges
+  // can't decrypt encrypted attachments) and routes the event through
+  // matrixSync.sendRoomEvent so the event itself is Megolm-encrypted when
+  // the room is encrypted. Without this, encrypted rooms (incl. WhatsApp
+  // bridge) rejected the plaintext m.image/m.file send.
   const sendFileMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/send-file$/)
   if (sendFileMatch && req.method === 'POST') {
     return handleAsync(async () => {
       const roomId = decodeURIComponent(sendFileMatch[1]!)
       const body = JSON.parse(await readBody(req))
 
-      // Upload the file
       const fileData = Buffer.from(body.content, 'base64')
       const contentType = body.mimeType || 'application/octet-stream'
       const upload = await matrix.uploadMedia(fileData, contentType, body.filename)
 
-      // Send as m.image or m.file based on content type
-      const msgtype = contentType.startsWith('image/') ? 'm.image' : 'm.file'
+      const msgtype = contentType.startsWith('image/') ? 'm.image'
+        : contentType.startsWith('video/') ? 'm.video'
+        : contentType.startsWith('audio/') ? 'm.audio'
+        : 'm.file'
 
       const content: Record<string, unknown> = {
         msgtype,
@@ -240,7 +260,9 @@ export function handleMatrixRoutes(
         info: { mimetype: contentType, size: fileData.length },
       }
 
-      const result = await matrix.sendRoomEvent(roomId, 'm.room.message', content)
+      const result = await matrixSync.sendRoomEvent({
+        roomId, type: 'm.room.message', content,
+      })
       json(result)
     })
   }
