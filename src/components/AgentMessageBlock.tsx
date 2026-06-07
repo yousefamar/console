@@ -1,10 +1,10 @@
-import { memo, useMemo, useState, useCallback, useRef } from 'react'
+import { memo, useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import type { AgentMessage } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
   Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft, Volume2, Square,
-  Check, Circle, Loader2, ListTodo,
+  Check, Circle, Loader2, ListTodo, Copy,
 } from 'lucide-react'
 
 // ============================================================================
@@ -383,6 +383,140 @@ function ErrorBlock({ message }: { message: string }) {
 }
 
 // --------------------------------------------------------------------------
+// Code fence — fenced code block with optional language label + copy button
+// --------------------------------------------------------------------------
+
+function CodeFence({ lang, code }: { lang?: string; code: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* ignore — clipboard may be blocked */ }
+  }, [code])
+
+  return (
+    <div className="my-1 rounded-sm bg-surface-2 max-w-[calc(100vw-24px)] overflow-hidden">
+      {(lang || true) && (
+        <div className="flex items-center justify-between px-2 py-0.5 border-b border-border/40">
+          <span className="text-[9px] text-text-tertiary uppercase tracking-wider">{lang || 'code'}</span>
+          <button
+            type="button"
+            onClick={copy}
+            className="flex items-center gap-1 text-[9px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="Copy code"
+          >
+            {copied ? <Check size={10} /> : <Copy size={10} />}
+            {copied ? 'copied' : 'copy'}
+          </button>
+        </div>
+      )}
+      <pre className="px-2 py-1.5 text-[11px] font-mono overflow-x-auto">
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Mermaid diagram — renders SVG inline. Mermaid is heavy (~600KB) so it's
+// dynamically imported, initialised once per page, and the import is shared
+// across all MermaidBlock instances. Falls back to source-view-on-error and
+// always offers a "show source" toggle + copy.
+// --------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mermaidPromise: Promise<any> | null = null
+function loadMermaid() {
+  if (!mermaidPromise) {
+    mermaidPromise = import('mermaid').then((m) => {
+      const dark = document.documentElement.classList.contains('dark') ||
+        window.matchMedia?.('(prefers-color-scheme: dark)').matches
+      m.default.initialize({
+        startOnLoad: false,
+        theme: dark ? 'dark' : 'default',
+        securityLevel: 'strict',          // disallow inline event handlers / HTML labels
+        fontFamily: 'inherit',
+      })
+      return m.default
+    })
+  }
+  return mermaidPromise
+}
+
+let mermaidIdCounter = 0
+
+function MermaidBlock({ source }: { source: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [showSource, setShowSource] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    void (async () => {
+      try {
+        const mermaid = await loadMermaid()
+        const id = `mermaid-${++mermaidIdCounter}`
+        const { svg } = await mermaid.render(id, source)
+        if (cancelled) return
+        if (containerRef.current) containerRef.current.innerHTML = svg
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message || 'Failed to render diagram')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [source])
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(source)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard may be blocked */ }
+  }, [source])
+
+  return (
+    <div className="my-1 rounded-sm bg-surface-2 max-w-[calc(100vw-24px)] overflow-hidden">
+      <div className="flex items-center justify-between px-2 py-0.5 border-b border-border/40">
+        <span className="text-[9px] text-text-tertiary uppercase tracking-wider">
+          mermaid{error ? ' · error' : ''}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSource((v) => !v)}
+            className="text-[9px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title={showSource ? 'Show diagram' : 'Show source'}
+          >
+            {showSource ? 'diagram' : 'source'}
+          </button>
+          <button
+            type="button"
+            onClick={copy}
+            className="flex items-center gap-1 text-[9px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="Copy source"
+          >
+            {copied ? <Check size={10} /> : <Copy size={10} />}
+            {copied ? 'copied' : 'copy'}
+          </button>
+        </div>
+      </div>
+      {showSource || error ? (
+        <pre className="px-2 py-1.5 text-[11px] font-mono overflow-x-auto">
+          {error && <div className="text-[10px] text-destructive mb-1">{error}</div>}
+          <code>{source}</code>
+        </pre>
+      ) : (
+        <div ref={containerRef} className="p-2 overflow-x-auto [&_svg]:max-w-full [&_svg]:h-auto" />
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
 
@@ -417,10 +551,9 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
     const lang = match[1]
     const code = match[2]!.replace(/\n$/, '')
     parts.push(
-      <pre key={key++} className="my-1 p-2 rounded-sm bg-surface-2 text-[11px] font-mono overflow-x-auto max-w-[calc(100vw-24px)]">
-        {lang && <span className="text-[9px] text-text-tertiary uppercase tracking-wider">{lang}</span>}
-        <code>{code}</code>
-      </pre>,
+      lang === 'mermaid'
+        ? <MermaidBlock key={key++} source={code} />
+        : <CodeFence key={key++} lang={lang} code={code} />,
     )
     lastIndex = match.index + match[0].length
   }
