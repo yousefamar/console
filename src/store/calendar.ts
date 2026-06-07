@@ -6,10 +6,11 @@ import * as api from '@/calendar/api'
 import { getAccounts, addCalendarAccount, removeCalendarAccount, type CalendarAccount } from '@/calendar/accounts'
 import { optimisticallyDeleted, pendingTempIds } from '@/calendar/sync'
 import { useUiStore } from '@/store/ui'
-import { getPref, setPref } from '@/prefs'
+import { getPref, setPref, isPrefsLoaded } from '@/prefs'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 
 const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
+const DEFAULT_CAL_PREF = 'calendar.defaultId'
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -102,6 +103,23 @@ function addDays(d: Date, n: number): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n)
 }
 
+function addMonths(d: Date, n: number): Date {
+  const target = new Date(d.getFullYear(), d.getMonth() + n, 1)
+  const daysInTarget = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
+  target.setDate(Math.min(d.getDate(), daysInTarget))
+  return target
+}
+
+/** Fetch window covering the visible UI plus a one-week pad on each side. */
+function viewRange(date: Date, view: 'week' | 'day' | 'month'): { start: Date; end: Date } {
+  if (view === 'month') {
+    const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1)
+    const gridStart = weekStart(firstOfMonth)
+    return { start: addDays(gridStart, -7), end: addDays(gridStart, 49) }
+  }
+  return { start: addDays(weekStart(date), -7), end: addDays(weekEnd(date), 14) }
+}
+
 // --------------------------------------------------------------------------
 // Store
 // --------------------------------------------------------------------------
@@ -114,7 +132,7 @@ interface CalendarState {
   connected: boolean
 
   currentDate: Date
-  view: 'week' | 'day'
+  view: 'week' | 'day' | 'month'
   selectedEventId: string | null
   showEventForm: boolean
   editingEvent: CalendarEvent | null
@@ -123,6 +141,7 @@ interface CalendarState {
   locationPickerEvent: CalendarEvent | null
 
   visibleCalendarIds: Set<string>
+  defaultCalendarId: string | null
 
   // Actions
   loadAccounts: () => Promise<void>
@@ -132,11 +151,13 @@ interface CalendarState {
   fetchEvents: (start?: Date, end?: Date) => Promise<void>
   refreshAll: () => Promise<void>
   navigateWeek: (delta: number) => void
+  navigateMonth: (delta: number) => void
   navigateToday: () => void
   navigateToDate: (date: Date) => void
-  setView: (v: 'week' | 'day') => void
+  setView: (v: 'week' | 'day' | 'month') => void
   selectEvent: (id: string | null) => void
   toggleCalendarVisibility: (calId: string) => void
+  setDefaultCalendar: (calId: string | null) => void
 
   // CRUD
   createEvent: (calendarId: string, accountEmail: string, event: Partial<CalendarEvent>) => Promise<void>
@@ -164,7 +185,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   connected: false,
 
   currentDate: new Date(),
-  view: 'week',
+  // Default to day view on phone-sized viewports — 7-col week/month grids
+  // are too cramped to be useful as a landing view. The user can switch.
+  view: typeof window !== 'undefined' && window.innerWidth < 768 ? 'day' : 'week',
   selectedEventId: null,
   showEventForm: false,
   editingEvent: null,
@@ -174,6 +197,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   // Hydrated from hub prefs on boot (initPrefs() runs before App renders).
   visibleCalendarIds: new Set<string>(getPref<string[]>(VISIBLE_CAL_IDS_PREF, [])),
+  defaultCalendarId: getPref<string | null>(DEFAULT_CAL_PREF, null),
 
   // --- Accounts ---
 
@@ -289,12 +313,15 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
       // Initialize visibility — use the hub-synced set if present, otherwise
       // keep whatever is in-memory, otherwise default to all calendars visible.
+      // Only "default to all + persist" when prefs are confirmed loaded; if
+      // prefs are still loading, leave the in-memory set alone so we don't
+      // clobber the saved selection on a hub-race.
       const { visibleCalendarIds } = get()
       const savedIds = getPref<string[] | null>(VISIBLE_CAL_IDS_PREF, null)
       let newVisible: Set<string>
       if (savedIds && Array.isArray(savedIds)) {
         newVisible = new Set(savedIds)
-      } else if (visibleCalendarIds.size === 0) {
+      } else if (visibleCalendarIds.size === 0 && isPrefsLoaded()) {
         newVisible = new Set(allCalendars.map((c) => c.id))
         setPref(VISIBLE_CAL_IDS_PREF, Array.from(newVisible))
       } else {
@@ -312,13 +339,14 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   fetchEvents: async (start?: Date, end?: Date) => {
-    const { calendars, currentDate } = get()
+    const { calendars, currentDate, view } = get()
     if (calendars.length === 0) return
 
     set({ loading: true })
 
-    const rangeStart = start || addDays(weekStart(currentDate), -7)
-    const rangeEnd = end || addDays(weekEnd(currentDate), 14)
+    const fallback = viewRange(currentDate, view)
+    const rangeStart = start || fallback.start
+    const rangeEnd = end || fallback.end
     const timeMin = rangeStart.toISOString()
     const timeMax = rangeEnd.toISOString()
 
@@ -389,27 +417,54 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   navigateWeek: (delta) => {
     const { currentDate, view } = get()
+    if (view === 'month') {
+      get().navigateMonth(delta)
+      return
+    }
     const days = view === 'week' ? 7 * delta : delta
     const newDate = addDays(currentDate, days)
     set({ currentDate: newDate, selectedEventId: null })
     // Load from IDB immediately (prefetched data), then background refresh
     get().loadEventsFromDb()
-    get().fetchEvents(addDays(weekStart(newDate), -7), addDays(weekEnd(newDate), 14))
+    const r = viewRange(newDate, view)
+    get().fetchEvents(r.start, r.end)
+  },
+
+  navigateMonth: (delta) => {
+    const { currentDate } = get()
+    const newDate = addMonths(currentDate, delta)
+    set({ currentDate: newDate, selectedEventId: null })
+    get().loadEventsFromDb()
+    const r = viewRange(newDate, 'month')
+    get().fetchEvents(r.start, r.end)
   },
 
   navigateToday: () => {
-    set({ currentDate: new Date(), selectedEventId: null })
+    const today = new Date()
+    set({ currentDate: today, selectedEventId: null })
     get().loadEventsFromDb()
-    get().fetchEvents()
+    const r = viewRange(today, get().view)
+    get().fetchEvents(r.start, r.end)
   },
 
   navigateToDate: (date) => {
     set({ currentDate: date, selectedEventId: null })
     get().loadEventsFromDb()
-    get().fetchEvents(addDays(weekStart(date), -7), addDays(weekEnd(date), 14))
+    const r = viewRange(date, get().view)
+    get().fetchEvents(r.start, r.end)
   },
 
-  setView: (v) => set({ view: v }),
+  setView: (v) => {
+    const prev = get().view
+    set({ view: v })
+    // Fetch range may differ between views (month covers 6 weeks vs week's 3).
+    // Re-hydrate IDB-cached events for the new range immediately, then refresh.
+    if (prev !== v) {
+      get().loadEventsFromDb()
+      const r = viewRange(get().currentDate, v)
+      get().fetchEvents(r.start, r.end)
+    }
+  },
   selectEvent: (id) => set({ selectedEventId: id }),
 
   toggleCalendarVisibility: (calId) => {
@@ -421,6 +476,11 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       return { visibleCalendarIds: next }
     })
     get().loadEventsFromDb()
+  },
+
+  setDefaultCalendar: (calId) => {
+    set({ defaultCalendarId: calId })
+    setPref(DEFAULT_CAL_PREF, calId)
   },
 
   // --- CRUD (optimistic: IDB first → enqueue → background sync) ---
@@ -635,12 +695,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   loadEventsFromDb: async () => {
     const { currentDate, view, visibleCalendarIds } = get()
 
-    const rangeStart = view === 'week'
-      ? addDays(weekStart(currentDate), -1)
-      : new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate())
-    const rangeEnd = view === 'week'
-      ? addDays(weekEnd(currentDate), 1)
-      : addDays(currentDate, 1)
+    let rangeStart: Date
+    let rangeEnd: Date
+    if (view === 'month') {
+      const firstOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
+      rangeStart = addDays(weekStart(firstOfMonth), -1)
+      rangeEnd = addDays(weekStart(firstOfMonth), 43)
+    } else if (view === 'week') {
+      rangeStart = addDays(weekStart(currentDate), -1)
+      rangeEnd = addDays(weekEnd(currentDate), 1)
+    } else {
+      rangeStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate())
+      rangeEnd = addDays(currentDate, 1)
+    }
 
     const startStr = rangeStart.toISOString()
     const endStr = rangeEnd.toISOString()

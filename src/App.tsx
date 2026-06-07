@@ -169,6 +169,18 @@ export function App() {
           useNotesStore.setState({ expandedDirs: new Set(expandedDirs) })
         })
       }
+      // Calendar store reads its prefs at module-init time (before initPrefs
+      // resolves), so it sees nulls. Hydrate after the cache is populated.
+      const defaultCalId = getPref<string | null>('calendar.defaultId', null)
+      const visibleCalIds = getPref<string[] | null>('calendar.visibleIds', null)
+      if (defaultCalId !== null || (visibleCalIds && Array.isArray(visibleCalIds))) {
+        void import('@/store/calendar').then(({ useCalendarStore }) => {
+          const patch: Partial<{ defaultCalendarId: string | null; visibleCalendarIds: Set<string> }> = {}
+          if (defaultCalId !== null) patch.defaultCalendarId = defaultCalId
+          if (visibleCalIds && Array.isArray(visibleCalIds)) patch.visibleCalendarIds = new Set(visibleCalIds)
+          useCalendarStore.setState(patch)
+        })
+      }
     })
 
     void initAuth().then(() => {

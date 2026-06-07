@@ -1,17 +1,19 @@
 import { useMemo } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { getHubUrl } from '@/hub'
-import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff, Rss, User } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff, Rss, User, Star } from 'lucide-react'
 
 export function CalendarSidebar() {
   const currentDate = useCalendarStore((s) => s.currentDate)
   const view = useCalendarStore((s) => s.view)
   const calendars = useCalendarStore((s) => s.calendars)
   const visibleCalendarIds = useCalendarStore((s) => s.visibleCalendarIds)
+  const defaultCalendarId = useCalendarStore((s) => s.defaultCalendarId)
   const navigateToday = useCalendarStore((s) => s.navigateToday)
   const navigateToDate = useCalendarStore((s) => s.navigateToDate)
   const setView = useCalendarStore((s) => s.setView)
   const toggleCalendarVisibility = useCalendarStore((s) => s.toggleCalendarVisibility)
+  const setDefaultCalendar = useCalendarStore((s) => s.setDefaultCalendar)
   const addAccount = useCalendarStore((s) => s.addAccount)
 
   // Group calendars by account
@@ -37,6 +39,14 @@ export function CalendarSidebar() {
           Today
         </button>
         <div className="flex-1" />
+        <button
+          onClick={() => setView('month')}
+          className={`px-1.5 py-0.5 text-[10px] rounded-sm transition-colors ${
+            view === 'month' ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+          }`}
+        >
+          M
+        </button>
         <button
           onClick={() => setView('week')}
           className={`px-1.5 py-0.5 text-[10px] rounded-sm transition-colors ${
@@ -69,6 +79,8 @@ export function CalendarSidebar() {
             </div>
             {cals.map((cal) => {
               const isVisible = visibleCalendarIds.has(cal.id)
+              const isWritable = cal.accessRole === 'owner' || cal.accessRole === 'writer'
+              const isDefault = defaultCalendarId === cal.id
               return (
                 <div
                   key={cal.id}
@@ -107,6 +119,21 @@ export function CalendarSidebar() {
                       : <EyeOff size={10} className="text-text-tertiary" />
                     }
                   </button>
+                  {isWritable && (
+                    <button
+                      onClick={() => setDefaultCalendar(isDefault ? null : cal.id)}
+                      title={isDefault ? 'Default for new events' : 'Set as default for new events'}
+                      className={`flex-shrink-0 transition-opacity ${
+                        isDefault ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+                      }`}
+                    >
+                      <Star
+                        size={10}
+                        className={isDefault ? 'text-text-secondary' : 'text-text-tertiary'}
+                        fill={isDefault ? 'currentColor' : 'none'}
+                      />
+                    </button>
+                  )}
                 </div>
               )
             })}

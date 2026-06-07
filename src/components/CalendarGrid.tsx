@@ -3,6 +3,7 @@ import { useCalendarStore } from '@/store/calendar'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { ChevronLeft, ChevronRight, Plus, MapPin, Square, Bell } from 'lucide-react'
+import { CalendarMobileControls } from './CalendarMobileControls'
 
 // --------------------------------------------------------------------------
 // Constants
@@ -474,14 +475,15 @@ export function CalendarGrid() {
         <button onClick={() => navigateWeek(1)} className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5">
           <ChevronRight size={14} />
         </button>
-        <span className="text-sm font-medium text-text-primary">{headerLabel}</span>
+        <span className="text-sm font-medium text-text-primary truncate">{headerLabel}</span>
         <div className="flex-1" />
+        {isMobile && <CalendarMobileControls />}
         <button
           onClick={() => openCreateForm()}
           className="flex items-center gap-1 px-2 py-0.5 text-xs text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
         >
           <Plus size={11} />
-          Event
+          {!isMobile && 'Event'}
         </button>
       </div>
 

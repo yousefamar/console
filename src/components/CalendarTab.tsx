@@ -3,6 +3,7 @@ import { useCalendarStore } from '@/store/calendar'
 import { isSignedIn } from '@/gmail/auth'
 import { CalendarSidebar } from './CalendarSidebar'
 import { CalendarGrid } from './CalendarGrid'
+import { CalendarMonth } from './CalendarMonth'
 import { CalendarEventPopover } from './CalendarEventPopover'
 import { CalendarEventForm } from './CalendarEventForm'
 import { CalendarLocationPicker } from './CalendarLocationPicker'
@@ -12,6 +13,7 @@ export const CalendarTab = memo(function CalendarTab() {
   const connected = useCalendarStore((s) => s.connected)
   const loading = useCalendarStore((s) => s.loading)
   const calendars = useCalendarStore((s) => s.calendars)
+  const view = useCalendarStore((s) => s.view)
   const showEventForm = useCalendarStore((s) => s.showEventForm)
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
   const locationPickerEvent = useCalendarStore((s) => s.locationPickerEvent)
@@ -52,7 +54,7 @@ export const CalendarTab = memo(function CalendarTab() {
       )}
 
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-        <CalendarGrid />
+        {view === 'month' ? <CalendarMonth /> : <CalendarGrid />}
       </div>
 
       {selectedEventId && <CalendarEventPopover />}

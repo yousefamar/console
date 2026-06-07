@@ -14,10 +14,14 @@ export function CalendarEventForm() {
   const createEvent = useCalendarStore((s) => s.createEvent)
   const updateEvent = useCalendarStore((s) => s.updateEvent)
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
+  const defaultCalendarId = useCalendarStore((s) => s.defaultCalendarId)
 
   const isEdit = !!editingEvent
   const writableCalendars = calendars.filter((c) => c.accessRole === 'owner' || c.accessRole === 'writer')
-  const primaryCalendar = writableCalendars.find((c) => c.primary) || writableCalendars[0]
+  const userDefault = defaultCalendarId
+    ? writableCalendars.find((c) => c.id === defaultCalendarId)
+    : undefined
+  const primaryCalendar = userDefault || writableCalendars.find((c) => c.primary) || writableCalendars[0]
 
   const [title, setTitle] = useState('')
   const [calendarId, setCalendarId] = useState('')
