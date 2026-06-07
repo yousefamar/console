@@ -64,6 +64,7 @@ import { CalendarSync } from './cal/sync.js'
 import { KeyBackupStore } from './matrix/key-backup-store.js'
 import { HubMatrixCrypto } from './matrix/crypto.js'
 import { MatrixSync } from './matrix/sync.js'
+import { ChatRoomsStore } from './matrix/chat-rooms-store.js'
 import type { DebugClientMessage } from './debug-protocol.js'
 
 // --------------------------------------------------------------------------
@@ -250,6 +251,16 @@ const hubMatrixCrypto = new HubMatrixCrypto(
     })().catch((e) => log(`[hub-crypto] boot init failed: ${e}`))
   }
 }
+// Hub-owned canonical room snapshot. Every /sync delta is computed here and
+// broadcast over the `chat-rooms` SyncBus service; clients drop the result
+// straight into their IDB cache instead of running their own derivation. This
+// is what gives "mark read on PC → phone sees it immediately" — the hub is
+// the source of truth, not each device's local Dexie state.
+const chatRoomsStore = new ChatRoomsStore({
+  path: join(feedsConfigDir, 'chat-rooms.json'),
+  bus: syncBus,
+  log: (msg: string) => { log(msg) },
+})
 // Matrix sync loop — starts once crypto is ready (polled).
 const matrixSync = new MatrixSync(
   matrixClient,
@@ -259,6 +270,7 @@ const matrixSync = new MatrixSync(
   pushServer,
   join(feedsConfigDir, 'matrix-sync-state.json'),
   (msg: string) => { log(msg) },
+  chatRoomsStore,
 )
 syncBus.register('matrix', {
   syncNow: async () => matrixSync.syncNow(),
@@ -276,6 +288,16 @@ syncBus.register('matrix', {
   // Discard the outbound Megolm session for a room so the next send forces
   // a fresh shareRoomKey round — used when a bridge reports FAIL_RETRIABLE.
   rotateRoomKey: async (args) => matrixSync.rotateRoomKey(args as { roomId: string }),
+})
+// Hub-owned chat-rooms snapshot RPCs. Clients call `snapshot` on first connect
+// and after reconnect; every other mutation either flows through here
+// (markUnread, snooze) or is shadowed by markRead's optimistic update inside
+// MatrixSync. All paths persist + broadcast via SnapshotStore.update.
+syncBus.register('chat-rooms', {
+  snapshot: async () => chatRoomsStore.snapshot(),
+  markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
+  markUnread: async (args) => matrixSync.markUnread(args as { roomId: string }),
+  snooze: async (args) => matrixSync.snooze(args as { roomId: string; untilMs?: number }),
 })
 matrixSync.start()
 

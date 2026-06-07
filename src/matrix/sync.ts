@@ -731,6 +731,12 @@ async function processJoinedRoom(
     readReceipts: updatedReceipts,
   }
 
+  // Transitional: write the locally-derived room row back to IDB until the
+  // hub's chat-rooms snapshot has been populated by a full initial sync. The
+  // hub's broadcast will overwrite this with the canonical shape within one
+  // sync tick — but until then this is the only thing keeping rooms visible
+  // in the SPA at all. Once the hub snapshot is reliably bootstrapped on
+  // boot we can delete this write again.
   await db.chatRooms.put(dbRoom)
 
   // Fire notification for new messages from others

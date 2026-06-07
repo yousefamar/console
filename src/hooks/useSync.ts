@@ -133,6 +133,14 @@ export function useSync() {
         // calls so we don't want to block the main sync wiring on it.
         void healStaleBridgeRoomState().catch(() => {})
 
+        // Subscribe to the hub-owned room snapshot. After this is wired the
+        // hub is authoritative for room metadata (name, isUnread, avatar,
+        // memberCount, tags, …) — every device gets the same view and
+        // "mark read on PC → phone sees it" works without local derivation.
+        const { wireChatRoomsSubscription } = await import('@/matrix/chat-rooms-subscribe')
+        const unsubChatRooms = wireChatRoomsSubscription()
+        matrixCleanups.push(unsubChatRooms)
+
         const { hubBus } = await import('@/sync-bus')
         hubUnsubDelta = hubBus.on('matrix', 'delta', (data: unknown) => {
           ingestHubDelta(data as HubMatrixDelta).catch(() => {})

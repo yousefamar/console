@@ -21,6 +21,8 @@ import type { HubMatrixCrypto } from './crypto.js'
 import type { AuthStore } from '../auth-store.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
+import type { ChatRoomsStore } from './chat-rooms-store.js'
+import type { SyncRoomDelta } from './room-state.js'
 
 type MatrixSyncState = { nextBatch?: string; lastSyncMs?: number }
 
@@ -109,6 +111,10 @@ export class MatrixSync {
     private readonly push: PushServer,
     private readonly stateFile: string,
     private readonly log: (msg: string) => void,
+    /** Hub-owned canonical room snapshot. When provided, every /sync delta is
+     *  computed into a RoomState and written here, making the hub the source
+     *  of truth for room metadata across all connected clients. */
+    private readonly chatRoomsStore?: ChatRoomsStore,
   ) {
     this.loadState()
   }
@@ -231,6 +237,19 @@ export class MatrixSync {
       `[matrix-sync] resume${wantedSince ? ` since=${wantedSince.slice(0, 12)}…` : ' (cold)'}`
       + `: ${Object.keys(rooms).length}/${Object.keys(allRooms).length} rooms, ${eventCount} events`,
     )
+    // Update the canonical room snapshot from this resume payload too. The
+    // resume path is per-client point-to-point, but the snapshot it produces
+    // is identical to what the tick path computes — so we get the latest
+    // server state into the store regardless of which path delivered it.
+    if (this.chatRoomsStore && Object.keys(rooms).length > 0) {
+      this.chatRoomsStore.applySyncDelta(rooms as Record<string, SyncRoomDelta>, {
+        myUserId: cfg.userId,
+        mutedRoomIds: this.mutedRooms,
+      })
+    }
+    if (this.chatRoomsStore && leaves.length > 0) {
+      for (const id of leaves) this.chatRoomsStore.removeRoom(id)
+    }
     return {
       nextBatch: resp.next_batch,
       rooms,
@@ -436,6 +455,10 @@ export class MatrixSync {
     const cfg = this.auth.getMatrixConfig()
     if (!cfg) throw new Error('no matrix credentials')
     const { roomId, eventId } = args
+    // Optimistic: flip the snapshot now so every connected client sees the
+    // room as read immediately — no need to wait for the next homeserver
+    // /sync delta to round-trip our own receipt back to us.
+    this.chatRoomsStore?.setRoomRead(roomId, eventId)
     const markerUrl = `${cfg.homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`
     const receiptUrl = `${cfg.homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`
     const headers = { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }
@@ -445,6 +468,22 @@ export class MatrixSync {
     ])
     if (!m.ok) this.log(`[matrix-sync] read_markers failed: ${m.status}`)
     if (!r.ok) this.log(`[matrix-sync] receipt failed: ${r.status}`)
+    return { ok: true }
+  }
+
+  /** Mark a room as unread again — hub-only state (Matrix has no API for it).
+   *  Broadcast immediately so every device flips the badge in lockstep. */
+  async markUnread(args: { roomId: string }): Promise<{ ok: true }> {
+    if (!args?.roomId) throw new Error('roomId required')
+    this.chatRoomsStore?.setRoomUnread(args.roomId)
+    return { ok: true }
+  }
+
+  /** Snooze a room until a future time. Local-only (Matrix has no API for
+   *  it either) — but hub-owned so every device snoozes / unsnoozes together. */
+  async snooze(args: { roomId: string; untilMs?: number }): Promise<{ ok: true }> {
+    if (!args?.roomId) throw new Error('roomId required')
+    this.chatRoomsStore?.setRoomSnoozedUntil(args.roomId, args.untilMs)
     return { ok: true }
   }
 
@@ -546,6 +585,26 @@ export class MatrixSync {
       } else if (roomCount > 0 || invites.length > 0 || leaves.length > 0) {
         this.bus.broadcast('matrix', 'delta', delta)
         this.log(`[matrix-sync] delta: ${roomCount} rooms, ${totalEvents} events${failedDecrypts ? ` (${failedDecrypts} decrypt-failed)` : ''}`)
+      }
+
+      // Update hub-owned room snapshot — derives the canonical inbox view
+      // (name, isUnread, memberCount, …) and broadcasts on `chat-rooms.delta`
+      // so every connected client converges to the same state.
+      if (this.chatRoomsStore && roomCount > 0) {
+        const userId = cfg.userId
+        this.chatRoomsStore.applySyncDelta(rooms as Record<string, SyncRoomDelta>, {
+          myUserId: userId,
+          mutedRoomIds: this.mutedRooms,
+        })
+      }
+      if (this.chatRoomsStore && this.pushRulesChangedThisTick) {
+        // Re-sync mute flag across all rooms whenever push rules changed —
+        // handled in addition to the per-room delta above so muted-state flips
+        // on rooms that didn't appear in this tick still propagate.
+        this.chatRoomsStore.setMutedRoomIds(this.mutedRooms)
+      }
+      if (this.chatRoomsStore) {
+        for (const leftId of leaves) this.chatRoomsStore.removeRoom(leftId)
       }
 
       // 5. Push notifications for new messages from other users (not our own).

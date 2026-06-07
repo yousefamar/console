@@ -483,20 +483,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const id = roomId ?? get().selectedRoomId
     if (!id) return
 
-    // Update DB
+    // Optimistic IDB + Zustand for snappy UI; the hub's broadcast on
+    // `chat-rooms.delta` arrives within one tick and overwrites identically.
     await db.chatRooms.update(id, { isUnread: true, unreadCount: 1 })
-
-    // Optimistic: add back to rooms list if not already there
-    set((s) => {
-      const existing = s.rooms.find((r) => r.id === id)
-      if (existing) {
-        return { rooms: s.rooms.map((r) => r.id === id ? { ...r, isUnread: true, unreadCount: 1 } : r) }
-      }
-      // Room not in list — fetch from DB
-      return s
-    })
-
-    // If room wasn't in the list, the live query will pick it up from DB
+    set((s) => ({
+      rooms: s.rooms.map((r) =>
+        r.id === id ? { ...r, isUnread: true, unreadCount: 1 } : r,
+      ),
+    }))
+    // Hub owns the authoritative flag — route through the chat-rooms RPC
+    // so every connected device sees the unread flip immediately.
+    try {
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('chat-rooms', 'markUnread', { roomId: id })
+    } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 
   snoozeRoom: async (option, customDate) => {
@@ -505,7 +505,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const snoozedUntil = getSnoozeTime(option, customDate)
 
-    // Update DB first so live query doesn't rubberband
+    // Optimistic local update — replaced by the hub broadcast within a tick.
     await db.chatRooms.update(id, { snoozedUntil })
 
     set((s) => {
@@ -518,6 +518,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     })
     useUiStore.getState().setShowSnoozePicker(false)
+    // Hub owns the authoritative snoozed-until — route through the
+    // chat-rooms RPC so every device snoozes / unsnoozes together.
+    try {
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('chat-rooms', 'snooze', { roomId: id, untilMs: snoozedUntil })
+    } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 
   sendMessage: async (roomId, body, formattedBody) => {
