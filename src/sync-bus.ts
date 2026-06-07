@@ -45,6 +45,22 @@ export class HubSyncBus {
   private connectHandlers = new Set<(info: { first: boolean }) => void>()
   private disconnectHandlers = new Set<() => void>()
 
+  // Heartbeat — every PING_INTERVAL_MS the client sends {t:'ping'} and the
+  // hub replies {t:'pong'} (handled in server/src/sync-bus.ts). We track the
+  // most recent inbound message; if it's older than STALE_TIMEOUT_MS at the
+  // next tick, the WS is dead and we force-reconnect.
+  //
+  // Why this is the right fix: Android backgrounding pauses both JS and
+  // every WS timer, so the OS-level TCP socket can quietly go dead while
+  // `readyState` still reports OPEN. With heartbeats, the first interval
+  // tick after JS resumes catches the staleness regardless of how the
+  // connection died (background, network blip, NAT timeout, server
+  // restart). No dependence on visibility events.
+  private readonly PING_INTERVAL_MS = 15_000
+  private readonly STALE_TIMEOUT_MS = 30_000
+  private heartbeatHandle: ReturnType<typeof setInterval> | null = null
+  private lastInboundAt = 0
+
   connect(): void {
     this.stopped = false
     this.open()
@@ -52,8 +68,46 @@ export class HubSyncBus {
 
   close(): void {
     this.stopped = true
+    this.stopHeartbeat()
     try { this.ws?.close() } catch {}
     this.ws = null
+  }
+
+  /**
+   * Tear down + reopen the WS. Used by the heartbeat watchdog when the WS
+   * appears OPEN but no inbound traffic has arrived for STALE_TIMEOUT_MS —
+   * typical after a phone WebView resumes from background.
+   */
+  forceReconnect(): void {
+    if (this.stopped) return
+    if (this.ws) {
+      try { this.ws.close() } catch {}
+      // onclose will fire disconnect handlers + queue the reconnect.
+    } else {
+      this.open()
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    this.lastInboundAt = Date.now()
+    this.heartbeatHandle = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+      // If no inbound traffic for too long, the WS is dead-but-OPEN. Close
+      // it; the onclose handler triggers the reconnect loop.
+      if (Date.now() - this.lastInboundAt > this.STALE_TIMEOUT_MS) {
+        this.forceReconnect()
+        return
+      }
+      try { this.ws.send(JSON.stringify({ t: 'ping' })) } catch {}
+    }, this.PING_INTERVAL_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatHandle) {
+      clearInterval(this.heartbeatHandle)
+      this.heartbeatHandle = null
+    }
   }
 
   /** Listen for events of shape {service, op, data}. Returns unsubscribe fn. */
@@ -186,14 +240,21 @@ export class HubSyncBus {
       for (const fn of this.connectHandlers) {
         try { fn({ first }) } catch {}
       }
+      // Start heartbeat watchdog. lastInboundAt is seeded by `hello` below.
+      this.startHeartbeat()
     }
 
     ws.onmessage = (ev) => {
+      this.lastInboundAt = Date.now()
       let msg: any
       try { msg = JSON.parse(ev.data as string) } catch { return }
       if (!msg || typeof msg !== 'object') return
       switch (msg.t) {
         case 'hello':
+          break
+        case 'pong':
+          // lastInboundAt already updated above; no-op handler keeps the
+          // switch exhaustive.
           break
         case 'evt': {
           const key = `${msg.service}.${msg.op}`
@@ -220,6 +281,7 @@ export class HubSyncBus {
         clearTimeout(this.connectTimeoutHandle)
         this.connectTimeoutHandle = null
       }
+      this.stopHeartbeat()
       this.ws = null
       for (const fn of this.disconnectHandlers) {
         try { fn() } catch {}
