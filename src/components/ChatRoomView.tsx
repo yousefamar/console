@@ -122,6 +122,13 @@ export function ChatRoomView() {
   )
 }
 
+// Mount cap per room. Tuned so 20 pre-rendered rooms hold ~600 bubbles in
+// the DOM rather than the unbounded ~2.5K we used to. Scroll-up grows the
+// window in WINDOW_STEP increments — first into the local IDB cache, then
+// out to the homeserver via onLoadOlder.
+const INITIAL_WINDOW = 30
+const WINDOW_STEP = 30
+
 const RoomMessages = memo(function RoomMessages({
   roomId,
   isVisible,
@@ -173,15 +180,30 @@ const RoomMessages = memo(function RoomMessages({
   const isVisibleRef = useRef(isVisible)
   isVisibleRef.current = isVisible
 
+  // Bounded window of mounted bubbles. Capped per room so 20+ pre-rendered
+  // rooms don't drag down the main thread — Matrix sync touches every room's
+  // liveQuery, and unbounded queries blow up the DOM. User scrolls to top to
+  // grow the window (expanding into IDB locally first, fetching from the
+  // homeserver only once the local cache is exhausted).
+  const [visibleWindow, setVisibleWindow] = useState(INITIAL_WINDOW)
+
   useEffect(() => {
-    const sub = liveQuery(
-      () => db.chatMessages.where('roomId').equals(roomId).sortBy('timestamp')
-    ).subscribe(msgs => {
+    const sub = liveQuery(async () => {
+      // Use the [roomId+timestamp] compound index to walk newest-first and
+      // cap at the current window — O(N) for N bubbles instead of O(allRoomMessages).
+      const arr = await db.chatMessages
+        .where('[roomId+timestamp]')
+        .between([roomId, 0], [roomId, Number.MAX_SAFE_INTEGER])
+        .reverse()
+        .limit(visibleWindow)
+        .toArray()
+      return arr.reverse() // back to chronological order for render
+    }).subscribe((msgs) => {
       messagesRef.current = msgs
       if (isVisibleRef.current) setMessages(msgs)
     })
     return () => sub.unsubscribe()
-  }, [roomId])
+  }, [roomId, visibleWindow])
 
   // When becoming visible, flush ref to state immediately (instant switch, no loading flash)
   useEffect(() => {
@@ -189,6 +211,71 @@ const RoomMessages = memo(function RoomMessages({
       setMessages(messagesRef.current)
     }
   }, [isVisible])
+
+  // userId → displayName lookup for reaction tooltips. Built from three
+  // sources, each filling gaps the others miss:
+  //   • read receipts        (active readers, already enriched by sync)
+  //   • this room's messages (anyone who's spoken)
+  //   • /matrix/rooms/:id/info member list (everyone joined — covers
+  //     reactors who only reacted but never spoke, including WhatsApp ghosts
+  //     under @whatsapp_lid-… that aren't otherwise in our data)
+  //
+  // Stored in a ref + read through a stable callback so the bubble's memo
+  // stays warm (a fresh map identity per Dexie tick would force every
+  // bubble to re-render).
+  const nameLookupRef = useRef<Map<string, string>>(new Map())
+  const [memberNamesVersion, setMemberNamesVersion] = useState(0)
+  const memberNamesRef = useRef<Map<string, string>>(new Map())
+
+  // One-shot room-info fetch when the room first becomes visible. Populates
+  // the member-derived half of the lookup. Cheap per session — re-uses the
+  // hub's room-state cache and only runs once per mount.
+  const fetchedMembersRef = useRef(false)
+  useEffect(() => {
+    if (!isVisible || fetchedMembersRef.current) return
+    fetchedMembersRef.current = true
+    ;(async () => {
+      try {
+        const { getHubUrl } = await import('@/hub')
+        const res = await fetch(`${getHubUrl()}/matrix/rooms/${encodeURIComponent(roomId)}/info`)
+        if (!res.ok) return
+        const data = await res.json() as { members?: Array<{ userId: string; displayName?: string }> }
+        const m = new Map<string, string>()
+        for (const member of data.members ?? []) {
+          if (member.displayName) m.set(member.userId, member.displayName)
+        }
+        memberNamesRef.current = m
+        setMemberNamesVersion((v) => v + 1)
+      } catch { /* tooltip will fall back to MXID localpart */ }
+    })()
+  }, [isVisible, roomId])
+
+  useEffect(() => {
+    const m = new Map<string, string>()
+    // Highest priority: explicit displayName on read receipts.
+    if (readReceipts) {
+      for (const [uid, r] of Object.entries(readReceipts)) {
+        if (r.displayName) m.set(uid, r.displayName)
+      }
+    }
+    // Then senders of messages we've already loaded for this room.
+    for (const msg of messagesRef.current) {
+      if (msg.senderId && msg.senderName && !m.has(msg.senderId)) {
+        m.set(msg.senderId, msg.senderName)
+      }
+    }
+    // Finally, every joined room member (covers react-only ghosts).
+    for (const [uid, name] of memberNamesRef.current) {
+      if (!m.has(uid)) m.set(uid, name)
+    }
+    nameLookupRef.current = m
+  }, [messages, readReceipts, memberNamesVersion])
+  const resolveName = useCallback((userId: string) => {
+    const hit = nameLookupRef.current.get(userId)
+    if (hit) return hit
+    // Fall back to localpart of the MXID (e.g. @yousef:beeper.com → yousef).
+    return userId.split(':')[0]?.slice(1) || userId
+  }, [])
 
   // Check if user is scrolled near the bottom
   const isNearBottom = useCallback(() => {
@@ -218,17 +305,25 @@ const RoomMessages = memo(function RoomMessages({
     }
   }, [isVisible, messages, lastReadTs])
 
-  // Auto-scroll on new messages: always if own message, only if near bottom for others
+  // Auto-scroll on new messages: always if own, only if near bottom for others.
+  //
+  // We key off the newest message id (not array length) because once the
+  // bounded liveQuery window is saturated, a new message arriving causes the
+  // oldest to drop and length stays constant — a length-based check would
+  // silently no-op. The id check fires whenever the tail actually changes.
+  const prevLastMessageId = useRef<string | null>(null)
   useEffect(() => {
     if (!isVisible || !scrollRef.current || !didInitialScroll.current) return
-    if (messages.length <= prevMessageCount.current) {
-      prevMessageCount.current = messages.length
-      return
-    }
-    const newMessages = messages.slice(prevMessageCount.current)
-    prevMessageCount.current = messages.length
+    if (messages.length === 0) return
+    const newest = messages[messages.length - 1]!
+    if (newest.id === prevLastMessageId.current) return
+    const isFirstObservation = prevLastMessageId.current === null
+    prevLastMessageId.current = newest.id
+    // Skip the very first tail-id observation after didInitialScroll — that's
+    // just us catching up with what initial-scroll already handled.
+    if (isFirstObservation) return
 
-    const hasOwnMessage = newMessages.some((m) => m.senderId === matrixUserId || m.id.startsWith('~'))
+    const hasOwnMessage = newest.senderId === matrixUserId || newest.id.startsWith('~')
     if (hasOwnMessage || isNearBottom()) {
       requestAnimationFrame(() => {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -236,29 +331,46 @@ const RoomMessages = memo(function RoomMessages({
     }
   }, [isVisible, messages, matrixUserId, isNearBottom])
 
-  // Reset when room hides
+  // Reset when room hides. Shrinking the window back to INITIAL_WINDOW
+  // frees the bubbles the user expanded into for that visit — important
+  // because every room stays mounted in the pre-render strategy.
   useEffect(() => {
     if (!isVisible) {
       didInitialScroll.current = false
+      didAutoLoad.current = false
       prevMessageCount.current = 0
+      prevLastMessageId.current = null
       setShowScrollToBottom(false)
+      setVisibleWindow(INITIAL_WINDOW)
     }
   }, [isVisible])
 
-  // Auto-load older messages when content doesn't fill the container
+  // Auto-load older messages when content doesn't fill the container — but
+  // only once per visibility, otherwise window-expansion re-fires the
+  // effect (messages changed → check again → still under-fills → expand →
+  // …) into a runaway that re-mounts the entire history.
+  const didAutoLoad = useRef(false)
   useEffect(() => {
     if (!isVisible || !scrollRef.current || isLoadingOlder.current) return
-    if (messages.length === 0) return
+    if (messages.length === 0 || didAutoLoad.current) return
     const el = scrollRef.current
     if (el.scrollHeight <= el.clientHeight) {
+      didAutoLoad.current = true
       isLoadingOlder.current = true
       setShowLoadingOlder(true)
-      onLoadOlder(roomId).then(() => {
+      ;(async () => {
+        const totalLocal = await db.chatMessages.where('roomId').equals(roomId).count()
+        if (totalLocal > visibleWindow) {
+          setVisibleWindow((w) => Math.min(totalLocal, w + WINDOW_STEP))
+        } else {
+          const hasMore = await onLoadOlder(roomId)
+          if (hasMore) setVisibleWindow((w) => w + WINDOW_STEP)
+        }
         isLoadingOlder.current = false
         setShowLoadingOlder(false)
-      })
+      })()
     }
-  }, [isVisible, messages, roomId, onLoadOlder])
+  }, [isVisible, messages, roomId, onLoadOlder, visibleWindow])
 
   const handleScroll = useCallback(async () => {
     if (!scrollRef.current) return
@@ -269,14 +381,36 @@ const RoomMessages = memo(function RoomMessages({
       isLoadingOlder.current = true
       setShowLoadingOlder(true)
       const prevHeight = el.scrollHeight
-      const hasMore = await onLoadOlder(roomId)
-      if (hasMore && scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight - prevHeight
+      // Try expanding the local window first — cheap and avoids a roundtrip
+      // when IDB already has older messages cached.
+      const totalLocal = await db.chatMessages.where('roomId').equals(roomId).count()
+      let grew = false
+      if (totalLocal > visibleWindow) {
+        setVisibleWindow((w) => Math.min(totalLocal, w + WINDOW_STEP))
+        grew = true
+      } else {
+        const hasMore = await onLoadOlder(roomId)
+        // Network fetch wrote into IDB; bump the window so the new rows
+        // actually become visible (otherwise liveQuery returns the same
+        // capped set and the user sees no progress after the spinner).
+        if (hasMore) {
+          setVisibleWindow((w) => w + WINDOW_STEP)
+          grew = true
+        }
+      }
+      if (grew) {
+        // Restore scroll offset after the new bubbles mount so the user
+        // stays anchored to whatever they were reading.
+        requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight - prevHeight
+          }
+        })
       }
       isLoadingOlder.current = false
       setShowLoadingOlder(false)
     }
-  }, [roomId, onLoadOlder])
+  }, [roomId, onLoadOlder, visibleWindow])
 
   const scrollToBottom = useCallback(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -327,6 +461,7 @@ const RoomMessages = memo(function RoomMessages({
                   onReply={onReply}
                   onReact={onReact}
                   onEdit={onEdit}
+                  resolveName={resolveName}
                 />
               </div>
             )
