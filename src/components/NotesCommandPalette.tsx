@@ -118,12 +118,19 @@ export function NotesCommandPalette() {
       prompt: { placeholder: 'Project title…' },
     })
 
-    // Agent in current project — visible only when active file is in a project dir
+    // Agent in current project — visible whenever active file is in a project
+    // directory, tracked or not. Untracked dirs get a humanised slug as title.
     const enclosingSlug = enclosingProjectSlug(activeFilePath)
-    const enclosingProject = useBlogStore.getState().projects.find((p) => p.slug === enclosingSlug)
-    if (enclosingProject) {
+    if (enclosingSlug) {
+      const enclosingProject = useBlogStore.getState().projects.find((p) => p.slug === enclosingSlug)
+      const projectTitle = enclosingProject?.title ?? enclosingSlug
+        .split('-')
+        .filter(Boolean)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' ')
+
       // Existing sessions jumper
-      const needle = `/projects/${enclosingProject.slug}`
+      const needle = `/projects/${enclosingSlug}`
       const projectSessions = useAgentStore.getState().sessions.filter((s) => {
         if (!s.cwd || s.status === 'ended') return false
         return s.cwd === needle || s.cwd.endsWith(needle) || s.cwd.includes(needle + '/')
@@ -142,7 +149,7 @@ export function NotesCommandPalette() {
       }
       cmds.push({
         id: 'start-agent',
-        label: `Start Agent in ${enclosingProject.title}`,
+        label: `Start Agent in ${projectTitle}`,
         icon: <Bot size={12} />,
         action: async () => {
           closeCommandPalette()
@@ -151,14 +158,14 @@ export function NotesCommandPalette() {
             await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
             return
           }
-          const prompt = await showPrompt(`First message for the new ${enclosingProject.title} agent:`, {
-            title: `Start agent — ${enclosingProject.title}`,
+          const prompt = await showPrompt(`First message for the new ${projectTitle} agent:`, {
+            title: `Start agent — ${projectTitle}`,
             placeholder: 'e.g. Help me plan the next iteration',
             confirmLabel: 'Start',
           })
           if (!prompt || !prompt.trim()) return
-          const cwd = `${vaultPath}/projects/${enclosingProject.slug}`
-          useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, enclosingProject.title)
+          const cwd = `${vaultPath}/projects/${enclosingSlug}`
+          useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, projectTitle)
           useUiStore.getState().setActivePane('agents')
         },
       })

@@ -75,7 +75,7 @@ export function ProjectPanel({ slug, onClose }: Props) {
 
   const setStatus = async (status: Status) => {
     setStatusOpen(false)
-    if (status === project.status) return
+    if (!project || status === project.status) return
     const r = await setProjectStatus(slug, status)
     if (!r.ok) {
       await showAlert(`Failed to update status: ${r.error}`, { title: 'Error' })
@@ -155,69 +155,79 @@ export function ProjectPanel({ slug, onClose }: Props) {
         </div>
       </div>
 
-      {/* Status dropdown */}
-      <div className="px-3 py-2 border-b border-border relative">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[10px] text-text-tertiary uppercase tracking-wide">Status</span>
-          <button
-            onClick={() => setStatusOpen((v) => !v)}
-            className={`flex items-center gap-1 px-2 py-0.5 text-xs cursor-pointer bg-surface-0 border border-border rounded-sm hover:bg-surface-2 transition-colors duration-fast ${statusColor[project.status]}`}
-          >
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-              project.status === 'active' ? 'bg-green-400' :
-              project.status === 'dormant' ? 'bg-yellow-400' : 'bg-text-tertiary'
-            }`} />
-            {project.status}
-            <ChevronDown size={10} className={`transition-transform duration-fast ${statusOpen ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-        {statusOpen && (
-          <div className="absolute top-full right-3 mt-1 bg-surface-0 border border-border rounded-sm shadow-lg z-10 min-w-32 overflow-hidden">
-            {(['active', 'dormant', 'complete'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => void setStatus(s)}
-                className={`flex items-center gap-1.5 w-full text-left px-3 py-1 text-xs cursor-pointer hover:bg-surface-2 transition-colors duration-fast ${
-                  s === project.status ? 'bg-surface-2 text-text-primary' : statusColor[s]
-                }`}
-              >
-                <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                  s === 'active' ? 'bg-green-400' :
-                  s === 'dormant' ? 'bg-yellow-400' : 'bg-text-tertiary'
-                }`} />
-                <span className="flex-1">{s}</span>
-                {s === project.status && <span className="text-text-tertiary">✓</span>}
-              </button>
-            ))}
+      {/* Status dropdown — only for tracked projects */}
+      {project && (
+        <div className="px-3 py-2 border-b border-border relative">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-text-tertiary uppercase tracking-wide">Status</span>
+            <button
+              onClick={() => setStatusOpen((v) => !v)}
+              className={`flex items-center gap-1 px-2 py-0.5 text-xs cursor-pointer bg-surface-0 border border-border rounded-sm hover:bg-surface-2 transition-colors duration-fast ${statusColor[project.status]}`}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                project.status === 'active' ? 'bg-green-400' :
+                project.status === 'dormant' ? 'bg-yellow-400' : 'bg-text-tertiary'
+              }`} />
+              {project.status}
+              <ChevronDown size={10} className={`transition-transform duration-fast ${statusOpen ? 'rotate-180' : ''}`} />
+            </button>
           </div>
-        )}
-      </div>
+          {statusOpen && (
+            <div className="absolute top-full right-3 mt-1 bg-surface-0 border border-border rounded-sm shadow-lg z-10 min-w-32 overflow-hidden">
+              {(['active', 'dormant', 'complete'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => void setStatus(s)}
+                  className={`flex items-center gap-1.5 w-full text-left px-3 py-1 text-xs cursor-pointer hover:bg-surface-2 transition-colors duration-fast ${
+                    s === project.status ? 'bg-surface-2 text-text-primary' : statusColor[s]
+                  }`}
+                >
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                    s === 'active' ? 'bg-green-400' :
+                    s === 'dormant' ? 'bg-yellow-400' : 'bg-text-tertiary'
+                  }`} />
+                  <span className="flex-1">{s}</span>
+                  {s === project.status && <span className="text-text-tertiary">✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Posts list */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        {posts.length === 0 ? (
-          <div className="px-3 py-4 text-xs text-text-tertiary">No posts yet — write one ↓</div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {posts.map((p) => (
-              <li
-                key={p.path}
-                onClick={() => void openFile(p.path)}
-                className="flex items-start gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer"
-                role="button"
-              >
-                <FileText size={11} className="text-text-tertiary mt-0.5 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-text-primary truncate">{p.title}</div>
-                  <div className="text-[10px] text-text-tertiary truncate">
-                    {p.date ? p.date.split(' ')[0] : '(no date)'}
+      {/* Posts list — only for tracked projects */}
+      {project ? (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {posts.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-text-tertiary">No posts yet — write one ↓</div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {posts.map((p) => (
+                <li
+                  key={p.path}
+                  onClick={() => void openFile(p.path)}
+                  className="flex items-start gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer"
+                  role="button"
+                >
+                  <FileText size={11} className="text-text-tertiary mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-text-primary truncate">{p.title}</div>
+                    <div className="text-[10px] text-text-tertiary truncate">
+                      {p.date ? p.date.split(' ')[0] : '(no date)'}
+                    </div>
                   </div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-4 text-[10px] text-text-tertiary">
+          This directory isn't tracked as a blog project. To track posts and
+          status, add an <code className="text-text-secondary">index.md</code> here
+          with frontmatter <code className="text-text-secondary">log: true</code>.
+        </div>
+      )}
 
       {/* Agent sessions for this project */}
       <div className="border-t border-border">
@@ -260,15 +270,17 @@ export function ProjectPanel({ slug, onClose }: Props) {
           title={`Start an agent in projects/${slug}/`}
         >
           <Bot size={11} />
-          Start agent in {project.title}
+          Start agent in {title}
         </button>
-        <button
-          onClick={() => void newPost()}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-1 text-xs bg-surface-2 text-text-primary rounded-sm hover:bg-surface-0 border border-border transition-colors"
-        >
-          <Plus size={11} />
-          New post about {project.title}
-        </button>
+        {project && (
+          <button
+            onClick={() => void newPost()}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1 text-xs bg-surface-2 text-text-primary rounded-sm hover:bg-surface-0 border border-border transition-colors"
+          >
+            <Plus size={11} />
+            New post about {title}
+          </button>
+        )}
       </div>
     </div>
   )
