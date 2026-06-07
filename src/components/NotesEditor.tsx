@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react'
 import { useNotesStore } from '@/store/notes'
-import { useBlogStore, projectSlugFromPath } from '@/store/blog'
+import { useBlogStore, enclosingProjectSlug } from '@/store/blog'
 import { NotesEditorCore } from './NotesEditorCore'
 import { ProjectPill } from './notes/ProjectPill'
 import { ProjectPanel } from './notes/ProjectPanel'
@@ -24,9 +24,9 @@ export const NotesEditor = memo(function NotesEditor() {
   const isFileDirty = useNotesStore((s) => s.isFileDirty)
   const isMobile = useIsMobile()
 
-  // Project panel: only relevant when activeFilePath is a tracked project page.
-  // Detection runs on activeFilePath change only (not on every keystroke).
-  const slug = projectSlugFromPath(activeFilePath)
+  // Project panel: relevant for ANY file under projects/<slug>/, not just the
+  // index page. Detection runs on activeFilePath change only.
+  const slug = enclosingProjectSlug(activeFilePath)
   const isTracked = useBlogStore((s) => slug ? s.projects.some((p) => p.slug === slug) : false)
   // Per-client toggle (localStorage, not synced) — defaults to last user choice.
   // First-time default: open on desktop, closed on mobile (so it doesn't fill the screen).

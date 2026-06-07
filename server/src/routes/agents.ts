@@ -164,8 +164,9 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         prompt: msg.prompt,
         images: msg.images,
         cwd: msg.cwd,
+        name: msg.name,
       })
-      const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt }
+      const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt, ...(session.name ? { name: session.name } : {}) }
       broadcast(clients, createdMsg)
       session.logMessage(createdMsg)
       const promptMsg = { type: 'user_prompt' as const, sessionId: session.id, content: msg.prompt, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
@@ -271,6 +272,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       try { session.kill() } catch {}
       sessions.delete(msg.sessionId)
+      saveManifest(sessions)
       const remaining = Array.from(sessions.values()).map((s) => s.getInfo())
       broadcast(clients, { type: 'sessions_list', sessions: remaining })
       log(`Session deleted: ${session.id}`)

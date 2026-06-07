@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNotesStore } from '@/store/notes'
-import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw, FileText, Folder } from 'lucide-react'
-import { useBlogStore, projectSlugFromPath } from '@/store/blog'
+import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw, FileText, Folder, Bot } from 'lucide-react'
+import { useBlogStore, projectSlugFromPath, enclosingProjectSlug } from '@/store/blog'
+import { useAgentStore } from '@/store/agent'
 import { useUiStore } from '@/store/ui'
-import { showConfirm, showAlert } from '@/dialog'
+import { showConfirm, showAlert, showPrompt } from '@/dialog'
+import { getVaultPath } from '@/notes/vault-info'
 
 interface CommandItem {
   id: string
@@ -115,6 +117,52 @@ export function NotesCommandPalette() {
       action: () => {},
       prompt: { placeholder: 'Project title…' },
     })
+
+    // Agent in current project — visible only when active file is in a project dir
+    const enclosingSlug = enclosingProjectSlug(activeFilePath)
+    const enclosingProject = useBlogStore.getState().projects.find((p) => p.slug === enclosingSlug)
+    if (enclosingProject) {
+      // Existing sessions jumper
+      const needle = `/projects/${enclosingProject.slug}`
+      const projectSessions = useAgentStore.getState().sessions.filter((s) => {
+        if (!s.cwd || s.status === 'ended') return false
+        return s.cwd === needle || s.cwd.endsWith(needle) || s.cwd.includes(needle + '/')
+      })
+      for (const s of projectSessions) {
+        cmds.push({
+          id: `jump-agent-${s.id}`,
+          label: `Jump to agent: ${s.name || s.prompt?.slice(0, 50) || s.id}`,
+          icon: <Bot size={12} />,
+          action: () => {
+            useAgentStore.getState().selectSession(s.id)
+            useUiStore.getState().setActivePane('agents')
+            closeCommandPalette()
+          },
+        })
+      }
+      cmds.push({
+        id: 'start-agent',
+        label: `Start Agent in ${enclosingProject.title}`,
+        icon: <Bot size={12} />,
+        action: async () => {
+          closeCommandPalette()
+          const vaultPath = await getVaultPath()
+          if (!vaultPath) {
+            await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
+            return
+          }
+          const prompt = await showPrompt(`First message for the new ${enclosingProject.title} agent:`, {
+            title: `Start agent — ${enclosingProject.title}`,
+            placeholder: 'e.g. Help me plan the next iteration',
+            confirmLabel: 'Start',
+          })
+          if (!prompt || !prompt.trim()) return
+          const cwd = `${vaultPath}/projects/${enclosingProject.slug}`
+          useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, enclosingProject.title)
+          useUiStore.getState().setActivePane('agents')
+        },
+      })
+    }
 
     if (hasActiveFile && activeFilePath!.startsWith('scratch/blog-drafts/')) {
       cmds.push({

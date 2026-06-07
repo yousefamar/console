@@ -19,6 +19,12 @@ export function handleNoteRoutes(
     return true
   }
 
+  if (path === '/notes/vault-path' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ path: noteStore.vaultPath }))
+    return true
+  }
+
   if (path.startsWith('/notes/file/') && req.method === 'GET') {
     const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
     noteStore.read(filePath).then((content) => {

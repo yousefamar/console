@@ -241,6 +241,23 @@ export function projectSlugFromPath(path: string | null | undefined): string | n
   return m ? m[1]! : null
 }
 
+/**
+ * Slug of the project ENCLOSING the given vault path. Returns a slug for any
+ * file under `projects/<slug>/...`, not just the index page — so an agent
+ * session can be started from any note within a project.
+ */
+export function enclosingProjectSlug(path: string | null | undefined): string | null {
+  if (!path) return null
+  if (!path.startsWith('projects/')) return null
+  const rest = path.slice('projects/'.length)
+  const slashIdx = rest.indexOf('/')
+  if (slashIdx === -1) {
+    // Top-level file like `projects/foo.md` (legacy) — strip extension
+    return rest.replace(/\.md$/, '') || null
+  }
+  return rest.slice(0, slashIdx) || null
+}
+
 function slugify(s: string): string {
   return s.toLowerCase().trim()
     .replace(/[^a-z0-9\s-]/g, '')

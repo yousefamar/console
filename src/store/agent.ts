@@ -63,6 +63,9 @@ export interface SessionInfo {
   /** Hub-persisted index of the last message marked read.
    *  hasUnread is derived from `messageLogLength > lastReadIndex`. */
   lastReadIndex?: number
+  /** Live child-process count from `ps -eo pid,ppid` on the claude PID —
+   *  approximates running background bashes. Refreshed on sessions_list. */
+  backgroundProcessCount?: number
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
@@ -149,7 +152,7 @@ interface AgentState {
   // Actions
   connect: () => void
   disconnect: () => void
-  createSession: (prompt: string, cwd?: string, images?: Array<{ media_type: string; data: string }>) => void
+  createSession: (prompt: string, cwd?: string, images?: Array<{ media_type: string; data: string }>, name?: string) => void
   sendMessage: (content: string, images?: Array<{ media_type: string; data: string }>) => void
   approveTool: (requestId: string, modifiedInput?: Record<string, unknown>) => void
   denyTool: (requestId: string, reason?: string) => void
@@ -253,12 +256,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ connected: false, connecting: false })
   },
 
-  createSession: (prompt, cwd, images) => {
+  createSession: (prompt, cwd, images, name) => {
     sendWs({
       type: 'create_session',
       prompt,
       ...(cwd ? { cwd } : {}),
       ...(images?.length ? { images } : {}),
+      ...(name ? { name } : {}),
     })
     set({
       pendingPrompt: prompt,

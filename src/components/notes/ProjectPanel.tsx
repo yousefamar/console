@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
-import { X, Plus, FileText, RefreshCw, ChevronDown } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { X, Plus, FileText, RefreshCw, ChevronDown, Bot } from 'lucide-react'
 import { useBlogStore } from '@/store/blog'
 import { useNotesStore } from '@/store/notes'
+import { useAgentStore, type SessionInfo } from '@/store/agent'
+import { useUiStore } from '@/store/ui'
 import { showAlert, showPrompt } from '@/dialog'
+import { getVaultPath } from '@/notes/vault-info'
 
 interface Props {
   slug: string
@@ -32,8 +35,26 @@ export function ProjectPanel({ slug, onClose }: Props) {
   const setProjectStatus = useBlogStore((s) => s.setProjectStatus)
   const createDraft = useBlogStore((s) => s.createDraft)
   const openFile = useNotesStore((s) => s.openFile)
+  const agentSessions = useAgentStore((s) => s.sessions)
   const [statusOpen, setStatusOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [vaultPath, setVaultPath] = useState<string | null>(null)
+
+  useEffect(() => {
+    void getVaultPath().then(setVaultPath)
+  }, [])
+
+  // Sessions whose cwd is anywhere under projects/<slug>/. Match on the
+  // suffix so it works regardless of vault location (and survives if we
+  // failed to fetch vaultPath — the suffix is unambiguous).
+  const projectSessions = useMemo<SessionInfo[]>(() => {
+    const needle = `/projects/${slug}`
+    return agentSessions.filter((s) => {
+      if (!s.cwd) return false
+      if (s.status === 'ended') return false
+      return s.cwd === needle || s.cwd.endsWith(needle) || s.cwd.includes(needle + '/')
+    })
+  }, [agentSessions, slug])
 
   useEffect(() => {
     void refreshPosts(slug)
@@ -60,6 +81,28 @@ export function ProjectPanel({ slug, onClose }: Props) {
     if (!title || !title.trim()) return
     const r = await createDraft({ title, project: slug })
     if (!r.ok) await showAlert(`Failed to create draft: ${r.error}`, { title: 'Error' })
+  }
+
+  const startAgent = async () => {
+    if (!project) return
+    if (!vaultPath) {
+      await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
+      return
+    }
+    const prompt = await showPrompt(`First message for the new ${project.title} agent:`, {
+      title: `Start agent — ${project.title}`,
+      placeholder: 'e.g. Help me plan the next iteration',
+      confirmLabel: 'Start',
+    })
+    if (!prompt || !prompt.trim()) return
+    const cwd = `${vaultPath}/projects/${slug}`
+    useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, project.title)
+    useUiStore.getState().setActivePane('agents')
+  }
+
+  const jumpToSession = (sessionId: string) => {
+    useAgentStore.getState().selectSession(sessionId)
+    useUiStore.getState().setActivePane('agents')
   }
 
   const refresh = async () => {
@@ -164,8 +207,49 @@ export function ProjectPanel({ slug, onClose }: Props) {
         )}
       </div>
 
-      {/* Footer — new post */}
-      <div className="border-t border-border px-3 py-2">
+      {/* Agent sessions for this project */}
+      <div className="border-t border-border">
+        <div className="flex items-center justify-between px-3 py-1.5">
+          <span className="text-[10px] text-text-tertiary uppercase tracking-wide">
+            Agent sessions
+          </span>
+          <span className="text-[10px] text-text-tertiary">{projectSessions.length}</span>
+        </div>
+        {projectSessions.length > 0 && (
+          <ul className="divide-y divide-border">
+            {projectSessions.map((s) => (
+              <li
+                key={s.id}
+                onClick={() => jumpToSession(s.id)}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer"
+                role="button"
+              >
+                <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+                  s.status === 'running' ? 'bg-green-400' :
+                  s.status === 'idle' ? 'bg-text-tertiary' : 'bg-text-tertiary opacity-40'
+                }`} />
+                <span className="text-xs text-text-primary truncate flex-1 min-w-0">
+                  {s.name || s.prompt || s.id}
+                </span>
+                {s.hasUnread && (
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Footer — actions */}
+      <div className="border-t border-border px-3 py-2 flex flex-col gap-1.5">
+        <button
+          onClick={() => void startAgent()}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-1 text-xs bg-surface-2 text-text-primary rounded-sm hover:bg-surface-0 border border-border transition-colors"
+          title={`Start an agent in projects/${slug}/`}
+        >
+          <Bot size={11} />
+          Start agent in {project.title}
+        </button>
         <button
           onClick={() => void newPost()}
           className="w-full flex items-center justify-center gap-1.5 px-3 py-1 text-xs bg-surface-2 text-text-primary rounded-sm hover:bg-surface-0 border border-border transition-colors"

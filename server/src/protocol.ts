@@ -10,7 +10,7 @@
 // --------------------------------------------------------------------------
 
 export type ClientMessage =
-  | { type: 'create_session'; prompt: string; images?: Array<{ media_type: string; data: string }>; cwd?: string }
+  | { type: 'create_session'; prompt: string; images?: Array<{ media_type: string; data: string }>; cwd?: string; name?: string }
   | { type: 'send_message'; sessionId: string; content: string; images?: Array<{ media_type: string; data: string }> }
   | { type: 'approve_tool'; sessionId: string; requestId: string; modifiedInput?: Record<string, unknown> }
   | { type: 'deny_tool'; sessionId: string; requestId: string; reason?: string }
@@ -35,7 +35,7 @@ export type ClientMessage =
 // --------------------------------------------------------------------------
 
 export type HubMessage =
-  | { type: 'session_created'; sessionId: string; cwd: string; prompt: string }
+  | { type: 'session_created'; sessionId: string; cwd: string; prompt: string; name?: string }
   | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number; permissionMode?: string }
   | { type: 'context_update'; sessionId: string; used: number; total: number }
   | { type: 'sessions_list'; sessions: SessionInfo[] }
@@ -119,6 +119,11 @@ export interface SessionInfo {
   /** Hub-persisted: index of the last message the user has marked read.
    *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
   lastReadIndex?: number
+  /** Live count of direct child processes of the claude subprocess —
+   *  approximates background `Bash{run_in_background:true}` shells still
+   *  alive. From `ps -eo pid,ppid` via `process-tree.ts`; refreshed on a
+   *  3-sec cache. Undefined when the session isn't running. */
+  backgroundProcessCount?: number
   gitBranch?: string
   gitDirty?: boolean
   gitStats?: { added: number; deleted: number }

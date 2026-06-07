@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
-import { Folder } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
+import { Bot, Folder } from 'lucide-react'
 import { useBlogStore } from '@/store/blog'
+import { useAgentStore } from '@/store/agent'
 
 interface Props {
   slug: string
@@ -17,10 +18,19 @@ export function ProjectPill({ slug, open, onToggle }: Props) {
   const project = useBlogStore((s) => s.projects.find((p) => p.slug === slug))
   const posts = useBlogStore((s) => s.postsByProject[slug])
   const refreshPosts = useBlogStore((s) => s.refreshProjectPosts)
+  const agentSessions = useAgentStore((s) => s.sessions)
 
   useEffect(() => {
     void refreshPosts(slug)
   }, [slug, refreshPosts])
+
+  const sessionCount = useMemo(() => {
+    const needle = `/projects/${slug}`
+    return agentSessions.filter((s) => {
+      if (!s.cwd || s.status === 'ended') return false
+      return s.cwd === needle || s.cwd.endsWith(needle) || s.cwd.includes(needle + '/')
+    }).length
+  }, [agentSessions, slug])
 
   if (!project) return null
 
@@ -43,6 +53,11 @@ export function ProjectPill({ slug, open, onToggle }: Props) {
       <Folder size={10} />
       <span>{project.title}</span>
       {posts && <span className="text-text-tertiary">· {posts.length} {posts.length === 1 ? 'post' : 'posts'}</span>}
+      {sessionCount > 0 && (
+        <span className="flex items-center gap-0.5 text-green-400" title={`${sessionCount} active agent session${sessionCount === 1 ? '' : 's'}`}>
+          · <Bot size={9} />{sessionCount}
+        </span>
+      )}
       <span className={statusColor}>· {status}</span>
     </button>
   )
