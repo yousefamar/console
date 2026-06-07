@@ -22,6 +22,7 @@ import type {
 } from './protocol.js'
 import { parseModelString } from './utils.js'
 import { getLastReadIndex } from './read-state.js'
+import { getChildCountSync } from './process-tree.js'
 
 let sessionCounter = 0
 
@@ -334,6 +335,7 @@ export class Session extends EventEmitter {
       totalTokens: { ...this.totalTokens },
       messageLogLength: this.messageLog.length,
       lastReadIndex: getLastReadIndex(this.claudeSessionId),
+      backgroundProcessCount: getChildCountSync(this.process?.pid),
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,

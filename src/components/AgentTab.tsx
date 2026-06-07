@@ -5,7 +5,8 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { Check, ChevronDown, ChevronRight, Circle, Folder, FolderOpen, Plus } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, Plus, Terminal } from 'lucide-react'
+import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -38,6 +39,25 @@ export const AgentTab = memo(function AgentTab() {
       // Don't disconnect on unmount — keep connection alive across tab switches
     }
   }, [connect])
+
+  // Hydrate the cron store for ALL sessions so the sidebar can render per-row
+  // task counts. Refresh every 30s for cross-client mutations.
+  const refreshAllCron = useCronStore((s) => s.refreshAll)
+  useEffect(() => {
+    refreshAllCron()
+    const id = setInterval(() => refreshAllCron(), 30_000)
+    return () => clearInterval(id)
+  }, [refreshAllCron])
+
+  // Periodically re-fetch the session list so `backgroundProcessCount` stays
+  // current — the hub only recomputes that field on `getInfo()` calls. 10s
+  // matches the cadence at which a background shell starting/exiting becomes
+  // visible in the sidebar.
+  const listSessions = useAgentStore((s) => s.listSessions)
+  useEffect(() => {
+    const id = setInterval(() => listSessions(), 10_000)
+    return () => clearInterval(id)
+  }, [listSessions])
 
   const handleNewSession = useCallback(() => {
     selectSession(null)
@@ -160,6 +180,16 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     return null
   })
   const subtitle = session.statusText || lastText
+  // Live background-shell count from the hub: child PIDs of the claude
+  // subprocess (via `ps -eo pid,ppid`). Reflects actual running processes
+  // rather than guessing from the message stream.
+  const bgBashCount = session.backgroundProcessCount ?? 0
+  // Active cron tasks for this session (only counts the non-disabled ones).
+  const cronCount = useCronStore((s) => {
+    const csid = session.claudeSessionId
+    if (!csid) return 0
+    return (s.tasksBySession[csid] ?? []).filter((t) => !t.disabledAt).length
+  })
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
@@ -302,6 +332,24 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               {isGenerating ? 'Generating title…' : displayName}
             </span>
             <div className="flex items-center gap-1.5">
+              {bgBashCount > 0 && (
+                <span
+                  className="flex items-center gap-0.5 text-[10px] text-amber-400 font-medium flex-shrink-0"
+                  title={`${bgBashCount} background process${bgBashCount === 1 ? '' : 'es'} alive (from \`ps -eo pid,ppid\` on the claude PID)`}
+                >
+                  <Terminal size={10} />
+                  <span>{bgBashCount}</span>
+                </span>
+              )}
+              {cronCount > 0 && (
+                <span
+                  className="flex items-center gap-0.5 text-[10px] text-blue-400 font-medium flex-shrink-0"
+                  title={`${cronCount} scheduled prompt${cronCount === 1 ? '' : 's'}`}
+                >
+                  <Clock size={10} />
+                  <span>{cronCount}</span>
+                </span>
+              )}
               {session.hasUnread && (
                 <Circle size={5} className="fill-current text-blue-500 flex-shrink-0" />
               )}
