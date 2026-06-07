@@ -49,6 +49,19 @@ export interface CreateDraftResult {
   error?: string
 }
 
+export interface CreateProjectArgs {
+  title: string
+  /** Optional slug override; defaults to a slug derived from title. */
+  slug?: string
+}
+
+export interface CreateProjectResult {
+  ok: boolean
+  path?: string
+  slug?: string
+  error?: string
+}
+
 interface BlogState {
   drafts: DraftSummary[]
   projects: ProjectSummary[]
@@ -68,6 +81,12 @@ interface BlogState {
    * pane. If a draft with the same slug already exists, just opens it.
    */
   createDraft: (args: CreateDraftArgs) => Promise<CreateDraftResult>
+  /**
+   * Create a new project stub in `projects/<slug>.md` with `log: true` and
+   * `status: active`, then open it in the Notes pane. Hub-backed so the CLI
+   * and the SPA share one implementation.
+   */
+  createProject: (args: CreateProjectArgs) => Promise<CreateProjectResult>
 }
 
 const DRAFTS_DIR = 'scratch/blog-drafts'
@@ -190,6 +209,27 @@ export const useBlogStore = create<BlogState>((set) => ({
       return { ok: true, path }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
+    }
+  },
+
+  createProject: async ({ title, slug }): Promise<CreateProjectResult> => {
+    try {
+      const result = await hubFetch<CreateProjectResult>('/blog/project', {
+        method: 'POST',
+        body: JSON.stringify({ title, slug }),
+      })
+      if (result.ok && result.path) {
+        const { useNotesStore } = await import('./notes')
+        const { useUiStore } = await import('./ui')
+        useUiStore.getState().setActivePane('notes')
+        // Refresh notes file list so the new project shows in the tree
+        await useNotesStore.getState().loadVaultFiles()
+        await useNotesStore.getState().openFile(result.path)
+        void useBlogStore.getState().refreshProjects()
+      }
+      return result
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
     }
   },
 }))

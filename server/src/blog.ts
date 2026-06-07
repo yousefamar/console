@@ -106,6 +106,52 @@ export interface DraftSummary {
   mtime: number
 }
 
+export interface CreateDraftResult {
+  ok: boolean
+  path?: string
+  alreadyExists?: boolean
+  error?: string
+}
+
+function frontmatterNow(): string {
+  const d = new Date()
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+export async function createDraft(
+  store: NoteStore,
+  { title, project }: { title: string; project?: string },
+): Promise<CreateDraftResult> {
+  const cleanTitle = title.trim()
+  if (!cleanTitle) return { ok: false, error: 'Title required' }
+  const titleSlug = slugifyTitle(cleanTitle)
+  const filenameSlug = project ? `${slugifyTitle(project)}-${titleSlug}` : titleSlug
+  const path = `${DRAFTS_DIR}/${filenameSlug}.md`
+
+  const all = await store.list()
+  if (all.some((f) => f.path === path)) {
+    return { ok: true, path, alreadyExists: true }
+  }
+
+  const fm: string[] = [
+    `title: ${cleanTitle}`,
+    'public: false',
+    `date: ${frontmatterNow()}`,
+    'post: true',
+  ]
+  if (project) fm.push(`project: ${project}`)
+  fm.push('tags: ')
+  const content = `---\n${fm.join('\n')}\n---\n\n`
+
+  try {
+    await store.write(path, content)
+    return { ok: true, path }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
 export async function listDrafts(store: NoteStore): Promise<DraftSummary[]> {
   const all = await store.list()
   const drafts = all.filter((f) => f.dir === DRAFTS_DIR)
@@ -259,6 +305,51 @@ function projectFilePath(slug: string, all: { path: string; name: string; dir: s
   const flat = all.find((f) => f.path === `${PROJECTS_DIR}/${slug}.md`)
   if (flat) return flat.path
   return null
+}
+
+function slugifyTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'untitled'
+}
+
+export interface CreateProjectResult {
+  ok: boolean
+  path?: string
+  slug?: string
+  error?: string
+}
+
+export async function createProject(
+  store: NoteStore,
+  { title, slug }: { title: string; slug?: string },
+): Promise<CreateProjectResult> {
+  const cleanTitle = title.trim()
+  if (!cleanTitle) return { ok: false, error: 'Title required' }
+  const finalSlug = (slug ?? slugifyTitle(cleanTitle)).trim()
+  if (!finalSlug) return { ok: false, error: 'Slug required' }
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(finalSlug)) {
+    return { ok: false, error: 'Slug must be lowercase letters, digits, and hyphens' }
+  }
+
+  // Check for collisions against any existing project file/dir
+  const all = await store.list()
+  const flatPath = `${PROJECTS_DIR}/${finalSlug}.md`
+  const indexPath = `${PROJECTS_DIR}/${finalSlug}/index.md`
+  if (all.some((f) => f.path === flatPath || f.path === indexPath)) {
+    return { ok: false, error: `Project '${finalSlug}' already exists` }
+  }
+
+  const body = `---\ntitle: ${cleanTitle}\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
+  try {
+    await store.write(flatPath, body)
+    return { ok: true, path: flatPath, slug: finalSlug }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
 }
 
 export async function setProjectStatus(

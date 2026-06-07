@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
-import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, setProjectStatus } from '../blog.js'
+import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, setProjectStatus, createProject, createDraft } from '../blog.js'
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -56,6 +56,36 @@ export function handleBlogRoutes(
           return json(res, 400, { ok: false, error: 'status must be active|dormant|complete|null' })
         }
         const result = await setProjectStatus(noteStore, slug, status)
+        json(res, result.ok ? 200 : 400, result)
+      } catch (err) {
+        json(res, 500, { ok: false, error: (err as Error).message })
+      }
+    }).catch((err) => json(res, 500, { ok: false, error: (err as Error).message }))
+    return true
+  }
+
+  // POST /blog/project { title, slug? } → create a new project stub
+  if (path === '/blog/project' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      try {
+        const { title, slug } = JSON.parse(body) as { title?: string; slug?: string }
+        if (!title) return json(res, 400, { ok: false, error: 'Missing `title`' })
+        const result = await createProject(noteStore, { title, slug })
+        json(res, result.ok ? 200 : 400, result)
+      } catch (err) {
+        json(res, 500, { ok: false, error: (err as Error).message })
+      }
+    }).catch((err) => json(res, 500, { ok: false, error: (err as Error).message }))
+    return true
+  }
+
+  // POST /blog/draft { title, project? } → create a new blog draft stub
+  if (path === '/blog/draft' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      try {
+        const { title, project } = JSON.parse(body) as { title?: string; project?: string }
+        if (!title) return json(res, 400, { ok: false, error: 'Missing `title`' })
+        const result = await createDraft(noteStore, { title, project })
         json(res, result.ok ? 200 : 400, result)
       } catch (err) {
         json(res, 500, { ok: false, error: (err as Error).message })

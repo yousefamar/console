@@ -389,6 +389,24 @@ export const COMMANDS: CommandDef[] = [
     flags: { n: { type: 'string', description: 'Max firings per task (default 20)' } } },
   { name: 'cron ics-url', description: 'Print the calendar subscription URL (token-protected) for the hub schedule', safety: 'read' },
 
+  // blog — drafts, projects, publish for the personal blog (~/sync/brain/root → yousefamar.com/memo)
+  { name: 'blog drafts', description: 'List blog drafts in scratch/blog-drafts/', safety: 'read',
+    examples: ['con blog drafts'] },
+  { name: 'blog draft', description: 'Create a new blog draft (writes a stub with `title`, `post:true`, `public:false`, optional `project`)', safety: 'write',
+    args: [{ name: 'title', required: true, description: 'Draft title' }],
+    flags: { project: { type: 'string', description: 'Tie to a project by slug' } },
+    examples: ['con blog draft "Why I switched to vim"', 'con blog draft "Memo update" --project memo'] },
+  { name: 'blog publish', description: 'Publish a draft → log/<timestamp>.md, stamp `date` + `public:true`, hit /rebuild', safety: 'write',
+    args: [{ name: 'path', required: true, description: 'Vault-relative draft path (e.g. scratch/blog-drafts/foo.md)' }] },
+  { name: 'blog projects', description: 'List, add, or set status on projects', safety: 'write',
+    args: [{ name: 'sub', required: false, description: 'list (default) | add | status' }],
+    flags: { status: { type: 'string', description: 'Filter by active|dormant|complete (list)' }, slug: { type: 'string', description: 'Slug override (add)' } },
+    examples: ['con blog projects', 'con blog projects add "Cura"', 'con blog projects status memo dormant'] },
+  { name: 'blog posts', description: 'List posts tagged with a project', safety: 'read',
+    args: [{ name: 'slug', required: true, description: 'Project slug' }] },
+  { name: 'blog tags', description: 'List all tags used across log/', safety: 'read' },
+  { name: 'blog status', description: 'Summary counts: drafts, projects (by status), tags', safety: 'read' },
+
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
   { name: 'capabilities', description: 'List all commands for agent discovery', safety: 'read' },

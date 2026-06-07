@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNotesStore } from '@/store/notes'
-import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw } from 'lucide-react'
-import { useBlogStore } from '@/store/blog'
+import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw, FileText, Folder } from 'lucide-react'
+import { useBlogStore, projectSlugFromPath } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
-import { showConfirm } from '@/dialog'
+import { showConfirm, showAlert } from '@/dialog'
 
 interface CommandItem {
   id: string
@@ -94,6 +94,26 @@ export function NotesCommandPalette() {
         closeCommandPalette()
         useNotesStore.getState().openNewFileForm()
       },
+    })
+
+    // Blog: new draft (inherits project from active file's path if it's a project page)
+    const inferredProject = projectSlugFromPath(activeFilePath)
+    cmds.push({
+      id: 'new-blog-draft',
+      label: inferredProject
+        ? `New Blog Draft (project: ${inferredProject})`
+        : 'New Blog Draft',
+      icon: <FileText size={12} />,
+      action: () => {},
+      prompt: { placeholder: 'Draft title…' },
+    })
+
+    cmds.push({
+      id: 'new-project',
+      label: 'New Project',
+      icon: <Folder size={12} />,
+      action: () => {},
+      prompt: { placeholder: 'Project title…' },
     })
 
     if (hasActiveFile && activeFilePath!.startsWith('scratch/blog-drafts/')) {
@@ -198,6 +218,17 @@ export function NotesCommandPalette() {
       const dir = activeFilePath.split('/').slice(0, -1).join('/')
       const newPath = dir ? `${dir}/${trimmed}.md` : `${trimmed}.md`
       await state.renameFile(activeFilePath, newPath)
+    } else if (cmd.id === 'new-blog-draft') {
+      closeCommandPalette()
+      const project = projectSlugFromPath(activeFilePath) ?? undefined
+      const r = await useBlogStore.getState().createDraft({ title: trimmed, project })
+      if (!r.ok) await showAlert(`Failed to create draft: ${r.error}`, { title: 'Error' })
+      return
+    } else if (cmd.id === 'new-project') {
+      closeCommandPalette()
+      const r = await useBlogStore.getState().createProject({ title: trimmed })
+      if (!r.ok) await showAlert(`Failed to create project: ${r.error}`, { title: 'Error' })
+      return
     }
 
     closeCommandPalette()

@@ -160,6 +160,11 @@ async function main() {
         await cron(verb, rest, flags)
         break
       }
+      case 'blog': {
+        const { blog } = await import('./commands/blog.js')
+        await blog(verb, rest, flags)
+        break
+      }
       case 'capabilities': {
         const { capabilities } = await import('./commands/capabilities.js')
         capabilities(flags)

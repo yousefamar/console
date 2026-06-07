@@ -11,6 +11,7 @@ export function ProjectsCard() {
   const loading = useBlogStore((s) => s.projectsLoading)
   const refresh = useBlogStore((s) => s.refreshProjects)
   const createDraft = useBlogStore((s) => s.createDraft)
+  const createProject = useBlogStore((s) => s.createProject)
 
   useEffect(() => {
     void refresh()
@@ -33,11 +34,28 @@ export function ProjectsCard() {
     if (!r.ok) await showAlert(`Failed to create draft: ${r.error}`, { title: 'Error' })
   }
 
+  const newProject = async () => {
+    const title = await showPrompt('Project title:', { title: 'New project', placeholder: 'e.g. Cura', confirmLabel: 'Create' })
+    if (!title || !title.trim()) return
+    const r = await createProject({ title })
+    if (!r.ok) await showAlert(`Failed to create project: ${r.error}`, { title: 'Error' })
+  }
+
   return (
     <section className="flex flex-col h-full min-h-0 border border-border rounded-sm bg-surface-1 overflow-hidden">
       <header className="flex items-center justify-between px-3 py-1.5 border-b border-border">
         <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">Active projects</h2>
-        <span className="text-[10px] text-text-tertiary">{active.length}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-text-tertiary">{active.length}</span>
+          <button
+            onClick={() => { void newProject() }}
+            className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="New project"
+            aria-label="New project"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
       </header>
       <HomeScrollPane>
         {active.length === 0 && (

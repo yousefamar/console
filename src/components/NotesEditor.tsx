@@ -4,11 +4,17 @@ import { useBlogStore, projectSlugFromPath } from '@/store/blog'
 import { NotesEditorCore } from './NotesEditorCore'
 import { ProjectPill } from './notes/ProjectPill'
 import { ProjectPanel } from './notes/ProjectPanel'
-import { X, ChevronLeft } from 'lucide-react'
+import { X, ChevronLeft, Send } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
+import { useUiStore } from '@/store/ui'
 
 const PANEL_TOGGLE_KEY = 'console:notes:projectPanelOpen'
+const DRAFTS_DIR = 'scratch/blog-drafts/'
+
+function isDraftPath(path: string | null | undefined): boolean {
+  return !!path && path.startsWith(DRAFTS_DIR)
+}
 
 export const NotesEditor = memo(function NotesEditor() {
   const openFiles = useNotesStore((s) => s.openFiles)
@@ -57,6 +63,34 @@ export const NotesEditor = memo(function NotesEditor() {
       if (!(await showConfirm('This file has unsaved changes. Close anyway?', { title: 'Unsaved changes', danger: true, confirmLabel: 'Close' }))) return
     }
     closeFile(path, true)
+  }
+
+  const handlePublish = async () => {
+    if (!activeFilePath || !isDraftPath(activeFilePath)) return
+    const dirty = isFileDirty(activeFilePath)
+    if (dirty) {
+      if (!(await showConfirm('This draft has unsaved changes. Save and publish?', { title: 'Publish draft', confirmLabel: 'Save & publish' }))) return
+      await useNotesStore.getState().saveFile()
+    } else {
+      if (!(await showConfirm('Publish this draft? It will be moved to log/ and the site rebuilt.', { title: 'Publish draft', confirmLabel: 'Publish' }))) return
+    }
+    const path = activeFilePath
+    const ui = useUiStore.getState()
+    const blog = useBlogStore.getState()
+    const notes = useNotesStore.getState()
+    ui.pushToast({ kind: 'info', message: 'Publishing…' })
+    const r = await blog.publish(path)
+    if (!r.ok) {
+      ui.pushToast({ kind: 'error', message: `Publish failed: ${r.error}` })
+      return
+    }
+    ui.pushToast({
+      kind: r.rebuildOk ? 'success' : 'error',
+      message: r.rebuildOk ? `Published → ${r.newPath}` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
+    })
+    notes.closeFile(path, true)
+    if (r.newPath) await notes.openFile(r.newPath)
+    void blog.refreshDrafts()
   }
 
   const displayName = (path: string) => {
@@ -123,6 +157,16 @@ export const NotesEditor = memo(function NotesEditor() {
           {activeFilePath}
         </span>
         <div className="flex items-center gap-2">
+          {isDraftPath(activeFilePath) && (
+            <button
+              onClick={() => { void handlePublish() }}
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded-sm transition-colors"
+              title="Publish this draft (:publish)"
+            >
+              <Send size={10} />
+              publish
+            </button>
+          )}
           {slug && isTracked && !isMobile && (
             <ProjectPill slug={slug} open={panelOpen} onToggle={() => setPanelOpen((v) => !v)} />
           )}
