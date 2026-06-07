@@ -5,7 +5,7 @@ import { mxcToThumbnail, mxcToHttp, getUrlPreview, type UrlPreview } from '@/mat
 import { decryptAttachment } from '@/matrix/decrypt-media'
 import { diffWords } from 'diff'
 import DOMPurify from 'dompurify'
-import { Reply, SmilePlus, Clock, AlertCircle, Pencil } from 'lucide-react'
+import { Reply, SmilePlus, Clock, AlertCircle, Pencil, Download } from 'lucide-react'
 import clsx from 'clsx'
 
 // --- Markdown / HTML rendering ---
@@ -399,99 +399,102 @@ function EncryptedVideo({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { m
 }
 
 // Renders an audio player from either plain mxc:// or encrypted file.
-// Uses Web Audio API for playback because Chrome can't play OGG blob URLs via HTMLAudioElement.
-function AudioPlayer({ mediaUrl, encryptedFile, duration, waveform, isVoiceNote }: {
+// Uses <audio> so playbackRate preserves pitch (Web Audio's playbackRate
+// resamples and chipmunks the speaker — bad for voice notes). Browsers
+// default `preservesPitch` to true on HTMLMediaElement.
+function AudioPlayer({ mediaUrl, encryptedFile, mimeType, filename, duration, waveform, isVoiceNote }: {
   mediaUrl?: string
   encryptedFile?: EncryptedFile
+  mimeType?: string
+  filename?: string
   duration?: number
   waveform?: number[]
   isVoiceNote?: boolean
 }) {
-  const [audioData, setAudioData] = useState<ArrayBuffer | null>(null)
+  const [src, setSrc] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [totalDuration, setTotalDuration] = useState(duration ? duration / 1000 : 0)
+  // Persisted per-client so the user doesn't have to re-pick 2× every voice
+  // note. Voice-note apps universally cycle 1× → 1.5× → 2× → 1×.
+  const [playbackRate, setPlaybackRate] = useState<number>(() => {
+    const stored = parseFloat(localStorage.getItem('chat:audioRate') ?? '1')
+    return Number.isFinite(stored) && stored > 0 ? stored : 1
+  })
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const ctxRef = useRef<{ ctx: AudioContext; source: AudioBufferSourceNode; startedAt: number; offset: number } | null>(null)
-  const rafRef = useRef<number>(0)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  // Download URL — points at the decrypted blob for E2E rooms, or directly
+  // at the hub proxy for plaintext mxc. Same URL fuels the <audio> src.
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
 
   // Fetch/decrypt audio data
   useEffect(() => {
     let cancelled = false
+    let createdBlobUrl: string | null = null
     if (encryptedFile) {
-      decryptAttachment(encryptedFile)
-        .then((blob) => blob.arrayBuffer())
-        .then((buf) => { if (!cancelled) setAudioData(buf) })
+      decryptAttachment(encryptedFile, mimeType)
+        .then((blob) => {
+          if (cancelled) return
+          createdBlobUrl = URL.createObjectURL(blob)
+          setDownloadUrl(createdBlobUrl)
+          setSrc(createdBlobUrl)
+        })
         .catch(() => {})
     } else if (mediaUrl) {
       const url = mxcToHttp(mediaUrl)
-      if (url) fetch(url).then((r) => r.arrayBuffer()).then((buf) => { if (!cancelled) setAudioData(buf) }).catch(() => {})
-    }
-    return () => { cancelled = true }
-  }, [encryptedFile?.url, mediaUrl])
-
-  // Cleanup on unmount
-  useEffect(() => () => {
-    cancelAnimationFrame(rafRef.current)
-    if (ctxRef.current) {
-      ctxRef.current.source.stop()
-      ctxRef.current.ctx.close()
-      ctxRef.current = null
-    }
-  }, [])
-
-  const toggle = async () => {
-    if (!audioData) return
-
-    if (playing && ctxRef.current) {
-      // Pause: record position and stop
-      const elapsed = ctxRef.current.ctx.currentTime - ctxRef.current.startedAt + ctxRef.current.offset
-      ctxRef.current.source.stop()
-      ctxRef.current.ctx.close()
-      ctxRef.current = null
-      cancelAnimationFrame(rafRef.current)
-      setCurrentTime(elapsed)
-      setPlaying(false)
-      return
-    }
-
-    // Play from current offset
-    const ctx = new AudioContext()
-    try {
-      const buffer = await ctx.decodeAudioData(audioData.slice(0))
-      if (!totalDuration || totalDuration <= 0) setTotalDuration(buffer.duration)
-      const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.connect(ctx.destination)
-      const offset = currentTime
-      source.start(0, offset)
-      ctxRef.current = { ctx, source, startedAt: ctx.currentTime, offset }
-      setPlaying(true)
-
-      // Track progress
-      const tick = () => {
-        if (!ctxRef.current) return
-        const elapsed = ctxRef.current.ctx.currentTime - ctxRef.current.startedAt + offset
-        setCurrentTime(elapsed)
-        if (elapsed < buffer.duration) {
-          rafRef.current = requestAnimationFrame(tick)
-        }
+      if (url) {
+        setDownloadUrl(url)
+        setSrc(url)
       }
-      rafRef.current = requestAnimationFrame(tick)
+    }
+    return () => {
+      cancelled = true
+      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl)
+    }
+  }, [encryptedFile?.url, mediaUrl, mimeType])
 
-      source.onended = () => {
-        cancelAnimationFrame(rafRef.current)
-        if (ctxRef.current) {
-          ctxRef.current.ctx.close()
-          ctxRef.current = null
-        }
-        setPlaying(false)
-        setCurrentTime(0)
-      }
-    } catch {
-      ctx.close()
+  // Apply the persisted rate whenever the element mounts / src changes. Also
+  // belt-and-braces toggle preservesPitch (default is already true in modern
+  // Chromium/Firefox/Safari, but cheap to be explicit).
+  useEffect(() => {
+    const a = audioRef.current
+    if (!a) return
+    a.playbackRate = playbackRate
+    a.preservesPitch = true
+  }, [src, playbackRate])
+
+  const toggle = () => {
+    const a = audioRef.current
+    if (!a) return
+    if (playing) {
+      a.pause()
+    } else {
+      a.playbackRate = playbackRate
+      void a.play().catch(() => { setPlaying(false) })
     }
   }
+
+  const cycleRate = useCallback(() => {
+    // 1× → 1.5× → 2× → 1×
+    const next = playbackRate >= 2 ? 1 : playbackRate >= 1.5 ? 2 : 1.5
+    setPlaybackRate(next)
+    localStorage.setItem('chat:audioRate', String(next))
+    if (audioRef.current) audioRef.current.playbackRate = next
+  }, [playbackRate])
+
+  // Seek to the click position on the progress bar / waveform. Fraction of
+  // the bar width maps to fraction of the total duration.
+  const seekFromEvent = useCallback((e: React.MouseEvent<HTMLElement>) => {
+    const a = audioRef.current
+    if (!a) return
+    const total = a.duration || totalDuration
+    if (!total || !Number.isFinite(total)) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    a.currentTime = fraction * total
+    setCurrentTime(a.currentTime)
+  }, [totalDuration])
 
   // Draw waveform
   const drawStateRef = useRef({ currentTime: 0, totalDuration: 0 })
@@ -555,13 +558,27 @@ function AudioPlayer({ mediaUrl, encryptedFile, duration, waveform, isVoiceNote 
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
-  if (!audioData && !encryptedFile && !mediaUrl) return <span className="text-sm text-text-secondary italic">[{isVoiceNote ? 'Voice message' : 'Audio'}]</span>
+  if (!src && !encryptedFile && !mediaUrl) return <span className="text-sm text-text-secondary italic">[{isVoiceNote ? 'Voice message' : 'Audio'}]</span>
 
   return (
     <div className="flex items-center gap-2 py-1 max-w-[260px]">
+      <audio
+        ref={audioRef}
+        src={src ?? undefined}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setCurrentTime(0) }}
+        onTimeUpdate={(e) => setCurrentTime((e.target as HTMLAudioElement).currentTime)}
+        onLoadedMetadata={(e) => {
+          const d = (e.target as HTMLAudioElement).duration
+          if (Number.isFinite(d) && d > 0) setTotalDuration(d)
+        }}
+        style={{ display: 'none' }}
+      />
       <button
         onClick={toggle}
-        disabled={!audioData}
+        disabled={!src}
         className="flex-shrink-0 h-8 w-8 rounded-full bg-surface-2 hover:bg-surface-3 flex items-center justify-center transition-colors disabled:opacity-40"
         aria-label={playing ? 'Pause' : 'Play'}
       >
@@ -578,9 +595,17 @@ function AudioPlayer({ mediaUrl, encryptedFile, duration, waveform, isVoiceNote 
       </button>
       <div className="flex-1 min-w-0">
         {waveform && waveform.length > 0 ? (
-          <canvas ref={canvasRef} className="w-full h-6" style={{ display: 'block' }} />
+          <canvas
+            ref={canvasRef}
+            onClick={seekFromEvent}
+            className="w-full h-6 cursor-pointer"
+            style={{ display: 'block' }}
+          />
         ) : (
-          <div className="relative h-1 bg-surface-2 rounded-full overflow-hidden">
+          <div
+            onClick={seekFromEvent}
+            className="relative h-1 bg-surface-2 rounded-full overflow-hidden cursor-pointer"
+          >
             <div
               className="absolute inset-y-0 left-0 bg-text-secondary rounded-full transition-[width] duration-100"
               style={{ width: totalDuration > 0 ? `${(currentTime / totalDuration) * 100}%` : '0%' }}
@@ -595,6 +620,23 @@ function AudioPlayer({ mediaUrl, encryptedFile, duration, waveform, isVoiceNote 
               : '0:00'}
         </span>
       </div>
+      <button
+        onClick={cycleRate}
+        className="flex-shrink-0 text-[10px] font-medium text-text-tertiary hover:text-text-primary px-1 tabular-nums"
+        title="Playback speed"
+      >
+        {playbackRate === 1 ? '1×' : playbackRate === 1.5 ? '1.5×' : '2×'}
+      </button>
+      {downloadUrl && (
+        <a
+          href={downloadUrl}
+          download={filename || (mimeType === 'audio/ogg' ? 'voice.ogg' : 'audio.mp3')}
+          className="flex-shrink-0 text-text-tertiary hover:text-text-primary p-1"
+          title="Download"
+        >
+          <Download size={12} />
+        </a>
+      )}
     </div>
   )
 }
@@ -634,9 +676,12 @@ interface ChatMessageBubbleProps {
   onReply?: (msg: DbChatMessage) => void
   onReact?: (msg: DbChatMessage, emoji: string) => void
   onEdit?: (msg: DbChatMessage) => void
+  // Resolves an MXID to a display name for reaction tooltips. Stable
+  // identity across renders so memo holds.
+  resolveName?: (userId: string) => string
 }
 
-export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onPdfClick, onReply, onReact, onEdit }: ChatMessageBubbleProps) {
+export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOwn, showSender, receipts, onImageClick, onPdfClick, onReply, onReact, onEdit, resolveName }: ChatMessageBubbleProps) {
   const avatarUrl = message.senderAvatar ? mxcToThumbnail(message.senderAvatar, 24, 24) : undefined
   // Strip bridge sender prefix (e.g. "anko: message" → "message") when it matches the display name
   const displayBody = useMemo(() => {
@@ -794,6 +839,8 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
           <AudioPlayer
             mediaUrl={message.mediaUrl}
             encryptedFile={message.encryptedFile}
+            mimeType={message.mediaMimeType}
+            filename={message.body}
             duration={message.audioDuration}
             waveform={message.audioWaveform}
             isVoiceNote={message.isVoiceNote}
@@ -839,7 +886,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
                 key={emoji}
                 onClick={() => handleReactionClick(emoji)}
                 className="inline-flex items-center gap-0.5 rounded-full bg-surface-2 px-1.5 py-0.5 text-xs hover:bg-surface-3 transition-colors cursor-pointer"
-                title={senders.join(', ')}
+                title={senders.map((uid) => resolveName ? resolveName(uid) : uid).join(', ')}
               >
                 {emoji} <span className="text-text-tertiary">{senders.length}</span>
               </button>
