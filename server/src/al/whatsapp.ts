@@ -278,5 +278,10 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
     `thread: ${msg.jid}`,
     `msg_id: ${msg.id}`,
   ].join('\n')
-  return `${header}\n\n${msg.text}`
+  // Per-message reply hint. The persona system prompt covers the protocol in
+  // detail, but reminding here per-inbound makes it impossible for Al to forget
+  // that a text-only response in this session is NOT seen by the WhatsApp
+  // sender — he has to shell out to `con whatsapp send <jid>` to actually reply.
+  const replyHint = `[reply on WA: con whatsapp send ${msg.jid} --body "<short conversational reply — plain text, no markdown, sound like a person texting>"]`
+  return `${header}\n\n${msg.text}\n\n${replyHint}`
 }
