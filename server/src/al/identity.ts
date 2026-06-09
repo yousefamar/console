@@ -1,0 +1,48 @@
+// Path constants for the absorbed Al runtime.
+//
+// Yousef's "Al workspace" — persona, mistakes log, per-user files, workflows,
+// call transcripts — stays at `~/.local/share/al/workspace/` (the symlinked
+// vault target). Console only READS from there; it never writes back. Writes
+// happen via Yousef's Obsidian / shell edits, and changes are picked up the
+// next time Al's Console session is restarted (no fs.watch).
+//
+// Baileys WhatsApp auth state moves into Console's config dir on cutover.
+//
+// Old layout (al daemon owned):
+//   ~/.local/share/al/auth_whatsapp/       Baileys creds + key files
+//   ~/.local/share/al/workspace/           Persona + users + workflows + transcripts
+//
+// New layout (Console hub owns the auth dir; workspace unchanged):
+//   ~/.config/console/auth_whatsapp/       Baileys creds + key files (moved)
+//   ~/.local/share/al/workspace/           Unchanged — Yousef's vault
+//
+// The mv is atomic and same-filesystem, so Baileys reconnects without re-QR.
+
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
+const xdgData = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share')
+
+/** Yousef's Al data root (vault is symlinked under here). Read-only from Console. */
+export const AL_HOME = process.env.AL_HOME || join(xdgData, 'al')
+
+/** Persona + users + workflows + call-transcripts. Read at session spawn. */
+export const WORKSPACE_DIR = join(AL_HOME, 'workspace')
+
+/** Baileys auth state — owned by Console post-cutover. */
+export const AUTH_WHATSAPP_DIR = join(homedir(), '.config', 'console', 'auth_whatsapp')
+
+/** Persistent record of which Claude session is "Al". */
+export const AL_SESSION_FILE = join(homedir(), '.config', 'console', 'al-session.json')
+
+/** Yousef's WhatsApp phone (used by the OWNER_PHONE guard in the send route). */
+export const OWNER_PHONE = (process.env.NOTIFY_JID || '').replace('@s.whatsapp.net', '')
+
+export async function readIfExists(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, 'utf-8')
+  } catch {
+    return null
+  }
+}

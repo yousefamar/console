@@ -130,6 +130,11 @@ async function main() {
         await glasses(verb, rest, flags)
         break
       }
+      case 'whatsapp': {
+        const { whatsapp } = await import('./commands/whatsapp.js')
+        await whatsapp(verb, rest, flags)
+        break
+      }
       case 'search': {
         const { search } = await import('./commands/search.js')
         await search([verb, ...rest].filter(Boolean) as string[], flags)

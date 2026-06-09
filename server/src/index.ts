@@ -57,6 +57,11 @@ import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
+import { handleAlRoutes } from './routes/al.js'
+import { ensureAlSession, injectToAl } from './al/al-session.js'
+import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
+import * as alWa from './al/whatsapp.js'
+import { startDeprecationShim } from './al/shim-18789.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
@@ -652,6 +657,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
+  if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
@@ -1030,6 +1036,56 @@ httpServer.listen(port, host, () => {
     // Save manifest immediately so restored sessions are persisted
     saveManifest(sessions)
   }
+
+  // -----------------------------------------------------------------
+  // Al runtime bootstrap — absorbed from ~/proj/code/al into the hub.
+  //
+  // Order: ensure the Al Claude session is alive (spawned fresh or resumed
+  // from manifest), THEN load users + start Baileys. The WhatsApp handlers
+  // inject inbound messages into Al; injecting before Al exists is a no-op
+  // (returns false) so a fast inbound during the boot window is dropped
+  // safely rather than crashing.
+  ;(async () => {
+    try {
+      await loadUsers()
+      setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
+      const alSession = await ensureAlSession(agentCtx)
+      log(`Al session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+
+      await alWa.startWhatsApp({
+        onInbound: async (msg) => {
+          try {
+            await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
+            const resolved = resolveUsername(msg.sender)
+            const envelope = alWa.inboundEnvelope(msg, resolved)
+            injectToAl(envelope, broadcast)
+          } catch (err) {
+            console.error('[al/wa/inbound] handler failed:', (err as Error)?.message)
+          }
+        },
+        onQrUpdate: (dataUrl) => {
+          const body = [
+            '[Hub event] WhatsApp needs pairing.',
+            'Scan with your phone (rotates every ~20s):',
+            '',
+            `![WhatsApp QR](${dataUrl})`,
+          ].join('\n')
+          injectToAl(body, broadcast)
+        },
+        onHealthChange: (state, detail) => {
+          const detailSuffix = detail ? ` (${detail})` : ''
+          injectToAl(`[Hub event] WhatsApp ${state}${detailSuffix}`, broadcast)
+        },
+      })
+      log('Baileys WhatsApp started')
+
+      // Deprecation shim on :18789 — translates old POST /message → wa.sendText
+      // until every caller migrates to `con whatsapp send`. Logs every caller.
+      startDeprecationShim()
+    } catch (err) {
+      console.error('[al/boot] failed:', (err as Error)?.message)
+    }
+  })()
 
   log('')
   log('Waiting for Console to connect...')

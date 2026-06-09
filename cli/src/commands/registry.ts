@@ -394,6 +394,27 @@ export const COMMANDS: CommandDef[] = [
            { name: 'n', required: false, description: 'Line count when verb=tail' }],
     examples: ['con glasses research tail 200', 'con glasses research on', 'con glasses research off'] },
 
+  // whatsapp (absorbed Al runtime — Baileys integration via the hub)
+  { name: 'whatsapp status', description: 'WhatsApp connection state + QR readiness', safety: 'read' },
+  { name: 'whatsapp qr', description: 'Fetch the current pairing QR PNG (404 when paired or not yet awaiting)', safety: 'read',
+    flags: { out: { type: 'string', description: 'Write PNG to this path instead of stdout' } } },
+  { name: 'whatsapp send', description: 'Send a WhatsApp message. `to` is a phone (bare or with @s.whatsapp.net) or group/lid JID.', safety: 'write',
+    args: [{ name: 'to', required: true, description: 'Phone or JID' }],
+    flags: {
+      body: { type: 'string', description: 'Message text' },
+      file: { type: 'string', description: 'Read body from file' },
+      stdin: { type: 'boolean', description: 'Read body from stdin' },
+    },
+    examples: [
+      'con whatsapp send 447700900123 --body "On my way."',
+      'cat draft.md | con whatsapp send 447700900123@s.whatsapp.net --stdin',
+    ] },
+  { name: 'whatsapp delete', description: 'Revoke a message for everyone (~48h window; WhatsApp silently ignores past that)', safety: 'destructive',
+    args: [{ name: 'message_id', required: true, description: 'Message id returned by `send`' }],
+    flags: { to: { type: 'string', description: 'Recipient JID (required)' } } },
+  { name: 'whatsapp contacts', description: 'List workspace contacts (JID lookup; source: ~/.local/share/al/workspace/users/*.md)', safety: 'read',
+    flags: { query: { type: 'string', description: 'Filter (substring of username or identifier)' } } },
+
   // hub lifecycle
   { name: 'hub restart', description: 'Restart the hub via pm2 (auto-continues in-progress agent sessions)', safety: 'write',
     examples: ['con hub restart'] },

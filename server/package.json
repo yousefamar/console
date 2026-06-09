@@ -6,27 +6,31 @@
     "console-server": "./dist/index.js"
   },
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "dev:watch": "tsx watch src/index.ts",
+    "dev": "tsx --env-file-if-exists=.env src/index.ts",
+    "dev:watch": "tsx --env-file-if-exists=.env watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@matrix-org/matrix-sdk-crypto-wasm": "^17.1.0",
     "@mozilla/readability": "^0.6.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "croner": "^10.0.1",
     "fake-indexeddb": "^6.2.5",
     "fast-xml-parser": "^5.5.10",
     "ical-generator": "^10.2.0",
     "linkedom": "^0.18.12",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
     "rss-parser": "^3.13.0",
     "ws": "^8.18.0",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
     "typescript": "^5.7.3",
