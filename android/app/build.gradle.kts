@@ -14,7 +14,7 @@ android {
         // Keep the patch segment synced to versionCode so the user-visible
         // string directly reveals the integer version. If you bump one,
         // bump the other.
-        val vCode = 19
+        val vCode = 20
         versionCode = vCode
         versionName = "0.1.$vCode"
     }
@@ -80,4 +80,6 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     // Persistent WebSocket client for push notifications
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // EncryptedSharedPreferences for the hub bearer token (HubTokenStore)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

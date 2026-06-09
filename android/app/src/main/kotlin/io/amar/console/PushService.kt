@@ -97,6 +97,19 @@ class PushService : Service() {
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, PushService::class.java))
         }
+
+        /** Bounce the WebSocket so a freshly-set hub bearer takes effect. */
+        fun kick(ctx: Context) {
+            val i = Intent(ctx, PushService::class.java).setAction(ACTION_KICK)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(i)
+            } else {
+                ctx.startService(i)
+            }
+        }
+
+        const val ACTION_KICK = "io.amar.console.PUSH_KICK"
+        private const val NOTIF_NEEDS_PAIR_ID = 200
     }
 
     private val client: OkHttpClient by lazy {
@@ -280,6 +293,15 @@ class PushService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_KICK) {
+            // SPA just set a new hub bearer — reconnect with the fresh token.
+            reconnectDelayMs = RECONNECT_MIN_MS
+            reconnectHandler.removeCallbacksAndMessages(null)
+            try { webSocket?.close(1000, "rekey") } catch (_: Exception) {}
+            webSocket = null
+            cancelNeedsPairNotification()
+            connect()
+        }
         return START_STICKY
     }
 
@@ -345,8 +367,45 @@ class PushService : Service() {
 
     private fun connect() {
         if (stopped) return
-        val req = Request.Builder().url(PUSH_URL).build()
-        webSocket = client.newWebSocket(req, listener)
+        val builder = Request.Builder().url(PUSH_URL)
+        // Authorization: Bearer <token> — the hub validates this in log-only
+        // mode (decorative pre-enforcement) and starts rejecting after Phase 8
+        // flips CONSOLE_AUTH_ENABLED. If we never received a token (fresh
+        // install / clear), connect anyway so the loopback log path still has
+        // something useful.
+        HubTokenStore.get()?.let { builder.header("Authorization", "Bearer $it") }
+        webSocket = client.newWebSocket(builder.build(), listener)
+    }
+
+    /**
+     * Show a persistent notification telling the user to re-pair from the
+     * SPA. Tapping it opens the app where they can hit "Pair this APK" again.
+     */
+    private fun postNeedsPairNotification() {
+        HubTokenStore.markNeedsRepair()
+        val openApp = android.content.Intent(this, MainActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pending = android.app.PendingIntent.getActivity(
+            this,
+            0,
+            openApp,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_GENERIC)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle("Console: re-pair needed")
+            .setContentText("The hub rejected this device's token. Open the app and hit Pair this APK.")
+            .setContentIntent(pending)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .build()
+        androidx.core.app.NotificationManagerCompat.from(this).notify(NOTIF_NEEDS_PAIR_ID, n)
+    }
+
+    private fun cancelNeedsPairNotification() {
+        try {
+            androidx.core.app.NotificationManagerCompat.from(this).cancel(NOTIF_NEEDS_PAIR_ID)
+        } catch (_: Exception) {}
     }
 
     private fun scheduleReconnect() {
@@ -378,10 +437,25 @@ class PushService : Service() {
         }
         override fun onClosed(ws: WebSocket, code: Int, reason: String) {
             webSocket = null
+            // Per RFC 6455, the server can send an application-level 4401/4403
+            // close code to signal an auth problem. Treat that as "needs re-pair"
+            // rather than retrying in a tight loop.
+            if (code == 4401 || code == 4403) {
+                postNeedsPairNotification()
+                reconnectDelayMs = RECONNECT_MAX_MS
+            }
             scheduleReconnect()
         }
         override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
             webSocket = null
+            // Standard HTTP upgrade rejection — the hub said 401 before the
+            // WS handshake completed. OkHttp surfaces it via onFailure with
+            // Response.code() = 401.
+            val status = response?.code
+            if (status == 401 || status == 403) {
+                postNeedsPairNotification()
+                reconnectDelayMs = RECONNECT_MAX_MS
+            }
             scheduleReconnect()
         }
     }

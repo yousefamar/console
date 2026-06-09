@@ -72,15 +72,11 @@ class MainActivity : ComponentActivity() {
     // accumulates until Tailscale is back up.
     private val appUrl = "https://amarhp-lin.rya-yo.ts.net:8443/"
 
-    // The hub (REST + /apk/* + WS) is always at <host>:9877, regardless of which
-    // port the SPA shell is served from. Derive it from appUrl's host so the
-    // updater + APK download hit the hub even though the shell now loads on the
-    // :8443 Funnel port (the old `replace(":5173", ":9877")` was a no-op there,
-    // which silently broke the in-app updater).
-    private val hubBaseUrl: String by lazy {
-        val host = try { java.net.URI(appUrl).host } catch (_: Exception) { null }
-        if (host != null) "https://$host:9877" else appUrl.trimEnd('/').replace(":8443", ":9877").replace(":5173", ":9877")
-    }
+    // The hub (REST + WS) is reached via Caddy on the SPA's :8443 origin under
+    // the /hub prefix. Update channel lives at the no-auth /public/apk/* path,
+    // so the in-app updater works without a session even if the hub auth is on.
+    // Direct :9877 is gone post-Phase-9 (bind locked to 127.0.0.1).
+    private val publicBaseUrl: String by lazy { appUrl.trimEnd('/') }
 
     private lateinit var webView: WebView
     private lateinit var errorView: LinearLayout
@@ -125,6 +121,11 @@ class MainActivity : ComponentActivity() {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
         splash.setKeepOnScreenCondition { !pageLoaded }
+
+        // Initialize EncryptedSharedPreferences before anything else can read
+        // the token (PushService starts a few lines down; pairing flow may
+        // call into HubTokenStore via the JS bridge).
+        HubTokenStore.init(this)
 
         WindowInsetsControllerCompat(window, window.decorView)
             .isAppearanceLightStatusBars = false
@@ -240,6 +241,32 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun checkForUpdate() {
             checkForUpdateAsync()
+        }
+
+        // --- Hub bearer token (paired by the authenticated SPA) ------------
+
+        /**
+         * Set the long-lived hub bearer for PushService. Called by the SPA's
+         * "Pair this APK" action after it has minted a new token via
+         * POST /hub/auth/tokens. Reconnects PushService so the new token
+         * takes effect immediately.
+         */
+        @JavascriptInterface
+        fun setHubToken(token: String) {
+            if (token.isBlank()) return
+            HubTokenStore.set(token)
+            PushService.kick(this@MainActivity)
+        }
+
+        /** True if the APK has a stored bearer (does NOT validate it). */
+        @JavascriptInterface
+        fun hasHubToken(): Boolean = HubTokenStore.get() != null
+
+        /** Drop the stored bearer (used when revoking from another device). */
+        @JavascriptInterface
+        fun clearHubToken() {
+            HubTokenStore.clear()
+            PushService.kick(this@MainActivity)
         }
 
         // --- Glasses: status ------------------------------------------------
@@ -408,7 +435,7 @@ class MainActivity : ComponentActivity() {
     private fun checkForUpdateAsync() {
         Thread {
             try {
-                val url = URL("$hubBaseUrl/apk/latest.json")
+                val url = URL("$publicBaseUrl/public/apk/latest.json")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 5_000
                 conn.readTimeout = 5_000
@@ -465,7 +492,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun downloadAndInstall(apkUrl: String) {
-        val fullUrl = if (apkUrl.startsWith("http")) apkUrl else "$hubBaseUrl$apkUrl"
+        // latest.json carries `url: /apk/console-N.apk` (the hub-side format
+        // dating back to the pre-public era). Rewrite to /public/apk so the
+        // download works once the hub binds 127.0.0.1 and only Caddy's
+        // /public/* route reaches the apk handler.
+        val publicPath = apkUrl.replace(Regex("^/apk/"), "/public/apk/")
+        val fullUrl = if (publicPath.startsWith("http")) publicPath else "$publicBaseUrl$publicPath"
         try {
             val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val req = DownloadManager.Request(Uri.parse(fullUrl))

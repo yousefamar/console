@@ -31,6 +31,11 @@ declare global {
        */
       setMirrorDim?: (enabled: boolean) => void
       setNotesMirrorDim?: (enabled: boolean) => void
+      // Hub bearer token bridge (APK v20+). Set is called by AccountModal's
+      // "Pair this APK" action; has/clear let the SPA reflect current state.
+      setHubToken?: (token: string) => void
+      hasHubToken?: () => boolean
+      clearHubToken?: () => void
     }
   }
 }

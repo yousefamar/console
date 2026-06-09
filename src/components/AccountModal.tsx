@@ -7,6 +7,8 @@ import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Download } from 'lucide-
 import { GlassesSettings } from './GlassesSettings'
 import { glassesSupported } from '@/glasses/bridge'
 import { importFromOrigin, type MigrationResult } from '@/migration'
+import { ApkPairSection } from './ApkPairSection'
+import { isNative } from '@/platform'
 
 export function AccountModal() {
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
@@ -132,6 +134,13 @@ export function AccountModal() {
             <>
               <div className="border-t border-border" />
               <GlassesSettings />
+            </>
+          )}
+
+          {isNative() && (
+            <>
+              <div className="border-t border-border" />
+              <ApkPairSection />
             </>
           )}
 
