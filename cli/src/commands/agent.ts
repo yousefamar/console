@@ -14,9 +14,149 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'deny': return agentDeny(args, flags)
     case 'tail': return agentTail(args, flags)
     case 'wait': return agentWait(args, flags)
+    case 'chat': return agentChat(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
+}
+
+// --------------------------------------------------------------------------
+// agent chat — talk to another agent session.
+//
+// First turn:  con agent chat "<name>" "<message>"
+//   Forks the named session (inherits its full context), injects the message,
+//   waits for its reply, prints `conv: <claudeSessionId>` then the reply text.
+//   The fork is a real session — visible in `con agent list`, tailable, and
+//   left alive for follow-ups. The forked agent's MAIN session is untouched.
+//
+// Continue:    con agent chat --id <conv-id> "<message>"
+//   Injects into the existing fork (resolved by claudeSessionId → live hub id,
+//   so it survives hub restarts), waits for the reply, prints it.
+//
+// End:         con agent chat --id <conv-id> --end
+//   Ends the fork (kill_session). Or just stop calling — idle forks are cheap.
+// --------------------------------------------------------------------------
+
+interface HealthSession { id: string; claudeSessionId?: string; name?: string; cwd?: string; status: string }
+
+async function resolveByName(name: string): Promise<HealthSession> {
+  const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
+  const matches = (health.sessions || []).filter(
+    (s) => s.status !== 'ended' && s.id !== 'al' && (s.name || '').toLowerCase() === name.toLowerCase(),
+  )
+  if (matches.length === 0) throw new Error(`No active session named "${name}". See \`con agent list\`.`)
+  if (matches.length > 1) throw new Error(`Multiple active sessions named "${name}" — rename so it's unique.`)
+  return matches[0]!
+}
+
+async function resolveByClaudeId(convId: string): Promise<HealthSession> {
+  const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
+  const match = (health.sessions || []).find((s) => s.claudeSessionId === convId && s.status !== 'ended')
+  if (!match) throw new Error(`Conversation ${convId} not found (the fork may have ended).`)
+  return match
+}
+
+async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  // Positionals = tokens that are neither a --flag nor a value consumed by a
+  // value-taking flag. Lets the message appear before OR after flags
+  // (e.g. `chat --id X "msg"` and `chat Name "msg" --from Y` both work).
+  const VALUE_FLAGS = new Set(['id', 'from', 'timeout'])
+  const lead: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('--')) {
+      const key = a.slice(2).split('=')[0]!
+      if (VALUE_FLAGS.has(key) && !a.includes('=')) i++ // skip its value token
+      continue
+    }
+    lead.push(a)
+  }
+  const timeoutMs = opts.timeout ? parseDurationMs(opts.timeout) : 300_000
+  const { streamWithSends, injectAndCapture } = await import('../ws-client.js')
+
+  // --- End an existing conversation ---
+  if (opts.end === 'true') {
+    const convId = opts.id
+    if (!convId) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> --end', flags); return }
+    const target = await resolveByClaudeId(convId)
+    const { sendAndReceive } = await import('../ws-client.js')
+    await sendAndReceive({ type: 'kill_session', sessionId: target.id }, () => false)
+    output({ ended: convId }, flags)
+    return
+  }
+
+  // --- Continue an existing conversation ---
+  if (opts.id) {
+    const message = lead.join(' ').trim()
+    if (!message) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> "<message>"', flags); return }
+    const target = await resolveByClaudeId(opts.id)
+    const reply = await injectAndCapture({ sessionId: target.id, message, timeoutMs })
+    printConv(opts.id, reply, flags)
+    return
+  }
+
+  // --- First turn: fork the named session, inject, await reply ---
+  const name = lead[0]
+  const message = lead.slice(1).join(' ').trim()
+  if (!name || !message) {
+    exitWithError('USAGE', 'Usage: con agent chat "<name>" "<message>"  (or --id <conv-id> "<message>")', flags)
+    return
+  }
+  const target = await resolveByName(name)
+  if (!target.claudeSessionId) { exitWithError('ERROR', `Session "${name}" has no Claude session id yet — let it start first.`, flags); return }
+
+  const from = opts.from || 'another agent'
+  const seed =
+    `[Forked side-conversation: you've been branched from your session to talk with ${from}. ` +
+    `Your main session is untouched. Reply normally — your reply is delivered back to them. ` +
+    `They will continue or end this conversation.]\n\n${message}`
+
+  // Snapshot existing ids so we can spot the new fork.
+  const health = await hubFetch<{ sessions: Array<{ id: string }> }>('/health')
+  const existingIds = new Set((health.sessions || []).map((s) => s.id))
+
+  let forkHubId: string | null = null
+  let convId: string | null = null
+  const deltas: string[] = []
+  const texts: string[] = []
+
+  await streamWithSends({
+    timeoutMs,
+    initial: { type: 'fork_session', sessionId: target.id },
+    onMessage: (msg, send) => {
+      if (msg.type === 'session_created' && !existingIds.has(msg.sessionId) && !forkHubId) {
+        forkHubId = msg.sessionId
+        // Inject as soon as the fork exists — its stdin is ready on spawn, and a
+        // silent fork may not emit session_init until it has input.
+        send({ type: 'send_message', sessionId: forkHubId, content: seed })
+        return
+      }
+      if (!forkHubId || msg.sessionId !== forkHubId) return
+      if (msg.type === 'session_init') { convId = msg.claudeSessionId; return }
+      if (msg.type === 'text_delta') deltas.push(msg.content || '')
+      else if (msg.type === 'text') texts.push(msg.content || '')
+      else if (msg.type === 'result') return 'stop'
+      else if (msg.type === 'session_ended') return 'stop'
+    },
+  })
+
+  const reply = (texts.join('\n').trim() || deltas.join('').trim())
+  printConv(convId, reply, flags)
+}
+
+function printConv(convId: string | null, reply: string, flags: GlobalFlags): void {
+  if (flags.json) { output({ conv: convId, reply }, flags); return }
+  // First line is the conv id so the calling agent can capture it for --id;
+  // a blank line then the reply text follows.
+  process.stdout.write(`conv: ${convId ?? '(unknown)'}\n\n${reply || '(no reply)'}\n`)
+}
+
+function parseDurationMs(s: string): number {
+  const m = s.match(/^(\d+)\s*(s|m|h)?$/)
+  if (!m) return 300_000
+  const n = parseInt(m[1]!, 10)
+  return n * ({ s: 1000, m: 60_000, h: 3_600_000 }[m[2] || 's']!)
 }
 
 async function agentList(args: string[], flags: GlobalFlags): Promise<void> {
