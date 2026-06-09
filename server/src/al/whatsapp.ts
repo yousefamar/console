@@ -273,15 +273,28 @@ export async function deleteForEveryone(to: string, messageId: string): Promise<
 export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | null): string {
   const user = resolvedUser ?? 'unknown'
   const senderTag = msg.senderName ? `${msg.senderName} (${msg.sender})` : msg.sender
-  const header = [
-    `[WhatsApp inbound from ${senderTag} — resolved user: ${user}]`,
-    `thread: ${msg.jid}`,
-    `msg_id: ${msg.id}`,
+  // Envelope is framed as a TASK with a required ACTION (Bash call), not as a
+  // chat message awaiting a reply. This stops Claude from defaulting to a
+  // conversational in-session reply (which fails silently — the WA sender
+  // never sees your session text). The text you write in this session after
+  // the Bash call is the OPERATOR LOG, not the reply.
+  return [
+    `[INBOUND WhatsApp — action required]`,
+    `From: ${senderTag} — resolved user: ${user}`,
+    `Thread: ${msg.jid}`,
+    `Message ID: ${msg.id}`,
+    ``,
+    `Message:`,
+    msg.text,
+    ``,
+    `---`,
+    `ACTION (do this FIRST, before any explanation):`,
+    `  Bash → con whatsapp send ${msg.jid} --body "<short conversational reply, plain text, no markdown, sound like a person texting>"`,
+    `Then write ONE line in this session describing what you replied — operator log only, the WhatsApp sender does NOT see this session.`,
+    ``,
+    `If no reply is appropriate (informational only, told to stay silent on this thread, etc.):`,
+    `  Skip the Bash call and write ONE line in this session explaining why.`,
+    ``,
+    `Critical: a text response in this session WITHOUT the Bash call fails silently — the WhatsApp sender hears NOTHING.`,
   ].join('\n')
-  // Per-message reply hint. The persona system prompt covers the protocol in
-  // detail, but reminding here per-inbound makes it impossible for Al to forget
-  // that a text-only response in this session is NOT seen by the WhatsApp
-  // sender — he has to shell out to `con whatsapp send <jid>` to actually reply.
-  const replyHint = `[reply on WA: con whatsapp send ${msg.jid} --body "<short conversational reply — plain text, no markdown, sound like a person texting>"]`
-  return `${header}\n\n${msg.text}\n\n${replyHint}`
 }

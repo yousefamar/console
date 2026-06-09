@@ -76,7 +76,18 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
   // `Read users/<name>.md`, `Read workflows/<slug>.md`, etc. resolve as
   // relative paths the way the prompt and the agent both expect.
   const session = createSession(ctx, {
-    prompt: 'Booted by Console hub. Stay idle; respond when channels (WhatsApp, voice, console) bring you a message. Acknowledge briefly that you are online.',
+    prompt: [
+      'Booted by Console hub. Stay idle; channels (WhatsApp, voice, console) will inject envelope-prefixed messages.',
+      '',
+      'Quick reminder for when WhatsApp envelopes arrive:',
+      '  - The reply path is Bash → `con whatsapp send <jid> --body "<short conversational reply>"`.',
+      '  - Your in-session text is the operator log, NOT the reply the sender sees.',
+      '  - Example: envelope says `Thread: 447700900123@s.whatsapp.net` and `Message: Hey what time?`.',
+      '    First action: Bash `con whatsapp send 447700900123@s.whatsapp.net --body "3pm, see you then"`.',
+      '    Then in this session: one line — "replied: 3pm see you then".',
+      '',
+      'Acknowledge briefly that you are online.',
+    ].join('\n'),
     cwd: WORKSPACE_DIR,
     name: 'Al',
     systemPrompt,
