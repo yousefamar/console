@@ -1,11 +1,18 @@
 // WebSocket client for streaming agent sessions and chat tails
 
 import WebSocket from 'ws'
-import { getHubUrl } from './client.js'
+import { getHubUrl, getHubToken } from './client.js'
 
 function getWsUrl(): string {
   const httpUrl = getHubUrl()
   return httpUrl.replace(/^http/, 'ws')
+}
+
+function buildWsOptions(): WebSocket.ClientOptions {
+  const opts: WebSocket.ClientOptions = { rejectUnauthorized: false }
+  const token = getHubToken()
+  if (token) opts.headers = { Authorization: `Bearer ${token}` }
+  return opts
 }
 
 export async function connectAndStream(opts: {
@@ -13,7 +20,7 @@ export async function connectAndStream(opts: {
   onMessage: (msg: unknown) => void | 'stop'
 }): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(getWsUrl(), { rejectUnauthorized: false })
+    const ws = new WebSocket(getWsUrl(), buildWsOptions())
 
     ws.on('open', () => {
       // Connection established — messages will flow
@@ -55,7 +62,7 @@ export async function streamWithSends(opts: {
 }): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 300_000
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(getWsUrl(), { rejectUnauthorized: false })
+    const ws = new WebSocket(getWsUrl(), buildWsOptions())
     const send = (m: unknown) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)) }
     const timer = setTimeout(() => { ws.close(); resolve() }, timeoutMs)
     ws.on('open', () => send(opts.initial))
@@ -89,7 +96,7 @@ export async function injectAndCapture(opts: {
   const timeoutMs = opts.timeoutMs ?? 300_000
   const settleMs = opts.settleMs ?? 500
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(getWsUrl(), { rejectUnauthorized: false })
+    const ws = new WebSocket(getWsUrl(), buildWsOptions())
     const deltas: string[] = []
     const texts: string[] = []
     let sent = false
@@ -136,7 +143,7 @@ export async function sendAndReceive(
   timeoutMs = 10000,
 ): Promise<any> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(getWsUrl(), { rejectUnauthorized: false })
+    const ws = new WebSocket(getWsUrl(), buildWsOptions())
     let timer: ReturnType<typeof setTimeout>
 
     ws.on('open', () => {

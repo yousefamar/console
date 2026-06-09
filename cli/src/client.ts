@@ -14,11 +14,43 @@
 // restricted to the CLI, which only talks to the local hub.
 
 import { Agent } from 'undici'
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 const insecureDispatcher = new Agent({ connect: { rejectUnauthorized: false } })
 
 const DEFAULT_HUB_PORT = 9877
 const DEFAULT_HUB_HOST = 'localhost'
+
+const LOCAL_TOKENS_FILE = join(homedir(), '.config', 'console', 'local-tokens.json')
+
+let cachedHubToken: string | null | undefined
+
+/**
+ * Read the CLI-scoped bearer token from `~/.config/console/local-tokens.json`.
+ * Cached for process lifetime. CONSOLE_HUB_TOKEN env var overrides for use
+ * from off-host shells. Returns null if no token is available — we attach
+ * the header opportunistically while enforcement is off.
+ */
+export function getHubToken(): string | null {
+  if (cachedHubToken !== undefined) return cachedHubToken
+  if (process.env.CONSOLE_HUB_TOKEN) {
+    cachedHubToken = process.env.CONSOLE_HUB_TOKEN
+    return cachedHubToken
+  }
+  try {
+    if (existsSync(LOCAL_TOKENS_FILE)) {
+      const parsed = JSON.parse(readFileSync(LOCAL_TOKENS_FILE, 'utf8')) as { cli?: string }
+      cachedHubToken = parsed.cli ?? null
+      return cachedHubToken
+    }
+  } catch {
+    // unreadable / corrupt — proceed without
+  }
+  cachedHubToken = null
+  return null
+}
 
 /** Fetch that ignores self-signed certs but only for HTTPS URLs. */
 function insecureFetch(url: string, init?: RequestInit): Promise<Response> {
@@ -106,6 +138,8 @@ export async function hubFetch<T = unknown>(
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(opts.body)
   }
+  const token = getHubToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
 
   const controller = new AbortController()
   const timer = opts.timeout
