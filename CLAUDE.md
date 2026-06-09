@@ -9,7 +9,9 @@ Personal command center: offline-first Gmail inbox + Matrix chat + Obsidian book
 ## Architecture
 - **PWA** — installable standalone, works in any browser including mobile
 - **Android APK** (`android/`) — thin native-Kotlin WebView wrapper for the phone (PWA install was flaky). Loads `https://amarhp-lin.rya-yo.ts.net:8443/` (Funnel-served, public). Routes OAuth into Chrome Custom Tabs, handles `console://` deep links, in-app updater polls the hub.
-- **Public SPA, tailnet-only hub.** SPA shell goes public via Tailscale Funnel on `:8443` → Caddy `:8080` → Vite `:5173` (HTTPS upstream, `tls_insecure_skip_verify`). Hub on `:9877` stays tailnet-only. Same `*.ts.net` hostname carries both; `getHubUrl()` in `src/hub.ts` derives the hub URL from `window.location.hostname:9877` so the SPA's hub WS goes direct via the tailnet IP. Off-tailnet → shell loads, hub calls fail, offline queue accumulates, the `<CloudOff>` pill + `SyncStatus` "Offline" surface it. CORS allow-list in `server/src/index.ts` only permits `{:8443, :5173, localhost:5173}`. **Different origin = different IndexedDB** — one-time cross-origin migration UI in `AccountModal` ("Import from another origin"), powered by `src/migration.ts` (hidden iframe + postMessage pump). See `memory/project_public_funnel_arch.md` and `memory/reference_caddy_funnel_setup.md`.
+- **Public SPA + public hub via Caddy.** Tailscale Funnel `:8443` → Caddy `:8080`, which fans out by prefix: `/hub/*` → `https://127.0.0.1:9877` (Caddy strips `/hub`, sets `X-Forwarded-Host/Proto/-Prefix`); `/public/*` → `https://127.0.0.1:9877` (prefix preserved, never auth-gated); legacy `/cron.ics` rewrites to `/public/cron.ics`; legacy `/apk/*` rewrites to `/public/apk/*` (for stuck pre-v20 installs); catch-all → `https://127.0.0.1:5173` (Vite). Hub binds `0.0.0.0:9877` today but every external client should hit it through `/hub/*` so the Phase-9 bind-lock to `127.0.0.1` is a one-line flip. `servers :8080 { trusted_proxies static 127.0.0.1/32 }` so the `X-Forwarded-*` chain cannot be spoofed from off-host. SPA's `getHubUrl()` defaults to `${window.location.origin}/hub` with a one-shot legacy `:hostname:9877` fallback (kicks in if a `/hub/*` request returns HTML — meaning Caddy hasn't been reloaded with the new config yet). **Different origin = different IndexedDB** — one-time cross-origin migration UI in `AccountModal` ("Import from another origin"), powered by `src/migration.ts` (hidden iframe + postMessage pump). See `memory/project_public_funnel_arch.md` and `memory/reference_caddy_funnel_setup.md`.
+- **Hub auth — cookie + bearer.** Single allow-list (`hubAllowedEmails` in `~/.config/console/auth.json`, default `['yousefamar@gmail.com']`). Browser path: SPA hits `${origin}/hub/auth/google/start?return=…`, hub does Google OAuth, callback sets `console_session=<id>; HttpOnly; Secure; SameSite=Lax; Path=/hub`. Sessions stored in `auth.json` `hubSessions[]`, 30-day TTL. Non-browser path: named bearer tokens (`hubTokens[]`, hashed sha256, individually revocable) sent as `Authorization: Bearer <…>`. Scopes: `cli`, `al`, `apk`, `other`. CLI + Al read plaintext from `~/.config/console/local-tokens.json` (mode 0600) — auto-minted on hub first boot, separate per scope. APK gets paired via SPA "Pair this APK" → `POST /hub/auth/tokens` → `window.ConsoleNative.setHubToken(…)` → `HubTokenStore.kt` (EncryptedSharedPreferences). PushService attaches the bearer via OkHttp `Request.Builder().header("Authorization", …)` and posts a "needs re-pair" notification on close-4401/4403 or HTTP 401/403 during handshake. **Enforcement** gated by `CONSOLE_AUTH_ENABLED=1`; **break-glass** is `CONSOLE_AUTH_DISABLED=1` (forces allow even if enabled). Both env vars set in pm2's environment. Middleware (`server/src/auth-middleware.ts`) runs in log-only mode by default — logs would-have-rejected lines without rejecting. Mutating session-authed requests also pass a `SameSite=Lax`-belt-and-braces `Origin`/`Referer` check (`isCsrfSafe`). Confused-deputy guard: requests carrying BOTH cookie and bearer are rejected.
+- **Public canvas surface.** Each tab/island can be flipped public via `con dashboard canvas {tab,} publish <slug>` → mints a 256-bit base64url token, persisted at `~/.config/console/canvas-public-tokens.json` (sibling of `canvas/` so `con dashboard canvas reset` does NOT silently revoke shares — only explicit `unpublish` does). Public URL: `https://amarhp-lin.rya-yo.ts.net:8443/public/canvas/<token>/`. Routes in `server/src/routes/public.ts`: trailing-slash 301, asset path-traversal guard (`path.resolve` ⊂ `tabsDir/<slug>/`), `no-store`/`nosniff`/`no-referrer` HTML headers. Islands are inline-HTML only (no asset paths); tabs serve files from their dir. `con dashboard canvas {publish,unpublish,url} <slug>` and the `tab` equivalents; UI toggle not wired yet.
 - **Offline-first** — all mutations (email, chat, calendar) write to IndexedDB first, sync via queue
 - **Hub server** — Node.js backend (`server/`) proxies all API calls (Gmail, Calendar, Matrix, Monzo), manages OAuth tokens, hosts agent sessions. HTTPS via Tailscale certs. Binds `0.0.0.0:9877` by default so the tailnet hostname resolves (see `server/src/index.ts` `host` const).
 - **Sub-app isolation** — Layout subscribes only to `activePane`. Each tab component is `React.memo`'d. A chat state change never re-renders the email pane.
@@ -198,8 +200,15 @@ The debug agent:
 - Session persistence across hub restarts. Message replay for late-joining clients.
 - **`messageLog` rolling cap** (`server/src/session.ts` `MAX_LOG_SIZE = 500`). Older entries `shift()` off; `logOffset` tracks the absolute index of `messageLog[0]`. Client paginates with absolute indices via `session.messageLogLength` / `session.messageLogOffset` getters — `get_older_messages` in `server/src/index.ts` translates `beforeIndex - offset` into the in-memory window. Past the boundary, `hasMore: false`. Full history still on disk in Claude CLI's `~/.claude/projects/<encoded-cwd>/<claudeSessionId>.jsonl` (decode via `decodeClaudePath` in `server/src/projects.ts`). Fixed a 4 GB-heap OOM after ~13 h with 24+ sessions — see `memory/project_hub_session_log_cap.md`.
 - **Background-process detection.** `Session.getInfo()` includes `backgroundProcessCount` — child PIDs of the `claude` subprocess (from `ps -eo pid,ppid` via `server/src/process-tree.ts`). `AgentTab` shows a Terminal-icon badge per row when > 0.
+- **`@amar` attention mechanism.** Any agent session that emits the literal `@amar` in its **assistant output** flags itself for Yousef's attention — a sticky red marker in the sidebar (red left-rail + `AlertCircle` badge), a red dot on the Agents pane tab, and a push notification (pane `agents`). The intent: agents ping Yousef without `con agent send`-ing into his live timeline. Wiring:
+  - Detection is a pure module `server/src/attention.ts` (`mentionsAmar` uses `/\B@amar\b/i` so `name@amar.io` / `@amaranth` don't match; `extractAttentionSnippet` centres a ~140-char excerpt). Tested in `server/src/__tests__/attention.test.ts`.
+  - `Session.scanForAttention()` runs on **finalized assistant text** (`flushPendingDeltas` for streamed text + directly-emitted `text` in `emitHub`) — checking complete text, since `@`/`amar` split across deltas. User prompts are never scanned (self-ping protection). Sets `Session.needsAttention = { ts, snippet }`, emits a `session_attention` hub message.
+  - **Push dedup / anti-noise** (in `Session`): no second push within 60 s; ≥5 in 10 min → marker stays but push is suppressed + a `[attention]` warn logged. The `push: boolean` on the `session_attention` message is a transport-only hint; `routes/agents.ts` strips it before broadcasting and only fires `ctx.notifyAttention` (→ `pushServer`) when true. `clearAttentionPush` cancels the phone notification on clear.
+  - Persisted in the manifest (`needsAttention`), restored on hub restart via `SessionOptions.needsAttention`.
+  - SPA: `SessionInfo.needsAttention` flows through `sessions_list`; the `session_attention` handler in `src/store/agent.ts` updates it + notifies (desktop notification suppressed only when that session is already the active one — the marker still sticks). **The marker is sticky until Yousef explicitly marks the session read** — opening it (`selectSession`) does NOT clear it, matching the "unread chats stay until marked read" rule. Only `markSessionRead` sends `clear_attention` → hub clears + broadcasts null + cancels push.
 - Al (personal AI) connects on `/al` WebSocket path.
-- **Agent-to-agent forks** (`con agent chat`). Spawns a fork of a named session, injects a message, waits for the reply, prints `conv: <claudeSessionId>` then the reply text. Follow-up turns: `con agent chat --id <conv-id> "<message>"` routes via the fork's claudeSessionId (survives hub restarts). `--end` kills the fork; otherwise idle forks are cheap. The fork is a real hub session — visible in `con agent list`, tailable, appears in the SPA sidebar (nested under the parent with a `GitBranch` glyph from `AgentTab`). The target's MAIN session is untouched. Implementation: `cli/src/commands/agent.ts` + `cli/src/ws-client.ts` (`streamWithSends`, `injectAndCapture`).
+- **Agent-to-agent forks** (`con agent chat`). Spawns a fork of a named session, injects a message, waits for the reply, prints `conv: <claudeSessionId>` then the reply text. Follow-up turns: `con agent chat --id <conv-id> "<message>"` routes via the fork's claudeSessionId (survives hub restarts). The fork is a real hub session — visible in `con agent list`, tailable, appears in the SPA sidebar (nested under the parent with a `GitBranch` glyph from `AgentTab`). The target's MAIN session is untouched. Implementation: `cli/src/commands/agent.ts` + `cli/src/ws-client.ts` (`streamWithSends`, `injectAndCapture`).
+- **`--end` vs `kill` — sharp edge.** `con agent chat --id <conv-id> --end` closes the *chat side* (no more `injectAndCapture` against it) but leaves the underlying forked session **idle in `con agent list` with `status: ended`** — it's not reaped, just dormant. To actually remove a fork from the list use `con agent kill <session-id>` (which sets `status: ended` *and* deletes the session entry). The current `--end` wording in `cli/src/commands/agent.ts` overpromises; consider either renaming it (`--close-conv`) or making it call `kill` after the chat closes. Caught twice on 2026-06-09 during the Al-rebuild design conversation — two leftover `Console general (fork)` entries from `--end`ed forks.
 - **Manifest** (`~/.claude/console-hub-sessions.json`, written by `server/src/manifest.ts`): the list the hub uses to re-spawn sessions at startup. Every write is **synchronous and atomic** (`writeFileSync` to a `.tmp` sibling, then `renameSync`) — no in-memory debounce buffer, so a SIGKILL or host crash can't lose pending state. Every session with a `claudeSessionId` is persisted regardless of `status` (yes, including `ended`); removal is driven only by `delete_session`, not by subprocess lifecycle. This prevents the old failure mode where SDK timeouts / process exits would silently prune sessions from the manifest, so a later restart would resume zero. If you ever need to manually rebuild the manifest from JSONL transcripts on disk: the hub clobbers external writes within ms of any session event, so the only reliable path is **write the new manifest then `SIGKILL` the hub in the same Node tick** (the shutdown handler also calls `saveManifest`, so SIGTERM would still clobber); pm2/tsx will respawn the hub and it'll load the new manifest cleanly.
 
 ### Hub-side agent cron (`/cron/*`)
@@ -275,25 +284,82 @@ Requires Android SDK at `$ANDROID_HOME` (default `~/app/Android/Sdk`), minSdk 26
 ## Setup
 1. Google Cloud project with Gmail + People + Calendar APIs enabled
 2. OAuth 2.0 Web Application credentials
-3. Add redirect URI: `http://localhost:9877/auth/google/callback` (+ Tailscale hostname variant)
+3. Add redirect URIs:
+   - `https://amarhp-lin.rya-yo.ts.net:8443/hub/auth/google/callback` — the public-Funnel path (used by browsers + WebView).
+   - `http://localhost:9877/auth/google/callback` — direct loopback, kept for back-compat with curl flows.
 4. `npm install && npm run dev`
 5. Hub: `cd server && npm install && npm run dev`
 6. Set Google credentials: `curl -X POST localhost:9877/auth/google/credentials -d '{"clientId":"...","clientSecret":"..."}'`
-7. Sign in via the app UI
+7. Sign in via the app UI (or hit `https://amarhp-lin.rya-yo.ts.net:8443/hub/auth/google/start?return=…` directly).
+8. **Auth enforcement** (Phase 8 of the public-funnel refactor): set `CONSOLE_AUTH_ENABLED=1` in the pm2 env once SPA cookie, APK bearer, and CLI bearer are all in place. **Break-glass**: `CONSOLE_AUTH_DISABLED=1` forces allow even with `ENABLED=1`. Both vars live in pm2's environment — `pm2 restart console-server --update-env` after editing.
 
 ## Hub Routes
-- `/auth/*` — OAuth flow, token endpoint, Matrix login
-- `/mail/*` — Gmail proxy
-- `/cal/*` — Calendar proxy (events, RSVP, location, accounts)
-- `/matrix/*` — Matrix proxy
-- `/money/*` — Monzo proxy + webhook
-- `/bookmarks/*`, `/feeds/*`, `/notes/*` — CRUD
-- `/debug/*` — Debug agent log, eval, state, screenshot, toggle
-- `/apk/latest.json`, `/apk/console-<versionCode>.apk` — APK update channel served from `~/.config/console/apk/`
-- `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService. Also carries glasses WS RPC framing (see Glasses section).
-- `/glasses/*` — low-level dumb pipe proxied to the APK's GlassesService over the `/push` WS: `GET /status`, `POST /text`, `POST /bmp`, `POST /clear`, `POST /notify`, `POST /mic/start|stop`, `POST /scan`, `POST /pair`, `POST /disconnect`, `GET /events` (SSE).
-- `/dashboard/snapshot`, `/dashboard/alerts`, `/dashboard/servers` — Home pane data sources. `POST /dashboard/servers` adds an external probe; `DELETE /dashboard/servers/:id` removes one.
+External clients reach all of these under `${origin}/hub/<path>` via Caddy (the prefix is stripped before the upstream sees it). Local-host clients (CLI, Al) hit `https://127.0.0.1:9877/<path>` directly with a bearer. The `/public/*` and `/auth/google/*` paths are the only ones the auth middleware lets through unauthenticated.
+- `/auth/*` — Google + Monzo + Matrix OAuth flows.
+  - `/auth/session` (GET) + `/auth/session/logout` (POST) — current hub session (cookie-derived).
+  - `/auth/hub/sessions` (GET) — list active browser sessions (id-prefixes only).
+  - `/auth/hub/tokens` (GET/POST), `/auth/hub/tokens/:id` (DELETE) — name + scope-keyed bearer tokens for non-browser clients. POST returns the plaintext once.
+  - `/auth/hub/allowed-emails` (GET/POST), `/auth/hub/allowed-emails/:email` (DELETE) — Google allow-list. Default: `['yousefamar@gmail.com']`.
+- `/mail/*`, `/cal/*`, `/matrix/*`, `/money/*`, `/bookmarks/*`, `/feeds/*`, `/notes/*` — service proxies / CRUD.
+- `/debug/*` — debug agent log, eval, state, screenshot, toggle. `/debug/eval` is loopback-only (Phase 9+).
+- `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService. Carries glasses WS RPC framing (see Glasses section). PushService attaches `Authorization: Bearer <apk-scoped-token>`.
+- `/glasses/*` — low-level dumb pipe proxied to the APK's GlassesService over the `/push` WS.
+- `/dashboard/snapshot`, `/dashboard/alerts`, `/dashboard/servers` — Home pane data sources.
+- `/dashboard/canvas/{islands,tabs}` — CRUD + per-slug `POST/GET/DELETE /publish` for the public-token surface.
 - `/canvas/*` — static file serve from `~/.config/console/canvas/` (the AI agent canvas dir). `DELETE /canvas` wipes + re-seeds the placeholder. fs.watch broadcasts `dashboard.canvas_changed` on the SyncBus.
+- `/public/*` — unauthenticated surface. Three things live here:
+  - `/public/canvas/<token>/` — single tab/island standalone page; `/<token>/<asset>` serves tab assets (`path.resolve` guard). 32-byte base64url tokens persist at `~/.config/console/canvas-public-tokens.json` (sibling of `canvas/`, survives `con dashboard canvas reset`).
+  - `/public/cron.ics?token=…` — Google Calendar subscription; the cron token in the query is its own auth. Legacy `/cron.ics` is Caddy-rewritten to this.
+  - `/public/apk/latest.json` + `/public/apk/console-<n>.apk` — APK update channel. Legacy `/apk/*` is Caddy-rewritten to this (so pre-v20 stuck installs can still pull v20+).
+
+## Al (absorbed into Console hub)
+
+The standalone Al daemon (`~/proj/code/al/`) was retired 2026-06-09. Its WhatsApp + voice + persona runtime now lives in-process at `server/src/al/` and is owned by Console hub. Al himself is a permanent Console-managed Claude Code session (no more `pi-agent-core` loop). Persona (`AL.md`, `mistakes.md`, workflows summary) is loaded as the system prompt at session spawn; persona edits land via `con agent restart Al` — no fs.watch / no live reload.
+
+### Layout
+- `server/src/al/identity.ts` — `AL_HOME`, `WORKSPACE_DIR`, `AUTH_WHATSAPP_DIR` (now at `~/.config/console/auth_whatsapp/`, moved from `~/.local/share/al/auth_whatsapp/` on cutover), `AL_SESSION_FILE` (`~/.config/console/al-session.json`), `OWNER_PHONE`.
+- `server/src/al/persona.ts` — `buildAlSystemPrompt()`: verbatim `AL.md`, then mistakes log under `# Past mistakes`, then auto-built workflow one-liners.
+- `server/src/al/users.ts` — frontmatter resolver + `normalize()` that strips `@s.whatsapp.net|@lid|@c.us|@g.us`. Yousef's `users/yousef.md` carries both his SIM (`447XXXXXXXXX`) and iPad lid identifier under `whatsapp:`; without that his iPad-sent messages get treated as non-owner (footgun #1).
+- `server/src/al/whatsapp.ts` — Baileys wrapper. Every event callback wrapped in try/catch at the boundary; reconnect uses `setTimeout` with exponential backoff (`setTimeout`, not `throw`). `pino({level:'silent'})`. libsignal `console.info` patch preserved. `msg.key.fromMe` filter at the boundary. QR self-heal posts a `data:image/png;base64,...` URL via the injected callback (rendered in Al's Console chat by `AgentMessageBlock.tsx:454-498`).
+- `server/src/al/voice.ts` — Atoms integration: `buildVoicePrompt()` strips text-only `AL.md` sections, `syncVoicePrompt()` PATCHes Atoms workflow before every outbound call, `handleDelegate(alSession, callerPhone, text)` injects into Al's session and waits for the next assistant turn's text (25 s cap; Atoms's hard timeout is 30 s).
+- `server/src/al/al-session.ts` — `ensureAlSession()` either resumes Al from manifest or spawns fresh with persona; persists `claudeSessionId` to `al-session.json` on first `session_init`. `injectToAl(envelope, broadcast)` is the canonical inbound surface — broadcasts a `user_prompt` so the SPA renders it AND writes to Claude's stdin.
+- `server/src/al/shim-18789.ts` — temporary deprecation shim. Listens on `127.0.0.1:18789`, translates old `POST /message` calls into in-process `wa.sendText()`, logs every caller. Returns 410 for Slack (dropped). Tear down + delete this file after a week of zero shim calls.
+
+### Sending WhatsApp from a sibling agent
+Use `con whatsapp send <to> --body "..."`. The CLI carries an `al`-scoped bearer when enforcement lands. Old `curl -X POST http://localhost:18789/message ...` still works via the shim but logs a deprecation warning — migrate.
+
+- `con whatsapp send <to> [--body "..." | --file <path> | --stdin]` — outbound text. `<to>` is bare phone (auto-suffixed `@s.whatsapp.net`) or fully-qualified JID (`<n>@s.whatsapp.net`, `<lid>@lid`, `<id>@g.us`).
+- `con whatsapp delete <message_id> --to <jid>` — revoke for everyone; WhatsApp silently ignores past ~48 h.
+- `con whatsapp contacts [--query <text>]` — workspace lookup; source = `~/.local/share/al/workspace/users/*.md`.
+- `con whatsapp qr [--out <path.png>]` — fetch current pairing QR; 404 when paired.
+- `con whatsapp status` — `{connected, hasQr}`.
+
+The CLI is the preferred path. If a sibling agent needs Al's interpretation / context, `con agent chat "Al" "please WA Rowan saying X"` — Al sends, holds the thread, forwards replies.
+
+### HTTP routes (hub :9877; voice paths are also reachable via `https://al.amar.io/*`)
+- `GET /whatsapp/status` / `GET /whatsapp/qr` / `POST /whatsapp/send` / `POST /whatsapp/delete` / `GET /whatsapp/contacts` — bearer-gated.
+- `GET /voice/health` / `POST /voice/delegate` / `POST /voice/call` / `POST /voice/webhook` — voice paths are always-open (Atoms posts from the public internet via al.amar.io → Caddy → hub). Caddyfile `al.amar.io` block reverse-proxies to `https://localhost:9877` with `tls_insecure_skip_verify`.
+
+### Inbound flow
+Baileys `onMessage` (after `fromMe` filter) → `ensureUserKnown` → `inboundEnvelope(msg, resolvedUser)` → `injectToAl(envelope, broadcast)`. Envelope shape is plain text:
+```
+[WhatsApp inbound from <senderName> (<jid>) — resolved user: <name or "unknown">]
+thread: <chatId>
+msg_id: <wamid.HBgL...>
+
+<body>
+```
+Al's Claude context IS the routing state — no per-thread session table. Voice delegate envelopes use a `[Voice delegate from ...]` header with explicit "reply will be spoken aloud" guidance.
+
+### Cutover (one-off, 2026-06-09)
+1. `pm2 stop al`.
+2. `mv /home/amar/.local/share/al/auth_whatsapp /home/amar/.config/console/auth_whatsapp` — atomic, same-fs, no re-QR.
+3. `pm2 restart console-server --update-env` (env loaded via `--env-file-if-exists=.env` in `server/package.json` scripts; `server/.env` carries `ATOMS_API_KEY`, `ATOMS_AGENT_ID`, `NOTIFY_JID`).
+4. Baileys reconnects from the moved creds; Al session spawns + persists `al-session.json`.
+5. Caddyfile: `al.amar.io` backend swapped from `localhost:18789` to `https://localhost:9877` (with `tls_insecure_skip_verify`).
+6. Sanity-check single "WhatsApp Web" entry on Yousef's phone (more than one = stale session leaked).
+
+Rollback: stop console-server, `mv` auth dir back, restart old al daemon. Auth state is preserved; Baileys reconnects without re-QR.
 
 ## Known Issues
 - Matrix E2EE: new device needs key backup restore (`POST /matrix/keys/restore-from-recovery-key`) before old messages decrypt
