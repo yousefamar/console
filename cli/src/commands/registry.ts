@@ -170,6 +170,57 @@ export const COMMANDS: CommandDef[] = [
   { name: 'cal remove-account', description: 'Remove a calendar account', safety: 'destructive',
     args: [{ name: 'email', required: true, description: 'Account email' }] },
 
+  // cal flights — SerpApi-backed flight search & watchlists (see CLAUDE.md)
+  { name: 'cal flights status', description: 'Show SerpApi credential status', safety: 'read' },
+  { name: 'cal flights credentials', description: 'Set/rotate the SerpApi key', safety: 'write',
+    flags: { key: { type: 'string', description: 'SerpApi API key' } } },
+  { name: 'cal flights explore', description: 'Anywhere/region flight discovery (Google Travel Explore engine)', safety: 'read',
+    flags: {
+      from: { type: 'string', description: 'Origin airport code (e.g. LHR) — required' },
+      to: { type: 'string', description: 'Specific destination code (optional)' },
+      region: { type: 'string', description: 'europe|africa|asia|oceania|northAmerica|southAmerica' },
+      month: { type: 'string', description: '1..12 or 0 for next six months (default 0)' },
+      duration: { type: 'string', description: 'Weekend | "1 week" | "2 weeks" (default "1 week")' },
+      currency: { type: 'string', description: 'ISO currency (default GBP)' },
+    },
+    examples: ['con cal flights explore --from LHR --region europe --month 11', 'con cal flights explore --from STN --to BCN --month 12'] },
+  { name: 'cal flights search', description: 'Point-to-point flight search (Google Flights engine)', safety: 'read',
+    flags: {
+      from: { type: 'string', description: 'Origin code — required' },
+      to: { type: 'string', description: 'Destination code — required' },
+      date: { type: 'string', description: 'YYYY-MM-DD outbound — required' },
+      return: { type: 'string', description: 'YYYY-MM-DD return (omit for one-way)' },
+      class: { type: 'string', description: '1 economy | 2 premium | 3 business | 4 first' },
+      adults: { type: 'string', description: 'Adult passengers (default 1)' },
+      currency: { type: 'string', description: 'ISO currency (default GBP)' },
+    },
+    examples: ['con cal flights search --from LHR --to JFK --date 2026-08-15 --return 2026-08-22'] },
+  { name: 'cal flights watch', description: 'Manage flight price watchlists',
+    safety: 'write',
+    args: [{ name: 'sub', required: false, description: 'list (default) | add | remove | run' }],
+    flags: {
+      kind: { type: 'string', description: 'explore | route (auto-detected from --date if omitted)' },
+      from: { type: 'string', description: 'Origin code' },
+      to: { type: 'string', description: 'Destination code' },
+      region: { type: 'string', description: 'Explore region (europe etc)' },
+      month: { type: 'string', description: 'Explore month 1..12 or 0' },
+      duration: { type: 'string', description: 'Explore duration (Weekend|1 week|2 weeks)' },
+      date: { type: 'string', description: 'Route outbound date YYYY-MM-DD' },
+      return: { type: 'string', description: 'Route return date' },
+      class: { type: 'string', description: 'Route travel class 1..4' },
+      adults: { type: 'string', description: 'Route adults (default 1)' },
+      label: { type: 'string', description: 'Friendly label' },
+      max: { type: 'string', description: 'Alert threshold in major units (e.g. 250)' },
+      currency: { type: 'string', description: 'ISO currency (default GBP)' },
+    },
+    examples: [
+      'con cal flights watch list',
+      'con cal flights watch add --from LHR --region europe --month 11 --max 200 --label "Nov Europe"',
+      'con cal flights watch add --from LHR --to JFK --date 2026-08-15 --return 2026-08-22 --max 600',
+      'con cal flights watch run wl_abcdef',
+      'con cal flights watch remove wl_abcdef',
+    ] },
+
   // agent
   { name: 'agent list', description: 'List agent sessions', safety: 'read',
     flags: { past: { type: 'boolean', description: 'Include past sessions' }, cwd: { type: 'string', description: 'Working directory' } } },
@@ -195,6 +246,22 @@ export const COMMANDS: CommandDef[] = [
     args: [{ name: 'session-id', required: true, description: 'Session ID' }] },
   { name: 'agent wait', description: 'Block until session completes', safety: 'read',
     args: [{ name: 'session-id', required: true, description: 'Session ID' }] },
+  { name: 'agent chat', description: 'Talk to another agent: forks the named session (inherits its context), injects your message, returns its reply. The fork is a normal session (see `agent list`). Continue with --id, end with --id --end.', safety: 'write',
+    args: [
+      { name: 'name', required: false, description: 'Target session name (first turn). Omit when using --id.' },
+      { name: 'message', required: false, description: 'Message to send. Omit only with --end.' },
+    ],
+    flags: {
+      id: { type: 'string', description: 'Continue an existing conversation (the conv id = fork claudeSessionId printed on the first turn)' },
+      end: { type: 'boolean', description: 'End the conversation fork (with --id)' },
+      from: { type: 'string', description: 'Your own name, shown to the other agent on the first turn (default: "another agent")' },
+      timeout: { type: 'string', description: 'Max wait for a reply, e.g. 5m, 90s (default 5m)' },
+    },
+    examples: [
+      'con agent chat "Gravel general" "what auth does the control plane use?"',
+      'con agent chat --id 3c7ac00e-… "and how are keys rotated?"',
+      'con agent chat --id 3c7ac00e-… --end',
+    ] },
 
   // search
   { name: 'search', description: 'Cross-service search', safety: 'read',
@@ -343,9 +410,9 @@ export const COMMANDS: CommandDef[] = [
       'expect-status': { type: 'string', description: 'HTTP status that means healthy (add)' },
     },
     examples: ['con dashboard servers list', 'con dashboard servers add --name vps --url https://example.com', 'con dashboard servers remove srv_abc'] },
-  { name: 'dashboard canvas', description: 'Collaborate on the agent canvas via islands. Multiple agents can each own a slug; hub composes them into a grid. Falls back to direct index.html writes for full takeover.',
+  { name: 'dashboard canvas', description: 'Collaborate on the agent canvas via islands or tabs. Islands compose into a grid; tabs are sandboxed sub-canvases owned by one agent each. Falls back to direct index.html writes for full takeover when neither islands nor tabs exist.',
     safety: 'write',
-    args: [{ name: 'sub', required: false, description: 'list (default) | add | remove | clear | reset' }],
+    args: [{ name: 'sub', required: false, description: 'list (default) | add | remove | clear | reset | tab' }],
     flags: {
       title: { type: 'string', description: 'Island header title (add)' },
       by: { type: 'string', description: 'Author tag shown in island header (add). Note: cannot use --agent — it is a global flag.' },
@@ -361,6 +428,9 @@ export const COMMANDS: CommandDef[] = [
       'con dashboard canvas remove greeting',
       'con dashboard canvas clear',
       'con dashboard canvas reset',
+      'con dashboard canvas tab list',
+      "cat slideshow.html | con dashboard canvas tab add flights --title 'Flights' --by claude --accent '#f59e0b'",
+      'con dashboard canvas tab remove flights',
     ] },
 
   // cron — hub-side scheduler that fires user_prompts into agent sessions.

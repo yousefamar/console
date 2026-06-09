@@ -251,11 +251,15 @@ Commands:
   deny          Deny tool use
   tail          Stream session output (NDJSON)
   wait          Block until session completes
+  chat          Talk to another agent (forks it, returns its reply)
 
 Examples:
   con agent create "Fix the auth bug" --cwd /path/to/project --wait
   con agent list
   con agent tail session_1
+  con agent chat "Gravel general" "what auth does the control plane use?"
+  con agent chat --id <conv-id> "follow-up question"
+  con agent chat --id <conv-id> --end
 `.trim(),
 
   auth: `
