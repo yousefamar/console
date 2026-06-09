@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { showConfirm } from '@/dialog'
+import { sanitizeAndLinkify } from '@/utils/html'
 import {
   X, MapPin, Clock, Users, Video,
   ExternalLink, Pencil, Trash2,
@@ -145,9 +146,7 @@ export function CalendarEventPopover() {
 
           {/* Description snippet */}
           {event.description && (
-            <div className="text-xs text-text-tertiary mt-1 line-clamp-3 whitespace-pre-wrap">
-              {event.description.replace(/<[^>]*>/g, '').slice(0, 200)}
-            </div>
+            <DescriptionBlock description={event.description} />
           )}
         </div>
 
@@ -269,6 +268,16 @@ const REMINDER_PRESETS = [
   { minutes: 30, label: '30 min' },
   { minutes: 60, label: '1 hr' },
 ] as const
+
+function DescriptionBlock({ description }: { description: string }) {
+  const html = useMemo(() => sanitizeAndLinkify(description), [description])
+  return (
+    <div
+      className="text-xs text-text-tertiary mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words [&_a]:text-text-secondary [&_a]:underline [&_a:hover]:text-text-primary"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
+}
 
 function ReminderPicker({ reminders, defaultReminders, onChange }: {
   reminders?: { useDefault: boolean; overrides?: Array<{ method: string; minutes: number }> }
