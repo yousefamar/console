@@ -2,6 +2,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AuthStore } from '../auth-store.js'
+import { buildSessionCookie, buildClearSessionCookie, parseCookies, SESSION_COOKIE_NAME } from '../auth-middleware.js'
 
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
@@ -12,22 +13,69 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar',
 ].join(' ')
 
-// Track pending OAuth flows
-let pendingOAuthState: string | null = null
-// Whether the in-flight OAuth was initiated from the Android APK and should
-// return via a `console://auth/done` deep link instead of the HTML success page.
-let pendingOAuthCallbackApp = false
+// Track pending OAuth flows. Per-state map so concurrent sign-ins from
+// different devices don't trample each other.
+interface PendingOAuth {
+  state: string
+  callbackApp: boolean
+  returnTo?: string
+  createdAt: number
+}
+const pendingOAuthByState = new Map<string, PendingOAuth>()
 let lastOAuthResult: { email: string } | null = null
 
 // Monzo OAuth state
 let pendingMonzoState: string | null = null
 let lastMonzoResult: { connected: boolean; scaRequired?: boolean; error?: string } | null = null
 
-function getBaseUrl(req: IncomingMessage, hubPort: number): string {
+/**
+ * Compute the externally-visible base URL.
+ *
+ * Caddy reverse-proxies `/hub/*` to the hub after stripping the `/hub` prefix.
+ * We therefore need both: the proxy-visible host (`X-Forwarded-Host`) AND the
+ * forwarded prefix so that `redirect_uri` matches what we registered with
+ * Google. The prefix is supplied via `X-Forwarded-Prefix` (Caddy can set it
+ * via `header_up`); when absent we default to `/hub` only if the request was
+ * forwarded at all (X-Forwarded-Host present). Direct loopback requests get
+ * the legacy base for back-compat during the migration.
+ */
+export interface ResolvedBase { origin: string; prefix: string; secure: boolean }
+
+function resolveBase(req: IncomingMessage, hubPort: number): ResolvedBase {
+  const xfh = req.headers['x-forwarded-host']
+  const xfp = req.headers['x-forwarded-proto']
+  const xfPrefix = req.headers['x-forwarded-prefix']
+  if (typeof xfh === 'string' && xfh) {
+    const proto = typeof xfp === 'string' && xfp ? xfp.split(',')[0].trim() : 'https'
+    const prefixHeader = typeof xfPrefix === 'string' && xfPrefix ? xfPrefix : '/hub'
+    const prefix = prefixHeader.startsWith('/') ? prefixHeader.replace(/\/$/, '') : `/${prefixHeader.replace(/\/$/, '')}`
+    return { origin: `${proto}://${xfh}`, prefix, secure: proto === 'https' }
+  }
   const host = req.headers.host || `localhost:${hubPort}`
-  // If the connection is TLS (socket has 'encrypted'), use https
-  const proto = (req.socket as any).encrypted ? 'https' : 'http'
-  return `${proto}://${host}`
+  const secure = (req.socket as any).encrypted === true
+  const proto = secure ? 'https' : 'http'
+  return { origin: `${proto}://${host}`, prefix: '', secure }
+}
+
+function getBaseUrl(req: IncomingMessage, hubPort: number): string {
+  const r = resolveBase(req, hubPort)
+  return r.origin + r.prefix
+}
+
+function buildGoogleRedirectUri(req: IncomingMessage, hubPort: number): string {
+  return `${getBaseUrl(req, hubPort)}/auth/google/callback`
+}
+
+function pruneStaleOAuth(): void {
+  const now = Date.now()
+  for (const [state, entry] of pendingOAuthByState) {
+    if (now - entry.createdAt > 10 * 60 * 1000) pendingOAuthByState.delete(state)
+  }
+}
+
+function jsonResponse(res: ServerResponse, status: number, body: unknown, extraHeaders: Record<string, string> = {}): void {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders })
+  res.end(JSON.stringify(body))
 }
 
 export function handleAuthRoutes(
@@ -91,16 +139,18 @@ export function handleAuthRoutes(
       return true
     }
 
-    // Generate state for CSRF protection
-    pendingOAuthState = Math.random().toString(36).slice(2)
+    pruneStaleOAuth()
+    const state = Math.random().toString(36).slice(2)
     lastOAuthResult = null
+    const startUrl = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
     // `?callback=app` — caller is the Android APK; finish by redirecting to the
     // `console://auth/done` custom scheme so the native shell can close the
     // Custom Tab and notify the WebView.
-    const startUrl = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
-    pendingOAuthCallbackApp = startUrl.searchParams.get('callback') === 'app'
+    const callbackApp = startUrl.searchParams.get('callback') === 'app'
+    const returnTo = startUrl.searchParams.get('return') ?? undefined
+    pendingOAuthByState.set(state, { state, callbackApp, returnTo, createdAt: Date.now() })
 
-    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
+    const redirectUri = buildGoogleRedirectUri(req, hubPort)
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
     url.searchParams.set('client_id', clientId)
     url.searchParams.set('redirect_uri', redirectUri)
@@ -108,7 +158,7 @@ export function handleAuthRoutes(
     url.searchParams.set('scope', GOOGLE_SCOPES)
     url.searchParams.set('access_type', 'offline')
     url.searchParams.set('prompt', 'consent')
-    url.searchParams.set('state', pendingOAuthState)
+    url.searchParams.set('state', state)
 
     // Redirect the browser to Google's consent page
     res.writeHead(302, { Location: url.toString() })
@@ -129,40 +179,178 @@ export function handleAuthRoutes(
       return true
     }
 
-    if (!code || state !== pendingOAuthState) {
+    const pending = state ? pendingOAuthByState.get(state) : undefined
+    if (!code || !pending) {
       res.writeHead(400, { 'Content-Type': 'text/html' })
       res.end('<html><body><h2>Invalid OAuth callback</h2><p>State mismatch or missing code.</p></body></html>')
       return true
     }
 
-    pendingOAuthState = null
-    const returnToApp = pendingOAuthCallbackApp
-    pendingOAuthCallbackApp = false
+    pendingOAuthByState.delete(state!)
+    const returnToApp = pending.callbackApp
+    const returnTo = pending.returnTo
 
-    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/google/callback`
+    const redirectUri = buildGoogleRedirectUri(req, hubPort)
+    const base = resolveBase(req, hubPort)
     authStore.exchangeGoogleCode(code, redirectUri)
       .then(({ email }) => {
         lastOAuthResult = { email }
         console.log(`[auth] Google account connected: ${email}`)
+
+        // Mint a hub session cookie if this email is allow-listed for hub access.
+        // The cookie is set regardless of CONSOLE_AUTH_ENABLED — having a valid
+        // cookie ready is what lets us flip enforcement on later without locking
+        // ourselves out.
+        let setCookieHeader: string | null = null
+        if (authStore.isHubAllowedEmail(email)) {
+          const session = authStore.createHubSession(email, req.headers['user-agent'])
+          setCookieHeader = buildSessionCookie(session.id, base.secure)
+          console.log(`[auth] hub session minted for ${email} (id-prefix=${session.id.slice(0, 8)})`)
+        } else {
+          console.log(`[auth] ${email} not in hub allow-list; no session cookie issued`)
+        }
+
+        const headers: Record<string, string> = {}
+        if (setCookieHeader) headers['Set-Cookie'] = setCookieHeader
+
+        if (returnToApp) {
+          headers['Location'] = 'console://auth/done'
+          res.writeHead(302, headers)
+          res.end()
+          return
+        }
+
+        // Redirect back to the SPA if a return URL was provided. The session
+        // cookie is set on the Set-Cookie header before the redirect, so the
+        // SPA load following the redirect will already be authenticated.
+        if (returnTo && /^https?:\/\//.test(returnTo)) {
+          headers['Location'] = returnTo
+          res.writeHead(302, headers)
+          res.end()
+          return
+        }
+
+        headers['Content-Type'] = 'text/html'
+        res.writeHead(200, headers)
+        res.end(`
+          <html><body style="font-family: system-ui; text-align: center; padding-top: 100px;">
+            <h2>✓ Connected to Google</h2>
+            <p>You can close this tab and return to the app.</p>
+          </body></html>
+        `)
       })
       .catch((err: Error) => {
         console.error('[auth] OAuth exchange failed:', err.message)
+        res.writeHead(500, { 'Content-Type': 'text/html' })
+        res.end(`<html><body><h2>OAuth exchange failed</h2><pre>${err.message}</pre></body></html>`)
       })
 
-    if (returnToApp) {
-      // Redirect Custom Tab back into the APK via the custom scheme.
-      res.writeHead(302, { Location: 'console://auth/done' })
-      res.end()
+    return true
+  }
+
+  // GET /auth/session — report the current hub session (cookie-derived)
+  if (path === '/auth/session' && req.method === 'GET') {
+    const cookies = parseCookies(req)
+    const sid = cookies[SESSION_COOKIE_NAME]
+    if (!sid) {
+      jsonResponse(res, 200, { authenticated: false })
       return true
     }
+    const session = authStore.findHubSession(sid)
+    if (!session) {
+      jsonResponse(res, 200, { authenticated: false })
+      return true
+    }
+    jsonResponse(res, 200, {
+      authenticated: true,
+      email: session.email,
+      createdAt: session.createdAt,
+      lastUsedAt: session.lastUsedAt,
+    })
+    return true
+  }
 
-    res.writeHead(200, { 'Content-Type': 'text/html' })
-    res.end(`
-      <html><body style="font-family: system-ui; text-align: center; padding-top: 100px;">
-        <h2>✓ Connected to Google</h2>
-        <p>You can close this tab and return to the CLI.</p>
-      </body></html>
-    `)
+  // POST /auth/session/logout — revoke the current session cookie
+  if (path === '/auth/session/logout' && req.method === 'POST') {
+    const cookies = parseCookies(req)
+    const sid = cookies[SESSION_COOKIE_NAME]
+    if (sid) authStore.revokeHubSession(sid)
+    const base = resolveBase(req, hubPort)
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': buildClearSessionCookie(base.secure),
+    })
+    res.end(JSON.stringify({ ok: true }))
+    return true
+  }
+
+  // GET /auth/hub/sessions — list active sessions (id-prefixes only)
+  if (path === '/auth/hub/sessions' && req.method === 'GET') {
+    jsonResponse(res, 200, { sessions: authStore.listHubSessions() })
+    return true
+  }
+
+  // GET /auth/hub/tokens — list bearer tokens (no hashes/plaintexts)
+  if (path === '/auth/hub/tokens' && req.method === 'GET') {
+    jsonResponse(res, 200, { tokens: authStore.listHubTokens() })
+    return true
+  }
+
+  // POST /auth/hub/tokens — mint a new bearer token; plaintext returned once
+  if (path === '/auth/hub/tokens' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const { name, scope } = JSON.parse(body || '{}') as { name?: string; scope?: string }
+      if (!name || !scope) {
+        jsonResponse(res, 400, { error: 'name and scope are required' })
+        return
+      }
+      const allowedScopes = ['cli', 'al', 'apk', 'other']
+      if (!allowedScopes.includes(scope)) {
+        jsonResponse(res, 400, { error: `scope must be one of ${allowedScopes.join(', ')}` })
+        return
+      }
+      const { token, plaintext } = authStore.createHubToken(name, scope as 'cli' | 'al' | 'apk' | 'other')
+      jsonResponse(res, 200, {
+        id: token.id,
+        name: token.name,
+        scope: token.scope,
+        createdAt: token.createdAt,
+        plaintext,
+      })
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
+    return true
+  }
+
+  // DELETE /auth/hub/tokens/:id — revoke a bearer token
+  if (path.startsWith('/auth/hub/tokens/') && req.method === 'DELETE') {
+    const id = decodeURIComponent(path.slice('/auth/hub/tokens/'.length))
+    const ok = authStore.revokeHubToken(id)
+    jsonResponse(res, ok ? 200 : 404, { ok })
+    return true
+  }
+
+  // GET /auth/hub/allowed-emails — list emails allowed to mint hub sessions
+  if (path === '/auth/hub/allowed-emails' && req.method === 'GET') {
+    jsonResponse(res, 200, { emails: authStore.getHubAllowedEmails() })
+    return true
+  }
+
+  // POST /auth/hub/allowed-emails  body: { email }
+  if (path === '/auth/hub/allowed-emails' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const { email } = JSON.parse(body || '{}') as { email?: string }
+      if (!email) { jsonResponse(res, 400, { error: 'email is required' }); return }
+      authStore.addHubAllowedEmail(email)
+      jsonResponse(res, 200, { ok: true, emails: authStore.getHubAllowedEmails() })
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
+    return true
+  }
+
+  // DELETE /auth/hub/allowed-emails/:email
+  if (path.startsWith('/auth/hub/allowed-emails/') && req.method === 'DELETE') {
+    const email = decodeURIComponent(path.slice('/auth/hub/allowed-emails/'.length))
+    authStore.removeHubAllowedEmail(email)
+    jsonResponse(res, 200, { ok: true, emails: authStore.getHubAllowedEmails() })
     return true
   }
 

@@ -2,7 +2,7 @@
 // Persists to ~/.config/console/auth.json (mode 0600)
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -28,6 +28,26 @@ export interface MonzoAuth {
   userId?: string
 }
 
+export type HubTokenScope = 'cli' | 'al' | 'apk' | 'other'
+
+export interface HubSession {
+  id: string
+  email: string
+  createdAt: number
+  lastUsedAt: number
+  userAgent?: string
+}
+
+export interface HubToken {
+  id: string
+  name: string
+  scope: HubTokenScope
+  tokenHash: string
+  createdAt: number
+  lastUsedAt?: number
+  revoked?: true
+}
+
 export interface AuthConfig {
   google: {
     clientId: string
@@ -43,10 +63,32 @@ export interface AuthConfig {
   monzo?: MonzoAuth
   serpApi?: { apiKey: string }
   webhookSecret?: string
+  hubAllowedEmails?: string[]
+  hubSessions?: HubSession[]
+  hubTokens?: HubToken[]
 }
 
 const DEFAULT_CONFIG: AuthConfig = {
   google: { clientId: '', clientSecret: '', accounts: [] },
+}
+
+const DEFAULT_ALLOWED_EMAILS = ['yousefamar@gmail.com']
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const HUB_TOKEN_BYTES = 32
+
+function sha256Hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex')
+}
+
+function safeEqualHex(a: string, b: string): boolean {
+  try {
+    const ab = Buffer.from(a, 'hex')
+    const bb = Buffer.from(b, 'hex')
+    if (ab.length !== bb.length || ab.length === 0) return false
+    return timingSafeEqual(ab, bb)
+  } catch {
+    return false
+  }
 }
 
 export class AuthStore {
@@ -513,6 +555,163 @@ export class AuthStore {
         : { connected: false, hasCredentials: false },
       serpApi: { configured: !!this.config.serpApi?.apiKey },
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Hub auth — allow-list, sessions, bearer tokens
+  // --------------------------------------------------------------------------
+
+  getHubAllowedEmails(): string[] {
+    if (!this.config.hubAllowedEmails || this.config.hubAllowedEmails.length === 0) {
+      this.config.hubAllowedEmails = [...DEFAULT_ALLOWED_EMAILS]
+      this.save()
+    }
+    return [...this.config.hubAllowedEmails]
+  }
+
+  isHubAllowedEmail(email: string): boolean {
+    return this.getHubAllowedEmails().some((e) => e.toLowerCase() === email.toLowerCase())
+  }
+
+  addHubAllowedEmail(email: string): void {
+    const list = this.getHubAllowedEmails()
+    if (!list.some((e) => e.toLowerCase() === email.toLowerCase())) {
+      list.push(email)
+      this.config.hubAllowedEmails = list
+      this.save()
+    }
+  }
+
+  removeHubAllowedEmail(email: string): void {
+    const list = this.getHubAllowedEmails().filter((e) => e.toLowerCase() !== email.toLowerCase())
+    this.config.hubAllowedEmails = list
+    this.save()
+  }
+
+  // Sessions (browser cookie principals)
+
+  createHubSession(email: string, userAgent?: string): HubSession {
+    const session: HubSession = {
+      id: randomBytes(32).toString('base64url'),
+      email,
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      userAgent,
+    }
+    const sessions = this.config.hubSessions ?? []
+    this.pruneExpiredSessions(sessions)
+    sessions.push(session)
+    this.config.hubSessions = sessions
+    this.save()
+    return session
+  }
+
+  findHubSession(id: string): HubSession | undefined {
+    const sessions = this.config.hubSessions ?? []
+    const now = Date.now()
+    for (const s of sessions) {
+      if (safeEqualHex(sha256Hex(s.id), sha256Hex(id))) {
+        if (now - s.createdAt > SESSION_TTL_MS) return undefined
+        s.lastUsedAt = now
+        // Lazy save — TTL bumps don't need disk hits every request
+        return s
+      }
+    }
+    return undefined
+  }
+
+  touchHubSession(id: string): void {
+    const sessions = this.config.hubSessions ?? []
+    const s = sessions.find((x) => x.id === id)
+    if (s) {
+      s.lastUsedAt = Date.now()
+      this.save()
+    }
+  }
+
+  revokeHubSession(id: string): void {
+    const sessions = this.config.hubSessions ?? []
+    this.config.hubSessions = sessions.filter((s) => s.id !== id)
+    this.save()
+  }
+
+  listHubSessions(): Array<Omit<HubSession, 'id'> & { idPrefix: string }> {
+    const sessions = this.config.hubSessions ?? []
+    return sessions.map(({ id, ...rest }) => ({ ...rest, idPrefix: id.slice(0, 8) }))
+  }
+
+  private pruneExpiredSessions(sessions: HubSession[]): void {
+    const now = Date.now()
+    const keep = sessions.filter((s) => now - s.createdAt <= SESSION_TTL_MS)
+    if (keep.length !== sessions.length) {
+      sessions.length = 0
+      sessions.push(...keep)
+    }
+  }
+
+  // Bearer tokens (CLI / Al / APK / other)
+
+  createHubToken(name: string, scope: HubTokenScope): { token: HubToken; plaintext: string } {
+    const plaintext = randomBytes(HUB_TOKEN_BYTES).toString('base64url')
+    const token: HubToken = {
+      id: randomBytes(8).toString('base64url'),
+      name,
+      scope,
+      tokenHash: sha256Hex(plaintext),
+      createdAt: Date.now(),
+    }
+    const tokens = this.config.hubTokens ?? []
+    tokens.push(token)
+    this.config.hubTokens = tokens
+    this.save()
+    return { token, plaintext }
+  }
+
+  /**
+   * Validate a presented bearer token. Returns the matching token meta or null.
+   * Uses timing-safe comparison.
+   */
+  validateHubToken(plaintext: string): HubToken | null {
+    if (!plaintext) return null
+    const incomingHash = sha256Hex(plaintext)
+    const tokens = this.config.hubTokens ?? []
+    for (const t of tokens) {
+      if (t.revoked) continue
+      if (safeEqualHex(t.tokenHash, incomingHash)) {
+        t.lastUsedAt = Date.now()
+        // Persist usage lazily on next save; not critical to flush per-request.
+        return t
+      }
+    }
+    return null
+  }
+
+  listHubTokens(): Array<Omit<HubToken, 'tokenHash'>> {
+    const tokens = this.config.hubTokens ?? []
+    return tokens.map(({ tokenHash, ...rest }) => rest)
+  }
+
+  revokeHubToken(id: string): boolean {
+    const tokens = this.config.hubTokens ?? []
+    const t = tokens.find((x) => x.id === id)
+    if (!t) return false
+    t.revoked = true
+    this.save()
+    return true
+  }
+
+  /**
+   * Ensure a single named token for a fixed-scope local consumer exists.
+   * Returns the plaintext IFF a new token was just minted; otherwise null
+   * (because we never store plaintext — old plaintexts are unrecoverable).
+   * Used by the hub on first boot to mint CLI + Al tokens.
+   */
+  ensureLocalToken(name: string, scope: HubTokenScope): string | null {
+    const tokens = this.config.hubTokens ?? []
+    const existing = tokens.find((t) => t.scope === scope && t.name === name && !t.revoked)
+    if (existing) return null
+    const { plaintext } = this.createHubToken(name, scope)
+    return plaintext
   }
 
   destroy(): void {

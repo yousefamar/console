@@ -34,6 +34,8 @@ import { handleCronRoutes } from './routes/cron.js'
 import { STT_REALTIME_URL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
+import { enforce as enforceHubAuth, authEnforcementActive } from './auth-middleware.js'
+import { ensureLocalTokens } from './local-tokens.js'
 import { GmailClient } from './gmail-client.js'
 import { handleMailRoutes } from './routes/mail.js'
 import { CalendarClient } from './calendar-client.js'
@@ -98,6 +100,14 @@ const feedStore = new FeedStore(
   join(feedsConfigDir, 'feed-read.json'),
 )
 const authStore = new AuthStore()
+// Ensure CLI + Al have plaintext bearers on disk before either client tries to
+// authenticate. Safe to run on every boot — idempotent and only mints fresh
+// tokens when the cached plaintext is gone or no longer validates.
+try {
+  ensureLocalTokens(authStore)
+} catch (err) {
+  console.error('[local-tokens] failed to ensure local tokens:', (err as Error)?.message)
+}
 const debugLog = new DebugLog(join(feedsConfigDir, 'debug.log'))
 const debugClients = new Set<WebSocket>()
 const gmailClient = new GmailClient(authStore)
@@ -447,6 +457,23 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(204)
     res.end()
     return
+  }
+
+  // Hub auth gate. In log-only mode (default) this always allows, but logs
+  // any decision that enforcement WOULD have rejected so we can verify the
+  // model before flipping CONSOLE_AUTH_ENABLED=1. Wrapped in try/catch so a
+  // middleware bug can't ever break the request path.
+  try {
+    const decision = enforceHubAuth(req, authStore)
+    if (!decision.allow) {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (decision.challenge) headers['WWW-Authenticate'] = 'ConsoleSession'
+      res.writeHead(401, headers)
+      res.end(JSON.stringify({ error: 'unauthorized', reason: decision.reason ?? null }))
+      return
+    }
+  } catch (err) {
+    console.error('[auth] middleware exception (forcing allow):', (err as Error)?.message)
   }
 
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
