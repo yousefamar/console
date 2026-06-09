@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Trash2, Maximize2, Minimize2, ExternalLink } from 'lucide-react'
 import { useDashboardStore } from '@/store/dashboard'
 import { getHubUrl } from '@/hub'
 import { showConfirm } from '@/dialog'
@@ -10,6 +10,7 @@ export function AgentCanvasCard() {
   const refreshMeta = useDashboardStore((s) => s.refreshCanvasMeta)
   const clearCanvas = useDashboardStore((s) => s.clearCanvas)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const [maximized, setMaximized] = useState(false)
 
   // Reload iframe when the canvas dir changes (fired off WS event by the hub).
   useEffect(() => {
@@ -24,19 +25,49 @@ export function AgentCanvasCard() {
 
   useEffect(() => { void refreshMeta() }, [refreshMeta])
 
+  // Esc exits fullscreen
+  useEffect(() => {
+    if (!maximized) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMaximized(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [maximized])
+
   const onClear = async () => {
     if (!(await showConfirm('Clear the canvas?', { title: 'Clear canvas', danger: true, confirmLabel: 'Clear' }))) return
     await clearCanvas()
   }
 
+  const openInNewTab = () => window.open(`${getHubUrl()}/canvas/index.html`, '_blank', 'noopener,noreferrer')
+
   return (
-    <section className="flex flex-col min-h-0 h-full border border-border rounded-sm bg-surface-1 overflow-hidden">
+    <section
+      className={
+        maximized
+          ? 'fixed inset-0 z-50 flex flex-col border-0 rounded-none bg-surface-1 overflow-hidden'
+          : 'flex flex-col min-h-0 h-full border border-border rounded-sm bg-surface-1 overflow-hidden'
+      }
+    >
       <header className="flex items-center justify-between px-3 py-1.5 border-b border-border">
         <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">Agent canvas</h2>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-text-tertiary">
             {meta?.isPlaceholder ? 'empty' : meta ? `updated ${fmtAgo(Date.now() - meta.updatedAt)}` : ''}
           </span>
+          <button
+            onClick={openInNewTab}
+            className="text-[10px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="Open canvas in a new browser tab"
+          >
+            <ExternalLink size={11} />
+          </button>
+          <button
+            onClick={() => setMaximized(!maximized)}
+            className="text-[10px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title={maximized ? 'Restore (Esc)' : 'Maximize'}
+          >
+            {maximized ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+          </button>
           <button
             onClick={onClear}
             disabled={meta?.isPlaceholder}

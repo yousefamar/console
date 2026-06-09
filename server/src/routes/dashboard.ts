@@ -192,3 +192,61 @@ export function handleCanvasIslandRoutes(
 
   return false
 }
+
+/** Tab CRUD — each tab is a sandboxed sub-canvas owned by one agent. */
+export function handleCanvasTabRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  ctx: DashboardCtx,
+  readBody: (req: IncomingMessage) => Promise<string>,
+): boolean {
+  if (!path.startsWith('/dashboard/canvas/tabs')) return false
+  const json = (data: unknown, status = 200) => {
+    res.writeHead(status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(data))
+  }
+
+  if (path === '/dashboard/canvas/tabs' && req.method === 'GET') {
+    json({ tabs: ctx.canvas.listTabs() })
+    return true
+  }
+
+  if (path === '/dashboard/canvas/tabs' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      let parsed: { slug?: string; html?: string; meta?: Record<string, unknown> }
+      try { parsed = JSON.parse(body) } catch { return json({ error: 'invalid json' }, 400) }
+      if (!parsed.slug || typeof parsed.html !== 'string') return json({ error: 'slug and html required' }, 400)
+      try {
+        const saved = ctx.canvas.writeTab(parsed.slug, parsed.html, parsed.meta as Record<string, never> | undefined)
+        // Recompose root so the shell picks up the new/updated tab.
+        ctx.canvas.composeIndexHtml()
+        json({ slug: saved })
+      } catch (err) {
+        json({ error: (err as Error).message }, 400)
+      }
+    }).catch((err) => json({ error: (err as Error).message }, 500))
+    return true
+  }
+
+  if (path === '/dashboard/canvas/tabs' && req.method === 'DELETE') {
+    ctx.canvas.clearTabs()
+    ctx.canvas.composeIndexHtml()
+    json({ ok: true })
+    return true
+  }
+
+  const m = path.match(/^\/dashboard\/canvas\/tabs\/([^/]+)$/)
+  if (m && req.method === 'DELETE') {
+    const ok = ctx.canvas.removeTab(decodeURIComponent(m[1]!))
+    if (!ok) {
+      json({ error: 'not found' }, 404)
+      return true
+    }
+    ctx.canvas.composeIndexHtml()
+    json({ ok: true })
+    return true
+  }
+
+  return false
+}

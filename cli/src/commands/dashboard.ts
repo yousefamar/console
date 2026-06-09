@@ -71,6 +71,7 @@ async function canvasCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const sub = args[0]
   const rest = args.slice(1)
   switch (sub) {
+    case 'tab': return canvasTabCmd(rest, flags)
     case undefined:
     case 'list': {
       const r = await hubFetch<{ islands: unknown[] }>('/dashboard/canvas/islands')
@@ -125,7 +126,64 @@ async function canvasCmd(args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
     default:
-      exitWithError('USAGE', `Unknown dashboard canvas verb: ${sub}. Try: list, add, remove, clear, reset.`, flags)
+      exitWithError('USAGE', `Unknown dashboard canvas verb: ${sub}. Try: list, add, remove, clear, reset, tab.`, flags)
+  }
+}
+
+// --------------------------------------------------------------------------
+// Canvas tabs — each agent can own a tab with arbitrary HTML.
+// --------------------------------------------------------------------------
+
+async function canvasTabCmd(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case undefined:
+    case 'list': {
+      const r = await hubFetch<{ tabs: unknown[] }>('/dashboard/canvas/tabs')
+      output(r.tabs, flags)
+      return
+    }
+    case 'add': {
+      const opts = parseFlags(rest)
+      const slug = opts.slug ?? rest.find((a) => !a.startsWith('--'))
+      if (!slug) {
+        exitWithError('USAGE', "Usage: con dashboard canvas tab add <slug> [--title 'X'] [--by X] [--accent #hex] [--order N] (HTML on stdin or --file PATH)", flags)
+        return
+      }
+      const html = opts.file
+        ? readFileSync(opts.file, 'utf8')
+        : await readStdin()
+      if (!html) {
+        exitWithError('USAGE', 'No HTML provided. Pipe to stdin or use --file PATH.', flags)
+        return
+      }
+      const meta: Record<string, unknown> = {}
+      if (opts.title) meta.title = opts.title
+      if (opts.by) meta.agent = opts.by
+      if (opts.accent) meta.accent = opts.accent
+      if (opts.order) meta.order = parseInt(opts.order, 10)
+      const r = await hubFetch<unknown>('/dashboard/canvas/tabs', { method: 'POST', body: { slug, html, meta } })
+      output(r, flags)
+      return
+    }
+    case 'remove': {
+      const slug = rest[0]
+      if (!slug) {
+        exitWithError('USAGE', 'Usage: con dashboard canvas tab remove <slug>', flags)
+        return
+      }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/tabs/${encodeURIComponent(slug)}`, { method: 'DELETE' })
+      output(r, flags)
+      return
+    }
+    case 'clear': {
+      const r = await hubFetch<unknown>('/dashboard/canvas/tabs', { method: 'DELETE' })
+      output(r, flags)
+      return
+    }
+    default:
+      exitWithError('USAGE', `Unknown dashboard canvas tab verb: ${sub}. Try: list, add, remove, clear.`, flags)
   }
 }
 

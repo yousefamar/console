@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { execFile } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync, type Dirent } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { Session } from './session.js'
@@ -390,15 +390,54 @@ export interface Island {
   meta: IslandMeta
 }
 
+export interface TabMeta {
+  title?: string
+  agent?: string
+  /** Header accent color (CSS) — drives active-tab top border */
+  accent?: string
+  /** Lower → earlier in the bar. Falls back to createdAt. */
+  order?: number
+  /** Auto-set on first write */
+  createdAt?: number
+}
+
+export interface Tab {
+  slug: string
+  meta: TabMeta
+  /** True when tabs/<slug>/index.html exists */
+  hasContent: boolean
+}
+
 export class CanvasDir {
   constructor(public readonly dir: string) {
     mkdirSync(dir, { recursive: true })
     mkdirSync(this.islandsDir, { recursive: true })
-    // If index.html missing, compose (empty islands → placeholder).
-    if (!existsSync(join(dir, 'index.html'))) this.composeIndexHtml()
+    mkdirSync(this.tabsDir, { recursive: true })
+    // Recompose at startup when index.html is missing OR when islands/tabs
+    // exist (direct index.html writes are only respected when both are
+    // empty — same invariant as the islands-only era).
+    if (!existsSync(join(dir, 'index.html')) || this.hasIslands() || this.hasTabs()) {
+      this.composeIndexHtml()
+    }
   }
 
   get islandsDir(): string { return join(this.dir, 'islands') }
+  get tabsDir(): string { return join(this.dir, 'tabs') }
+
+  /** Current served index.html (empty string if absent). Used by the canvas
+   *  watcher to gate broadcasts on actual content change. */
+  readIndexHtml(): string {
+    try { return readFileSync(join(this.dir, 'index.html'), 'utf8') } catch { return '' }
+  }
+
+  /** Write only if content differs — avoids retriggering the fs.watch loop
+   *  that caused the canvas iframe to flash (compose → write → watch event →
+   *  compose → …). Returns true if a write happened. */
+  private writeIfChanged(path: string, content: string): boolean {
+    try { if (readFileSync(path, 'utf8') === content) return false } catch { /* missing → write */ }
+    writeFileSync(path, content, 'utf8')
+    return true
+  }
 
   /** Resolve a request path inside the dir. Returns null if it escapes. */
   resolve(relPath: string): string | null {
@@ -420,9 +459,10 @@ export class CanvasDir {
     try { return readFileSync(full) } catch { return null }
   }
 
-  metadata(): { updatedAt: number; sizeBytes: number; isPlaceholder: boolean; islandCount: number } {
+  metadata(): { updatedAt: number; sizeBytes: number; isPlaceholder: boolean; islandCount: number; tabCount: number } {
     const idx = join(this.dir, 'index.html')
     const islandCount = this.hasIslands() ? this.listIslands().length : 0
+    const tabCount = this.listTabs().length
     try {
       const st = statSync(idx)
       const buf = readFileSync(idx)
@@ -431,22 +471,25 @@ export class CanvasDir {
         sizeBytes: st.size,
         isPlaceholder: buf.toString('utf8').includes('No canvas content yet.'),
         islandCount,
+        tabCount,
       }
     } catch {
-      return { updatedAt: 0, sizeBytes: 0, isPlaceholder: true, islandCount }
+      return { updatedAt: 0, sizeBytes: 0, isPlaceholder: true, islandCount, tabCount }
     }
   }
 
   /**
-   * Wipe everything in the dir (incl. islands contents) and re-seed the
-   * placeholder. The islands DIR itself is preserved — deleting and
-   * recreating it would invalidate the hub's inotify handle on it.
+   * Wipe everything in the dir (incl. islands AND tabs contents) and
+   * re-seed the placeholder. The islands and tabs DIRS themselves are
+   * preserved — deleting and recreating them would invalidate the hub's
+   * inotify handles.
    */
   clear(): void {
     this.clearIslands()
+    this.clearTabs()
     try {
       for (const entry of readdirSync(this.dir)) {
-        if (entry === 'islands') continue
+        if (entry === 'islands' || entry === 'tabs') continue
         rmSync(join(this.dir, entry), { recursive: true, force: true })
       }
     } catch { /* best effort */ }
@@ -518,15 +561,99 @@ export class CanvasDir {
     } catch { /* best effort */ }
   }
 
+  // ---- tabs ----
+  //
+  // A tab is a dir under tabs/<slug>/ containing its own index.html plus an
+  // optional tab.json with TabMeta. When ANY tab exists, the root index.html
+  // becomes a "tab shell" — a tab-bar + per-tab iframe layout. Otherwise the
+  // existing islands/direct behavior is unchanged (full backwards compat).
+
+  hasTabs(): boolean {
+    try {
+      return readdirSync(this.tabsDir, { withFileTypes: true }).some((d) => d.isDirectory())
+    } catch { return false }
+  }
+
+  listTabs(): Tab[] {
+    let entries: Dirent[]
+    try { entries = readdirSync(this.tabsDir, { withFileTypes: true }) } catch { return [] }
+    const tabs: Tab[] = []
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const slug = e.name
+      const tabDir = join(this.tabsDir, slug)
+      let meta: TabMeta = {}
+      try { meta = JSON.parse(readFileSync(join(tabDir, 'tab.json'), 'utf8')) } catch { /* no meta */ }
+      const hasContent = existsSync(join(tabDir, 'index.html'))
+      tabs.push({ slug, meta, hasContent })
+    }
+    tabs.sort((a, b) => {
+      const oa = a.meta.order ?? a.meta.createdAt ?? Number.POSITIVE_INFINITY
+      const ob = b.meta.order ?? b.meta.createdAt ?? Number.POSITIVE_INFINITY
+      return oa - ob
+    })
+    return tabs
+  }
+
+  writeTab(slug: string, html: string, meta?: TabMeta): string {
+    const safe = sanitiseSlug(slug)
+    if (!safe) throw new Error('invalid slug')
+    const tabDir = join(this.tabsDir, safe)
+    mkdirSync(tabDir, { recursive: true })
+    writeFileSync(join(tabDir, 'index.html'), html, 'utf8')
+    let existing: TabMeta = {}
+    try { existing = JSON.parse(readFileSync(join(tabDir, 'tab.json'), 'utf8')) } catch { /* no prior */ }
+    const finalMeta: TabMeta = {
+      ...existing,
+      ...meta,
+      createdAt: existing.createdAt ?? meta?.createdAt ?? Date.now(),
+    }
+    writeFileSync(join(tabDir, 'tab.json'), JSON.stringify(finalMeta, null, 2), 'utf8')
+    return safe
+  }
+
+  removeTab(slug: string): boolean {
+    const safe = sanitiseSlug(slug)
+    if (!safe) return false
+    const tabDir = join(this.tabsDir, safe)
+    if (!existsSync(tabDir)) return false
+    rmSync(tabDir, { recursive: true, force: true })
+    return true
+  }
+
+  clearTabs(): void {
+    try {
+      for (const e of readdirSync(this.tabsDir, { withFileTypes: true })) {
+        if (e.isDirectory()) rmSync(join(this.tabsDir, e.name), { recursive: true, force: true })
+      }
+    } catch { /* best effort */ }
+  }
+
   /**
-   * Regenerate index.html. If any islands exist, compose them into a grid
-   * shell. Otherwise re-seed the placeholder.
+   * Regenerate index.html.
+   *   • Tabs exist → tab-shell at root index.html. Root islands (if any)
+   *     are composed to _default.html and shown as the first tab.
+   *   • No tabs, root islands → grid of islands (legacy behavior).
+   *   • Nothing → placeholder.
    */
   composeIndexHtml(): string {
+    const tabs = this.listTabs()
     const islands = this.listIslands()
-    const html = islands.length > 0 ? composeIslands(islands) : PLACEHOLDER_HTML
+    let html: string
+    if (tabs.length > 0) {
+      const hasDefault = islands.length > 0
+      if (hasDefault) {
+        this.writeIfChanged(join(this.dir, '_default.html'), composeIslands(islands))
+      } else {
+        try { rmSync(join(this.dir, '_default.html')) } catch { /* not there */ }
+      }
+      html = composeTabShell(tabs, hasDefault)
+    } else {
+      try { rmSync(join(this.dir, '_default.html')) } catch { /* not there */ }
+      html = islands.length > 0 ? composeIslands(islands) : PLACEHOLDER_HTML
+    }
     try {
-      writeFileSync(join(this.dir, 'index.html'), html, 'utf8')
+      this.writeIfChanged(join(this.dir, 'index.html'), html)
     } catch (err) {
       console.error('[dashboard] compose index failed:', (err as Error).message)
     }
@@ -575,6 +702,74 @@ function composeIslands(islands: Island[]): string {
 <div class="grid">
 ${cards}
 </div>
+</body></html>
+`
+}
+
+function composeTabShell(tabs: Tab[], hasDefault: boolean): string {
+  // The "default" tab fronts the root-level islands (legacy compat). When the
+  // user only has named tabs and no root islands, it's omitted.
+  const all: Array<{ slug: string; meta: TabMeta; src: string }> = []
+  if (hasDefault) {
+    all.push({ slug: '_default', meta: { title: 'Default' }, src: '_default.html' })
+  }
+  for (const t of tabs) {
+    all.push({
+      slug: t.slug,
+      meta: t.meta,
+      src: `tabs/${encodeURIComponent(t.slug)}/index.html`,
+    })
+  }
+  const tabButtons = all.map((t) => {
+    const title = t.meta.title || t.slug
+    const accent = t.meta.accent || '#10b981'
+    const agent = t.meta.agent || ''
+    return `<button class="tab" data-slug="${escapeAttr(t.slug)}" data-accent="${escapeAttr(accent)}">${escapeHtml(title)}${agent ? `<span class="tab-by">${escapeHtml(agent)}</span>` : ''}</button>`
+  }).join('')
+  const frames = all.map((t) => {
+    return `<iframe class="tab-frame" data-slug="${escapeAttr(t.slug)}" src="${escapeAttr(t.src)}" loading="lazy"></iframe>`
+  }).join('')
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Canvas</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#0a0a0a;color:#e5e5e5;font:13px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden}
+  body{display:flex;flex-direction:column}
+  .tab-bar{display:flex;gap:2px;padding:6px 8px 0;background:#0f0f0f;border-bottom:1px solid #262626;overflow-x:auto;flex-shrink:0}
+  .tab{background:#1a1a1a;border:1px solid #262626;color:#a3a3a3;font:inherit;font-size:12px;padding:5px 12px 6px;border-radius:6px 6px 0 0;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;border-bottom:none;margin-bottom:-1px;border-top:2px solid transparent}
+  .tab:hover{background:#222;color:#e5e5e5}
+  .tab.active{background:#0a0a0a;color:#e5e5e5;border-top-color:var(--accent,#10b981)}
+  .tab-by{font-size:10px;color:#737373}
+  .tab-content{flex:1;min-height:0;position:relative;background:#0a0a0a}
+  .tab-frame{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#0a0a0a}
+  .tab-frame.active{display:block}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#262626;border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:#404040}
+</style></head><body>
+<div class="tab-bar">${tabButtons}</div>
+<div class="tab-content">${frames}</div>
+<script>
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const frames = Array.from(document.querySelectorAll('.tab-frame'));
+  function show(slug) {
+    let matched = null;
+    tabs.forEach(function(t) {
+      const active = t.dataset.slug === slug;
+      t.classList.toggle('active', active);
+      if (active) { t.style.setProperty('--accent', t.dataset.accent || '#10b981'); matched = t; }
+    });
+    frames.forEach(function(f) { f.classList.toggle('active', f.dataset.slug === slug); });
+    try { history.replaceState(null, '', '#tab=' + encodeURIComponent(slug)); } catch (e) {}
+    return matched;
+  }
+  tabs.forEach(function(t) { t.addEventListener('click', function() { show(t.dataset.slug); }); });
+  const m = location.hash.match(/tab=([^&]+)/);
+  const wanted = m ? decodeURIComponent(m[1]) : null;
+  if (wanted && tabs.some(function(t) { return t.dataset.slug === wanted; })) show(wanted);
+  else if (tabs[0]) show(tabs[0].dataset.slug);
+</script>
 </body></html>
 `
 }
