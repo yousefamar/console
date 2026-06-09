@@ -7,6 +7,8 @@ import { CalendarMonth } from './CalendarMonth'
 import { CalendarEventPopover } from './CalendarEventPopover'
 import { CalendarEventForm } from './CalendarEventForm'
 import { CalendarLocationPicker } from './CalendarLocationPicker'
+import { FlightsSheet } from './FlightsSheet'
+import { useFlightsStore } from '@/store/flights'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
 export const CalendarTab = memo(function CalendarTab() {
@@ -26,6 +28,9 @@ export const CalendarTab = memo(function CalendarTab() {
       store.loadAccounts().then(() =>
         store.fetchCalendars().then(() => store.fetchEvents())
       )
+      // Initialise flight watchlists so the mobile button shows a fresh count
+      // even before the user opens the sheet. Idempotent.
+      void useFlightsStore.getState().init()
     }
   }, [])
 
@@ -60,6 +65,7 @@ export const CalendarTab = memo(function CalendarTab() {
       {selectedEventId && <CalendarEventPopover />}
       {showEventForm && <CalendarEventForm />}
       {locationPickerEvent && <CalendarLocationPicker />}
+      {isMobile && <FlightsSheet />}
     </div>
   )
 })

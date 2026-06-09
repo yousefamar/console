@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { getHubUrl } from '@/hub'
 import { ChevronLeft, ChevronRight, Plus, Eye, EyeOff, Rss, User, Star } from 'lucide-react'
+import { FlightsPanel } from './FlightsPanel'
 
 export function CalendarSidebar() {
   const currentDate = useCalendarStore((s) => s.currentDate)
@@ -155,6 +156,11 @@ export function CalendarSidebar() {
           <Plus size={11} />
           Add calendar account
         </button>
+      </div>
+
+      {/* Flight watchlists (SerpApi-backed) */}
+      <div className="pt-2 mt-2 border-t border-border">
+        <FlightsPanel />
       </div>
     </div>
   )

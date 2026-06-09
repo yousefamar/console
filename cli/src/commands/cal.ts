@@ -15,9 +15,137 @@ export async function cal(verb: string | undefined, args: string[], flags: Globa
     case 'accounts': return calAccounts(flags)
     case 'add-account': return calAddAccount(flags)
     case 'remove-account': return calRemoveAccount(args, flags)
+    case 'flights': return calFlights(args, flags)
     default:
       exitWithError('USAGE', `Unknown cal command: ${verb}. Run 'con help cal'.`, flags)
   }
+}
+
+// --------------------------------------------------------------------------
+// Flights subcommand — SerpApi-backed flight search & watchlists
+// --------------------------------------------------------------------------
+
+async function calFlights(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case 'explore': return flightExplore(rest, flags)
+    case 'search': return flightSearch(rest, flags)
+    case 'watch': return flightWatch(rest, flags)
+    case 'status': return flightStatus(flags)
+    case 'credentials': return flightCredentials(rest, flags)
+    default:
+      exitWithError('USAGE', "Usage: con cal flights {explore|search|watch|status|credentials}", flags)
+  }
+}
+
+async function flightStatus(flags: GlobalFlags): Promise<void> {
+  const data = await hubFetch('/flights/status')
+  output(data, flags)
+}
+
+async function flightCredentials(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  if (!opts.key) exitWithError('USAGE', 'Usage: con cal flights credentials --key <serpapi-key>', flags)
+  const result = await hubFetch('/flights/credentials', { method: 'POST', body: { apiKey: opts.key } })
+  output(result, flags)
+}
+
+async function flightExplore(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  if (!opts.from) exitWithError('USAGE', 'Usage: con cal flights explore --from LHR [--region europe] [--to <code>] [--month 11] [--duration "1 week"]', flags)
+  const params: Record<string, string | undefined> = {
+    from: opts.from,
+    to: opts.to,
+    region: opts.region,
+    month: opts.month,
+    duration: opts.duration,
+    currency: opts.currency,
+  }
+  const data = await hubFetch('/flights/explore', { params })
+  output(data, flags)
+}
+
+async function flightSearch(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  if (!opts.from || !opts.to || !opts.date) {
+    exitWithError('USAGE', 'Usage: con cal flights search --from LHR --to JFK --date 2026-08-15 [--return 2026-08-22] [--class 1] [--adults 1]', flags)
+  }
+  const params: Record<string, string | undefined> = {
+    from: opts.from,
+    to: opts.to,
+    date: opts.date,
+    return: opts.return,
+    class: opts.class,
+    adults: opts.adults,
+    currency: opts.currency,
+  }
+  const data = await hubFetch('/flights/search', { params })
+  output(data, flags)
+}
+
+async function flightWatch(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case 'list': return flightWatchList(flags)
+    case 'add': return flightWatchAdd(rest, flags)
+    case 'remove': return flightWatchRemove(rest, flags)
+    case 'run': return flightWatchRun(rest, flags)
+    default:
+      exitWithError('USAGE', 'Usage: con cal flights watch {list|add|remove|run}', flags)
+  }
+}
+
+async function flightWatchList(flags: GlobalFlags): Promise<void> {
+  const data = await hubFetch('/flights/watchlists')
+  output(data, flags)
+}
+
+async function flightWatchAdd(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const kind = opts.kind || (opts.date ? 'route' : 'explore')
+  if (!opts.from) exitWithError('USAGE', 'Provide --from <origin-code>', flags)
+
+  const body: Record<string, unknown> = {
+    kind,
+    origin: opts.from,
+    label: opts.label,
+    currency: opts.currency || 'GBP',
+    maxPriceMajor: opts.max ? parseFloat(opts.max) : undefined,
+  }
+  if (kind === 'explore') {
+    body.region = opts.region
+    body.destination = opts.to
+    body.month = opts.month ? parseInt(opts.month, 10) : 0
+    body.duration = opts.duration || '1 week'
+  } else {
+    if (!opts.to || !opts.date) exitWithError('USAGE', 'Route watchlist needs --to and --date', flags)
+    body.destination = opts.to
+    body.outboundDate = opts.date
+    body.returnDate = opts.return
+    body.travelClass = opts.class ? parseInt(opts.class, 10) : undefined
+    body.adults = opts.adults ? parseInt(opts.adults, 10) : 1
+  }
+
+  if (flags.dryRun) { info(`Would create ${kind} watchlist from ${opts.from}`); return }
+  const result = await hubFetch('/flights/watchlists', { method: 'POST', body })
+  output(result, flags)
+}
+
+async function flightWatchRemove(args: string[], flags: GlobalFlags): Promise<void> {
+  const id = args[0]
+  if (!id) exitWithError('USAGE', 'Usage: con cal flights watch remove <id>', flags)
+  if (flags.dryRun) { info(`Would remove watchlist ${id}`); return }
+  await hubFetch(`/flights/watchlists/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  output({ removed: id }, flags)
+}
+
+async function flightWatchRun(args: string[], flags: GlobalFlags): Promise<void> {
+  const id = args[0]
+  if (!id) exitWithError('USAGE', 'Usage: con cal flights watch run <id>', flags)
+  const result = await hubFetch(`/flights/watchlists/${encodeURIComponent(id)}/run`, { method: 'POST' })
+  output(result, flags)
 }
 
 async function calCalendars(args: string[], flags: GlobalFlags): Promise<void> {

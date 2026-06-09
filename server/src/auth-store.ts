@@ -41,6 +41,7 @@ export interface AuthConfig {
     accessToken: string
   }
   monzo?: MonzoAuth
+  serpApi?: { apiKey: string }
   webhookSecret?: string
 }
 
@@ -452,6 +453,24 @@ export class AuthStore {
   }
 
   // --------------------------------------------------------------------------
+  // SerpApi (flight data via google_travel_explore / google_flights engines)
+  // --------------------------------------------------------------------------
+
+  getSerpApiKey(): string | undefined {
+    return this.config.serpApi?.apiKey
+  }
+
+  setSerpApiKey(apiKey: string): void {
+    this.config.serpApi = { apiKey }
+    this.save()
+  }
+
+  clearSerpApi(): void {
+    this.config.serpApi = undefined
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
   // Webhook secret
   // --------------------------------------------------------------------------
 
@@ -492,6 +511,7 @@ export class AuthStore {
             tokenExpiry: monzo.accessTokenExpiry ? new Date(monzo.accessTokenExpiry).toISOString() : null,
           }
         : { connected: false, hasCredentials: false },
+      serpApi: { configured: !!this.config.serpApi?.apiKey },
     }
   }
 
