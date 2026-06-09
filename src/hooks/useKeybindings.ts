@@ -500,16 +500,9 @@ export function useKeybindings() {
           notes.getState().openQuickSwitcher()
           return
         }
-        if (e.key === 'j' || e.key === 'ArrowDown') {
-          e.preventDefault()
-          notes.getState().nextTab()
-          return
-        }
-        if (e.key === 'k' || e.key === 'ArrowUp') {
-          e.preventDefault()
-          notes.getState().prevTab()
-          return
-        }
+        // Notes tab nav is Ctrl+H / Ctrl+L (handled in the capture-phase
+        // listener at the bottom). Bare j/k must not steal tab nav here —
+        // they conflict with up/down line motion inside the editor.
         if (e.key === 'e') {
           e.preventDefault()
           const path = notes.getState().activeFilePath
