@@ -56,8 +56,24 @@ export class Session extends EventEmitter {
   totalTokens: TokenUsage = { input: 0, output: 0 }
   contextWindow = 200_000
 
-  /** Coalesced message log for replay to late-joining clients */
+  /**
+   * Coalesced message log for replay to late-joining clients.
+   *
+   * Bounded by MAX_LOG_SIZE — older entries roll off into the abyss as new
+   * ones arrive. This is the rolling window; absolute indexing is tracked via
+   * `logOffset`. Without the cap a 13-hour multi-session hub blew through V8's
+   * default 4 GB heap (24+ sessions × hours of tool_use blocks).
+   *
+   * Source of truth for the full history is Claude CLI's own JSONL transcript
+   * at ~/.claude/projects/<encoded-cwd>/<claudeSessionId>.jsonl, which it
+   * writes regardless of this log. On hub restart the SDK replays into this
+   * log via stream-json, so cold-boot naturally rebuilds the recent window.
+   */
   readonly messageLog: LoggableHubMessage[] = []
+  /** Absolute index of `messageLog[0]`. Increases when the rolling window
+   *  rolls off the oldest entry; never decreases except on clearLog. */
+  private logOffset = 0
+  private readonly MAX_LOG_SIZE = 500
 
   private process: ChildProcess | null = null
   private stdinReady = false
@@ -333,7 +349,7 @@ export class Session extends EventEmitter {
       cwd: this.cwd,
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
-      messageLogLength: this.messageLog.length,
+      messageLogLength: this.messageLogLength,
       lastReadIndex: getLastReadIndex(this.claudeSessionId),
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       gitBranch: this.gitBranch,
@@ -541,14 +557,35 @@ export class Session extends EventEmitter {
     }
   }
 
-  /** Log a message that should be replayed to late-joining clients */
+  /** Log a message that should be replayed to late-joining clients.
+   *  Rolls the oldest entry off once at MAX_LOG_SIZE; logOffset accounts for
+   *  the absolute index so client pagination keeps working. */
   logMessage(msg: LoggableHubMessage) {
     this.messageLog.push(msg)
+    if (this.messageLog.length > this.MAX_LOG_SIZE) {
+      this.messageLog.shift()
+      this.logOffset++
+    }
   }
 
-  /** Clear the message log (e.g. after /clear) */
+  /** Absolute message count ever logged (monotonic, equals what would have
+   *  been `messageLog.length` without the rolling cap). Indexing semantics
+   *  expected by the client. */
+  get messageLogLength(): number {
+    return this.logOffset + this.messageLog.length
+  }
+
+  /** Absolute index of `messageLog[0]`. Used by get_older_messages to map
+   *  the client's absolute beforeIndex into the in-memory window. */
+  get messageLogOffset(): number {
+    return this.logOffset
+  }
+
+  /** Clear the message log (e.g. after /clear). Resets the offset too —
+   *  client indices start over from 0 after this. */
   clearLog() {
     this.messageLog.length = 0
+    this.logOffset = 0
   }
 
   /** Flush accumulated deltas into coalesced log entries */

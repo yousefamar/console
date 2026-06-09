@@ -31,6 +31,7 @@ import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGrou
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
+import { STT_REALTIME_URL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { GmailClient } from './gmail-client.js'
@@ -55,12 +56,16 @@ import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
-import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes } from './routes/dashboard.js'
+import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
 import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { SyncBus } from './sync-bus.js'
 import { MailSync } from './mail/sync.js'
 import { CalendarSync } from './cal/sync.js'
+import { SerpApiClient } from './flights/serpapi.js'
+import { WatchlistStore } from './flights/store.js'
+import { FlightSync } from './flights/sync.js'
+import { handleFlightRoutes } from './routes/flights.js'
 import { KeyBackupStore } from './matrix/key-backup-store.js'
 import { HubMatrixCrypto } from './matrix/crypto.js'
 import { MatrixSync } from './matrix/sync.js'
@@ -129,23 +134,23 @@ setReadStateLogger((m: string) => { log(m) })
 //  - Broadcast `dashboard.canvas_changed` so the SPA iframe live-reloads.
 {
   let pending: ReturnType<typeof setTimeout> | null = null
-  // Suppress one self-write echo after the composer rewrites index.html.
-  let justRecomposed = false
-  const schedule = (source: string, filename: string | null) => {
-    // Skip the composer's own echo on index.html.
-    if (source === 'root' && filename === 'index.html' && justRecomposed) {
-      justRecomposed = false
-      return
-    }
+  // Only broadcast when the served index.html actually changed. This kills the
+  // flash loop: composeIndexHtml writes index.html → fires the root watcher →
+  // re-tick → compose yields identical html → no broadcast. (fs.watch emits ~2
+  // events per write, so a one-shot suppression flag wasn't enough.)
+  let lastBroadcastHtml = canvasDir.readIndexHtml()
+  const schedule = (_source: string, _filename: string | null) => {
     if (pending) clearTimeout(pending)
     pending = setTimeout(() => {
       pending = null
       // Re-check at tick time, not at event time — event-time hasIslands()
       // can race with the FS write that triggered the event.
-      if (canvasDir.hasIslands()) {
+      if (canvasDir.hasIslands() || canvasDir.hasTabs()) {
         canvasDir.composeIndexHtml()
-        justRecomposed = true
       }
+      const html = canvasDir.readIndexHtml()
+      if (html === lastBroadcastHtml) return // no real change → no reload, no flash
+      lastBroadcastHtml = html
       syncBus.broadcast('dashboard', 'canvas_changed', canvasDir.metadata())
     }, 200)
   }
@@ -164,6 +169,18 @@ setReadStateLogger((m: string) => { log(m) })
     log(`[dashboard] watching canvas islands: ${canvasDir.islandsDir}`)
   } catch (e) {
     log(`[dashboard] canvas islands watch failed: ${(e as Error).message}`)
+  }
+  // Tabs watcher — recursive so per-tab content edits trigger a recompose +
+  // broadcast. Linux fs.watch recursive can degrade after subdir events, so
+  // agents should prefer the POST /dashboard/canvas/tabs API which calls
+  // composeIndexHtml() synchronously and lets the root watch broadcast.
+  try {
+    watch(canvasDir.tabsDir, { persistent: false, recursive: true }, (_evt, filename) => {
+      schedule('tabs', typeof filename === 'string' ? filename : null)
+    })
+    log(`[dashboard] watching canvas tabs: ${canvasDir.tabsDir}`)
+  } catch (e) {
+    log(`[dashboard] canvas tabs watch failed: ${(e as Error).message}`)
   }
 }
 const mailSync = new MailSync(
@@ -190,6 +207,10 @@ syncBus.register('cal', {
   syncNow: async () => calSync.syncNow(),
 })
 calSync.start()
+const serpApiClient = new SerpApiClient(authStore)
+const flightWatchlists = new WatchlistStore(join(feedsConfigDir, 'flight-watchlists.json'))
+const flightSync = new FlightSync(serpApiClient, flightWatchlists, pushServer, syncBus, (msg: string) => { log(msg) })
+flightSync.start()
 const keyBackupStore = new KeyBackupStore(
   join(feedsConfigDir, 'matrix-key-backup.json'),
   (msg: string) => { log(msg) },
@@ -576,6 +597,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
+  if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, readBody })) return
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, matrixSync, readBody)) return
   if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
   if (path.startsWith('/finance') && handleFinanceRoutes(req, res, path, url, financeStore, monzoStore, monzoClient, authStore, readBody)) return
@@ -589,6 +611,9 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+  }, readBody)) return
+  if (path.startsWith('/dashboard/canvas/tabs') && handleCanvasTabRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
   }, readBody)) return
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
@@ -708,56 +733,30 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return
     }
     log('[stt] Client connected, opening OpenAI realtime transcription...')
-    // gpt-realtime-whisper streams transcript deltas word-by-word as audio
-    // arrives (vs gpt-4o-mini-transcribe's bursty sentence-boundary commits).
-    // Session payload shape changed in the May 2026 voice-intelligence drop —
-    // nested under `audio.input.*` and the message type is now `session.update`,
-    // not `transcription_session.update`.
-    const openaiWs = new WebSocket('wss://api.openai.com/v1/realtime/transcription', {
-      headers: { 'Authorization': `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' },
-    })
+    // GA realtime API — config + event translation live in stt.ts (with tests).
+    // See that module's header for the two broken variants that preceded this.
+    const openaiWs = new WebSocket(STT_REALTIME_URL, { headers: buildSttHeaders(apiKey) })
 
     // Periodically commit the audio buffer to force transcription during continuous speech
     let commitInterval: ReturnType<typeof setInterval> | null = null
 
     openaiWs.on('open', () => {
-      openaiWs.send(JSON.stringify({
-        type: 'session.update',
-        session: {
-          type: 'transcription',
-          audio: {
-            input: {
-              // Client (AgentPromptInput) captures via AudioContext at 24000 Hz
-              // mono PCM16; keep these in sync if either side changes.
-              format: { type: 'audio/pcm', rate: 24000 },
-              transcription: { model: 'gpt-realtime-whisper', language: 'en' },
-              turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
-              noise_reduction: { type: 'near_field' },
-            },
-          },
-        },
-      }))
+      openaiWs.send(JSON.stringify(buildTranscriptionSessionUpdate()))
     })
 
     openaiWs.on('message', (data) => {
       try {
-        const msg = JSON.parse(data.toString())
-        // Log all event types for debugging (except session updates which are noisy)
-        if (msg.type && !msg.type.startsWith('transcription_session')) {
-          log(`[stt] event: ${msg.type}`)
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>
+        const type = msg.type as string | undefined
+        // Log all event types for debugging (except session acks which are noisy)
+        if (type && !type.startsWith('session.') && !type.startsWith('transcription_session')) {
+          log(`[stt] event: ${type}`)
         }
-        if (msg.type === 'conversation.item.input_audio_transcription.delta') {
-          ws.send(JSON.stringify({ type: 'interim', text: msg.delta || '' }))
-        } else if (msg.type === 'conversation.item.input_audio_transcription.completed') {
-          ws.send(JSON.stringify({ type: 'final', text: msg.transcript || '' }))
-        } else if (msg.type === 'conversation.item.input_audio_transcription.failed') {
-          // Log the full failure payload — OpenAI puts the reason inside `error`
-          log(`[stt] transcription failed: ${JSON.stringify(msg).slice(0, 500)}`)
-          ws.send(JSON.stringify({ type: 'error', message: msg.error?.message || 'Transcription failed' }))
-        } else if (msg.type === 'error') {
-          log(`[stt] OpenAI error: ${JSON.stringify(msg.error)}`)
-          ws.send(JSON.stringify({ type: 'error', message: msg.error?.message || 'Transcription error' }))
+        if (type === 'conversation.item.input_audio_transcription.failed' || type === 'error') {
+          log(`[stt] OpenAI error payload: ${JSON.stringify(msg).slice(0, 500)}`)
         }
+        const out = translateOpenAiEvent(msg)
+        if (out) ws.send(JSON.stringify(out))
       } catch { /* ignore */ }
     })
 
@@ -847,21 +846,38 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return
     }
 
-    // Handle older message pagination (works for both Al and regular sessions)
+    // Handle older message pagination (works for both Al and regular sessions).
+    // beforeIndex is an ABSOLUTE index (client-side message numbering, monotonic
+    // across the session). For agent sessions we translate to the in-memory
+    // window via `messageLogOffset` — anything older than the offset has been
+    // rolled off the cap and is no longer paginable in-memory (full history
+    // still lives in Claude CLI's JSONL transcript on disk, but we don't
+    // re-hydrate it from there yet).
     if (msg.type === 'get_older_messages') {
       const PAGE = (msg as any).limit || 50
       const beforeIndex = (msg as any).beforeIndex as number
       const sessionId = (msg as any).sessionId as string
-      const log = sessionId === AL_SESSION_ID
-        ? alBridge.getMessageLog()
-        : sessions.get(sessionId)?.messageLog
-      if (log) {
+      if (sessionId === AL_SESSION_ID) {
+        const log = alBridge.getMessageLog()
         const end = Math.min(beforeIndex, log.length)
         const start = Math.max(0, end - PAGE)
         const slice = log.slice(start, end)
         sendTo(ws, { type: 'older_messages', sessionId, messages: slice, hasMore: start > 0 })
       } else {
-        sendTo(ws, { type: 'older_messages', sessionId, messages: [], hasMore: false })
+        const session = sessions.get(sessionId)
+        if (!session) {
+          sendTo(ws, { type: 'older_messages', sessionId, messages: [], hasMore: false })
+          return
+        }
+        const offset = session.messageLogOffset
+        const memEnd = Math.min(beforeIndex - offset, session.messageLog.length)
+        const memStart = Math.max(0, memEnd - PAGE)
+        const slice = memStart < memEnd ? session.messageLog.slice(memStart, memEnd) : []
+        // hasMore reflects whether there's more *in memory* — when we've hit
+        // the rolling cap boundary, advertise no more so the client stops
+        // asking. (Older history still exists in Claude CLI's on-disk JSONL;
+        // a future JSONL-replay path could extend pagination past memory.)
+        sendTo(ws, { type: 'older_messages', sessionId, messages: slice, hasMore: memStart > 0 })
       }
       return
     }

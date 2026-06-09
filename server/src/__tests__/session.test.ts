@@ -30,6 +30,13 @@ vi.mock('node:child_process', () => ({
     mockProcess = new MockProcess()
     return mockProcess
   },
+  // process-tree.ts (imported via session.ts) promisifies execFile for its
+  // `ps` snapshots. Yield an empty process list in tests.
+  execFile: (_cmd: string, _args: string[], _opts: unknown, cb?: (e: Error | null, r: { stdout: string }) => void) => {
+    cb?.(null, { stdout: '' })
+  },
+  // execSync is used by Session.checkGit
+  execSync: () => '',
 }))
 
 // --------------------------------------------------------------------------

@@ -113,26 +113,27 @@ function sendTo(ws: WebSocket, msg: HubMessage) {
  *  later via copyReadStateForClaudeId once it arrives. */
 export function markSessionRead(session: Session, clients: Set<WebSocket>) {
   const key = session.claudeSessionId ?? session.id
-  const idx = session.messageLog.length
+  const idx = session.messageLogLength
   setLastReadIndex(key, idx)
   broadcast(clients, {
     type: 'session_read_state',
     sessionId: session.id,
     lastReadIndex: idx,
-    messageLogLength: session.messageLog.length,
+    messageLogLength: idx,
   })
 }
 
 export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
   const key = session.claudeSessionId ?? session.id
   // Roll the pointer back so the latest message counts as unread, but no further.
-  const idx = Math.max(0, session.messageLog.length - 1)
+  const len = session.messageLogLength
+  const idx = Math.max(0, len - 1)
   setLastReadIndex(key, idx)
   broadcast(clients, {
     type: 'session_read_state',
     sessionId: session.id,
     lastReadIndex: idx,
-    messageLogLength: session.messageLog.length,
+    messageLogLength: len,
   })
 }
 
