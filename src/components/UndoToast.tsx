@@ -26,7 +26,7 @@ export function UndoToast() {
 
   return (
     <div
-      className={`fixed bottom-4 left-1/2 z-50 -translate-x-1/2 transition-all duration-200 ${
+      className={`fixed bottom-20 md:bottom-4 left-1/2 z-50 -translate-x-1/2 transition-all duration-200 ${
         visible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'
       }`}
     >
