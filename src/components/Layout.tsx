@@ -5,6 +5,7 @@ import { ThreadView } from './ThreadView'
 import { ChatRoomList } from './ChatRoomList'
 import { ChatRoomView } from './ChatRoomView'
 import { SyncStatus } from './SyncStatus'
+import { LoginScreen } from './LoginScreen'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
@@ -230,6 +231,10 @@ export function Layout() {
 
   return (
     <div className="flex h-full flex-col bg-surface-0">
+      {/* Mounts above every pane when the hub returned 401 + WWW-Authenticate:
+       *  ConsoleSession. Off-tailnet sign-in flow lives here. No-op when
+       *  authPending is false (i.e. for the whole pre-enforcement era). */}
+      <LoginScreen />
       {/* Top bar */}
       <header className="flex items-center justify-between border-b border-border px-3 md:px-4 py-1.5">
         <div className="flex items-center gap-3">
