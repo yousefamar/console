@@ -72,6 +72,16 @@ class MainActivity : ComponentActivity() {
     // accumulates until Tailscale is back up.
     private val appUrl = "https://amarhp-lin.rya-yo.ts.net:8443/"
 
+    // The hub (REST + /apk/* + WS) is always at <host>:9877, regardless of which
+    // port the SPA shell is served from. Derive it from appUrl's host so the
+    // updater + APK download hit the hub even though the shell now loads on the
+    // :8443 Funnel port (the old `replace(":5173", ":9877")` was a no-op there,
+    // which silently broke the in-app updater).
+    private val hubBaseUrl: String by lazy {
+        val host = try { java.net.URI(appUrl).host } catch (_: Exception) { null }
+        if (host != null) "https://$host:9877" else appUrl.trimEnd('/').replace(":8443", ":9877").replace(":5173", ":9877")
+    }
+
     private lateinit var webView: WebView
     private lateinit var errorView: LinearLayout
     private lateinit var rootLayout: FrameLayout
@@ -83,6 +93,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var blePermissionsLauncher: ActivityResultLauncher<Array<String>>
+    private lateinit var micPermissionLauncher: ActivityResultLauncher<String>
+    // WebView mic request awaiting the OS RECORD_AUDIO grant (answered in the
+    // launcher callback once the user responds to the system dialog).
+    private var pendingWebPermissionRequest: android.webkit.PermissionRequest? = null
 
     private val glassesStateListener: () -> Unit = { emitGlassesState() }
     private val glassesBleListener = object : BleManager.Listener {
@@ -126,6 +140,15 @@ class MainActivity : ComponentActivity() {
         notificationPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { /* no-op */ }
+
+        micPermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            val req = pendingWebPermissionRequest
+            pendingWebPermissionRequest = null
+            req ?: return@registerForActivityResult
+            runOnUiThread { if (granted) req.grant(req.resources) else req.deny() }
+        }
 
         blePermissionsLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -385,7 +408,7 @@ class MainActivity : ComponentActivity() {
     private fun checkForUpdateAsync() {
         Thread {
             try {
-                val url = URL(appUrl.trimEnd('/').replace(":5173", ":9877") + "/apk/latest.json")
+                val url = URL("$hubBaseUrl/apk/latest.json")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 5_000
                 conn.readTimeout = 5_000
@@ -442,8 +465,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun downloadAndInstall(apkUrl: String) {
-        val fullUrl = if (apkUrl.startsWith("http")) apkUrl else
-            appUrl.trimEnd('/').replace(":5173", ":9877") + apkUrl
+        val fullUrl = if (apkUrl.startsWith("http")) apkUrl else "$hubBaseUrl$apkUrl"
         try {
             val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val req = DownloadManager.Request(Uri.parse(fullUrl))
@@ -597,6 +619,20 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                // Mic capture additionally needs the app's OS RECORD_AUDIO grant —
+                // granting the WebView request alone isn't enough. Request it the
+                // first time, then answer the WebView request in the launcher cb.
+                val wantsMic = request.resources.contains(
+                    android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                )
+                if (wantsMic && ContextCompat.checkSelfPermission(
+                        this@MainActivity, Manifest.permission.RECORD_AUDIO
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    pendingWebPermissionRequest = request
+                    runOnUiThread { micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+                    return
+                }
                 runOnUiThread { request.grant(request.resources) }
             }
         }

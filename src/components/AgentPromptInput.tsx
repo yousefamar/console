@@ -2,6 +2,7 @@ import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { useGlassesStore } from '@/glasses/store'
 import { getHubUrl } from '@/hub'
+import { isNative } from '@/platform'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
 // ============================================================================
@@ -483,6 +484,9 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
       ws.onopen = () => {
         const audioCtx = new AudioContext({ sampleRate: 24000 })
         audioContextRef.current = audioCtx
+        // Mobile WebViews/Safari create the context suspended even from a user
+        // gesture; without resume() onaudioprocess never fires → no audio sent.
+        if (audioCtx.state === 'suspended') void audioCtx.resume()
         const source = audioCtx.createMediaStreamSource(stream)
         const processor = audioCtx.createScriptProcessor(4096, 1, 1)
         processor.onaudioprocess = (e) => {
@@ -500,7 +504,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
         source.connect(processor)
         processor.connect(audioCtx.destination)
       }
-    } catch {
+    } catch (err) {
+      // Surface the cause (e.g. NotAllowedError = mic permission denied) instead
+      // of failing silently — the #1 "voice does nothing on mobile" symptom.
+      console.warn('[stt] mic capture failed:', (err as Error).name, (err as Error).message)
       setListening(false)
       setInterimText('')
     }
@@ -514,7 +521,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     setListening(true)
     // Focus the textarea so streamed words insert at a real caret position.
     inputRef.current?.focus()
-    if (!startBrowserSTT()) {
+    // In the APK WebView there's no reliable on-device speech service —
+    // webkitSpeechRecognition may exist but silently never fire results AND
+    // never error, hanging the mic. Go straight to the hub/OpenAI path there.
+    if (isNative() || !startBrowserSTT()) {
       startOpenAISTT()
     }
   }, [listening, stopListening, startBrowserSTT, startOpenAISTT])
