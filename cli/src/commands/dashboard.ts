@@ -125,8 +125,29 @@ async function canvasCmd(args: string[], flags: GlobalFlags): Promise<void> {
       output(r, flags)
       return
     }
+    case 'publish': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas publish <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/islands/${encodeURIComponent(slug)}/publish`, { method: 'POST' })
+      output(r, flags)
+      return
+    }
+    case 'unpublish': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas unpublish <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/islands/${encodeURIComponent(slug)}/publish`, { method: 'DELETE' })
+      output(r, flags)
+      return
+    }
+    case 'url': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas url <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/islands/${encodeURIComponent(slug)}/publish`, { method: 'GET' })
+      output(r, flags)
+      return
+    }
     default:
-      exitWithError('USAGE', `Unknown dashboard canvas verb: ${sub}. Try: list, add, remove, clear, reset, tab.`, flags)
+      exitWithError('USAGE', `Unknown dashboard canvas verb: ${sub}. Try: list, add, remove, clear, reset, publish, unpublish, url, tab.`, flags)
   }
 }
 
@@ -182,8 +203,29 @@ async function canvasTabCmd(args: string[], flags: GlobalFlags): Promise<void> {
       output(r, flags)
       return
     }
+    case 'publish': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas tab publish <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/tabs/${encodeURIComponent(slug)}/publish`, { method: 'POST' })
+      output(r, flags)
+      return
+    }
+    case 'unpublish': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas tab unpublish <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/tabs/${encodeURIComponent(slug)}/publish`, { method: 'DELETE' })
+      output(r, flags)
+      return
+    }
+    case 'url': {
+      const slug = rest[0]
+      if (!slug) { exitWithError('USAGE', 'Usage: con dashboard canvas tab url <slug>', flags); return }
+      const r = await hubFetch<unknown>(`/dashboard/canvas/tabs/${encodeURIComponent(slug)}/publish`, { method: 'GET' })
+      output(r, flags)
+      return
+    }
     default:
-      exitWithError('USAGE', `Unknown dashboard canvas tab verb: ${sub}. Try: list, add, remove, clear.`, flags)
+      exitWithError('USAGE', `Unknown dashboard canvas tab verb: ${sub}. Try: list, add, remove, clear, publish, unpublish, url.`, flags)
   }
 }
 

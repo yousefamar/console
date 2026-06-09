@@ -64,6 +64,8 @@ import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
+import { CanvasPublicTokens } from './canvas-public-tokens.js'
+import { handlePublicCanvas } from './routes/public.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
 import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { SyncBus } from './sync-bus.js'
@@ -127,6 +129,7 @@ const financeStore = new FinanceStore(feedsConfigDir)
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
+const publicCanvasTokens = new CanvasPublicTokens()
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
@@ -649,6 +652,24 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, matrixSync, readBody)) return
   if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
   if (path.startsWith('/finance') && handleFinanceRoutes(req, res, path, url, financeStore, monzoStore, monzoClient, authStore, readBody)) return
+  // ---- Public surface ---------------------------------------------------
+  // /public/canvas/<token>  → public.ts (canvas share)
+  // /public/cron.ics?token  → aliases to /cron.ics (token already on query)
+  // /public/apk/<name>      → aliases to /apk/<name> (immutable assets)
+  // No auth applies to /public/*; auth middleware already let it through.
+  if (path === '/public/canvas' || path.startsWith('/public/canvas/')) {
+    if (handlePublicCanvas(req, res, path, { canvas: canvasDir, publicTokens: publicCanvasTokens })) return
+  }
+  if (path === '/public/cron.ics' || path.startsWith('/public/cron.ics?')) {
+    if (handleCronRoutes(req, res, '/cron.ics', url, {
+      scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,
+    }, readBody)) return
+  }
+  if (path === '/public/apk' || path.startsWith('/public/apk/')) {
+    const apkPath = path.replace(/^\/public\/apk/, '/apk')
+    if (handleApkRoutes(req, res, apkPath)) return
+  }
+
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
@@ -660,16 +681,16 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
   }, readBody)) return
   if (path.startsWith('/dashboard/canvas/tabs') && handleCanvasTabRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
   }, readBody)) return
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
   })) return
   if ((path === '/cron' || path === '/cron.ics' || path.startsWith('/cron/')) && handleCronRoutes(req, res, path, url, {
     scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,

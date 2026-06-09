@@ -11,6 +11,7 @@ import {
 import type { Session } from '../session.js'
 import type { CalendarSync } from '../cal/sync.js'
 import type { DebugLog } from '../debug-log.js'
+import type { CanvasPublicTokens } from '../canvas-public-tokens.js'
 
 export interface DashboardCtx {
   servers: ServersConfig
@@ -18,6 +19,20 @@ export interface DashboardCtx {
   sessions: Map<string, Session>
   cal: CalendarSync
   debugLog: DebugLog
+  publicTokens: CanvasPublicTokens
+}
+
+function publicShareUrl(publicOrigin: string, token: string): string {
+  return `${publicOrigin.replace(/\/$/, '')}/public/canvas/${encodeURIComponent(token)}/`
+}
+
+/**
+ * Best-effort public origin used in CLI share-URL output. Defaults to the
+ * registered Tailscale Funnel hostname; agents that want a different origin
+ * can override via the env var.
+ */
+export function resolvePublicOrigin(): string {
+  return process.env.CONSOLE_PUBLIC_ORIGIN || 'https://amarhp-lin.rya-yo.ts.net:8443'
 }
 
 export function handleDashboardRoutes(
@@ -179,6 +194,29 @@ export function handleCanvasIslandRoutes(
     return true
   }
 
+  // publish / unpublish / url — toggle public share for a specific island
+  const publishMatch = path.match(/^\/dashboard\/canvas\/islands\/([^/]+)\/publish$/)
+  if (publishMatch) {
+    const slug = decodeURIComponent(publishMatch[1]!)
+    const origin = resolvePublicOrigin()
+    if (req.method === 'POST') {
+      const entry = ctx.publicTokens.publish('island', slug)
+      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      return true
+    }
+    if (req.method === 'GET') {
+      const entry = ctx.publicTokens.getBySlug('island', slug)
+      if (!entry) { json({ error: 'not published' }, 404); return true }
+      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      return true
+    }
+    if (req.method === 'DELETE') {
+      const ok = ctx.publicTokens.unpublish('island', slug)
+      json({ ok })
+      return true
+    }
+  }
+
   const m = path.match(/^\/dashboard\/canvas\/islands\/([^/]+)$/)
   if (m && req.method === 'DELETE') {
     const ok = ctx.canvas.removeIsland(decodeURIComponent(m[1]!))
@@ -234,6 +272,29 @@ export function handleCanvasTabRoutes(
     ctx.canvas.composeIndexHtml()
     json({ ok: true })
     return true
+  }
+
+  // publish / unpublish / url — toggle public share for a specific tab
+  const publishMatch = path.match(/^\/dashboard\/canvas\/tabs\/([^/]+)\/publish$/)
+  if (publishMatch) {
+    const slug = decodeURIComponent(publishMatch[1]!)
+    const origin = resolvePublicOrigin()
+    if (req.method === 'POST') {
+      const entry = ctx.publicTokens.publish('tab', slug)
+      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      return true
+    }
+    if (req.method === 'GET') {
+      const entry = ctx.publicTokens.getBySlug('tab', slug)
+      if (!entry) { json({ error: 'not published' }, 404); return true }
+      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      return true
+    }
+    if (req.method === 'DELETE') {
+      const ok = ctx.publicTokens.unpublish('tab', slug)
+      json({ ok })
+      return true
+    }
   }
 
   const m = path.match(/^\/dashboard\/canvas\/tabs\/([^/]+)$/)
