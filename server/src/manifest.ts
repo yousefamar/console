@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Session } from './session.js'
+import type { AttentionState } from './protocol.js'
 
 const MANIFEST_PATH = join(homedir(), '.claude', 'console-hub-sessions.json')
 const TMP_PATH = MANIFEST_PATH + '.tmp'
@@ -13,8 +14,12 @@ export interface ManifestEntry {
   cwd: string
   prompt: string
   name?: string
+  /** claudeSessionId of the parent session (forks) — restores sidebar nesting. */
+  parentClaudeSessionId?: string
   /** True if the session was actively running (mid-turn) when the manifest was last saved. */
   wasRunning?: boolean
+  /** Sticky `@amar` attention marker — survives hub restart. */
+  needsAttention?: AttentionState | null
 }
 
 /** Write the manifest synchronously and atomically.
@@ -40,7 +45,9 @@ export function saveManifest(sessions: Map<string, Session>) {
       cwd: session.cwd,
       prompt: session.initialPrompt,
       name: session.name,
+      ...(session.parentClaudeSessionId ? { parentClaudeSessionId: session.parentClaudeSessionId } : {}),
       wasRunning: session.status === 'running',
+      ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
     })
   }
   try {

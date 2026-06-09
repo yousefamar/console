@@ -393,7 +393,23 @@ const alBridge = new AlBridge({
 const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
-const agentCtx: AgentContext = { sessions, clients, cwd, log, truncate }
+const agentCtx: AgentContext = {
+  sessions, clients, cwd, log, truncate,
+  // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
+  // in Session; this only fires when Session decides `push: true`.
+  notifyAttention: (sessionId, name, snippet) => {
+    pushServer.broadcast({
+      type: 'agent',
+      title: `${name} wants your attention`,
+      body: snippet || '@amar',
+      pane: 'agents',
+      id: `attention:${sessionId}`,
+    })
+  },
+  clearAttentionPush: (sessionId) => {
+    pushServer.broadcast({ type: 'agent', cancel: true, id: `attention:${sessionId}` })
+  },
+}
 
 const cronScheduler = new HubCronScheduler(
   join(feedsConfigDir, 'agent-cron.json'),
@@ -957,6 +973,27 @@ httpServer.listen(port, host, () => {
   const manifest = loadManifest()
   if (manifest.length > 0) {
     log(`Restoring ${manifest.length} session(s) from manifest...`)
+
+    // One-time backfill of fork lineage for forks created before the hub began
+    // recording `parentClaudeSessionId`. A fork is named "<parent> (fork)"; if
+    // exactly one manifest entry has that base name, adopt it as the parent.
+    // Ambiguous (no/multiple matches) → left unlinked (renders as a root).
+    const byName = new Map<string, string[]>()
+    for (const e of manifest) {
+      if (e.name && e.claudeSessionId) {
+        const arr = byName.get(e.name) ?? []
+        arr.push(e.claudeSessionId)
+        byName.set(e.name, arr)
+      }
+    }
+    const resolveParent = (entry: { name?: string; parentClaudeSessionId?: string }): string | undefined => {
+      if (entry.parentClaudeSessionId) return entry.parentClaudeSessionId
+      const m = entry.name?.match(/^(.*) \(fork\)$/)
+      if (!m) return undefined
+      const candidates = byName.get(m[1]!)
+      return candidates && candidates.length === 1 ? candidates[0] : undefined
+    }
+
     for (const entry of manifest) {
       try {
         const session = createSession(agentCtx, {
@@ -965,6 +1002,8 @@ httpServer.listen(port, host, () => {
           resume: entry.claudeSessionId,
           silent: true,
           name: entry.name,
+          parentClaudeSessionId: resolveParent(entry),
+          needsAttention: entry.needsAttention,
         })
         // If the session was mid-turn when the hub stopped, nudge it to
         // continue where it left off. Silent resume alone leaves it idle.

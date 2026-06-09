@@ -81,6 +81,11 @@ export interface AgentContext {
   cwd: string
   log: LogFn
   truncate: TruncateFn
+  /** Fire a push notification for an `@amar` attention event (agents.ts has no
+   *  direct pushServer; index.ts wires this to the push channel). */
+  notifyAttention?: (sessionId: string, name: string, snippet: string) => void
+  /** Cancel the phone notification when the marker is cleared. */
+  clearAttentionPush?: (sessionId: string) => void
 }
 
 function broadcast(clients: Set<WebSocket>, msg: HubMessage) {
@@ -141,6 +146,16 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
   const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
 
   session.on('hub_message', (msg: HubMessage) => {
+    // `push` is a transport-only hint — strip it before broadcasting to clients.
+    if (msg.type === 'session_attention') {
+      const { push, ...clientMsg } = msg
+      broadcast(ctx.clients, clientMsg as HubMessage)
+      if (push && msg.needsAttention) {
+        ctx.notifyAttention?.(session.id, session.name ?? 'Agent', msg.needsAttention.snippet)
+      }
+      saveManifest(ctx.sessions) // persist needsAttention
+      return
+    }
     broadcast(ctx.clients, msg)
     // Save manifest on any session state change (debounced)
     if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result') {
@@ -212,6 +227,15 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       const session = sessions.get(msg.sessionId)
       if (!session) return
       markSessionUnread(session, clients)
+      break
+    }
+
+    case 'clear_attention': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) return
+      session.clearAttention() // emits session_attention(null) → broadcast via hub_message
+      ctx.clearAttentionPush?.(session.id)
+      saveManifest(sessions)
       break
     }
 
@@ -380,6 +404,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         fork: true,
         silent: true,
         name: forkName,
+        parentClaudeSessionId: sourceSession.claudeSessionId,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: forkName }
       broadcast(clients, createdMsg)

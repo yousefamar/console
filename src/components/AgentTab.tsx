@@ -5,7 +5,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, Plus, Terminal } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, Plus, Terminal } from 'lucide-react'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -115,16 +115,13 @@ export const AgentTab = memo(function AgentTab() {
               const { rootSessions, roots } = peelUniversalRoot(buildGroupTree(activeSessions, sessionOrder))
               return (
                 <>
-                  {rootSessions.map((session) => (
-                    <SessionListItem
-                      key={session.id}
-                      session={session}
-                      isActive={session.id === activeSessionId}
-                      indent={0}
-                      onSelect={selectSession}
-                      onReorder={reorderSession}
-                    />
-                  ))}
+                  <SessionLineage
+                    sessions={rootSessions}
+                    baseIndent={0}
+                    activeSessionId={activeSessionId}
+                    onSelect={selectSession}
+                    onReorder={reorderSession}
+                  />
                   {roots.map((node) => (
                     <GroupSection
                       key={node.cwd}
@@ -312,6 +309,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
         className={clsx(
           'w-full text-left py-1.5 pr-2 border-b transition-colors duration-fast',
           isDragOver ? 'border-t-2 border-t-text-primary border-b-border' : 'border-b-border',
+          // @amar attention: prominent red left rail + tint so it can't be missed.
+          session.needsAttention ? 'border-l-2 border-l-red-500 bg-red-500/5' : '',
           isActive ? 'bg-surface-2' : 'hover:bg-surface-1',
         )}
         style={{ paddingLeft: `${8 + indent * 10}px` }}
@@ -342,6 +341,14 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               <span className="truncate">{isGenerating ? 'Generating title…' : displayName}</span>
             </span>
             <div className="flex items-center gap-1.5">
+              {session.needsAttention && (
+                <span
+                  className="flex items-center gap-0.5 text-[10px] text-red-500 font-semibold flex-shrink-0"
+                  title={session.needsAttention.snippet || 'This session wants your attention (@amar)'}
+                >
+                  <AlertCircle size={11} className="fill-red-500/20" />
+                </span>
+              )}
               {isEnded && (
                 <span className="text-[9px] uppercase tracking-wider text-text-tertiary flex-shrink-0">ended</span>
               )}
@@ -554,6 +561,60 @@ function shiftDepth(node: GroupNode, delta: number): GroupNode {
   }
 }
 
+/** Arrange a flat list of sessions (all sharing one cwd group) into a fork
+ *  lineage: each fork is emitted right after its parent, one indent deeper.
+ *  Preserves the incoming order for roots; a fork whose parent isn't in this
+ *  list is treated as a root. */
+function arrangeLineage(sessions: SessionInfo[]): Array<{ session: SessionInfo; depth: number }> {
+  const inSet = new Set(sessions.map((s) => s.claudeSessionId).filter(Boolean) as string[])
+  const childrenOf = new Map<string, SessionInfo[]>()
+  for (const s of sessions) {
+    const p = s.parentClaudeSessionId
+    if (p && inSet.has(p)) {
+      const arr = childrenOf.get(p) ?? []
+      arr.push(s)
+      childrenOf.set(p, arr)
+    }
+  }
+  const out: Array<{ session: SessionInfo; depth: number }> = []
+  const emit = (s: SessionInfo, depth: number) => {
+    out.push({ session: s, depth })
+    if (s.claudeSessionId) {
+      for (const child of childrenOf.get(s.claudeSessionId) ?? []) emit(child, depth + 1)
+    }
+  }
+  for (const s of sessions) {
+    const isRoot = !s.parentClaudeSessionId || !inSet.has(s.parentClaudeSessionId)
+    if (isRoot) emit(s, 0)
+  }
+  return out
+}
+
+/** Render a session list with fork lineage nesting, at a given base indent. */
+function SessionLineage({ sessions, baseIndent, activeSessionId, onSelect, onReorder }: {
+  sessions: SessionInfo[]
+  baseIndent: number
+  activeSessionId: string | null
+  onSelect: (id: string) => void
+  onReorder: (fromId: string, toId: string) => void
+}) {
+  const arranged = useMemo(() => arrangeLineage(sessions), [sessions])
+  return (
+    <>
+      {arranged.map(({ session, depth }) => (
+        <SessionListItem
+          key={session.id}
+          session={session}
+          isActive={session.id === activeSessionId}
+          indent={baseIndent + depth}
+          onSelect={onSelect}
+          onReorder={onReorder}
+        />
+      ))}
+    </>
+  )
+}
+
 /** Recursively roll up status/unread/count for a group and its descendants. */
 function aggregateGroup(node: GroupNode): { unread: number; running: boolean; total: number } {
   let unread = node.sessions.reduce((n, s) => n + (s.hasUnread ? 1 : 0), 0)
@@ -603,16 +664,15 @@ function GroupSection({ node, activeSessionId, collapsedGroups, onToggleCollapse
           <span className="text-[10px] text-text-tertiary flex-shrink-0">{agg.total}</span>
         )}
       </button>
-      {!collapsed && node.sessions.map((session) => (
-        <SessionListItem
-          key={session.id}
-          session={session}
-          isActive={session.id === activeSessionId}
-          indent={node.depth + 1}
+      {!collapsed && (
+        <SessionLineage
+          sessions={node.sessions}
+          baseIndent={node.depth + 1}
+          activeSessionId={activeSessionId}
           onSelect={onSelect}
           onReorder={onReorder}
         />
-      ))}
+      )}
       {!collapsed && node.children.map((child) => (
         <GroupSection
           key={child.cwd}

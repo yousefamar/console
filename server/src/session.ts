@@ -19,10 +19,12 @@ import type {
   LoggableHubMessage,
   TokenUsage,
   SessionInfo,
+  AttentionState,
 } from './protocol.js'
 import { parseModelString } from './utils.js'
 import { getLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
+import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 
 let sessionCounter = 0
 
@@ -40,14 +42,28 @@ export interface SessionOptions {
   silent?: boolean
   /** If true, fork the resumed session (new session ID, same conversation history) */
   fork?: boolean
+  /** claudeSessionId of the session this was forked from — used to nest forks
+   *  under their parent in the sidebar. Persisted across restarts. */
+  parentClaudeSessionId?: string
   /** Display name for the session (persists across restarts) */
   name?: string
+  /**
+   * Verbatim text appended to Claude's system prompt at spawn time. Passed to
+   * `claude --append-system-prompt`. Used to inject a persona (Al's AL.md +
+   * mistakes.md + workflows summary) into a fresh long-lived session.
+   * Ignored on `resume` — Claude's CLI uses the prompt from the original spawn.
+   */
+  systemPrompt?: string
+  /** Restore the `@amar` attention flag on hub-restart resume (from manifest). */
+  needsAttention?: AttentionState | null
 }
 
 export class Session extends EventEmitter {
   readonly id: string
   claudeSessionId?: string
   name?: string
+  /** claudeSessionId of the parent session if this is a fork (else undefined). */
+  readonly parentClaudeSessionId?: string
   status: 'running' | 'idle' | 'ended' = 'running'
   readonly createdAt = Date.now()
   readonly initialPrompt: string
@@ -55,6 +71,14 @@ export class Session extends EventEmitter {
   totalCost = 0
   totalTokens: TokenUsage = { input: 0, output: 0 }
   contextWindow = 200_000
+
+  /** `@amar` attention flag — set when the session emits `@amar` in assistant
+   *  output, cleared when Yousef opens / marks-read the session. */
+  needsAttention: AttentionState | null = null
+  /** Push dedup + anti-noise: last push time and a rolling 10-min window of
+   *  push timestamps. The marker always refreshes; only the PUSH is gated. */
+  private lastAttentionPushAt = 0
+  private attentionPushTimes: number[] = []
 
   /**
    * Coalesced message log for replay to late-joining clients.
@@ -87,6 +111,7 @@ export class Session extends EventEmitter {
     this.id = `session_${++sessionCounter}_${Date.now()}`
     this.initialPrompt = options.prompt
     this.name = options.name
+    this.parentClaudeSessionId = options.parentClaudeSessionId
     this.cwd = options.cwd || process.cwd()
     // For resumes (not forks), set claudeSessionId immediately so list_sessions
     // can match before Claude emits the `system` message.
@@ -99,6 +124,8 @@ export class Session extends EventEmitter {
     if (options.silent) {
       this.status = 'idle'
     }
+    // Restore a pending @amar marker across hub restarts.
+    if (options.needsAttention) this.needsAttention = options.needsAttention
     this.spawn(options)
     // Send the initial prompt via stdin (since we use --input-format stream-json instead of -p)
     // For silent resumes (hub restart restore), skip — Claude resumes idle, waiting for user input
@@ -133,6 +160,13 @@ export class Session extends EventEmitter {
 
     if (options.name) {
       args.push('--name', options.name)
+    }
+
+    // Only append the system prompt on FRESH spawn (no resume). When the
+    // Claude CLI resumes a session it carries the original system-prompt; a
+    // second --append-system-prompt would stack on top of it on every restart.
+    if (options.systemPrompt && !options.resume) {
+      args.push('--append-system-prompt', options.systemPrompt)
     }
 
     const cwd = this.cwd
@@ -343,6 +377,7 @@ export class Session extends EventEmitter {
       id: this.id,
       claudeSessionId: this.claudeSessionId,
       name: this.name,
+      parentClaudeSessionId: this.parentClaudeSessionId,
       status: this.status,
       createdAt: this.createdAt,
       prompt: this.initialPrompt,
@@ -352,6 +387,7 @@ export class Session extends EventEmitter {
       messageLogLength: this.messageLogLength,
       lastReadIndex: getLastReadIndex(this.claudeSessionId),
       backgroundProcessCount: getChildCountSync(this.process?.pid),
+      needsAttention: this.needsAttention,
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,
@@ -595,6 +631,9 @@ export class Session extends EventEmitter {
       this.pendingThinking = ''
     }
     if (this.pendingText) {
+      // Scan the *complete* coalesced text — deltas split "@" and "amar" across
+      // chunks, so per-delta scanning would miss it.
+      this.scanForAttention(this.pendingText)
       this.logMessage({ type: 'text', sessionId: this.id, content: this.pendingText })
       this.pendingText = ''
     }
@@ -612,12 +651,55 @@ export class Session extends EventEmitter {
         || msg.type === 'session_ended' || msg.type === 'approval_required') {
         this.flushPendingDeltas()
       }
+      // Directly-emitted text (e.g. synthetic slash-command output) bypasses the
+      // delta buffer — scan it too.
+      if (msg.type === 'text') this.scanForAttention(msg.content)
       // Log non-ephemeral messages (skip status, deltas — they're coalesced above)
       if (msg.type !== 'status') {
         this.logMessage(msg as LoggableHubMessage)
       }
     }
     this.emit('hub_message', msg)
+  }
+
+  // --------------------------------------------------------------------------
+  // @amar attention mechanism — agents emit `@amar` to pull Yousef's eyes
+  // without injecting into his active workflow timeline. See ~/CLAUDE.md.
+  // --------------------------------------------------------------------------
+
+  private scanForAttention(content: string) {
+    if (!mentionsAmar(content)) return
+    const now = Date.now()
+    this.needsAttention = { ts: now, snippet: extractAttentionSnippet(content) }
+
+    // Anti-noise: dedup pushes within 60s; suppress (marker-only) if a session
+    // floods ≥5 pushes in 10 min — a misbehaving session per the CLAUDE.md rule.
+    this.attentionPushTimes = this.attentionPushTimes.filter((t) => now - t < 10 * 60_000)
+    const within60s = now - this.lastAttentionPushAt < 60_000
+    const flooding = this.attentionPushTimes.length >= 5
+    const push = !within60s && !flooding
+    if (push) { this.lastAttentionPushAt = now; this.attentionPushTimes.push(now) }
+    if (flooding) console.warn(`[attention] session ${this.id} (${this.name ?? '?'}) flooding @amar — suppressing push, keeping marker`)
+
+    this.emit('hub_message', {
+      type: 'session_attention',
+      sessionId: this.id,
+      sessionName: this.name,
+      needsAttention: this.needsAttention,
+      push,
+    } satisfies HubMessage)
+  }
+
+  /** Clear the marker (Yousef opened / marked-read the session). */
+  clearAttention() {
+    if (!this.needsAttention) return
+    this.needsAttention = null
+    this.emit('hub_message', {
+      type: 'session_attention',
+      sessionId: this.id,
+      sessionName: this.name,
+      needsAttention: null,
+    } satisfies HubMessage)
   }
 }
 

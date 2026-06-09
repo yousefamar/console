@@ -395,11 +395,14 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
           : pane === 'notes'
             ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
             : 0
+  // Agents: a session emitting @amar shows a high-priority red dot on the tab,
+  // visible from any other pane.
+  const attention = useAgentStore((s) => pane === 'agents' && s.sessions.some((sess) => sess.needsAttention))
 
   return (
     <button
       onClick={() => setActivePane(pane)}
-      className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
+      className={`relative flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-sm transition-colors duration-fast ${
         isActive ? 'text-text-primary bg-surface-2' : 'text-text-tertiary hover:text-text-secondary'
       }`}
     >
@@ -407,6 +410,9 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
       <span>{label}</span>
       {count > 0 && (
         <span className="text-blue-500">({count})</span>
+      )}
+      {attention && (
+        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500" title="A session wants your attention (@amar)" />
       )}
     </button>
   )

@@ -29,6 +29,7 @@ export type ClientMessage =
   | { type: 'set_collapsed_groups'; collapsed: string[] }
   | { type: 'mark_session_read'; sessionId: string }
   | { type: 'mark_session_unread'; sessionId: string }
+  | { type: 'clear_attention'; sessionId: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -61,6 +62,11 @@ export type HubMessage =
   | { type: 'collapsed_groups'; collapsed: string[] }
   | { type: 'session_read_state'; sessionId: string; lastReadIndex: number; messageLogLength: number }
   | { type: 'older_messages'; sessionId: string; messages: HubMessage[]; hasMore: boolean }
+  /** A session emitted `@amar` and wants Yousef's eyes. `needsAttention: null`
+   *  clears the marker. `push` is a transport-only hint (not persisted) telling
+   *  the hub whether to also fire a push notification this time (dedup/anti-noise
+   *  gated in Session). */
+  | { type: 'session_attention'; sessionId: string; sessionName?: string; needsAttention: AttentionState | null; push?: boolean }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */
@@ -105,10 +111,22 @@ export interface TokenUsage {
   cacheCreation?: number
 }
 
+/** Set when a session emits `@amar` to pull Yousef's attention. Sticky until
+ *  he opens the session (or marks it read). Persisted in the manifest. */
+export interface AttentionState {
+  ts: number
+  /** Short excerpt of the assistant text around the `@amar` mention, for the
+   *  push body + sidebar tooltip. */
+  snippet: string
+}
+
 export interface SessionInfo {
   id: string
   claudeSessionId?: string
   name?: string
+  /** claudeSessionId of the parent session if this is a fork — nests forks
+   *  under their parent in the sidebar. */
+  parentClaudeSessionId?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
@@ -116,6 +134,8 @@ export interface SessionInfo {
   totalCost: number
   totalTokens: TokenUsage
   messageLogLength?: number
+  /** Present when the session is flagged for Yousef's attention (`@amar`). */
+  needsAttention?: AttentionState | null
   /** Hub-persisted: index of the last message the user has marked read.
    *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
   lastReadIndex?: number

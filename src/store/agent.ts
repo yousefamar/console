@@ -48,6 +48,9 @@ export interface SessionInfo {
   id: string
   claudeSessionId?: string
   name?: string
+  /** claudeSessionId of the parent session if this is a fork — nests forks
+   *  under their parent in the sidebar tree. */
+  parentClaudeSessionId?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
@@ -66,6 +69,9 @@ export interface SessionInfo {
   /** Live child-process count from `ps -eo pid,ppid` on the claude PID —
    *  approximates running background bashes. Refreshed on sessions_list. */
   backgroundProcessCount?: number
+  /** Set when the session emitted `@amar` (wants Yousef's eyes). Sticky red
+   *  marker in the sidebar; cleared on open / mark-read. */
+  needsAttention?: { ts: number; snippet: string } | null
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
@@ -370,6 +376,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // newly active session.
     const activeApproval = sessionId ? (get().pendingApprovalsBySession[sessionId] ?? null) : null
     set({ activeSessionId: sessionId, pendingApproval: activeApproval, creatingNewSession: sessionId === null })
+    // Opening a session does NOT clear its @amar marker — it stays sticky until
+    // Yousef explicitly marks the session read (chat-style; see markSessionRead).
     // Don't auto-mark read on selection — chat-style: stays unread until the
     // user replies (sendMessage) or explicitly hits `e`.
     import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(sessionId))
@@ -448,6 +456,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // on every client (including this one) for cross-device sync.
     if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false })
     sendWs({ type: 'mark_session_read', sessionId })
+    // Marking read also acknowledges any @amar attention marker.
+    if (sess?.needsAttention) {
+      updateSession(sessionId, { needsAttention: null })
+      sendWs({ type: 'clear_attention', sessionId })
+    }
   },
 
   markSessionUnread: (id) => {
@@ -783,10 +796,15 @@ function handleHubMessage(msg: Record<string, unknown>) {
       }
       useAgentStore.setState(stateUpdate)
 
-      // Auto-select first active session ONLY if no session is selected and user isn't creating a new one
+      // Auto-select first active session ONLY if no session is selected and
+      // user isn't creating a new one. Skip on mobile — there the list and
+      // detail are separate "screens" and auto-selecting would yank the user
+      // into a session (typically Al, since it's pinned first) every time the
+      // 10s sessions_list poll fires while they're browsing the list.
       const currentActiveId = useAgentStore.getState().activeSessionId
       const isCreatingNew = useAgentStore.getState().creatingNewSession
-      if (!isCreatingNew && !currentActiveId && merged.length > 0) {
+      const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+      if (!isMobile && !isCreatingNew && !currentActiveId && merged.length > 0) {
         const firstActive = merged.find((s) => s.status !== 'ended')
         if (firstActive) {
           useAgentStore.getState().selectSession(firstActive.id)
@@ -1067,6 +1085,31 @@ function handleHubMessage(msg: Record<string, unknown>) {
           ? { ...sess, lastReadIndex, messageLogLength: Math.max(sess.messageLogLength ?? 0, messageLogLength), hasUnread: Math.max(sess.messageLogLength ?? 0, messageLogLength) > lastReadIndex }
           : sess),
       }))
+      break
+    }
+
+    case 'session_attention': {
+      const sessionId = msg.sessionId as string
+      const needsAttention = msg.needsAttention as { ts: number; snippet: string } | null
+      updateSession(sessionId, { needsAttention })
+      // The marker stays sticky until Yousef marks the session read — opening it
+      // (even being the active session) does NOT clear it. Only skip the desktop
+      // notification when he's already looking at this session, or during replay.
+      if (needsAttention && !suppressNotifications) {
+        const active = useAgentStore.getState().activeSessionId === sessionId
+        if (!active) {
+          const sess = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
+          import('@/notifications').then(({ notify }) => {
+            notify({
+              title: `${(msg.sessionName as string) || sess?.name || 'Agent'} wants your attention`,
+              body: needsAttention.snippet || '@amar',
+              icon: '/icon-192.png',
+              tag: `attention-${sessionId}`,
+              data: { pane: 'agents', itemId: sessionId },
+            })
+          })
+        }
+      }
       break
     }
 
