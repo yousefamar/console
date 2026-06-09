@@ -527,6 +527,55 @@ describe('killSession', () => {
   })
 })
 
+describe('markSessionRead', () => {
+  it('clears unread on an active (non-ended) session without deleting it', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = MockWebSocket.latest()!
+    useAgentStore.setState({
+      sessions: [{
+        id: 'sess_1', status: 'idle', createdAt: 1, prompt: '', totalCost: 0,
+        totalTokens: { input: 0, output: 0 }, contextWindow: 200_000, contextUsed: 0,
+        messageLogLength: 5, lastReadIndex: 0, hasUnread: true,
+      }],
+      activeSessionId: 'sess_1',
+    })
+
+    useAgentStore.getState().markSessionRead('sess_1')
+
+    // Still present, just read
+    const sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_1')
+    expect(sess).toBeTruthy()
+    expect(sess!.hasUnread).toBe(false)
+    const msgs = ws.sentMessages.map((m) => JSON.parse(m))
+    expect(msgs.some((m: Record<string, unknown>) => m.type === 'mark_session_read')).toBe(true)
+    expect(msgs.some((m: Record<string, unknown>) => m.type === 'delete_session')).toBe(false)
+  })
+
+  it('deletes an ENDED session when marked read (terminated + acknowledged → gone)', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = MockWebSocket.latest()!
+    useAgentStore.setState({
+      sessions: [{
+        id: 'sess_dead', status: 'ended', createdAt: 1, prompt: '', totalCost: 0,
+        totalTokens: { input: 0, output: 0 }, contextWindow: 200_000, contextUsed: 0,
+        messageLogLength: 5, lastReadIndex: 0, hasUnread: true,
+      }],
+      activeSessionId: 'sess_dead',
+    })
+
+    useAgentStore.getState().markSessionRead('sess_dead')
+
+    // Removed locally + delete sent to hub; active session cleared
+    expect(useAgentStore.getState().sessions.find((s) => s.id === 'sess_dead')).toBeUndefined()
+    expect(useAgentStore.getState().activeSessionId).toBeNull()
+    const msgs = ws.sentMessages.map((m) => JSON.parse(m))
+    const del = msgs.find((m: Record<string, unknown>) => m.type === 'delete_session')
+    expect(del).toEqual({ type: 'delete_session', sessionId: 'sess_dead' })
+  })
+})
+
 describe('resumeSession', () => {
   it('sends resume_session message with claudeSessionId, prompt, and cwd', async () => {
     useAgentStore.getState().connect()

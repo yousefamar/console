@@ -5,7 +5,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, Plus, Terminal } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, Plus, Terminal } from 'lucide-react'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -28,9 +28,12 @@ export const AgentTab = memo(function AgentTab() {
   const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
   const isMobile = useIsMobile()
 
-  // Separate Al from regular sessions — always pinned at top
+  // Separate Al from regular sessions — always pinned at top.
+  // Keep ENDED sessions visible while they're still unread, so a terminated
+  // chat fork (or any finished session) survives for audit until acknowledged.
+  // Marking it read removes it (see markSessionRead → delete on ended).
   const alSession = sessions.find((s) => s.id === 'al')
-  const activeSessions = sessions.filter((s) => s.status !== 'ended' && s.id !== 'al')
+  const activeSessions = sessions.filter((s) => s.id !== 'al' && (s.status !== 'ended' || s.hasUnread))
 
   // Auto-connect on mount
   useEffect(() => {
@@ -208,22 +211,27 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     leftIconRef: swipeIconRef,
   })
 
-  const displayName = session.name || session.prompt || session.id
+  const rawName = session.name || session.prompt || session.id
+  // Forks are named "<parent> (fork)". Show a branch glyph + the bare parent
+  // name instead of the noisy suffix, so chat forks read cleanly in the list.
+  const isFork = /\s\(fork\)$/.test(session.name || '')
+  const displayName = isFork ? rawName.replace(/\s\(fork\)$/, '') : rawName
+  const isEnded = session.status === 'ended'
 
   const startRename = useCallback(() => {
-    setRenameValue(displayName)
+    setRenameValue(rawName)
     setIsRenaming(true)
     // Focus after render
     setTimeout(() => inputRef.current?.select(), 0)
-  }, [displayName])
+  }, [rawName])
 
   const commitRename = useCallback(() => {
     const trimmed = renameValue.trim()
-    if (trimmed && trimmed !== displayName) {
+    if (trimmed && trimmed !== rawName) {
       renameSession(session.id, trimmed)
     }
     setIsRenaming(false)
-  }, [renameValue, displayName, session.id, renameSession])
+  }, [renameValue, rawName, session.id, renameSession])
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     const items: ContextMenuItem[] = [
@@ -325,13 +333,18 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
         ) : (
           <div className="flex items-center justify-between">
             <span className={clsx(
-              'text-xs truncate max-w-[200px]',
+              'flex items-center gap-1 text-xs truncate max-w-[200px]',
+              isEnded ? 'text-text-tertiary' :
               isGenerating ? 'text-text-tertiary italic font-medium' :
               session.hasUnread ? 'text-text-primary font-semibold' : 'text-text-primary font-medium',
             )}>
-              {isGenerating ? 'Generating title…' : displayName}
+              {isFork && <GitBranch size={10} className="flex-shrink-0 opacity-70" />}
+              <span className="truncate">{isGenerating ? 'Generating title…' : displayName}</span>
             </span>
             <div className="flex items-center gap-1.5">
+              {isEnded && (
+                <span className="text-[9px] uppercase tracking-wider text-text-tertiary flex-shrink-0">ended</span>
+              )}
               {bgBashCount > 0 && (
                 <span
                   className="flex items-center gap-0.5 text-[10px] text-amber-400 font-medium flex-shrink-0"

@@ -41,6 +41,11 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const sttWsRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
+  // True once a streaming delta has been inserted for the current OpenAI STT
+  // session — lets us ignore a trailing `final` (its text is already in the
+  // textarea from the deltas) while still honouring a `final` from any model
+  // that sends only a final and no deltas.
+  const sawSttDeltaRef = useRef(false)
 
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
@@ -136,6 +141,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
 
   // Sync textarea DOM value when interim STT text changes, then resize.
   // Committed text changes are applied imperatively at their source — no React reactivity.
+  // NOTE: only the browser-SpeechRecognition fallback uses `interimText` (its
+  // results revise in place). The OpenAI/gpt-realtime-whisper path inserts each
+  // delta straight into the textarea at the caret (see insertAtCaret), so its
+  // transcript is live-editable and this effect is a no-op for it.
   useEffect(() => {
     const el = inputRef.current
     if (!el) return
@@ -143,6 +152,31 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     el.value = interimText ? base + (base ? ' ' : '') + interimText : base
     resizeTextarea()
   }, [interimText, resizeTextarea])
+
+  /** Insert text at the textarea's current caret (replacing any selection),
+   *  keeping textRef in sync and advancing the caret past the insertion. Lets
+   *  streamed speech land wherever the user has placed the cursor and coexist
+   *  with manual edits made mid-recording. */
+  const insertAtCaret = useCallback((insert: string) => {
+    if (!insert) return
+    const el = inputRef.current
+    if (!el) { textRef.current += insert; return }
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? el.value.length
+    const before = el.value.slice(0, start)
+    const after = el.value.slice(end)
+    // Add a separating space only when gluing two word characters together
+    // (whisper deltas usually include their own leading space, so this rarely fires).
+    const needsSpace = before.length > 0 && /\w$/.test(before) && /^\w/.test(insert)
+    const piece = needsSpace ? ' ' + insert : insert
+    const next = before + piece + after
+    el.value = next
+    textRef.current = next
+    const caret = start + piece.length
+    el.setSelectionRange(caret, caret)
+    setHasContent(!!next.trim())
+    resizeTextarea()
+  }, [resizeTextarea])
 
   // Fetch past sessions when a directory is selected
   useEffect(() => {
@@ -363,6 +397,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     if (sttWsRef.current) { sttWsRef.current.close(); sttWsRef.current = null }
     if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
     if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach((t) => t.stop()); mediaStreamRef.current = null }
+    // No flush needed: OpenAI-path deltas are inserted into the textarea live,
+    // so the transcript is already committed. interimText only holds in-flight
+    // browser-SR text, which is intentionally discarded on stop.
+    sawSttDeltaRef.current = false
     setListening(false)
     setInterimText('')
     inputRef.current?.focus()
@@ -418,25 +456,21 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
       const { getHubWsUrl } = await import('@/hub')
       const ws = new WebSocket(getHubWsUrl().replace(/\/$/, '') + '/stt')
       sttWsRef.current = ws
-      let pendingDelta = ''
+      sawSttDeltaRef.current = false
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
           if (msg.type === 'interim') {
-            pendingDelta += msg.text || ''
-            setInterimText(pendingDelta)
+            // whisper-streaming deltas are append-only word chunks — insert each
+            // straight at the caret as committed, editable text.
+            sawSttDeltaRef.current = true
+            insertAtCaret(msg.text || '')
           } else if (msg.type === 'final') {
-            const final = (msg.text || '').trim()
-            if (final) {
-              const prev = textRef.current
-              const next = prev + (prev ? ' ' : '') + final
-              textRef.current = next
-              if (inputRef.current) inputRef.current.value = next
-              setHasContent(!!next.trim())
-            }
-            pendingDelta = ''
-            setInterimText('')
+            // Only insert a `final` when no deltas covered it (a final from a
+            // VAD model that doesn't stream). Otherwise it would duplicate.
+            if (!sawSttDeltaRef.current) insertAtCaret((msg.text || '').trim())
+            sawSttDeltaRef.current = false
           } else if (msg.type === 'error') {
             console.warn('[stt]', msg.message)
           }
@@ -478,6 +512,8 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
       return
     }
     setListening(true)
+    // Focus the textarea so streamed words insert at a real caret position.
+    inputRef.current?.focus()
     if (!startBrowserSTT()) {
       startOpenAISTT()
     }

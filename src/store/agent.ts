@@ -431,9 +431,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   markSessionRead: (id) => {
     const sessionId = id ?? get().activeSessionId
     if (!sessionId) return
+    const sess = get().sessions.find((s) => s.id === sessionId)
+    // Reading an ENDED session = acknowledging a terminated chat fork / finished
+    // session. It only lingered in the list because it was unread; once read,
+    // remove it for good (delete from hub + manifest).
+    if (sess && sess.status === 'ended') {
+      // Drop locally immediately; hub delete_session broadcasts the new list.
+      set((s) => ({
+        sessions: s.sessions.filter((x) => x.id !== sessionId),
+        ...(s.activeSessionId === sessionId ? { activeSessionId: null } : {}),
+      }))
+      sendWs({ type: 'delete_session', sessionId })
+      return
+    }
     // Optimistic local clear; hub broadcasts session_read_state which lands
     // on every client (including this one) for cross-device sync.
-    const sess = get().sessions.find((s) => s.id === sessionId)
     if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false })
     sendWs({ type: 'mark_session_read', sessionId })
   },
