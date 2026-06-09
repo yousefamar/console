@@ -295,7 +295,7 @@ interface ChatState {
   snoozeRoom: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => Promise<void>
 
   // Send
-  sendMessage: (roomId: string, body: string, formattedBody?: string) => Promise<void>
+  sendMessage: (roomId: string, body: string, formattedBody?: string, mentionUserIds?: string[]) => Promise<void>
   sendImage: (roomId: string, file: File, caption?: string) => Promise<void>
   sendFile: (roomId: string, file: File, caption?: string) => Promise<void>
 
@@ -526,7 +526,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 
-  sendMessage: async (roomId, body, formattedBody) => {
+  sendMessage: async (roomId, body, formattedBody, mentionUserIds) => {
     const { replyingTo } = get()
     const localId = `~${Date.now()}.${Math.random().toString(36).slice(2)}`
     const userId = localStorage.getItem('matrix_user_id') ?? ''
@@ -568,7 +568,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastReadEventId: localId,
       lastReadTs: localMsg.timestamp,
     })
-    await enqueue('chatSend', { roomId, body, formattedBody, replyToEventId: replyingTo?.eventId }, { roomId })
+    await enqueue('chatSend', { roomId, body, formattedBody, replyToEventId: replyingTo?.eventId, mentionUserIds }, { roomId })
     // Send read receipt for the latest real message
     const msgs = await db.chatMessages
       .where('roomId').equals(roomId)

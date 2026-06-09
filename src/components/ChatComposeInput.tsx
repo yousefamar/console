@@ -3,10 +3,47 @@ import { useChatStore } from '@/store/chat'
 import { useGlassesStore } from '@/glasses/store'
 import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
+import { primeRoomMembers, searchRoomMembers, type RoomMember } from '@/matrix/room-members'
 
 interface ChatComposeInputProps {
   roomId: string
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Build the Matrix `formatted_body` HTML for a message that contains
+ *  `@DisplayName` tokens. Only mentions whose `@<displayName>` substring is
+ *  still present in the body are wired up — if the user typed @Alice then
+ *  deleted it, Alice should not get notified. Returns undefined when no
+ *  mentions survive. */
+function buildMentionsFormatted(
+  body: string,
+  mentions: Array<{ displayName: string; userId: string }>,
+): { formattedBody: string; activeMentions: Array<{ displayName: string; userId: string }> } | undefined {
+  // Filter to mentions actually present in the body as a discrete `@Name` token.
+  const active = mentions.filter((m) => {
+    const re = new RegExp(`(^|\\s|[.,!?:;])@${escapeRegex(m.displayName)}(?=$|\\s|[.,!?:;])`)
+    return re.test(body)
+  })
+  if (active.length === 0) return undefined
+  // Replace tokens left-to-right with anchor tags. Longer names first so
+  // "@Alice Smith" wins over a bare "@Alice" mention if both apply.
+  const sorted = [...active].sort((a, b) => b.displayName.length - a.displayName.length)
+  let html = escapeHtml(body)
+  for (const m of sorted) {
+    const re = new RegExp(`(^|\\s|[.,!?:;])@${escapeRegex(m.displayName)}(?=$|\\s|[.,!?:;])`, 'g')
+    const link = `<a href="https://matrix.to/#/${encodeURIComponent(m.userId)}">@${escapeHtml(m.displayName)}</a>`
+    html = html.replace(re, (_match, pre) => `${pre}${link}`)
+  }
+  return { formattedBody: html, activeMentions: active }
+}
+
 
 export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatComposeInputProps) {
   // Text lives in a ref + the textarea's uncontrolled value, NOT React state.
@@ -21,6 +58,17 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   const [emojiQuery, setEmojiQuery] = useState<{ query: string; startIdx: number } | null>(null)
   const [emojiResults, setEmojiResults] = useState<{ shortcode: string; emoji: string }[]>([])
   const [emojiSelectedIdx, setEmojiSelectedIdx] = useState(0)
+  // @-mention autocomplete state — parallels the emoji one. Active mention
+  // userIds collected here flow into the formatted_body + `m.mentions` on send
+  // so receiving Matrix clients (Element, Cinny, the bridges) treat the
+  // message as an intentional mention per MSC3952.
+  const [mentionQuery, setMentionQuery] = useState<{ query: string; startIdx: number } | null>(null)
+  const [mentionResults, setMentionResults] = useState<RoomMember[]>([])
+  const [mentionSelectedIdx, setMentionSelectedIdx] = useState(0)
+  // Display-name → userId pairs the user actively inserted via the picker
+  // during this compose. Cleared on send/clear. Used to build the formatted
+  // body so duplicate display names still link to the right MXID.
+  const pendingMentionsRef = useRef<Array<{ displayName: string; userId: string }>>([])
   const sendMessage = useChatStore((s) => s.sendMessage)
   const sendImage = useChatStore((s) => s.sendImage)
   const sendFile = useChatStore((s) => s.sendFile)
@@ -80,6 +128,33 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     }
   }, [])
 
+  // Detect `@<query>` at the cursor — only when the `@` is at the start of
+  // input or preceded by whitespace, so typing inside an email like
+  // alice@example.com doesn't open the mention picker.
+  const detectMentionQuery = useCallback((value: string, cursorPos: number) => {
+    const textBefore = value.slice(0, cursorPos)
+    const atMatch = textBefore.match(/(?:^|\s)@([^\s@]*)$/)
+    if (atMatch && atMatch[1] !== undefined && atMatch.index !== undefined) {
+      const query = atMatch[1]
+      // Offset of the `@` (atMatch.index points at the whitespace or 0).
+      const startIdx = atMatch[0].startsWith('@') ? atMatch.index : atMatch.index + 1
+      const results = searchRoomMembers(roomId, query)
+      setMentionQuery({ query, startIdx })
+      setMentionResults(results)
+      setMentionSelectedIdx(0)
+    } else {
+      setMentionQuery((prev) => prev === null ? prev : null)
+      setMentionResults((prev) => prev.length === 0 ? prev : [])
+    }
+  }, [roomId])
+
+  // Prime the room member list on mount / room switch so the first `@`
+  // keystroke isn't a blank dropdown waiting on the network.
+  useEffect(() => {
+    void primeRoomMembers(roomId).catch(() => {})
+    pendingMentionsRef.current = []
+  }, [roomId])
+
   const attachFile = useCallback((file: File) => {
     setPendingFile(file)
     setImagePreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null)
@@ -90,6 +165,41 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setPendingFile(null)
     setImagePreview(null)
   }, [imagePreview])
+
+  // Replace the in-flight `@query` with `@DisplayName ` and record the
+  // mention. The trailing space lets the user keep typing without re-arming
+  // the picker on the very next keystroke.
+  const selectMention = useCallback((member: RoomMember) => {
+    if (!mentionQuery) return
+    const cur = textRef.current
+    const before = cur.slice(0, mentionQuery.startIdx)
+    const after = cur.slice(mentionQuery.startIdx + 1 /* @ */ + mentionQuery.query.length)
+    const displayName = member.displayName || (member.userId.split(':')[0] ?? member.userId).slice(1)
+    const insertion = `@${displayName} `
+    const newText = before + insertion + after
+    textRef.current = newText
+    if (inputRef.current) {
+      inputRef.current.value = newText
+      inputRef.current.style.height = '24px'
+      inputRef.current.style.height = Math.min(120, inputRef.current.scrollHeight) + 'px'
+    }
+    setHasContent(!!newText.trim())
+    setMentionQuery(null)
+    setMentionResults([])
+    // Track this mention so the send path can attach it to m.mentions even if
+    // there are multiple members with the same display name.
+    if (!pendingMentionsRef.current.some((m) => m.userId === member.userId)) {
+      pendingMentionsRef.current.push({ displayName, userId: member.userId })
+    }
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        const pos = mentionQuery.startIdx + insertion.length
+        inputRef.current.selectionStart = pos
+        inputRef.current.selectionEnd = pos
+        inputRef.current.focus()
+      }
+    })
+  }, [mentionQuery])
 
   const selectEmoji = useCallback((result: { shortcode: string; emoji: string }) => {
     if (!emojiQuery) return
@@ -125,6 +235,9 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(false)
     setEmojiQuery(null)
     setEmojiResults([])
+    setMentionQuery(null)
+    setMentionResults([])
+    pendingMentionsRef.current = []
     useGlassesStore.getState().setComposerText('chat', '')
   }, [])
 
@@ -170,10 +283,13 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     const body = textRef.current.trim()
     if (!body) return
 
+    const fmt = buildMentionsFormatted(body, pendingMentionsRef.current)
+    const mentionUserIds = fmt?.activeMentions.map((m) => m.userId)
+
     sendingRef.current = true
     clearInput()
     try {
-      await sendMessage(roomId, body)
+      await sendMessage(roomId, body, fmt?.formattedBody, mentionUserIds)
     } finally {
       sendingRef.current = false
     }
@@ -181,6 +297,33 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   }, [roomId, sendMessage, sendImage, sendFile, pendingFile, clearAttachment, clearInput, editingMessage, editMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // @-mention autocomplete keyboard handling (takes priority over emoji
+    // because the mention picker is what's actively open at this moment).
+    if (mentionQuery && mentionResults.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionSelectedIdx(i => Math.min(i + 1, mentionResults.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionSelectedIdx(i => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const selected = mentionResults[mentionSelectedIdx]
+        if (selected) selectMention(selected)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMentionQuery(null)
+        setMentionResults([])
+        return
+      }
+    }
+
     // Emoji autocomplete keyboard handling
     if (emojiQuery && emojiResults.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -218,7 +361,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       e.preventDefault()
       handleSend()
     }
-  }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji, editingMessage, setEditingMessage, clearInput])
+  }, [handleSend, emojiQuery, emojiResults, emojiSelectedIdx, selectEmoji, mentionQuery, mentionResults, mentionSelectedIdx, selectMention, editingMessage, setEditingMessage, clearInput])
 
   const resizeScheduledRef = useRef(false)
   const autoResize = useCallback(() => {
@@ -241,16 +384,18 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     autoResize()
     const cursorPos = e.target.selectionStart
     detectEmojiQuery(value, cursorPos)
+    detectMentionQuery(value, cursorPos)
     useGlassesStore.getState().setComposerText('chat', value)
-  }, [detectEmojiQuery, autoResize, hasContent])
+  }, [detectEmojiQuery, detectMentionQuery, autoResize, hasContent])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Arrow keys move cursor without triggering onChange
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
       const cursorPos = e.currentTarget.selectionStart
       detectEmojiQuery(textRef.current, cursorPos)
+      detectMentionQuery(textRef.current, cursorPos)
     }
-  }, [detectEmojiQuery])
+  }, [detectEmojiQuery, detectMentionQuery])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
@@ -291,6 +436,33 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
                 <span className="text-text-secondary">:{result.shortcode}:</span>
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* @-mention dropdown. Same visual treatment as the emoji picker so
+          users have one mental model for autocomplete. */}
+      {mentionQuery && mentionResults.length > 0 && (
+        <div className="px-3 pt-2">
+          <div className="bg-surface-1 border border-border rounded-sm shadow-lg py-1 max-h-48 overflow-y-auto">
+            {mentionResults.map((m, i) => {
+              const localpart = (m.userId.split(':')[0] ?? '').slice(1)
+              const display = m.displayName || localpart
+              return (
+                <button
+                  key={m.userId}
+                  onMouseDown={(e) => { e.preventDefault(); selectMention(m) }}
+                  className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm ${
+                    i === mentionSelectedIdx ? 'bg-surface-2' : 'hover:bg-surface-1'
+                  }`}
+                >
+                  <span className="text-text-primary">@{display}</span>
+                  {display !== localpart && (
+                    <span className="text-xs text-text-tertiary truncate">{m.userId}</span>
+                  )}
+                </button>
+              )
+            })}
           </div>
         </div>
       )}

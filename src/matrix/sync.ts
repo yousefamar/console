@@ -964,7 +964,7 @@ export async function processChatQueue(): Promise<void> {
     try {
       switch (action.type) {
         case 'chatSend': {
-          const p = action.payload as { roomId: string; body: string; formattedBody?: string; replyToEventId?: string }
+          const p = action.payload as { roomId: string; body: string; formattedBody?: string; replyToEventId?: string; mentionUserIds?: string[] }
 
           const content: Record<string, unknown> = {
             msgtype: 'm.text',
@@ -976,6 +976,13 @@ export async function processChatQueue(): Promise<void> {
           }
           if (p.replyToEventId) {
             content['m.relates_to'] = { 'm.in_reply_to': { event_id: p.replyToEventId } }
+          }
+          // Intentional Mentions per MSC3952 — receivers (Element, Cinny,
+          // Beeper bridges) only treat the message as a mention notification
+          // when the user's MXID appears in `m.mentions.user_ids`. Plain
+          // `@name` text alone isn't enough on modern Matrix.
+          if (p.mentionUserIds && p.mentionUserIds.length > 0) {
+            content['m.mentions'] = { user_ids: p.mentionUserIds }
           }
 
           const sendResult = await hubRpc<{ event_id?: string }>('matrix', 'sendEvent', {
