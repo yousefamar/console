@@ -23,7 +23,7 @@ import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
-import { ChevronRight, ArrowUp, FolderTree, Search, X } from 'lucide-react'
+import { ChevronRight, ArrowUp, FolderTree, NotebookPen, Search, X } from 'lucide-react'
 import {
   ROOT_PATH,
   buildHierarchy,
@@ -702,6 +702,13 @@ export const CirclesView = memo(function CirclesView() {
           title="Search (/)"
         >
           <Search size={12} />
+        </button>
+        <button
+          onClick={() => setViewMode('blog')}
+          className="p-0.5 text-text-tertiary hover:text-text-primary rounded-sm hover:bg-surface-2"
+          title="Switch to blog view"
+        >
+          <NotebookPen size={12} />
         </button>
         <button
           onClick={() => setViewMode('tree')}

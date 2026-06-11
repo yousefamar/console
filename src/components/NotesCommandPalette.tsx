@@ -196,7 +196,8 @@ export function NotesCommandPalette() {
           if (result.rebuildOk) {
             ui.pushToast({
               kind: 'success', message: 'Published',
-              detail: result.newPath, href: 'https://yousefamar.com/log/',
+              detail: result.newPath,
+              href: (result.newPath && (await import('@/utils/frontmatter')).permalinkForLogPath(result.newPath)) || 'https://yousefamar.com/memo/log/',
             })
           } else {
             ui.pushToast({

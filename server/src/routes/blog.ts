@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
-import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, setProjectStatus, createProject, createDraft } from '../blog.js'
+import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -25,6 +25,31 @@ export function handleBlogRoutes(
     listProjects(noteStore)
       .then((projects) => json(res, 200, projects))
       .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
+  // GET /blog/posts?limit=N — recent published posts across all projects
+  if (path.startsWith('/blog/posts') && req.method === 'GET') {
+    const url = new URL(path, 'http://localhost')
+    const limit = parseInt(url.searchParams.get('limit') ?? '20', 10) || 20
+    listRecentPosts(noteStore, limit)
+      .then((posts) => json(res, 200, posts))
+      .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
+  // POST /blog/format { text } — format dictated text without changing wording
+  if (path === '/blog/format' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      try {
+        const { text } = JSON.parse(body) as { text?: string }
+        if (!text) return json(res, 400, { ok: false, error: 'Missing `text`' })
+        const result = await formatDictation(text)
+        json(res, result.ok ? 200 : 500, result)
+      } catch (err) {
+        json(res, 500, { ok: false, error: (err as Error).message })
+      }
+    }).catch((err) => json(res, 500, { ok: false, error: (err as Error).message }))
     return true
   }
 

@@ -34,6 +34,15 @@ export interface ProjectPost {
   mtime: number
 }
 
+export interface PublishedPost {
+  path: string
+  title: string
+  date: string | null
+  mtime: number
+  project: string | null
+  tags: string[]
+}
+
 export interface CreateDraftArgs {
   title: string
   /** Optional project slug — adds `project: <slug>` to frontmatter and prefixes filename to dodge cross-project collisions. */
@@ -69,10 +78,15 @@ interface BlogState {
   postsByProject: Record<string, ProjectPost[]>
   draftsLoading: boolean
   projectsLoading: boolean
+  recentPosts: PublishedPost[]
+  recentPostsLoading: boolean
   refreshDrafts: () => Promise<void>
   refreshProjects: () => Promise<void>
   refreshTags: () => Promise<void>
   refreshProjectPosts: (slug: string) => Promise<void>
+  refreshRecentPosts: (limit?: number) => Promise<void>
+  /** Format dictated text via the hub LLM endpoint. Returns formatted text or null on failure. */
+  formatDictation: (text: string) => Promise<{ ok: boolean; text?: string; error?: string }>
   publish: (path: string) => Promise<PublishResult>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
@@ -98,6 +112,8 @@ export const useBlogStore = create<BlogState>((set) => ({
   postsByProject: {},
   draftsLoading: false,
   projectsLoading: false,
+  recentPosts: [],
+  recentPostsLoading: false,
 
   refreshDrafts: async () => {
     set({ draftsLoading: true })
@@ -134,6 +150,28 @@ export const useBlogStore = create<BlogState>((set) => ({
       set((s) => ({ postsByProject: { ...s.postsByProject, [slug]: posts } }))
     } catch {
       // keep last known
+    }
+  },
+
+  refreshRecentPosts: async (limit = 20) => {
+    set({ recentPostsLoading: true })
+    try {
+      const recentPosts = await hubFetch<PublishedPost[]>(`/blog/posts?limit=${limit}`, { timeoutMs: 12000 })
+      set({ recentPosts, recentPostsLoading: false })
+    } catch {
+      set({ recentPostsLoading: false })
+    }
+  },
+
+  formatDictation: async (text) => {
+    try {
+      return await hubFetch<{ ok: boolean; text?: string; error?: string }>('/blog/format', {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+        timeoutMs: 95000,
+      })
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
     }
   },
 

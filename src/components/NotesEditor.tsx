@@ -4,17 +4,16 @@ import { useBlogStore, enclosingProjectSlug } from '@/store/blog'
 import { NotesEditorCore } from './NotesEditorCore'
 import { ProjectPill } from './notes/ProjectPill'
 import { ProjectPanel } from './notes/ProjectPanel'
-import { X, ChevronLeft, Send } from 'lucide-react'
+import { WriteMetaBar } from './notes/WriteMetaBar'
+import { WriteActionBar } from './notes/WriteActionBar'
+import { X, ChevronLeft, ExternalLink, Send } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
 import { useUiStore } from '@/store/ui'
+import { isDraftPath, isPublishedPath, permalinkForLogPath } from '@/utils/frontmatter'
 
 const PANEL_TOGGLE_KEY = 'console:notes:projectPanelOpen'
-const DRAFTS_DIR = 'scratch/blog-drafts/'
-
-function isDraftPath(path: string | null | undefined): boolean {
-  return !!path && path.startsWith(DRAFTS_DIR)
-}
+const MOBILE_VIM_KEY = 'console:notes:mobileVim'
 
 export const NotesEditor = memo(function NotesEditor() {
   const openFiles = useNotesStore((s) => s.openFiles)
@@ -41,8 +40,33 @@ export const NotesEditor = memo(function NotesEditor() {
   useEffect(() => { localStorage.setItem(PANEL_TOGGLE_KEY, String(panelOpen)) }, [panelOpen])
   const showPanel = panelOpen && slug !== null && !isMobile
 
+  // Mobile vim: off by default (soft keyboards fight modal editing), but a
+  // hardware (BT) keyboard flips it on. Detection is heuristic: soft keyboards
+  // emit composition events (keyCode 229 / key 'Unidentified') — a real
+  // Escape or Ctrl-chord can only come from physical keys. Manual fallback:
+  // the status-bar 'vim' chip is tappable on mobile.
+  const [mobileVim, setMobileVim] = useState<boolean>(() => localStorage.getItem(MOBILE_VIM_KEY) === 'true')
+  useEffect(() => { localStorage.setItem(MOBILE_VIM_KEY, String(mobileVim)) }, [mobileVim])
+  useEffect(() => {
+    if (!isMobile || mobileVim) return
+    const onKey = (e: KeyboardEvent) => {
+      const physical = e.key === 'Escape' || ((e.ctrlKey || e.metaKey) && e.key.length === 1)
+      if (physical && e.keyCode !== 229 && e.key !== 'Unidentified') {
+        setMobileVim(true)
+        useUiStore.getState().pushToast({ kind: 'info', message: 'Hardware keyboard detected — vim mode on', detail: 'Tap "vim" in the status bar to toggle' })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isMobile, mobileVim])
+
   const paths = Object.keys(openFiles)
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
+
+  // "Writing files" get the focused-writing chrome: meta bar, action bar,
+  // no gutters. Drafts AND published posts qualify.
+  const isWritingFile = isDraftPath(activeFilePath) || isPublishedPath(activeFilePath)
+  const permalink = activeFilePath ? permalinkForLogPath(activeFilePath) : null
 
   if (!activeFile) {
     return (
@@ -140,17 +164,26 @@ export const NotesEditor = memo(function NotesEditor() {
         })}
       </div>
 
+      {/* Post metadata bar — drafts and published posts only */}
+      {isWritingFile && <WriteMetaBar path={activeFilePath!} />}
+
       {/* Editor + side panel overlay */}
       <div className="relative flex flex-col flex-1 min-h-0">
         <NotesEditorCore
           key={activeFilePath!}
           filePath={activeFilePath!}
           content={activeFile.content}
+          options={isMobile ? { vim: mobileVim, gutters: false } : (isWritingFile ? { gutters: false } : undefined)}
         />
         {showPanel && slug && (
           <ProjectPanel slug={slug} onClose={() => setPanelOpen(false)} />
         )}
       </div>
+
+      {/* Writing action bar — mobile-first thumb zone for posts */}
+      {isWritingFile && (
+        <WriteActionBar path={activeFilePath!} onPublish={() => void handlePublish()} />
+      )}
 
       {/* Status bar */}
       <div className="flex items-center justify-between border-t border-border px-3 py-0.5 flex-shrink-0">
@@ -158,7 +191,7 @@ export const NotesEditor = memo(function NotesEditor() {
           {activeFilePath}
         </span>
         <div className="flex items-center gap-2">
-          {isDraftPath(activeFilePath) && (
+          {isDraftPath(activeFilePath) && !isWritingFile && (
             <button
               onClick={() => { void handlePublish() }}
               className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded-sm transition-colors"
@@ -168,13 +201,35 @@ export const NotesEditor = memo(function NotesEditor() {
               publish
             </button>
           )}
+          {isPublishedPath(activeFilePath) && permalink && (
+            <a
+              href={permalink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded-sm transition-colors"
+              title="View the live post"
+            >
+              <ExternalLink size={10} />
+              live
+            </a>
+          )}
           {slug && !isMobile && (
             <ProjectPill slug={slug} open={panelOpen} onToggle={() => setPanelOpen((v) => !v)} />
           )}
           {isFileDirty(activeFilePath!) && (
             <span className="text-[10px] text-accent">modified</span>
           )}
-          <span className="text-[10px] text-text-tertiary">vim</span>
+          {isMobile ? (
+            <button
+              onClick={() => setMobileVim((v) => !v)}
+              className={`text-[10px] px-1 rounded-sm transition-colors ${mobileVim ? 'text-text-primary bg-surface-2' : 'text-text-tertiary'}`}
+              title="Toggle vim keybindings"
+            >
+              vim{mobileVim ? '' : ' off'}
+            </button>
+          ) : (
+            <span className="text-[10px] text-text-tertiary">vim</span>
+          )}
         </div>
       </div>
     </div>

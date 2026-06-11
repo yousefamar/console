@@ -2,7 +2,7 @@ import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { useGlassesStore } from '@/glasses/store'
 import { getHubUrl } from '@/hub'
-import { isNative } from '@/platform'
+import { useDictation } from '@/hooks/useDictation'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
 
 // ============================================================================
@@ -36,17 +36,6 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const slashListRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sendingRef = useRef(false)
-  const [listening, setListening] = useState(false)
-  const [interimText, setInterimText] = useState('')
-  const recognitionRef = useRef<any>(null)
-  const sttWsRef = useRef<WebSocket | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const mediaStreamRef = useRef<MediaStream | null>(null)
-  // True once a streaming delta has been inserted for the current OpenAI STT
-  // session — lets us ignore a trailing `final` (its text is already in the
-  // textarea from the deltas) while still honouring a `final` from any model
-  // that sends only a final and no deltas.
-  const sawSttDeltaRef = useRef(false)
 
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
@@ -140,20 +129,6 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     })
   }, [])
 
-  // Sync textarea DOM value when interim STT text changes, then resize.
-  // Committed text changes are applied imperatively at their source — no React reactivity.
-  // NOTE: only the browser-SpeechRecognition fallback uses `interimText` (its
-  // results revise in place). The OpenAI/gpt-realtime-whisper path inserts each
-  // delta straight into the textarea at the caret (see insertAtCaret), so its
-  // transcript is live-editable and this effect is a no-op for it.
-  useEffect(() => {
-    const el = inputRef.current
-    if (!el) return
-    const base = textRef.current
-    el.value = interimText ? base + (base ? ' ' : '') + interimText : base
-    resizeTextarea()
-  }, [interimText, resizeTextarea])
-
   /** Insert text at the textarea's current caret (replacing any selection),
    *  keeping textRef in sync and advancing the caret past the insertion. Lets
    *  streamed speech land wherever the user has placed the cursor and coexist
@@ -178,6 +153,25 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     setHasContent(!!next.trim())
     resizeTextarea()
   }, [resizeTextarea])
+
+  // Dictation — shared STT hook (browser SR with hub /stt fallback). Committed
+  // chunks insert straight at the caret as editable text.
+  const dictation = useDictation({ onText: insertAtCaret })
+  const listening = dictation.recording
+  const interimText = dictation.interim
+
+  // Sync textarea DOM value when interim STT text changes, then resize.
+  // Committed text changes are applied imperatively at their source — no React
+  // reactivity. Only the browser-SpeechRecognition fallback produces interim
+  // text (its results revise in place); the hub path inserts deltas straight
+  // at the caret, so this effect is a no-op for it.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    const base = textRef.current
+    el.value = interimText ? base + (base ? ' ' : '') + interimText : base
+    resizeTextarea()
+  }, [interimText, resizeTextarea])
 
   // Fetch past sessions when a directory is selected
   useEffect(() => {
@@ -209,7 +203,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
 
   const handleSend = useCallback(() => {
     if (sendingRef.current) return
-    if (listening) stopListening()
+    if (dictation.recording) dictation.stop()
     const body = textRef.current.trim()
     if (!body && !imagePayload) return
 
@@ -392,142 +386,17 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     setDirIndex(0)
   }, [])
 
-  const stopListening = useCallback(() => {
-    recognitionRef.current?.stop()
-    recognitionRef.current = null
-    if (sttWsRef.current) { sttWsRef.current.close(); sttWsRef.current = null }
-    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
-    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach((t) => t.stop()); mediaStreamRef.current = null }
-    // No flush needed: OpenAI-path deltas are inserted into the textarea live,
-    // so the transcript is already committed. interimText only holds in-flight
-    // browser-SR text, which is intentionally discarded on stop.
-    sawSttDeltaRef.current = false
-    setListening(false)
-    setInterimText('')
-    inputRef.current?.focus()
-  }, [])
-
-  const startBrowserSTT = useCallback((): boolean => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) return false
-    const recognition = new SR()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'en-GB'
-    let finalTranscript = textRef.current
-    let failed = false
-    recognition.onresult = (event: any) => {
-      let interim = ''
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript
-        if (event.results[i].isFinal) {
-          finalTranscript += (finalTranscript ? ' ' : '') + t
-          textRef.current = finalTranscript
-          if (inputRef.current) inputRef.current.value = finalTranscript
-          setHasContent(!!finalTranscript.trim())
-          setInterimText('')
-        } else {
-          interim += t
-        }
-      }
-      if (interim) setInterimText(interim)
-    }
-    recognition.onend = () => {
-      if (!failed) { setListening(false); setInterimText(''); recognitionRef.current = null; inputRef.current?.focus() }
-    }
-    recognition.onerror = (e: any) => {
-      if (e.error === 'network' || e.error === 'service-not-allowed' || e.error === 'not-allowed') {
-        failed = true
-        recognition.stop()
-        // Fall back to OpenAI
-        startOpenAISTT()
-      } else {
-        setListening(false); setInterimText(''); recognitionRef.current = null
-      }
-    }
-    recognitionRef.current = recognition
-    recognition.start()
-    return true
-  }, [])
-
-  const startOpenAISTT = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-      const { getHubWsUrl } = await import('@/hub')
-      const ws = new WebSocket(getHubWsUrl().replace(/\/$/, '') + '/stt')
-      sttWsRef.current = ws
-      sawSttDeltaRef.current = false
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'interim') {
-            // whisper-streaming deltas are append-only word chunks — insert each
-            // straight at the caret as committed, editable text.
-            sawSttDeltaRef.current = true
-            insertAtCaret(msg.text || '')
-          } else if (msg.type === 'final') {
-            // Only insert a `final` when no deltas covered it (a final from a
-            // VAD model that doesn't stream). Otherwise it would duplicate.
-            if (!sawSttDeltaRef.current) insertAtCaret((msg.text || '').trim())
-            sawSttDeltaRef.current = false
-          } else if (msg.type === 'error') {
-            console.warn('[stt]', msg.message)
-          }
-        } catch { /* ignore */ }
-      }
-
-      ws.onclose = () => { stopListening() }
-      ws.onerror = () => { ws.close() }
-
-      ws.onopen = () => {
-        const audioCtx = new AudioContext({ sampleRate: 24000 })
-        audioContextRef.current = audioCtx
-        // Mobile WebViews/Safari create the context suspended even from a user
-        // gesture; without resume() onaudioprocess never fires → no audio sent.
-        if (audioCtx.state === 'suspended') void audioCtx.resume()
-        const source = audioCtx.createMediaStreamSource(stream)
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-        processor.onaudioprocess = (e) => {
-          if (ws.readyState !== WebSocket.OPEN) return
-          const pcm = e.inputBuffer.getChannelData(0)
-          const int16 = new Int16Array(pcm.length)
-          for (let i = 0; i < pcm.length; i++) {
-            int16[i] = Math.max(-32768, Math.min(32767, pcm[i]! * 32768))
-          }
-          const bytes = new Uint8Array(int16.buffer)
-          let binary = ''
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
-          ws.send(JSON.stringify({ type: 'audio', data: btoa(binary) }))
-        }
-        source.connect(processor)
-        processor.connect(audioCtx.destination)
-      }
-    } catch (err) {
-      // Surface the cause (e.g. NotAllowedError = mic permission denied) instead
-      // of failing silently — the #1 "voice does nothing on mobile" symptom.
-      console.warn('[stt] mic capture failed:', (err as Error).name, (err as Error).message)
-      setListening(false)
-      setInterimText('')
-    }
-  }, [stopListening])
-
   const toggleListening = useCallback(() => {
-    if (listening) {
-      stopListening()
+    if (dictation.recording) {
+      dictation.stop()
+      inputRef.current?.focus()
       return
     }
-    setListening(true)
     // Focus the textarea so streamed words insert at a real caret position.
     inputRef.current?.focus()
-    // In the APK WebView there's no reliable on-device speech service —
-    // webkitSpeechRecognition may exist but silently never fire results AND
-    // never error, hanging the mic. Go straight to the hub/OpenAI path there.
-    if (isNative() || !startBrowserSTT()) {
-      startOpenAISTT()
-    }
-  }, [listening, stopListening, startBrowserSTT, startOpenAISTT])
+    dictation.start()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dictation.recording, dictation.start, dictation.stop])
 
   if (!connected) return null
 

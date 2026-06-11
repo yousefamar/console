@@ -13,7 +13,7 @@ import { getPref, setPref } from '@/prefs'
 const EXPANDED_DIRS_PREF = 'notesExpandedDirs'
 const VIEW_MODE_PREF = 'notesViewMode'
 
-export type NotesViewMode = 'tree' | 'circles'
+export type NotesViewMode = 'tree' | 'circles' | 'blog'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

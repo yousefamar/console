@@ -142,15 +142,25 @@ function tagCompletion(context: CompletionContext): CompletionResult | null {
   }
 }
 
+export interface EditorOptions {
+  /** Vim keybindings. Default true (current behaviour). */
+  vim?: boolean
+  /** Line numbers + fold gutter. Default true. */
+  gutters?: boolean
+}
+
 interface Props {
   filePath: string
   content: string
+  options?: EditorOptions
 }
 
-export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content }: Props) {
+export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content, options }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const filePathRef = useRef(filePath)
+  const vimEnabled = options?.vim ?? true
+  const guttersEnabled = options?.gutters ?? true
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -283,11 +293,20 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
           return false
         },
       })),
-      vim(),
-      lineNumbers(),
+      ...(vimEnabled ? [vim()] : []),
+      ...(guttersEnabled ? [lineNumbers()] : []),
       activeLineWhenCollapsed,
       drawSelection(),
-      foldGutter(),
+      // Browser-native spellcheck (red squiggles + right-click suggestions).
+      // CM6 disables it by default — turning it on here. In vim mode,
+      // autocorrect/autocapitalize stay off so the editor doesn't munge
+      // code-y prose; in plain mode (mobile writing) they're on for prose.
+      EditorView.contentAttributes.of(
+        vimEnabled
+          ? { spellcheck: 'true', autocorrect: 'off', autocapitalize: 'off' }
+          : { spellcheck: 'true', autocorrect: 'on', autocapitalize: 'sentences' },
+      ),
+      ...(guttersEnabled ? [foldGutter()] : []),
       bracketMatching(),
       history(),
       syntaxHighlighting(oneDarkHighlightStyle, { fallback: true }),
@@ -432,11 +451,12 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       void blog.refreshDrafts()
       void blog.refreshProjects()
       if (result.rebuildOk) {
+        const { permalinkForLogPath } = await import('@/utils/frontmatter')
         ui.pushToast({
           kind: 'success',
           message: 'Published',
           detail: result.newPath,
-          href: 'https://yousefamar.com/log/',
+          href: (result.newPath && permalinkForLogPath(result.newPath)) || 'https://yousefamar.com/memo/log/',
         })
       } else {
         ui.pushToast({
@@ -468,7 +488,7 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       viewRef.current?.destroy()
       viewRef.current = null
     }
-  }, [filePath]) // Re-create editor when file changes
+  }, [filePath, vimEnabled, guttersEnabled]) // Re-create editor when file or editor options change
 
   // Keep filePathRef in sync
   useEffect(() => {

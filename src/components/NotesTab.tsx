@@ -10,6 +10,7 @@ import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
 import { NewNoteModal } from './NewNoteModal'
 import { CirclesView } from './notes/CirclesView'
+import { BlogView } from './notes/BlogView'
 import { FolderOpen } from 'lucide-react'
 
 export const NotesTab = memo(function NotesTab() {
@@ -75,13 +76,13 @@ export const NotesTab = memo(function NotesTab() {
     )
   }
 
-  // Mobile: show browser/circles or editor, not both
+  const sidebar = viewMode === 'circles' ? <CirclesView /> : viewMode === 'blog' ? <BlogView /> : <NotesFileBrowser />
+
+  // Mobile: show browser/circles/blog or editor, not both
   if (isMobile) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        {activeFilePath
-          ? <NotesEditor />
-          : (viewMode === 'circles' ? <CirclesView /> : <NotesFileBrowser />)}
+        {activeFilePath ? <NotesEditor /> : sidebar}
         {quickSwitcherOpen && <NotesQuickSwitcher />}
         {linkPickerOpen && <NotesLinkPicker />}
         {commandPaletteOpen && <NotesCommandPalette />}
@@ -91,11 +92,11 @@ export const NotesTab = memo(function NotesTab() {
   }
 
   // Desktop: sidebar + editor. Circles view replaces the narrow tree with a wider pane.
-  const sidebarWidthClass = viewMode === 'circles' ? 'w-[40%] min-w-[320px] max-w-[640px]' : 'w-56'
+  const sidebarWidthClass = viewMode === 'circles' ? 'w-[40%] min-w-[320px] max-w-[640px]' : viewMode === 'blog' ? 'w-64' : 'w-56'
   return (
     <div className="flex flex-1 min-h-0">
       <div className={`${sidebarWidthClass} flex-shrink-0 border-r border-border overflow-hidden flex flex-col`}>
-        {viewMode === 'circles' ? <CirclesView /> : <NotesFileBrowser />}
+        {sidebar}
       </div>
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
         <NotesEditor />

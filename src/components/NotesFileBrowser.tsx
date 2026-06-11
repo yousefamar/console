@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useNotesStore, type TreeNode } from '@/store/notes'
 import { showConfirm } from '@/dialog'
-import { ChevronRight, Circle, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine } from 'lucide-react'
+import { ChevronRight, Circle, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
 
 interface ContextMenu {
   x: number
@@ -90,6 +90,13 @@ export function NotesFileBrowser() {
           className="flex-1 text-left text-xs text-text-tertiary hover:text-text-secondary transition-colors truncate"
         >
           Find file...
+        </button>
+        <button
+          onClick={() => useNotesStore.getState().setViewMode('blog')}
+          className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+          title="Switch to blog view"
+        >
+          <NotebookPen size={12} />
         </button>
         <button
           onClick={() => useNotesStore.getState().setViewMode('circles')}

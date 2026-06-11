@@ -295,6 +295,97 @@ export async function listProjectPosts(store: NoteStore, slug: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// Recent published posts (across all projects)
+// ---------------------------------------------------------------------------
+
+export interface PublishedPost {
+  path: string
+  title: string
+  date: string | null
+  mtime: number
+  project: string | null
+  tags: string[]
+}
+
+export async function listRecentPosts(store: NoteStore, limit = 20): Promise<PublishedPost[]> {
+  const capped = Math.min(Math.max(1, limit), 100)
+  const all = await store.list()
+  const logFiles = all.filter((f) => f.dir === LOG_DIR)
+  const out: PublishedPost[] = []
+  for (const f of logFiles) {
+    try {
+      const content = await store.read(f.path)
+      const { fm, body } = parseFrontmatter(content)
+      let title = fm.title ?? f.name.replace(/\.md$/, '')
+      if (!fm.title) {
+        const h1 = body.match(/^#\s+(.+)$/m)
+        if (h1) title = h1[1]!.trim()
+      }
+      out.push({
+        path: f.path,
+        title,
+        date: fm.date ?? null,
+        mtime: f.mtime,
+        project: fm.project ?? null,
+        tags: fm.tags ?? [],
+      })
+    } catch {}
+  }
+  out.sort((a, b) => {
+    const ad = a.date ? Date.parse(a.date.replace(' ', 'T')) : a.mtime
+    const bd = b.date ? Date.parse(b.date.replace(' ', 'T')) : b.mtime
+    return bd - ad
+  })
+  return out.slice(0, capped)
+}
+
+// ---------------------------------------------------------------------------
+// Dictation formatting — LLM cleanup that must not alter wording.
+// Runs through the `claude` CLI (one-shot -p) so it rides the existing
+// Claude subscription — no ANTHROPIC_API_KEY needed. Model = CLI default
+// (the best available; currently Fable 5).
+// ---------------------------------------------------------------------------
+
+export async function formatDictation(text: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+  if (!text.trim()) return { ok: false, error: 'Empty text' }
+
+  const prompt = `The following text was dictated by voice and transcribed. Format it for publication:
+- Add punctuation and capitalisation.
+- Break it into paragraphs where natural.
+- Fix obvious transcription artefacts (duplicated words, filler like "um"/"uh", spoken punctuation like "comma" or "new paragraph" become actual punctuation/breaks).
+- Use Markdown formatting where the speaker clearly implied structure (e.g. lists).
+- DO NOT change the wording, vocabulary, tone, or content. Do not paraphrase. Do not add or remove ideas.
+
+Respond with ONLY the formatted text, no preamble.
+
+<dictation>
+${text}
+</dictation>`
+
+  const { execFile } = await import('node:child_process')
+  return new Promise((resolve) => {
+    const child = execFile(
+      'claude',
+      ['-p', prompt, '--output-format', 'text'],
+      { timeout: 90_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } },
+      (err, stdout, stderr) => {
+        if (err) {
+          resolve({ ok: false, error: `claude CLI failed: ${stderr?.slice(0, 200) || err.message}` })
+          return
+        }
+        const formatted = stdout.trim()
+        if (!formatted) {
+          resolve({ ok: false, error: 'Empty response from model' })
+          return
+        }
+        resolve({ ok: true, text: formatted })
+      },
+    )
+    child.on('error', (e) => resolve({ ok: false, error: e.message }))
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Project status update
 // ---------------------------------------------------------------------------
 
