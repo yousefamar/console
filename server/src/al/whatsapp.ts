@@ -177,6 +177,9 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
               scheduleReconnect()
             })
         } else {
+          // Log the status code so stdout and health envelopes tell the same
+          // story (428 = benign server-initiated close; 440 = session replaced).
+          console.log(`[al/wa] disconnected (statusCode=${statusCode ?? 'unknown'}), reconnecting...`)
           if (wasConnected) {
             try { cb.onHealthChange('disconnected', `code=${statusCode ?? 'unknown'}`) } catch { /* ignore */ }
           }

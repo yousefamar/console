@@ -24,11 +24,23 @@ import { homedir } from 'node:os'
 
 const xdgData = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share')
 
-/** Yousef's Al data root (vault is symlinked under here). Read-only from Console. */
+/**
+ * Legacy "Al data root" — the OLD daemon used `${XDG_DATA_HOME}/al` and
+ * symlinked `workspace` into the Obsidian vault. The hub no longer routes
+ * file IO through this path; kept as a label for back-compat in case any
+ * older script reads it from the environment.
+ */
 export const AL_HOME = process.env.AL_HOME || join(xdgData, 'al')
 
-/** Persona + users + workflows + call-transcripts. Read at session spawn. */
-export const WORKSPACE_DIR = join(AL_HOME, 'workspace')
+/**
+ * Persona + users + workflows + call-transcripts. Read at session spawn.
+ * Points at the literal vault path rather than the `.local/share/al/workspace`
+ * symlink so Al's cwd (and Claude's transcript folder) match the on-disk
+ * canonical location with no indirection. Override via AL_WORKSPACE_DIR.
+ */
+export const WORKSPACE_DIR =
+  process.env.AL_WORKSPACE_DIR ||
+  join(homedir(), 'sync', 'brain', 'root', 'projects', 'al', 'workspace')
 
 /** Baileys auth state — owned by Console post-cutover. */
 export const AUTH_WHATSAPP_DIR = join(homedir(), '.config', 'console', 'auth_whatsapp')
