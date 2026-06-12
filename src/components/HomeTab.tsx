@@ -65,14 +65,14 @@ export const HomeTab = memo(function HomeTab() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col p-3 gap-3 overflow-hidden">
-      <div className="grid grid-cols-4 gap-3 flex-[4] min-h-0">
+    <div className="flex flex-1 min-h-0 p-3 gap-3 overflow-hidden">
+      <div className="grid grid-cols-2 grid-rows-2 gap-3 flex-[2] min-w-0 min-h-0">
         <AlertsCard />
         <ServersCard />
         <BlogDraftsCard />
         <ProjectsCard />
       </div>
-      <div className="flex-[5] min-h-0">
+      <div className="flex-[3] min-w-0 min-h-0">
         <AgentCanvasCard />
       </div>
     </div>
