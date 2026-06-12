@@ -196,7 +196,40 @@ export function handleMonzoRoutes(
   // GET /money/webhook-url — returns the public webhook URL with secret
   if (path === '/money/webhook-url' && req.method === 'GET') {
     const secret = authStore.getWebhookSecret()
-    json({ url: `https://hub.amar.io/money/webhook?secret=${secret}` })
+    // Monzo POSTs through con.amar.io's Caddy → /hub/money/webhook → (strip)
+    // /money/webhook, which is always-open in the auth middleware; the secret
+    // in the query string is the actual auth. The old hub.amar.io vhost is
+    // dead (DNS never got a dynamic A record after the WAN IP changed).
+    const origin = process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io'
+    json({ url: `${origin}/hub/money/webhook?secret=${secret}` })
+    return true
+  }
+
+  // POST /money/webhook/register — sync Monzo's registered webhook to the
+  // canonical URL: deletes any webhook pointing elsewhere, registers the
+  // current one if missing. Idempotent. Returns the final webhook list.
+  if (path === '/money/webhook/register' && req.method === 'POST') {
+    const accountId = authStore.getMonzoConfig()?.accountId
+    if (!accountId) {
+      error(400, 'Monzo account not configured')
+      return true
+    }
+    const secret = authStore.getWebhookSecret()
+    const origin = process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io'
+    const canonical = `${origin}/hub/money/webhook?secret=${secret}`
+    ;(async () => {
+      const existing = await monzoClient.listWebhooks(accountId)
+      const stale = existing.filter((w) => w.url !== canonical)
+      for (const w of stale) {
+        await monzoClient.deleteWebhook(w.id)
+      }
+      const hasCanonical = existing.some((w) => w.url === canonical)
+      if (!hasCanonical) {
+        await monzoClient.registerWebhook(accountId, canonical)
+      }
+      const final = await monzoClient.listWebhooks(accountId)
+      json({ ok: true, deleted: stale.length, registered: !hasCanonical, webhooks: final.map((w) => ({ id: w.id, url: w.url.replace(secret, '<secret>') })) })
+    })().catch((err: Error) => error(500, err.message))
     return true
   }
 
