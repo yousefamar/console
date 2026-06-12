@@ -113,12 +113,6 @@ export interface CreateDraftResult {
   error?: string
 }
 
-function frontmatterNow(): string {
-  const d = new Date()
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
 export async function createDraft(
   store: NoteStore,
   { title, project }: { title: string; project?: string },
@@ -134,10 +128,12 @@ export async function createDraft(
     return { ok: true, path, alreadyExists: true }
   }
 
+  // No `date:` here — date is the date of PUBLISHING, stamped by publishDraft.
+  // A draft-time date would be misleading and could leak stale if the draft is
+  // ever published by a path that doesn't re-stamp (e.g. manual move).
   const fm: string[] = [
     `title: ${cleanTitle}`,
     'public: false',
-    `date: ${frontmatterNow()}`,
     'post: true',
   ]
   if (project) {
