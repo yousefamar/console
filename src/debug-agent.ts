@@ -52,7 +52,14 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 function getWsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${window.location.hostname || 'localhost'}:9877/debug`
+  const host = window.location.host || 'localhost'
+  // Same-origin /hub/debug — Caddy strips /hub before forwarding to the
+  // hub's WS endpoint. Off-host PWA / dev pages on :5173 fall through to
+  // the historic :9877 path via the explicit port substitution.
+  if (window.location.port === '5173') {
+    return `${proto}//${window.location.hostname || 'localhost'}:9877/debug`
+  }
+  return `${proto}//${host}/hub/debug`
 }
 
 function connect(): void {

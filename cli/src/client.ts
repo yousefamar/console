@@ -7,11 +7,11 @@
 // only falling back to HTTP on a connection-level failure, with the result
 // cached for subsequent calls in the same process.
 //
-// The Tailscale cert is bound to the tailnet hostname (e.g.
-// `amarhp-lin.rya-yo.ts.net`), not `localhost`, so we pass a dedicated
-// undici dispatcher with `rejectUnauthorized: false` on every HTTPS request.
-// Scoped rather than global (which would emit a loud Node warning) and
-// restricted to the CLI, which only talks to the local hub.
+// The hub's internal TLS cert (if any) is self-signed and bound to a
+// hostname that isn't `localhost`, so we pass a dedicated undici dispatcher
+// with `rejectUnauthorized: false` on every HTTPS request. Scoped rather
+// than global (which would emit a loud Node warning) and restricted to the
+// CLI, which only talks to the local hub.
 
 import { Agent } from 'undici'
 import { readFileSync, existsSync } from 'node:fs'

@@ -86,14 +86,14 @@ export function handleCronRoutes(
     return true
   }
 
-  // GET /cron/ics-token — token + the public Funnel'd URL if one's set up.
-  // CLI/SPA fall back to constructing from their known hub URL when publicUrl is null.
+  // GET /cron/ics-token — token + the public Caddy-served URL.
+  // CLI/SPA use publicUrl verbatim; null means no public origin configured.
   if (path === '/cron/ics-token' && req.method === 'GET') {
     const token = scheduler.getIcsToken()
     scheduler.getPublicIcsBase()
       .then((publicBase) => json(res, 200, {
         token,
-        publicUrl: publicBase ? `${publicBase}/cron.ics?token=${token}` : null,
+        publicUrl: publicBase ? `${publicBase}/public/cron.ics?token=${token}` : null,
       }))
       .catch(() => json(res, 200, { token, publicUrl: null }))
     return true

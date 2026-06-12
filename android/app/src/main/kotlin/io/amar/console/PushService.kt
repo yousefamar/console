@@ -67,8 +67,8 @@ class PushService : Service() {
         const val MAIL_GROUP_KEY = "console.mail"
         const val MAIL_SUMMARY_ID = 101
 
-        private const val PUSH_URL = "wss://amarhp-lin.rya-yo.ts.net:9877/push"
-        private const val HUB_HTTPS = "https://amarhp-lin.rya-yo.ts.net:9877"
+        private const val PUSH_URL = "wss://con.amar.io/hub/push"
+        private const val HUB_HTTPS = "https://con.amar.io/hub"
         private const val RECONNECT_MIN_MS = 2_000L
         private const val RECONNECT_MAX_MS = 60_000L
         private const val VIBRATE_DEBOUNCE_MS = 60_000L

@@ -27,12 +27,11 @@ function publicShareUrl(publicOrigin: string, token: string): string {
 }
 
 /**
- * Best-effort public origin used in CLI share-URL output. Defaults to the
- * registered Tailscale Funnel hostname; agents that want a different origin
- * can override via the env var.
+ * Public origin used in canvas share-URL output. Same hostname Caddy serves
+ * the SPA + /hub/* + /public/* from; override via CONSOLE_PUBLIC_ORIGIN.
  */
 export function resolvePublicOrigin(): string {
-  return process.env.CONSOLE_PUBLIC_ORIGIN || 'https://amarhp-lin.rya-yo.ts.net:8443'
+  return process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io'
 }
 
 export function handleDashboardRoutes(

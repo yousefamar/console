@@ -59,23 +59,18 @@ import org.json.JSONObject
 /**
  * Console — single WebView activity.
  *
- * Loads the tailnet URL directly, intercepts OAuth into Chrome Custom Tabs,
- * and handles `console://` deep links for OAuth return / navigation.
+ * Loads https://con.amar.io/ directly (public Caddy + Let's Encrypt cert,
+ * no Tailscale required), intercepts OAuth into Chrome Custom Tabs, handles
+ * `console://` deep links.
  */
 class MainActivity : ComponentActivity() {
 
-    // Public URL via Tailscale Funnel on :8443 (same *.ts.net hostname as the
-    // tailnet, reachable from anywhere). Funnel can't use :443 because Caddy
-    // already binds *:443 for the *.amar.io sites; 8443 is the next allowed
-    // Funnel port. Hub on :9877 stays tailnet-only.
-    // Off-tailnet the shell loads, hub calls fail, and the offline queue
-    // accumulates until Tailscale is back up.
-    private val appUrl = "https://amarhp-lin.rya-yo.ts.net:8443/"
+    // Public URL on the home Caddy. Resolves via Namecheap DDNS, served by
+    // Caddy on :443 with a real Let's Encrypt cert. SPA + hub + /public/*
+    // all live on the same origin (see /etc/caddy/Caddyfile con.amar.io block).
+    private val appUrl = "https://con.amar.io/"
 
-    // The hub (REST + WS) is reached via Caddy on the SPA's :8443 origin under
-    // the /hub prefix. Update channel lives at the no-auth /public/apk/* path,
-    // so the in-app updater works without a session even if the hub auth is on.
-    // Direct :9877 is gone post-Phase-9 (bind locked to 127.0.0.1).
+    // Same-origin: APK in-app updater hits ${publicBaseUrl}/public/apk/...
     private val publicBaseUrl: String by lazy { appUrl.trimEnd('/') }
 
     private lateinit var webView: WebView
@@ -718,6 +713,19 @@ class MainActivity : ComponentActivity() {
 
         when {
             host == "auth" && path.startsWith("/done") -> {
+                // OAuth returned via Custom Tab. The Custom Tab now holds the
+                // session cookie but the WebView (separate jar) does not. If
+                // the hub deep-linked us with `?ott=…`, navigate the WebView
+                // to /hub/auth/claim to redeem it into the WebView's jar.
+                val ott = data.getQueryParameter("ott")
+                if (!ott.isNullOrEmpty()) {
+                    val claimUrl = "https://con.amar.io/hub/auth/claim?ott=" + Uri.encode(ott)
+                    webView.loadUrl(claimUrl)
+                } else {
+                    // No OTT (shouldn't happen post-refactor); fall back to a
+                    // reload so the SPA re-probes /auth/session.
+                    webView.loadUrl(appUrl)
+                }
                 webView.evaluateJavascript(
                     """
                     (function(){
@@ -774,7 +782,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
         }
         val hint = TextView(this).apply {
-            text = "Make sure Tailscale is running on this phone."
+            text = "Couldn't reach con.amar.io. Check your internet connection."
             setTextColor(Color.parseColor("#9ca3af"))
             textSize = 14f
             gravity = Gravity.CENTER

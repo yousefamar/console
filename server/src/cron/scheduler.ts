@@ -140,33 +140,14 @@ export class HubCronScheduler {
   }
 
   /**
-   * If a Tailscale Funnel path mapping exists for `/cron.ics → localhost:9877`,
-   * return the public base URL (`https://<funnel-host>`). Otherwise null.
-   * Cached for 5 minutes — Funnel changes are rare and a stale value still
-   * resolves correctly (the path mapping is what's authoritative).
+   * Public base URL for the cron ICS feed. Defaults to the same `con.amar.io`
+   * origin the rest of the public surface uses; override via the
+   * `CONSOLE_PUBLIC_ORIGIN` env var. Returns null only when explicitly
+   * disabled — Google Calendar etc. will be told to use the URL we return
+   * verbatim, so it has to be reachable from the public internet.
    */
   async getPublicIcsBase(): Promise<string | null> {
-    const now = Date.now()
-    if (this.publicBaseCache && now < this.publicBaseExpiry) return this.publicBaseCache.url
-    let url: string | null = null
-    try {
-      const { stdout } = await execFileP('tailscale', ['funnel', 'status', '--json'], { timeout: 2000 })
-      const status = JSON.parse(stdout) as { Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }> }
-      for (const [host, web] of Object.entries(status.Web ?? {})) {
-        const handler = web.Handlers?.['/cron.ics']
-        if (!handler?.Proxy) continue
-        // Match any proxy pointing at our hub port (treat scheme/insecure as opaque).
-        if (/localhost:9877/.test(handler.Proxy)) {
-          url = `https://${host}`
-          break
-        }
-      }
-    } catch {
-      // tailscale not installed / not running / not authorized — fall through to null
-    }
-    this.publicBaseCache = { url }
-    this.publicBaseExpiry = now + 5 * 60_000
-    return url
+    return (process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')
   }
 
   /** Next N upcoming firings per task, capped at `windowMs` from now. */

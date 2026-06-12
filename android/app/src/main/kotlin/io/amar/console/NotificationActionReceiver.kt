@@ -37,7 +37,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val EXTRA_THREAD_IDS = "threadIds"
         const val KEY_REPLY_TEXT = "replyText"
 
-        private const val HUB_HTTPS = "https://amarhp-lin.rya-yo.ts.net:9877"
+        private const val HUB_HTTPS = "https://con.amar.io/hub"
         private const val TAG = "NotifAction"
     }
 

@@ -160,9 +160,9 @@ export function AccountModal() {
 }
 
 function MigrationSection() {
-  // Default to the alternate port: if we're on 8443, suggest 5173 (and vice
-  // versa). This is the typical "I just moved from Vite-direct to Funnel and
-  // want my chat/mail back" flow.
+  // Suggest the prior origin a one-time IDB import should pull from. Used
+  // mainly when moving devices from the old Funnel/tailnet host to
+  // con.amar.io — same per-origin IDB, so caches need a one-time copy.
   const otherOrigin = computeOtherOrigin()
   const [origin, setOrigin] = useState(otherOrigin)
   const [busy, setBusy] = useState(false)
@@ -193,7 +193,7 @@ function MigrationSection() {
         type="url"
         value={origin}
         onChange={(e) => setOrigin(e.target.value)}
-        placeholder="https://amarhp-lin.rya-yo.ts.net:5173"
+        placeholder="https://other-origin.example/"
         className="w-full bg-surface-2 border border-border rounded-sm px-2 py-1 text-xs text-text-primary"
         disabled={busy}
       />
@@ -222,15 +222,8 @@ function MigrationSection() {
 }
 
 function computeOtherOrigin(): string {
-  if (typeof window === 'undefined') return ''
-  const { protocol, hostname, port } = window.location
-  // Heuristic: if we're on the Funnel port, suggest Vite; if on Vite, suggest
-  // Funnel; otherwise leave blank for the user to fill in.
-  let otherPort = ''
-  if (port === '8443') otherPort = '5173'
-  else if (port === '5173') otherPort = '8443'
-  else return ''
-  return `${protocol}//${hostname}:${otherPort}`
+  // No heuristic post-cutover — user types the prior origin manually.
+  return ''
 }
 
 function formatBuildAge(iso: string): string {

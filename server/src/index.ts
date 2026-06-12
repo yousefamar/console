@@ -11,7 +11,7 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { readFileSync, existsSync, unlinkSync, watch } from 'node:fs'
+import { readFileSync, existsSync, unlinkSync, watch, readdirSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
@@ -442,26 +442,30 @@ alBridge.onSessionUpdate = () => {
 // HTTP/HTTPS server
 // --------------------------------------------------------------------------
 
-// Use HTTPS if Tailscale certs are available
+// Hub TLS: any `*.crt` / matching `*.key` pair in the config dir is good
+// enough. Caddy in front terminates real TLS for con.amar.io; the only
+// reason the hub still speaks TLS internally is so the Caddy upstream
+// transport stays consistent. Without a cert pair we fall back to plain
+// HTTP and Caddy uses `transport http` without `tls_insecure_skip_verify`.
 const configDir = join(homedir(), '.config', 'console')
-const tsHost = 'amarhp-lin.rya-yo.ts.net'
-const certPath = join(configDir, `${tsHost}.crt`)
-const keyPath = join(configDir, `${tsHost}.key`)
-const hasTls = existsSync(certPath) && existsSync(keyPath)
-const tlsOpts = hasTls ? { cert: readFileSync(certPath), key: readFileSync(keyPath) } : null
+const certCandidates = (() => {
+  try {
+    return readdirSync(configDir)
+      .filter((n) => n.endsWith('.crt') && existsSync(join(configDir, n.replace(/\.crt$/, '.key'))))
+      .map((n) => ({ cert: join(configDir, n), key: join(configDir, n.replace(/\.crt$/, '.key')) }))
+  } catch { return [] }
+})()
+const tlsOpts = certCandidates[0]
+  ? { cert: readFileSync(certCandidates[0].cert), key: readFileSync(certCandidates[0].key) }
+  : null
 
-// Browser-origin allow-list. SPA shell goes public via Tailscale Funnel on
-// :8443 (same `*.ts.net` hostname as the tailnet, but reachable from
-// anywhere); hub stays tailnet-only on :9877. Without this lockdown any site
-// you visit while on tailnet could pivot to read your hub. Server-to-server
-// clients (CLI / Al / glasses / Node WS) send no Origin header — handled
-// separately for WS, harmless for HTTP since CORS only matters when a
-// browser is involved.
+// Browser-origin allow-list. SPA is reached via Caddy on con.amar.io and is
+// same-origin with /hub/* — so CORS only matters for legacy cross-origin
+// access. Production is single-origin under con.amar.io.
 const ALLOWED_ORIGINS = new Set([
-  `https://${tsHost}:8443`,    // Funnel (public)
-  `https://${tsHost}:5173`,    // Vite dev (HMR, tailnet)
-  'https://localhost:5173',    // local dev
-  'http://localhost:5173',     // local dev (no certs)
+  'https://con.amar.io',
+  'https://localhost:5173',
+  'http://localhost:5173',
 ])
 
 function originAllowed(origin: string | undefined): boolean {
@@ -994,7 +998,7 @@ httpServer.listen(port, host, () => {
   log(`Working directory: ${cwd}`)
   log(`WebSocket: ${wsproto}://${host}:${port}`)
   log(`Health check: ${proto}://${host}:${port}/health`)
-  if (tlsOpts) log(`TLS: using ${certPath}`)
+  if (tlsOpts && certCandidates[0]) log(`TLS: using ${certCandidates[0].cert}`)
 
   // Restore sessions from manifest
   const manifest = loadManifest()
