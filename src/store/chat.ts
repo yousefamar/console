@@ -388,12 +388,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (count > 0) return
 
     try {
-      const result = await fetchAndStoreMessages(roomId, { limit: INITIAL_PAGE_SIZE })
-      if (result.end) {
+      // Paginate until we have actual displayable messages, not just state /
+      // reaction events. Busy group rooms can have pages of m.room.member +
+      // m.reaction (e.g. RSVPs to an event message) with zero m.room.message
+      // — a single page used to come back empty and the room rendered blank.
+      let from: string | undefined
+      let stored = 0
+      for (let page = 0; page < 5 && stored < INITIAL_PAGE_SIZE; page++) {
+        const result = await fetchAndStoreMessages(roomId, { from, limit: OLDER_PAGE_SIZE })
+        stored += result.messages.length
+        if (!result.end) break // history exhausted
+        from = result.end
         await db.chatRooms.update(roomId, { prevBatch: result.end })
       }
-      if (result.messages.length > 0) {
-        const latest = result.messages.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
+      const msgs = await db.chatMessages.where('roomId').equals(roomId).toArray()
+      if (msgs.length > 0) {
+        const latest = msgs.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
         await db.chatRooms.update(roomId, {
           lastMessageBody: latest.body,
           lastMessageSender: latest.senderName,
@@ -470,11 +480,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         .reverse()
         .sortBy('timestamp')
         .then(async (msgs) => {
-          const lastMsg = msgs[0]
+          // Local-echo ids can't be used for receipts — find the newest real one.
+          const lastMsg = msgs.find((m) => !m.id.startsWith('~'))
           if (lastMsg) {
             await db.chatRooms.update(id, { lastReadEventId: lastMsg.id, lastReadTs: lastMsg.timestamp })
             await enqueue('chatMarkRead', { roomId: id, eventId: lastMsg.id }, { roomId: id })
+            return
           }
+          // No local messages cached (room whose recent history is all state
+          // events / reactions — never paginated into IDB). Without an
+          // eventId the receipt was silently skipped, the homeserver's
+          // notification_count stayed > 0, and the hub snapshot resurrected
+          // the room on every delta. Fall back to asking the hub for the
+          // newest event of ANY type and receipt that.
+          try {
+            const { hubBus } = await import('@/sync-bus')
+            const resp = await hubBus.rpc<{ chunk?: Array<{ event_id?: string; origin_server_ts?: number }> }>(
+              'matrix', 'paginate', { roomId: id, dir: 'b', limit: 1 },
+            )
+            const newest = resp?.chunk?.[0]
+            if (newest?.event_id) {
+              await db.chatRooms.update(id, { lastReadEventId: newest.event_id, lastReadTs: newest.origin_server_ts ?? Date.now() })
+              await enqueue('chatMarkRead', { roomId: id, eventId: newest.event_id }, { roomId: id })
+            }
+          } catch { /* will retry next markRead */ }
         })
     })
   },
