@@ -77,7 +77,9 @@ export function WriteActionBar({ path, onPublish }: Props) {
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
       const savedPath = await useNotesStore.getState().pasteImage(scaled, `photo-${ts}.${ext}`)
       if (savedPath) {
-        insertAtCursor(`![](${savedPath})\n`)
+        // Bare filename = sibling assets dir → wiki-embed (publishes correctly);
+        // path = offline vault fallback → markdown form.
+        insertAtCursor(savedPath.includes('/') ? `![](${savedPath})\n` : `![[${savedPath}]]\n`)
       } else {
         useUiStore.getState().pushToast({ kind: 'error', message: 'Image upload failed' })
       }

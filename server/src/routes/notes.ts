@@ -1,5 +1,18 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { NoteStore } from '../notes.js'
+import { NoteStore, contentTypeFor } from '../notes.js'
+
+function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c as Buffer))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+function wantsBinary(req: IncomingMessage): boolean {
+  return (req.url ?? '').includes('binary=1')
+}
 
 export function handleNoteRoutes(
   req: IncomingMessage,
@@ -27,6 +40,16 @@ export function handleNoteRoutes(
 
   if (path.startsWith('/notes/file/') && req.method === 'GET') {
     const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
+    if (wantsBinary(req)) {
+      noteStore.readBinary(filePath).then((buf) => {
+        res.writeHead(200, { 'Content-Type': contentTypeFor(filePath), 'Content-Length': buf.length })
+        res.end(buf)
+      }).catch((err) => {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      })
+      return true
+    }
     noteStore.read(filePath).then((content) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ content }))
@@ -39,9 +62,52 @@ export function handleNoteRoutes(
 
   if (path.startsWith('/notes/file/') && req.method === 'PUT') {
     const filePath = decodeURIComponent(path.slice('/notes/file/'.length))
+    if (wantsBinary(req)) {
+      readRawBody(req).then(async (buf) => {
+        await noteStore.writeBinary(filePath, buf)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      })
+      return true
+    }
     readBody(req).then(async (body) => {
       const { content } = JSON.parse(body)
       await noteStore.write(filePath, content)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
+  // Sibling assets dir (~/sync/brain/assets — Obsidian attachments + Eleventy
+  // passthrough assets live OUTSIDE the vault root). GET serves raw bytes,
+  // PUT writes them (used by image paste/camera upload).
+  if (path.startsWith('/notes/asset/') && req.method === 'GET') {
+    const assetPath = decodeURIComponent(path.slice('/notes/asset/'.length))
+    noteStore.readAsset(assetPath).then((buf) => {
+      res.writeHead(200, {
+        'Content-Type': contentTypeFor(assetPath),
+        'Content-Length': buf.length,
+        'Cache-Control': 'max-age=3600',
+      })
+      res.end(buf)
+    }).catch((err) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
+  if (path.startsWith('/notes/asset/') && req.method === 'PUT') {
+    const assetPath = decodeURIComponent(path.slice('/notes/asset/'.length))
+    readRawBody(req).then(async (buf) => {
+      await noteStore.writeAsset(assetPath, buf)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true }))
     }).catch((err) => {

@@ -98,6 +98,47 @@ export class NoteStore {
     await rename(absFrom, absTo)
   }
 
+  /** Read file as raw bytes (images etc.) */
+  async readBinary(relPath: string): Promise<Buffer> {
+    this.validatePath(relPath)
+    const absPath = join(this.vaultPath, relPath)
+    return readFile(absPath)
+  }
+
+  /** Write raw bytes (images etc.) */
+  async writeBinary(relPath: string, data: Buffer): Promise<void> {
+    this.validatePath(relPath)
+    const absPath = join(this.vaultPath, relPath)
+    await mkdir(dirname(absPath), { recursive: true })
+    await writeFile(absPath, data)
+  }
+
+  // -------------------------------------------------------------------------
+  // Sibling assets dir (~/sync/brain/assets — OUTSIDE the vault root).
+  // Obsidian's attachment folder and Eleventy's passthrough-copied assets both
+  // live there, so vault wiki-embeds like ![[Pasted image X.png]] resolve to
+  // files the vault-rooted methods above can't reach.
+  // -------------------------------------------------------------------------
+
+  /** Absolute path of the sibling assets dir (vault root's parent + /assets). */
+  get assetsPath(): string {
+    return join(this.vaultPath, '..', 'assets')
+  }
+
+  /** Read an asset (path relative to the assets dir, e.g. "images/foo.png") */
+  async readAsset(relPath: string): Promise<Buffer> {
+    this.validateAssetPath(relPath)
+    return readFile(join(this.assetsPath, relPath))
+  }
+
+  /** Write an asset (path relative to the assets dir) */
+  async writeAsset(relPath: string, data: Buffer): Promise<void> {
+    this.validateAssetPath(relPath)
+    const absPath = join(this.assetsPath, relPath)
+    await mkdir(dirname(absPath), { recursive: true })
+    await writeFile(absPath, data)
+  }
+
   /** Ensure path doesn't escape vault directory */
   private validatePath(relPath: string): void {
     const resolved = join(this.vaultPath, relPath)
@@ -106,4 +147,26 @@ export class NoteStore {
       throw new Error('Path escapes vault directory')
     }
   }
+
+  /** Ensure path doesn't escape the assets directory */
+  private validateAssetPath(relPath: string): void {
+    const resolved = join(this.assetsPath, relPath)
+    const rel = relative(this.assetsPath, resolved)
+    if (rel.startsWith('..') || rel.startsWith('/')) {
+      throw new Error('Path escapes assets directory')
+    }
+  }
+}
+
+/** Minimal content-type map for asset serving */
+export function contentTypeFor(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  const map: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav',
+    pdf: 'application/pdf',
+  }
+  return map[ext] ?? 'application/octet-stream'
 }

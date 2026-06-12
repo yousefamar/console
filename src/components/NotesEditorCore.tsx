@@ -382,11 +382,14 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
               const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
               const filename = `pasted-${timestamp}.${ext}`
 
-              // Save image and insert markdown
+              // Save image and insert an embed. pasteImage returns a bare
+              // filename when the image landed in the sibling assets dir
+              // (wiki-embed form — what Obsidian + Eleventy expect) or a
+              // vault path from the offline fallback (markdown form).
               useNotesStore.getState().pasteImage(blob, filename).then((savedPath) => {
                 if (savedPath) {
                   const cursor = view.state.selection.main.head
-                  const insert = `![](${savedPath})\n`
+                  const insert = savedPath.includes('/') ? `![](${savedPath})\n` : `![[${savedPath}]]\n`
                   view.dispatch({
                     changes: { from: cursor, insert },
                     selection: { anchor: cursor + insert.length },

@@ -621,13 +621,48 @@ export const useNotesStore = create<NotesState>((set, get) => ({
       }
     }
 
+    // Final fallback: the SIBLING assets dir (~/sync/brain/assets — outside
+    // the vault root, so no adapter can reach it). This is where Obsidian's
+    // attachment folder and Eleventy's published assets actually live; the
+    // hub serves it at /notes/asset/. Wiki-embeds like ![[Pasted image X.png]]
+    // resolve here.
+    const bareName = imagePath.split('/').pop()!
+    for (const assetPath of [`images/${bareName}`, bareName]) {
+      try {
+        const { getHubUrl } = await import('@/hub')
+        const res = await fetch(`${getHubUrl()}/notes/asset/${encodeURIComponent(assetPath)}`)
+        if (res.ok) {
+          const blob = await res.blob()
+          return URL.createObjectURL(blob)
+        }
+      } catch {
+        // hub unreachable — give up on this candidate
+      }
+    }
+
     return null
   },
 
   pasteImage: async (blob, filename) => {
+    // Images go to the SIBLING assets dir (~/sync/brain/assets/images) via the
+    // hub — that's Obsidian's attachment folder AND what Eleventy passthrough-
+    // copies to the published site. Writing inside the vault root would render
+    // in-editor but 404 on the live blog.
+    try {
+      const { getHubUrl } = await import('@/hub')
+      const res = await fetch(`${getHubUrl()}/notes/asset/${encodeURIComponent(`images/${filename}`)}`, {
+        method: 'PUT',
+        body: blob,
+      })
+      if (res.ok) return filename
+    } catch {
+      // hub unreachable — fall through to vault-local write
+    }
+
+    // Fallback (offline / hub down): write inside the vault via the adapter.
+    // Won't publish, but at least the content isn't lost.
     const { adapter } = get()
     if (!adapter) return null
-
     const path = `assets/images/${filename}`
     try {
       await adapter.createDirectory('assets/images')
