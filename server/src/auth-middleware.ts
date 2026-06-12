@@ -75,6 +75,7 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   if (path.startsWith('/auth/google/start')) return true
   if (path.startsWith('/auth/google/callback')) return true
   if (path.startsWith('/auth/google/poll')) return true
+  if (path.startsWith('/auth/claim')) return true
   if (path.startsWith('/auth/monzo/start')) return true
   if (path.startsWith('/auth/monzo/callback')) return true
   if (path.startsWith('/auth/monzo/poll')) return true
@@ -95,9 +96,21 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   return false
 }
 
+/**
+ * True only for requests that reached the hub directly via loopback, NOT for
+ * Caddy-proxied requests that happen to come from 127.0.0.1 at the TCP layer.
+ * Caddy always sets X-Forwarded-For; its presence proves the original client
+ * was off-host. Without this check, Caddy traffic would silently bypass auth
+ * enforcement.
+ */
 export function isLoopback(req: IncomingMessage): boolean {
   const addr = req.socket.remoteAddress ?? ''
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
+  const isLocalSocket = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
+  if (!isLocalSocket) return false
+  if (req.headers['x-forwarded-for']) return false
+  if (req.headers['x-forwarded-host']) return false
+  if (req.headers['x-forwarded-proto']) return false
+  return true
 }
 
 /**

@@ -1,6 +1,7 @@
 // Auth routes — Google OAuth callback flow + Matrix login + status
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import type { AuthStore } from '../auth-store.js'
 import { buildSessionCookie, buildClearSessionCookie, parseCookies, SESSION_COOKIE_NAME } from '../auth-middleware.js'
 
@@ -23,6 +24,36 @@ interface PendingOAuth {
 }
 const pendingOAuthByState = new Map<string, PendingOAuth>()
 let lastOAuthResult: { email: string } | null = null
+
+// One-time tokens: bridge OAuth completion across the Custom Tab → WebView
+// cookie-jar boundary on Android. The Custom Tab successfully receives the
+// session cookie but the WebView (different jar) does not. We mint an OTT
+// at callback time, deep-link it back into the APK, and the WebView redeems
+// it at /auth/claim — which issues a fresh Set-Cookie in the WebView's jar.
+// Single-use, 2-minute TTL, never logged.
+interface OttEntry { sessionId: string; createdAt: number }
+const ottStore = new Map<string, OttEntry>()
+const OTT_TTL_MS = 2 * 60 * 1000
+
+function mintOtt(sessionId: string): string {
+  pruneOtts()
+  const ott = randomBytes(24).toString('base64url')
+  ottStore.set(ott, { sessionId, createdAt: Date.now() })
+  return ott
+}
+
+function consumeOtt(ott: string): string | null {
+  pruneOtts()
+  const entry = ottStore.get(ott)
+  if (!entry) return null
+  ottStore.delete(ott)
+  return entry.sessionId
+}
+
+function pruneOtts(): void {
+  const cutoff = Date.now() - OTT_TTL_MS
+  for (const [k, v] of ottStore) if (v.createdAt < cutoff) ottStore.delete(k)
+}
 
 // Monzo OAuth state
 let pendingMonzoState: string | null = null
@@ -214,7 +245,20 @@ export function handleAuthRoutes(
         if (setCookieHeader) headers['Set-Cookie'] = setCookieHeader
 
         if (returnToApp) {
-          headers['Location'] = 'console://auth/done'
+          // Cross-jar handoff: the Custom Tab now holds the session cookie,
+          // but the WebView (separate cookie jar) does not. Mint a one-time
+          // token bound to the just-created session and pass it through the
+          // deep link; the WebView will redeem it at /auth/claim, which sets
+          // a fresh Set-Cookie scoped to the WebView's jar.
+          let location = 'console://auth/done'
+          const sid = setCookieHeader
+            ? /console_session=([^;]+)/.exec(setCookieHeader)?.[1]
+            : null
+          if (sid) {
+            const ott = mintOtt(sid)
+            location = `console://auth/done?ott=${encodeURIComponent(ott)}`
+          }
+          headers['Location'] = location
           res.writeHead(302, headers)
           res.end()
           return
@@ -245,6 +289,33 @@ export function handleAuthRoutes(
         res.end(`<html><body><h2>OAuth exchange failed</h2><pre>${err.message}</pre></body></html>`)
       })
 
+    return true
+  }
+
+  // GET /auth/claim?ott=… — redeem a one-time token (from the OAuth deep
+  // link) for a session cookie set on THIS jar. Solves the Android Custom
+  // Tab → WebView cookie split. Single-use, ~2 minute window.
+  if (path.startsWith('/auth/claim') && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
+    const ott = url.searchParams.get('ott') ?? ''
+    const sid = consumeOtt(ott)
+    if (!sid) {
+      res.writeHead(400, { 'Content-Type': 'text/html' })
+      res.end('<html><body><h2>Invalid or expired claim</h2><p>Sign in again from the app.</p></body></html>')
+      return true
+    }
+    // Validate the session still exists (could have been revoked between
+    // mint and redeem). findHubSession also bumps lastUsedAt.
+    const session = authStore.findHubSession(sid)
+    if (!session) {
+      res.writeHead(400, { 'Content-Type': 'text/html' })
+      res.end('<html><body><h2>Session no longer valid</h2></body></html>')
+      return true
+    }
+    const base = resolveBase(req, hubPort)
+    const setCookie = buildSessionCookie(sid, base.secure)
+    res.writeHead(302, { 'Set-Cookie': setCookie, Location: '/' })
+    res.end()
     return true
   }
 
