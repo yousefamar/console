@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getHubUrl, isAuthPending, subscribeAuthPending } from '@/hub'
+import { isNative } from '@/platform'
 
 /**
  * Full-screen overlay shown when a hub request returned 401 with the
@@ -21,7 +22,8 @@ export function LoginScreen() {
 
   const signIn = () => {
     const ret = encodeURIComponent(window.location.href)
-    window.location.href = `${getHubUrl()}/auth/google/start?return=${ret}`
+    const cb = isNative() ? '&callback=app' : ''
+    window.location.href = `${getHubUrl()}/auth/google/start?return=${ret}${cb}`
   }
 
   return (
