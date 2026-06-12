@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Trash2, Maximize2, Minimize2, ExternalLink } from 'lucide-react'
+import { Trash2, Maximize2, Minimize2, ExternalLink, Share2 } from 'lucide-react'
 import { useDashboardStore } from '@/store/dashboard'
 import { getHubUrl } from '@/hub'
 import { showConfirm } from '@/dialog'
+import { CanvasShareMenu } from './CanvasShareMenu'
 
 export function AgentCanvasCard() {
   const reloadKey = useDashboardStore((s) => s.canvasReloadKey)
@@ -11,6 +12,7 @@ export function AgentCanvasCard() {
   const clearCanvas = useDashboardStore((s) => s.clearCanvas)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [maximized, setMaximized] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
 
   // Reload iframe when the canvas dir changes (fired off WS event by the hub).
   useEffect(() => {
@@ -55,6 +57,13 @@ export function AgentCanvasCard() {
             {meta?.isPlaceholder ? 'empty' : meta ? `updated ${fmtAgo(Date.now() - meta.updatedAt)}` : ''}
           </span>
           <button
+            onClick={() => setShareOpen(true)}
+            className="text-[10px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="Share a tab or island via public URL"
+          >
+            <Share2 size={11} />
+          </button>
+          <button
             onClick={openInNewTab}
             className="text-[10px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
             title="Open canvas in a new browser tab"
@@ -81,10 +90,11 @@ export function AgentCanvasCard() {
       <iframe
         ref={iframeRef}
         src={canvasSrc(0)}
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         title="AI agent canvas"
         className="flex-1 min-h-0 w-full border-0 bg-surface-0"
       />
+      {shareOpen && <CanvasShareMenu onClose={() => setShareOpen(false)} />}
     </section>
   )
 }
