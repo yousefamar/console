@@ -254,9 +254,14 @@ async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
   const sessionId = args[0]
   if (!sessionId) exitWithError('USAGE', 'Usage: con agent kill <session-id>', flags)
 
+  // delete_session terminates the subprocess AND removes from the manifest.
+  // kill_session alone left the entry to be resurrected on next hub restart —
+  // not what `con agent kill` documents itself as doing (see CLAUDE.md "kill"
+  // sharp-edge note: "deletes the session entry"). Use the action that
+  // actually matches the documented contract.
   const { sendAndReceive } = await import('../ws-client.js')
   await sendAndReceive(
-    { type: 'kill_session', sessionId },
+    { type: 'delete_session', sessionId },
     () => false,
   )
   output({ killed: sessionId }, flags)
