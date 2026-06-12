@@ -167,6 +167,18 @@ html, body, #root {
   table { display: block; overflow-x: auto; }
 }
 
+/* Tailwind v4's preflight sets `cursor: default` on buttons (a deliberate
+   change from v3). For this app every clickable should read as clickable —
+   restore pointer on buttons, links, selects, summaries, and anything
+   marked role=button, unless disabled. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+select:not(:disabled),
+summary,
+a[href] {
+  cursor: pointer;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 0.8125rem;
