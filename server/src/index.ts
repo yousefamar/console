@@ -87,10 +87,11 @@ import type { DebugClientMessage } from './debug-protocol.js'
 
 const DEFAULT_PORT = 9877
 const port = getArg('--port', DEFAULT_PORT)
-// Bind all interfaces by default so the tailnet hostname can reach the hub.
-// The whole point of the hub is to be the central agent / sync target for
-// every client device on the tailnet — `localhost` is useless here.
-const host = getArg('--host', '0.0.0.0')
+// Loopback only. Caddy (con.amar.io) is the sole external ingress — it
+// reverse-proxies /hub/* and /public/* from :443. Same-host clients (CLI,
+// Al, agents) hit 127.0.0.1:9877 directly with a bearer. Override with
+// --host 0.0.0.0 only for debugging an emergency where Caddy is down.
+const host = getArg('--host', '127.0.0.1')
 const cwd = getArg('--cwd', process.cwd())
 const bookmarkVault = getArg('--bookmarks', join(homedir(), 'sync', 'brain', 'root', 'bookmarks'))
 const notesVault = getArg('--notes', join(homedir(), 'sync', 'brain', 'root'))
@@ -1026,6 +1027,12 @@ httpServer.listen(port, host, () => {
     }
 
     for (const entry of manifest) {
+      // User explicitly ended this session — stay dead. The saveManifest()
+      // after the loop prunes it (it never enters the sessions map).
+      if (entry.ended) {
+        log(`  Skipped (ended by user): ${entry.name ?? entry.claudeSessionId}`)
+        continue
+      }
       try {
         const session = createSession(agentCtx, {
           prompt: entry.prompt,
