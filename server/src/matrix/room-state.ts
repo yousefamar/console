@@ -293,6 +293,13 @@ export function computeRoomState(
     }
   }
 
+  // CRITICAL: distinguish "field absent" from "explicitly zero". Matrix
+  // omits unread_notifications on deltas that don't change it (receipt-only
+  // / ephemeral-only updates). Treating absent as 0 made every such delta
+  // silently clear isUnread — that's how 22 unread rooms got lost from the
+  // snapshot on 2026-06-08. Absent ⇒ no new unread information; preserve
+  // the existing flags verbatim (see isUnread/unreadCount below).
+  const notifInfoPresent = delta.unread_notifications !== undefined
   const serverNotifCount = delta.unread_notifications?.notification_count ?? 0
   const serverHighlightCount = delta.unread_notifications?.highlight_count ?? 0
   const hasNewMessages = !!lastMsg
@@ -347,20 +354,26 @@ export function computeRoomState(
     isUnread: latestIsFromMe
       ? false
       : existing
-        ? (serverNotifCount === 0 && !hasNewerMessagesFromOthers
-          ? false
-          : (existing.isUnread || (roomIsLowPriority ? serverHighlightCount > 0 : hasNewerMessagesFromOthers)))
+        ? (!notifInfoPresent && !hasNewerMessagesFromOthers
+          // No unread info on this delta and no new messages — this delta
+          // carries nothing that should change read state. Preserve.
+          ? existing.isUnread
+          : (serverNotifCount === 0 && notifInfoPresent && !hasNewerMessagesFromOthers
+            ? false // explicit zero — read on another client
+            : (existing.isUnread || (roomIsLowPriority ? serverHighlightCount > 0 : hasNewerMessagesFromOthers))))
         : (roomIsLowPriority
           ? (serverHighlightCount > 0)
           : (serverNotifCount > 0 && (hasNewMessages || hadMessages || lastMessageTime > 0))),
     unreadCount: latestIsFromMe
       ? 0
       : existing
-        ? (serverNotifCount === 0 && !hasNewerMessagesFromOthers
-          ? 0
-          : hasNewerMessagesFromOthers
-            ? (existing.unreadCount ?? 0) + 1
-            : existing.unreadCount)
+        ? (!notifInfoPresent && !hasNewerMessagesFromOthers
+          ? existing.unreadCount // preserve — no new information
+          : (serverNotifCount === 0 && notifInfoPresent && !hasNewerMessagesFromOthers
+            ? 0
+            : hasNewerMessagesFromOthers
+              ? (existing.unreadCount ?? 0) + 1
+              : existing.unreadCount))
         : serverNotifCount || undefined,
     lastReadEventId: existing?.lastReadEventId,
     lastReadTs: existing?.lastReadTs
