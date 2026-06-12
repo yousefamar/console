@@ -32,6 +32,7 @@ export interface ProjectPost {
   title: string
   date: string | null
   mtime: number
+  tags: string[]
 }
 
 export interface PublishedPost {
@@ -102,8 +103,6 @@ interface BlogState {
    */
   createProject: (args: CreateProjectArgs) => Promise<CreateProjectResult>
 }
-
-const DRAFTS_DIR = 'scratch/blog-drafts'
 
 export const useBlogStore = create<BlogState>((set) => ({
   drafts: [],
@@ -212,42 +211,31 @@ export const useBlogStore = create<BlogState>((set) => ({
   createDraft: async ({ title, project }): Promise<CreateDraftResult> => {
     const trimmed = title.trim()
     if (!trimmed) return { ok: false, error: 'Title is required' }
-    const titleSlug = slugify(trimmed)
-    if (!titleSlug) return { ok: false, error: 'Title produced an empty slug' }
-    const filenameSlug = project ? `${slugify(project)}-${titleSlug}` : titleSlug
-    const path = `${DRAFTS_DIR}/${filenameSlug}.md`
+
+    // Delegate to the hub — single implementation for frontmatter seeding
+    // (incl. inheriting tags from the project's most recent post). The hub
+    // writes straight to the vault dir on disk, which both adapters see.
+    let result: CreateDraftResult
+    try {
+      result = await hubFetch<CreateDraftResult>('/blog/draft', {
+        method: 'POST',
+        body: JSON.stringify({ title: trimmed, project }),
+        timeoutMs: 12000,
+      })
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+    if (!result.ok || !result.path) return result
 
     // Lazy import to avoid circular dependencies between stores.
     const { useNotesStore } = await import('./notes')
     const { useUiStore } = await import('./ui')
-
-    // Use the in-store list as a quick "already exists?" check; falls back to
-    // a stat via the adapter if the store is cold.
-    const existing = useBlogStore.getState().drafts.find((d) => d.path === path)
-    if (existing) {
-      useUiStore.getState().setActivePane('notes')
-      await useNotesStore.getState().openFile(path)
-      return { ok: true, path, alreadyExists: true }
-    }
-
-    const fm: string[] = [
-      `title: ${trimmed}`,
-      'public: false',
-      `date: ${nowFrontmatterDate()}`,
-      'post: true',
-    ]
-    if (project) fm.push(`project: ${project}`)
-    fm.push('tags: ')
-    const content = `---\n${fm.join('\n')}\n---\n\n`
-
     useUiStore.getState().setActivePane('notes')
-    try {
-      await useNotesStore.getState().createFile(path, content)
-      void useBlogStore.getState().refreshDrafts()
-      return { ok: true, path }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
-    }
+    // New file → rescan so the tree/browser sees it before opening.
+    if (!result.alreadyExists) await useNotesStore.getState().loadVaultFiles()
+    await useNotesStore.getState().openFile(result.path)
+    void useBlogStore.getState().refreshDrafts()
+    return result
   },
 
   createProject: async ({ title, slug }): Promise<CreateProjectResult> => {
@@ -296,17 +284,3 @@ export function enclosingProjectSlug(path: string | null | undefined): string | 
   return rest.slice(0, slashIdx) || null
 }
 
-function slugify(s: string): string {
-  return s.toLowerCase().trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80)
-}
-
-function nowFrontmatterDate(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}

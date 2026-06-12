@@ -140,8 +140,24 @@ export async function createDraft(
     `date: ${frontmatterNow()}`,
     'post: true',
   ]
-  if (project) fm.push(`project: ${project}`)
-  fm.push('tags: ')
+  if (project) {
+    fm.push(`project: ${project}`)
+    // Seed tags from the project's most recent post — the best predictor of
+    // how this project gets tagged (e.g. garden posts carry [projects, life]).
+    // `projects` is always included: it feeds Eleventy's collections.projects,
+    // without which the post never appears in the project's devlog.
+    let tags = ['projects']
+    try {
+      const prev = await listProjectPosts(store, project)
+      const latest = prev[0]
+      if (latest?.tags.length) {
+        tags = [...new Set(['projects', ...latest.tags])]
+      }
+    } catch {}
+    fm.push('tags:', ...tags.map((t) => `  - ${t}`))
+  } else {
+    fm.push('tags: ')
+  }
   const content = `---\n${fm.join('\n')}\n---\n\n`
 
   try {
@@ -266,6 +282,7 @@ export interface ProjectPost {
   title: string
   date: string | null
   mtime: number
+  tags: string[]
 }
 
 export async function listProjectPosts(store: NoteStore, slug: string): Promise<ProjectPost[]> {
@@ -282,7 +299,7 @@ export async function listProjectPosts(store: NoteStore, slug: string): Promise<
         const h1 = body.match(/^#\s+(.+)$/m)
         if (h1) title = h1[1]!.trim()
       }
-      out.push({ path: f.path, title, date: fm.date ?? null, mtime: f.mtime })
+      out.push({ path: f.path, title, date: fm.date ?? null, mtime: f.mtime, tags: fm.tags ?? [] })
     } catch {}
   }
   // Newest first — date frontmatter is the canonical order, fall back to mtime
