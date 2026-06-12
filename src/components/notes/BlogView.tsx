@@ -35,10 +35,17 @@ export function BlogView() {
     setRefreshing(false)
   }
 
-  const newPost = async () => {
-    const title = await showPrompt('Post title?', { title: 'New post', placeholder: 'e.g. Why I switched to vim', confirmLabel: 'Create' })
+  const newPost = async (project?: { slug: string; title: string }) => {
+    const title = await showPrompt(
+      project ? `Title for the post about ${project.title}:` : 'Post title?',
+      {
+        title: project ? `New post — ${project.title}` : 'New post',
+        placeholder: 'e.g. Why I switched to vim',
+        confirmLabel: 'Create',
+      },
+    )
     if (!title || !title.trim()) return
-    const r = await useBlogStore.getState().createDraft({ title })
+    const r = await useBlogStore.getState().createDraft({ title, project: project?.slug })
     if (!r.ok) await showAlert(`Failed to create draft: ${r.error}`, { title: 'Error' })
   }
 
@@ -145,6 +152,14 @@ export function BlogView() {
                   />
                   <Folder size={11} className="text-text-tertiary shrink-0" />
                   <span className="text-xs text-text-primary truncate flex-1">{p.title}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void newPost({ slug: p.slug, title: p.title }) }}
+                    className="text-text-tertiary hover:text-text-primary transition-colors shrink-0 p-1 -m-1"
+                    title={`New post about ${p.title}`}
+                    aria-label={`New post about ${p.title}`}
+                  >
+                    <Plus size={11} />
+                  </button>
                   <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
                     p.status === 'active' ? 'bg-green-400' :
                     p.status === 'dormant' ? 'bg-yellow-400' : 'bg-text-tertiary opacity-40'
