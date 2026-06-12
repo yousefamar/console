@@ -166,6 +166,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
+  const reloadSessionHistory = useAgentStore((s) => s.reloadSessionHistory)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
   const isMobile = useIsMobile()
   // Latest text/prompt snippet — same pattern as Al, gives a glanceable activity preview
@@ -234,6 +235,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     const items: ContextMenuItem[] = [
       { label: 'Rename', onClick: startRename },
       { label: 'Generate title', onClick: () => generateTitleAction(session.id) },
+      { label: 'Reload history', onClick: () => reloadSessionHistory(session.id) },
       { label: 'Fork', onClick: () => forkSession(session.id) },
     ]
     if (session.status !== 'ended') {
@@ -244,7 +246,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, killSession, startRename, generateTitleAction])
+  }, [session.status, session.id, killSession, startRename, generateTitleAction, forkSession, reloadSessionHistory])
 
   return (
     <ContextMenu items={menuItems}>

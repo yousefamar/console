@@ -176,6 +176,10 @@ interface AgentState {
   markSessionRead: (id?: string) => void
   markSessionUnread: (id?: string) => void
   loadOlderMessages: (sessionId: string) => void
+  /** Drop the in-memory message view and re-pull the full transcript from the
+   *  hub (reads the complete JSONL from disk). Use when the local view is stale
+   *  or was truncated by the visible-window cap. */
+  reloadSessionHistory: (sessionId: string) => void
   setTailing: (sessionId: string, tailing: boolean) => void
   reorderSession: (fromId: string, toId: string) => void
   toggleGroupCollapsed: (cwd: string) => void
@@ -200,10 +204,17 @@ function nextId(): string {
   return `msg_${++messageIdCounter}_${Date.now()}`
 }
 
+// The agent WS uses the hub's "default" path dispatch (anything that doesn't
+// match a named handler). We target `/hub/agents` explicitly because (a)
+// `/hub` with no trailing path falls outside Caddy's `handle_path /hub/*`
+// matcher, and (b) Chrome's HTTP/2 WebSocket bridge through Caddy is flaky
+// on `/hub/` (trailing-slash-only) but reliable on `/hub/<word>`.
+const agentWsUrl = `${getHubWsUrl()}/agents`
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   connected: false,
   connecting: false,
-  hubUrl: getHubWsUrl(),
+  hubUrl: agentWsUrl,
 
   projectDirs: [],
 
@@ -488,6 +499,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
     set((s) => ({ loadingOlderBySession: { ...s.loadingOlderBySession, [sessionId]: true } }))
     sendWs({ type: 'get_older_messages', sessionId, beforeIndex })
+  },
+
+  reloadSessionHistory: (sessionId) => {
+    // Drop the in-memory view + any pending deltas, then re-pull the full
+    // transcript from the hub (loadSessionHistory reads the complete JSONL from
+    // disk). The session_history handler prepends onto the now-empty list.
+    set((s) => {
+      const messagesBySession = { ...s.messagesBySession }; delete messagesBySession[sessionId]
+      const pendingTextBySession = { ...s.pendingTextBySession }; delete pendingTextBySession[sessionId]
+      const pendingThinkingBySession = { ...s.pendingThinkingBySession }; delete pendingThinkingBySession[sessionId]
+      const hasOlderBySession = { ...s.hasOlderBySession }; delete hasOlderBySession[sessionId]
+      const activeSubagentsBySession = { ...s.activeSubagentsBySession }; delete activeSubagentsBySession[sessionId]
+      return { messagesBySession, pendingTextBySession, pendingThinkingBySession, hasOlderBySession, activeSubagentsBySession }
+    })
+    sendWs({ type: 'get_session_history', sessionId })
   },
 
   setTailing: (sessionId, tailing) => {

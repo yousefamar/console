@@ -53,13 +53,32 @@ function saveCollapsedGroups(collapsed: string[]) {
 /** Load session order and translate claudeSessionIds → hub session IDs */
 export function loadSessionOrder(sessions: Map<string, Session>): string[] {
   const claudeOrder = loadOrderFromDisk()
-  if (claudeOrder.length === 0) return []
-  // Map claudeSessionId → hub session ID
   const claudeToHub = new Map<string, string>()
   for (const s of sessions.values()) {
     if (s.claudeSessionId) claudeToHub.set(s.claudeSessionId, s.id)
   }
-  return claudeOrder.map((cid) => claudeToHub.get(cid)).filter(Boolean) as string[]
+  const ordered = claudeOrder.map((cid) => claudeToHub.get(cid)).filter(Boolean) as string[]
+
+  // Al is always pinned at position 0 regardless of persisted order. The
+  // permanent Console-managed Al session is the routing hub for inbound
+  // WhatsApp/voice/etc.; surfacing him at the top of the agent list reflects
+  // his "always-on assistant" role. Override the user's manual reorder for
+  // this one slot only — any drag-reorder of Al gets stashed back to 0 on
+  // the next refresh, which is the intended behaviour.
+  const alHubId = findAlHubId(sessions)
+  if (alHubId) {
+    const without = ordered.filter((id) => id !== alHubId)
+    return [alHubId, ...without]
+  }
+
+  return ordered
+}
+
+function findAlHubId(sessions: Map<string, Session>): string | undefined {
+  for (const s of sessions.values()) {
+    if (s.name === 'Al' && s.status !== 'ended') return s.id
+  }
+  return undefined
 }
 
 /** Translate hub session IDs → claudeSessionIds and persist */
