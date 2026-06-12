@@ -78,6 +78,9 @@ describe('Session spawn', () => {
     expect(lastSpawnArgs!.args).toContain('--verbose')
     expect(lastSpawnArgs!.args).toContain('--permission-prompt-tool')
     expect(lastSpawnArgs!.args).toContain('stdio')
+    // Every agent defaults to the newest model tier (overridable via CLAUDE_MODEL)
+    expect(lastSpawnArgs!.args).toContain('--model')
+    expect(lastSpawnArgs!.args).toContain('claude-fable-5')
     // Prompt sent via stdin, not -p
     expect(lastSpawnArgs!.args).not.toContain('-p')
     const written = JSON.parse(mockProcess.stdin.write.mock.calls[0]![0].replace('\n', ''))

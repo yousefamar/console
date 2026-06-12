@@ -28,6 +28,12 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 
 let sessionCounter = 0
 
+// Default Claude model for every hub-spawned agent session (incl. Al + forks).
+// `claude-fable-5` is the newest, most capable tier. Runs under the Claude Max
+// subscription, not metered API. Override per-deploy with the CLAUDE_MODEL env
+// var; this constant is the single source of truth for the agent default.
+const DEFAULT_AGENT_MODEL = 'claude-fable-5'
+
 export interface ImageAttachment {
   media_type: string
   data: string  // base64
@@ -139,6 +145,10 @@ export class Session extends EventEmitter {
     // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
     // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
     const effort = process.env.CLAUDE_EFFORT || 'high'
+    // Default model for ALL hub-spawned agents (incl. Al + forks). Fable 5 is
+    // the most capable tier. Override per-deploy via the CLAUDE_MODEL env var.
+    // This is THE single place to bump the default agent model.
+    const model = process.env.CLAUDE_MODEL || DEFAULT_AGENT_MODEL
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -148,6 +158,7 @@ export class Session extends EventEmitter {
       '--permission-prompt-tool', 'stdio',
       '--chrome',
       '--effort', effort,
+      '--model', model,
     ]
 
     if (options.resume) {
