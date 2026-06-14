@@ -186,7 +186,7 @@ The debug agent:
 ### Flights (cal sub-feature)
 - SerpApi-backed flight search + watchlists. Hub stores one API key in `AuthStore.serpApi` (`POST /flights/credentials --key <serpapi-key>` or via CLI).
 - `server/src/flights/serpapi.ts` wraps the `google_travel_explore` (anywhere/region discovery) and `google_flights` (point-to-point) engines.
-- `server/src/flights/store.ts` persists watchlists (`~/.config/console/flight-watchlists.json`); `server/src/flights/sync.ts` polls every 1 h, diffs best price vs last snapshot, broadcasts `flights.polled` on the sync bus with the delta.
+- `server/src/flights/store.ts` persists watchlists (`~/.config/console/flight-watchlists.json`); `server/src/flights/sync.ts` polls every 24 h (was 1 h — SerpApi has a hard monthly request cap and hourly burned ~720/mo per watchlist; daily catches every meaningful move at ~30/mo, manual refresh via `pollOne` always available), diffs best price vs last snapshot, broadcasts `flights.polled` on the sync bus with the delta.
 - Routes at `/flights/*` (status, credentials, explore, search, watch CRUD, history). CLI: `con cal flights {status, credentials, explore, search, watch, watch list, watch remove}`.
 - SPA: `FlightsPanel.tsx` mounts in the calendar sidebar (desktop) or `FlightsSheet.tsx` as a full-screen sheet (mobile, via `CalendarMobileControls`). Backed by `src/store/flights.ts`, which mirrors hub state via the sync bus — no client polling.
 

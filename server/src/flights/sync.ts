@@ -16,7 +16,12 @@ import type { Watchlist, WatchlistResult, WatchlistStore } from './store.js'
 export class FlightSync {
   private timer: ReturnType<typeof setInterval> | null = null
   private running = false
-  private readonly INTERVAL_MS = 60 * 60 * 1000 // 1h baseline
+  // Once daily. Flight prices for trips weeks/months out don't move
+  // hour-to-hour, and SerpApi has a hard monthly request cap — hourly polling
+  // burned ~720 requests/month per watchlist. Daily catches every meaningful
+  // move at ~30/month. Manual refresh (pollOne) is always available for
+  // on-demand checks.
+  private readonly INTERVAL_MS = 24 * 60 * 60 * 1000 // 24h
 
   constructor(
     private readonly serpApi: SerpApiClient,
@@ -28,7 +33,7 @@ export class FlightSync {
 
   start(): void {
     if (this.timer) return
-    this.log('[flight-sync] starting (1h interval)')
+    this.log('[flight-sync] starting (24h interval)')
     // Defer first tick so boot stays snappy.
     setTimeout(() => {
       this.tick().catch((e) => this.log(`[flight-sync] initial tick failed: ${e}`))
