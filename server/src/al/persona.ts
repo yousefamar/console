@@ -2,48 +2,26 @@
 //
 // The Al Console session is spawned with a fixed system prompt composed at
 // boot time. No fs.watch, no live reload — Claude system prompts are fixed at
-// session creation. Edits to persona files land via `con agent restart Al`.
+// session creation. Edits to persona files land via `con agent reload Al`.
 //
 // Composition order (concatenated with `\n\n---\n\n`):
 //   1. Verbatim AL.md (persona, decision rules, hard rules)
 //   2. mistakes.md under `# Past mistakes (do not repeat)`
-//   3. Auto-built `# Available workflows` (walks workflows/, takes first
-//      non-blank line as a one-liner per workflow; Al reads full on demand)
-//   4. `# Workspace` block — absolute path constant so Al can Read on demand
+//   3. `# Workspace` block — absolute path constant so Al can Read on demand
+//
+// Al's operational playbooks are NOT injected here — they live as Claude Code
+// skills in `<workspace>/.claude/skills/<name>/SKILL.md`, which the CLI surfaces
+// natively (progressive disclosure). The old buildWorkflowsBlock that walked
+// `workflows/` was removed when those migrated to skills.
 
-import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { WORKSPACE_DIR, readIfExists } from './identity.js'
-
-const WORKFLOW_TEMPLATES = new Set(['TEMPLATE.md'])
-
-async function buildWorkflowsBlock(): Promise<string | null> {
-  const workflowsDir = join(WORKSPACE_DIR, 'workflows')
-  let files: string[]
-  try {
-    files = await readdir(workflowsDir)
-  } catch {
-    return null
-  }
-  const lines: string[] = []
-  for (const f of files.filter((n) => n.endsWith('.md') && !WORKFLOW_TEMPLATES.has(n)).sort()) {
-    const content = await readIfExists(join(workflowsDir, f))
-    if (!content) continue
-    const slug = f.replace(/\.md$/, '')
-    // First non-blank line, strip leading hashes + spaces. Falls back to slug.
-    const firstLine = content.split('\n').find((l) => l.trim().length > 0) ?? ''
-    const desc = firstLine.replace(/^#+\s*/, '').trim() || slug
-    lines.push(`- ${slug} — ${desc}`)
-  }
-  if (lines.length === 0) return null
-  return `# Available workflows\n\nRead the full file at \`${workflowsDir}/<slug>.md\` when you need to follow one.\n\n${lines.join('\n')}`
-}
 
 export interface PersonaPaths {
   workspaceDir: string
   alMdPath: string
   usersDir: string
-  workflowsDir: string
+  skillsDir: string
   transcriptsDir: string
 }
 
@@ -52,7 +30,7 @@ export function getPersonaPaths(): PersonaPaths {
     workspaceDir: WORKSPACE_DIR,
     alMdPath: join(WORKSPACE_DIR, 'AL.md'),
     usersDir: join(WORKSPACE_DIR, 'users'),
-    workflowsDir: join(WORKSPACE_DIR, 'workflows'),
+    skillsDir: join(WORKSPACE_DIR, '.claude', 'skills'),
     transcriptsDir: join(WORKSPACE_DIR, 'call-transcripts'),
   }
 }
@@ -74,16 +52,13 @@ export async function buildAlSystemPrompt(): Promise<string> {
     parts.push(`# Past mistakes (do not repeat)\n\n${mistakes.trim()}`)
   }
 
-  const workflows = await buildWorkflowsBlock()
-  if (workflows) parts.push(workflows)
-
   parts.push(
     [
       '# Workspace',
       '',
       `Your workspace root is \`${paths.workspaceDir}\` (your cwd).`,
       `- Contact files: \`users/<name>.md\` (Read on demand).`,
-      `- Workflow definitions: \`workflows/<slug>.md\`.`,
+      `- Skills (your playbooks): \`.claude/skills/<name>/SKILL.md\` — surfaced to you automatically.`,
       `- Call transcripts: \`call-transcripts/<callId>.json\`.`,
     ].join('\n'),
   )
