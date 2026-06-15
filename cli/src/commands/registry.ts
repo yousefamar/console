@@ -234,6 +234,9 @@ export const COMMANDS: CommandDef[] = [
     flags: { prompt: { type: 'string', description: 'Resume prompt' }, cwd: { type: 'string', description: 'Working directory' } } },
   { name: 'agent kill', description: 'Kill a session', safety: 'destructive',
     args: [{ name: 'session-id', required: true, description: 'Session ID' }] },
+  { name: 'agent reload', description: "Reload a session WITHOUT bouncing the hub: respawn its subprocess (history preserved). Pass \"Al\" to re-derive his persona from AL.md (a genuinely fresh spawn — the lever for applying persona/AL.md edits); works whether Al is up or down. Accepts a session id or a unique name.", safety: 'write',
+    args: [{ name: 'session-id|name|Al', required: true, description: 'Session id, unique name, or "Al"' }],
+    examples: ['con agent reload Al', 'con agent reload session_12_1781...'] },
   { name: 'agent interrupt', description: 'Interrupt a session', safety: 'write',
     args: [{ name: 'session-id', required: true, description: 'Session ID' }] },
   { name: 'agent approve', description: 'Approve tool use', safety: 'write',
@@ -261,6 +264,15 @@ export const COMMANDS: CommandDef[] = [
       'con agent chat "Gravel general" "what auth does the control plane use?"',
       'con agent chat --id 3c7ac00e-… "and how are keys rotated?"',
       'con agent chat --id 3c7ac00e-… --end',
+    ] },
+  { name: 'agent model', description: 'Inspect or switch the Claude model all hub agents spawn with. Recovery lever when a model is pulled: `set` changes it live (no code edit) and restarts sessions onto it; the hub also auto-falls-back down the chain on a model-unavailable error.', safety: 'write',
+    args: [
+      { name: 'subcommand', required: false, description: '`get` (default) or `set`' },
+      { name: 'model-id', required: false, description: 'Model id for `set`, e.g. claude-opus-4-8' },
+    ],
+    examples: [
+      'con agent model',
+      'con agent model set claude-opus-4-8',
     ] },
 
   // search

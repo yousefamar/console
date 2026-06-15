@@ -16,7 +16,8 @@ import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { Session } from './session.js'
+import { Session, setAgentModelResolver } from './session.js'
+import { ModelConfig } from './model-config.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
 import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
@@ -27,7 +28,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, type AgentContext } from './routes/agents.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
@@ -58,7 +59,7 @@ import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
 import { handleAlRoutes } from './routes/al.js'
-import { ensureAlSession, injectToAl } from './al/al-session.js'
+import { ensureAlSession, reloadAlSession, injectToAl } from './al/al-session.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
@@ -128,6 +129,11 @@ const monzoStore = new MonzoStore(
 )
 const financeStore = new FinanceStore(feedsConfigDir)
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
+// Runtime agent-model config + fallback chain. Inject the resolver into Session
+// NOW, before any session is spawned (restore loop, Al, fresh) so every spawn
+// resolves the configured model rather than a hardcoded const.
+const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
+setAgentModelResolver(() => modelConfig.getModel())
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
@@ -403,7 +409,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate,
+  sessions, clients, cwd, log, truncate, modelConfig,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {
@@ -418,6 +424,8 @@ const agentCtx: AgentContext = {
   clearAttentionPush: (sessionId) => {
     pushServer.broadcast({ type: 'agent', cancel: true, id: `attention:${sessionId}` })
   },
+  // `con agent reload Al` → fresh persona spawn, no hub restart needed.
+  reloadAl: () => reloadAlSession(agentCtx),
 }
 
 const cronScheduler = new HubCronScheduler(
@@ -525,6 +533,37 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     const q = url.searchParams.get('q') ?? ''
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ dirs: listDirectories(q) }))
+    return
+  }
+
+  // Agent model config + fallback chain. GET inspects; POST {model} switches.
+  // The out-of-band recovery lever when a model is pulled (`con agent model`).
+  if (path === '/agents/model') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(modelConfig.getState()))
+      return
+    }
+    if (req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        try {
+          const { model } = JSON.parse(raw || '{}') as { model?: string }
+          if (!model?.trim()) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'model is required' })); return }
+          if (modelConfig.getState().lockedByEnv) { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'locked by CLAUDE_MODEL env var' })); return }
+          applyUserModelChange(agentCtx, model)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(modelConfig.getState()))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
     return
   }
 
@@ -873,6 +912,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // Send project directories on connect
   const dirs = discoverProjectDirs()
   sendTo(ws, { type: 'project_dirs', dirs })
+
+  // Send current agent-model config so the picker reflects reality on connect.
+  sendTo(ws, { type: 'model_state', ...modelConfig.getState() })
 
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())

@@ -9,12 +9,14 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'send': return agentSend(args, flags)
     case 'resume': return agentResume(args, flags)
     case 'kill': return agentKill(args, flags)
+    case 'reload': return agentReload(args, flags)
     case 'interrupt': return agentInterrupt(args, flags)
     case 'approve': return agentApprove(args, flags)
     case 'deny': return agentDeny(args, flags)
     case 'tail': return agentTail(args, flags)
     case 'wait': return agentWait(args, flags)
     case 'chat': return agentChat(args, flags)
+    case 'model': return agentModel(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -265,6 +267,61 @@ async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
     () => false,
   )
   output({ killed: sessionId }, flags)
+}
+
+// con agent reload <id|name|Al> — respawn a session's subprocess without
+// bouncing the hub. Al is special-cased: reloading him re-derives his persona
+// from AL.md (a genuinely fresh spawn — a plain resume keeps the old baked-in
+// --append-system-prompt), and works whether he's up or already down. Generic
+// sessions are resumed in place (history preserved). Mirrors the SPA's intent
+// of a reloadable session; the lever for applying persona/AL.md edits.
+async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
+  const target = args[0]
+  if (!target) exitWithError('USAGE', 'Usage: con agent reload <session-id|name|Al>', flags)
+  const { sendAndReceive } = await import('../ws-client.js')
+
+  if (target.toLowerCase() === 'al') {
+    await sendAndReceive({ type: 'reload_al' }, () => false)
+    output({ reloaded: 'Al', mode: 'fresh-persona-spawn' }, flags)
+    return
+  }
+
+  // Resolve a live session by id or unique name, then respawn it.
+  let sessionId = target
+  try {
+    const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
+    const live = (health.sessions || []).filter((s) => s.status !== 'ended')
+    if (!live.some((s) => s.id === target)) {
+      const named = live.filter((s) => (s.name || '').toLowerCase() === target.toLowerCase())
+      if (named.length === 1) sessionId = named[0]!.id
+      else if (named.length > 1) exitWithError('AMBIGUOUS', `Multiple sessions named "${target}" — use the id.`, flags)
+    }
+  } catch { /* /health unavailable — treat target as a raw id */ }
+
+  await sendAndReceive({ type: 'reload_session', sessionId }, () => false)
+  output({ reloaded: sessionId }, flags)
+}
+
+interface ModelState { model: string; chain: string[]; lockedByEnv: boolean }
+
+/** `con agent model` — inspect or switch the model all hub agents spawn with.
+ *  The out-of-band recovery lever when Anthropic pulls a model: change it here,
+ *  no code edit, and live sessions restart onto the new model. */
+async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  if (!sub || sub === 'get' || sub === 'list') {
+    const state = await hubFetch<ModelState>('/agents/model')
+    output(state, flags)
+    return
+  }
+  if (sub === 'set') {
+    const model = args[1]
+    if (!model) exitWithError('USAGE', 'Usage: con agent model set <model-id>', flags)
+    const state = await hubFetch<ModelState>('/agents/model', { method: 'POST', body: { model } })
+    output(state, flags)
+    return
+  }
+  exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id>]`, flags)
 }
 
 async function agentInterrupt(args: string[], flags: GlobalFlags): Promise<void> {

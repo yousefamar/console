@@ -17,6 +17,8 @@ export type ClientMessage =
   | { type: 'interrupt'; sessionId: string }
   | { type: 'kill_session'; sessionId: string }
   | { type: 'delete_session'; sessionId: string }
+  | { type: 'reload_session'; sessionId: string }
+  | { type: 'reload_al' }
   | { type: 'list_sessions' }
   | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string }
   | { type: 'list_past_sessions'; cwd: string }
@@ -30,6 +32,8 @@ export type ClientMessage =
   | { type: 'mark_session_read'; sessionId: string }
   | { type: 'mark_session_unread'; sessionId: string }
   | { type: 'clear_attention'; sessionId: string }
+  | { type: 'get_model' }
+  | { type: 'set_model'; model: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -67,6 +71,10 @@ export type HubMessage =
    *  the hub whether to also fire a push notification this time (dedup/anti-noise
    *  gated in Session). */
   | { type: 'session_attention'; sessionId: string; sessionName?: string; needsAttention: AttentionState | null; push?: boolean }
+  /** Active agent model + fallback chain. Broadcast on change (manual set or
+   *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
+   *  advanced the model itself after a model-unavailable failure. */
+  | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; autoFellBack?: boolean; failedModel?: string }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */

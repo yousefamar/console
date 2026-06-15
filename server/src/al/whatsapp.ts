@@ -15,7 +15,8 @@
 //   - inboundEnvelope(): pure helper that formats an inbound message
 //
 // What it does NOT do:
-//   - Decide who to send to (caller's job; OWNER_PHONE guard lives in the route)
+//   - Decide who to send to (caller's job; /whatsapp/send is bearer-gated, no
+//     per-recipient guard — see the note in identity.ts)
 //   - Render notifications elsewhere (caller injects callbacks)
 //   - Auto-discover users (caller calls ensureUserKnown)
 
@@ -30,10 +31,38 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys'
 import QRCode from 'qrcode'
 import pino from 'pino'
-import { rm } from 'node:fs/promises'
+import { rm, mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 
 const logger = pino({ level: 'silent' })
+
+// Inbound images are persisted here so Al (a Claude Code session) can `Read`
+// them — the injected envelope is plain text and can't carry image bytes.
+// /tmp is ephemeral; files are small and one-per-inbound, so no active cleanup.
+const INBOUND_IMG_DIR = join(tmpdir(), 'console-al-inbound')
+const MIME_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
+
+async function persistInboundImage(buf: Buffer, mimeType: string, msgId: string, idx: number): Promise<string | null> {
+  try {
+    await mkdir(INBOUND_IMG_DIR, { recursive: true })
+    const ext = MIME_EXT[mimeType.toLowerCase()] || 'bin'
+    const safeId = (msgId || 'img').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)
+    const p = join(INBOUND_IMG_DIR, `${safeId}-${idx}.${ext}`)
+    await writeFile(p, buf)
+    return p
+  } catch (err) {
+    console.error('[al/wa] persist inbound image failed:', (err as Error)?.message)
+    return null
+  }
+}
 
 export interface WhatsAppImage {
   data: string  // base64
@@ -47,6 +76,7 @@ export interface WhatsAppInbound {
   senderName?: string
   text: string
   images: WhatsAppImage[]
+  imagePaths: string[]         // local temp-file paths for downloaded images (Al can Read them)
   timestamp: number
 }
 
@@ -206,6 +236,7 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
           ''
 
         const images: WhatsAppImage[] = []
+        const imagePaths: string[] = []
         const imgMsg = msg.message.imageMessage
         if (imgMsg) {
           try {
@@ -213,7 +244,10 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
             const chunks: Buffer[] = []
             for await (const chunk of stream) chunks.push(chunk)
             const buffer = Buffer.concat(chunks)
-            images.push({ data: buffer.toString('base64'), mimeType: imgMsg.mimetype || 'image/jpeg' })
+            const mimeType = imgMsg.mimetype || 'image/jpeg'
+            images.push({ data: buffer.toString('base64'), mimeType })
+            const p = await persistInboundImage(buffer, mimeType, msg.key.id || 'img', images.length - 1)
+            if (p) imagePaths.push(p)
           } catch (err) {
             console.error('[al/wa] image download failed:', (err as Error)?.message)
           }
@@ -238,6 +272,7 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
           senderName: msg.pushName || undefined,
           text,
           images,
+          imagePaths,
           timestamp: typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp * 1000 : Date.now(),
         })
       } catch (err) {
@@ -281,14 +316,23 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
   // conversational in-session reply (which fails silently — the WA sender
   // never sees your session text). The text you write in this session after
   // the Bash call is the OPERATOR LOG, not the reply.
-  return [
+  const lines = [
     `[INBOUND WhatsApp — action required]`,
     `From: ${senderTag} — resolved user: ${user}`,
     `Thread: ${msg.jid}`,
     `Message ID: ${msg.id}`,
     ``,
     `Message:`,
-    msg.text,
+    msg.text || '(no text — image only)',
+  ]
+  if (msg.imagePaths.length > 0) {
+    lines.push(
+      ``,
+      `Attached image${msg.imagePaths.length > 1 ? 's' : ''} (use the Read tool on the path${msg.imagePaths.length > 1 ? 's' : ''} to view before replying):`,
+      ...msg.imagePaths.map((p) => `  ${p}`),
+    )
+  }
+  lines.push(
     ``,
     `---`,
     `ACTION (do this FIRST, before any explanation):`,
@@ -299,5 +343,6 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
     `  Skip the Bash call and write ONE line in this session explaining why.`,
     ``,
     `Critical: a text response in this session WITHOUT the Bash call fails silently — the WhatsApp sender hears NOTHING.`,
-  ].join('\n')
+  )
+  return lines.join('\n')
 }

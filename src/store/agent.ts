@@ -101,6 +101,16 @@ interface AgentState {
   // Project directories (discovered from ~/.claude/projects/)
   projectDirs: string[]
 
+  // Agent model config (model-config.ts). `agentModel` is what new/restarted
+  // sessions spawn with; `agentModelChain` is the ordered fallback list shown in
+  // the picker; `agentModelLockedByEnv` disables the picker (CLAUDE_MODEL set).
+  agentModel: string
+  agentModelChain: string[]
+  agentModelLockedByEnv: boolean
+  /** Set when the hub auto-fell-back after a model became unavailable. Drives a
+   *  dismissible banner; cleared by dismissModelFallbackNotice. */
+  modelFallbackNotice: { failedModel: string; model: string } | null
+
   // Sessions
   sessions: SessionInfo[]
   activeSessionId: string | null
@@ -172,6 +182,9 @@ interface AgentState {
   selectNextSession: () => void
   selectPrevSession: () => void
   listSessions: () => void
+  /** Switch the model all hub agents spawn with (restarts live sessions). */
+  setAgentModel: (model: string) => void
+  dismissModelFallbackNotice: () => void
   toggleThinkingCollapsed: (messageId: string) => void
   markSessionRead: (id?: string) => void
   markSessionUnread: (id?: string) => void
@@ -217,6 +230,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   hubUrl: agentWsUrl,
 
   projectDirs: [],
+
+  agentModel: '',
+  agentModelChain: [],
+  agentModelLockedByEnv: false,
+  modelFallbackNotice: null,
 
   sessions: [],
   activeSessionId: null,
@@ -428,6 +446,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({ type: 'list_sessions' })
   },
 
+  setAgentModel: (model) => {
+    sendWs({ type: 'set_model', model })
+  },
+
+  dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),
+
   toggleThinkingCollapsed: (messageId) => {
     set((state) => {
       const sessionId = state.activeSessionId
@@ -623,6 +647,8 @@ function doConnect() {
     // Hub sends sessions_list + message replay on connect.
     // Suppress notifications during replay — re-enable after 2s.
     setTimeout(() => { suppressNotifications = false }, 2000)
+    // Model config (model_state) is pushed by the hub on connect, like
+    // sessions_list — no request needed.
   }
 
   ws.onmessage = (event) => {
@@ -738,6 +764,25 @@ function handleHubMessage(msg: Record<string, unknown>) {
     case 'project_dirs': {
       const dirs = msg.dirs as string[]
       useAgentStore.setState({ projectDirs: dirs })
+      break
+    }
+
+    case 'model_state': {
+      useAgentStore.setState({
+        agentModel: msg.model as string,
+        agentModelChain: (msg.chain as string[]) ?? [],
+        agentModelLockedByEnv: !!msg.lockedByEnv,
+        ...(msg.autoFellBack
+          ? { modelFallbackNotice: { failedModel: msg.failedModel as string, model: msg.model as string } }
+          : {}),
+      })
+      if (msg.autoFellBack) {
+        import('@/notifications').then(({ notify }) => notify({
+          title: 'Agent model fell back',
+          body: `${msg.failedModel} unavailable — switched to ${msg.model}`,
+          data: { pane: 'agents' },
+        })).catch(() => {})
+      }
       break
     }
 

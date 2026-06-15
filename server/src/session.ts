@@ -25,14 +25,28 @@ import { parseModelString } from './utils.js'
 import { getLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
+import { looksLikeModelError } from './model-config.js'
 
 let sessionCounter = 0
 
-// Default Claude model for every hub-spawned agent session (incl. Al + forks).
-// `claude-fable-5` is the newest, most capable tier. Runs under the Claude Max
-// subscription, not metered API. Override per-deploy with the CLAUDE_MODEL env
-// var; this constant is the single source of truth for the agent default.
-const DEFAULT_AGENT_MODEL = 'claude-fable-5'
+// Ultimate fallback model when no resolver is wired (e.g. unit tests). In the
+// running hub the model comes from ModelConfig via setAgentModelResolver — see
+// model-config.ts. Kept currently-available so a bare Session() never spawns a
+// dead model.
+const DEFAULT_AGENT_MODEL = 'claude-opus-4-8'
+
+// Injected at boot (index.ts) so the model is a runtime-configurable setting
+// with a fallback chain rather than a hardcoded const. Honours the CLAUDE_MODEL
+// env override internally (see ModelConfig.getModel).
+let agentModelResolver: (() => string) | null = null
+export function setAgentModelResolver(fn: () => string) { agentModelResolver = fn }
+function resolveAgentModel(): string {
+  return agentModelResolver?.() ?? process.env.CLAUDE_MODEL?.trim() ?? DEFAULT_AGENT_MODEL
+}
+
+/** How many times a single session may auto-restart chasing a working model
+ *  before giving up — guards against a restart loop if every model fails. */
+const MAX_MODEL_RESTARTS = 6
 
 export interface ImageAttachment {
   media_type: string
@@ -145,10 +159,12 @@ export class Session extends EventEmitter {
     // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
     // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
     const effort = process.env.CLAUDE_EFFORT || 'high'
-    // Default model for ALL hub-spawned agents (incl. Al + forks). Fable 5 is
-    // the most capable tier. Override per-deploy via the CLAUDE_MODEL env var.
-    // This is THE single place to bump the default agent model.
-    const model = process.env.CLAUDE_MODEL || DEFAULT_AGENT_MODEL
+    // Resolved from ModelConfig (runtime-configurable + fallback chain). Record
+    // what we spawned with so a model-unavailable failure reports the right id.
+    const model = resolveAgentModel()
+    this.spawnedModel = model
+    this.spawnedAt = Date.now()
+    this.gotSystemInit = false
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -187,6 +203,7 @@ export class Session extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     })
+    this.processAlive = true
 
     this.stdinReady = true
 
@@ -214,6 +231,7 @@ export class Session extends EventEmitter {
       rl.on('line', (line) => {
         const trimmed = line.trim()
         if (trimmed) {
+          if (looksLikeModelError(trimmed)) this.signalModelFailure(`stderr: ${trimmed.slice(0, 200)}`)
           this.emitHub({ type: 'status', sessionId: this.id, text: trimmed })
         }
       })
@@ -221,6 +239,15 @@ export class Session extends EventEmitter {
 
     this.process.on('exit', (code) => {
       this.stdinReady = false
+      this.processAlive = false
+      // A model-driven restart or a user `reload()` killed the subprocess on
+      // purpose — re-spawn it instead of ending the session.
+      if (this.restartingForModel || this.reloading) {
+        this.restartingForModel = false
+        this.reloading = false
+        this.doModelRespawn()
+        return
+      }
       // If process exited after an interrupt and we have a claudeSessionId,
       // auto-resume instead of ending the session
       if (this.interrupted && this.claudeSessionId) {
@@ -230,6 +257,19 @@ export class Session extends EventEmitter {
         // Re-spawn with --resume to keep the session alive
         this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId, silent: true, name: this.name })
         return
+      }
+      // Exited before ever initializing, soon after spawn → the model is the
+      // likely culprit (pulled / unavailable / not entitled). Signal the hub so
+      // it can advance the fallback chain. reportFailure → restartAllSessions
+      // (or the stale/else branch) synchronously re-spawns THIS session via
+      // restartForModelChange (which handles the now-dead process). Do NOT end
+      // the session here — returning lets that re-spawn stand.
+      if (!this.gotSystemInit && !this.endedByUser
+          && Date.now() - this.spawnedAt < 20_000) {
+        this.signalModelFailure(`exited before init (code=${code})`)
+        // If the signal led to a re-spawn (new process alive), we're done.
+        if (this.processAlive || this.restartingForModel) return
+        // Otherwise (chain exhausted / no advance) fall through to end cleanly.
       }
       this.status = 'ended'
       this.emitHub({ type: 'session_ended', sessionId: this.id })
@@ -321,12 +361,104 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** True when the user explicitly ended this session (kill_session /
+   *  delete_session), as opposed to the subprocess dying on its own (SDK
+   *  timeout, crash). Persisted to the manifest so an explicit "End session"
+   *  survives hub restarts — incidental deaths still get resumed. */
+  endedByUser = false
+
+  // --- Model-failure / fallback bookkeeping (see model-config.ts) ---
+  /** Model id passed to `--model` on the most recent spawn. */
+  private spawnedModel = ''
+  /** Wall-clock of the most recent spawn — used to scope the "exited before
+   *  init" model-failure heuristic to a short window. */
+  private spawnedAt = 0
+  /** True once the subprocess emitted its `system` init — i.e. it started fine. */
+  private gotSystemInit = false
+  /** De-dupe: emit at most one `model_failure` per spawn. */
+  private modelFailureSignaled = false
+  /** Set while a model-driven restart is in flight so the exit handler re-spawns
+   *  instead of ending the session. */
+  private restartingForModel = false
+  /** Set while a user-driven `reload()` is in flight — same re-spawn path as a
+   *  model restart, but triggered manually (con agent reload). */
+  private reloading = false
+  /** Whether the current subprocess is still running — guards restart against
+   *  kill()ing an already-dead process (which would never fire `exit`). */
+  private processAlive = false
+  /** Count of consecutive model restarts (reset on successful init). */
+  private modelRestarts = 0
+
   /** Kill the session */
   kill() {
+    this.endedByUser = true
     if (this.process) {
       this.process.kill('SIGTERM')
       this.status = 'ended'
       this.stdinReady = false
+    }
+  }
+
+  /** Emit a `model_failure` once per spawn so the hub can fall back to the next
+   *  model in the chain. Skipped for user-ended sessions and during a model
+   *  restart (the new spawn hasn't failed yet). */
+  private signalModelFailure(reason: string) {
+    if (this.modelFailureSignaled || this.endedByUser || this.restartingForModel) return
+    this.modelFailureSignaled = true
+    this.emit('model_failure', this.spawnedModel, reason)
+  }
+
+  /** Restart this session onto whatever model the resolver now returns. Driven
+   *  by the hub after a fallback / manual model switch. Kills the current
+   *  subprocess; the exit handler does the actual re-spawn (mirrors the
+   *  interrupt-resume path). No-op once the per-session restart cap is hit. */
+  restartForModelChange() {
+    if (this.endedByUser) return
+    if (this.restartingForModel) return // a restart is already in flight
+    if (this.modelRestarts >= MAX_MODEL_RESTARTS) {
+      this.emitHub({ type: 'error', sessionId: this.id, message: `Model fallback gave up after ${MAX_MODEL_RESTARTS} restarts — set a working model.` })
+      return
+    }
+    this.modelRestarts++
+    if (this.process && this.processAlive) {
+      // Alive — kill it; the exit handler does the re-spawn on the new model.
+      this.restartingForModel = true
+      this.process.kill('SIGKILL')
+    } else {
+      // Already dead (e.g. failed before init) — re-spawn directly. Killing a
+      // dead process would never fire `exit`, so the exit-driven path can't run.
+      this.doModelRespawn()
+    }
+  }
+
+  /** Re-spawn this session's subprocess, resuming the same Claude conversation
+   *  (history + original system prompt preserved). Recovers a stuck/dead
+   *  session — or revives a user-killed one — without bouncing the hub. For Al,
+   *  the hub routes to `reloadAlSession()` instead, which re-derives the persona
+   *  via a genuinely fresh spawn (a resume keeps the OLD `--append-system-prompt`). */
+  reload() {
+    this.endedByUser = false
+    this.modelRestarts = 0
+    if (this.process && this.processAlive) {
+      this.reloading = true
+      this.process.kill('SIGKILL') // exit handler does the re-spawn
+    } else {
+      this.doModelRespawn()
+    }
+  }
+
+  /** Re-spawn after a model change. Resumes silently when we have a
+   *  claudeSessionId (history preserved); otherwise re-runs the initial prompt
+   *  fresh on the new model (the prior attempt never produced a session). */
+  private doModelRespawn() {
+    this.modelFailureSignaled = false
+    this.gotSystemInit = false
+    this.status = 'idle'
+    if (this.claudeSessionId) {
+      this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId, silent: true, name: this.name })
+    } else {
+      this.spawn({ prompt: this.initialPrompt, cwd: this.cwd, name: this.name })
+      if (this.initialPrompt) this.sendMessage(this.initialPrompt)
     }
   }
 
@@ -413,6 +545,11 @@ export class Session extends EventEmitter {
     switch (msg.type) {
       case 'system': {
         this.claudeSessionId = msg.session_id
+        // Subprocess started cleanly — clear model-failure bookkeeping so a
+        // later (different) model death can still trip a fresh fallback.
+        this.gotSystemInit = true
+        this.modelFailureSignaled = false
+        this.modelRestarts = 0
         const { displayName, contextWindow } = parseModelString(msg.model)
         this.contextWindow = contextWindow
         this.emitHub({
@@ -447,6 +584,7 @@ export class Session extends EventEmitter {
             .trim()
           if (text) {
             if (anyMsg.isApiErrorMessage) {
+              if (looksLikeModelError(text)) this.signalModelFailure(`api error: ${text.slice(0, 200)}`)
               this.emitHub({ type: 'error', sessionId: this.id, message: text })
             } else {
               this.emitHub({ type: 'text', sessionId: this.id, content: text })

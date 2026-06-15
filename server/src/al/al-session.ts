@@ -10,7 +10,7 @@
 // injected via `Session.sendMessage(envelope)`. Al's Claude context IS the
 // routing state — no per-thread session table.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Session } from '../session.js'
 import { createSession, type AgentContext } from '../routes/agents.js'
@@ -111,6 +111,28 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
   session.on('hub_message', onInit as any)
 
   return session
+}
+
+/**
+ * Force a fresh Al spawn so persona edits (`AL.md` / `persona.ts`) take effect
+ * WITHOUT a hub restart. Tears down the current Al session + the recorded
+ * `al-session.json`, then re-runs `ensureAlSession` (which fresh-spawns, since
+ * no record remains → new `claudeSessionId`, persona re-derived). Works whether
+ * Al is currently up or already down. This is what `con agent reload Al` calls.
+ *
+ * A plain `Session.reload()` would only *resume* Al, keeping his stale baked-in
+ * `--append-system-prompt` — that's why Al needs this dedicated path.
+ */
+export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
+  const existing = currentAlSession
+  if (existing) {
+    try { existing.kill() } catch { /* ignore */ }
+    ctx.sessions.delete(existing.id)
+  }
+  currentAlSession = null
+  try { if (existsSync(AL_SESSION_FILE)) unlinkSync(AL_SESSION_FILE) } catch { /* ignore */ }
+  console.log('[al/session] reloading Al — fresh persona spawn')
+  return ensureAlSession(ctx)
 }
 
 /**

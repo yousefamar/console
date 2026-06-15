@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
+import type { ModelConfig } from '../model-config.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -105,6 +106,33 @@ export interface AgentContext {
   notifyAttention?: (sessionId: string, name: string, snippet: string) => void
   /** Cancel the phone notification when the marker is cleared. */
   clearAttentionPush?: (sessionId: string) => void
+  /** Runtime agent-model config + fallback chain (model-config.ts). */
+  modelConfig: ModelConfig
+  /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
+   *  `reloadAlSession`; used by the `reload_al` client message. */
+  reloadAl?: () => Promise<Session | null>
+}
+
+/** Restart every live session onto the currently-resolved model. Used after a
+ *  manual model switch and after an auto-fallback so the whole fleet heals at
+ *  once rather than one-failure-at-a-time. Resume-silent preserves history. */
+export function restartAllSessionsForModel(ctx: AgentContext) {
+  for (const s of ctx.sessions.values()) {
+    if (s.status !== 'ended') s.restartForModelChange()
+  }
+}
+
+/** Broadcast the current model state to all clients. */
+export function broadcastModelState(ctx: AgentContext, extra?: { autoFellBack?: boolean; failedModel?: string }) {
+  broadcast(ctx.clients, { type: 'model_state', ...ctx.modelConfig.getState(), ...extra })
+}
+
+/** Apply a user-driven model change: persist, broadcast, heal the fleet. */
+export function applyUserModelChange(ctx: AgentContext, model: string): void {
+  ctx.modelConfig.setModel(model)
+  ctx.log(`[model] set to '${ctx.modelConfig.getModel()}' (user) — restarting live sessions`)
+  broadcastModelState(ctx)
+  restartAllSessionsForModel(ctx)
 }
 
 function broadcast(clients: Set<WebSocket>, msg: HubMessage) {
@@ -184,6 +212,24 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
 
   session.on('exit', () => {
     saveManifest(ctx.sessions)
+  })
+
+  // A session hit a model-unavailable error. Advance the fallback chain (once
+  // per dead model — reportFailure is idempotent for stale reports) and heal
+  // the whole fleet; otherwise just restart this one onto the active model.
+  session.on('model_failure', (failedModel: string, reason: string) => {
+    const res = ctx.modelConfig.reportFailure(failedModel)
+    if (res.changed) {
+      ctx.log(`[model] '${failedModel}' failed (${reason}) → falling back to '${res.model}'`)
+      broadcastModelState(ctx, { autoFellBack: true, failedModel })
+      restartAllSessionsForModel(ctx)
+    } else if (res.exhausted) {
+      ctx.log(`[model] '${failedModel}' failed (${reason}); fallback chain exhausted`)
+      broadcast(ctx.clients, { type: 'error', sessionId: session.id, message: `Model '${failedModel}' is unavailable and the fallback chain is exhausted. Set a working model in the picker or via 'con agent model set <model>'.` })
+    } else {
+      // Already fell back (another session beat us to it) — catch this one up.
+      session.restartForModelChange()
+    }
   })
 
   ctx.sessions.set(session.id, session)
@@ -304,6 +350,9 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       session.kill()
+      // Persist endedByUser even when the subprocess was already dead (no
+      // exit event will fire to trigger the usual manifest save).
+      saveManifest(sessions)
       log(`Session killed: ${session.id}`)
       break
     }
@@ -316,6 +365,17 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       try { session.kill() } catch {}
       sessions.delete(msg.sessionId)
+      // Duplicate guard: resume_session can create a second hub session for
+      // the same claudeSessionId. Deleting only one would let the survivor
+      // re-write the manifest entry and resurrect the session on restart.
+      if (session.claudeSessionId) {
+        for (const [id, s] of sessions) {
+          if (s.claudeSessionId === session.claudeSessionId) {
+            try { s.kill() } catch {}
+            sessions.delete(id)
+          }
+        }
+      }
       saveManifest(sessions)
       const remaining = Array.from(sessions.values()).map((s) => s.getInfo())
       broadcast(clients, { type: 'sessions_list', sessions: remaining })
@@ -323,9 +383,58 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       break
     }
 
+    case 'reload_session': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      session.reload()
+      saveManifest(sessions)
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      log(`Session reloaded: ${session.id}`)
+      break
+    }
+
+    case 'reload_al': {
+      if (!ctx.reloadAl) {
+        sendTo(ws, { type: 'hub_error', message: 'Al reload is not wired on this hub' })
+        return
+      }
+      ctx.reloadAl()
+        .then((s) => {
+          saveManifest(sessions)
+          broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((x) => x.getInfo()) })
+          log(`Al reloaded (fresh persona): ${s?.id ?? 'spawn pending'}`)
+        })
+        .catch((e) => {
+          sendTo(ws, { type: 'hub_error', message: `Al reload failed: ${(e as Error).message}` })
+        })
+      break
+    }
+
     case 'list_sessions': {
       const active = Array.from(sessions.values()).map((s) => s.getInfo())
       sendTo(ws, { type: 'sessions_list', sessions: active })
+      break
+    }
+
+    case 'get_model': {
+      sendTo(ws, { type: 'model_state', ...ctx.modelConfig.getState() })
+      break
+    }
+
+    case 'set_model': {
+      if (!msg.model?.trim()) {
+        sendTo(ws, { type: 'hub_error', message: 'set_model requires a model id' })
+        return
+      }
+      if (ctx.modelConfig.getState().lockedByEnv) {
+        sendTo(ws, { type: 'hub_error', message: 'Model is locked by the CLAUDE_MODEL env var; unset it to change the model from the UI.' })
+        broadcastModelState(ctx)
+        return
+      }
+      applyUserModelChange(ctx, msg.model)
       break
     }
 

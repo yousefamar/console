@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { Session } from '../session.js'
+import { Session, setAgentModelResolver } from '../session.js'
+import { ModelConfig } from '../model-config.js'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { HubMessage } from '../protocol.js'
 
 // --------------------------------------------------------------------------
@@ -78,9 +82,10 @@ describe('Session spawn', () => {
     expect(lastSpawnArgs!.args).toContain('--verbose')
     expect(lastSpawnArgs!.args).toContain('--permission-prompt-tool')
     expect(lastSpawnArgs!.args).toContain('stdio')
-    // Every agent defaults to the newest model tier (overridable via CLAUDE_MODEL)
+    // Every agent spawns with an explicit --model (resolved from ModelConfig in
+    // the running hub; falls back to the built-in default with no resolver).
     expect(lastSpawnArgs!.args).toContain('--model')
-    expect(lastSpawnArgs!.args).toContain('claude-fable-5')
+    expect(lastSpawnArgs!.args).toContain('claude-opus-4-8')
     // Prompt sent via stdin, not -p
     expect(lastSpawnArgs!.args).not.toContain('-p')
     const written = JSON.parse(mockProcess.stdin.write.mock.calls[0]![0].replace('\n', ''))
@@ -95,6 +100,59 @@ describe('Session spawn', () => {
 
     expect(lastSpawnArgs!.args).toContain('--resume')
     expect(lastSpawnArgs!.args).toContain('old_session_123')
+  })
+
+  it('spawns with the model from the injected resolver', async () => {
+    const { setAgentModelResolver } = await import('../session.js')
+    setAgentModelResolver(() => 'claude-sonnet-4-6')
+    try {
+      const session = new Session({ prompt: 'x' })
+      const i = lastSpawnArgs!.args.indexOf('--model')
+      expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-4-6')
+    } finally {
+      setAgentModelResolver(() => 'claude-opus-4-8') // reset to a known default
+    }
+  })
+
+  it('emits model_failure once when it exits before init', async () => {
+    setAgentModelResolver(() => 'claude-dead-model')
+    try {
+      const session = new Session({ prompt: 'x' })
+      const failures: Array<{ model: string }> = []
+      session.on('model_failure', (model: string) => failures.push({ model }))
+      // Process dies before ever emitting a `system` init message.
+      mockProcess.emit('exit', 1)
+      expect(failures).toHaveLength(1)
+      expect(failures[0]!.model).toBe('claude-dead-model')
+    } finally {
+      setAgentModelResolver(() => 'claude-opus-4-8')
+    }
+  })
+
+  it('auto-falls-back to the next model and re-spawns on exit-before-init', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sess-fallback-'))
+    const cfg = new ModelConfig(join(dir, 'm.json'))
+    cfg.setChain(['claude-dead', 'claude-good'])
+    setAgentModelResolver(() => cfg.getModel())
+    try {
+      const session = new Session({ prompt: 'x' })
+      // Mirror the hub's createSession wiring (routes/agents.ts).
+      session.on('model_failure', (failed: string) => {
+        if (cfg.reportFailure(failed).changed) session.restartForModelChange()
+      })
+      // First spawn used the (dead) head of the chain.
+      let i = lastSpawnArgs!.args.indexOf('--model')
+      expect(lastSpawnArgs!.args[i + 1]).toBe('claude-dead')
+      // Subprocess dies before init → fallback + silent re-spawn on the good model.
+      mockProcess.emit('exit', 1)
+      expect(cfg.getModel()).toBe('claude-good')
+      i = lastSpawnArgs!.args.indexOf('--model')
+      expect(lastSpawnArgs!.args[i + 1]).toBe('claude-good')
+      expect(session.getInfo().status).not.toBe('ended')
+    } finally {
+      setAgentModelResolver(() => 'claude-opus-4-8')
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('generates unique session IDs', () => {

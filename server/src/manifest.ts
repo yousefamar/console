@@ -18,6 +18,10 @@ export interface ManifestEntry {
   parentClaudeSessionId?: string
   /** True if the session was actively running (mid-turn) when the manifest was last saved. */
   wasRunning?: boolean
+  /** True if the USER explicitly ended this session (kill/delete). Restore
+   *  skips + prunes these — an explicit "End session" must survive restarts.
+   *  Absent for incidental subprocess deaths, which DO get resumed. */
+  ended?: boolean
   /** Sticky `@amar` attention marker — survives hub restart. */
   needsAttention?: AttentionState | null
 }
@@ -28,11 +32,13 @@ export interface ManifestEntry {
  *  An SIGKILL'd hub still leaves a complete, up-to-date manifest behind.
  *  Atomic via write-to-tmp + rename so a crash mid-write can't corrupt the file.
  *
- *  We persist EVERY session with a claudeSessionId, including `ended` ones.
- *  Ended sessions get `--resume`'d on restart — Claude CLI handles that fine,
- *  and keeping them here means a subprocess dying (SDK timeout, host hibernate,
- *  etc.) doesn't silently delete the session from the user's sidebar. Removal
- *  is driven explicitly by `delete_session`, not by subprocess lifecycle.
+ *  We persist EVERY session with a claudeSessionId, including `ended` ones,
+ *  so a subprocess dying (SDK timeout, host hibernate, etc.) doesn't silently
+ *  delete the session from the user's sidebar — those get `--resume`'d on
+ *  restart. Sessions the USER explicitly ended carry `ended: true` and are
+ *  skipped + pruned by the restore loop instead of resurrected. Removal is
+ *  driven by `delete_session` (or `ended` pruning), never by subprocess
+ *  lifecycle alone.
  */
 export function saveManifest(sessions: Map<string, Session>) {
   const seen = new Set<string>()
@@ -47,6 +53,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       name: session.name,
       ...(session.parentClaudeSessionId ? { parentClaudeSessionId: session.parentClaudeSessionId } : {}),
       wasRunning: session.status === 'running',
+      ...(session.endedByUser ? { ended: true } : {}),
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
     })
   }

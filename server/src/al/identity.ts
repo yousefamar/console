@@ -48,8 +48,11 @@ export const AUTH_WHATSAPP_DIR = join(homedir(), '.config', 'console', 'auth_wha
 /** Persistent record of which Claude session is "Al". */
 export const AL_SESSION_FILE = join(homedir(), '.config', 'console', 'al-session.json')
 
-/** Yousef's WhatsApp phone (used by the OWNER_PHONE guard in the send route). */
-export const OWNER_PHONE = (process.env.NOTIFY_JID || '').replace('@s.whatsapp.net', '')
+// NOTE: there is intentionally no OWNER_PHONE / recipient guard here. The old
+// standalone daemon restricted *non-owner conversation participants* from
+// messaging arbitrary people — a concept that doesn't exist now that Al is a
+// single bearer-gated Console session whose actual job is to message contacts
+// on Yousef's behalf. Authorization is the hub bearer on /whatsapp/send.
 
 export async function readIfExists(path: string): Promise<string | null> {
   try {

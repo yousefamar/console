@@ -5,7 +5,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, Plus, Terminal } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, Plus, Terminal } from 'lucide-react'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -26,6 +26,12 @@ export const AgentTab = memo(function AgentTab() {
   const collapsedGroups = useAgentStore((s) => s.collapsedGroups)
   const toggleGroupCollapsed = useAgentStore((s) => s.toggleGroupCollapsed)
   const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
+  const agentModel = useAgentStore((s) => s.agentModel)
+  const agentModelChain = useAgentStore((s) => s.agentModelChain)
+  const agentModelLockedByEnv = useAgentStore((s) => s.agentModelLockedByEnv)
+  const setAgentModel = useAgentStore((s) => s.setAgentModel)
+  const modelFallbackNotice = useAgentStore((s) => s.modelFallbackNotice)
+  const dismissModelFallbackNotice = useAgentStore((s) => s.dismissModelFallbackNotice)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top.
@@ -33,7 +39,26 @@ export const AgentTab = memo(function AgentTab() {
   // chat fork (or any finished session) survives for audit until acknowledged.
   // Marking it read removes it (see markSessionRead → delete on ended).
   const alSession = sessions.find((s) => s.id === 'al')
-  const activeSessions = sessions.filter((s) => s.id !== 'al' && (s.status !== 'ended' || s.hasUnread))
+
+  // "Needs me" filter — show only sessions that want attention or are in
+  // flight: unread, @amar-flagged, blocked on a tool approval, or actively
+  // running (the orange status dot). View pref, device-local.
+  const [filterAlerted, setFilterAlerted] = useState(() => localStorage.getItem('console:agents:filterAlerted') === '1')
+  const toggleFilterAlerted = useCallback(() => {
+    setFilterAlerted((v) => {
+      localStorage.setItem('console:agents:filterAlerted', v ? '0' : '1')
+      return !v
+    })
+  }, [])
+  const pendingApprovals = useAgentStore((s) => s.pendingApprovalsBySession)
+  const isAlerted = (s: SessionInfo) =>
+    !!(s.hasUnread || s.needsAttention || pendingApprovals[s.id] || s.status === 'running')
+
+  const activeSessions = sessions.filter((s) =>
+    s.id !== 'al'
+    && (s.status !== 'ended' || s.hasUnread)
+    && (!filterAlerted || isAlerted(s)))
+  const showAl = !!alSession && (!filterAlerted || isAlerted(alSession!))
 
   // Auto-connect on mount
   useEffect(() => {
@@ -83,6 +108,16 @@ export const AgentTab = memo(function AgentTab() {
             <span className="text-xs font-medium text-text-primary">Sessions</span>
             <div className="flex items-center gap-2">
               <button
+                onClick={toggleFilterAlerted}
+                className={clsx(
+                  'transition-colors duration-fast',
+                  filterAlerted ? 'text-blue-500 hover:text-blue-400' : 'text-text-tertiary hover:text-text-primary',
+                )}
+                title={filterAlerted ? 'Showing only unread / needs-attention — click to show all' : 'Show only unread / needs-attention'}
+              >
+                <ListFilter size={12} />
+              </button>
+              <button
                 onClick={handleNewSession}
                 className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
                 title="New session"
@@ -102,13 +137,27 @@ export const AgentTab = memo(function AgentTab() {
             </div>
           </div>
 
+          {modelFallbackNotice && (
+            <div className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+              <AlertCircle size={13} className="mt-0.5 flex-shrink-0" />
+              <span className="flex-1 leading-snug">
+                <span className="font-mono">{modelFallbackNotice.failedModel}</span> was unavailable — agents fell back to <span className="font-mono">{modelFallbackNotice.model}</span>.
+              </span>
+              <button onClick={dismissModelFallbackNotice} className="flex-shrink-0 text-amber-300/70 hover:text-amber-200" title="Dismiss">
+                <Check size={13} />
+              </button>
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto">
             {/* Al — pinned at top */}
-            {alSession && <AlListItem session={alSession} isActive={alSession.id === activeSessionId} onSelect={selectSession} />}
+            {showAl && alSession && <AlListItem session={alSession} isActive={alSession.id === activeSessionId} onSelect={selectSession} />}
 
-            {activeSessions.length === 0 && !alSession && connected && (
+            {activeSessions.length === 0 && !showAl && connected && (
               <div className="flex h-32 items-center justify-center">
-                <p className="text-xs text-text-tertiary">No active sessions</p>
+                <p className="text-xs text-text-tertiary">
+                  {filterAlerted ? 'Nothing needs you' : 'No active sessions'}
+                </p>
               </div>
             )}
             {(() => {
@@ -136,6 +185,31 @@ export const AgentTab = memo(function AgentTab() {
                 </>
               )
             })()}
+          </div>
+
+          {/* Model picker — switch the model all agents spawn with. The manual
+              recovery lever when a model is pulled; auto-fallback handles the
+              rest. */}
+          <div className="flex items-center gap-1.5 border-t border-border px-3 py-1.5">
+            <span className="text-[10px] text-text-tertiary flex-shrink-0">Model</span>
+            <select
+              value={agentModel}
+              onChange={(e) => setAgentModel(e.target.value)}
+              disabled={agentModelLockedByEnv || !connected || agentModelChain.length === 0}
+              title={agentModelLockedByEnv ? 'Locked by the CLAUDE_MODEL env var — unset it to change the model here' : 'Model all hub agents spawn with. Changing it restarts live sessions onto it.'}
+              className="flex-1 min-w-0 bg-transparent text-[11px] text-text-secondary font-mono outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 truncate"
+            >
+              {/* Ensure the active model is selectable even if not in the chain. */}
+              {agentModel && !agentModelChain.includes(agentModel) && (
+                <option value={agentModel}>{agentModel}</option>
+              )}
+              {agentModelChain.map((m, i) => (
+                <option key={m} value={m}>{m}{i === 0 ? '' : ` (fallback ${i})`}</option>
+              ))}
+            </select>
+            {agentModelLockedByEnv && (
+              <span className="text-[9px] uppercase tracking-wider text-amber-400/80 flex-shrink-0" title="Pinned by CLAUDE_MODEL env var">env</span>
+            )}
           </div>
         </div>
       )}
