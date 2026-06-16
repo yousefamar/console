@@ -72,6 +72,14 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
   }
 
   const systemPrompt = await buildAlSystemPrompt()
+  // Al is the org-chart root. Ensure his role node exists (idempotent — the
+  // backfill usually already created it). Its charter is NEVER injected — Al
+  // passes his own richer buildAlSystemPrompt, and createSession's
+  // `!options.systemPrompt` guard respects that. The role file is purely Al's
+  // org-chart node + the default manager target for top-level agents.
+  if (!ctx.agentRegistry.has('al')) {
+    ctx.agentRegistry.create('al', { title: 'Al', charter: 'Al — personal AI orchestrator and org-chart root. (Persona lives in AL.md; this file is just Al’s org node.)' })
+  }
   // Al's working directory IS his persona/workflow vault. This makes
   // `Read users/<name>.md`, `Read workflows/<slug>.md`, etc. resolve as
   // relative paths the way the prompt and the agent both expect.
@@ -91,6 +99,7 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
     cwd: WORKSPACE_DIR,
     name: 'Al',
     systemPrompt,
+    agentKey: 'al',
   })
   currentAlSession = session
 
