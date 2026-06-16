@@ -51,6 +51,8 @@ export interface SessionInfo {
   /** claudeSessionId of the parent session if this is a fork — nests forks
    *  under their parent in the sidebar tree. */
   parentClaudeSessionId?: string
+  /** Durable org-chart role this session embodies (agents/registry.ts). */
+  agentKey?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
@@ -79,6 +81,25 @@ export interface SessionInfo {
   gitStats?: { added: number; deleted: number }
 }
 
+/** A durable agent role (org-chart node). Mirrors server/src/agents/registry.ts. */
+export interface AgentRole {
+  key: string
+  title: string
+  manager: string | null
+  goals: string[]
+  cwd: string | null
+  created: string | null
+  charter: string
+  hasFile: boolean
+}
+
+export interface OrgNode {
+  role: AgentRole
+  children: OrgNode[]
+  danglingManager?: string
+  cycleBroken?: boolean
+}
+
 export interface PastSession {
   sessionId: string
   prompt: string
@@ -104,6 +125,12 @@ interface AgentState {
   // Agent model config (model-config.ts). `agentModel` is what new/restarted
   // sessions spawn with; `agentModelChain` is the ordered fallback list shown in
   // the picker; `agentModelLockedByEnv` disables the picker (CLAUDE_MODEL set).
+  // Org-chart roles (agents/registry.ts). Pushed by the hub on connect + change.
+  agentRoles: AgentRole[]
+  agentTree: OrgNode[]
+  /** Agents-pane view: the session list, or the visual org chart. Device-local. */
+  agentViewMode: 'list' | 'orgchart'
+
   agentModel: string
   agentModelChain: string[]
   agentModelLockedByEnv: boolean
@@ -185,6 +212,15 @@ interface AgentState {
   /** Switch the model all hub agents spawn with (restarts live sessions). */
   setAgentModel: (model: string) => void
   dismissModelFallbackNotice: () => void
+  /** Reparent a role in the org chart (null = make it a root). */
+  setAgentManager: (agentKey: string, manager: string | null) => void
+  /** Spawn a fresh session for a parked role. */
+  reviveAgent: (agentKey: string) => void
+  /** Reload a live session (role-backed → re-derives charter via fresh spawn). */
+  reloadSession: (sessionId: string) => void
+  /** Delete a role (kills its live session + removes the file). */
+  deleteRole: (agentKey: string) => void
+  setAgentViewMode: (mode: 'list' | 'orgchart') => void
   toggleThinkingCollapsed: (messageId: string) => void
   markSessionRead: (id?: string) => void
   markSessionUnread: (id?: string) => void
@@ -230,6 +266,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   hubUrl: agentWsUrl,
 
   projectDirs: [],
+
+  agentRoles: [],
+  agentTree: [],
+  agentViewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:viewMode') === 'orgchart') ? 'orgchart' : 'list',
 
   agentModel: '',
   agentModelChain: [],
@@ -451,6 +491,27 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),
+
+  setAgentManager: (agentKey, manager) => {
+    sendWs({ type: 'set_manager', agentKey, manager })
+  },
+
+  reviveAgent: (agentKey) => {
+    sendWs({ type: 'revive_agent', agentKey })
+  },
+
+  reloadSession: (sessionId) => {
+    sendWs({ type: 'reload_session', sessionId })
+  },
+
+  deleteRole: (agentKey) => {
+    sendWs({ type: 'delete_role', agentKey })
+  },
+
+  setAgentViewMode: (mode) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('console:agents:viewMode', mode)
+    set({ agentViewMode: mode })
+  },
 
   toggleThinkingCollapsed: (messageId) => {
     set((state) => {
@@ -764,6 +825,14 @@ function handleHubMessage(msg: Record<string, unknown>) {
     case 'project_dirs': {
       const dirs = msg.dirs as string[]
       useAgentStore.setState({ projectDirs: dirs })
+      break
+    }
+
+    case 'agents_list': {
+      useAgentStore.setState({
+        agentRoles: (msg.roles as AgentRole[]) ?? [],
+        agentTree: (msg.tree as OrgNode[]) ?? [],
+      })
       break
     }
 

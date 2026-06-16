@@ -5,7 +5,9 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, Plus, Terminal } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, Network, List, Plus, Terminal } from 'lucide-react'
+import { AgentOrgChart } from './agent/AgentOrgChart'
+import { AgentProfilePanel } from './agent/AgentProfilePanel'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -32,6 +34,9 @@ export const AgentTab = memo(function AgentTab() {
   const setAgentModel = useAgentStore((s) => s.setAgentModel)
   const modelFallbackNotice = useAgentStore((s) => s.modelFallbackNotice)
   const dismissModelFallbackNotice = useAgentStore((s) => s.dismissModelFallbackNotice)
+  const agentViewMode = useAgentStore((s) => s.agentViewMode)
+  const setAgentViewMode = useAgentStore((s) => s.setAgentViewMode)
+  const [selectedRole, setSelectedRole] = useState<string | null>(null)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top.
@@ -99,6 +104,32 @@ export const AgentTab = memo(function AgentTab() {
   const showList = isMobile ? (!activeSessionId && !creatingNewSession) : true
   const showDetail = isMobile ? (!!activeSessionId || creatingNewSession || !connected) : true
 
+  const viewToggle = (
+    <button
+      onClick={() => setAgentViewMode(agentViewMode === 'orgchart' ? 'list' : 'orgchart')}
+      className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+      title={agentViewMode === 'orgchart' ? 'Switch to session list' : 'Switch to org chart'}
+    >
+      {agentViewMode === 'orgchart' ? <List size={12} /> : <Network size={12} />}
+    </button>
+  )
+
+  // Org-chart mode: full-pane visual tree + a profile panel for the picked role.
+  if (agentViewMode === 'orgchart') {
+    return (
+      <div className="flex flex-1 h-full min-w-0 flex-col">
+        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+          <span className="text-xs font-medium text-text-primary">Org chart</span>
+          {viewToggle}
+        </div>
+        <div className="flex flex-1 min-h-0">
+          <div className="flex-1 min-w-0"><AgentOrgChart onPick={setSelectedRole} /></div>
+          {selectedRole && <AgentProfilePanel agentKey={selectedRole} onClose={() => setSelectedRole(null)} />}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-1 h-full min-w-0">
       {/* Session sidebar */}
@@ -107,6 +138,7 @@ export const AgentTab = memo(function AgentTab() {
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <span className="text-xs font-medium text-text-primary">Sessions</span>
             <div className="flex items-center gap-2">
+              {viewToggle}
               <button
                 onClick={toggleFilterAlerted}
                 className={clsx(
