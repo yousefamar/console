@@ -76,6 +76,10 @@ export interface SessionOptions {
   systemPrompt?: string
   /** Restore the `@amar` attention flag on hub-restart resume (from manifest). */
   needsAttention?: AttentionState | null
+  /** Durable org-chart role this session embodies (see agents/registry.ts). The
+   *  role's charter is resolved into `systemPrompt` at the createSession choke
+   *  point on fresh spawn. Persisted in the manifest; survives restarts. */
+  agentKey?: string
 }
 
 export class Session extends EventEmitter {
@@ -84,6 +88,8 @@ export class Session extends EventEmitter {
   name?: string
   /** claudeSessionId of the parent session if this is a fork (else undefined). */
   readonly parentClaudeSessionId?: string
+  /** Durable org-chart role key (agents/registry.ts), if this session embodies one. */
+  readonly agentKey?: string
   status: 'running' | 'idle' | 'ended' = 'running'
   readonly createdAt = Date.now()
   readonly initialPrompt: string
@@ -132,6 +138,7 @@ export class Session extends EventEmitter {
     this.initialPrompt = options.prompt
     this.name = options.name
     this.parentClaudeSessionId = options.parentClaudeSessionId
+    this.agentKey = options.agentKey
     this.cwd = options.cwd || process.cwd()
     // For resumes (not forks), set claudeSessionId immediately so list_sessions
     // can match before Claude emits the `system` message.
@@ -521,6 +528,7 @@ export class Session extends EventEmitter {
       claudeSessionId: this.claudeSessionId,
       name: this.name,
       parentClaudeSessionId: this.parentClaudeSessionId,
+      agentKey: this.agentKey,
       status: this.status,
       createdAt: this.createdAt,
       prompt: this.initialPrompt,

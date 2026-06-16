@@ -11,13 +11,14 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { readFileSync, existsSync, unlinkSync, watch, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, watch, readdirSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, setAgentModelResolver } from './session.js'
 import { ModelConfig } from './model-config.js'
+import { AgentRegistry } from './agents/registry.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
 import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
@@ -28,7 +29,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastAgentsList, type AgentContext } from './routes/agents.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
@@ -134,6 +135,9 @@ const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // resolves the configured model rather than a hardcoded const.
 const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
 setAgentModelResolver(() => modelConfig.getModel())
+// Durable agent roles / org chart. Loaded before any session spawn so charter
+// injection (createSession) can resolve a restored session's role.
+const agentRegistry = new AgentRegistry(join(feedsConfigDir, 'agents'), (m) => log(m))
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
@@ -409,7 +413,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate, modelConfig,
+  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {
@@ -427,6 +431,10 @@ const agentCtx: AgentContext = {
   // `con agent reload Al` → fresh persona spawn, no hub restart needed.
   reloadAl: () => reloadAlSession(agentCtx),
 }
+
+// Live org-chart updates when an agent edits its own role file. Content-compared
+// inside the registry so the hub's own writes don't re-fire.
+agentRegistry.watch(() => broadcastAgentsList(agentCtx))
 
 const cronScheduler = new HubCronScheduler(
   join(feedsConfigDir, 'agent-cron.json'),
@@ -555,6 +563,38 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
           applyUserModelChange(agentCtx, model)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(modelConfig.getState()))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
+  // Org-chart roles. GET inspects roles+tree; POST {agentKey, manager} reparents
+  // (surgical frontmatter stamp). The out-of-band lever for `con agent role`.
+  if (path === '/agents/roles') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ roles: agentRegistry.list(), tree: agentRegistry.tree() }))
+      return
+    }
+    if (req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        try {
+          const { agentKey, manager } = JSON.parse(raw || '{}') as { agentKey?: string; manager?: string | null }
+          if (!agentKey?.trim() || !agentRegistry.has(agentKey)) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no such role' })); return }
+          if (manager === agentKey) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'a role cannot manage itself' })); return }
+          agentRegistry.setManager(agentKey, manager ?? null)
+          broadcastAgentsList(agentCtx)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ roles: agentRegistry.list(), tree: agentRegistry.tree() }))
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: (e as Error).message }))
@@ -916,6 +956,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // Send current agent-model config so the picker reflects reality on connect.
   sendTo(ws, { type: 'model_state', ...modelConfig.getState() })
 
+  // Send the org-chart roles + tree (mirror model_state; also pushed on change).
+  sendTo(ws, { type: 'agents_list', roles: agentRegistry.list(), tree: agentRegistry.tree() })
+
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
   if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
@@ -1068,6 +1111,63 @@ httpServer.listen(port, host, () => {
       return candidates && candidates.length === 1 ? candidates[0] : undefined
     }
 
+    // One-time, idempotent ROLE backfill: turn every pre-existing named session
+    // into a durable org-chart role. Two passes so a fork's manager can resolve
+    // to its parent's (possibly just-minted) key. create()/mintKey are file-aware,
+    // so re-running on later boots is a no-op once role files exist.
+    const csidToKey = new Map<string, string>()
+    for (const entry of manifest) {
+      if (entry.ended || !entry.claudeSessionId || !entry.name) continue
+      let key = entry.agentKey
+      if (!key) key = agentRegistry.mintKey(entry.name)
+      if (!agentRegistry.has(key)) {
+        agentRegistry.create(key, { title: entry.name, charter: entry.prompt, cwd: entry.cwd })
+      }
+      csidToKey.set(entry.claudeSessionId, key)
+    }
+    for (const entry of manifest) {
+      if (entry.ended || !entry.claudeSessionId) continue
+      const key = csidToKey.get(entry.claudeSessionId)
+      if (!key) continue
+      const role = agentRegistry.get(key)
+      const parentCsid = resolveParent(entry)
+      const mgrKey = parentCsid ? csidToKey.get(parentCsid) : undefined
+      // Only seed a manager for a role that doesn't already have one (don't
+      // override an edge the user/agent set).
+      if (role && role.manager === null && mgrKey && mgrKey !== key) {
+        agentRegistry.setManager(key, mgrKey)
+      }
+    }
+
+    // One-time org reorg: within a directory, the "<X> general" agent manages
+    // the other agents in that same cwd. Gated by a marker file so it runs once
+    // and never fights a manual reparent later. Forks keep their fork-parent
+    // edge (set above); only still-rootless same-dir peers are reparented.
+    const reorgMarker = join(feedsConfigDir, 'agents', '.general-reorg-v1')
+    if (!existsSync(reorgMarker)) {
+      const generalByCwd = new Map<string, string>()
+      for (const entry of manifest) {
+        if (entry.ended || !entry.claudeSessionId || !entry.name || !entry.cwd) continue
+        if (!/\bgeneral\b/i.test(entry.name)) continue
+        const key = csidToKey.get(entry.claudeSessionId)
+        if (key && !generalByCwd.has(entry.cwd)) generalByCwd.set(entry.cwd, key)
+      }
+      let reorged = 0
+      for (const entry of manifest) {
+        if (entry.ended || !entry.claudeSessionId || !entry.cwd) continue
+        const key = csidToKey.get(entry.claudeSessionId)
+        if (!key) continue
+        const gen = generalByCwd.get(entry.cwd)
+        const role = agentRegistry.get(key)
+        if (gen && gen !== key && role && role.manager === null) {
+          agentRegistry.setManager(key, gen)
+          reorged++
+        }
+      }
+      try { writeFileSync(reorgMarker, new Date().toISOString()) } catch { /* best effort */ }
+      log(`[agents] general-reorg: ${reorged} role(s) placed under their dir's general`)
+    }
+
     for (const entry of manifest) {
       // User explicitly ended this session — stay dead. The saveManifest()
       // after the loop prunes it (it never enters the sessions map).
@@ -1083,6 +1183,7 @@ httpServer.listen(port, host, () => {
           silent: true,
           name: entry.name,
           parentClaudeSessionId: resolveParent(entry),
+          agentKey: entry.agentKey ?? (entry.claudeSessionId ? csidToKey.get(entry.claudeSessionId) : undefined),
           needsAttention: entry.needsAttention,
         })
         // If the session was mid-turn when the hub stopped, nudge it to

@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
+import type { AgentRegistry } from '../agents/registry.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -108,6 +109,8 @@ export interface AgentContext {
   clearAttentionPush?: (sessionId: string) => void
   /** Runtime agent-model config + fallback chain (model-config.ts). */
   modelConfig: ModelConfig
+  /** Durable agent roles / org chart (agents/registry.ts). */
+  agentRegistry: AgentRegistry
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
@@ -133,6 +136,56 @@ export function applyUserModelChange(ctx: AgentContext, model: string): void {
   ctx.log(`[model] set to '${ctx.modelConfig.getModel()}' (user) — restarting live sessions`)
   broadcastModelState(ctx)
   restartAllSessionsForModel(ctx)
+}
+
+// --------------------------------------------------------------------------
+// Org-chart roles (agents/registry.ts). reviveAgentRole/reloadAgentRole live
+// here (not a separate file) to avoid a cycle with createSession.
+// --------------------------------------------------------------------------
+
+/** Broadcast the role list + derived org tree to all clients. */
+export function broadcastAgentsList(ctx: AgentContext): void {
+  broadcast(ctx.clients, { type: 'agents_list', roles: ctx.agentRegistry.list(), tree: ctx.agentRegistry.tree() })
+}
+
+/** The single live (non-ended) session embodying a role, if any. Enforces the
+ *  ≤1-live-session-per-role invariant. */
+export function liveSessionForRole(ctx: AgentContext, agentKey: string): Session | undefined {
+  for (const s of ctx.sessions.values()) {
+    if (s.agentKey === agentKey && s.status !== 'ended') return s
+  }
+  return undefined
+}
+
+/** Spawn a fresh session embodying a (parked) role, charter injected. Focuses an
+ *  already-live session instead of duplicating. Returns null if the role is gone. */
+export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | null {
+  const role = ctx.agentRegistry.get(agentKey)
+  if (!role) return null
+  const existing = liveSessionForRole(ctx, agentKey)
+  if (existing) return existing
+  return createSession(ctx, {
+    agentKey,
+    cwd: role.cwd ?? ctx.cwd,
+    prompt: `You are (re)starting as the "${role.title}" agent. Your charter and memory are in your system prompt above — read them, then await instructions.`,
+  })
+}
+
+/** Re-derive a role from its (possibly-edited) file and fresh-spawn it. The only
+ *  way to apply a changed charter, since --append-system-prompt is fresh-spawn
+ *  only; the agent's ## Memory carries forward across the new conversation. */
+export function reloadAgentRole(ctx: AgentContext, agentKey: string): Session | null {
+  ctx.agentRegistry.load()
+  if (!ctx.agentRegistry.get(agentKey)) return null
+  const existing = liveSessionForRole(ctx, agentKey)
+  if (existing) {
+    existing.kill()
+    ctx.sessions.delete(existing.id)
+  }
+  const session = reviveAgentRole(ctx, agentKey)
+  const remaining = Array.from(ctx.sessions.values()).map((s) => s.getInfo())
+  broadcast(ctx.clients, { type: 'sessions_list', sessions: remaining })
+  return session
 }
 
 function broadcast(clients: Set<WebSocket>, msg: HubMessage) {
@@ -190,6 +243,14 @@ export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
 }
 
 export function createSession(ctx: AgentContext, options: SessionOptions): Session {
+  // Resolve the durable role's charter into the system prompt — but only on a
+  // FRESH spawn (!resume, mirroring session.ts:195, else restarts double-stack
+  // --append-system-prompt), and only when the caller hasn't already supplied a
+  // prompt (lets Al keep its richer buildAlSystemPrompt).
+  if (options.agentKey && !options.resume && !options.systemPrompt) {
+    const charter = ctx.agentRegistry.resolveCharter(options.agentKey)
+    if (charter) options.systemPrompt = charter
+  }
   const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
 
   session.on('hub_message', (msg: HubMessage) => {
@@ -241,11 +302,20 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
 
   switch (msg.type) {
     case 'create_session': {
+      // A user-designated agent (asAgent) gets a durable role minted up front so
+      // its charter is injected on this very spawn. Ad-hoc sessions stay role-less.
+      let agentKey: string | undefined
+      if (msg.asAgent && msg.name?.trim()) {
+        agentKey = ctx.agentRegistry.mintKey(msg.name)
+        ctx.agentRegistry.create(agentKey, { title: msg.name.trim(), charter: msg.prompt, cwd: msg.cwd })
+        broadcastAgentsList(ctx)
+      }
       const session = createSession(ctx, {
         prompt: msg.prompt,
         images: msg.images,
         cwd: msg.cwd,
         name: msg.name,
+        agentKey,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt, ...(session.name ? { name: session.name } : {}) }
       broadcast(clients, createdMsg)
@@ -389,10 +459,22 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
         return
       }
-      session.reload()
+      // Al is a role node but keeps its bespoke persona path (buildAlSystemPrompt),
+      // not the generic charter — route it to reloadAl.
+      if (session.agentKey === 'al' && ctx.reloadAl) {
+        ctx.reloadAl()
+        log('Role reloaded: al (via reloadAl)')
+      } else if (session.agentKey) {
+        // A role-backed session re-derives its (possibly-edited) charter via a
+        // fresh spawn; a role-less session just resumes (history preserved).
+        reloadAgentRole(ctx, session.agentKey)
+        log(`Role reloaded: ${session.agentKey}`)
+      } else {
+        session.reload()
+        broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+        log(`Session reloaded: ${session.id}`)
+      }
       saveManifest(sessions)
-      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
-      log(`Session reloaded: ${session.id}`)
       break
     }
 
@@ -435,6 +517,47 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       applyUserModelChange(ctx, msg.model)
+      break
+    }
+
+    case 'list_agents': {
+      sendTo(ws, { type: 'agents_list', roles: ctx.agentRegistry.list(), tree: ctx.agentRegistry.tree() })
+      break
+    }
+
+    case 'get_agent_role': {
+      const role = ctx.agentRegistry.get(msg.agentKey)
+      if (!role) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
+      sendTo(ws, { type: 'agent_role', role })
+      break
+    }
+
+    case 'set_manager': {
+      if (!ctx.agentRegistry.has(msg.agentKey)) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
+      // Guard against an obvious self-cycle; deeper cycles are broken at render.
+      if (msg.manager === msg.agentKey) { sendTo(ws, { type: 'hub_error', message: 'A role cannot manage itself' }); return }
+      ctx.agentRegistry.setManager(msg.agentKey, msg.manager)
+      broadcastAgentsList(ctx)
+      log(`[agents] ${msg.agentKey} manager → ${msg.manager ?? '(root)'}`)
+      break
+    }
+
+    case 'revive_agent': {
+      const session = reviveAgentRole(ctx, msg.agentKey)
+      if (!session) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      log(`[agents] revived ${msg.agentKey} → ${session.id}`)
+      break
+    }
+
+    case 'delete_role': {
+      const live = liveSessionForRole(ctx, msg.agentKey)
+      if (live) { try { live.kill() } catch {} sessions.delete(live.id) }
+      ctx.agentRegistry.delete(msg.agentKey)
+      saveManifest(sessions)
+      broadcastAgentsList(ctx)
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      log(`[agents] deleted role ${msg.agentKey}`)
       break
     }
 
@@ -525,6 +648,16 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       const forkCwd = msg.cwd || sourceSession.cwd
       const forkName = sourceSession.name ? `${sourceSession.name} (fork)` : undefined
+      // A UI fork (seedRole) becomes its own org node reporting to the source's
+      // role; the charter applies on a future fresh revive (this spawn resumes,
+      // so it inherits the source's conversation + system prompt). `con agent
+      // chat` forks pass no seedRole → ephemeral, role-less.
+      let forkAgentKey: string | undefined
+      if (msg.seedRole) {
+        forkAgentKey = ctx.agentRegistry.mintKey(forkName ?? 'fork')
+        ctx.agentRegistry.create(forkAgentKey, { title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd })
+        broadcastAgentsList(ctx)
+      }
       const session = createSession(ctx, {
         prompt: '',
         cwd: forkCwd,
@@ -533,6 +666,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         silent: true,
         name: forkName,
         parentClaudeSessionId: sourceSession.claudeSessionId,
+        agentKey: forkAgentKey,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: forkName }
       broadcast(clients, createdMsg)

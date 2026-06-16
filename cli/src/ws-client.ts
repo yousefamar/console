@@ -137,6 +137,10 @@ export async function injectAndCapture(opts: {
   })
 }
 
+/** Pass as `matchResponse` for fire-and-forget sends: resolves ~100ms after the
+ *  message is flushed (the hub has it), without waiting for a reply. */
+export const NO_RESPONSE = () => false
+
 export async function sendAndReceive(
   message: unknown,
   matchResponse: (msg: unknown) => boolean,
@@ -149,8 +153,8 @@ export async function sendAndReceive(
     ws.on('open', () => {
       ws.send(JSON.stringify(message))
 
-      // If we don't need a response, resolve immediately
-      if (matchResponse === (() => false)) {
+      // If we don't need a response, resolve shortly after the send is flushed
+      if (matchResponse === NO_RESPONSE) {
         setTimeout(() => {
           ws.close()
           resolve(null)

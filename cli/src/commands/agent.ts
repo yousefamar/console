@@ -17,6 +17,8 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'wait': return agentWait(args, flags)
     case 'chat': return agentChat(args, flags)
     case 'model': return agentModel(args, flags)
+    case 'role': return agentRole(args, flags)
+    case 'revive': return agentRevive(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -322,6 +324,56 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id>]`, flags)
+}
+
+interface RoleData { key: string; title: string; manager: string | null; goals: string[]; cwd: string | null; charter: string }
+
+/** `con agent role` — inspect/maintain the durable org-chart roles. Charter,
+ *  goals and memory are AGENT-owned (edited in the role's .md file); the CLI only
+ *  reads them and writes the `manager` edge. */
+async function agentRole(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  if (!sub || sub === 'list' || sub === 'tree') {
+    const data = await hubFetch('/agents/roles')
+    output(data, flags)
+    return
+  }
+  if (sub === 'get') {
+    const key = args[1]
+    if (!key) exitWithError('USAGE', 'Usage: con agent role get <key>', flags)
+    const { roles } = await hubFetch<{ roles: RoleData[] }>('/agents/roles')
+    const role = roles.find((r) => r.key === key)
+    if (!role) exitWithError('NOT_FOUND', `No such role: ${key}`, flags)
+    output({ ...role, file: `~/.config/console/agents/${key}.md` }, flags)
+    return
+  }
+  if (sub === 'manager') {
+    const key = args[1]
+    const mgr = args[2]
+    if (!key || !mgr) exitWithError('USAGE', 'Usage: con agent role manager <key> <manager-key|--root>', flags)
+    const manager = (mgr === '--root' || mgr === 'root') ? null : mgr
+    const data = await hubFetch('/agents/roles', { method: 'POST', body: { agentKey: key, manager } })
+    output(data, flags)
+    return
+  }
+  if (sub === 'delete') {
+    const key = args[1]
+    if (!key) exitWithError('USAGE', 'Usage: con agent role delete <key>', flags)
+    const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
+    await sendAndReceive({ type: 'delete_role', agentKey: key }, NO_RESPONSE)
+    output({ deleted: key }, flags)
+    return
+  }
+  exitWithError('USAGE', `Unknown: con agent role ${sub}. Usage: con agent role [list | get <key> | manager <key> <mgr|--root> | delete <key>]`, flags)
+}
+
+/** `con agent revive <key>` — spawn a fresh session for a parked role (charter injected). */
+async function agentRevive(args: string[], flags: GlobalFlags): Promise<void> {
+  const key = args[0]
+  if (!key) exitWithError('USAGE', 'Usage: con agent revive <key>', flags)
+  const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
+  await sendAndReceive({ type: 'revive_agent', agentKey: key }, NO_RESPONSE)
+  output({ revived: key }, flags)
 }
 
 async function agentInterrupt(args: string[], flags: GlobalFlags): Promise<void> {

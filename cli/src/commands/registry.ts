@@ -274,6 +274,21 @@ export const COMMANDS: CommandDef[] = [
       'con agent model',
       'con agent model set claude-opus-4-8',
     ] },
+  { name: 'agent role', description: 'Inspect/maintain durable org-chart roles. Each agent is a role backed by ~/.config/console/agents/<key>.md (title/manager/goals frontmatter + charter/Memory body). Charter, goals and memory are AGENT-owned — edit the .md directly; the CLI only reads them and writes the `manager` reporting edge.', safety: 'write',
+    args: [
+      { name: 'subcommand', required: false, description: '`list`|`tree` (default), `get <key>`, `manager <key> <mgr|--root>`, `delete <key>`' },
+      { name: 'key', required: false, description: 'Role key (filename without .md)' },
+      { name: 'manager', required: false, description: 'Manager role key, or --root to detach' },
+    ],
+    examples: [
+      'con agent role',
+      'con agent role get feeds-tab',
+      'con agent role manager feeds-tab al',
+      'con agent role manager feeds-tab --root',
+    ] },
+  { name: 'agent revive', description: 'Spawn a fresh session for a parked role (one with no live session). Its charter + memory are injected from its role file.', safety: 'write',
+    args: [{ name: 'key', required: true, description: 'Role key to revive' }],
+    examples: ['con agent revive feeds-tab'] },
 
   // search
   { name: 'search', description: 'Cross-service search', safety: 'read',

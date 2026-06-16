@@ -16,6 +16,8 @@ export interface ManifestEntry {
   name?: string
   /** claudeSessionId of the parent session (forks) — restores sidebar nesting. */
   parentClaudeSessionId?: string
+  /** Durable org-chart role key (agents/registry.ts) this session embodies. */
+  agentKey?: string
   /** True if the session was actively running (mid-turn) when the manifest was last saved. */
   wasRunning?: boolean
   /** True if the USER explicitly ended this session (kill/delete). Restore
@@ -52,6 +54,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       prompt: session.initialPrompt,
       name: session.name,
       ...(session.parentClaudeSessionId ? { parentClaudeSessionId: session.parentClaudeSessionId } : {}),
+      ...(session.agentKey ? { agentKey: session.agentKey } : {}),
       wasRunning: session.status === 'running',
       ...(session.endedByUser ? { ended: true } : {}),
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),

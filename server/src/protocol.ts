@@ -5,12 +5,14 @@
 // are JSON-encoded instances of these types.
 // ============================================================================
 
+import type { AgentRole, OrgNode } from './agents/registry.js'
+
 // --------------------------------------------------------------------------
 // Browser → Hub
 // --------------------------------------------------------------------------
 
 export type ClientMessage =
-  | { type: 'create_session'; prompt: string; images?: Array<{ media_type: string; data: string }>; cwd?: string; name?: string }
+  | { type: 'create_session'; prompt: string; images?: Array<{ media_type: string; data: string }>; cwd?: string; name?: string; asAgent?: boolean }
   | { type: 'send_message'; sessionId: string; content: string; images?: Array<{ media_type: string; data: string }> }
   | { type: 'approve_tool'; sessionId: string; requestId: string; modifiedInput?: Record<string, unknown> }
   | { type: 'deny_tool'; sessionId: string; requestId: string; reason?: string }
@@ -25,7 +27,7 @@ export type ClientMessage =
   | { type: 'get_session_history'; sessionId: string }
   | { type: 'rename_session'; sessionId: string; name: string }
   | { type: 'generate_title'; sessionId: string }
-  | { type: 'fork_session'; sessionId: string; cwd?: string }
+  | { type: 'fork_session'; sessionId: string; cwd?: string; seedRole?: boolean }
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
   | { type: 'set_collapsed_groups'; collapsed: string[] }
@@ -34,6 +36,11 @@ export type ClientMessage =
   | { type: 'clear_attention'; sessionId: string }
   | { type: 'get_model' }
   | { type: 'set_model'; model: string }
+  | { type: 'list_agents' }
+  | { type: 'set_manager'; agentKey: string; manager: string | null }
+  | { type: 'get_agent_role'; agentKey: string }
+  | { type: 'revive_agent'; agentKey: string }
+  | { type: 'delete_role'; agentKey: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -75,6 +82,10 @@ export type HubMessage =
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
   | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; autoFellBack?: boolean; failedModel?: string }
+  /** Org-chart roles + derived manager tree. Pushed on connect and on every
+   *  registry change (an agent editing its file, a reparent, create/delete). */
+  | { type: 'agents_list'; roles: AgentRole[]; tree: OrgNode[] }
+  | { type: 'agent_role'; role: AgentRole }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */
@@ -135,6 +146,9 @@ export interface SessionInfo {
   /** claudeSessionId of the parent session if this is a fork — nests forks
    *  under their parent in the sidebar. */
   parentClaudeSessionId?: string
+  /** Durable org-chart role key (agents/registry.ts) this session embodies, if
+   *  any. The client joins to the role tree (agents_list) to find its manager. */
+  agentKey?: string
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string
