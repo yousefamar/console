@@ -791,6 +791,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({
       type: 'fork_session',
       sessionId,
+      seed: true, // UI fork → inject a branch-point marker so it knows its own work
       ...(session.cwd ? { cwd: session.cwd } : {}),
     })
     set({

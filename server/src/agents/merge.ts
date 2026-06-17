@@ -12,6 +12,21 @@
 // into the parent, kill it) lives in routes/agents.ts beside the session map.
 // ============================================================================
 
+/** Injected into a UI fork once it spawns, so it knows where its own branch
+ *  begins (vs the inherited history shared with its parent). Makes a later
+ *  merge summary crisp — the fork can scope "this branch" to post-seed work. */
+export function buildForkSeed(parentName: string): string {
+  return [
+    `[FORK — branched from ${parentName}]`,
+    '',
+    'You are a fork: an independent copy that shares all the conversation history',
+    'above, up to this point. Everything ABOVE this line is inherited context',
+    '(shared with your parent, already done); anything from HERE on is your own',
+    "branch's work — that's what you'll hand back if you're later merged into your",
+    'parent. Acknowledge in one short line and await instructions.',
+  ].join('\n')
+}
+
 /** Injected into the fork to elicit its hand-back summary (its final message). */
 export function buildMergeRequest(parentTitle: string): string {
   return [

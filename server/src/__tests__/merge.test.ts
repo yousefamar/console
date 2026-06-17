@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { buildMergeRequest, buildMergeEnvelope } from '../agents/merge.js'
+import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
+
+describe('buildForkSeed', () => {
+  it('names the parent and marks the inherited/own-branch boundary', () => {
+    const s = buildForkSeed('Gravel general')
+    expect(s).toContain('Gravel general')
+    expect(s).toContain('FORK')
+    expect(s).toMatch(/inherited/i)
+    expect(s).toMatch(/branch/i)
+  })
+})
 
 describe('buildMergeRequest', () => {
   it('names the parent and asks for a concise final summary', () => {

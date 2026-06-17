@@ -11,7 +11,7 @@ import type { AgentRegistry } from '../agents/registry.js'
 import type { TaskStore, AgentTask } from '../agents/tasks.js'
 import { checkDelegation, buildChain, chainLabel } from '../agents/delegation.js'
 import { buildDelegationProtocol, buildDelegationEnvelope, buildReportEnvelope, buildOrgPosition, renderOrgRoster, shortDescription } from '../agents/delegation-protocol.js'
-import { buildMergeRequest, buildMergeEnvelope } from '../agents/merge.js'
+import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -938,6 +938,24 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       if (history.length > 0) {
         const historyMsg = { type: 'session_history' as const, sessionId: session.id, messages: history }
         broadcast(clients, historyMsg)
+      }
+      // UI forks (seed:true) get a branch-point marker injected once the fork has
+      // initialised — so the fork KNOWS where its own work begins (the inherited
+      // history above vs its branch below). `con agent chat` forks pass no seed
+      // (they inject their own richer side-conversation seed). Post-init timing
+      // mirrors ensureAlSession so the message isn't lost before the subprocess
+      // is ready.
+      if (msg.seed) {
+        const seed = buildForkSeed(sourceSession.name ?? 'your parent')
+        const onInit = (m: HubMessage) => {
+          if (m.type !== 'session_init') return
+          session.off('hub_message', onInit)
+          const pm = { type: 'user_prompt' as const, sessionId: session.id, content: seed }
+          broadcast(clients, pm)
+          session.logMessage(pm)
+          session.sendMessage(seed)
+        }
+        session.on('hub_message', onInit)
       }
       log(`Session forked: ${session.id} from ${msg.sessionId} (claude: ${sourceSession.claudeSessionId})`)
       break
