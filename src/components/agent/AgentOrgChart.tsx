@@ -37,6 +37,7 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
   const renameRole = useAgentStore((s) => s.renameRole)
   const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
   const delegate = useAgentStore((s) => s.delegate)
+  const mergeSession = useAgentStore((s) => s.mergeSession)
   const tasks = useAgentStore((s) => s.tasks)
   const cronTasks = useCronStore((s) => s.tasksBySession)
 
@@ -491,6 +492,8 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       if (live) {
         items.push({ label: 'Open', onClick: () => onPick(role.key) })
         items.push({ label: 'Fork', onClick: () => forkSession(live.id) })
+        // Forks (have a parent) can be folded back into it instead of discarded.
+        if (live.parentClaudeSessionId) items.push({ label: 'Merge into parent', onClick: () => mergeSession(live.id) })
         items.push({ label: 'Reload history', onClick: () => reloadSessionHistory(live.id) })
         items.push({ label: 'Reload role', onClick: () => reloadSession(live.id) })
       } else {
@@ -528,7 +531,7 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       } })
     }
     return items
-  }, [menu, agentRoles, sessions, onPick, openRoleInfo, delegate, forkSession, reloadSessionHistory, reloadSession, reviveAgent, renameRole, createFolder, setAgentManager, killSession, deleteRole])
+  }, [menu, agentRoles, sessions, onPick, openRoleInfo, delegate, mergeSession, forkSession, reloadSessionHistory, reloadSession, reviveAgent, renameRole, createFolder, setAgentManager, killSession, deleteRole])
 
   if (layout.nodes.length === 0) {
     return <div className="flex h-full items-center justify-center text-xs text-text-tertiary">No agent roles yet</div>
