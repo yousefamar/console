@@ -91,6 +91,8 @@ export interface AgentRole {
   created: string | null
   charter: string
   hasFile: boolean
+  /** Organization-only folder node (no session, not spawnable). */
+  folder?: boolean
 }
 
 export interface OrgNode {
@@ -99,6 +101,31 @@ export interface OrgNode {
   danglingManager?: string
   cycleBroken?: boolean
 }
+
+/** A delegation task (mirrors server/src/agents/tasks.ts). */
+export interface AgentTask {
+  id: string
+  title: string
+  brief: string
+  fromKey: string
+  toKey: string
+  origin: 'human' | 'agent'
+  parentTaskId: string | null
+  chain: string[]
+  status: 'pending' | 'in_progress' | 'blocked' | 'done' | 'failed' | 'cancelled'
+  result: string | null
+  workerSessionId?: string
+  ephemeral?: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+/** A reversible org-chart edit. Covers the two key-stable, easily-inverted
+ *  mutations (reparent + rename); folder create/delete are not undoable (the key
+ *  is hub-minted async). */
+export type OrgHistoryEntry =
+  | { kind: 'manager'; agentKey: string; prev: string | null; next: string | null }
+  | { kind: 'rename'; agentKey: string; prev: string; next: string }
 
 export interface PastSession {
   sessionId: string
@@ -128,8 +155,26 @@ interface AgentState {
   // Org-chart roles (agents/registry.ts). Pushed by the hub on connect + change.
   agentRoles: AgentRole[]
   agentTree: OrgNode[]
+  /** Delegation tasks (pushed by the hub on connect + on every change). */
+  tasks: AgentTask[]
+  /** A pending hand-off offer (Al emitted `@handoff(<key>)`); drives a "Talk to
+   *  X" affordance. Cleared once acted on or dismissed. */
+  pendingHandoff: { fromSessionId: string; targetAgentKey: string } | null
+  /** When the user followed a hand-off, the session to return to ("Back to Al"). */
+  handoffReturnTo: string | null
   /** Agents-pane view: the session list, or the visual org chart. Device-local. */
   agentViewMode: 'list' | 'orgchart'
+  /** "Needs me" filter — shared by the list and the org chart. When on, the list
+   *  shows only alerted sessions and the chart prunes to the alerted subtree.
+   *  Device-local (localStorage). */
+  filterAlerted: boolean
+  /** Role whose info dialog is open (null = closed). Opened via a "Show info"
+   *  context-menu action in either view; rendered centered/modal. */
+  roleInfoKey: string | null
+  /** Undo/redo of org-chart edits (reparent + rename). Reparenting via drag was
+   *  easy to trigger accidentally, so these make every edge change reversible. */
+  orgPast: OrgHistoryEntry[]
+  orgFuture: OrgHistoryEntry[]
 
   agentModel: string
   agentModelChain: string[]
@@ -212,15 +257,38 @@ interface AgentState {
   /** Switch the model all hub agents spawn with (restarts live sessions). */
   setAgentModel: (model: string) => void
   dismissModelFallbackNotice: () => void
-  /** Reparent a role in the org chart (null = make it a root). */
-  setAgentManager: (agentKey: string, manager: string | null) => void
+  /** Reparent a role in the org chart (null = make it a root). `record` (default
+   *  true) pushes an undo entry; undo/redo pass false. */
+  setAgentManager: (agentKey: string, manager: string | null, record?: boolean) => void
+  /** Toggle the "needs me" filter (shared list + chart). */
+  toggleFilterAlerted: () => void
+  /** Open / close the role info dialog. */
+  openRoleInfo: (agentKey: string) => void
+  closeRoleInfo: () => void
+  /** Undo / redo the last org-chart edge/rename change. */
+  undoOrg: () => void
+  redoOrg: () => void
   /** Spawn a fresh session for a parked role. */
   reviveAgent: (agentKey: string) => void
   /** Reload a live session (role-backed → re-derives charter via fresh spawn). */
   reloadSession: (sessionId: string) => void
   /** Delete a role (kills its live session + removes the file). */
   deleteRole: (agentKey: string) => void
+  /** Create an organization-only folder node (optionally under a manager). */
+  createFolder: (title: string, manager?: string | null) => void
+  /** Rename a role/folder. `record` (default true) pushes an undo entry. */
+  renameRole: (agentKey: string, title: string, record?: boolean) => void
   setAgentViewMode: (mode: 'list' | 'orgchart') => void
+  /** Delegate a task to a role (fromKey defaults to 'al'). */
+  delegate: (toKey: string, brief: string, fromKey?: string) => void
+  /** Cancel a delegation task. */
+  cancelTask: (taskId: string) => void
+  /** Follow a hand-off: open the target agent's session, remember where to return. */
+  acceptHandoff: (targetAgentKey: string) => void
+  /** Dismiss the pending hand-off offer without following it. */
+  dismissHandoff: () => void
+  /** Return to Al after a hand-off (clears the return marker). */
+  returnFromHandoff: () => void
   toggleThinkingCollapsed: (messageId: string) => void
   markSessionRead: (id?: string) => void
   markSessionUnread: (id?: string) => void
@@ -233,6 +301,8 @@ interface AgentState {
   reorderSession: (fromId: string, toId: string) => void
   toggleGroupCollapsed: (cwd: string) => void
   forkSession: (sessionId: string) => void
+  /** Merge a fork back into its parent (summary folded in), then close the fork. */
+  mergeSession: (sessionId: string) => void
   renameSession: (sessionId: string, name: string) => void
   generateTitle: (sessionId: string) => void
   resumeSession: (claudeSessionId: string, prompt: string, cwd?: string) => void
@@ -269,7 +339,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   agentRoles: [],
   agentTree: [],
+  tasks: [],
+  pendingHandoff: null,
+  handoffReturnTo: null,
   agentViewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:viewMode') === 'orgchart') ? 'orgchart' : 'list',
+  filterAlerted: typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:filterAlerted') === '1',
+  roleInfoKey: null,
+  orgPast: [],
+  orgFuture: [],
 
   agentModel: '',
   agentModelChain: [],
@@ -492,8 +569,44 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),
 
-  setAgentManager: (agentKey, manager) => {
+  setAgentManager: (agentKey, manager, record = true) => {
+    const prev = get().agentRoles.find((r) => r.key === agentKey)?.manager ?? null
+    if (prev === manager) return // no-op edge (e.g. dropped on current parent)
+    // Optimistic: patch the role locally so the chart reparents instantly; the
+    // hub's agents_list broadcast reconciles (and reverts if it rejected, e.g.
+    // a self/cycle edge).
+    set((s) => ({ agentRoles: s.agentRoles.map((r) => (r.key === agentKey ? { ...r, manager } : r)) }))
     sendWs({ type: 'set_manager', agentKey, manager })
+    if (record) set((s) => ({ orgPast: [...s.orgPast, { kind: 'manager', agentKey, prev, next: manager }], orgFuture: [] }))
+  },
+
+  toggleFilterAlerted: () => {
+    set((s) => {
+      const next = !s.filterAlerted
+      if (typeof localStorage !== 'undefined') localStorage.setItem('console:agents:filterAlerted', next ? '1' : '0')
+      return { filterAlerted: next }
+    })
+  },
+
+  openRoleInfo: (agentKey) => set({ roleInfoKey: agentKey }),
+  closeRoleInfo: () => set({ roleInfoKey: null }),
+
+  undoOrg: () => {
+    const past = get().orgPast
+    const entry = past[past.length - 1]
+    if (!entry) return
+    set((s) => ({ orgPast: s.orgPast.slice(0, -1), orgFuture: [...s.orgFuture, entry] }))
+    if (entry.kind === 'manager') get().setAgentManager(entry.agentKey, entry.prev, false)
+    else get().renameRole(entry.agentKey, entry.prev, false)
+  },
+
+  redoOrg: () => {
+    const future = get().orgFuture
+    const entry = future[future.length - 1]
+    if (!entry) return
+    set((s) => ({ orgFuture: s.orgFuture.slice(0, -1), orgPast: [...s.orgPast, entry] }))
+    if (entry.kind === 'manager') get().setAgentManager(entry.agentKey, entry.next, false)
+    else get().renameRole(entry.agentKey, entry.next, false)
   },
 
   reviveAgent: (agentKey) => {
@@ -508,9 +621,48 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({ type: 'delete_role', agentKey })
   },
 
+  createFolder: (title, manager = null) => {
+    sendWs({ type: 'create_folder', title, manager })
+  },
+
+  renameRole: (agentKey, title, record = true) => {
+    const prev = get().agentRoles.find((r) => r.key === agentKey)?.title ?? ''
+    if (prev === title) return
+    // Optimistic title update; the agents_list broadcast reconciles.
+    set((s) => ({ agentRoles: s.agentRoles.map((r) => (r.key === agentKey ? { ...r, title } : r)) }))
+    sendWs({ type: 'rename_role', agentKey, title })
+    if (record) set((s) => ({ orgPast: [...s.orgPast, { kind: 'rename', agentKey, prev, next: title }], orgFuture: [] }))
+  },
+
   setAgentViewMode: (mode) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('console:agents:viewMode', mode)
     set({ agentViewMode: mode })
+  },
+
+  delegate: (toKey, brief, fromKey = 'al') => {
+    sendWs({ type: 'delegate', toKey, brief, fromKey })
+  },
+
+  cancelTask: (taskId) => {
+    set((s) => ({ tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, status: 'cancelled' } : t)) }))
+    sendWs({ type: 'cancel_task', taskId })
+  },
+
+  acceptHandoff: (targetAgentKey) => {
+    const sessions = get().sessions
+    const al = sessions.find((s) => s.id === 'al' || s.name === 'Al')
+    const live = sessions.find((s) => s.agentKey === targetAgentKey && s.status !== 'ended')
+    if (live) get().selectSession(live.id)
+    else get().reviveAgent(targetAgentKey) // spawns; sessions_list update lets the user land in it
+    set({ pendingHandoff: null, handoffReturnTo: al?.id ?? null })
+  },
+
+  dismissHandoff: () => set({ pendingHandoff: null }),
+
+  returnFromHandoff: () => {
+    const to = get().handoffReturnTo
+    set({ handoffReturnTo: null })
+    if (to) get().selectSession(to)
   },
 
   toggleThinkingCollapsed: (messageId) => {
@@ -646,6 +798,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       pendingApproval: null,
       creatingNewSession: false,
     })
+  },
+
+  mergeSession: (sessionId) => {
+    sendWs({ type: 'merge_session', sessionId })
   },
 
   renameSession: (sessionId, name) => {
@@ -833,6 +989,33 @@ function handleHubMessage(msg: Record<string, unknown>) {
         agentRoles: (msg.roles as AgentRole[]) ?? [],
         agentTree: (msg.tree as OrgNode[]) ?? [],
       })
+      break
+    }
+
+    case 'tasks': {
+      useAgentStore.setState({ tasks: (msg.tasks as AgentTask[]) ?? [] })
+      break
+    }
+
+    case 'session_handoff': {
+      useAgentStore.setState({
+        pendingHandoff: { fromSessionId: msg.sessionId as string, targetAgentKey: msg.targetAgentKey as string },
+      })
+      break
+    }
+
+    case 'session_merged': {
+      // The fork is gone (sessions_list update handles removal); surface a toast
+      // so the user knows the digest landed in the parent.
+      const parentId = msg.parentId as string
+      const parent = useAgentStore.getState().sessions.find((s) => s.id === parentId)
+      if (!suppressNotifications) {
+        import('@/notifications').then(({ notify }) => notify({
+          title: 'Fork merged',
+          body: `Summary folded into ${parent?.name || 'its parent'}.`,
+          data: { pane: 'agents', itemId: parentId },
+        })).catch(() => {})
+      }
       break
     }
 

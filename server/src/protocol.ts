@@ -6,6 +6,7 @@
 // ============================================================================
 
 import type { AgentRole, OrgNode } from './agents/registry.js'
+import type { AgentTask } from './agents/tasks.js'
 
 // --------------------------------------------------------------------------
 // Browser → Hub
@@ -41,6 +42,19 @@ export type ClientMessage =
   | { type: 'get_agent_role'; agentKey: string }
   | { type: 'revive_agent'; agentKey: string }
   | { type: 'delete_role'; agentKey: string }
+  | { type: 'create_folder'; title: string; manager?: string | null }
+  | { type: 'rename_role'; agentKey: string; title: string }
+  // --- Delegation (org-aware task routing) ---
+  /** Delegate work to a role. `toKey` OR a `newRole` spec (mints a role first).
+   *  `fromKey` defaults to 'al' (top of a human chain) when omitted. */
+  | { type: 'delegate'; toKey?: string; newRole?: { title: string; cwd?: string; manager?: string | null }; title?: string; brief: string; fromKey?: string; parentTaskId?: string | null; ephemeral?: boolean }
+  /** Report a task result back to its delegator. */
+  | { type: 'report'; taskId: string; result: string; status?: 'done' | 'blocked' | 'failed' }
+  | { type: 'cancel_task'; taskId: string }
+  | { type: 'tasks_list' }
+  /** Merge a fork back into its parent: the fork summarises, the digest is
+   *  injected into the parent, then the fork is killed. */
+  | { type: 'merge_session'; sessionId: string }
 
 // --------------------------------------------------------------------------
 // Hub → Browser
@@ -86,6 +100,13 @@ export type HubMessage =
    *  registry change (an agent editing its file, a reparent, create/delete). */
   | { type: 'agents_list'; roles: AgentRole[]; tree: OrgNode[] }
   | { type: 'agent_role'; role: AgentRole }
+  /** Delegation tasks. Pushed on connect and on every task change. */
+  | { type: 'tasks'; tasks: AgentTask[] }
+  /** An agent emitted `@handoff(<agentKey>)` — Al wants to put Yousef in direct
+   *  contact with that agent. The SPA renders an opt-in "Talk to X" affordance. */
+  | { type: 'session_handoff'; sessionId: string; targetAgentKey: string }
+  /** A fork was merged into its parent (summary folded in, fork closed). */
+  | { type: 'session_merged'; forkId: string; parentId: string; summary: string }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */

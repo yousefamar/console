@@ -16,9 +16,13 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'tail': return agentTail(args, flags)
     case 'wait': return agentWait(args, flags)
     case 'chat': return agentChat(args, flags)
+    case 'merge': return agentMerge(args, flags)
     case 'model': return agentModel(args, flags)
     case 'role': return agentRole(args, flags)
     case 'revive': return agentRevive(args, flags)
+    case 'delegate': return agentDelegate(args, flags)
+    case 'report': return agentReport(args, flags)
+    case 'tasks': return agentTasks(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -78,6 +82,15 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
   }
   const timeoutMs = opts.timeout ? parseDurationMs(opts.timeout) : 300_000
   const { streamWithSends, injectAndCapture } = await import('../ws-client.js')
+
+  // --- Merge a conversation (fork) back into its parent, then close it ---
+  if (opts.merge === 'true') {
+    const convId = opts.id
+    if (!convId) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> --merge', flags); return }
+    const target = await resolveByClaudeId(convId)
+    await runMerge(target.id, flags)
+    return
+  }
 
   // --- End an existing conversation ---
   if (opts.end === 'true') {
@@ -367,6 +380,31 @@ async function agentRole(args: string[], flags: GlobalFlags): Promise<void> {
   exitWithError('USAGE', `Unknown: con agent role ${sub}. Usage: con agent role [list | get <key> | manager <key> <mgr|--root> | delete <key>]`, flags)
 }
 
+/** `con agent merge <session-id|conv-id|name>` — fold a fork's findings back into
+ *  its parent (the fork self-summarises, the digest is injected into the parent),
+ *  then close the fork. The reversible alternative to just killing a fork. */
+async function agentMerge(args: string[], flags: GlobalFlags): Promise<void> {
+  const idArg = args[0]
+  if (!idArg) { exitWithError('USAGE', 'Usage: con agent merge <session-id|conv-id|name>', flags); return }
+  let hubId = idArg
+  if (!/^session_/.test(hubId)) {
+    try { hubId = (await resolveByClaudeId(idArg)).id } catch { try { hubId = (await resolveByName(idArg)).id } catch { /* assume it's already a hub id */ } }
+  }
+  await runMerge(hubId, flags)
+}
+
+/** Shared merge runner — waits for the fork's summary turn (up to ~90s). */
+async function runMerge(hubId: string, flags: GlobalFlags): Promise<void> {
+  const { sendAndReceive } = await import('../ws-client.js')
+  const res = await sendAndReceive(
+    { type: 'merge_session', sessionId: hubId },
+    (m: any) => (m.type === 'session_merged' && m.forkId === hubId) || m.type === 'hub_error',
+    95_000,
+  )
+  if (res.type === 'hub_error') { exitWithError('ERROR', res.message, flags); return }
+  output({ merged: res.forkId, parentId: res.parentId, summary: res.summary }, flags)
+}
+
 /** `con agent revive <key>` — spawn a fresh session for a parked role (charter injected). */
 async function agentRevive(args: string[], flags: GlobalFlags): Promise<void> {
   const key = args[0]
@@ -374,6 +412,73 @@ async function agentRevive(args: string[], flags: GlobalFlags): Promise<void> {
   const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
   await sendAndReceive({ type: 'revive_agent', agentKey: key }, NO_RESPONSE)
   output({ revived: key }, flags)
+}
+
+// --------------------------------------------------------------------------
+// Delegation — `con agent delegate / report / tasks`. The org-aware comms layer:
+// hand work down the tree, report results back up. Backed by /agents/tasks.
+// --------------------------------------------------------------------------
+
+interface TaskData { id: string; title: string; brief: string; fromKey: string; toKey: string; status: string; parentTaskId: string | null; chain: string[]; result: string | null; ephemeral?: boolean; createdAt: number; updatedAt: number }
+
+/** Positionals only — skips `--flag value` pairs (parseFlags handles the flags). */
+function positionalArgs(args: string[]): string[] {
+  const pos: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('--')) {
+      if (a.indexOf('=') === -1 && i + 1 < args.length && !args[i + 1]!.startsWith('--')) i++ // skip its value
+    } else pos.push(a)
+  }
+  return pos
+}
+
+/** con agent delegate <toKey> "<brief>" [--title T] [--from <key>] [--parent <taskId>] [--ephemeral]
+ *  con agent delegate "<brief>" --new "<title>" [--cwd <dir>] [--manager <key>]  (mint a new role) */
+async function agentDelegate(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const pos = positionalArgs(args)
+  const toKey = opts.new ? undefined : pos[0]
+  const brief = opts.new ? pos[0] : pos[1]
+  if (!brief) exitWithError('USAGE', 'Usage: con agent delegate <toKey> "<brief>"  (or: con agent delegate "<brief>" --new "<title>" [--cwd <dir>] [--manager <key>])', flags)
+  const body: Record<string, unknown> = { fromKey: opts.from || 'al', brief, title: opts.title }
+  if (opts.parent) body.parentTaskId = opts.parent
+  if (opts.ephemeral === 'true') body.ephemeral = true
+  if (opts.new) body.newRole = { title: opts.new, cwd: opts.cwd, manager: opts.manager ?? undefined }
+  else body.toKey = toKey
+  const { task } = await hubFetch<{ task: TaskData }>('/agents/tasks', { method: 'POST', body })
+  output(task, flags)
+}
+
+/** con agent report <taskId> "<result>" [--status done|blocked|failed] */
+async function agentReport(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const pos = positionalArgs(args)
+  const taskId = pos[0]
+  const result = pos[1] ?? ''
+  if (!taskId) exitWithError('USAGE', 'Usage: con agent report <taskId> "<result>" [--status done|blocked|failed]', flags)
+  const status = opts.status || 'done'
+  await hubFetch(`/agents/tasks/${encodeURIComponent(taskId!)}/report`, { method: 'POST', body: { result, status } })
+  output({ reported: taskId, status }, flags)
+}
+
+/** con agent tasks [--open] [--assigned <key>] [--from <key>] [--children <taskId>]
+ *  con agent tasks cancel <taskId> */
+async function agentTasks(args: string[], flags: GlobalFlags): Promise<void> {
+  if (args[0] === 'cancel') {
+    const id = args[1]
+    if (!id) exitWithError('USAGE', 'Usage: con agent tasks cancel <taskId>', flags)
+    await hubFetch(`/agents/tasks/${encodeURIComponent(id!)}`, { method: 'DELETE' })
+    output({ cancelled: id }, flags)
+    return
+  }
+  const opts = parseFlags(args)
+  let { tasks } = await hubFetch<{ tasks: TaskData[] }>('/agents/tasks')
+  if (opts.open === 'true') tasks = tasks.filter((t) => ['pending', 'in_progress', 'blocked'].includes(t.status))
+  if (opts.assigned) tasks = tasks.filter((t) => t.toKey === opts.assigned)
+  if (opts.from) tasks = tasks.filter((t) => t.fromKey === opts.from)
+  if (opts.children) tasks = tasks.filter((t) => t.parentTaskId === opts.children)
+  output({ tasks }, flags)
 }
 
 async function agentInterrupt(args: string[], flags: GlobalFlags): Promise<void> {

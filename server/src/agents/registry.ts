@@ -42,6 +42,9 @@ export interface AgentRole {
   /** The FULL markdown body verbatim (charter + ## Memory) — injected on fresh spawn. */
   charter: string
   hasFile: boolean
+  /** True for an organization-only "folder" node: no session, no charter
+   *  injection, not spawnable/revivable — just an org-chart container. */
+  folder: boolean
 }
 
 export interface OrgNode {
@@ -83,6 +86,7 @@ export function parseRole(key: string, content: string): AgentRole {
     created: asStr(fm.created),
     charter: body.trim(),
     hasFile: true,
+    folder: fm.folder === true || fm.folder === 'true',
   }
 }
 
@@ -180,10 +184,12 @@ export class AgentRegistry {
   list(): AgentRole[] { return [...this.roles.values()] }
   tree(): OrgNode[] { return buildOrgTree(this.list()) }
 
-  /** Body to inject as the system prompt on a fresh spawn (null if no role/empty). */
+  /** Body to inject as the system prompt on a fresh spawn (null if no role/empty
+   *  or a folder — folders never spawn). */
   resolveCharter(key: string): string | null {
-    const charter = this.roles.get(key)?.charter
-    return charter && charter.trim() ? charter : null
+    const role = this.roles.get(key)
+    if (!role || role.folder) return null
+    return role.charter && role.charter.trim() ? role.charter : null
   }
 
   /** Mint a unique, immutable key from a display title (collision-suffixed). */
@@ -195,8 +201,8 @@ export class AgentRegistry {
     return `${base}-${n}`
   }
 
-  /** Create a role file. No-op if one already exists (idempotent for backfill). */
-  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string }): AgentRole {
+  /** Create a role (or folder) file. No-op if one already exists (idempotent). */
+  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string; folder?: boolean }): AgentRole {
     const existing = this.roles.get(key)
     if (existing || existsSync(this.filePath(key))) {
       this.reloadOne(key)
@@ -204,18 +210,39 @@ export class AgentRegistry {
     }
     const fm: string[] = [`title: ${init.title}`]
     if (init.manager) fm.push(`manager: ${init.manager}`)
+    if (init.folder) fm.push('folder: true')
     if (init.goals && init.goals.length) {
       fm.push('goals:')
       for (const g of init.goals) fm.push(`  - ${g}`)
     }
     if (init.cwd) fm.push(`cwd: ${init.cwd}`)
     fm.push(`created: ${init.created ?? new Date().toISOString()}`)
-    const charter = (init.charter ?? '').trim()
-    const content = `---\n${fm.join('\n')}\n---\n\n${charter}\n\n## Memory\n_(Durable notes the agent maintains across sessions.)_\n`
+    // Folders are org-only — no charter/Memory body.
+    const content = init.folder
+      ? `---\n${fm.join('\n')}\n---\n`
+      : `---\n${fm.join('\n')}\n---\n\n${(init.charter ?? '').trim()}\n\n## Memory\n_(Durable notes the agent maintains across sessions.)_\n`
     this.atomicWrite(key, content)
     const role = parseRole(key, content)
     this.roles.set(key, role)
     return role
+  }
+
+  /** Rename a node (surgical `title:` stamp; body untouched). Mainly for folders
+   *  — agents own their own title, but a single-line stamp is safe either way. */
+  setTitle(key: string, title: string): AgentRole | undefined {
+    const path = this.filePath(key)
+    if (!existsSync(path)) return undefined
+    const content = readFileSync(path, 'utf-8')
+    const m = content.match(/^---\n([\s\S]*?)\n---(\n[\s\S]*)?$/)
+    if (!m) return undefined
+    const lines = m[1]!.split('\n')
+    const rest = m[2] ?? ''
+    const idx = lines.findIndex((l) => /^title:\s*/.test(l))
+    if (idx >= 0) lines[idx] = `title: ${title}`
+    else lines.unshift(`title: ${title}`)
+    this.atomicWrite(key, `---\n${lines.join('\n')}\n---${rest}`)
+    this.reloadOne(key)
+    return this.roles.get(key)
   }
 
   /**

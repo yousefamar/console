@@ -58,7 +58,9 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
 // --------------------------------------------------------------------------
 
 function TextBlock({ content }: { content: string }) {
-  const rendered = useMemo(() => renderMarkdownLite(content), [content])
+  // Hide the `@handoff(<key>)` control sentinel from display — it drives the
+  // "Talk to X" banner (see store `session_handoff`), it's not message text.
+  const rendered = useMemo(() => renderMarkdownLite(content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').replace(/[ \t]{2,}/g, ' ').trimEnd()), [content])
   const [speaking, setSpeaking] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)

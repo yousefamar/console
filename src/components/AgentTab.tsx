@@ -1,13 +1,15 @@
 import { Fragment, memo, useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { useAgentStore } from '@/store/agent'
+import { useUiStore } from '@/store/ui'
 import { AgentSessionView } from './AgentSessionView'
 import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, Network, List, Plus, Terminal } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Network, List, Plus, Terminal, X } from 'lucide-react'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
+import { TasksPanel } from './agent/TasksPanel'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -36,7 +38,20 @@ export const AgentTab = memo(function AgentTab() {
   const dismissModelFallbackNotice = useAgentStore((s) => s.dismissModelFallbackNotice)
   const agentViewMode = useAgentStore((s) => s.agentViewMode)
   const setAgentViewMode = useAgentStore((s) => s.setAgentViewMode)
-  const [selectedRole, setSelectedRole] = useState<string | null>(null)
+  const filterAlerted = useAgentStore((s) => s.filterAlerted)
+  const toggleFilterAlerted = useAgentStore((s) => s.toggleFilterAlerted)
+  const roleInfoKey = useAgentStore((s) => s.roleInfoKey)
+  const closeRoleInfo = useAgentStore((s) => s.closeRoleInfo)
+  const undoOrg = useAgentStore((s) => s.undoOrg)
+  const redoOrg = useAgentStore((s) => s.redoOrg)
+  const openTaskCount = useAgentStore((s) => s.tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked').length)
+  const pendingHandoff = useAgentStore((s) => s.pendingHandoff)
+  const handoffReturnTo = useAgentStore((s) => s.handoffReturnTo)
+  const acceptHandoff = useAgentStore((s) => s.acceptHandoff)
+  const dismissHandoff = useAgentStore((s) => s.dismissHandoff)
+  const returnFromHandoff = useAgentStore((s) => s.returnFromHandoff)
+  const agentRoles = useAgentStore((s) => s.agentRoles)
+  const [showTasks, setShowTasks] = useState(false)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top.
@@ -47,14 +62,8 @@ export const AgentTab = memo(function AgentTab() {
 
   // "Needs me" filter — show only sessions that want attention or are in
   // flight: unread, @amar-flagged, blocked on a tool approval, or actively
-  // running (the orange status dot). View pref, device-local.
-  const [filterAlerted, setFilterAlerted] = useState(() => localStorage.getItem('console:agents:filterAlerted') === '1')
-  const toggleFilterAlerted = useCallback(() => {
-    setFilterAlerted((v) => {
-      localStorage.setItem('console:agents:filterAlerted', v ? '0' : '1')
-      return !v
-    })
-  }, [])
+  // running (the orange status dot). Shared with the org chart (store-backed,
+  // persisted) so toggling it in either view sticks.
   const pendingApprovals = useAgentStore((s) => s.pendingApprovalsBySession)
   const isAlerted = (s: SessionInfo) =>
     !!(s.hasUnread || s.needsAttention || pendingApprovals[s.id] || s.status === 'running')
@@ -92,6 +101,24 @@ export const AgentTab = memo(function AgentTab() {
     return () => clearInterval(id)
   }, [listSessions])
 
+  // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z = redo, for org-chart
+  // edge/rename edits. Only while the Agents pane is active and focus isn't in a
+  // text field (so the rename input / prompt box keep their native undo).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (useUiStore.getState().activePane !== 'agents') return
+      if (!(e.metaKey || e.ctrlKey)) return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
+      const k = e.key.toLowerCase()
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undoOrg() }
+      else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redoOrg() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undoOrg, redoOrg])
+
   const handleNewSession = useCallback(() => {
     selectSession(null)
     // Focus the prompt input
@@ -114,18 +141,102 @@ export const AgentTab = memo(function AgentTab() {
     </button>
   )
 
-  // Org-chart mode: full-pane visual tree + a profile panel for the picked role.
+  // Shared "needs me" filter toggle — used by both the list and org-chart headers.
+  const filterToggle = (
+    <button
+      onClick={toggleFilterAlerted}
+      className={clsx(
+        'transition-colors duration-fast',
+        filterAlerted ? 'text-blue-500 hover:text-blue-400' : 'text-text-tertiary hover:text-text-primary',
+      )}
+      title={filterAlerted ? 'Showing only unread / needs-attention — click to show all' : 'Show only unread / needs-attention'}
+    >
+      <ListFilter size={12} />
+    </button>
+  )
+
+  // Delegation tasks panel toggle (with an open-count dot).
+  const tasksToggle = (
+    <button
+      onClick={() => setShowTasks((v) => !v)}
+      className={clsx('relative transition-colors duration-fast', showTasks ? 'text-violet-400 hover:text-violet-300' : 'text-text-tertiary hover:text-text-primary')}
+      title="Delegation tasks"
+    >
+      <ClipboardList size={12} />
+      {openTaskCount > 0 && <span className="absolute -right-1.5 -top-1 rounded-full bg-violet-500 px-1 text-[8px] font-semibold leading-[1.3] text-white">{openTaskCount}</span>}
+    </button>
+  )
+
+  // Overlays shared by both views: the role info dialog, the tasks panel, the
+  // hand-off offer banner, and the Back-to-Al return control.
+  const overlays = (
+    <>
+      <AgentInfoDialog roleKey={roleInfoKey} onClose={closeRoleInfo} />
+      {showTasks && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={() => setShowTasks(false)}>
+          <div className="h-[70vh] w-full overflow-hidden rounded-t-xl border border-border shadow-xl sm:h-[80vh] sm:max-w-md sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
+            <TasksPanel onClose={() => setShowTasks(false)} />
+          </div>
+        </div>
+      )}
+      {pendingHandoff && (
+        <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
+          <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{agentRoles.find((r) => r.key === pendingHandoff.targetAgentKey)?.title ?? pendingHandoff.targetAgentKey}</span></span>
+          <button onClick={() => acceptHandoff(pendingHandoff.targetAgentKey)} className="rounded bg-violet-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-violet-500">Talk →</button>
+          <button onClick={dismissHandoff} className="text-text-tertiary hover:text-text-primary"><X size={13} /></button>
+        </div>
+      )}
+      {handoffReturnTo && !pendingHandoff && (
+        <button onClick={returnFromHandoff} className="fixed bottom-4 left-4 z-40 flex items-center gap-1 rounded-full border border-border bg-surface-2 px-3 py-1.5 text-[11px] text-text-secondary shadow-lg hover:text-text-primary">
+          <ArrowLeft size={12} /> Back to Al
+        </button>
+      )}
+    </>
+  )
+
+  // Org-chart mode: the chart replaces the session LIST (left), the chat panel
+  // stays on the right (mirrors the Notes circles-view + editor layout). Mobile
+  // shows one at a time. Left-click on an agent opens its session; on a folder
+  // opens its info dialog. The rich profile is now a modal (right-click → Show
+  // info), not a space-hogging bottom card.
   if (agentViewMode === 'orgchart') {
-    return (
-      <div className="flex flex-1 h-full min-w-0 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+    const handlePickRole = (roleKey: string) => {
+      const liveForRole = sessions.find((s) => s.agentKey === roleKey && s.status !== 'ended')
+      if (liveForRole) selectSession(liveForRole.id)
+      else useAgentStore.getState().openRoleInfo(roleKey) // folders / parked roles have no session → show info
+    }
+    const chartPanel = (
+      <div className="flex flex-1 min-h-0 flex-col">
+        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
           <span className="text-xs font-medium text-text-primary">Org chart</span>
-          {viewToggle}
+          <div className="flex items-center gap-2">
+            {tasksToggle}
+            {filterToggle}
+            {viewToggle}
+          </div>
         </div>
-        <div className="flex flex-1 min-h-0">
-          <div className="flex-1 min-w-0"><AgentOrgChart onPick={setSelectedRole} /></div>
-          {selectedRole && <AgentProfilePanel agentKey={selectedRole} onClose={() => setSelectedRole(null)} />}
+        <div className="relative flex-1 min-h-0">
+          <AgentOrgChart onPick={handlePickRole} />
         </div>
+      </div>
+    )
+    if (isMobile) {
+      return (
+        <div className="flex flex-1 h-full min-w-0 flex-col">
+          {activeSessionId || creatingNewSession ? <AgentSessionView /> : chartPanel}
+          {overlays}
+        </div>
+      )
+    }
+    return (
+      <div className="flex flex-1 h-full min-w-0">
+        <div className="w-[42%] min-w-[340px] max-w-[640px] flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+          {chartPanel}
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col">
+          <AgentSessionView />
+        </div>
+        {overlays}
       </div>
     )
   }
@@ -139,16 +250,8 @@ export const AgentTab = memo(function AgentTab() {
             <span className="text-xs font-medium text-text-primary">Sessions</span>
             <div className="flex items-center gap-2">
               {viewToggle}
-              <button
-                onClick={toggleFilterAlerted}
-                className={clsx(
-                  'transition-colors duration-fast',
-                  filterAlerted ? 'text-blue-500 hover:text-blue-400' : 'text-text-tertiary hover:text-text-primary',
-                )}
-                title={filterAlerted ? 'Showing only unread / needs-attention — click to show all' : 'Show only unread / needs-attention'}
-              >
-                <ListFilter size={12} />
-              </button>
+              {filterToggle}
+              {tasksToggle}
               <button
                 onClick={handleNewSession}
                 className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
@@ -252,9 +355,40 @@ export const AgentTab = memo(function AgentTab() {
           <AgentSessionView />
         </div>
       )}
+      {overlays}
     </div>
   )
 })
+
+// --------------------------------------------------------------------------
+// Agent info dialog — the role profile (charter / goals / memory / manager /
+// lifecycle actions) as a centered modal. Replaces the old bottom card so it
+// doesn't eat the chart's space; available in both views via "Show info".
+// --------------------------------------------------------------------------
+
+function AgentInfoDialog({ roleKey, onClose }: { roleKey: string | null; onClose: () => void }) {
+  useEffect(() => {
+    if (!roleKey) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [roleKey, onClose])
+
+  if (!roleKey) return null
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-h-[85vh] overflow-y-auto rounded-t-xl border border-border bg-surface-1 shadow-xl sm:max-w-md sm:rounded-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <AgentProfilePanel key={roleKey} agentKey={roleKey} onClose={onClose} />
+      </div>
+    </div>
+  )
+}
 
 // --------------------------------------------------------------------------
 // Session list item with context menu
@@ -269,10 +403,12 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
 }) {
   const killSession = useAgentStore((s) => s.killSession)
   const forkSession = useAgentStore((s) => s.forkSession)
+  const mergeSession = useAgentStore((s) => s.mergeSession)
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
   const reloadSessionHistory = useAgentStore((s) => s.reloadSessionHistory)
+  const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
   const isMobile = useIsMobile()
   // Latest text/prompt snippet — same pattern as Al, gives a glanceable activity preview
@@ -344,6 +480,13 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       { label: 'Reload history', onClick: () => reloadSessionHistory(session.id) },
       { label: 'Fork', onClick: () => forkSession(session.id) },
     ]
+    if (session.agentKey) {
+      items.unshift({ label: 'Show info', onClick: () => openRoleInfo(session.agentKey!) })
+    }
+    // Forks (have a parent) can be merged back into it instead of just killed.
+    if (session.parentClaudeSessionId && session.status !== 'ended') {
+      items.push({ label: 'Merge into parent', onClick: () => mergeSession(session.id) })
+    }
     if (session.status !== 'ended') {
       items.push({
         label: 'End session',
@@ -352,7 +495,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, killSession, startRename, generateTitleAction, forkSession, reloadSessionHistory])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, killSession, mergeSession, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
 
   return (
     <ContextMenu items={menuItems}>
@@ -544,17 +687,10 @@ const AlListItem = memo(function AlListItem({ session, isActive, onSelect }: {
 // --------------------------------------------------------------------------
 
 function StatusDot({ status }: { status: 'running' | 'idle' | 'ended' }) {
-  return (
-    <Circle
-      size={6}
-      className={clsx(
-        'fill-current flex-shrink-0',
-        status === 'running' && 'text-warning',
-        status === 'idle' && 'text-success',
-        status === 'ended' && 'text-text-tertiary',
-      )}
-    />
-  )
+  // Only running (amber) shows a dot. Idle/ended show nothing — absence means
+  // "fine" (avoids the hard-to-distinguish green-vs-orange the user flagged).
+  if (status !== 'running') return null
+  return <Circle size={6} className="fill-current flex-shrink-0 text-warning" />
 }
 
 function dirBasename(path: string): string {

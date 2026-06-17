@@ -22,7 +22,6 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState({ x: 0, y: 0 })
-  const menuRef = useRef<HTMLDivElement>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Touch start position — used to cancel the long-press timer if the finger
    *  moves enough to look like a swipe instead of a deliberate hold. */
@@ -70,33 +69,6 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
     touchStartPos.current = null
   }, [])
 
-  // Close on outside click or scroll
-  useEffect(() => {
-    if (!open) return
-    const close = () => setOpen(false)
-    const onMouseDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) close()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('scroll', close, true)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('scroll', close, true)
-    }
-  }, [open])
-
-  // Clamp position to viewport
-  useEffect(() => {
-    if (!open || !menuRef.current) return
-    const rect = menuRef.current.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    let { x, y } = pos
-    if (x + rect.width > vw) x = vw - rect.width - 4
-    if (y + rect.height > vh) y = vh - rect.height - 4
-    if (x !== pos.x || y !== pos.y) setPos({ x, y })
-  }, [open])
-
   return (
     <>
       <div
@@ -110,25 +82,68 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
         {children}
       </div>
 
-      {open && (
-        <div
-          ref={menuRef}
-          className="fixed z-50 border border-border bg-surface-1 shadow-lg py-0.5 min-w-[140px]"
-          style={{ left: pos.x, top: pos.y }}
-        >
-          {items.map((item) => (
-            <button
-              key={item.label}
-              onClick={() => { setOpen(false); item.onClick() }}
-              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors duration-fast ${
-                item.destructive ? 'text-destructive' : 'text-text-secondary'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {open && <ContextMenuView items={items} x={pos.x} y={pos.y} onClose={() => setOpen(false)} />}
     </>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Controlled variant — render at an arbitrary point with explicit open/close.
+// Used where the trigger isn't a wrapped element (e.g. a <canvas> node, which
+// hit-tests the pointer and opens this directly).
+// --------------------------------------------------------------------------
+
+export function ContextMenuView({ items, x, y, onClose }: {
+  items: ContextMenuItem[]
+  x: number
+  y: number
+  onClose: () => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ x, y })
+  useEffect(() => setPos({ x, y }), [x, y])
+
+  // Close on outside click or scroll
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('scroll', onClose, true)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('scroll', onClose, true)
+    }
+  }, [onClose])
+
+  // Clamp position to viewport
+  useEffect(() => {
+    if (!menuRef.current) return
+    const rect = menuRef.current.getBoundingClientRect()
+    const nx = x + rect.width > window.innerWidth ? window.innerWidth - rect.width - 4 : x
+    const ny = y + rect.height > window.innerHeight ? window.innerHeight - rect.height - 4 : y
+    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [x, y])
+
+  if (items.length === 0) return null
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 border border-border bg-surface-1 shadow-lg py-0.5 min-w-[150px]"
+      style={{ left: pos.x, top: pos.y }}
+    >
+      {items.map((item) => (
+        <button
+          key={item.label}
+          onClick={() => { onClose(); item.onClick() }}
+          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 transition-colors duration-fast ${
+            item.destructive ? 'text-destructive' : 'text-text-secondary'
+          }`}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
   )
 }

@@ -8,6 +8,10 @@ import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
 import type { AgentRegistry } from '../agents/registry.js'
+import type { TaskStore, AgentTask } from '../agents/tasks.js'
+import { checkDelegation, buildChain, chainLabel } from '../agents/delegation.js'
+import { buildDelegationProtocol, buildDelegationEnvelope, buildReportEnvelope, buildOrgPosition, renderOrgRoster, shortDescription } from '../agents/delegation-protocol.js'
+import { buildMergeRequest, buildMergeEnvelope } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -111,6 +115,8 @@ export interface AgentContext {
   modelConfig: ModelConfig
   /** Durable agent roles / org chart (agents/registry.ts). */
   agentRegistry: AgentRegistry
+  /** Delegation task store (agents/tasks.ts). */
+  tasks: TaskStore
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
@@ -247,9 +253,28 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
   // FRESH spawn (!resume, mirroring session.ts:195, else restarts double-stack
   // --append-system-prompt), and only when the caller hasn't already supplied a
   // prompt (lets Al keep its richer buildAlSystemPrompt).
-  if (options.agentKey && !options.resume && !options.systemPrompt) {
-    const charter = ctx.agentRegistry.resolveCharter(options.agentKey)
-    if (charter) options.systemPrompt = charter
+  if (options.agentKey && !options.resume) {
+    // Charter + delegation verbs only when the caller didn't supply a prompt
+    // (Al passes his own richer buildAlSystemPrompt, which already includes them).
+    if (!options.systemPrompt) {
+      const charter = ctx.agentRegistry.resolveCharter(options.agentKey)
+      if (charter) options.systemPrompt = `${charter}\n\n${buildDelegationProtocol()}`
+    }
+    // Every role spawn — INCLUDING Al — gets its org position: the full roster
+    // (everyone's NAMES, to locate anyone) + short DESCRIPTIONS of just its
+    // immediate neighbours (manager above + direct reports below).
+    const role = ctx.agentRegistry.get(options.agentKey)
+    if (role) {
+      const manager = role.manager ? ctx.agentRegistry.get(role.manager) : null
+      const reports = ctx.agentRegistry.list().filter((r) => r.manager === options.agentKey)
+      const pos = buildOrgPosition({
+        self: { key: role.key, title: role.title },
+        roster: renderOrgRoster(ctx.agentRegistry.tree()),
+        manager: manager ? { key: manager.key, title: manager.title, desc: shortDescription(manager.charter) } : null,
+        reports: reports.map((r) => ({ key: r.key, title: r.title, desc: shortDescription(r.charter), folder: r.folder })),
+      })
+      options.systemPrompt = options.systemPrompt ? `${options.systemPrompt}\n\n${pos}` : pos
+    }
   }
   const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
 
@@ -295,6 +320,192 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
 
   ctx.sessions.set(session.id, session)
   return session
+}
+
+// --------------------------------------------------------------------------
+// Delegation orchestration — touches sessions, so it lives here beside
+// createSession/reviveAgentRole (the pure guards are in agents/delegation.ts).
+// --------------------------------------------------------------------------
+
+/** Broadcast the current task list to all clients. */
+export function broadcastTasks(ctx: AgentContext): void {
+  broadcast(ctx.clients, { type: 'tasks', tasks: ctx.tasks.list() })
+}
+
+/** Inject a message into a live session's timeline + wake it — the same path
+ *  cron and Al's inbound use (broadcast user_prompt + log + write stdin). */
+function wakeSession(ctx: AgentContext, session: Session, content: string): void {
+  const msg = { type: 'user_prompt' as const, sessionId: session.id, content }
+  broadcast(ctx.clients, msg)
+  session.logMessage(msg)
+  session.sendMessage(content)
+}
+
+const titleOf = (ctx: AgentContext, key: string): string => ctx.agentRegistry.get(key)?.title ?? key
+
+export interface DelegateInput {
+  fromKey: string
+  toKey?: string
+  newRole?: { title: string; cwd?: string; manager?: string | null }
+  title?: string
+  brief: string
+  parentTaskId?: string | null
+  ephemeral?: boolean
+}
+
+/** Delegate work down the org. Creates a task, wakes the assignee's session with
+ *  a self-instructing envelope, returns the task (or an error). Async — the
+ *  delegator is NOT blocked; the result arrives later via reportTask. */
+export function delegateTask(ctx: AgentContext, input: DelegateInput): { task?: AgentTask; error?: string } {
+  const fromKey = input.fromKey
+  const parent = input.parentTaskId ? ctx.tasks.get(input.parentTaskId) : undefined
+  if (input.parentTaskId && !parent) return { error: `no such parent task: ${input.parentTaskId}` }
+
+  // Resolve / mint the assignee role.
+  let toKey = input.toKey
+  if (!toKey && input.newRole?.title?.trim()) {
+    toKey = ctx.agentRegistry.mintKey(input.newRole.title)
+    ctx.agentRegistry.create(toKey, {
+      title: input.newRole.title.trim(),
+      cwd: input.newRole.cwd ?? null,
+      manager: input.newRole.manager ?? fromKey,
+    })
+    broadcastAgentsList(ctx)
+  }
+  if (!toKey) return { error: 'delegate needs toKey or newRole' }
+  const role = ctx.agentRegistry.get(toKey)
+  if (!role) return { error: `no such role: ${toKey}` }
+  if (role.folder) return { error: `"${toKey}" is a folder, not an agent` }
+
+  const chainBeforeTo = parent?.chain && parent.chain.length ? parent.chain : [fromKey]
+  const check = checkDelegation(chainBeforeTo, fromKey, toKey)
+  if (!check.ok) return { error: check.error }
+  const chain = buildChain(parent?.chain, fromKey, toKey)
+  const origin: 'human' | 'agent' = parent ? parent.origin : fromKey === 'al' ? 'human' : 'agent'
+
+  const title = (input.title?.trim() || input.brief).slice(0, 120)
+  const task = ctx.tasks.create({ title, brief: input.brief, fromKey, toKey, origin, parentTaskId: input.parentTaskId ?? null, chain, ephemeral: input.ephemeral })
+  // The assignee's own reports — so if this task is really for one of them, the
+  // envelope can mandate routing onward (don't let a manager short-circuit).
+  const assigneeReports = ctx.agentRegistry.list().filter((r) => r.manager === toKey && !r.folder).map((r) => ({ key: r.key, title: r.title }))
+  const envelope = buildDelegationEnvelope({ task, fromTitle: titleOf(ctx, fromKey), chainLabel: chainLabel(chain, (k) => titleOf(ctx, k), origin), reports: assigneeReports })
+
+  if (input.ephemeral) {
+    // A throwaway, role-less worker: the assignee's charter is passed explicitly
+    // (no agentKey, so it dodges the ≤1-live-per-role sweep) and the envelope is
+    // its opening prompt (auto-sent on spawn).
+    const charter = ctx.agentRegistry.resolveCharter(toKey)
+    const delegator = liveSessionForRole(ctx, fromKey)
+    const worker = createSession(ctx, {
+      prompt: envelope,
+      cwd: role.cwd ?? ctx.cwd,
+      name: `${title} ⟂`,
+      systemPrompt: `${charter ?? ''}\n\n${buildDelegationProtocol()}`.trim(),
+      parentClaudeSessionId: delegator?.claudeSessionId,
+    })
+    ctx.tasks.update(task.id, { workerSessionId: worker.id })
+    const created = { type: 'session_created' as const, sessionId: worker.id, cwd: worker.cwd, prompt: envelope, ...(worker.name ? { name: worker.name } : {}) }
+    broadcast(ctx.clients, created); worker.logMessage(created)
+    const pm = { type: 'user_prompt' as const, sessionId: worker.id, content: envelope }
+    broadcast(ctx.clients, pm); worker.logMessage(pm)
+  } else {
+    const worker = reviveAgentRole(ctx, toKey)
+    if (!worker) return { error: `could not start ${toKey}` }
+    ctx.tasks.update(task.id, { workerSessionId: worker.id })
+    wakeSession(ctx, worker, envelope)
+  }
+
+  broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+  broadcastTasks(ctx)
+  ctx.log(`[delegate] ${fromKey} → ${toKey} (${task.id}): ${title}`)
+  return { task: ctx.tasks.get(task.id)! }
+}
+
+/** Report a task result up to its delegator. Wakes the delegator's session with
+ *  the report envelope; tears down an ephemeral worker once it has reported. */
+export function reportTask(ctx: AgentContext, taskId: string, result: string, status: 'done' | 'blocked' | 'failed' = 'done'): { ok: boolean; error?: string } {
+  const task = ctx.tasks.get(taskId)
+  if (!task) return { ok: false, error: `no such task: ${taskId}` }
+  ctx.tasks.update(taskId, { result, status })
+  const updated = ctx.tasks.get(taskId)!
+
+  if (task.ephemeral && task.workerSessionId && status !== 'blocked') {
+    const w = ctx.sessions.get(task.workerSessionId)
+    if (w) { try { w.kill() } catch { /* ignore */ } ctx.sessions.delete(w.id) }
+  }
+
+  const isAlTop = task.fromKey === 'al' && !task.parentTaskId && task.origin === 'human'
+  const delegator = liveSessionForRole(ctx, task.fromKey) ?? reviveAgentRole(ctx, task.fromKey)
+  if (delegator) {
+    wakeSession(ctx, delegator, buildReportEnvelope({ task: updated, fromTitle: titleOf(ctx, task.toKey), isAlTop }))
+  } else {
+    ctx.log(`[report] ${taskId} ${status} but delegator ${task.fromKey} could not be reached`)
+  }
+  broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+  broadcastTasks(ctx)
+  ctx.log(`[report] ${task.toKey} → ${task.fromKey} (${taskId}): ${status}`)
+  return { ok: true }
+}
+
+/** Watchdog: nudge in-progress tasks whose assignee has gone idle without
+ *  reporting; after `maxNudges`, mark blocked and bubble a stall report. Called
+ *  on an interval from index.ts. */
+export function runTaskWatchdog(ctx: AgentContext, staleMs = 15 * 60_000, maxNudges = 2): void {
+  const now = Date.now()
+  for (const task of ctx.tasks.open()) {
+    if (task.status !== 'in_progress') continue
+    if (now - task.updatedAt < staleMs) continue
+    const worker = task.workerSessionId ? ctx.sessions.get(task.workerSessionId) : liveSessionForRole(ctx, task.toKey)
+    if (worker && worker.status === 'running') continue // still working
+    const nudges = task.nudges ?? 0
+    if (nudges >= maxNudges) {
+      reportTask(ctx, task.id, `Stalled — no report after ${maxNudges} reminders.`, 'blocked')
+      continue
+    }
+    ctx.tasks.update(task.id, { nudges: nudges + 1 })
+    if (worker) wakeSession(ctx, worker, `[REMINDER] Task ${task.id} ("${task.title}") is still open. If done: con agent report ${task.id} "<result>". If still working, ignore this.`)
+  }
+}
+
+/** Inject a prompt into a session and resolve with the text of its next turn
+ *  (captures streamed deltas + directly-emitted text; ends on `result` or the
+ *  timeout). Used to elicit a fork's hand-back summary at merge time. */
+function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve) => {
+    let buf = ''
+    const onMsg = (m: HubMessage) => {
+      if (m.type === 'text_delta' || m.type === 'text') buf += m.content
+      else if (m.type === 'result') finish()
+    }
+    const finish = () => { clearTimeout(timer); session.off('hub_message', onMsg); resolve(buf.trim()) }
+    const timer = setTimeout(finish, timeoutMs)
+    session.on('hub_message', onMsg)
+    wakeSession(ctx, session, prompt)
+  })
+}
+
+/** Merge a fork back into its parent: ask the fork to self-summarise, inject that
+ *  digest into the parent (resolved via `parentClaudeSessionId`), then kill the
+ *  fork. The summary — not the transcript — keeps the parent's context clean. */
+export async function mergeFork(ctx: AgentContext, forkSessionId: string, timeoutMs = 60_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+  const fork = ctx.sessions.get(forkSessionId)
+  if (!fork) return { ok: false, error: `session not found: ${forkSessionId}` }
+  const parentCsid = fork.parentClaudeSessionId
+  if (!parentCsid) return { ok: false, error: 'not a fork — it has no parent to merge into' }
+  const parent = [...ctx.sessions.values()].find((s) => s.claudeSessionId === parentCsid && s.status !== 'ended')
+  if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
+  if (fork.status === 'running') return { ok: false, error: 'fork is busy; wait for its current turn to finish, then merge' }
+
+  const summary = await captureNextTurn(ctx, fork, buildMergeRequest(parent.name ?? 'your parent'), timeoutMs)
+  if (!summary) return { ok: false, error: 'fork produced no summary (timed out) — left alive so nothing is lost' }
+
+  wakeSession(ctx, parent, buildMergeEnvelope(fork.name ?? 'fork', summary))
+  try { fork.kill() } catch { /* ignore */ }
+  ctx.sessions.delete(fork.id)
+  saveManifest(ctx.sessions)
+  broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+  ctx.log(`[merge] fork ${fork.id} → parent ${parent.id} (${summary.length}-char summary)`)
+  return { ok: true, summary, parentId: parent.id }
 }
 
 export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: ClientMessage) {
@@ -558,6 +769,57 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcastAgentsList(ctx)
       broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
       log(`[agents] deleted role ${msg.agentKey}`)
+      break
+    }
+
+    case 'create_folder': {
+      const title = msg.title?.trim() || 'New folder'
+      const key = ctx.agentRegistry.mintKey(title)
+      ctx.agentRegistry.create(key, { title, folder: true, manager: msg.manager ?? null })
+      broadcastAgentsList(ctx)
+      log(`[agents] created folder ${key} (manager: ${msg.manager ?? 'root'})`)
+      break
+    }
+
+    case 'rename_role': {
+      if (!ctx.agentRegistry.has(msg.agentKey)) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
+      ctx.agentRegistry.setTitle(msg.agentKey, msg.title?.trim() || msg.agentKey)
+      broadcastAgentsList(ctx)
+      break
+    }
+
+    case 'delegate': {
+      const res = delegateTask(ctx, { fromKey: msg.fromKey ?? 'al', toKey: msg.toKey, newRole: msg.newRole, title: msg.title, brief: msg.brief, parentTaskId: msg.parentTaskId, ephemeral: msg.ephemeral })
+      if (res.error) { sendTo(ws, { type: 'hub_error', message: `delegate failed: ${res.error}` }); return }
+      // The new task is in the broadcast `tasks` message; CLI diffs to find its id.
+      break
+    }
+
+    case 'report': {
+      const res = reportTask(ctx, msg.taskId, msg.result, msg.status ?? 'done')
+      if (res.error) { sendTo(ws, { type: 'hub_error', message: `report failed: ${res.error}` }); return }
+      break
+    }
+
+    case 'cancel_task': {
+      ctx.tasks.cancel(msg.taskId)
+      broadcastTasks(ctx)
+      break
+    }
+
+    case 'tasks_list': {
+      sendTo(ws, { type: 'tasks', tasks: ctx.tasks.list() })
+      break
+    }
+
+    case 'merge_session': {
+      const id = msg.sessionId
+      mergeFork(ctx, id)
+        .then((r) => {
+          if (r.ok) broadcast(clients, { type: 'session_merged', forkId: id, parentId: r.parentId!, summary: r.summary! })
+          else sendTo(ws, { type: 'hub_error', message: `merge failed: ${r.error}` })
+        })
+        .catch((e) => sendTo(ws, { type: 'hub_error', message: `merge failed: ${(e as Error).message}` }))
       break
     }
 

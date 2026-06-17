@@ -25,6 +25,7 @@ import { parseModelString } from './utils.js'
 import { getLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
+import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 
 let sessionCounter = 0
@@ -791,6 +792,7 @@ export class Session extends EventEmitter {
       // Scan the *complete* coalesced text — deltas split "@" and "amar" across
       // chunks, so per-delta scanning would miss it.
       this.scanForAttention(this.pendingText)
+      this.scanForHandoff(this.pendingText)
       this.logMessage({ type: 'text', sessionId: this.id, content: this.pendingText })
       this.pendingText = ''
     }
@@ -810,7 +812,7 @@ export class Session extends EventEmitter {
       }
       // Directly-emitted text (e.g. synthetic slash-command output) bypasses the
       // delta buffer — scan it too.
-      if (msg.type === 'text') this.scanForAttention(msg.content)
+      if (msg.type === 'text') { this.scanForAttention(msg.content); this.scanForHandoff(msg.content) }
       // Log non-ephemeral messages (skip status, deltas — they're coalesced above)
       if (msg.type !== 'status') {
         this.logMessage(msg as LoggableHubMessage)
@@ -856,6 +858,25 @@ export class Session extends EventEmitter {
       sessionId: this.id,
       sessionName: this.name,
       needsAttention: null,
+    } satisfies HubMessage)
+  }
+
+  private lastHandoff = ''
+  private lastHandoffAt = 0
+  /** Detect `@handoff(<agentKey>)` in finalized assistant text → ask the SPA to
+   *  offer Yousef a direct line to that agent. Deduped per-target within 30s so a
+   *  sentinel re-scanned across flushes fires once. */
+  private scanForHandoff(content: string) {
+    const target = parseHandoff(content)
+    if (!target) return
+    const now = Date.now()
+    if (target === this.lastHandoff && now - this.lastHandoffAt < 30_000) return
+    this.lastHandoff = target
+    this.lastHandoffAt = now
+    this.emit('hub_message', {
+      type: 'session_handoff',
+      sessionId: this.id,
+      targetAgentKey: target,
     } satisfies HubMessage)
   }
 }

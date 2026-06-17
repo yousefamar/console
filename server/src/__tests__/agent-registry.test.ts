@@ -15,7 +15,7 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'agent-reg-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 function role(key: string, manager: string | null, title = key): AgentRole {
-  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true }
+  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }
 }
 
 describe('parseRole', () => {

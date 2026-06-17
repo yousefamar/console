@@ -257,14 +257,18 @@ export const COMMANDS: CommandDef[] = [
     flags: {
       id: { type: 'string', description: 'Continue an existing conversation (the conv id = fork claudeSessionId printed on the first turn)' },
       end: { type: 'boolean', description: 'End the conversation fork (with --id)' },
+      merge: { type: 'boolean', description: 'Merge the fork back into its parent (fork summarises → parent absorbs), then close it — the reversible alternative to --end (with --id)' },
       from: { type: 'string', description: 'Your own name, shown to the other agent on the first turn (default: "another agent")' },
       timeout: { type: 'string', description: 'Max wait for a reply, e.g. 5m, 90s (default 5m)' },
     },
     examples: [
       'con agent chat "Gravel general" "what auth does the control plane use?"',
       'con agent chat --id 3c7ac00e-… "and how are keys rotated?"',
-      'con agent chat --id 3c7ac00e-… --end',
+      'con agent chat --id 3c7ac00e-… --merge',
     ] },
+  { name: 'agent merge', description: 'Merge a fork back into its parent: the fork self-summarises what it learned/did, that digest is injected into the parent session, then the fork is closed. Use instead of killing a fork when its findings should survive. Accepts a hub session id, a conv id (fork claudeSessionId), or a unique name.', safety: 'write',
+    args: [{ name: 'session', required: true, description: 'Fork to merge (session id / conv id / name)' }],
+    examples: ['con agent merge session_47_1781…', 'con agent merge 6ecfb8ec-…'] },
   { name: 'agent model', description: 'Inspect or switch the Claude model all hub agents spawn with. Recovery lever when a model is pulled: `set` changes it live (no code edit) and restarts sessions onto it; the hub also auto-falls-back down the chain on a model-unavailable error.', safety: 'write',
     args: [
       { name: 'subcommand', required: false, description: '`get` (default) or `set`' },
@@ -289,6 +293,40 @@ export const COMMANDS: CommandDef[] = [
   { name: 'agent revive', description: 'Spawn a fresh session for a parked role (one with no live session). Its charter + memory are injected from its role file.', safety: 'write',
     args: [{ name: 'key', required: true, description: 'Role key to revive' }],
     examples: ['con agent revive feeds-tab'] },
+  { name: 'agent delegate', description: 'Delegate a task DOWN the org to a role. Creates a task, wakes the assignee with a self-instructing envelope, returns the task id; async (non-blocking). The assignee reports back up with `con agent report`. Use --new to mint a role on the fly, --ephemeral for a throwaway parallel worker.', safety: 'write',
+    args: [
+      { name: 'toKey', required: false, description: 'Assignee role key (omit when using --new)' },
+      { name: 'brief', required: true, description: 'The instruction (quote it)' },
+    ],
+    flags: {
+      title: { type: 'string', description: 'Short task title (defaults to the brief)' },
+      from: { type: 'string', description: 'Delegator role key (default: al)' },
+      parent: { type: 'string', description: 'Parent task id (for a sub-delegation; report bubbles to it)' },
+      ephemeral: { type: 'boolean', description: 'Spawn a fresh role-less worker instead of the durable role session' },
+      new: { type: 'string', description: 'Mint a new role with this title and delegate to it' },
+      cwd: { type: 'string', description: 'cwd for the new role (with --new)' },
+      manager: { type: 'string', description: 'Manager for the new role (with --new; defaults to the delegator)' },
+    },
+    examples: [
+      'con agent delegate feeds-tab "add a dark-mode toggle to the reader"',
+      'con agent delegate "research X" --new "X researcher" --cwd /home/amar/proj/x',
+    ] },
+  { name: 'agent report', description: 'Report a task result UP to its delegator (wakes their session). Run this when work delegated to you is done/blocked.', safety: 'write',
+    args: [
+      { name: 'taskId', required: true, description: 'Task id (from the [DELEGATED TASK] envelope)' },
+      { name: 'result', required: true, description: 'Concise result text (quote it)' },
+    ],
+    flags: { status: { type: 'string', description: 'done (default) | blocked | failed' } },
+    examples: ['con agent report tsk_abc123 "shipped — dark-mode toggle in FeedItemView, verified on APK"'] },
+  { name: 'agent tasks', description: 'List delegation tasks (what you owe / are owed). Filter with flags; `cancel <id>` cancels one.', safety: 'read',
+    args: [{ name: 'subcommand', required: false, description: '`cancel <taskId>` to cancel a task' }],
+    flags: {
+      open: { type: 'boolean', description: 'Only non-terminal tasks' },
+      assigned: { type: 'string', description: 'Only tasks assigned to this role key' },
+      from: { type: 'string', description: 'Only tasks delegated by this role key' },
+      children: { type: 'string', description: 'Only direct sub-tasks of this task id' },
+    },
+    examples: ['con agent tasks --open', 'con agent tasks --assigned feeds-tab', 'con agent tasks cancel tsk_abc123'] },
 
   // search
   { name: 'search', description: 'Cross-service search', safety: 'read',

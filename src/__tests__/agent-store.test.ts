@@ -769,3 +769,101 @@ describe('status updates', () => {
     expect(session?.status).toBe('idle')
   })
 })
+
+// --------------------------------------------------------------------------
+// Delegation / hand-off / org-chart store (tasks, handoff, reparent undo/redo)
+// --------------------------------------------------------------------------
+
+describe('delegation + handoff + org store', () => {
+  async function connected() {
+    useAgentStore.getState().connect()
+    await flush()
+    return MockWebSocket.latest()!
+  }
+  const sent = (ws: MockWebSocket) => ws.sentMessages.map((m) => JSON.parse(m))
+
+  beforeEach(() => useAgentStore.setState({
+    agentRoles: [], agentTree: [], tasks: [], pendingHandoff: null, handoffReturnTo: null, orgPast: [], orgFuture: [],
+  }))
+
+  it('`tasks` message populates state.tasks', async () => {
+    const ws = await connected()
+    ws.receiveMessage({ type: 'tasks', tasks: [{ id: 'tsk_1', title: 'T', status: 'in_progress', toKey: 'eng', fromKey: 'al', chain: ['al', 'eng'], origin: 'human', parentTaskId: null, result: null, brief: 'b', createdAt: 0, updatedAt: 0 }] })
+    expect(useAgentStore.getState().tasks).toHaveLength(1)
+    expect(useAgentStore.getState().tasks[0]!.id).toBe('tsk_1')
+  })
+
+  it('`session_handoff` message sets pendingHandoff', async () => {
+    const ws = await connected()
+    ws.receiveMessage({ type: 'session_handoff', sessionId: 's1', targetAgentKey: 'feeds-tab' })
+    expect(useAgentStore.getState().pendingHandoff).toEqual({ fromSessionId: 's1', targetAgentKey: 'feeds-tab' })
+  })
+
+  it('delegate() sends a delegate message (fromKey defaults to al)', async () => {
+    const ws = await connected()
+    useAgentStore.getState().delegate('eng', 'do X')
+    expect(sent(ws)).toContainEqual({ type: 'delegate', toKey: 'eng', brief: 'do X', fromKey: 'al' })
+  })
+
+  it('mergeSession() sends merge_session', async () => {
+    const ws = await connected()
+    useAgentStore.getState().mergeSession('s-fork')
+    expect(sent(ws)).toContainEqual({ type: 'merge_session', sessionId: 's-fork' })
+  })
+
+  it('cancelTask() optimistically marks cancelled + sends cancel_task', async () => {
+    const ws = await connected()
+    useAgentStore.setState({ tasks: [{ id: 'tsk_1', title: 'T', status: 'in_progress', toKey: 'eng', fromKey: 'al', chain: ['al', 'eng'], origin: 'human', parentTaskId: null, result: null, brief: 'b', createdAt: 0, updatedAt: 0 }] })
+    useAgentStore.getState().cancelTask('tsk_1')
+    expect(useAgentStore.getState().tasks[0]!.status).toBe('cancelled')
+    expect(sent(ws)).toContainEqual({ type: 'cancel_task', taskId: 'tsk_1' })
+  })
+
+  it('setAgentManager is optimistic, records history, and undo/redo round-trips', async () => {
+    const ws = await connected()
+    useAgentStore.setState({ agentRoles: [{ key: 'eng', title: 'Eng', manager: 'al', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }] })
+    const mgr = () => useAgentStore.getState().agentRoles[0]!.manager
+
+    useAgentStore.getState().setAgentManager('eng', 'cg')
+    expect(mgr()).toBe('cg')                                   // optimistic
+    expect(useAgentStore.getState().orgPast).toHaveLength(1)
+
+    useAgentStore.getState().undoOrg()
+    expect(mgr()).toBe('al')
+    expect(useAgentStore.getState().orgFuture).toHaveLength(1)
+
+    useAgentStore.getState().redoOrg()
+    expect(mgr()).toBe('cg')
+    expect(useAgentStore.getState().orgFuture).toHaveLength(0)
+
+    expect(sent(ws).filter((m) => m.type === 'set_manager')).toHaveLength(3) // initial + undo + redo
+  })
+
+  it('acceptHandoff opens the target session + sets a return marker; returnFromHandoff goes back', async () => {
+    await connected()
+    const base = { createdAt: 0, prompt: '', totalCost: 0, totalTokens: { input: 0, output: 0 }, contextWindow: 0, contextUsed: 0 }
+    useAgentStore.setState({
+      sessions: [
+        { id: 'al', name: 'Al', status: 'idle', ...base },
+        { id: 's-feeds', agentKey: 'feeds-tab', status: 'idle', ...base },
+      ],
+      pendingHandoff: { fromSessionId: 'al', targetAgentKey: 'feeds-tab' },
+    })
+    useAgentStore.getState().acceptHandoff('feeds-tab')
+    expect(useAgentStore.getState().activeSessionId).toBe('s-feeds')
+    expect(useAgentStore.getState().handoffReturnTo).toBe('al')
+    expect(useAgentStore.getState().pendingHandoff).toBeNull()
+
+    useAgentStore.getState().returnFromHandoff()
+    expect(useAgentStore.getState().activeSessionId).toBe('al')
+    expect(useAgentStore.getState().handoffReturnTo).toBeNull()
+  })
+
+  it('dismissHandoff clears the offer without switching', async () => {
+    await connected()
+    useAgentStore.setState({ pendingHandoff: { fromSessionId: 'al', targetAgentKey: 'x' } })
+    useAgentStore.getState().dismissHandoff()
+    expect(useAgentStore.getState().pendingHandoff).toBeNull()
+    expect(useAgentStore.getState().activeSessionId).toBeNull()
+  })
+})

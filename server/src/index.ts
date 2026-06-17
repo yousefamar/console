@@ -29,7 +29,8 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastAgentsList, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
+import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
@@ -138,6 +139,7 @@ setAgentModelResolver(() => modelConfig.getModel())
 // Durable agent roles / org chart. Loaded before any session spawn so charter
 // injection (createSession) can resolve a restored session's role.
 const agentRegistry = new AgentRegistry(join(feedsConfigDir, 'agents'), (m) => log(m))
+const taskStore = new TaskStore(join(feedsConfigDir, 'agent-tasks.json'), () => Date.now(), (m) => log(m))
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
@@ -413,7 +415,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry,
+  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry, tasks: taskStore,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {
@@ -443,6 +445,10 @@ const cronScheduler = new HubCronScheduler(
   (m) => log(m),
 )
 cronScheduler.start()
+
+// Delegation watchdog: nudge stalled in-progress tasks, eventually bubble a
+// stall report. 5-min cadence (the staleness threshold inside is 15 min).
+setInterval(() => { try { runTaskWatchdog(agentCtx) } catch (e) { log(`[tasks] watchdog: ${(e as Error).message}`) } }, 5 * 60_000)
 
 // Wire Al session updates to broadcast full session list
 alBridge.onSessionUpdate = () => {
@@ -600,6 +606,69 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
           res.end(JSON.stringify({ error: (e as Error).message }))
         }
       })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
+  // Delegation tasks — the out-of-band lever + CLI backend (mirrors /agents/roles).
+  if (path === '/agents/tasks') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ tasks: taskStore.list() }))
+      return
+    }
+    if (req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        try {
+          const b = JSON.parse(raw || '{}') as { fromKey?: string; toKey?: string; newRole?: { title: string; cwd?: string; manager?: string | null }; title?: string; brief?: string; parentTaskId?: string | null; ephemeral?: boolean }
+          if (!b.brief?.trim()) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'brief is required' })); return }
+          const r = delegateTask(agentCtx, { fromKey: b.fromKey ?? 'al', toKey: b.toKey, newRole: b.newRole, title: b.title, brief: b.brief, parentTaskId: b.parentTaskId, ephemeral: b.ephemeral })
+          if (r.error) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: r.error })); return }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ task: r.task }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
+  // Report a task (POST /agents/tasks/<id>/report) or cancel it (DELETE /agents/tasks/<id>).
+  const taskMatch = path.match(/^\/agents\/tasks\/([^/]+?)(\/report)?$/)
+  if (taskMatch) {
+    const taskId = decodeURIComponent(taskMatch[1]!)
+    if (taskMatch[2] === '/report' && req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        try {
+          const b = JSON.parse(raw || '{}') as { result?: string; status?: 'done' | 'blocked' | 'failed' }
+          const r = reportTask(agentCtx, taskId, b.result ?? '', b.status ?? 'done')
+          if (r.error) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: r.error })); return }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    if (!taskMatch[2] && req.method === 'DELETE') {
+      taskStore.cancel(taskId)
+      broadcastTasks(agentCtx)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
       return
     }
     res.writeHead(405, { 'Content-Type': 'application/json' })
@@ -959,6 +1028,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // Send the org-chart roles + tree (mirror model_state; also pushed on change).
   sendTo(ws, { type: 'agents_list', roles: agentRegistry.list(), tree: agentRegistry.tree() })
 
+  // Delegation tasks
+  sendTo(ws, { type: 'tasks', tasks: taskStore.list() })
+
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
   if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
@@ -1166,6 +1238,28 @@ httpServer.listen(port, host, () => {
       }
       try { writeFileSync(reorgMarker, new Date().toISOString()) } catch { /* best effort */ }
       log(`[agents] general-reorg: ${reorged} role(s) placed under their dir's general`)
+    }
+
+    // One-time: materialize the directory buckets as REAL folder nodes (so they
+    // can be renamed, created, and used as drop targets) and parent the still-
+    // rootless agents under them. Replaces the old client-side synthetic folders.
+    const dirFoldersMarker = join(feedsConfigDir, 'agents', '.dir-folders-v1')
+    if (!existsSync(dirFoldersMarker)) {
+      const parentDirOf = (p: string) => { const s = p.replace(/\/+$/, ''); const i = s.lastIndexOf('/'); return i > 0 ? s.slice(0, i) : s }
+      const baseNameOf = (p: string) => { const s = p.replace(/\/+$/, ''); const i = s.lastIndexOf('/'); const b = i >= 0 ? s.slice(i + 1) : s; return b ? b.charAt(0).toUpperCase() + b.slice(1) : b }
+      const roots = agentRegistry.list().filter((r) => !r.folder && r.key !== 'al' && !r.manager && r.cwd)
+      const byDir = new Map<string, typeof roots>()
+      for (const r of roots) { const d = parentDirOf(r.cwd!); const arr = byDir.get(d) ?? []; arr.push(r); byDir.set(d, arr) }
+      let folders = 0
+      for (const [dir, members] of byDir) {
+        if (members.length < 2) continue
+        const fkey = agentRegistry.mintKey(baseNameOf(dir))
+        agentRegistry.create(fkey, { title: baseNameOf(dir), folder: true, manager: 'al' })
+        for (const m of members) agentRegistry.setManager(m.key, fkey)
+        folders++
+      }
+      try { writeFileSync(dirFoldersMarker, new Date().toISOString()) } catch { /* best effort */ }
+      log(`[agents] dir-folders: created ${folders} folder node(s) from directory buckets`)
     }
 
     for (const entry of manifest) {
