@@ -84,6 +84,15 @@ export class PushServer {
     this.inboundHandlers.push(handler)
   }
 
+  /** Fired once per client connection, after the hello is sent. Used to sweep
+   *  stale notifications (cancel anything for rooms now read) — the only way
+   *  to clear notifications orphaned by a hub restart, since the in-memory
+   *  pushed-rooms tracking doesn't survive one. */
+  private readonly connectHandlers: Array<() => void> = []
+  onConnect(handler: () => void): void {
+    this.connectHandlers.push(handler)
+  }
+
   attach(ws: WebSocket): void {
     this.clients.add(ws)
     this.log(`[push] Client connected (${this.clients.size} total)`)
@@ -106,6 +115,10 @@ export class PushServer {
     try {
       ws.send(JSON.stringify({ type: 'hello', time: Date.now() }))
     } catch { /* ignore */ }
+
+    for (const h of this.connectHandlers) {
+      try { h() } catch (e) { this.log(`[push] connect handler failed: ${(e as Error).message}`) }
+    }
   }
 
   broadcast(msg: PushMessage): void {

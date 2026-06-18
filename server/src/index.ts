@@ -313,6 +313,53 @@ const chatRoomsStore = new ChatRoomsStore({
   bus: syncBus,
   log: (msg: string) => { log(msg) },
 })
+// When a push client (the APK) connects, send a reconcile frame so it can
+// drop stale chat + mail notifications — anything it's showing that's no
+// longer unread. This is the only way to clear notifications orphaned by a
+// hub restart (in-memory push tracking is gone) or by a read/archive that
+// happened while the phone was offline. The hub sends the KEEP sets (still-
+// unread items); the APK cancels its chat/mail notifications not in them,
+// leaving point-in-time types (money/flights/calendar/agent) untouched.
+//
+// chat keep = unread rooms (in-memory store, always reliable). mail keep =
+// unread inbox threads per Google account (one Gmail query, cached briefly
+// so frequent reconnects don't hammer the API). On a mail-fetch failure the
+// `mail` key is OMITTED so the APK never wipes mail notifications on a
+// transient error (omitted ⇒ "don't touch mail this round").
+const MAIL_RECONCILE_CACHE_MS = 30_000
+let mailKeepCache: Array<{ account: string; threadId: string }> | null = null
+let mailKeepCacheAt = 0
+async function sendNotifReconcile(): Promise<void> {
+  let chatKeep: string[] = []
+  try {
+    const rooms = chatRoomsStore.snapshot().data
+    chatKeep = Object.entries(rooms).filter(([, r]) => r.isUnread).map(([id]) => id)
+  } catch (err) {
+    log(`[push] reconcile: chat keep failed: ${(err as Error).message}`)
+  }
+  let mailKeep = mailKeepCache
+  if (!mailKeep || Date.now() - mailKeepCacheAt > MAIL_RECONCILE_CACHE_MS) {
+    try {
+      const collected: Array<{ account: string; threadId: string }> = []
+      for (const acct of authStore.getGoogleAccounts()) {
+        const res = await gmailClient.listThreads({ q: 'in:inbox is:unread', maxResults: '100', account: acct.email })
+        for (const t of res.threads ?? []) collected.push({ account: acct.email, threadId: t.id })
+      }
+      mailKeep = collected
+      mailKeepCache = collected
+      mailKeepCacheAt = Date.now()
+    } catch (err) {
+      mailKeep = null // omit mail key → APK leaves mail notifications alone
+      log(`[push] reconcile: mail keep fetch failed: ${(err as Error).message}`)
+    }
+  }
+  const frame: Record<string, unknown> = { type: 'notif_reconcile', chat: chatKeep }
+  if (mailKeep) frame.mail = mailKeep
+  pushServer.broadcastRaw(JSON.stringify(frame))
+  log(`[push] reconcile sent: ${chatKeep.length} chat + ${mailKeep ? mailKeep.length : 'skip'} mail keep`)
+}
+pushServer.onConnect(() => { void sendNotifReconcile() })
+
 // Matrix sync loop — starts once crypto is ready (polled).
 const matrixSync = new MatrixSync(
   matrixClient,

@@ -610,6 +610,29 @@ export class MatrixSync {
       // 5. Push notifications for new messages from other users (not our own).
       if (!isInitial) {
         for (const [roomId, r] of Object.entries(rooms)) {
+          // Dismiss-on-caught-up FIRST — before the empty-timeline guard.
+          // Marking a room read produces a receipt-only delta: updated
+          // unread_notifications, ZERO new timeline events. The old code
+          // `continue`d on empty timeline before reaching the dismiss, so a
+          // read on the PC never cleared the phone's notification.
+          //
+          // Gate on an EXPLICIT zero: an ABSENT unread_notifications means
+          // "no change to my unread state" (e.g. someone else's read receipt
+          // arriving as an ephemeral-only delta) and must NOT clear a
+          // notification I haven't read — mirrors the absent≠zero rule in
+          // room-state.ts. An explicit 0 means I caught up here or elsewhere.
+          //
+          // Broadcast the cancel UNCONDITIONALLY (no pushedRooms gate): that
+          // set is in-memory, so a hub restart would otherwise orphan every
+          // notification pushed before it, forever. A cancel for a room with
+          // no live notification is a harmless no-op on the APK.
+          const explicitNotif = r.unread_notifications?.notification_count
+          if (explicitNotif === 0) {
+            this.pushedRooms.delete(roomId)
+            this.push.broadcast({ type: 'chat', cancel: true, roomId })
+            continue
+          }
+
           const events = r.timeline?.events ?? []
           if (events.length === 0) continue
 
@@ -618,15 +641,9 @@ export class MatrixSync {
           //   * room tagged m.lowpriority / m.archive → only notify on mentions
           const notifCount = r.unread_notifications?.notification_count ?? 0
           const highlightCount = r.unread_notifications?.highlight_count ?? 0
-          if (notifCount === 0) {
-            // Room is caught up (read here or on another client, or
-            // server-side muted). Dismiss any outstanding APK notif so the
-            // phone doesn't keep showing a stale preview.
-            if (this.pushedRooms.delete(roomId)) {
-              this.push.broadcast({ type: 'chat', cancel: true, roomId })
-            }
-            continue
-          }
+          // Absent count (the only way to reach here with notifCount 0, since
+          // explicit-0 was handled above) → no new unread info; don't push.
+          if (notifCount === 0) continue
           const tagEvent = (r.account_data?.events ?? []).find((e) => e.type === 'm.tag')
           const tags = (tagEvent?.content as any)?.tags as Record<string, unknown> | undefined
           const isLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive'])

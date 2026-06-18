@@ -171,12 +171,16 @@ export class MailSync {
         await this.pushAddedMessages(account, delta.added)
       }
       // Dismiss phone notifications for threads that got archived (INBOX
-      // removed) or deleted — covers both in-app actions (browser → hub →
-      // Gmail) and external ones (stock Gmail app). One cancel per unique
-      // threadId; the APK ignores unknown notifIds harmlessly.
+      // removed), marked read (UNREAD removed), or deleted — covers both
+      // in-app actions (browser → hub → Gmail) and external ones (stock
+      // Gmail app). The notification represents an unread inbox thread, so
+      // either leaving the inbox OR being read should clear it. One cancel
+      // per unique threadId; the APK ignores unknown notifIds harmlessly.
       const handledThreads = new Set<string>()
       for (const lc of delta.labelChanged ?? []) {
-        if (lc.threadId && lc.removedLabels?.includes('INBOX')) handledThreads.add(lc.threadId)
+        const left = lc.removedLabels?.includes('INBOX')
+        const read = lc.removedLabels?.includes('UNREAD')
+        if (lc.threadId && (left || read)) handledThreads.add(lc.threadId)
       }
       for (const r of delta.removed ?? []) {
         if (r.threadId) handledThreads.add(r.threadId)
