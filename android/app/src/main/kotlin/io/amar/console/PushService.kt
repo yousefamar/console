@@ -469,6 +469,10 @@ class PushService : Service() {
             handleHubRpc(json)
             return
         }
+        if (type == "notif_reconcile") {
+            handleReconcile(json)
+            return
+        }
         if (json.optBoolean("cancel", false)) {
             handleCancelPush(json, type)
             return
@@ -510,6 +514,68 @@ class PushService : Service() {
                 try { nm.cancel(idStr.hashCode()) } catch (_: SecurityException) {}
             }
         }
+    }
+
+    /**
+     * Reconcile active notifications against the hub's "keep" sets, sent on
+     * every push (re)connect. The hub can't know what we're showing after a
+     * restart (its in-memory push tracking is gone), so it sends the set of
+     * items that are STILL unread; we cancel any chat/mail notification not
+     * in that set. Only the chat + mail channels are touched — point-in-time
+     * types (money, flights, calendar, agent) have no read-state and are
+     * left alone. A key absent from the frame (e.g. `mail` omitted on a hub
+     * Gmail-fetch failure) means "don't reconcile that channel this round".
+     */
+    private fun handleReconcile(json: JSONObject) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return // getActiveNotifications: API 23+
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+
+        // chat keep — roomId.hashCode() mirrors handleChatPush's notifId.
+        val keepIds = HashSet<Int>()
+        var reconcileChat = false
+        json.optJSONArray("chat")?.let { arr ->
+            reconcileChat = true
+            for (i in 0 until arr.length()) {
+                val roomId = arr.optString(i)
+                if (roomId.isNotEmpty()) keepIds.add(roomId.hashCode())
+            }
+        }
+        // mail keep — "mail:$account:$threadId".hashCode() mirrors handleMailPush.
+        var reconcileMail = false
+        json.optJSONArray("mail")?.let { arr ->
+            reconcileMail = true
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val account = o.optString("account")
+                val threadId = o.optString("threadId")
+                if (account.isNotEmpty() && threadId.isNotEmpty()) {
+                    keepIds.add(("mail:$account:$threadId").hashCode())
+                }
+            }
+        }
+
+        // Never cancel the foreground-service notif, the group summaries, or
+        // the needs-pair notice.
+        val reserved = setOf(ONGOING_NOTIFICATION_ID, CHAT_SUMMARY_ID, MAIL_SUMMARY_ID, NOTIF_NEEDS_PAIR_ID)
+        try {
+            for (sbn in nm.activeNotifications) {
+                if (sbn.id in reserved) continue
+                val channel = sbn.notification?.channelId
+                val isChat = channel == CHANNEL_CHAT
+                val isMail = channel == CHANNEL_MAIL
+                if (isChat && !reconcileChat) continue
+                if (isMail && !reconcileMail) continue
+                if (!isChat && !isMail) continue // leave money/flights/calendar/agent alone
+                if (sbn.id !in keepIds) {
+                    nm.cancel(sbn.id)
+                    // Drop the MessagingStyle history for a cancelled chat room
+                    // (ConcurrentHashMap rejects a null key, so guard the lookup).
+                    if (isChat) {
+                        roomStates.keys.firstOrNull { it.hashCode() == sbn.id }?.let { roomStates.remove(it) }
+                    }
+                }
+            }
+        } catch (_: Exception) { /* getActiveNotifications can throw on some OEMs */ }
     }
 
     /**
