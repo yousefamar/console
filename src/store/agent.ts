@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { getHubWsUrl, setHubUrl as saveHubUrl } from '@/hub'
+import { flattenSidebarOrder } from '@/components/agent/session-tree'
 
 // ============================================================================
 // Agent Store — manages WebSocket connection to the Console Agent Hub,
@@ -540,26 +541,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   selectNextSession: () => {
-    const { sessions, activeSessionId } = get()
-    const active = sortedActiveSessions(sessions)
+    const state = get()
+    const active = visibleSidebarOrder(state) // same order the sidebar renders
     if (active.length === 0) return
-    const idx = active.findIndex((s) => s.id === activeSessionId)
-    const next = active[Math.min(idx + 1, active.length - 1)]
+    const idx = active.findIndex((s) => s.id === state.activeSessionId)
+    const next = active[Math.min(idx + 1, active.length - 1)] ?? active[0]
     if (next) {
-      const activeApproval = get().pendingApprovalsBySession[next.id] ?? null
+      const activeApproval = state.pendingApprovalsBySession[next.id] ?? null
       set({ activeSessionId: next.id, pendingApproval: activeApproval })
       import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(next.id))
     }
   },
 
   selectPrevSession: () => {
-    const { sessions, activeSessionId } = get()
-    const active = sortedActiveSessions(sessions)
+    const state = get()
+    const active = visibleSidebarOrder(state)
     if (active.length === 0) return
-    const idx = active.findIndex((s) => s.id === activeSessionId)
-    const prev = active[Math.max(idx - 1, 0)]
+    const idx = active.findIndex((s) => s.id === state.activeSessionId)
+    const prev = active[Math.max(idx - 1, 0)] ?? active[0]
     if (prev) {
-      const activeApproval = get().pendingApprovalsBySession[prev.id] ?? null
+      const activeApproval = state.pendingApprovalsBySession[prev.id] ?? null
       set({ activeSessionId: prev.id, pendingApproval: activeApproval })
       import('@/notifications').then(({ setActiveAgentSession }) => setActiveAgentSession(prev.id))
     }
@@ -1658,9 +1659,19 @@ function flushPending(sessionId: string) {
   }
 }
 
-/** Sort active (non-ended) sessions by createdAt desc — matches sidebar order */
-function sortedActiveSessions(sessions: SessionInfo[]): SessionInfo[] {
-  return sessions
-    .filter((s) => s.status !== 'ended')
-    .sort((a, b) => b.createdAt - a.createdAt)
+/** The flat session order exactly as the sidebar renders it (Al pinned first,
+ *  then sessions clustered by cwd in `sessionOrder`, fork lineage, collapsed
+ *  groups skipped, and the "needs me" filter applied) — so j/k cycling moves
+ *  top-to-bottom through what the user actually sees. */
+function visibleSidebarOrder(s: AgentState): SessionInfo[] {
+  const isAlerted = (x: SessionInfo) => !!(x.hasUnread || x.needsAttention || s.pendingApprovalsBySession[x.id] || x.status === 'running')
+  const al = s.sessions.find((x) => x.id === 'al')
+  const active = s.sessions.filter((x) =>
+    x.id !== 'al'
+    && (x.status !== 'ended' || x.hasUnread)
+    && (!s.filterAlerted || isAlerted(x)))
+  const ordered: SessionInfo[] = []
+  if (al && (!s.filterAlerted || isAlerted(al))) ordered.push(al)
+  ordered.push(...flattenSidebarOrder(active, s.sessionOrder, s.collapsedGroups))
+  return ordered
 }
