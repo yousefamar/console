@@ -171,6 +171,8 @@ interface AgentState {
   /** Role whose info dialog is open (null = closed). Opened via a "Show info"
    *  context-menu action in either view; rendered centered/modal. */
   roleInfoKey: string | null
+  /** "/" quick-switcher: fuzzy-find an agent by name and jump to it. */
+  showAgentSwitcher: boolean
   /** Undo/redo of org-chart edits (reparent + rename). Reparenting via drag was
    *  easy to trigger accidentally, so these make every edge change reversible. */
   orgPast: OrgHistoryEntry[]
@@ -265,6 +267,9 @@ interface AgentState {
   /** Open / close the role info dialog. */
   openRoleInfo: (agentKey: string) => void
   closeRoleInfo: () => void
+  /** Open / close the "/" agent quick-switcher. */
+  openAgentSwitcher: () => void
+  closeAgentSwitcher: () => void
   /** Undo / redo the last org-chart edge/rename change. */
   undoOrg: () => void
   redoOrg: () => void
@@ -345,6 +350,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   agentViewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:viewMode') === 'orgchart') ? 'orgchart' : 'list',
   filterAlerted: typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:filterAlerted') === '1',
   roleInfoKey: null,
+  showAgentSwitcher: false,
   orgPast: [],
   orgFuture: [],
 
@@ -590,6 +596,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   openRoleInfo: (agentKey) => set({ roleInfoKey: agentKey }),
   closeRoleInfo: () => set({ roleInfoKey: null }),
+
+  openAgentSwitcher: () => set({ showAgentSwitcher: true }),
+  closeAgentSwitcher: () => set({ showAgentSwitcher: false }),
 
   undoOrg: () => {
     const past = get().orgPast

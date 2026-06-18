@@ -10,6 +10,7 @@ import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, Clipb
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
 import { TasksPanel } from './agent/TasksPanel'
+import { AgentQuickSwitcher } from './agent/AgentQuickSwitcher'
 import { useCronStore } from '@/store/cron'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
@@ -42,6 +43,7 @@ export const AgentTab = memo(function AgentTab() {
   const toggleFilterAlerted = useAgentStore((s) => s.toggleFilterAlerted)
   const roleInfoKey = useAgentStore((s) => s.roleInfoKey)
   const closeRoleInfo = useAgentStore((s) => s.closeRoleInfo)
+  const showAgentSwitcher = useAgentStore((s) => s.showAgentSwitcher)
   const undoOrg = useAgentStore((s) => s.undoOrg)
   const redoOrg = useAgentStore((s) => s.redoOrg)
   const openTaskCount = useAgentStore((s) => s.tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked').length)
@@ -171,6 +173,7 @@ export const AgentTab = memo(function AgentTab() {
   // hand-off offer banner, and the Back-to-Al return control.
   const overlays = (
     <>
+      {showAgentSwitcher && <AgentQuickSwitcher />}
       <AgentInfoDialog roleKey={roleInfoKey} onClose={closeRoleInfo} />
       {showTasks && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={() => setShowTasks(false)}>

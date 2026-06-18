@@ -179,6 +179,12 @@ export function useKeybindings() {
 
       // Agent-specific keybindings
       if (isAgents) {
+        // "/" — fuzzy-find an agent and jump to it (works in list + org-chart).
+        if (e.key === '/') {
+          e.preventDefault()
+          agent.getState().openAgentSwitcher()
+          return
+        }
         const approval = agent.getState().pendingApproval
         // y/n/a shortcuts only for standard tool approval, not AskUserQuestion
         if (approval && approval.toolName !== 'AskUserQuestion') {
