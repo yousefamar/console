@@ -28,6 +28,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_CHAT_READ = "io.amar.console.action.CHAT_READ"
         const val ACTION_CHAT_REPLY = "io.amar.console.action.CHAT_REPLY"
+        const val ACTION_CHAT_MUTE = "io.amar.console.action.CHAT_MUTE"
         const val ACTION_MAIL_ARCHIVE = "io.amar.console.action.MAIL_ARCHIVE"
         const val ACTION_MAIL_READ = "io.amar.console.action.MAIL_READ"
 
@@ -46,6 +47,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, -1)
         val pending = goAsync()
         val appCtx = context.applicationContext
+        // The receiver can run in a fresh process where the token store was
+        // never initialised; init is idempotent + cheap.
+        HubTokenStore.init(appCtx)
 
         Thread {
             try {
@@ -53,6 +57,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     ACTION_CHAT_READ -> {
                         val roomId = intent.getStringExtra(EXTRA_ROOM_ID) ?: return@Thread
                         post("/matrix/rooms/${enc(roomId)}/read", "{}")
+                    }
+                    ACTION_CHAT_MUTE -> {
+                        val roomId = intent.getStringExtra(EXTRA_ROOM_ID) ?: return@Thread
+                        req("PUT", "/matrix/rooms/${enc(roomId)}/mute", "{}")
                     }
                     ACTION_CHAT_REPLY -> {
                         val roomId = intent.getStringExtra(EXTRA_ROOM_ID) ?: return@Thread
@@ -96,17 +104,22 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }.start()
     }
 
-    private fun post(path: String, jsonBody: String): Boolean {
+    private fun post(path: String, jsonBody: String): Boolean = req("POST", path, jsonBody)
+
+    /** Hub HTTP call with the paired bearer. The hub prefix is auth-gated, so
+     *  without the Authorization header every action 401s and silently no-ops. */
+    private fun req(method: String, path: String, jsonBody: String): Boolean {
         val client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .build()
         val body = jsonBody.toRequestBody("application/json".toMediaType())
-        val req = Request.Builder().url("$HUB_HTTPS$path").post(body).build()
+        val rb = Request.Builder().url("$HUB_HTTPS$path").method(method, body)
+        HubTokenStore.get()?.let { rb.header("Authorization", "Bearer $it") }
         return try {
-            client.newCall(req).execute().use { resp -> resp.isSuccessful }
+            client.newCall(rb.build()).execute().use { resp -> resp.isSuccessful }
         } catch (t: Throwable) {
-            Log.w(TAG, "POST $path failed: ${t.message}")
+            Log.w(TAG, "$method $path failed: ${t.message}")
             false
         }
     }

@@ -816,10 +816,11 @@ class PushService : Service() {
         val ts = if (json.has("timestamp")) json.optLong("timestamp", System.currentTimeMillis())
                  else System.currentTimeMillis()
         val senderAvatarMxc = json.optString("senderAvatarMxc").takeIf { it.isNotEmpty() }
+        val roomAvatarMxc = json.optString("roomAvatarMxc").takeIf { it.isNotEmpty() }
 
         val personBuilder = Person.Builder().setName(senderName).setKey(senderId)
-        val avatar = senderAvatarMxc?.let { loadMxcAvatar(it) }
-        if (avatar != null) personBuilder.setIcon(IconCompat.createWithBitmap(avatar))
+        val senderAvatar = senderAvatarMxc?.let { loadMxcAvatar(it) }
+        if (senderAvatar != null) personBuilder.setIcon(IconCompat.createWithBitmap(senderAvatar))
         val person = personBuilder.build()
 
         val room = roomStates.getOrPut(roomId) { RoomState() }
@@ -872,7 +873,11 @@ class PushService : Service() {
                 if (shouldVibrate) NotificationCompat.PRIORITY_HIGH
                 else NotificationCompat.PRIORITY_LOW
             )
-        if (avatar != null) builder.setLargeIcon(avatar)
+        // Large icon = the GROUP avatar for named rooms (Beeper-style: group
+        // logo on the card, per-sender avatars inline in the stack), else the
+        // sender's avatar for DMs.
+        val largeIcon = (if (asGroup) roomAvatarMxc?.let { loadMxcAvatar(it) } else null) ?: senderAvatar
+        if (largeIcon != null) builder.setLargeIcon(largeIcon)
 
         // ---- Actions: Reply (RemoteInput) + Mark as Read -----------------
         val replyIntent = Intent(this, NotificationActionReceiver::class.java).apply {
@@ -913,7 +918,24 @@ class PushService : Service() {
             .setShowsUserInterface(false)
             .build()
 
-        builder.addAction(replyAction).addAction(readAction)
+        // Mute — sets a server-side room push rule (PUT /matrix/rooms/:id/mute).
+        val muteIntent = Intent(this, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_CHAT_MUTE
+            putExtra(NotificationActionReceiver.EXTRA_NOTIF_ID, notifId)
+            putExtra(NotificationActionReceiver.EXTRA_ROOM_ID, roomId)
+        }
+        val mutePi = PendingIntent.getBroadcast(
+            this, notifId xor 0x2, muteIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val muteAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_launcher_foreground, "Mute", mutePi,
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MUTE)
+            .setShowsUserInterface(false)
+            .build()
+
+        builder.addAction(replyAction).addAction(readAction).addAction(muteAction)
 
         val nm = NotificationManagerCompat.from(this)
         try {
