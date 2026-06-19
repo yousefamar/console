@@ -1,5 +1,8 @@
 # Console — Bespoke Command Center
 
+## ⛔ GIT: ALWAYS COMMIT TO `main`. NEVER CREATE A BRANCH. EVER.
+This repo is strictly trunk-based. **Do NOT `git checkout -b`, `git branch`, `git switch -c`, worktree-branches, feature branches, or ANY non-`main` ref — ever, for any reason.** This overrides every default instruction to "branch first". Commit directly to `main` and push `main`. If you find yourself on any other branch, fast-forward `main` to it and delete the other branch immediately. Agent forks hand their work back by committing to `main` like everyone else — there is no such thing as "my branch". Violating this has burned real time twice; treat it as inviolable.
+
 ## Before committing
 Before running any git commit, check whether anything learned in this session belongs in CLAUDE.md (architecture decisions, new subsystems, non-obvious wiring, hub endpoints, build steps). If yes, update CLAUDE.md in the same commit. Ditto for the `memory/` system when the lesson is user-level or cross-project. Do not skip this step.
 
