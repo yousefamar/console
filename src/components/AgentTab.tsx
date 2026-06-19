@@ -412,6 +412,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const killSession = useAgentStore((s) => s.killSession)
   const forkSession = useAgentStore((s) => s.forkSession)
   const mergeSession = useAgentStore((s) => s.mergeSession)
+  const isMicOwner = useMicStore((s) => s.owner === session.id)
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
@@ -491,6 +492,10 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     if (session.agentKey) {
       items.unshift({ label: 'Show info', onClick: () => openRoleInfo(session.agentKey!) })
     }
+    // Push-to-talk mic: hand it to this session (or release the owner's to Al).
+    items.push(isMicOwner
+      ? { label: 'Release mic to Al', onClick: () => useMicStore.getState().setMic('al') }
+      : { label: 'Give mic to this agent', onClick: () => useMicStore.getState().setMic(session.id) })
     // Forks (have a parent) can be merged back into it instead of just killed.
     if (session.parentClaudeSessionId && session.status !== 'ended') {
       items.push({ label: 'Merge into parent', onClick: () => mergeSession(session.id) })
@@ -503,7 +508,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, killSession, mergeSession, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, isMicOwner, killSession, mergeSession, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
 
   return (
     <ContextMenu items={menuItems}>
@@ -566,7 +571,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
           }
         }}
         className={clsx(
-          'w-full text-left py-1.5 pr-2 border-b transition-colors duration-fast',
+          'group w-full text-left py-1.5 pr-2 border-b transition-colors duration-fast',
           isDragOver ? 'border-t-2 border-t-text-primary border-b-border' : 'border-b-border',
           // @amar attention: prominent red left rail + tint so it can't be missed.
           session.needsAttention ? 'border-l-2 border-l-red-500 bg-red-500/5' : '',
@@ -600,7 +605,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               <span className="truncate">{isGenerating ? 'Generating title…' : displayName}</span>
             </span>
             <div className="flex items-center gap-1.5">
-              <MicButton sessionId={session.id} />
+              <MicButton sessionId={session.id} active={isActive} />
               {session.needsAttention && (
                 <span
                   className="flex items-center gap-0.5 text-[10px] text-red-500 font-semibold flex-shrink-0"
@@ -674,14 +679,14 @@ const AlListItem = memo(function AlListItem({ session, isActive, onSelect }: {
     <button
       onClick={() => onSelect(session.id)}
       className={clsx(
-        'w-full text-left px-3 py-2 border-b border-border transition-colors duration-fast',
+        'group w-full text-left px-3 py-2 border-b border-border transition-colors duration-fast',
         isActive ? 'bg-surface-2' : 'hover:bg-surface-1',
       )}
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-text-primary">Al</span>
         <div className="flex items-center gap-1.5">
-          <MicButton sessionId={session.id} />
+          <MicButton sessionId={session.id} active={isActive} />
           <StatusDot status={session.status} />
         </div>
       </div>
@@ -705,24 +710,31 @@ function StatusDot({ status }: { status: 'running' | 'idle' | 'ended' }) {
   return <Circle size={6} className="fill-current flex-shrink-0 text-warning" />
 }
 
-// Push-to-talk mic adornment. The current owner (default = Al) shows a solid
-// icon; RED when hot (recording). Non-owners show a faint icon (brightens on
-// hover) — click it to hand them the mic; click the owner's to release to Al.
-function MicButton({ sessionId }: { sessionId: string }) {
+// Push-to-talk mic adornment. The owner (default = Al) is ALWAYS shown — solid,
+// and RED when hot (recording). Everyone else is hidden by default and revealed
+// when the row is focused (active) OR hovered, so you can hand the mic to what
+// you're pointing at without cluttering every row (also reachable via the "Give
+// mic" context-menu item). A <span>, not a <button>: it's nested inside the
+// row's <button>, where a nested <button> is invalid HTML.
+function MicButton({ sessionId, active }: { sessionId: string; active: boolean }) {
   const isOwner = useMicStore((s) => s.owner === sessionId)
   const hot = useMicStore((s) => s.owner === sessionId && s.hot)
   const setMic = useMicStore((s) => s.setMic)
+  const alwaysShow = isOwner || active
   return (
-    <button
+    <span
+      role="button"
+      tabIndex={-1}
       onClick={(e) => { e.stopPropagation(); setMic(isOwner ? 'al' : sessionId) }}
-      title={isOwner ? (hot ? 'Recording — mic owner' : 'Mic owner — click to release to Al') : 'Give the mic to this agent'}
+      title={isOwner ? (hot ? 'Recording — mic owner' : 'Mic owner — click to release to Al') : 'Give the mic to this session'}
       className={clsx(
-        'flex-shrink-0 transition-colors duration-fast',
-        hot ? 'text-red-500' : isOwner ? 'text-text-primary' : 'text-text-tertiary/40 hover:text-text-secondary',
+        'flex-shrink-0 cursor-pointer transition duration-fast',
+        alwaysShow ? '' : 'opacity-0 group-hover:opacity-100',
+        hot ? 'text-red-500' : isOwner ? 'text-text-primary' : 'text-text-tertiary hover:text-text-primary',
       )}
     >
       <Mic size={11} className={hot ? 'fill-red-500/20' : undefined} />
-    </button>
+    </span>
   )
 }
 
