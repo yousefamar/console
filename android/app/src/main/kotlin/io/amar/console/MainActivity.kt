@@ -65,6 +65,13 @@ import org.json.JSONObject
  */
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        // True while the Console WebView is foreground (and thus the SPA's
+        // sync-bus is live). PushService reads this to decide where a PTT
+        // transcript goes: composer if foreground, else auto-send.
+        @Volatile var foreground: Boolean = false
+    }
+
     // Public URL on the home Caddy. Resolves via Namecheap DDNS, served by
     // Caddy on :443 with a real Let's Encrypt cert. SPA + hub + /public/*
     // all live on the same origin (see /etc/caddy/Caddyfile con.amar.io block).
@@ -221,7 +228,18 @@ class MainActivity : ComponentActivity() {
         Handler(Looper.getMainLooper()).postDelayed({ attachGlassesBleListener(attempt + 1) }, 100L)
     }
 
+    override fun onResume() {
+        super.onResume()
+        foreground = true
+    }
+
+    override fun onPause() {
+        foreground = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        foreground = false
         GlassesState.removeListener(glassesStateListener)
         if (GlassesController.isReady()) {
             try { GlassesController.requireBle().removeListener(glassesBleListener) } catch (_: Throwable) {}

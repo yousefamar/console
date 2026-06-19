@@ -15,6 +15,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -28,8 +32,10 @@ import io.amar.console.glasses.BleManager
 import io.amar.console.glasses.G1Protocol
 import io.amar.console.glasses.GlassesController
 import io.amar.console.glasses.GlassesState
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -300,14 +306,108 @@ class PushService : Service() {
     private val pttReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             val action = intent?.action ?: return
-            try {
-                val extras = JSONObject()
-                intent.extras?.keySet()?.forEach { k ->
-                    try { extras.put(k, intent.extras?.get(k)?.toString()) } catch (_: Exception) {}
-                }
-                webSocket?.send(JSONObject().put("type", "ptt_button").put("action", action).put("extras", extras).toString())
-            } catch (_: Exception) {}
+            // Forward to the hub for visibility (kept from the probe build).
+            try { webSocket?.send(JSONObject().put("type", "ptt_button").put("action", action).toString()) } catch (_: Exception) {}
+            when {
+                action.endsWith(".down") -> pttDown()
+                action.endsWith(".up") -> pttUp()
+            }
         }
+    }
+
+    // --- Hold-to-talk capture: mic → hub /stt → owner -----------------------
+    @Volatile private var pttRecord: AudioRecord? = null
+    @Volatile private var pttWs: WebSocket? = null
+    @Volatile private var pttActive = false
+    private val pttFinals = StringBuilder()
+    @Volatile private var pttPending = ""
+    private fun pttFullText(): String =
+        (pttFinals.toString() + pttPending).trim().replace(Regex("\\s+"), " ")
+
+    private fun hubPost(path: String, json: String) {
+        try {
+            val rb = Request.Builder().url("$HUB_HTTPS$path")
+                .post(json.toRequestBody("application/json".toMediaType()))
+            HubTokenStore.get()?.let { rb.header("Authorization", "Bearer $it") }
+            client.newCall(rb.build()).enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
+                override fun onResponse(call: okhttp3.Call, response: Response) { response.close() }
+            })
+        } catch (_: Exception) {}
+    }
+
+    private fun pttDown() {
+        if (pttActive) return
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            // No mic permission — the WebView grant doesn't cover a background
+            // service. Nudge the user to open the app + grant it.
+            postNeedsPairNotification() // reuse the open-app notification path
+            return
+        }
+        pttActive = true
+        pttFinals.setLength(0); pttPending = ""
+        setForegroundType(withMic = true)        // assert mic FGS type for AudioRecord
+        hubPost("/mic/hot", "{\"hot\":true}")
+        // Stream to the hub /stt realtime transcription WS (origin-gated; a
+        // no-origin native client passes verifyClient).
+        val req = Request.Builder().url("wss://con.amar.io/hub/stt").build()
+        pttWs = client.newWebSocket(req, object : WebSocketListener() {
+            override fun onMessage(ws: WebSocket, text: String) {
+                try {
+                    val m = JSONObject(text)
+                    when (m.optString("type")) {
+                        "interim" -> { pttPending += m.optString("text"); }
+                        "final" -> { val t = m.optString("text"); if (t.isNotEmpty()) pttFinals.append(t).append(' '); pttPending = "" }
+                    }
+                } catch (_: Exception) {}
+            }
+        })
+        startAudioStream()
+    }
+
+    private fun startAudioStream() {
+        val sr = 24000
+        val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val rec = try {
+            @Suppress("MissingPermission")
+            AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sr, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, sr / 5 * 2))
+        } catch (_: Throwable) { return }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { try { rec.release() } catch (_: Throwable) {}; return }
+        pttRecord = rec
+        try { rec.startRecording() } catch (_: Throwable) { return }
+        Thread {
+            val buf = ByteArray(sr / 20 * 2)     // ~50ms frames
+            while (pttActive) {
+                val n = try { rec.read(buf, 0, buf.size) } catch (_: Throwable) { -1 }
+                if (n > 0) {
+                    val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
+                    try { pttWs?.send(JSONObject().put("type", "audio").put("data", b64).toString()) } catch (_: Exception) {}
+                } else if (n < 0) break
+            }
+        }.start()
+    }
+
+    private fun pttUp() {
+        if (!pttActive) return
+        pttActive = false
+        try { pttRecord?.stop() } catch (_: Throwable) {}
+        try { pttRecord?.release() } catch (_: Throwable) {}
+        pttRecord = null
+        hubPost("/mic/hot", "{\"hot\":false}")
+        setForegroundType(withMic = false)
+        // Give OpenAI a beat to flush a trailing final, then route + close.
+        reconnectHandler.postDelayed({
+            try { pttWs?.close(1000, "ptt-end") } catch (_: Exception) {}
+            pttWs = null
+            val text = pttFullText()
+            if (text.isNotEmpty()) {
+                val payload = JSONObject().put("text", text).toString()
+                // Compose into the SPA composer when Console is foreground (its
+                // sync-bus is live); otherwise auto-send so it isn't lost.
+                hubPost(if (MainActivity.foreground) "/mic/compose" else "/mic/say", payload)
+            }
+        }, 700)
     }
     private fun registerPttProbe() {
         try {
@@ -361,28 +461,32 @@ class PushService : Service() {
 
     // --- Foreground + channels -----------------------------------------------
 
-    private fun startForegroundCompat() {
+    private fun startForegroundCompat() = setForegroundType(withMic = false)
+
+    /** (Re)assert the foreground service, optionally adding the microphone
+     *  type so AudioRecord is permitted while the app is backgrounded. The
+     *  service is ALREADY foreground, so this updates its active type rather
+     *  than starting from background (which Android 14+ would block for mic). */
+    private fun setForegroundType(withMic: Boolean) {
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notif = NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setContentTitle("Console")
-            .setContentText("Connected")
+            .setContentText(if (withMic) "Listening…" else "Connected")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(pi)
-            // Group with GlassesService's ongoing notification so the
-            // status shade shows them collapsed as one row.
             .setGroup("console.ongoing")
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                ONGOING_NOTIFICATION_ID, notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-            )
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            if (withMic) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            try { startForeground(ONGOING_NOTIFICATION_ID, notif, type) }
+            catch (_: Throwable) { try { startForeground(ONGOING_NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) } catch (_: Throwable) {} }
         } else {
             startForeground(ONGOING_NOTIFICATION_ID, notif)
         }
