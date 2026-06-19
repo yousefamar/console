@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { useGlassesStore } from '@/glasses/store'
+import { useMicStore } from '@/store/mic'
 import { getHubUrl } from '@/hub'
 import { useDictation } from '@/hooks/useDictation'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
@@ -47,6 +48,8 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const slashCommands = useAgentStore((s) => s.sessionSlashCommands)
   const pastSessions = useAgentStore((s) => s.pastSessions)
   const resumeSession = useAgentStore((s) => s.resumeSession)
+  // Push-to-talk review-mode compose trigger (monotonic per utterance).
+  const composeSeq = useMicStore((s) => s.composeSeq)
 
   // Filesystem dir suggestions — fetched from hub when the user types a path-like
   // string (starts with `/` or `~`). Lets them tab-complete into directories that
@@ -172,6 +175,38 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     el.value = interimText ? base + (base ? ' ' : '') + interimText : base
     resizeTextarea()
   }, [interimText, resizeTextarea])
+
+  // Review-mode push-to-talk: the hub broadcasts a finished utterance on the
+  // 'mic' service ('compose' op) to be dropped into the OWNER session's composer
+  // UNSENT (vs /mic/say's auto-send). `composeSeq` increments per utterance so an
+  // identical transcript still fires. We mirror the interim-STT DOM-value-sync
+  // (set value, sync textRef, resize) but as a committed value — then focus, do
+  // NOT send. If the owner isn't the active session, switch to it first so the
+  // text lands where the user can see it. Deps are [composeSeq] only — switching
+  // sessions must not re-drop the last utterance.
+  // Wire the mic store once so the 'compose' subscription exists even if the
+  // Agents pane (which also inits it) never mounted. Idempotent.
+  useEffect(() => { useMicStore.getState().init() }, [])
+
+  useEffect(() => {
+    const { composeSeq, composeOwner, composeText } = useMicStore.getState()
+    if (!composeSeq || !composeText) return
+    if (composeOwner && composeOwner !== useAgentStore.getState().activeSessionId) {
+      useAgentStore.getState().selectSession(composeOwner)
+    }
+    textRef.current = composeText
+    const el = inputRef.current
+    if (el) {
+      el.value = composeText
+      const caret = composeText.length
+      el.setSelectionRange(caret, caret)
+      el.focus()
+    }
+    setHasContent(!!composeText.trim())
+    resizeTextarea()
+    useGlassesStore.getState().setComposerText('agents', composeText)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composeSeq])
 
   // Fetch past sessions when a directory is selected
   useEffect(() => {
