@@ -61,7 +61,7 @@ import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
 import { handleAlRoutes } from './routes/al.js'
-import { ensureAlSession, reloadAlSession, injectToAl } from './al/al-session.js'
+import { ensureAlSession, reloadAlSession, injectToAl, getAlSession } from './al/al-session.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
@@ -69,6 +69,8 @@ import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { CanvasPublicTokens } from './canvas-public-tokens.js'
 import { handlePublicCanvas } from './routes/public.js'
+import { MicState } from './mic.js'
+import { handleMicRoutes } from './routes/mic.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
 import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { SyncBus } from './sync-bus.js'
@@ -481,6 +483,69 @@ const agentCtx: AgentContext = {
   reloadAl: () => reloadAlSession(agentCtx),
 }
 
+// --------------------------------------------------------------------------
+// Push-to-talk mic ownership (see server/src/mic.ts).
+// --------------------------------------------------------------------------
+const micState = new MicState()
+
+/** Effective owner = explicit owner if it's a live (non-ended) session, else
+ *  Al. Returns null only if neither is up. */
+function effectiveMicOwnerId(): string | null {
+  const explicit = micState.getOwnerSessionId()
+  if (explicit) {
+    const s = sessions.get(explicit)
+    if (s && s.status !== 'ended') return explicit
+  }
+  return getAlSession()?.id ?? null
+}
+function micOwnerName(sessionId: string | null): string | undefined {
+  if (!sessionId) return undefined
+  return sessions.get(sessionId)?.name ?? (sessionId === getAlSession()?.id ? 'Al' : undefined)
+}
+/** Resolve a session id / name / agentKey to a live session id, or null. */
+function resolveMicTarget(target: string): string | null {
+  if (sessions.get(target)) return target
+  const lower = target.toLowerCase()
+  for (const [id, s] of sessions) {
+    const info = s.getInfo()
+    if (info.name?.toLowerCase() === lower || info.agentKey?.toLowerCase() === lower) return id
+  }
+  return null
+}
+/** Inject + auto-send a transcript to a session (mirrors the cron nudge path). */
+function injectToSession(sessionId: string, content: string): boolean {
+  const s = sessions.get(sessionId)
+  if (!s || s.status === 'ended') return false
+  const msg = { type: 'user_prompt' as const, sessionId: s.id, content }
+  try {
+    broadcast(msg)
+    s.logMessage(msg)
+    s.sendMessage(content)
+    return true
+  } catch (err) {
+    log(`[mic] inject failed: ${(err as Error).message}`)
+    return false
+  }
+}
+syncBus.register('mic', {
+  status: async () => {
+    const owner = effectiveMicOwnerId()
+    return { owner, ownerName: micOwnerName(owner), hot: micState.isHot() }
+  },
+  set: async (args) => {
+    const target = (args as { target?: string } | undefined)?.target ?? ''
+    const sid = target && target.toLowerCase() !== 'al' && target.toLowerCase() !== 'default'
+      ? resolveMicTarget(target) : null
+    micState.setOwnerSessionId(sid)
+    const owner = effectiveMicOwnerId()
+    return { ok: true, owner, ownerName: micOwnerName(owner) }
+  },
+})
+micState.onChange(() => {
+  const owner = effectiveMicOwnerId()
+  syncBus.broadcast('mic', 'state', { owner, ownerName: micOwnerName(owner), hot: micState.isHot() })
+})
+
 // Live org-chart updates when an agent edits its own role file. Content-compared
 // inside the registry so the hub's own writes don't re-fire.
 agentRegistry.watch(() => broadcastAgentsList(agentCtx))
@@ -735,8 +800,14 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         if (!boundary) { res.writeHead(400); res.end('Missing boundary'); return }
         const parts = body.toString('binary').split('--' + boundary)
         let audioData: Buffer | null = null
+        // Honor the uploaded part's real filename — OpenAI Whisper picks the
+        // audio format from the extension. Browser MediaRecorder sends
+        // audio.webm; the `con mic` CLI sends a .wav. Default to webm.
+        let filename = 'audio.webm'
         for (const part of parts) {
           if (part.includes('name="file"')) {
+            const fnMatch = part.match(/filename="([^"]+)"/)
+            if (fnMatch) filename = fnMatch[1]!
             const headerEnd = part.indexOf('\r\n\r\n')
             if (headerEnd !== -1) {
               audioData = Buffer.from(part.slice(headerEnd + 4).replace(/\r\n$/, ''), 'binary')
@@ -749,10 +820,12 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         const apiKey = process.env.OPENAI_API_KEY
         if (!apiKey) { res.writeHead(500); res.end('OPENAI_API_KEY not set'); return }
 
+        const ext = filename.slice(filename.lastIndexOf('.') + 1).toLowerCase()
+        const audioMime = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : ext === 'ogg' ? 'audio/ogg' : 'audio/webm'
         // Build multipart form for OpenAI
         const formBoundary = '----FormBoundary' + Date.now()
         const formParts = [
-          `--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`,
+          `--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${audioMime}\r\n\r\n`,
           audioData,
           `\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${formBoundary}--\r\n`,
         ]
@@ -870,6 +943,16 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     if (handleApkRoutes(req, res, apkPath)) return
   }
 
+  if (path.startsWith('/mic') && handleMicRoutes(req, res, path, {
+    effectiveOwnerId: effectiveMicOwnerId,
+    ownerName: micOwnerName,
+    isHot: () => micState.isHot(),
+    explicitOwnerId: () => micState.getOwnerSessionId(),
+    resolveTarget: resolveMicTarget,
+    setOwner: (sid) => micState.setOwnerSessionId(sid),
+    setHot: (hot) => micState.setHot(hot),
+    injectToSession,
+  }, readBody)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return

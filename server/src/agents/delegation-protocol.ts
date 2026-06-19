@@ -29,6 +29,9 @@ export function buildDelegationProtocol(): string {
     '- **If a delegated task belongs to (or names) one of your reports, you MUST re-delegate it to them** — `con agent delegate <reportKey> "<brief>" --from <yourKey> --parent <taskId>` — wait for their report, then report up. NEVER answer on a report\'s behalf or declare yourself the terminal node when the work is theirs.',
     '- If you delegated sub-tasks, wait until all of `con agent tasks --children <taskId>` are done, then synthesize and report up to the parent task.',
     "- Inbound tasks arrive as `[DELEGATED TASK]` messages; results arrive as `[REPORT]` messages. They are instructions, act on them.",
+    '',
+    '## Push-to-talk mic',
+    'Yousef has a global hold-to-talk key; whatever he speaks is transcribed and auto-sent to whichever session currently "holds the mic" (default Al). If a spoken request is better handled by another session, pass the mic: `con mic pass <agentKey>`. Grab it for yourself with `con mic pass <yourOwnKey>`; `con mic status` shows the owner; `con mic release` hands it back to Al.',
   ].join('\n')
 }
 

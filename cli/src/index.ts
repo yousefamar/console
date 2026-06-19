@@ -135,6 +135,11 @@ async function main() {
         await whatsapp(verb, rest, flags)
         break
       }
+      case 'mic': {
+        const { mic } = await import('./commands/mic.js')
+        await mic(verb, rest, flags)
+        break
+      }
       case 'search': {
         const { search } = await import('./commands/search.js')
         await search([verb, ...rest].filter(Boolean) as string[], flags)

@@ -480,6 +480,25 @@ export const COMMANDS: CommandDef[] = [
   { name: 'whatsapp contacts', description: 'List workspace contacts (JID lookup; source: ~/.local/share/al/workspace/users/*.md)', safety: 'read',
     flags: { query: { type: 'string', description: 'Filter (substring of username or identifier)' } } },
 
+  // mic — push-to-talk ownership + capture. A single owner session (default
+  // Al) receives PTT transcripts; agents can pass the mic to each other.
+  { name: 'mic status', description: 'Show the current push-to-talk mic owner + hot state', safety: 'read',
+    examples: ['con mic status'] },
+  { name: 'mic give', description: 'Give the push-to-talk mic to a session (you become silent listener). Target = session name, id, or agentKey; "al" resets to default.', safety: 'write',
+    args: [{ name: 'target', required: true, description: 'Session name | id | agentKey | "al"' }],
+    examples: ['con mic give Al', 'con mic give notes-tab', 'con mic give al'] },
+  { name: 'mic pass', description: 'Pass the push-to-talk mic to another session — agent-facing alias of `give`. Use your own agentKey to grab it.', safety: 'write',
+    args: [{ name: 'target', required: true, description: 'Session name | id | agentKey' }],
+    examples: ['con mic pass dashboard-tab', 'con mic pass al'] },
+  { name: 'mic release', description: 'Release the mic back to the default owner (Al)', safety: 'write',
+    examples: ['con mic release'] },
+  { name: 'mic say', description: 'Route a text transcript to the current mic owner and auto-send it', safety: 'write',
+    args: [{ name: 'text', required: true, description: 'Text to deliver to the owner session' }],
+    examples: ['con mic say "what is on my calendar today"'] },
+  { name: 'mic ptt', description: 'Hold-to-talk driver (wired to Sway super+c). `start` records, `stop` transcribes + routes to the owner.', safety: 'write',
+    args: [{ name: 'sub', required: true, description: 'start | stop' }],
+    examples: ['con mic ptt start', 'con mic ptt stop'] },
+
   // hub lifecycle
   { name: 'hub restart', description: 'Restart the hub via pm2 (auto-continues in-progress agent sessions)', safety: 'write',
     examples: ['con hub restart'] },
