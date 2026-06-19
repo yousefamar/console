@@ -188,23 +188,37 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   // Agents pane (which also inits it) never mounted. Idempotent.
   useEffect(() => { useMicStore.getState().init() }, [])
 
+  // Track the last compose utterance we actually applied. Initialised to the
+  // CURRENT seq so a remount (layout swap / pane re-render) never re-drops an
+  // already-handled utterance — that bug resurrected erased text and yanked
+  // focus back to the owner session, making other sessions impossible to open.
+  const consumedComposeSeq = useRef(useMicStore.getState().composeSeq)
+
   useEffect(() => {
     const { composeSeq, composeOwner, composeText } = useMicStore.getState()
     if (!composeSeq || !composeText) return
+    if (composeSeq === consumedComposeSeq.current) return // already applied / stale remount
+    consumedComposeSeq.current = composeSeq
     if (composeOwner && composeOwner !== useAgentStore.getState().activeSessionId) {
       useAgentStore.getState().selectSession(composeOwner)
     }
-    textRef.current = composeText
+    // APPEND to whatever's already in the composer (read the live DOM value so
+    // user typing/erasing is respected) rather than replacing it — successive
+    // PTT utterances accrue into one message.
     const el = inputRef.current
+    const existing = el?.value ?? textRef.current ?? ''
+    const sep = existing && !/\s$/.test(existing) ? ' ' : ''
+    const next = existing + sep + composeText
+    textRef.current = next
     if (el) {
-      el.value = composeText
-      const caret = composeText.length
+      el.value = next
+      const caret = next.length
       el.setSelectionRange(caret, caret)
       el.focus()
     }
-    setHasContent(!!composeText.trim())
+    setHasContent(!!next.trim())
     resizeTextarea()
-    useGlassesStore.getState().setComposerText('agents', composeText)
+    useGlassesStore.getState().setComposerText('agents', next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [composeSeq])
 

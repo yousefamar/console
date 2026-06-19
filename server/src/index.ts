@@ -1477,8 +1477,13 @@ httpServer.listen(port, host, () => {
           injectToAl(body, broadcast)
         },
         onHealthChange: (state, detail) => {
+          // WhatsApp drops + auto-reconnects constantly on transient 428/503
+          // blips. Injecting each connect/disconnect into Al's session spends a
+          // full turn's tokens for zero action, so DON'T feed Al — just log for
+          // diagnostics. The one actionable case (logged-out → needs re-pair) is
+          // surfaced separately via onQrUpdate when the fresh QR is issued.
           const detailSuffix = detail ? ` (${detail})` : ''
-          injectToAl(`[Hub event] WhatsApp ${state}${detailSuffix}`, broadcast)
+          console.log(`[al/wa] health: ${state}${detailSuffix}`)
         },
       })
       log('Baileys WhatsApp started')
