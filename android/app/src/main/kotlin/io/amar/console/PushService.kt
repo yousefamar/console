@@ -1007,7 +1007,12 @@ class PushService : Service() {
         val url = "$HUB_HTTPS/matrix/media/thumbnail/${Uri.encode(server)}/${Uri.encode(mediaId)}" +
             "?width=$AVATAR_PX&height=$AVATAR_PX&method=crop"
         return try {
-            val req = Request.Builder().url(url).build()
+            // Auth enforcement gates /hub/* — the thumbnail proxy lives there,
+            // so attach the paired bearer (same token PushService uses for the
+            // /push WS). Without it the GET 401s and the avatar silently drops.
+            val reqB = Request.Builder().url(url)
+            HubTokenStore.get()?.let { reqB.header("Authorization", "Bearer $it") }
+            val req = reqB.build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val bytes = resp.body?.bytes() ?: return null
