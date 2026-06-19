@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="PTT Shim"
+        android:allowBackup="false">
+
+        <!-- Translucent, no-history, finishes in onCreate → satisfies the
+             firmware's "is com.zello installed?" check and gives it a launch
+             target that draws nothing. -->
+        <activity
+            android:name=".ShimActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

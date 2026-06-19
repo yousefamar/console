@@ -3,6 +3,8 @@
 .kotlin/
 /build/
 /app/build/
+# Any module's build output (e.g. zello-shim/build/)
+**/build/
 
 # IDE
 /.idea/

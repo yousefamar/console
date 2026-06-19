@@ -43,11 +43,21 @@ export function ApkPairSection() {
       })
       // Retry the bridge call a few times — WebView occasionally injects
       // the interface slightly after first paint.
+      //
+      // CRITICAL: Android's addJavascriptInterface methods must be invoked AS A
+      // MEMBER of the injected object (`native.setHubToken(x)`). Extracting the
+      // method into a local (`const fn = native.setHubToken; fn(x)`) detaches it
+      // from the injected object and throws "Java bridge method can't be invoked
+      // on a non-injected object". So keep `native` and call through it.
       const tryBridge = (attempt: number) => {
-        const fn = window.ConsoleNative?.setHubToken
-        if (typeof fn === 'function') {
-          fn(res.plaintext)
-          setPaired(true)
+        const native = window.ConsoleNative
+        if (native && typeof native.setHubToken === 'function') {
+          try {
+            native.setHubToken(res.plaintext)
+            setPaired(true)
+          } catch (e) {
+            setError(`setHubToken failed: ${(e as Error)?.message || String(e)}`)
+          }
           return
         }
         if (attempt >= 5) {

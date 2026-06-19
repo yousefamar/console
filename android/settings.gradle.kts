@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "console"
 include(":app")
+include(":zello-shim")

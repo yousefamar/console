@@ -80,10 +80,11 @@ export function handleMicRoutes(
     readBody(req).then((body) => {
       const { text } = JSON.parse(body || '{}') as { text?: string }
       const t = (text ?? '').trim()
-      if (!t) { json({ ok: true, skipped: 'empty transcript' }); return }
+      if (!t) { console.log('[mic] say: empty transcript (skipped)'); json({ ok: true, skipped: 'empty transcript' }); return }
       const owner = ctx.effectiveOwnerId()
-      if (!owner) { json({ error: 'no mic owner available (is Al up?)' }, 503); return }
+      if (!owner) { console.log('[mic] say: no owner'); json({ error: 'no mic owner available (is Al up?)' }, 503); return }
       const ok = ctx.injectToSession(owner, t)
+      console.log(`[mic] say → owner=${owner} (${ctx.ownerName(owner)}) live=${ok} text=${JSON.stringify(t.slice(0, 80))}`)
       json(ok ? { ok: true, owner, ownerName: ctx.ownerName(owner) } : { error: 'owner session not live' }, ok ? 200 : 503)
     }).catch((err: Error) => json({ error: err.message }, 400))
     return true
@@ -96,8 +97,9 @@ export function handleMicRoutes(
     readBody(req).then((body) => {
       const { text } = JSON.parse(body || '{}') as { text?: string }
       const t = (text ?? '').trim()
-      if (!t) { json({ ok: true, skipped: 'empty transcript' }); return }
+      if (!t) { console.log('[mic] compose: empty transcript (skipped)'); json({ ok: true, skipped: 'empty transcript' }); return }
       const owner = ctx.compose(t)
+      console.log(`[mic] compose → owner=${owner} (${ctx.ownerName(owner)}) text=${JSON.stringify(t.slice(0, 80))}`)
       json({ ok: true, owner, ownerName: ctx.ownerName(owner) })
     }).catch((err: Error) => json({ error: err.message }, 400))
     return true
