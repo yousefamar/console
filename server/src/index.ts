@@ -952,6 +952,11 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     setOwner: (sid) => micState.setOwnerSessionId(sid),
     setHot: (hot) => micState.setHot(hot),
     injectToSession,
+    compose: (text) => {
+      const owner = effectiveMicOwnerId()
+      syncBus.broadcast('mic', 'compose', { owner, ownerName: micOwnerName(owner), text })
+      return owner
+    },
   }, readBody)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
