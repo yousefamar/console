@@ -129,6 +129,13 @@ export class GlassesHub {
       else p.reject(new Error(typeof f.error === 'string' ? f.error : 'rpc failed'))
       return true
     }
+    // PTT hardware-button probe (APK v25): forward of any captured Zello/
+    // vendor PTT broadcast. Discovery-only — we log the action + extras so we
+    // can see what the phone's Custom key actually emits, then wire real PTT.
+    if (f.type === 'ptt_button') {
+      this.log(`[ptt-probe] action=${String(f.action)} extras=${JSON.stringify(f.extras ?? {})}`)
+      return true
+    }
     if (f.type === 'glasses_state' && f.state && typeof f.state === 'object') {
       this.cachedState = f.state as GlassesSnapshot
       this.cachedAt = Date.now()

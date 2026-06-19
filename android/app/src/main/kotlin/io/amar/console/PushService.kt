@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -280,6 +282,45 @@ class PushService : Service() {
         // Forward BLE audio + touch to the hub. BleManager may not be ready
         // yet (GlassesService starts async); poll until it is.
         attachBleListener()
+        registerPttProbe()
+    }
+
+    // --- PTT hardware-button probe ------------------------------------------
+    // The rugged phone's Custom key can be set (Settings → SOS/Custom key →
+    // Long press → "Open Zello") to emit Zello-style PTT broadcasts. We don't
+    // know which action this firmware uses, so register the widest plausible
+    // set and forward anything that fires to the hub for inspection. Real
+    // hold-to-talk gets wired to whichever down/up pair actually shows up.
+    private val pttActions = listOf(
+        "com.zello.ptt.down", "com.zello.ptt.up", "com.zello.ptt.toggle",
+        "com.zello.ptt.action.down", "com.zello.ptt.action.up",
+        "android.intent.action.PTT", "com.ptt.down", "com.ptt.up",
+        "com.ulefone.ptt.down", "com.ulefone.ptt.up", "com.ptt.intent.action.PTT",
+    )
+    private val pttReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            try {
+                val extras = JSONObject()
+                intent.extras?.keySet()?.forEach { k ->
+                    try { extras.put(k, intent.extras?.get(k)?.toString()) } catch (_: Exception) {}
+                }
+                webSocket?.send(JSONObject().put("type", "ptt_button").put("action", action).put("extras", extras).toString())
+            } catch (_: Exception) {}
+        }
+    }
+    private fun registerPttProbe() {
+        try {
+            val filter = IntentFilter()
+            pttActions.forEach { filter.addAction(it) }
+            // Cross-app broadcasts require an EXPORTED dynamic receiver on API 33+.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(pttReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(pttReceiver, filter)
+            }
+        } catch (_: Throwable) {}
     }
 
     private fun attachBleListener(attempt: Int = 0) {
@@ -312,6 +353,7 @@ class PushService : Service() {
             try { GlassesController.requireBle().removeListener(bleListener) } catch (_: Throwable) {}
         }
         reconnectHandler.removeCallbacksAndMessages(null)
+        try { unregisterReceiver(pttReceiver) } catch (_: Throwable) {}
         try { webSocket?.close(1000, "shutdown") } catch (_: Exception) {}
         webSocket = null
         super.onDestroy()
