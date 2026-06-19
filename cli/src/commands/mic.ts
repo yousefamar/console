@@ -70,12 +70,14 @@ async function pttStart(flags: GlobalFlags): Promise<void> {
   proc.unref()
   if (proc.pid) writeFileSync(PIDFILE, String(proc.pid), 'utf8')
   await hubFetch('/mic/hot', { method: 'POST', body: { hot: true } }).catch(() => {})
+  refreshWaybar()
   output({ ok: true, recording: true, pid: proc.pid }, flags)
 }
 
 async function pttStop(flags: GlobalFlags): Promise<void> {
   killRecorder()
   await hubFetch('/mic/hot', { method: 'POST', body: { hot: false } }).catch(() => {})
+  refreshWaybar()
   // Give pw-record a beat to flush the WAV header/tail after SIGINT.
   await new Promise((r) => setTimeout(r, 250))
   if (!existsSync(WAV) || safeSize(WAV) < 1024) {
@@ -101,6 +103,12 @@ function killRecorder(): void {
 
 function safeSize(p: string): number {
   try { return statSync(p).size } catch { return 0 }
+}
+
+/** Nudge the waybar custom/ptt module (signal 9) to repaint immediately
+ *  instead of waiting for its poll interval. No-op if waybar/pkill absent. */
+function refreshWaybar(): void {
+  try { execFile('pkill', ['-RTMIN+9', 'waybar'], () => {}) } catch { /* ignore */ }
 }
 
 /** POST the recorded WAV to the hub /stt via curl (multipart). Returns text. */
