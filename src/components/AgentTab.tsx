@@ -6,7 +6,8 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Mic, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { useMicStore } from '@/store/mic'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
 import { TasksPanel } from './agent/TasksPanel'
@@ -84,6 +85,9 @@ export const AgentTab = memo(function AgentTab() {
       // Don't disconnect on unmount — keep connection alive across tab switches
     }
   }, [connect])
+
+  // Subscribe to push-to-talk mic ownership (hub SyncBus 'mic' service).
+  useEffect(() => { useMicStore.getState().init() }, [])
 
   // Hydrate the cron store for ALL sessions so the sidebar can render per-row
   // task counts. Refresh every 30s for cross-client mutations.
@@ -596,6 +600,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               <span className="truncate">{isGenerating ? 'Generating title…' : displayName}</span>
             </span>
             <div className="flex items-center gap-1.5">
+              <MicButton sessionId={session.id} />
               {session.needsAttention && (
                 <span
                   className="flex items-center gap-0.5 text-[10px] text-red-500 font-semibold flex-shrink-0"
@@ -675,7 +680,10 @@ const AlListItem = memo(function AlListItem({ session, isActive, onSelect }: {
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-text-primary">Al</span>
-        <StatusDot status={session.status} />
+        <div className="flex items-center gap-1.5">
+          <MicButton sessionId={session.id} />
+          <StatusDot status={session.status} />
+        </div>
       </div>
       {lastText && (
         <div className="text-[10px] text-text-tertiary truncate mt-0.5 max-w-[200px]">
@@ -695,6 +703,27 @@ function StatusDot({ status }: { status: 'running' | 'idle' | 'ended' }) {
   // "fine" (avoids the hard-to-distinguish green-vs-orange the user flagged).
   if (status !== 'running') return null
   return <Circle size={6} className="fill-current flex-shrink-0 text-warning" />
+}
+
+// Push-to-talk mic adornment. The current owner (default = Al) shows a solid
+// icon; RED when hot (recording). Non-owners show a faint icon (brightens on
+// hover) — click it to hand them the mic; click the owner's to release to Al.
+function MicButton({ sessionId }: { sessionId: string }) {
+  const isOwner = useMicStore((s) => s.owner === sessionId)
+  const hot = useMicStore((s) => s.owner === sessionId && s.hot)
+  const setMic = useMicStore((s) => s.setMic)
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); setMic(isOwner ? 'al' : sessionId) }}
+      title={isOwner ? (hot ? 'Recording — mic owner' : 'Mic owner — click to release to Al') : 'Give the mic to this agent'}
+      className={clsx(
+        'flex-shrink-0 transition-colors duration-fast',
+        hot ? 'text-red-500' : isOwner ? 'text-text-primary' : 'text-text-tertiary/40 hover:text-text-secondary',
+      )}
+    >
+      <Mic size={11} className={hot ? 'fill-red-500/20' : undefined} />
+    </button>
+  )
 }
 
 
