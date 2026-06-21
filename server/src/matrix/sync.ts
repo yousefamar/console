@@ -650,8 +650,19 @@ export class MatrixSync {
           if (isLowPriority && highlightCount === 0) continue
 
           const cache = this.roomState.get(roomId)
-          const isDirect = cache?.isDirect ?? this.directRooms.has(roomId)
-          const roomName = cache?.name
+          // Prefer the canonical, persisted chat-rooms snapshot for
+          // name/isDirect/avatar. The local `roomState` cache only learns a
+          // room's name from `m.room.name` state events, which Matrix replays
+          // on initial sync (or when the name changes) — so after a hub restart
+          // an incremental sync delivering a group message carries no name, the
+          // cache stays empty, and the notification falls back to the sender's
+          // name (looks like a DM). The chat-rooms snapshot resolves names via
+          // heroes/bridge-member fallbacks and is persisted to disk, so it's
+          // correct across restarts.
+          const canonical = this.chatRoomsStore?.snapshot().data[roomId]
+          const isDirect = canonical?.isDirect ?? cache?.isDirect ?? this.directRooms.has(roomId)
+          const roomName = canonical?.name ?? cache?.name
+          const roomAvatarMxc = canonical?.avatar ?? cache?.avatarMxc
 
           for (const ev of events) {
             if (ev.sender === cfg.userId) continue
@@ -676,7 +687,7 @@ export class MatrixSync {
               senderName,
               senderId: ev.sender,
               senderAvatarMxc: member?.avatarMxc,
-              roomAvatarMxc: cache?.avatarMxc,
+              roomAvatarMxc,
               isDirect,
               timestamp: ev.origin_server_ts,
             })
