@@ -175,6 +175,11 @@ async function main() {
         await blog(verb, rest, flags)
         break
       }
+      case 'map': {
+        const { map } = await import('./commands/map.js')
+        await map(verb, rest, flags)
+        break
+      }
       case 'capabilities': {
         const { capabilities } = await import('./commands/capabilities.js')
         capabilities(flags)

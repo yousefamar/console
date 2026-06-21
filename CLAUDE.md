@@ -193,6 +193,22 @@ The debug agent:
 - Routes at `/flights/*` (status, credentials, explore, search, watch CRUD, history). CLI: `con cal flights {status, credentials, explore, search, watch, watch list, watch remove}`.
 - SPA: `FlightsPanel.tsx` mounts in the calendar sidebar (desktop) or `FlightsSheet.tsx` as a full-screen sheet (mobile, via `CalendarMobileControls`). Backed by `src/store/flights.ts`, which mirrors hub state via the sync bus — no client polling.
 
+### Map (location history + geocaching)
+New pane inserted **before Money** (`'map'` in `src/store/ui.ts` `ActivePane`). `src/components/MapTab.tsx` is a **MapLibre GL** map; owned by the `map-tab` agent role. **MapTab is `React.lazy` + mounts only on first activation** (MapLibre ~250 KB gz) — it deliberately does NOT pre-render like other panes.
+- **Basemap**: self-hosted **Protomaps PMTiles** + `protomaps-themes-base` dark theme (no third-party tile key). The hub serves `~/.config/console/basemap/<region>.pmtiles` via a **HTTP-Range-capable** route (`server/src/routes/basemap.ts` → `/basemap/*` + auth-exempt `/public/basemap/*`; 206/`Content-Range`/`Accept-Ranges`/HEAD). Generate archives with `con map basemap update [region]` → `scripts/basemap-extract.sh` (`pmtiles extract` from the Protomaps global build; needs the `pmtiles` CLI). `src/map/pmtiles-source.ts` registers the protocol; **`protomaps-themes-base` v4 `layers(src, theme)` wants a Theme object → `namedTheme('dark')`**.
+- **Offline**: "Download offline" pulls the archive into Dexie `basemaps` (v8) as a Blob; a custom PMTiles `FileSource(blob)` (`src/map/offline-basemap.ts`) reads ranges locally — **service-worker-independent**. `public/sw.js` MUST skip `/public/basemap/` (caching a 206 throws). Overlay layers are re-added on every `style.load` (survives the offline `setStyle` swap).
+- **Location layer**: full **history browser** (date-range → track polyline + points + live marker) from the OwnTracks proxy `server/src/routes/owntracks.ts` (`/owntracks/{version,list,last,locations}` → `maps.amar.io/recorder/api/0/*`, basic auth from `auth.json` `owntracks{}`). See `memory/reference_owntracks_server.md`.
+- **Geocaching layer**: see the dedicated subsystem below. Pins coloured by type, "Fetch caches in this view" → rate-limited area scrape, lazy detail panel (hint/attributes/logs), credentials panel. Client mirror `src/geocaching/subscribe.ts` (Dexie `geocaches` v8 + SyncBus `geocaching` service, offline-first). Keys: `j/k` adjacent cache, `f` fetch here, `g` my location.
+
+### Geocaching subsystem (pycaching port — `server/src/geocaching/`)
+The hub scrapes **geocaching.com as Yousef himself** (the c:geo model — the official partner API is closed to individuals; the open Opencaching dataset is too thin for the UK). A from-scratch TypeScript port of the Python `pycaching` library. See `memory/project_geocaching.md`.
+- `session.ts` — cookie jar (`geocaching-session.json`, 0600) + **manual redirect following** (Node `fetch` has no jar). Login via `/account/signin` + `__RequestVerificationToken`; success = `"username":"…"` in page JS. **reCAPTCHA often blocks programmatic login → cookie fallback** (paste browser `gspkauth`). **Premium matters** — PM-only caches otherwise 403 the detail scrape.
+- `client.ts` — **search-first**: `/api/proxy/web/search/v2?box=N,W,S,E` → ~200 summaries/request (`cacheFromApiRecord`, verified pycaching mapping). Full detail (hint ROT13, attributes off image filenames, logs via `/seek/geocache.logbook?tkn=<userToken>`) is **lazy**, only on cache open — keeps request volume + ban risk near zero.
+- `rate-limit.ts` — safety core: concurrency 1, jittered 3–6 s delay, persisted **daily budget** (default 400, `geocaching-budget.json`), 429 backoff. **Manual-trigger only — no background gc.com polling.**
+- `parse.ts`/`types.ts` — pure, unit-tested (`server/src/__tests__/geocaching.test.ts`); enum ids ported verbatim from pycaching.
+- Routes `server/src/routes/geocaching.ts`: `/geocaching/{status,credentials,fetch-area,caches,cache/:code}`. CLI `con map geocaching {status,config,fetch,caches,cache}` (second word = the Map tab; `con map basemap update` likewise).
+- **Upstream-watch cron** (id `dAnazbI`, weekly Mon 09:00, bound to a fixed claudeSession) checks `pycaching/releases.atom` vs `geocaching-upstream.json` and folds upstream fixes into the port. **Not yet tested end-to-end against a real login** (needs Premium creds + a generated basemap `.pmtiles`).
+
 ### Home / Dashboard
 - First pane (slot 0). Three sections: **Servers** (hub + Tailscale peers + PM2 processes + user-listed external URLs), **Alerts** (pending agent AskUserQuestions, calendar events starting in next 30 min, recent errors from `/debug/log`), **AI agent canvas** (sandboxed iframe).
 - Snapshot poll: 30s. Alerts poll: 15s. Server-side helpers in `server/src/dashboard.ts` shell out to `tailscale status --json` and `pm2 jlist` per request — no caching, no daemon.
@@ -284,6 +300,7 @@ A hardware/hotkey hold-to-talk that streams mic → hub `/stt` (OpenAI realtime,
 - **Calendar**: `h/l` = prev/next week, `t` = today, `w/d` = week/day view, `c` = create
 - **Agents**: `y/n/a` = approve/deny/allow-all, `Enter` = focus prompt, `Esc` = interrupt
 - **Notes**: vim mode in editor, `Ctrl+P` = find file, `Ctrl+S` = save, `:w/:q/:wq` ex commands
+- **Map**: `j/k` = adjacent cache, `f` = fetch caches in view, `g` = my location, `Esc` = deselect
 
 ## Commands
 - `pm2 start "npm run dev" --name console-dev` — dev server (Vite, plain HTTP; Caddy in front does TLS)
@@ -335,6 +352,7 @@ External clients reach all of these under `${origin}/hub/<path>` via Caddy (the 
   - `/auth/hub/tokens` (GET/POST), `/auth/hub/tokens/:id` (DELETE) — name + scope-keyed bearer tokens for non-browser clients. POST returns the plaintext once.
   - `/auth/hub/allowed-emails` (GET/POST), `/auth/hub/allowed-emails/:email` (DELETE) — Google allow-list. Default: `['yousefamar@gmail.com']`.
 - `/mail/*`, `/cal/*`, `/matrix/*`, `/money/*`, `/bookmarks/*`, `/feeds/*`, `/notes/*` — service proxies / CRUD.
+- `/owntracks/*` — proxy to the self-hosted OwnTracks Recorder (`maps.amar.io`, basic auth injected). `/geocaching/*` — gc.com scraper (status/credentials/fetch-area/caches/cache). `/basemap/*` (+ auth-exempt `/public/basemap/*`) — Range-capable PMTiles serve for the Map pane.
 - `/debug/*` — debug agent log, eval, state, screenshot, toggle. `/debug/eval` is loopback-only (Phase 9+).
 - `/push` (WebSocket), `POST /push/send`, `GET /push/status` — push notification channel consumed by the APK's PushService. Carries glasses WS RPC framing (see Glasses section). PushService attaches `Authorization: Bearer <apk-scoped-token>`.
 - `/glasses/*` — low-level dumb pipe proxied to the APK's GlassesService over the `/push` WS.

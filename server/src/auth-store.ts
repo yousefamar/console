@@ -62,6 +62,13 @@ export interface AuthConfig {
   }
   monzo?: MonzoAuth
   serpApi?: { apiKey: string }
+  /** OwnTracks Recorder (self-hosted location server, e.g. maps.amar.io) */
+  owntracks?: { url: string; username: string; password: string }
+  /**
+   * geocaching.com credentials for the hub-side scraper (pycaching port).
+   * Either username+password (CAPTCHA-prone) or a `gspkauth` session cookie.
+   */
+  geocaching?: { username?: string; password?: string; cookie?: string }
   webhookSecret?: string
   hubAllowedEmails?: string[]
   hubSessions?: HubSession[]
@@ -109,6 +116,15 @@ export class AuthStore {
     }
     // Ensure webhook secret exists
     this.getWebhookSecret()
+    // Seed the known OwnTracks server if unconfigured
+    if (!this.config.owntracks) {
+      this.config.owntracks = {
+        url: 'https://maps.amar.io/recorder',
+        username: 'amar',
+        password: 'bashbash',
+      }
+      this.save()
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -509,6 +525,38 @@ export class AuthStore {
 
   clearSerpApi(): void {
     this.config.serpApi = undefined
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
+  // OwnTracks (self-hosted location recorder, proxied by /owntracks/*)
+  // --------------------------------------------------------------------------
+
+  getOwntracksConfig(): NonNullable<AuthConfig['owntracks']> | undefined {
+    return this.config.owntracks
+  }
+
+  setOwntracksConfig(cfg: NonNullable<AuthConfig['owntracks']>): void {
+    this.config.owntracks = cfg
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
+  // Geocaching.com scraper credentials (pycaching port)
+  // --------------------------------------------------------------------------
+
+  getGeocachingCreds(): NonNullable<AuthConfig['geocaching']> | undefined {
+    return this.config.geocaching
+  }
+
+  setGeocachingCreds(creds: NonNullable<AuthConfig['geocaching']>): void {
+    // Merge so setting a cookie doesn't wipe a stored username, and vice-versa.
+    this.config.geocaching = { ...this.config.geocaching, ...creds }
+    this.save()
+  }
+
+  clearGeocachingCreds(): void {
+    this.config.geocaching = undefined
     this.save()
   }
 

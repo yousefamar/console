@@ -19,6 +19,33 @@ export interface DbFeedRead {
   itemId: string
 }
 
+/** A downloaded Protomaps basemap archive, kept for offline rendering. */
+export interface DbBasemap {
+  region: string
+  blob: Blob
+  bytes: number
+  zoomRange?: string
+  downloadedAt: number
+}
+
+/** Client mirror of the hub geocache store (summaries; detail fetched on tap). */
+export interface DbGeocache {
+  code: string
+  name: string
+  lat: number | null
+  lon: number | null
+  type: string
+  size: string
+  difficulty: number
+  terrain: number
+  found: boolean
+  pmOnly: boolean
+  owner: string
+  hidden: string
+  favorites: number
+  status: string
+}
+
 class ConsoleDatabase extends Dexie {
   threads!: Table<DbThread, string>
   messages!: Table<DbMessage, string>
@@ -31,6 +58,8 @@ class ConsoleDatabase extends Dexie {
   feedRead!: Table<DbFeedRead, string>
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
+  basemaps!: Table<DbBasemap, string>
+  geocaches!: Table<DbGeocache, string>
 
   constructor() {
     super('console-inbox')
@@ -118,6 +147,23 @@ class ConsoleDatabase extends Dexie {
       // Clear old calendar data — compound key format changed from calendarId:eventId to accountEmail:calendarId:eventId
       tx.table('calendarEvents').clear()
       tx.table('calendarList').clear()
+    })
+
+    // v8: Map pane — offline basemap archives + geocache mirror
+    this.version(8).stores({
+      threads: 'id, date, snoozedUntil',
+      messages: 'id, threadId, date',
+      attachmentData: 'attachmentId, messageId',
+      chatRooms: '&id, lastMessageTime, snoozedUntil',
+      chatMessages: '&id, roomId, timestamp, [roomId+timestamp]',
+      queue: '++id, type, status, createdAt',
+      meta: 'key',
+      feedItems: '&id, feedId, publishedAt, [feedId+publishedAt]',
+      feedRead: '&itemId',
+      calendarList: '&id, accountEmail',
+      calendarEvents: '&compoundKey, accountEmail, calendarId, startTime',
+      basemaps: '&region',
+      geocaches: '&code, [lat+lon]',
     })
   }
 }
