@@ -50,8 +50,9 @@ async function hydrateFromDb(): Promise<void> {
 }
 
 async function fetchSnapshot(): Promise<void> {
-  const env = await hubBus.rpc<{ layers: MapLayerMeta[] }>('map-layers', 'snapshot', undefined)
-  if (env?.layers) await applyIndex(env.layers)
+  // Plain HTTP, not a SyncBus RPC (the WS RPC was unreliable for this service).
+  const { layers } = await hubFetch<{ layers: MapLayerMeta[] }>('/map/layers')
+  await applyIndex(layers)
 }
 
 /** Idempotent; call once on boot. */
