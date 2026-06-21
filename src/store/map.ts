@@ -54,6 +54,49 @@ export interface GcStatus {
 
 export type BBox = [number, number, number, number] // [s, w, n, e]
 
+// --- Agent-authored layers --------------------------------------------------
+
+export interface MapLayerStyle {
+  color?: string
+  size?: number
+  fillColor?: string
+  fillOpacity?: number
+  strokeColor?: string
+  strokeWidth?: number
+  lineColor?: string
+  lineWidth?: number
+  popup?: Array<string | { key: string; label?: string }>
+}
+
+export interface MapLayerMeta {
+  slug: string
+  group: string
+  name: string
+  geometryTypes: string[]
+  featureCount: number
+  bbox: [number, number, number, number] | null // [w, s, e, n]
+  style: MapLayerStyle
+  fit: boolean
+  updatedAt: number
+  updatedBy?: string
+}
+
+const LAYER_VIS_KEY = 'console:map:layerVisible'
+function loadLayerVis(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(LAYER_VIS_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+function saveLayerVis(v: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(LAYER_VIS_KEY, JSON.stringify(v))
+  } catch {
+    /* ignore */
+  }
+}
+
 const DAY = 24 * 60 * 60 * 1000
 const OT_USER = 'amar'
 
@@ -87,6 +130,15 @@ interface MapState {
   loadPins: () => Promise<void>
   mergePins: (incoming: MapCache[]) => void
   selectCache: (code: string | null) => Promise<void>
+
+  // agent-authored layers
+  layers: MapLayerMeta[]
+  layerData: Record<string, unknown> // slug → geojson
+  layerVisible: Record<string, boolean>
+  setLayers: (metas: MapLayerMeta[]) => void
+  setLayerData: (slug: string, geojson: unknown) => void
+  toggleLayer: (slug: string) => void
+  setGroupVisible: (group: string, visible: boolean) => void
   setCredentials: (creds: { username?: string; password?: string; cookie?: string }) => Promise<void>
   selectAdjacentPin: (dir: 1 | -1) => void
 }
@@ -211,6 +263,26 @@ export const useMapStore = create<MapState>((set, get) => ({
     })
     set({ gcStatus: status })
   },
+
+  layers: [],
+  layerData: {},
+  layerVisible: loadLayerVis(),
+  setLayers: (metas) => set({ layers: metas }),
+  setLayerData: (slug, geojson) => set((s) => ({ layerData: { ...s.layerData, [slug]: geojson } })),
+  toggleLayer: (slug) =>
+    set((s) => {
+      const visible = s.layerVisible[slug] !== false
+      const next = { ...s.layerVisible, [slug]: !visible }
+      saveLayerVis(next)
+      return { layerVisible: next }
+    }),
+  setGroupVisible: (group, visible) =>
+    set((s) => {
+      const next = { ...s.layerVisible }
+      for (const l of s.layers) if (l.group === group || l.slug === group) next[l.slug] = visible
+      saveLayerVis(next)
+      return { layerVisible: next }
+    }),
 
   selectAdjacentPin: (dir) => {
     const { pins, selectedCode } = get()

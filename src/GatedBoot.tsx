@@ -83,6 +83,9 @@ const LazyApp = lazy(async () => {
   const { wireGeocachingSubscription } = await import('./geocaching/subscribe')
   wireGeocachingSubscription()
 
+  const { wireMapLayersSubscription } = await import('./map/layers-subscribe')
+  wireMapLayersSubscription()
+
   const { App } = await import('./App')
   return { default: App }
 })

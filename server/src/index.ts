@@ -59,6 +59,8 @@ import { handleApkRoutes } from './routes/apk.js'
 import { handleOwntracksRoutes } from './routes/owntracks.js'
 import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
+import { handleMapLayerRoutes } from './routes/map-layers.js'
+import { MapLayerStore } from './map-layers/store.js'
 import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
@@ -136,6 +138,7 @@ const monzoStore = new MonzoStore(
 )
 const financeStore = new FinanceStore(feedsConfigDir)
 const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
+const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // Runtime agent-model config + fallback chain. Inject the resolver into Session
 // NOW, before any session is spawned (restore loop, Al, fresh) so every spawn
@@ -416,6 +419,13 @@ geocachingClient.onChange = (changed) => {
     caches: changed.map(({ detail: _detail, ...summary }) => summary),
   })
 }
+
+// Agent-authored map layers: SyncBus carries only the index; clients fetch each
+// layer's GeoJSON over HTTP (layers can be multi-MB).
+syncBus.register('map-layers', {
+  snapshot: async () => ({ layers: mapLayerStore.list() }),
+})
+const broadcastLayers = () => syncBus.broadcast('map-layers', 'delta', { layers: mapLayerStore.list() })
 
 function markAlRead() {
   const len = alBridge.getMessageLog().length
@@ -981,6 +991,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
+  if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return

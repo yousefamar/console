@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2 } from 'lucide-react'
-import { useMapStore, type MapCache, type OtFix } from '@/store/map'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon } from 'lucide-react'
+import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle } from '@/store/map'
+import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
 
@@ -91,9 +92,12 @@ export function MapTab() {
     current, track, pins, selectedCode, gcStatus, fetching, error,
     rangeFrom, rangeTo, device, devices, loadingHistory,
     refresh, loadHistory, selectCache, setRange,
+    layers, layerData, layerVisible,
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
+  const [showLayers, setShowLayers] = useState(false)
+  const fittedRef = useRef<Set<string>>(new Set())
 
   // --- init map (once) ------------------------------------------------------
   useEffect(() => {
@@ -115,9 +119,11 @@ export function MapTab() {
       if (!m) return
       addOverlayLayers(m)
       readyRef.current = true
-      pushSource(m, 'gc-pins', pinsToFC(useMapStore.getState().pins))
-      pushSource(m, 'ot-track', trackToFC(useMapStore.getState().track))
-      pushSource(m, 'ot-current', currentToFC(useMapStore.getState().current))
+      const st = useMapStore.getState()
+      pushSource(m, 'gc-pins', pinsToFC(st.pins))
+      pushSource(m, 'ot-track', trackToFC(st.track))
+      pushSource(m, 'ot-current', currentToFC(st.current))
+      reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
     })
 
     // Layer-scoped handlers bind once (deferred by layer id is fine in MapLibre).
@@ -166,6 +172,20 @@ export function MapTab() {
     const map = mapRef.current
     if (readyRef.current && map) map.setFilter('gc-selected', ['==', ['get', 'code'], selectedCode ?? ''])
   }, [selectedCode])
+
+  // agent-authored layers → reconcile sources/layers + fit-to-bounds once
+  useEffect(() => {
+    const map = mapRef.current
+    if (!readyRef.current || !map) return
+    reconcileAgentLayers(map, layers, layerData, layerVisible)
+    for (const l of layers) {
+      if (l.fit && l.bbox && layerData[l.slug] && layerVisible[l.slug] !== false && !fittedRef.current.has(l.slug)) {
+        fittedRef.current.add(l.slug)
+        const [w, s, e, n] = l.bbox
+        map.fitBounds([[w, s], [e, n]], { padding: 40, duration: 600 })
+      }
+    }
+  }, [layers, layerData, layerVisible])
 
   const selected = pins.find((p) => p.code === selectedCode) ?? null
   const budget = gcStatus?.budget
@@ -226,6 +246,14 @@ export function MapTab() {
           {gcStatus?.loggedIn ? gcStatus.username : 'Sign in'}
         </button>
 
+        <button
+          onClick={() => setShowLayers((v) => !v)}
+          title="Toggle map layers"
+          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2"
+        >
+          <LayersIcon size={12} /> Layers{layers.length ? ` (${layers.length})` : ''}
+        </button>
+
         {budget && (
           <span className="rounded bg-surface-0/90 border border-border px-2 py-1 text-text-tertiary backdrop-blur">
             {budget.remaining}/{budget.cap} left · {pins.length} caches
@@ -242,6 +270,7 @@ export function MapTab() {
       </div>
 
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
+      {showLayers && <LayersPanel onClose={() => setShowLayers(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
     </div>
   )
@@ -292,6 +321,136 @@ function addOverlayLayers(map: maplibregl.Map) {
       paint: { 'circle-radius': 7, 'circle-color': '#3b82f6', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
     })
   }
+}
+
+// --- agent-authored layers ---------------------------------------------------
+
+type Expr = maplibregl.ExpressionSpecification
+const expr = (v: unknown) => v as unknown as Expr
+
+function subIds(slug: string) {
+  const b = `layer:${slug}`
+  return { src: b, fill: `${b}:fill`, line: `${b}:line`, circle: `${b}:circle`, symbol: `${b}:symbol` }
+}
+
+function removeAgentLayer(map: maplibregl.Map, slug: string) {
+  const { src, fill, line, circle, symbol } = subIds(slug)
+  for (const id of [fill, line, circle, symbol]) if (map.getLayer(id)) map.removeLayer(id)
+  if (map.getSource(src)) map.removeSource(src)
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
+}
+
+function buildPopupHtml(props: Record<string, unknown>, style: MapLayerStyle): string {
+  const fields = style.popup
+  const row = (label: string, v: unknown) =>
+    v == null || v === '' ? '' : `<div><span style="color:#888">${escapeHtml(label)}:</span> ${escapeHtml(String(v))}</div>`
+  const rows = fields?.length
+    ? fields.map((f) => (typeof f === 'string' ? row(f, props[f]) : row(f.label ?? f.key, props[f.key]))).join('')
+    : Object.entries(props).filter(([k]) => !k.startsWith('_')).map(([k, v]) => row(k, v)).join('')
+  return `<div style="font:12px system-ui,sans-serif;max-width:240px;line-height:1.4">${rows || '<i>no properties</i>'}</div>`
+}
+
+function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ) {
+  const { src, fill, line, circle, symbol } = subIds(meta.slug)
+  const existing = map.getSource(src) as maplibregl.GeoJSONSource | undefined
+  if (existing) { existing.setData(data); return }
+  const st = meta.style || {}
+  const before = map.getLayer('gc-pins') ? 'gc-pins' : undefined
+
+  map.addSource(src, { type: 'geojson', data })
+  map.addLayer({ id: fill, type: 'fill', source: src, paint: { 'fill-color': st.fillColor ?? '#3b82f6', 'fill-opacity': st.fillOpacity ?? 0.15 } }, before)
+  map.addLayer({ id: line, type: 'line', source: src, paint: { 'line-color': expr(['coalesce', ['get', '_color'], st.strokeColor ?? st.lineColor ?? '#3b82f6']), 'line-width': st.strokeWidth ?? st.lineWidth ?? 1.5 } }, before)
+  map.addLayer({
+    id: circle, type: 'circle', source: src,
+    filter: ['!', ['has', '_icon']] as maplibregl.FilterSpecification,
+    paint: {
+      'circle-color': expr(['coalesce', ['get', '_color'], st.color ?? '#22c55e']),
+      'circle-radius': expr(['coalesce', ['get', '_size'], st.size ?? 5]),
+      'circle-stroke-width': 1,
+      'circle-stroke-color': '#0a0a0a',
+    },
+  }, before)
+  map.addLayer({
+    id: symbol, type: 'symbol', source: src,
+    filter: ['all', ['==', ['geometry-type'], 'Point'], ['has', '_icon']] as maplibregl.FilterSpecification,
+    layout: { 'text-field': expr(['get', '_icon']), 'text-size': expr(['coalesce', ['get', '_size'], 18]), 'text-allow-overlap': true },
+  }, before)
+
+  const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+    const f = e.features?.[0]
+    if (!f) return
+    new maplibregl.Popup({ closeButton: true, maxWidth: '260px' })
+      .setLngLat(e.lngLat)
+      .setHTML(buildPopupHtml((f.properties ?? {}) as Record<string, unknown>, st))
+      .addTo(map)
+  }
+  for (const id of [fill, line, circle, symbol]) {
+    map.on('click', id, onClick)
+    map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
+  }
+}
+
+function reconcileAgentLayers(
+  map: maplibregl.Map,
+  layers: MapLayerMeta[],
+  layerData: Record<string, unknown>,
+  visible: Record<string, boolean>,
+) {
+  const desired = layers.filter((l) => visible[l.slug] !== false && layerData[l.slug])
+  const want = new Set(desired.map((l) => l.slug))
+  for (const srcId of Object.keys(map.getStyle()?.sources ?? {})) {
+    if (srcId.startsWith('layer:') && !want.has(srcId.slice('layer:'.length))) removeAgentLayer(map, srcId.slice('layer:'.length))
+  }
+  for (const l of desired) addOrUpdateAgentLayer(map, l, layerData[l.slug] as GJ)
+}
+
+function LayersPanel({ onClose }: { onClose: () => void }) {
+  const { layers, layerVisible, toggleLayer, setGroupVisible } = useMapStore()
+  const groups = new Map<string, MapLayerMeta[]>()
+  for (const l of layers) {
+    const g = l.group || ''
+    if (!groups.has(g)) groups.set(g, [])
+    groups.get(g)!.push(l)
+  }
+  return (
+    <div className="absolute top-12 right-14 z-10 w-72 max-h-[70%] overflow-y-auto rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+      <div className="flex items-center justify-between mb-2">
+        <span className="font-medium">Layers</span>
+        <button onClick={onClose}><X size={14} /></button>
+      </div>
+      {layers.length === 0 && (
+        <p className="text-text-tertiary text-xs">No agent layers yet. Push one with <code>con map layer upsert &lt;group/name&gt; --file …</code></p>
+      )}
+      {[...groups.entries()].map(([g, ls]) => {
+        const allOn = ls.every((l) => layerVisible[l.slug] !== false)
+        return (
+          <div key={g || '_'} className="mb-2">
+            {g && (
+              <label className="flex items-center gap-2 text-xs text-text-tertiary mb-1">
+                <input type="checkbox" checked={allOn} onChange={() => setGroupVisible(g, !allOn)} />
+                <span className="font-medium">{g}</span>
+              </label>
+            )}
+            <div className={g ? 'pl-4 space-y-1' : 'space-y-1'}>
+              {ls.map((l) => (
+                <label key={l.slug} className="flex items-center justify-between gap-2 text-xs cursor-pointer">
+                  <span className="flex items-center gap-2">
+                    <input type="checkbox" checked={layerVisible[l.slug] !== false} onChange={() => toggleLayer(l.slug)} />
+                    {l.name}
+                  </span>
+                  <span className="text-text-tertiary">{l.featureCount}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function CredentialsPanel({ onClose }: { onClose: () => void }) {
