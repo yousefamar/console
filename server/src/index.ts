@@ -56,7 +56,6 @@ import { handleConfigRoutes } from './routes/config.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
-import { handleBasemapRoutes } from './routes/basemap.js'
 import { handleOwntracksRoutes } from './routes/owntracks.js'
 import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
@@ -958,10 +957,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     const apkPath = path.replace(/^\/public\/apk/, '/apk')
     if (handleApkRoutes(req, res, apkPath)) return
   }
-  if (path.startsWith('/public/basemap/')) {
-    const basemapPath = path.replace(/^\/public\/basemap/, '/basemap')
-    if (handleBasemapRoutes(req, res, basemapPath)) return
-  }
 
   if (path.startsWith('/mic') && handleMicRoutes(req, res, path, {
     effectiveOwnerId: effectiveMicOwnerId,
@@ -984,7 +979,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
-  if (path.startsWith('/basemap/') && handleBasemapRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return

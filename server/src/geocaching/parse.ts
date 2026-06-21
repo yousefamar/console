@@ -122,8 +122,17 @@ export function parseLogbook(json: unknown): GeocacheLog[] {
   return data.map((d) => ({
     id: d.LogGuid ?? '',
     type: logTypeName((d.LogTypeImage ?? '').replace(/\.[a-z0-9]+$/i, '')),
-    text: d.LogText ?? '',
+    text: htmlToText(d.LogText ?? ''),
     date: (d.Visited ?? '').split('T')[0],
     author: d.UserName ?? '',
   }))
+}
+
+/** gc.com log text is an HTML fragment (`<p>…</p>`, `<strong>`, entities) — flatten
+ *  it to plain text so the client never has to render untrusted markup. */
+export function htmlToText(html: string): string {
+  if (!html) return ''
+  const pre = html.replace(/<\/(p|div)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
+  const { document } = parseHTML(`<div>${pre}</div>`)
+  return (document.querySelector('div')?.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim()
 }
