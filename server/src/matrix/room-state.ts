@@ -30,6 +30,11 @@ export interface RoomState {
   lastMessageSender?: string
   lastMessageTime: number
   isUnread: boolean
+  /** User explicitly marked the room unread (no homeserver concept). Sticky:
+   *  survives sync recomputes that report notification_count=0, cleared only by
+   *  an explicit mark-read. Without this, any sync touching the room (notably
+   *  the big catch-up after a hub restart) wiped the manual flag. */
+  manualUnread?: boolean
   unreadCount?: number
   lastReadEventId?: string
   lastReadTs?: number
@@ -334,6 +339,12 @@ export function computeRoomState(
         || (e.type === 'm.room.canonical_alias' && e.state_key === '' && (e.content as any)?.alias),
   )
 
+  // A manual "mark unread" is a sticky hub-only intent with no homeserver
+  // backing. Carry it through every recompute and force isUnread true — the
+  // server-notif-zero path below must never clear it (only an explicit
+  // mark-read does, via ChatRoomsStore.setRoomRead).
+  const manualUnread = existing?.manualUnread ?? false
+
   return {
     id: roomId,
     name: hasExplicitName ? computedName
@@ -351,7 +362,10 @@ export function computeRoomState(
     lastMessageBody: advancesPreview ? (lastMsg?.body ?? '') : (existing?.lastMessageBody ?? ''),
     lastMessageSender: advancesPreview ? (lastMsg?.senderName ?? '') : (existing?.lastMessageSender ?? ''),
     lastMessageTime,
-    isUnread: latestIsFromMe
+    manualUnread: manualUnread || undefined,
+    isUnread: manualUnread
+      ? true
+      : latestIsFromMe
       ? false
       : existing
         ? (!notifInfoPresent && !hasNewerMessagesFromOthers

@@ -62,10 +62,11 @@ export class ChatRoomsStore {
     this.store.update((draft) => {
       const room = draft[roomId]
       if (!room) return false
-      if (!room.isUnread && room.unreadCount === 0 && room.lastReadEventId === eventId) return false
+      if (!room.isUnread && room.unreadCount === 0 && !room.manualUnread && room.lastReadEventId === eventId) return false
       draft[roomId] = {
         ...room,
         isUnread: false,
+        manualUnread: false, // an explicit read clears the sticky manual flag
         unreadCount: 0,
         lastReadEventId: eventId,
         lastReadTs: lastReadTs ?? room.lastReadTs,
@@ -74,14 +75,17 @@ export class ChatRoomsStore {
   }
 
   /** Mark a room unread again (no homeserver concept — purely a hub flag
-   *  surfaced to all clients). */
+   *  surfaced to all clients). `manualUnread` makes it sticky so a later sync
+   *  reporting notification_count=0 (e.g. the catch-up after a hub restart)
+   *  can't silently clear it. */
   setRoomUnread(roomId: string): void {
     this.store.update((draft) => {
       const room = draft[roomId]
-      if (!room || room.isUnread) return false
+      if (!room || room.manualUnread) return false
       draft[roomId] = {
         ...room,
         isUnread: true,
+        manualUnread: true,
         unreadCount: room.unreadCount && room.unreadCount > 0 ? room.unreadCount : 1,
       }
     })

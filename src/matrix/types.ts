@@ -135,6 +135,7 @@ export interface DbChatRoom {
   lastMessageSender?: string   // Display name of last sender
   lastMessageTime: number      // Timestamp ms — sort key
   isUnread: boolean            // Has unread messages
+  manualUnread?: boolean       // User-set sticky unread (no homeserver concept)
   unreadCount?: number         // Server notification_count (for badge)
   lastReadEventId?: string     // Read receipt marker
   lastReadTs?: number          // Timestamp of latest message when marked read
