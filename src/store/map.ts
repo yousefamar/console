@@ -179,13 +179,9 @@ export const useMapStore = create<MapState>((set, get) => ({
         hubFetch<OtFix[]>('/owntracks/last').catch(() => [] as OtFix[]),
         hubFetch<GcStatus>('/geocaching/status').catch(() => null),
       ])
-      // Hide stale devices (e.g. a 3-point setup-day artifact) — only surface
-      // devices with a fix in the last 90 days.
-      const nowS = Date.now() / 1000
-      const recent = last.filter((f) => f.device && nowS - (f.tst || 0) < 90 * 24 * 3600)
-      const devices = [...new Set(recent.map((f) => f.device).filter(Boolean) as string[])]
+      const devices = [...new Set(last.map((f) => f.device).filter(Boolean) as string[])]
       set((s) => ({
-        current: recent,
+        current: last,
         devices,
         device: s.device && devices.includes(s.device) ? s.device : (devices[0] ?? null),
         gcStatus: status,
