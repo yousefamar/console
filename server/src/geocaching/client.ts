@@ -159,6 +159,7 @@ export class GeocachingClient {
           difficulty: 0,
           terrain: 0,
           found: false,
+          dnf: false,
           pmOnly: false,
           owner: '',
           hidden: '',

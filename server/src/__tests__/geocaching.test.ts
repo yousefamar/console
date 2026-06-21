@@ -49,6 +49,7 @@ describe('cacheFromApiRecord (search/v2 → summary)', () => {
     expect(c.size).toBe('micro')
     expect(c.difficulty).toBe(1.5)
     expect(c.found).toBe(true)
+    expect(c.dnf).toBe(false)
     expect(c.owner).toBe('bob')
     expect(c.hidden).toBe('2020-01-02')
     expect(c.lat).toBe(51.4)
@@ -61,6 +62,11 @@ describe('cacheFromApiRecord (search/v2 → summary)', () => {
     expect(c.lat).toBeNull()
     expect(c.owner).toBe('')
     expect(c.found).toBe(false)
+    expect(c.dnf).toBe(false)
+  })
+
+  it('maps a DNF', () => {
+    expect(cacheFromApiRecord({ code: 'GC9', userDidNotFind: true }).dnf).toBe(true)
   })
 })
 
