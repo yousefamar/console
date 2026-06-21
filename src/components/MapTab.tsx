@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
 import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle } from '@/store/map'
@@ -354,13 +355,17 @@ function escapeHtml(s: string): string {
 }
 
 function buildPopupHtml(props: Record<string, unknown>, style: MapLayerStyle): string {
-  const fields = style.popup
-  const row = (label: string, v: unknown) =>
-    v == null || v === '' ? '' : `<div><span style="color:#888">${escapeHtml(label)}:</span> ${escapeHtml(String(v))}</div>`
-  const rows = fields?.length
-    ? fields.map((f) => (typeof f === 'string' ? row(f, props[f]) : row(f.label ?? f.key, props[f.key]))).join('')
-    : Object.entries(props).filter(([k]) => !k.startsWith('_')).map(([k, v]) => row(k, v)).join('')
-  return `<div style="font:12px system-ui,sans-serif;max-width:240px;line-height:1.4">${rows || '<i>no properties</i>'}</div>`
+  const entries = style.popup?.length
+    ? style.popup.map((f) => (typeof f === 'string' ? { key: f, label: f } : { key: f.key, label: f.label ?? f.key }))
+    : Object.keys(props).filter((k) => !k.startsWith('_')).map((k) => ({ key: k, label: k }))
+  // Lift name/_label to a bold title; the rest become aligned key→value rows.
+  const name = props.name ?? props._label
+  const rows = entries
+    .filter((e) => e.key !== 'name' && props[e.key] != null && props[e.key] !== '')
+    .map((e) => `<div class="pr"><span class="pk">${escapeHtml(e.label)}</span><span class="pv">${escapeHtml(String(props[e.key]))}</span></div>`)
+    .join('')
+  const title = name != null && name !== '' ? `<div class="pt">${escapeHtml(String(name))}</div>` : ''
+  return title + (rows || '<div class="pm">no details</div>')
 }
 
 function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ) {
@@ -394,7 +399,7 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
   const onClick = (e: maplibregl.MapLayerMouseEvent) => {
     const f = e.features?.[0]
     if (!f) return
-    new maplibregl.Popup({ closeButton: true, maxWidth: '260px' })
+    new maplibregl.Popup({ closeButton: true, maxWidth: '260px', className: 'console-map-popup' })
       .setLngLat(e.lngLat)
       .setHTML(buildPopupHtml((f.properties ?? {}) as Record<string, unknown>, st))
       .addTo(map)
