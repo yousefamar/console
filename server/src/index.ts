@@ -1437,6 +1437,7 @@ httpServer.listen(port, host, () => {
           parentClaudeSessionId: resolveParent(entry),
           agentKey: entry.agentKey ?? (entry.claudeSessionId ? csidToKey.get(entry.claudeSessionId) : undefined),
           needsAttention: entry.needsAttention,
+          restoreMessageLogLength: entry.messageLogLength,
         })
         // If the session was mid-turn when the hub stopped, nudge it to
         // continue where it left off. Silent resume alone leaves it idle.

@@ -26,6 +26,9 @@ export interface ManifestEntry {
   ended?: boolean
   /** Sticky `@amar` attention marker — survives hub restart. */
   needsAttention?: AttentionState | null
+  /** Absolute message-log high-water — restored into the session's `logOffset`
+   *  so the unread marker (messageLogLength > lastReadIndex) survives restart. */
+  messageLogLength?: number
 }
 
 /** Write the manifest synchronously and atomically.
@@ -58,6 +61,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       wasRunning: session.status === 'running',
       ...(session.endedByUser ? { ended: true } : {}),
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
+      ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),
     })
   }
   try {
