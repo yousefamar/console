@@ -416,6 +416,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const renameSession = useAgentStore((s) => s.renameSession)
   const generateTitleAction = useAgentStore((s) => s.generateTitle)
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
+  const markSessionUnread = useAgentStore((s) => s.markSessionUnread)
   const reloadSessionHistory = useAgentStore((s) => s.reloadSessionHistory)
   const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
@@ -454,10 +455,13 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const swipeContainerRef = useRef<HTMLDivElement>(null)
   const swipeContentRef = useRef<HTMLDivElement>(null)
   const swipeIconRef = useRef<HTMLDivElement>(null)
+  const swipeUnreadIconRef = useRef<HTMLDivElement>(null)
   const swipe = useSwipeActions(swipeContainerRef, swipeContentRef, {
     onSwipeStart: () => { if (longPressTimer.current) clearTimeout(longPressTimer.current) },
     onSwipeRight: () => markSessionRead(session.id),
+    onSwipeLeft: () => markSessionUnread(session.id),
     leftIconRef: swipeIconRef,
+    rightIconRef: swipeUnreadIconRef,
   })
 
   const rawName = session.name || session.prompt || session.id
@@ -492,6 +496,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     if (session.agentKey) {
       items.unshift({ label: 'Show info', onClick: () => openRoleInfo(session.agentKey!) })
     }
+    // Mark unread (mobile-reachable equivalent of the Shift+E shortcut / swipe-left).
+    items.push({ label: 'Mark unread', onClick: () => markSessionUnread(session.id) })
     // Push-to-talk mic: hand it to this session (or release the owner's to Al).
     items.push(isMicOwner
       ? { label: 'Release mic to Al', onClick: () => useMicStore.getState().setMic('al') }
@@ -508,7 +514,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, isMicOwner, killSession, mergeSession, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, isMicOwner, killSession, mergeSession, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
 
   return (
     <ContextMenu items={menuItems}>
@@ -520,6 +526,15 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
             style={{ opacity: 0 }}
           >
             <Check size={16} className="text-green-500" />
+          </div>
+        )}
+        {isMobile && (
+          <div
+            ref={swipeUnreadIconRef}
+            className="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none z-10"
+            style={{ opacity: 0 }}
+          >
+            <Circle size={10} className="fill-blue-500 text-blue-500" />
           </div>
         )}
         <div

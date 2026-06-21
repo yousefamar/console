@@ -77,7 +77,10 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
         onTouchMove={isMobile ? handleTouchMove : undefined}
         onTouchEnd={isMobile ? handleTouchEnd : undefined}
         onTouchCancel={isMobile ? handleTouchEnd : undefined}
-        className={className}
+        // On mobile a long-press would otherwise start a native text selection
+        // (and an iOS callout) over the trigger content before the menu opens.
+        className={isMobile ? `${className ?? ''} select-none`.trim() : className}
+        style={isMobile ? { WebkitTouchCallout: 'none' } : undefined}
       >
         {children}
       </div>
