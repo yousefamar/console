@@ -414,10 +414,13 @@ export class Session extends EventEmitter {
   /** Kill the session */
   kill() {
     this.endedByUser = true
+    // Mark ended unconditionally — not only when a live process exists. If the
+    // subprocess had already exited, the old guard left status untouched (e.g.
+    // 'running'), so a killed fork could linger as running in the list.
+    this.status = 'ended'
+    this.stdinReady = false
     if (this.process) {
       this.process.kill('SIGTERM')
-      this.status = 'ended'
-      this.stdinReady = false
     }
   }
 
