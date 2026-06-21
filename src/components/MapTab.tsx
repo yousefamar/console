@@ -91,7 +91,7 @@ export function MapTab() {
   const {
     current, track, pins, selectedCode, gcStatus, fetching, error,
     rangeFrom, rangeTo, device, devices, loadingHistory,
-    refresh, loadHistory, selectCache, setRange,
+    refresh, loadHistory, selectCache,
     layers, layerData, layerVisible,
   } = useMapStore()
 
@@ -199,13 +199,13 @@ export function MapTab() {
         <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur">
           <input
             type="date" value={ymd(rangeFrom)}
-            onChange={(e) => setRange(new Date(e.target.value).getTime(), rangeTo)}
+            onChange={(e) => e.target.value && void loadHistory(new Date(e.target.value).getTime(), rangeTo)}
             className="bg-transparent outline-none w-[7.5rem]"
           />
           <span className="text-text-tertiary">→</span>
           <input
             type="date" value={ymd(rangeTo)}
-            onChange={(e) => setRange(rangeFrom, new Date(e.target.value).getTime())}
+            onChange={(e) => e.target.value && void loadHistory(rangeFrom, new Date(e.target.value).getTime())}
             className="bg-transparent outline-none w-[7.5rem]"
           />
           {devices.length > 1 && (
@@ -219,6 +219,15 @@ export function MapTab() {
           <button onClick={() => void loadHistory()} className="ml-1 px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface-3">
             {loadingHistory ? <Loader2 size={12} className="animate-spin" /> : 'History'}
           </button>
+          {([['7d', 7], ['30d', 30], ['90d', 90], ['1y', 365]] as const).map(([lbl, n]) => (
+            <button
+              key={lbl}
+              onClick={() => void loadHistory(Date.now() - n * 86400000, Date.now())}
+              className="px-1 py-0.5 rounded hover:bg-surface-2 text-text-tertiary"
+            >
+              {lbl}
+            </button>
+          ))}
         </div>
 
         <button

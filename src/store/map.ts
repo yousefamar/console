@@ -99,10 +99,25 @@ function saveLayerVis(v: Record<string, boolean>): void {
 
 const DAY = 24 * 60 * 60 * 1000
 const OT_USER = 'amar'
+const MAX_TRACK_POINTS = 4000 // decimate wide ranges so the polyline stays fast
 
 function ymd(ms: number): string {
   const d = new Date(ms)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** Even-sample an array down to `max` items, always keeping the last. */
+function decimate<T>(arr: T[], max: number): T[] {
+  if (arr.length <= max) return arr
+  const step = arr.length / max
+  const out: T[] = []
+  for (let i = 0; i < arr.length; i += step) {
+    const item = arr[Math.floor(i)]
+    if (item !== undefined) out.push(item)
+  }
+  const last = arr[arr.length - 1]
+  if (last !== undefined && out[out.length - 1] !== last) out.push(last)
+  return out
 }
 
 interface MapState {
@@ -148,7 +163,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   devices: [],
   device: null,
   track: [],
-  rangeFrom: Date.now() - 7 * DAY,
+  rangeFrom: Date.now() - 30 * DAY,
   rangeTo: Date.now(),
   loadingHistory: false,
 
@@ -195,8 +210,8 @@ export const useMapStore = create<MapState>((set, get) => ({
       const resp = await hubFetch<{ data?: OtFix[] } | OtFix[]>(`/owntracks/locations?${params.toString()}`)
       const data = Array.isArray(resp) ? resp : (resp.data ?? [])
       // newest-last so the polyline draws in chronological order
-      const track = data.filter((f) => typeof f.lat === 'number').sort((a, b) => a.tst - b.tst)
-      set({ track, loadingHistory: false })
+      const sorted = data.filter((f) => typeof f.lat === 'number').sort((a, b) => a.tst - b.tst)
+      set({ track: decimate(sorted, MAX_TRACK_POINTS), loadingHistory: false })
     } catch (err) {
       set({ loadingHistory: false, error: (err as Error).message })
     }
