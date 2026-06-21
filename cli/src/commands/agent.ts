@@ -42,7 +42,8 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
 //   so it survives hub restarts), waits for the reply, prints it.
 //
 // End:         con agent chat --id <conv-id> --end
-//   Ends the fork (kill_session). Or just stop calling — idle forks are cheap.
+//   Reaps the fork (delete_session — terminates the subprocess AND removes it
+//   from the list so it can't be resumed on restart). Or just stop calling.
 // --------------------------------------------------------------------------
 
 interface HealthSession { id: string; claudeSessionId?: string; name?: string; cwd?: string; status: string }
@@ -98,6 +99,10 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
     if (!convId) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> --end', flags); return }
     const target = await resolveByClaudeId(convId)
     const { sendAndReceive } = await import('../ws-client.js')
+    // kill_session ends the fork's subprocess but KEEPS the entry in the list so
+    // its conversation stays readable (Yousef's call — don't auto-reap). The hub
+    // marks it status:ended and broadcasts the updated list. To fully remove it,
+    // `con agent kill <session-id>`.
     await sendAndReceive({ type: 'kill_session', sessionId: target.id }, () => false)
     output({ ended: convId }, flags)
     return

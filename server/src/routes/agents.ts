@@ -631,9 +631,23 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       session.kill()
+      // A resume during a hub restart can leave a SECOND hub session sharing
+      // this claudeSessionId; killing only the resolved one left the duplicate
+      // lingering as a running '<name> (fork)' — the `con agent chat --end`
+      // "still running" report. Mark every session with the same claudeSessionId
+      // ended too, but KEEP them in the list so the conversation stays readable
+      // (vs delete_session, which removes them entirely).
+      if (session.claudeSessionId) {
+        for (const s of sessions.values()) {
+          if (s !== session && s.claudeSessionId === session.claudeSessionId) s.kill()
+        }
+      }
       // Persist endedByUser even when the subprocess was already dead (no
       // exit event will fire to trigger the usual manifest save).
       saveManifest(sessions)
+      // Broadcast so clients (SPA sidebar) reflect the ended status immediately;
+      // the old handler mutated state silently and left clients showing 'running'.
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
       log(`Session killed: ${session.id}`)
       break
     }
