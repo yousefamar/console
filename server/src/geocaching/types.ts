@@ -145,6 +145,8 @@ export interface Geocache {
   difficulty: number
   terrain: number
   found: boolean
+  /** You logged a "Didn't find it" (DNF) on this cache. */
+  dnf: boolean
   pmOnly: boolean
   owner: string
   hidden: string // placed date 'YYYY-MM-DD'
@@ -198,6 +200,7 @@ export function cacheFromApiRecord(record: Record<string, unknown>): Geocache {
     difficulty: Number(record.difficulty ?? 0),
     terrain: Number(record.terrain ?? 0),
     found: 'userFound' in record ? Boolean(record.userFound) : false,
+    dnf: 'userDidNotFind' in record ? Boolean(record.userDidNotFind) : false,
     pmOnly: Boolean(record.premiumOnly),
     owner: owner?.username ?? '',
     hidden: placed,

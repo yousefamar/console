@@ -28,6 +28,7 @@ export interface MapCache {
   difficulty: number
   terrain: number
   found: boolean
+  dnf: boolean
   pmOnly: boolean
   owner: string
   hidden: string

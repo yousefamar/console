@@ -15,19 +15,16 @@ function stripHtml(s: string): string {
   return text.replace(/\n{3,}/g, '\n\n').trim()
 }
 
-const TYPE_COLORS: unknown[] = [
-  'match', ['get', 'type'],
-  'Traditional', '#22c55e',
-  'Multi-cache', '#f59e0b',
-  'Mystery', '#3b82f6',
-  'EarthCache', '#84cc16',
-  'Letterbox', '#a855f7',
-  'Virtual', '#06b6d4',
-  'Wherigo', '#ec4899',
-  'Event', '#ef4444',
-  'Mega-Event', '#ef4444',
-  'Giga-Event', '#ef4444',
-  /* default */ '#9ca3af',
+// Pins are coloured by YOUR relationship to the cache, not its type (the type
+// lives in the popup). found = green, DNF = red, not-yet-attempted = muted slate.
+const FOUND = '#22c55e'
+const DNF = '#ef4444'
+const TODO = '#64748b'
+const STATE_COLOR: unknown[] = [
+  'case',
+  ['==', ['get', 'found'], 1], FOUND,
+  ['==', ['get', 'dnf'], 1], DNF,
+  TODO,
 ]
 
 function pinsToFC(pins: MapCache[]): FeatureCollection {
@@ -38,7 +35,7 @@ function pinsToFC(pins: MapCache[]): FeatureCollection {
       .map((p) => ({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p.lon as number, p.lat as number] },
-        properties: { code: p.code, type: p.type, found: p.found ? 1 : 0 },
+        properties: { code: p.code, type: p.type, found: p.found ? 1 : 0, dnf: p.dnf ? 1 : 0 },
       })),
   }
 }
@@ -222,9 +219,25 @@ export function MapTab() {
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
 
+      {/* legend — pins coloured by your find-state */}
+      <div className="absolute bottom-2 left-2 flex items-center gap-3 rounded bg-surface-0/90 border border-border px-2 py-1 text-[11px] text-text-secondary backdrop-blur">
+        <Dot color={FOUND} label="found" />
+        <Dot color={DNF} label="DNF" />
+        <Dot color={TODO} label="to do" />
+      </div>
+
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
     </div>
+  )
+}
+
+function Dot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="inline-block w-2 h-2 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
   )
 }
 
@@ -245,8 +258,8 @@ function addOverlayLayers(map: maplibregl.Map) {
       id: 'gc-pins', type: 'circle', source: 'gc-pins',
       paint: {
         'circle-radius': 6,
-        'circle-color': TYPE_COLORS as unknown as maplibregl.ExpressionSpecification,
-        'circle-opacity': ['case', ['==', ['get', 'found'], 1], 0.4, 0.92] as unknown as maplibregl.ExpressionSpecification,
+        'circle-color': STATE_COLOR as unknown as maplibregl.ExpressionSpecification,
+        'circle-opacity': ['case', ['==', ['get', 'found'], 1], 0.95, ['==', ['get', 'dnf'], 1], 0.95, 0.7] as unknown as maplibregl.ExpressionSpecification,
         'circle-stroke-width': 1,
         'circle-stroke-color': '#0a0a0a',
       },
@@ -327,6 +340,7 @@ function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => 
         <span>D {cache.difficulty}</span><span>T {cache.terrain}</span>
         <span>★ {cache.favorites}</span>
         {cache.found && <span className="text-green-400">found</span>}
+        {cache.dnf && <span className="text-red-400">DNF</span>}
         {cache.pmOnly && <span className="text-amber-400">premium</span>}
       </div>
       {cache.owner && <div className="text-xs text-text-tertiary mb-2">by {cache.owner}{cache.hidden ? ` · ${cache.hidden}` : ''}</div>}
