@@ -182,6 +182,27 @@ describe('Session getInfo', () => {
     expect(info.totalTokens).toEqual({ input: 0, output: 0 })
     expect(info.createdAt).toBeGreaterThan(0)
   })
+
+  // Regression: a hub restart re-spawns sessions with an empty in-memory log, so
+  // messageLogLength reported 0 while the persisted lastReadIndex stayed (e.g.)
+  // 18 — making hasUnread (= messageLogLength > lastReadIndex) false for EVERY
+  // session, wiping all unread markers in the Agents tab. Restoring logOffset
+  // from the manifest's high-water keeps the count on the same scale.
+  it('restores messageLogLength from a hub-restart resume so unread survives', () => {
+    const session = new Session({ prompt: 'continue', resume: 'csid_abc', silent: true, restoreMessageLogLength: 18 })
+    expect(session.getInfo().messageLogLength).toBe(18)
+  })
+
+  it('a fresh session (no restore) starts at messageLogLength 0', () => {
+    const session = new Session({ prompt: 'hi' })
+    expect(session.getInfo().messageLogLength).toBe(0)
+  })
+
+  it('new logged messages advance the restored count (no double-count)', () => {
+    const session = new Session({ prompt: 'continue', resume: 'csid_abc', silent: true, restoreMessageLogLength: 18 })
+    session.logMessage({ type: 'text', sessionId: session.id, content: 'a new reply' })
+    expect(session.getInfo().messageLogLength).toBe(19)
+  })
 })
 
 describe('Session stdin writes', () => {

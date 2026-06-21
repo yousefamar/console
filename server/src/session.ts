@@ -81,6 +81,12 @@ export interface SessionOptions {
    *  role's charter is resolved into `systemPrompt` at the createSession choke
    *  point on fresh spawn. Persisted in the manifest; survives restarts. */
   agentKey?: string
+  /** Absolute message-log high-water at the last manifest save. Restored into
+   *  `logOffset` on a hub-restart resume so `messageLogLength` reports the true
+   *  total (the in-memory log starts empty) — otherwise the unread marker
+   *  (`messageLogLength > lastReadIndex`) collapses to false for every session
+   *  on restart. Persisted in the manifest. */
+  restoreMessageLogLength?: number
 }
 
 export class Session extends EventEmitter {
@@ -141,6 +147,14 @@ export class Session extends EventEmitter {
     this.parentClaudeSessionId = options.parentClaudeSessionId
     this.agentKey = options.agentKey
     this.cwd = options.cwd || process.cwd()
+    // Restore the absolute message-log high-water (see SessionOptions). The
+    // in-memory log starts empty, so without this messageLogLength would report
+    // 0 after a restart and every session's unread marker would be wiped. The
+    // restored offset models "all prior messages rolled off to disk", exactly
+    // the get_older_messages boundary, so pagination stays consistent.
+    if (options.restoreMessageLogLength && options.restoreMessageLogLength > 0) {
+      this.logOffset = options.restoreMessageLogLength
+    }
     // For resumes (not forks), set claudeSessionId immediately so list_sessions
     // can match before Claude emits the `system` message.
     // Forks get a NEW claudeSessionId from Claude — don't pre-set to avoid
