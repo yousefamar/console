@@ -19,15 +19,6 @@ export interface DbFeedRead {
   itemId: string
 }
 
-/** A downloaded Protomaps basemap archive, kept for offline rendering. */
-export interface DbBasemap {
-  region: string
-  blob: Blob
-  bytes: number
-  zoomRange?: string
-  downloadedAt: number
-}
-
 /** Client mirror of the hub geocache store (summaries; detail fetched on tap). */
 export interface DbGeocache {
   code: string
@@ -58,7 +49,6 @@ class ConsoleDatabase extends Dexie {
   feedRead!: Table<DbFeedRead, string>
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
-  basemaps!: Table<DbBasemap, string>
   geocaches!: Table<DbGeocache, string>
 
   constructor() {
@@ -164,6 +154,12 @@ class ConsoleDatabase extends Dexie {
       calendarEvents: '&compoundKey, accountEmail, calendarId, startTime',
       basemaps: '&region',
       geocaches: '&code, [lat+lon]',
+    })
+
+    // v9: dropped the offline basemap store — the Map pane streams raster tiles
+    // on demand now (no self-hosted PMTiles archive).
+    this.version(9).stores({
+      basemaps: null,
     })
   }
 }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { rmSync } from 'node:fs'
 import { rot13, cacheFromApiRecord, typeName, sizeName, logTypeName } from '../geocaching/types.js'
-import { parseSearchResults, parseLogbook, parseCacheDetail, parseDegMin } from '../geocaching/parse.js'
+import { parseSearchResults, parseLogbook, parseCacheDetail, parseDegMin, htmlToText } from '../geocaching/parse.js'
 import { extractVerificationToken, getLoggedUser } from '../geocaching/session.js'
 import { RateLimiter, RateLimitExceededError } from '../geocaching/rate-limit.js'
 
@@ -81,6 +81,20 @@ describe('parseLogbook', () => {
     const logs = parseLogbook({ data: [{ LogGuid: 'g1', LogTypeImage: '2.png', LogText: 'TFTC', Visited: '2026-06-01', UserName: 'alice' }] })
     expect(logs).toHaveLength(1)
     expect(logs[0]).toMatchObject({ id: 'g1', type: 'found_it', text: 'TFTC', date: '2026-06-01', author: 'alice' })
+  })
+  it('strips HTML + decodes entities from log text', () => {
+    const logs = parseLogbook({ data: [{ LogGuid: 'g', LogTypeImage: '2.png', LogText: '<p><strong>TFTC</strong> &amp; nice walk</p>', Visited: '2026-06-01', UserName: 'a' }] })
+    expect(logs[0].text).toBe('TFTC & nice walk')
+  })
+})
+
+describe('htmlToText', () => {
+  it('flattens fragments, breaks paragraphs, decodes entities', () => {
+    expect(htmlToText('<p>one</p><p>two</p>')).toBe('one\ntwo')
+    expect(htmlToText('a<br>b')).toBe('a\nb')
+    expect(htmlToText('plain')).toBe('plain')
+    expect(htmlToText('')).toBe('')
+    expect(htmlToText('&lt;tag&gt; &amp; co')).toBe('<tag> & co')
   })
 })
 

@@ -597,8 +597,6 @@ export const COMMANDS: CommandDef[] = [
   { name: 'map geocaching caches', description: 'List all cached geocaches (summary snapshot)', safety: 'read' },
   { name: 'map geocaching cache', description: 'Full detail (hint, attributes, logs) for one cache; lazy-loaded + cached', safety: 'read',
     args: [{ name: 'gc-code', required: true, description: 'e.g. GC1PAR2' }] },
-  { name: 'map basemap update', description: 'Generate a regional Protomaps basemap (.pmtiles) for offline maps via pmtiles extract', safety: 'write',
-    args: [{ name: 'region', required: false, description: 'uk (default) | world | custom (set REGION_BBOX)' }] },
 
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },

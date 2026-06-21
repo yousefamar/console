@@ -2,13 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, HardDriveDownload, Check } from 'lucide-react'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2 } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix } from '@/store/map'
-import { ensurePmtilesProtocol } from '@/map/pmtiles-source'
-import { styleForRegion, downloadRegion, isRegionOffline } from '@/map/offline-basemap'
+import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
 
-const BASEMAP_REGION = 'uk'
+/** Strip HTML from gc.com log text (logs come back as `<p>…</p>` fragments). */
+function stripHtml(s: string): string {
+  if (!s) return ''
+  const pre = s.replace(/<\/(p|div)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
+  const text = new DOMParser().parseFromString(pre, 'text/html').body.textContent ?? ''
+  return text.replace(/\n{3,}/g, '\n\n').trim()
+}
 
 const TYPE_COLORS: unknown[] = [
   'match', ['get', 'type'],
@@ -77,86 +82,57 @@ export function MapTab() {
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
-  const [offline, setOffline] = useState(false)
-  const [dlPct, setDlPct] = useState<number | null>(null)
 
   // --- init map (once) ------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
-    let cancelled = false
-    let map: maplibregl.Map | null = null
-    ensurePmtilesProtocol()
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: darkRasterStyle(),
+      center: [-2, 54],
+      zoom: 5,
+      attributionControl: false,
+    })
+    mapRef.current = map
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
+    map.on('error', () => {/* tolerate the odd tile 404 — non-fatal */})
 
-    void (async () => {
-      const style = await styleForRegion(BASEMAP_REGION)
-      if (cancelled || !containerRef.current) return
-      map = new maplibregl.Map({
-        container: containerRef.current,
-        style,
-        center: [-2, 54],
-        zoom: 5,
-        attributionControl: false,
-      })
-      mapRef.current = map
-      void isRegionOffline(BASEMAP_REGION).then((v) => !cancelled && setOffline(v))
-      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
-      map.on('error', () => {/* tolerate a missing basemap — background still renders */})
+    // Add overlay layers once the style is ready (fires on initial load).
+    map.on('style.load', () => {
+      const m = mapRef.current
+      if (!m) return
+      addOverlayLayers(m)
+      readyRef.current = true
+      pushSource(m, 'gc-pins', pinsToFC(useMapStore.getState().pins))
+      pushSource(m, 'ot-track', trackToFC(useMapStore.getState().track))
+      pushSource(m, 'ot-current', currentToFC(useMapStore.getState().current))
+    })
 
-      // (Re)add overlay layers on every style load — fires on first load AND
-      // after setStyle (e.g. swapping to the offline archive after download).
-      map.on('style.load', () => {
-        const m = mapRef.current
-        if (!m) return
-        addOverlayLayers(m)
-        readyRef.current = true
-        pushSource(m, 'gc-pins', pinsToFC(useMapStore.getState().pins))
-        pushSource(m, 'ot-track', trackToFC(useMapStore.getState().track))
-        pushSource(m, 'ot-current', currentToFC(useMapStore.getState().current))
-      })
+    // Layer-scoped handlers bind once (deferred by layer id is fine in MapLibre).
+    map.on('click', 'gc-pins', (e) => {
+      const code = e.features?.[0]?.properties?.code as string | undefined
+      if (code) void selectCache(code)
+    })
+    map.on('mouseenter', 'gc-pins', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'gc-pins', () => { map.getCanvas().style.cursor = '' })
 
-      // Layer-scoped handlers bind once (deferred by layer id is fine in MapLibre).
-      map.on('click', 'gc-pins', (e) => {
-        const code = e.features?.[0]?.properties?.code as string | undefined
-        if (code) void selectCache(code)
-      })
-      map.on('mouseenter', 'gc-pins', () => { if (mapRef.current) mapRef.current.getCanvas().style.cursor = 'pointer' })
-      map.on('mouseleave', 'gc-pins', () => { if (mapRef.current) mapRef.current.getCanvas().style.cursor = '' })
-
-      mapController.flyToMe = () => {
-        const c = useMapStore.getState().current[0]
-        if (c && mapRef.current) mapRef.current.flyTo({ center: [c.lon, c.lat], zoom: 14 })
-      }
-      mapController.fetchHere = () => {
-        const m = mapRef.current
-        if (!m) return
-        const b = m.getBounds()
-        void useMapStore.getState().fetchArea([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]).catch(() => {})
-      }
-    })()
+    mapController.flyToMe = () => {
+      const c = useMapStore.getState().current[0]
+      if (c) map.flyTo({ center: [c.lon, c.lat], zoom: 14 })
+    }
+    mapController.fetchHere = () => {
+      const b = map.getBounds()
+      void useMapStore.getState().fetchArea([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]).catch(() => {})
+    }
 
     return () => {
-      cancelled = true
       mapController.flyToMe = undefined
       mapController.fetchHere = undefined
-      map?.remove()
+      map.remove()
       mapRef.current = null
       readyRef.current = false
     }
   }, [selectCache])
-
-  const downloadOffline = async () => {
-    setDlPct(0)
-    try {
-      await downloadRegion(BASEMAP_REGION, (f) => setDlPct(f))
-      const style = await styleForRegion(BASEMAP_REGION)
-      mapRef.current?.setStyle(style) // → style.load re-adds overlays
-      setOffline(true)
-    } catch (e) {
-      useMapStore.setState({ error: (e as Error).message })
-    } finally {
-      setDlPct(null)
-    }
-  }
 
   // initial data load
   useEffect(() => {
@@ -228,21 +204,6 @@ export function MapTab() {
           className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2"
         >
           <Crosshair size={12} /> Me
-        </button>
-
-        <button
-          onClick={() => { if (!offline && dlPct === null) void downloadOffline() }}
-          disabled={dlPct !== null}
-          title={offline ? 'Basemap available offline' : 'Download this region for offline use'}
-          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2 disabled:opacity-60"
-        >
-          {dlPct !== null ? (
-            <><Loader2 size={12} className="animate-spin" /> {Math.round(dlPct * 100)}%</>
-          ) : offline ? (
-            <><Check size={12} className="text-green-400" /> Offline</>
-          ) : (
-            <><HardDriveDownload size={12} /> Offline</>
-          )}
         </button>
 
         <button
@@ -388,7 +349,7 @@ function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => 
                 {d.logs.slice(0, 8).map((l) => (
                   <li key={l.id} className="text-xs">
                     <span className="text-text-tertiary">{l.date} · {l.type.replace(/_/g, ' ')} · {l.author}</span>
-                    {l.text && <div className="line-clamp-3 text-text-secondary">{l.text}</div>}
+                    {l.text && <div className="line-clamp-3 whitespace-pre-line text-text-secondary">{stripHtml(l.text)}</div>}
                   </li>
                 ))}
               </ul>
