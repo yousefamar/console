@@ -375,7 +375,9 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
   map.addLayer({ id: line, type: 'line', source: src, paint: { 'line-color': expr(['coalesce', ['get', '_color'], st.strokeColor ?? st.lineColor ?? '#3b82f6']), 'line-width': st.strokeWidth ?? st.lineWidth ?? 1.5 } }, before)
   map.addLayer({
     id: circle, type: 'circle', source: src,
-    filter: ['!', ['has', '_icon']] as maplibregl.FilterSpecification,
+    // Point geometries only — without this guard MapLibre draws a circle at
+    // every vertex of lines/polygons (blobs along an isochrone border).
+    filter: ['all', ['==', ['geometry-type'], 'Point'], ['!', ['has', '_icon']]] as maplibregl.FilterSpecification,
     paint: {
       'circle-color': expr(['coalesce', ['get', '_color'], st.color ?? '#22c55e']),
       'circle-radius': expr(['coalesce', ['get', '_size'], st.size ?? 5]),
