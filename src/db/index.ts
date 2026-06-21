@@ -19,6 +19,13 @@ export interface DbFeedRead {
   itemId: string
 }
 
+/** Cached GeoJSON for an agent-authored map layer (offline rendering). */
+export interface DbMapLayer {
+  slug: string
+  updatedAt: number
+  geojson: unknown
+}
+
 /** Client mirror of the hub geocache store (summaries; detail fetched on tap). */
 export interface DbGeocache {
   code: string
@@ -51,6 +58,7 @@ class ConsoleDatabase extends Dexie {
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
   geocaches!: Table<DbGeocache, string>
+  mapLayers!: Table<DbMapLayer, string>
 
   constructor() {
     super('console-inbox')
@@ -161,6 +169,11 @@ class ConsoleDatabase extends Dexie {
     // on demand now (no self-hosted PMTiles archive).
     this.version(9).stores({
       basemaps: null,
+    })
+
+    // v10: cache agent-authored map-layer GeoJSON for offline rendering
+    this.version(10).stores({
+      mapLayers: '&slug',
     })
   }
 }

@@ -597,6 +597,15 @@ export const COMMANDS: CommandDef[] = [
   { name: 'map geocaching caches', description: 'List all cached geocaches (summary snapshot)', safety: 'read' },
   { name: 'map geocaching cache', description: 'Full detail (hint, attributes, logs) for one cache; lazy-loaded + cached', safety: 'read',
     args: [{ name: 'gc-code', required: true, description: 'e.g. GC1PAR2' }] },
+  { name: 'map layer upsert', description: 'Create/replace a toggle-able GeoJSON map layer (pins/lines/polygons). Style baked into feature props (_color/_size/_icon) + optional --style for polygon fill/popup.', safety: 'write',
+    args: [{ name: 'group/name', required: true, description: 'namespaced slug, e.g. where-to-move/towns' }] },
+  { name: 'map layer list', description: 'List map layers (index: slug, group, feature count, bbox, style)', safety: 'read' },
+  { name: 'map layer get', description: 'Fetch one layer\'s GeoJSON', safety: 'read',
+    args: [{ name: 'group/name', required: true, description: 'layer slug' }] },
+  { name: 'map layer remove', description: 'Delete one map layer', safety: 'destructive',
+    args: [{ name: 'group/name', required: true, description: 'layer slug' }] },
+  { name: 'map layer clear', description: 'Delete all map layers, or all under a group prefix', safety: 'destructive',
+    args: [{ name: 'group', required: false, description: 'optional group prefix' }] },
 
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
