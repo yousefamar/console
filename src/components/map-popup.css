@@ -1,0 +1,52 @@
+/* Dark-themed MapLibre popups for the Map pane (override the default white box). */
+.maplibregl-popup.console-map-popup .maplibregl-popup-content {
+  background: #161616;
+  color: #e5e5e5;
+  border: 1px solid #2b2b2b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  font: 12px/1.45 system-ui, sans-serif;
+}
+.maplibregl-popup.console-map-popup .maplibregl-popup-tip {
+  display: none;
+}
+.maplibregl-popup.console-map-popup .maplibregl-popup-close-button {
+  color: #777;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  right: 2px;
+  top: 2px;
+}
+.maplibregl-popup.console-map-popup .maplibregl-popup-close-button:hover {
+  color: #fff;
+  background: transparent;
+}
+
+.console-map-popup .pt {
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 5px;
+  padding-right: 14px;
+}
+.console-map-popup .pr {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.console-map-popup .pr + .pr {
+  margin-top: 2px;
+}
+.console-map-popup .pk {
+  color: #8a8a8a;
+  white-space: nowrap;
+}
+.console-map-popup .pv {
+  color: #e5e5e5;
+  text-align: right;
+}
+.console-map-popup .pm {
+  color: #777;
+  font-style: italic;
+}
