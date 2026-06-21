@@ -91,7 +91,7 @@ export function MapTab() {
   const {
     current, track, pins, selectedCode, gcStatus, fetching, error,
     rangeFrom, rangeTo, device, devices, loadingHistory,
-    refresh, loadHistory, selectCache,
+    refresh, loadHistory, selectCache, loadLayers,
     layers, layerData, layerVisible,
   } = useMapStore()
 
@@ -155,6 +155,7 @@ export function MapTab() {
   // initial data load
   useEffect(() => {
     void refresh().then(() => void loadHistory())
+    void loadLayers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

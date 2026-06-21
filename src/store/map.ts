@@ -150,6 +150,7 @@ interface MapState {
   layers: MapLayerMeta[]
   layerData: Record<string, unknown> // slug → geojson
   layerVisible: Record<string, boolean>
+  loadLayers: () => Promise<void>
   setLayers: (metas: MapLayerMeta[]) => void
   setLayerData: (slug: string, geojson: unknown) => void
   toggleLayer: (slug: string) => void
@@ -282,6 +283,21 @@ export const useMapStore = create<MapState>((set, get) => ({
   layers: [],
   layerData: {},
   layerVisible: loadLayerVis(),
+  loadLayers: async () => {
+    try {
+      const { layers } = await hubFetch<{ layers: MapLayerMeta[] }>('/map/layers')
+      set({ layers })
+      for (const l of layers) {
+        try {
+          get().setLayerData(l.slug, await hubFetch<unknown>(`/map/layers/${encodeURIComponent(l.slug)}`))
+        } catch {
+          /* skip a layer that fails to fetch */
+        }
+      }
+    } catch {
+      /* offline — Dexie-hydrated layers (if any) remain */
+    }
+  },
   setLayers: (metas) => set({ layers: metas }),
   setLayerData: (slug, geojson) => set((s) => ({ layerData: { ...s.layerData, [slug]: geojson } })),
   toggleLayer: (slug) =>
