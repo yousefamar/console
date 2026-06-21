@@ -7,6 +7,21 @@ import { useMapStore, type MapCache, type OtFix } from '@/store/map'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
 
+/** Colour a log entry by its type — same family as the pins, so the detail panel
+ *  reads at a glance: green found, red DNF, amber maintenance, slate the rest. */
+function logColor(type: string): string {
+  switch (type) {
+    case 'found_it':
+    case 'attended':
+    case 'webcam_photo_taken': return '#22c55e'
+    case 'didnt_find_it': return '#ef4444'
+    case 'needs_maintenance':
+    case 'needs_archive':
+    case 'owner_maintenance': return '#f59e0b'
+    default: return '#94a3b8'
+  }
+}
+
 /** Strip HTML from gc.com log text (logs come back as `<p>…</p>` fragments). */
 function stripHtml(s: string): string {
   if (!s) return ''
@@ -274,7 +289,7 @@ function addOverlayLayers(map: maplibregl.Map) {
     map.addSource('ot-current', { type: 'geojson', data: currentToFC([]) })
     map.addLayer({
       id: 'ot-current', type: 'circle', source: 'ot-current',
-      paint: { 'circle-radius': 7, 'circle-color': '#f59e0b', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+      paint: { 'circle-radius': 7, 'circle-color': '#3b82f6', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
     })
   }
 }
@@ -359,10 +374,12 @@ function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => 
           {d.logs.length > 0 && (
             <div>
               <div className="text-text-tertiary text-xs mb-1">Recent logs</div>
-              <ul className="space-y-1">
+              <ul className="space-y-1.5">
                 {d.logs.slice(0, 8).map((l) => (
-                  <li key={l.id} className="text-xs">
-                    <span className="text-text-tertiary">{l.date} · {l.type.replace(/_/g, ' ')} · {l.author}</span>
+                  <li key={l.id} className="text-xs border-l-2 pl-2" style={{ borderColor: logColor(l.type) }}>
+                    <span className="text-text-tertiary">{l.date} · </span>
+                    <span style={{ color: logColor(l.type) }}>{l.type.replace(/_/g, ' ')}</span>
+                    <span className="text-text-tertiary"> · {l.author}</span>
                     {l.text && <div className="line-clamp-3 whitespace-pre-line text-text-secondary">{stripHtml(l.text)}</div>}
                   </li>
                 ))}
