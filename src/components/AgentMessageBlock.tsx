@@ -646,14 +646,36 @@ function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
   return parts
 }
 
+/** Allow only safe link schemes (blocks `javascript:`/`data:` href injection
+ *  from agent output). Returns the href to use, or null to render as plain text. */
+function safeHref(url: string): string | null {
+  const u = url.trim()
+  if (/^(https?:|mailto:|tel:)/i.test(u)) return u
+  if (u.startsWith('/') || u.startsWith('#')) return u
+  return null
+}
+
 function renderInlineMarkdown(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let key = 0
 
-  // Handle image, inline code, bold, and italic in one pass.
-  // Image first so its `(...)` URL doesn't collide with later patterns.
-  // Then code (so **bold** inside backticks stays literal), then bold, then italic.
-  const inlineRegex = /!\[([^\]]*)\]\(([^)]+)\)|`([^`]+)`|\*\*(.+?)\*\*|\*(.+?)\*/g
+  const link = (href: string, label: string) => (
+    <a
+      key={key++}
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-accent hover:underline break-all"
+    >
+      {label}
+    </a>
+  )
+
+  // Handle image, markdown link, inline code, bold, italic, and bare URLs in one
+  // pass. Image first so its `(...)` URL doesn't collide; markdown link next (the
+  // `!` guard keeps it from stealing images); then code (so **bold** inside
+  // backticks stays literal), bold, italic, and finally bare-URL autolinking.
+  const inlineRegex = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*(.+?)\*\*|\*(.+?)\*|(https?:\/\/[^\s<]+)/g
   let lastIndex = 0
 
   for (const match of text.matchAll(inlineRegex)) {
@@ -670,19 +692,31 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
           className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain"
         />,
       )
-    } else if (match[3] !== undefined) {
+    } else if (match[3] !== undefined && match[4] !== undefined) {
+      // Markdown link [text](url) — fall back to literal text on an unsafe scheme.
+      const href = safeHref(match[4])
+      parts.push(href ? link(href, match[3]) : <span key={key++}>{match[0]}</span>)
+    } else if (match[5] !== undefined) {
       // Inline code
       parts.push(
         <code key={key++} className="bg-surface-2 px-1 py-0.5 rounded-sm text-[11px] font-mono break-all">
-          {match[3]}
+          {match[5]}
         </code>,
       )
-    } else if (match[4] !== undefined) {
+    } else if (match[6] !== undefined) {
       // Bold
-      parts.push(<strong key={key++} className="font-semibold">{match[4]}</strong>)
-    } else if (match[5] !== undefined) {
+      parts.push(<strong key={key++} className="font-semibold">{match[6]}</strong>)
+    } else if (match[7] !== undefined) {
       // Italic
-      parts.push(<em key={key++}>{match[5]}</em>)
+      parts.push(<em key={key++}>{match[7]}</em>)
+    } else if (match[8] !== undefined) {
+      // Bare URL — strip trailing sentence punctuation back into the text run.
+      let url = match[8]
+      let trailing = ''
+      const tp = url.match(/[.,;:!?]+$/)
+      if (tp) { trailing = tp[0]; url = url.slice(0, -trailing.length) }
+      parts.push(link(url, url))
+      if (trailing) parts.push(<span key={key++}>{trailing}</span>)
     }
     lastIndex = match.index + match[0].length
   }
