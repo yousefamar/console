@@ -39,7 +39,9 @@ import { renderCalendar } from './panes/calendar'
 import { renderFeeds } from './panes/feeds'
 import { renderBookmarks } from './panes/bookmarks'
 import { renderMoney } from './panes/money'
+import { renderMap } from './panes/map'
 import { renderHome } from './panes/home'
+import { useMapStore } from '@/store/map'
 
 /**
  * Pessimistic-but-safe text width per row. G1 uses a proportional font,
@@ -75,6 +77,7 @@ const renderers: Record<ActivePane, PaneRenderer> = {
   feeds: renderFeeds,
   bookmarks: renderBookmarks,
   money: renderMoney,
+  map: renderMap,
 }
 
 // --- Enable / persistence --------------------------------------------------
@@ -288,6 +291,7 @@ export function wireMirror() {
   useFeedStore.subscribe(() => scheduleFrame())
   useBookmarkStore.subscribe(() => scheduleFrame())
   useMoneyStore.subscribe(() => scheduleFrame())
+  useMapStore.subscribe(() => scheduleFrame())
   useNotesStore.subscribe(() => scheduleFrame())
   useDashboardStore.subscribe(() => scheduleFrame())
 

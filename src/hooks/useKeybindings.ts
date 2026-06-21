@@ -7,6 +7,8 @@ import { useNotesStore } from '@/store/notes'
 import { useFeedStore } from '@/store/feeds'
 import { useCalendarStore } from '@/store/calendar'
 import { useMoneyStore } from '@/store/money'
+import { useMapStore } from '@/store/map'
+import { mapController } from '@/map/controller'
 import { useUiStore } from '@/store/ui'
 import { showConfirm } from '@/dialog'
 
@@ -19,6 +21,7 @@ export function useKeybindings() {
   const feeds = useFeedStore
   const cal = useCalendarStore
   const money = useMoneyStore
+  const map = useMapStore
   const ui = useUiStore
 
   useEffect(() => {
@@ -34,6 +37,7 @@ export function useKeybindings() {
       const isFeeds = activePane === 'feeds'
       const isCalendar = activePane === 'calendar'
       const isMoney = activePane === 'money'
+      const isMap = activePane === 'map'
 
       // Always active
       if (e.key === 'Escape') {
@@ -86,6 +90,8 @@ export function useKeybindings() {
           money.getState().selectTransaction(null)
         } else if (isMoney && money.getState().searchQuery) {
           money.getState().setSearchQuery('')
+        } else if (isMap && map.getState().selectedCode) {
+          void map.getState().selectCache(null)
         } else if (isAgents && isEditing) {
           // Agent pane: Esc from input blurs first (vim-like: insert → normal mode)
           ;(target as HTMLElement).blur()
@@ -328,6 +334,41 @@ export function useKeybindings() {
               money.getState().setCategoryFilter(null)
             }
           }
+          return
+        }
+        if (e.key === '?') {
+          e.preventDefault()
+          ui.getState().setShowKeybindingHelp(!ui.getState().showKeybindingHelp)
+          return
+        }
+        if (e.key === 'T') {
+          e.preventDefault()
+          ui.getState().toggleDarkMode()
+          return
+        }
+        return
+      }
+
+      // Map-specific keybindings
+      if (isMap) {
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          map.getState().selectAdjacentPin(1)
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          map.getState().selectAdjacentPin(-1)
+          return
+        }
+        if (e.key === 'f') {
+          e.preventDefault()
+          mapController.fetchHere?.()
+          return
+        }
+        if (e.key === 'g') {
+          e.preventDefault()
+          mapController.flyToMe?.()
           return
         }
         if (e.key === '?') {
@@ -616,28 +657,41 @@ export function useKeybindings() {
       }
     }
 
-    // Capture-phase handler for Notes tab nav. Ctrl+H = prev, Ctrl+L = next.
-    // Both are "unreserved" in Chromium so preventDefault on a cancelable
-    // event stops Brave's history/URL-bar accelerators. Runs at capture
-    // phase so CodeMirror's editor keymap (which would otherwise see Ctrl+H
-    // as cursor-left in vim normal mode) never gets the event.
-    const notesTabNav = (e: KeyboardEvent) => {
-      if (ui.getState().activePane !== 'notes') return
+    // Capture-phase handler for universal prev/next browsing: Ctrl+H = prev,
+    // Ctrl+L = next, mapped per pane to its "scroll through the list" action
+    // (notes tabs, email threads, chat rooms, agent sessions, feed items).
+    // Both keys are "unreserved" in Chromium, so preventDefault on a cancelable
+    // event stops Brave's history/URL-bar accelerators. Runs at capture phase
+    // so it beats any editor keymap (e.g. CodeMirror seeing Ctrl+H as
+    // cursor-left) AND works regardless of focus — including while composing,
+    // matching the Notes behaviour of switching tabs mid-edit.
+    const ctrlHLNav = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
-      if (e.key === 'h' || e.key === 'H') {
-        e.preventDefault()
-        e.stopPropagation()
-        notes.getState().prevTab()
-      } else if (e.key === 'l' || e.key === 'L') {
-        e.preventDefault()
-        e.stopPropagation()
-        notes.getState().nextTab()
+      const isH = e.key === 'h' || e.key === 'H'
+      const isL = e.key === 'l' || e.key === 'L'
+      if (!isH && !isL) return
+      // [prev, next] per pane — the pane's "scroll through the list" action.
+      // Calendar has no item list; prev/next week matches its bare h/l.
+      const nav: Record<string, [() => void, () => void]> = {
+        notes: [() => notes.getState().prevTab(), () => notes.getState().nextTab()],
+        email: [() => inbox.getState().selectPrevThread(), () => inbox.getState().selectNextThread()],
+        chat: [() => chat.getState().selectPrevRoom(), () => chat.getState().selectNextRoom()],
+        agents: [() => agent.getState().selectPrevSession(), () => agent.getState().selectNextSession()],
+        feeds: [() => feeds.getState().selectPrevItem(), () => feeds.getState().selectNextItem()],
+        bookmarks: [() => bm.getState().selectPrevBookmark(), () => bm.getState().selectNextBookmark()],
+        money: [() => money.getState().selectPrevTransaction(), () => money.getState().selectNextTransaction()],
+        calendar: [() => cal.getState().navigateWeek(-1), () => cal.getState().navigateWeek(1)],
       }
+      const pair = nav[ui.getState().activePane]
+      if (!pair) return
+      e.preventDefault()
+      e.stopPropagation()
+      ;(isH ? pair[0] : pair[1])()
     }
-    window.addEventListener('keydown', notesTabNav, true)
+    window.addEventListener('keydown', ctrlHLNav, true)
     window.addEventListener('keydown', handler)
     return () => {
-      window.removeEventListener('keydown', notesTabNav, true)
+      window.removeEventListener('keydown', ctrlHLNav, true)
       window.removeEventListener('keydown', handler)
     }
   }, [])

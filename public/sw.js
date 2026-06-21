@@ -30,6 +30,11 @@ self.addEventListener('fetch', (event) => {
   // Skip API calls and WebSocket upgrades
   if (request.url.includes('/api/')) return
 
+  // Skip basemap tiles — they're served with HTTP 206 (Range), and caching a
+  // 206 throws ("Cache.put() with a 206 status is not allowed"), which would
+  // break every tile load. Offline basemap is handled via IndexedDB instead.
+  if (request.url.includes('/public/basemap/') || request.url.includes('/basemap/')) return
+
   // Navigation requests: network-first (always get latest HTML)
   if (request.mode === 'navigate') {
     event.respondWith(

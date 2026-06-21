@@ -80,6 +80,9 @@ const LazyApp = lazy(async () => {
   wireGlassesStore()
   wireG1Events()
 
+  const { wireGeocachingSubscription } = await import('./geocaching/subscribe')
+  wireGeocachingSubscription()
+
   const { App } = await import('./App')
   return { default: App }
 })

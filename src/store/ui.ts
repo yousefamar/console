@@ -3,7 +3,7 @@ import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
 import { getPref, setPref } from '@/prefs'
 
-export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'money'
+export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'map' | 'money'
 
 const PANE_PATHS: Record<ActivePane, string> = {
   home: '/',
@@ -14,6 +14,7 @@ const PANE_PATHS: Record<ActivePane, string> = {
   agents: '/agents',
   feeds: '/feeds',
   calendar: '/calendar',
+  map: '/map',
   money: '/money',
 }
 
@@ -26,6 +27,7 @@ const PATH_PANES: Record<string, ActivePane> = {
   '/agents': 'agents',
   '/feeds': 'feeds',
   '/calendar': 'calendar',
+  '/map': 'map',
   '/money': 'money',
 }
 
@@ -162,7 +164,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ activePane: pane })
   },
   toggleActivePane: (reverse) => set((s) => {
-    const order: ActivePane[] = ['home', 'email', 'calendar', 'chat', 'agents', 'feeds', 'notes', 'bookmarks', 'money']
+    const order: ActivePane[] = ['home', 'email', 'calendar', 'chat', 'agents', 'feeds', 'notes', 'bookmarks', 'map', 'money']
     const idx = order.indexOf(s.activePane)
     const next = order[(idx + (reverse ? order.length - 1 : 1)) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])

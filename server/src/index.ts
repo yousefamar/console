@@ -56,6 +56,10 @@ import { handleConfigRoutes } from './routes/config.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
+import { handleBasemapRoutes } from './routes/basemap.js'
+import { handleOwntracksRoutes } from './routes/owntracks.js'
+import { handleGeocachingRoutes } from './routes/geocaching.js'
+import { GeocachingClient } from './geocaching/client.js'
 import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
@@ -132,6 +136,7 @@ const monzoStore = new MonzoStore(
   monzoClient,
 )
 const financeStore = new FinanceStore(feedsConfigDir)
+const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // Runtime agent-model config + fallback chain. Inject the resolver into Session
 // NOW, before any session is spawned (restore loop, Al, fresh) so every spawn
@@ -401,6 +406,17 @@ syncBus.register('chat-rooms', {
   snooze: async (args) => matrixSync.snooze(args as { roomId: string; untilMs?: number }),
 })
 matrixSync.start()
+
+// Geocaching: client mirrors the hub's geocache store. Snapshot on connect,
+// delta (summaries only) on every area fetch.
+syncBus.register('geocaching', {
+  snapshot: async () => geocachingClient.getSnapshot(),
+})
+geocachingClient.onChange = (changed) => {
+  syncBus.broadcast('geocaching', 'delta', {
+    caches: changed.map(({ detail: _detail, ...summary }) => summary),
+  })
+}
 
 function markAlRead() {
   const len = alBridge.getMessageLog().length
@@ -942,6 +958,10 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     const apkPath = path.replace(/^\/public\/apk/, '/apk')
     if (handleApkRoutes(req, res, apkPath)) return
   }
+  if (path.startsWith('/public/basemap/')) {
+    const basemapPath = path.replace(/^\/public\/basemap/, '/basemap')
+    if (handleBasemapRoutes(req, res, basemapPath)) return
+  }
 
   if (path.startsWith('/mic') && handleMicRoutes(req, res, path, {
     effectiveOwnerId: effectiveMicOwnerId,
@@ -964,6 +984,9 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
+  if (path.startsWith('/basemap/') && handleBasemapRoutes(req, res, path)) return
+  if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
+  if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return

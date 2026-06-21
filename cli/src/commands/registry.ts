@@ -588,6 +588,18 @@ export const COMMANDS: CommandDef[] = [
   { name: 'blog tags', description: 'List all tags used across log/', safety: 'read' },
   { name: 'blog status', description: 'Summary counts: drafts, projects (by status), tags', safety: 'read' },
 
+  // map (Map pane — geocaching.com scraper + offline basemap)
+  { name: 'map geocaching status', description: 'Login state, daily request budget, and cached-cache count', safety: 'read' },
+  { name: 'map geocaching config', description: 'Set geocaching.com credentials (--username/--password or --cookie <gspkauth>)', safety: 'write',
+    args: [{ name: 'flags', required: true, description: '--username --password | --cookie' }] },
+  { name: 'map geocaching fetch', description: 'Fetch geocaches in an area (rate-limited): --bbox s,w,n,e or --lat --lon [--radius km] [--max N]', safety: 'write',
+    args: [{ name: 'flags', required: true, description: '--bbox | --lat --lon --radius' }] },
+  { name: 'map geocaching caches', description: 'List all cached geocaches (summary snapshot)', safety: 'read' },
+  { name: 'map geocaching cache', description: 'Full detail (hint, attributes, logs) for one cache; lazy-loaded + cached', safety: 'read',
+    args: [{ name: 'gc-code', required: true, description: 'e.g. GC1PAR2' }] },
+  { name: 'map basemap update', description: 'Generate a regional Protomaps basemap (.pmtiles) for offline maps via pmtiles extract', safety: 'write',
+    args: [{ name: 'region', required: false, description: 'uk (default) | world | custom (set REGION_BBOX)' }] },
+
   // system
   { name: 'status', description: 'Hub health and sync status', safety: 'read' },
   { name: 'capabilities', description: 'List all commands for agent discovery', safety: 'read' },

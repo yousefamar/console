@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from 'react'
+import { memo, useRef, useState, useEffect, lazy, Suspense } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ThreadList } from './ThreadList'
 import { ThreadView } from './ThreadView'
@@ -17,7 +17,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
@@ -27,6 +27,9 @@ import { YouTubePiP } from './FeedItemView'
 import { PullIndicator } from './PullIndicator'
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
+// MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
+// initial bundle and only loads once the Map pane is first opened.
+const MapTab = lazy(() => import('./MapTab').then((m) => ({ default: m.MapTab })))
 import { useFeedStore } from '@/store/feeds'
 import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
@@ -169,7 +172,15 @@ export function Layout() {
   const isAgents = activePane === 'agents'
   const isFeeds = activePane === 'feeds'
   const isCalendar = activePane === 'calendar'
+  const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
+
+  // MapLibre is heavy; only mount MapTab once the Map pane is first opened, then
+  // keep it alive so later switches are instant (pre-render spirit, deferred cost).
+  const [mapMounted, setMapMounted] = useState(false)
+  useEffect(() => {
+    if (isMap) setMapMounted(true)
+  }, [isMap])
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -219,6 +230,9 @@ export function Layout() {
     } else if (isMoney) {
       const { useMoneyStore } = await import('@/store/money')
       await useMoneyStore.getState().refreshSync()
+    } else if (isMap) {
+      const { useMapStore } = await import('@/store/map')
+      await useMapStore.getState().refresh()
     } else if (isChat && matrixConnected) {
       if (e.ctrlKey || e.metaKey) {
         await db.chatMessages.clear()
@@ -272,6 +286,7 @@ export function Layout() {
               <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
+              <PaneTab pane="map" icon={<MapPin size={11} />} label="Map" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="money" icon={<PoundSterling size={11} />} label="Money" activePane={activePane} setActivePane={setActivePane} />
             </div>
           )}
@@ -279,7 +294,7 @@ export function Layout() {
         <div className="flex items-center gap-3 md:gap-4">
           <HubOfflineIndicator />
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney ? true : matrixConnected) && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -339,6 +354,15 @@ export function Layout() {
         {/* Calendar pane */}
         <div className={`flex flex-1 min-h-0 overflow-hidden ${isCalendar ? '' : 'hidden'}`}>
           <CalendarTab />
+        </div>
+
+        {/* Map pane (lazy — MapLibre; mounted on first activation) */}
+        <div className={`flex flex-1 min-h-0 overflow-hidden ${isMap ? '' : 'hidden'}`}>
+          {mapMounted && (
+            <Suspense fallback={<div className="flex-1 grid place-items-center text-sm text-text-tertiary">Loading map…</div>}>
+              <MapTab />
+            </Suspense>
+          )}
         </div>
 
         {/* Money pane */}
@@ -443,6 +467,7 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
     { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
     { pane: 'notes', icon: <FileText size={18} />, label: 'Notes' },
     { pane: 'bookmarks', icon: <Bookmark size={18} />, label: 'Marks' },
+    { pane: 'map', icon: <MapPin size={18} />, label: 'Map' },
     { pane: 'money', icon: <PoundSterling size={18} />, label: 'Money' },
   ]
 
@@ -527,6 +552,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
   const isNotes = activePane === 'notes'
   const isFeeds = activePane === 'feeds'
   const isCalendar = activePane === 'calendar'
+  const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
 
   const handleDone = () => {
@@ -538,7 +564,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
   return (
     <footer className="flex items-center justify-between border-t border-border px-4 py-1">
       <div className="flex items-center gap-4">
-        {isAgents || isBookmarks || isNotes || isCalendar || isMoney ? (
+        {isAgents || isBookmarks || isNotes || isCalendar || isMoney || isMap ? (
           <></>
         ) : isFeeds ? (
           <>
@@ -591,6 +617,12 @@ function Footer({ activePane }: { activePane: ActivePane }) {
             <span><kbd className="font-mono">t</kbd> today</span>
             <span><kbd className="font-mono">w</kbd>/<kbd className="font-mono">d</kbd> view</span>
             <span><kbd className="font-mono">c</kbd> create</span>
+          </>
+        ) : isMap ? (
+          <>
+            <span><kbd className="font-mono">j</kbd>/<kbd className="font-mono">k</kbd> caches</span>
+            <span><kbd className="font-mono">f</kbd> fetch here</span>
+            <span><kbd className="font-mono">g</kbd> my location</span>
           </>
         ) : isMoney ? (
           <>
