@@ -133,6 +133,7 @@ export function MapTab() {
     mapRef.current = map
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.on('error', () => {/* tolerate the odd tile 404 — non-fatal */})
+    registerEmojiImages(map)
 
     // Add overlay layers once the style is ready (fires on initial load).
     map.on('style.load', () => {
@@ -307,6 +308,33 @@ export function MapTab() {
   )
 }
 
+// MapLibre renders emoji in a text-field as monochrome SDF glyphs (black). To
+// get COLOUR emoji we rasterise each one to a canvas (system colour-emoji font)
+// and register it as a map image, referenced via icon-image `em:<emoji>`.
+// A `styleimagemissing` handler generates them on demand — so any emoji (fixed
+// geocache set OR an agent layer's arbitrary `_icon`) just works.
+function emojiImage(emoji: string, px = 44): ImageData | null {
+  const c = document.createElement('canvas')
+  c.width = c.height = px
+  const ctx = c.getContext('2d')
+  if (!ctx) return null
+  ctx.clearRect(0, 0, px, px)
+  ctx.font = `${Math.round(px * 0.8)}px "Noto Color Emoji","Apple Color Emoji","Segoe UI Emoji",sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(emoji, px / 2, px / 2 + Math.round(px * 0.04))
+  return ctx.getImageData(0, 0, px, px)
+}
+
+function registerEmojiImages(map: maplibregl.Map) {
+  map.on('styleimagemissing', (e: { id: string }) => {
+    const id = e.id
+    if (!id.startsWith('em:') || map.hasImage(id)) return
+    const img = emojiImage(id.slice(3))
+    if (img && !map.hasImage(id)) map.addImage(id, img, { pixelRatio: 2 })
+  })
+}
+
 function pushSource(map: maplibregl.Map, id: string, data: FeatureCollection) {
   const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined
   if (src) src.setData(data)
@@ -329,10 +357,10 @@ function addOverlayLayers(map: maplibregl.Map) {
     map.addLayer({
       id: 'gc-pins', type: 'symbol', source: 'gc-pins',
       layout: {
-        'text-field': PIN_EMOJI as unknown as maplibregl.ExpressionSpecification,
-        'text-size': 17,
-        'text-allow-overlap': true,
-        'text-ignore-placement': true,
+        'icon-image': ['concat', 'em:', PIN_EMOJI] as unknown as maplibregl.ExpressionSpecification,
+        'icon-size': 0.6,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
       },
     })
   }
@@ -404,7 +432,12 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
   map.addLayer({
     id: symbol, type: 'symbol', source: src,
     filter: ['all', ['==', ['geometry-type'], 'Point'], ['has', '_icon']] as maplibregl.FilterSpecification,
-    layout: { 'text-field': expr(['get', '_icon']), 'text-size': expr(['coalesce', ['get', '_size'], 18]), 'text-allow-overlap': true },
+    layout: {
+      'icon-image': expr(['concat', 'em:', ['get', '_icon']]),
+      'icon-size': 0.7,
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
   }, before)
 
   const onClick = (e: maplibregl.MapLayerMouseEvent) => {
