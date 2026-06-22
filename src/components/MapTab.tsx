@@ -404,7 +404,7 @@ function buildPopupHtml(props: Record<string, unknown>, style: MapLayerStyle): s
     .map((e) => `<div class="pr"><span class="pk">${escapeHtml(e.label)}</span><span class="pv">${escapeHtml(String(props[e.key]))}</span></div>`)
     .join('')
   const title = name != null && name !== '' ? `<div class="pt">${escapeHtml(String(name))}</div>` : ''
-  return title + (rows || '<div class="pm">no details</div>')
+  return title + rows // '' when the feature has nothing to show → no popup
 }
 
 function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ) {
@@ -443,9 +443,11 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
   const onClick = (e: maplibregl.MapLayerMouseEvent) => {
     const f = e.features?.[0]
     if (!f) return
+    const html = buildPopupHtml((f.properties ?? {}) as Record<string, unknown>, st)
+    if (!html) return // nothing to show — don't pop an empty box
     new maplibregl.Popup({ closeButton: true, maxWidth: '260px', className: 'console-map-popup' })
       .setLngLat(e.lngLat)
-      .setHTML(buildPopupHtml((f.properties ?? {}) as Record<string, unknown>, st))
+      .setHTML(html)
       .addTo(map)
   }
   for (const id of [fill, line, circle, symbol]) {
