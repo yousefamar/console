@@ -59,6 +59,27 @@ function pruneOtts(): void {
 let pendingMonzoState: string | null = null
 let lastMonzoResult: { connected: boolean; scaRequired?: boolean; error?: string } | null = null
 
+// Spotify OAuth state
+let pendingSpotifyState: string | null = null
+
+// Scopes for the Spotify Web API. Playback control + library read/modify; the
+// recommendations/audio-features/analysis scopes are intentionally omitted —
+// those endpoints are dead for apps created after 2024-11-27.
+const SPOTIFY_SCOPES = [
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'user-read-recently-played',
+  'playlist-read-private',
+  'playlist-read-collaborative',
+  'playlist-modify-private',
+  'playlist-modify-public',
+  'user-library-read',
+  'user-library-modify',
+  'user-follow-read',
+  'user-read-private',
+]
+
 /**
  * Compute the externally-visible base URL.
  *
@@ -695,6 +716,107 @@ export function handleAuthRoutes(
   // POST /auth/logout/monzo
   if (path === '/auth/logout/monzo' && req.method === 'POST') {
     authStore.clearMonzo()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return true
+  }
+
+  // --------------------------------------------------------------------------
+  // Spotify OAuth (Authorization Code, confidential client)
+  // --------------------------------------------------------------------------
+
+  // POST /auth/spotify/credentials — set client_id and client_secret
+  if (path === '/auth/spotify/credentials' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const { clientId, clientSecret } = JSON.parse(body) as { clientId: string; clientSecret: string }
+      authStore.setSpotifyCredentials(clientId, clientSecret)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    }).catch((err: Error) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    })
+    return true
+  }
+
+  // GET /auth/spotify/status — linking state (creds present? tokens present?)
+  if (path === '/auth/spotify/status' && req.method === 'GET') {
+    const s = authStore.getSpotifyConfig()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      hasCredentials: !!s?.clientId && !!s?.clientSecret,
+      connected: !!s?.accessToken,
+      userId: s?.userId,
+      displayName: s?.displayName,
+    }))
+    return true
+  }
+
+  // GET /auth/spotify/start — initiate OAuth flow
+  if (path === '/auth/spotify/start' && req.method === 'GET') {
+    const spotify = authStore.getSpotifyConfig()
+    if (!spotify?.clientId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Spotify credentials not configured' }))
+      return true
+    }
+
+    pendingSpotifyState = Math.random().toString(36).slice(2)
+
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/spotify/callback`
+    const url = new URL('https://accounts.spotify.com/authorize')
+    url.searchParams.set('client_id', spotify.clientId)
+    url.searchParams.set('redirect_uri', redirectUri)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('scope', SPOTIFY_SCOPES.join(' '))
+    url.searchParams.set('state', pendingSpotifyState)
+    // Force the consent screen so re-links always mint a fresh refresh token.
+    url.searchParams.set('show_dialog', 'true')
+
+    res.writeHead(302, { Location: url.toString() })
+    res.end()
+    return true
+  }
+
+  // GET /auth/spotify/callback — OAuth redirect callback
+  if (path.startsWith('/auth/spotify/callback') && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', `http://localhost:${hubPort}`)
+    const code = url.searchParams.get('code')
+    const state = url.searchParams.get('state')
+    const error = url.searchParams.get('error')
+
+    if (error) {
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(`<html><body><h2>Spotify auth failed</h2><p>${error}</p></body></html>`)
+      return true
+    }
+
+    if (!code || state !== pendingSpotifyState) {
+      res.writeHead(400, { 'Content-Type': 'text/html' })
+      res.end('<html><body><h2>Invalid callback</h2><p>State mismatch or missing code.</p></body></html>')
+      return true
+    }
+
+    pendingSpotifyState = null
+
+    const redirectUri = `${getBaseUrl(req, hubPort)}/auth/spotify/callback`
+    authStore.exchangeSpotifyCode(code, redirectUri)
+      .then(() => {
+        console.log('[auth] Spotify code exchanged — account linked')
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end('<html><body style="font-family: system-ui; text-align: center; padding-top: 80px;"><h2>Spotify Connected</h2><p>You can close this tab.</p></body></html>')
+      })
+      .catch((err: Error) => {
+        console.error('[auth] Spotify code exchange failed:', err.message)
+        res.writeHead(500, { 'Content-Type': 'text/html' })
+        res.end(`<html><body><h2>Spotify auth failed</h2><p>${err.message}</p></body></html>`)
+      })
+    return true
+  }
+
+  // POST /auth/logout/spotify — drop tokens (keep credentials)
+  if (path === '/auth/logout/spotify' && req.method === 'POST') {
+    authStore.clearSpotify()
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true }))
     return true

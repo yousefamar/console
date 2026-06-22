@@ -28,6 +28,16 @@ export interface MonzoAuth {
   userId?: string
 }
 
+export interface SpotifyAuth {
+  clientId: string
+  clientSecret: string
+  accessToken?: string
+  refreshToken?: string
+  accessTokenExpiry?: number
+  userId?: string
+  displayName?: string
+}
+
 export type HubTokenScope = 'cli' | 'al' | 'apk' | 'other'
 
 export interface HubSession {
@@ -61,6 +71,7 @@ export interface AuthConfig {
     accessToken: string
   }
   monzo?: MonzoAuth
+  spotify?: SpotifyAuth
   serpApi?: { apiKey: string }
   /** OwnTracks Recorder (self-hosted location server, e.g. maps.amar.io) */
   owntracks?: { url: string; username: string; password: string }
@@ -113,6 +124,10 @@ export class AuthStore {
     // Schedule Monzo refresh if configured
     if (this.config.monzo?.accessTokenExpiry) {
       this.scheduleMonzoRefresh()
+    }
+    // Schedule Spotify refresh if configured
+    if (this.config.spotify?.accessTokenExpiry) {
+      this.scheduleSpotifyRefresh()
     }
     // Ensure webhook secret exists
     this.getWebhookSecret()
@@ -508,6 +523,185 @@ export class AuthStore {
     }
     this.config.monzo = undefined
     this.save()
+  }
+
+  // --------------------------------------------------------------------------
+  // Spotify OAuth (Authorization Code, confidential client — hub holds secret)
+  //
+  // Playback control is delegated to a Spotify Connect device (spotifyd). The
+  // hub only ever calls the Web API; it never streams audio. Mirrors the Monzo
+  // single-account token model.
+  // --------------------------------------------------------------------------
+
+  private spotifyRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private spotifyRefreshing = false
+
+  getSpotifyConfig(): SpotifyAuth | undefined {
+    return this.config.spotify
+  }
+
+  setSpotifyCredentials(clientId: string, clientSecret: string): void {
+    this.config.spotify = { ...this.config.spotify, clientId, clientSecret } as SpotifyAuth
+    this.save()
+  }
+
+  async getSpotifyToken(): Promise<string | null> {
+    const spotify = this.config.spotify
+    if (!spotify?.accessToken) return null
+
+    // Valid with a 5-minute buffer.
+    if (spotify.accessTokenExpiry && Date.now() < spotify.accessTokenExpiry - 5 * 60 * 1000) {
+      return spotify.accessToken
+    }
+
+    const refreshed = await this.refreshSpotifyToken()
+    return refreshed ? this.config.spotify!.accessToken! : null
+  }
+
+  /** HTTP Basic auth header for the Spotify token endpoint (confidential client). */
+  private spotifyBasicAuth(): string | null {
+    const s = this.config.spotify
+    if (!s?.clientId || !s?.clientSecret) return null
+    return 'Basic ' + Buffer.from(`${s.clientId}:${s.clientSecret}`).toString('base64')
+  }
+
+  async refreshSpotifyToken(): Promise<boolean> {
+    if (this.spotifyRefreshing) {
+      await new Promise((r) => setTimeout(r, 1000))
+      return !!this.config.spotify?.accessToken
+    }
+    this.spotifyRefreshing = true
+
+    const spotify = this.config.spotify
+    const basic = this.spotifyBasicAuth()
+    if (!spotify?.refreshToken || !basic) {
+      this.spotifyRefreshing = false
+      return false
+    }
+
+    try {
+      const res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: basic },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: spotify.refreshToken,
+        }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error(`[auth] Spotify token refresh failed: ${res.status} ${text}`)
+        if (res.status === 400 || res.status === 401) {
+          spotify.accessToken = undefined
+          spotify.refreshToken = undefined
+          spotify.accessTokenExpiry = undefined
+          this.save()
+        }
+        return false
+      }
+
+      const data = await res.json() as {
+        access_token: string
+        token_type: string
+        expires_in: number
+        scope?: string
+        refresh_token?: string
+      }
+
+      spotify.accessToken = data.access_token
+      // Spotify only sometimes issues a new refresh token — keep the old one otherwise.
+      if (data.refresh_token) spotify.refreshToken = data.refresh_token
+      spotify.accessTokenExpiry = Date.now() + data.expires_in * 1000
+      this.save()
+
+      this.scheduleSpotifyRefresh()
+      return true
+    } catch (err) {
+      console.error('[auth] Spotify token refresh error:', err)
+      return false
+    } finally {
+      this.spotifyRefreshing = false
+    }
+  }
+
+  /** Exchange an authorization code for tokens, then fetch the user profile. */
+  async exchangeSpotifyCode(code: string, redirectUri: string): Promise<void> {
+    const basic = this.spotifyBasicAuth()
+    if (!basic) throw new Error('Spotify credentials not configured')
+
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: basic },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+      }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Spotify token exchange failed: ${res.status} ${text}`)
+    }
+
+    const data = await res.json() as {
+      access_token: string
+      refresh_token: string
+      expires_in: number
+      token_type: string
+      scope?: string
+    }
+
+    const spotify = this.config.spotify!
+    spotify.accessToken = data.access_token
+    spotify.refreshToken = data.refresh_token
+    spotify.accessTokenExpiry = Date.now() + data.expires_in * 1000
+    this.save()
+
+    // Best-effort profile fetch to record the account identity.
+    try {
+      const me = await fetch('https://api.spotify.com/v1/me', {
+        headers: { Authorization: `Bearer ${data.access_token}` },
+      })
+      if (me.ok) {
+        const profile = await me.json() as { id?: string; display_name?: string }
+        spotify.userId = profile.id
+        spotify.displayName = profile.display_name
+        this.save()
+      }
+    } catch {
+      // Non-fatal — tokens are stored regardless.
+    }
+
+    this.scheduleSpotifyRefresh()
+  }
+
+  private scheduleSpotifyRefresh(): void {
+    if (this.spotifyRefreshTimer) clearTimeout(this.spotifyRefreshTimer)
+    const spotify = this.config.spotify
+    if (!spotify?.accessTokenExpiry) return
+
+    const delay = Math.max(spotify.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
+    this.spotifyRefreshTimer = setTimeout(() => {
+      this.refreshSpotifyToken()
+    }, delay)
+  }
+
+  clearSpotify(): void {
+    if (this.spotifyRefreshTimer) {
+      clearTimeout(this.spotifyRefreshTimer)
+      this.spotifyRefreshTimer = null
+    }
+    // Keep credentials, drop tokens so the user can re-link without re-entering creds.
+    if (this.config.spotify) {
+      this.config.spotify.accessToken = undefined
+      this.config.spotify.refreshToken = undefined
+      this.config.spotify.accessTokenExpiry = undefined
+      this.config.spotify.userId = undefined
+      this.config.spotify.displayName = undefined
+      this.save()
+    }
   }
 
   // --------------------------------------------------------------------------

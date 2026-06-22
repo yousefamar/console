@@ -59,6 +59,10 @@ import { handleApkRoutes } from './routes/apk.js'
 import { handleOwntracksRoutes } from './routes/owntracks.js'
 import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
+import { handleSpotifyRoutes } from './routes/spotify.js'
+import { SpotifyClient } from './spotify/client.js'
+import { SpotifyStore } from './spotify/store.js'
+import { SpotifyPlayerSync } from './spotify/sync.js'
 import { handleMapLayerRoutes } from './routes/map-layers.js'
 import { MapLayerStore } from './map-layers/store.js'
 import { PushServer } from './push.js'
@@ -419,6 +423,22 @@ geocachingClient.onChange = (changed) => {
     caches: changed.map(({ detail: _detail, ...summary }) => summary),
   })
 }
+
+// Spotify — the hub is a remote control over the Web API; playback runs on the
+// spotifyd Connect device. The poller only hits Spotify while a drawer is open
+// (subscriberCount('spotify') > 0); control actions poke a fresh fetch.
+const spotifyClient = new SpotifyClient(authStore)
+const spotifyStore = new SpotifyStore({
+  path: join(feedsConfigDir, 'spotify-player.json'),
+  bus: syncBus,
+  log: (msg: string) => { log(msg) },
+})
+const spotifySync = new SpotifyPlayerSync(spotifyClient, spotifyStore, syncBus, (msg: string) => { log(msg) })
+syncBus.register('spotify', {
+  snapshot: async () => spotifyStore.snapshot(),
+  syncNow: async () => spotifySync.syncNow(),
+})
+spotifySync.start()
 
 // Agent-authored map layers: SyncBus carries only the index; clients fetch each
 // layer's GeoJSON over HTTP (layers can be multi-MB).
@@ -991,6 +1011,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
+  if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return

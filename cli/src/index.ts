@@ -180,6 +180,11 @@ async function main() {
         await map(verb, rest, flags)
         break
       }
+      case 'music': {
+        const { music } = await import('./commands/music.js')
+        await music(verb, rest, flags)
+        break
+      }
       case 'capabilities': {
         const { capabilities } = await import('./commands/capabilities.js')
         capabilities(flags)

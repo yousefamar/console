@@ -17,7 +17,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
@@ -27,6 +27,8 @@ import { YouTubePiP } from './FeedItemView'
 import { PullIndicator } from './PullIndicator'
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
+import { MusicDrawer } from './music/MusicDrawer'
+import { useMusicStore } from '@/store/music'
 // MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
 // initial bundle and only loads once the Map pane is first opened.
 const MapTab = lazy(() => import('./MapTab').then((m) => ({ default: m.MapTab })))
@@ -159,6 +161,8 @@ export function Layout() {
   const setActivePane = useUiStore((s) => s.setActivePane)
   const setShowMatrixLogin = useUiStore((s) => s.setShowMatrixLogin)
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
+  const musicOpen = useMusicStore((s) => s.open)
+  const toggleMusic = useMusicStore((s) => s.toggleOpen)
   const isMobile = useIsMobile()
 
   const gmailConnected = isGmailConnected()
@@ -305,6 +309,13 @@ export function Layout() {
           )}
           <DndIndicator />
           <button
+            onClick={toggleMusic}
+            className={`transition-colors duration-fast ${musicOpen ? 'text-accent' : 'text-text-tertiary hover:text-text-secondary'}`}
+            title="Music"
+          >
+            <Music size={13} />
+          </button>
+          <button
             onClick={() => setShowAccountModal(true)}
             className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
             title="Settings"
@@ -378,6 +389,9 @@ export function Layout() {
 
       {/* YouTube PiP overlay */}
       <YouTubePiP />
+
+      {/* Global music drawer (mounted only while open → hub poller gated to it) */}
+      {musicOpen && <MusicDrawer onClose={() => useMusicStore.getState().setOpen(false)} />}
 
       {/* Pull-to-refresh indicator (mobile) */}
       {isMobile && <PullIndicator />}
