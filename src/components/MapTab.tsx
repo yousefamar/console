@@ -32,16 +32,36 @@ function stripHtml(s: string): string {
   return text.replace(/\n{3,}/g, '\n\n').trim()
 }
 
-// Pins are coloured by YOUR relationship to the cache, not its type (the type
-// lives in the popup). found = green, DNF = red, not-yet-attempted = muted slate.
-const FOUND = '#22c55e'
-const DNF = '#ef4444'
-const TODO = '#64748b'
-const STATE_COLOR: unknown[] = [
+// Geocache pins are emoji glyphs (geocaching.com mental model): your find-state
+// wins — 😀 found, 😟 DNF — otherwise the cache TYPE emoji for not-yet-attempted.
+const TYPE_EMOJI: unknown[] = [
+  'match', ['get', 'type'],
+  'Traditional', '📦',
+  'Multi-cache', '🧩',
+  'Mystery', '❓',
+  'Letterbox', '✉️',
+  'EarthCache', '🌍',
+  'Event', '🎉',
+  'Mega-Event', '🎉',
+  'Giga-Event', '🎉',
+  'Community Celebration', '🎉',
+  'HQ Block Party', '🎉',
+  'HQ Celebration', '🎉',
+  'Cache In Trash Out Event', '♻️',
+  'Webcam', '📷',
+  'Virtual', '🔮',
+  'Wherigo', '🕹️',
+  'GPS Adventures Exhibit', '🧭',
+  'Geocaching HQ', '🏢',
+  'Locationless', '🌐',
+  'Project APE', '🦍',
+  /* default */ '📍',
+]
+const PIN_EMOJI: unknown[] = [
   'case',
-  ['==', ['get', 'found'], 1], FOUND,
-  ['==', ['get', 'dnf'], 1], DNF,
-  TODO,
+  ['==', ['get', 'found'], 1], '😀',
+  ['==', ['get', 'dnf'], 1], '😟',
+  TYPE_EMOJI,
 ]
 
 function pinsToFC(pins: MapCache[]): FeatureCollection {
@@ -273,26 +293,17 @@ export function MapTab() {
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
 
-      {/* legend — pins coloured by your find-state */}
+      {/* legend — pins are emoji: find-state, else cache type */}
       <div className="absolute bottom-2 left-2 flex items-center gap-3 rounded bg-surface-0/90 border border-border px-2 py-1 text-[11px] text-text-secondary backdrop-blur">
-        <Dot color={FOUND} label="found" />
-        <Dot color={DNF} label="DNF" />
-        <Dot color={TODO} label="to do" />
+        <span>😀 found</span>
+        <span>😟 DNF</span>
+        <span>📦❓🧩🌍 type = to-do</span>
       </div>
 
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
       {showLayers && <LayersPanel onClose={() => setShowLayers(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
     </div>
-  )
-}
-
-function Dot({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1">
-      <span className="inline-block w-2 h-2 rounded-full" style={{ background: color }} />
-      {label}
-    </span>
   )
 }
 
@@ -309,20 +320,20 @@ function addOverlayLayers(map: maplibregl.Map) {
   }
   if (!map.getSource('gc-pins')) {
     map.addSource('gc-pins', { type: 'geojson', data: pinsToFC([]) })
-    map.addLayer({
-      id: 'gc-pins', type: 'circle', source: 'gc-pins',
-      paint: {
-        'circle-radius': 6,
-        'circle-color': STATE_COLOR as unknown as maplibregl.ExpressionSpecification,
-        'circle-opacity': ['case', ['==', ['get', 'found'], 1], 0.95, ['==', ['get', 'dnf'], 1], 0.95, 0.7] as unknown as maplibregl.ExpressionSpecification,
-        'circle-stroke-width': 1,
-        'circle-stroke-color': '#0a0a0a',
-      },
-    })
+    // Selection ring sits UNDER the emoji glyph (added first).
     map.addLayer({
       id: 'gc-selected', type: 'circle', source: 'gc-pins',
       filter: ['==', ['get', 'code'], ''],
-      paint: { 'circle-radius': 9, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+      paint: { 'circle-radius': 14, 'circle-color': 'rgba(56,189,248,0.18)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+    })
+    map.addLayer({
+      id: 'gc-pins', type: 'symbol', source: 'gc-pins',
+      layout: {
+        'text-field': PIN_EMOJI as unknown as maplibregl.ExpressionSpecification,
+        'text-size': 17,
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+      },
     })
   }
   if (!map.getSource('ot-current')) {
