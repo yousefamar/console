@@ -294,13 +294,6 @@ export function MapTab() {
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
 
-      {/* legend — pins are emoji: find-state, else cache type */}
-      <div className="absolute bottom-2 left-2 flex items-center gap-3 rounded bg-surface-0/90 border border-border px-2 py-1 text-[11px] text-text-secondary backdrop-blur">
-        <span>😀 found</span>
-        <span>😟 DNF</span>
-        <span>📦❓🧩🌍 type = to-do</span>
-      </div>
-
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
       {showLayers && <LayersPanel onClose={() => setShowLayers(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}

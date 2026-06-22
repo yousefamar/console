@@ -16,10 +16,15 @@ export function FeedItemListEntry({ item, isSelected, onClick }: {
         isSelected ? 'bg-surface-2' : 'hover:bg-surface-1'
       }`}
     >
-      <div className="flex items-start gap-1.5">
+      <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-text-primary truncate leading-tight">
-            {item.title}
+          <div className="flex items-start gap-1.5">
+            <div className="text-xs text-text-primary line-clamp-2 leading-tight flex-1 min-w-0">
+              {item.title}
+            </div>
+            <span className="text-[10px] text-text-tertiary whitespace-nowrap flex-shrink-0">
+              {formatRelativeDate(item.publishedAt)}
+            </span>
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             {feed && (
@@ -39,9 +44,15 @@ export function FeedItemListEntry({ item, isSelected, onClick }: {
             </div>
           )}
         </div>
-        <span className="text-[10px] text-text-tertiary whitespace-nowrap flex-shrink-0">
-          {formatRelativeDate(item.publishedAt)}
-        </span>
+        {item.imageUrl && (
+          <img
+            src={item.imageUrl}
+            alt=""
+            loading="lazy"
+            onError={(e) => { e.currentTarget.style.display = 'none' }}
+            className="w-48 aspect-video object-cover rounded-sm bg-surface-2 flex-shrink-0"
+          />
+        )}
       </div>
     </button>
   )
