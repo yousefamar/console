@@ -39,13 +39,20 @@ async function downscaleImage(blob: Blob, maxDim = 2000): Promise<Blob> {
   }
 }
 
+/** Insert text at the cursor (replacing any selection). Adds a separating
+ *  space ONLY when gluing two word characters together — STT deltas usually
+ *  carry their own leading space, so blindly padding doubles them up. */
 function insertAtCursor(text: string) {
+  if (!text) return
   const view = useNotesStore.getState().editorView
   if (!view) return
-  const pos = view.state.selection.main.head
+  const sel = view.state.selection.main
+  const before = sel.from > 0 ? view.state.sliceDoc(sel.from - 1, sel.from) : ''
+  const needsSpace = /\w$/.test(before) && /^\w/.test(text)
+  const piece = needsSpace ? ' ' + text : text
   view.dispatch({
-    changes: { from: pos, insert: text },
-    selection: { anchor: pos + text.length },
+    changes: { from: sel.from, to: sel.to, insert: piece },
+    selection: { anchor: sel.from + piece.length },
     scrollIntoView: true,
   })
 }
@@ -62,10 +69,8 @@ export function WriteActionBar({ path, onPublish }: Props) {
   const permalink = permalinkForLogPath(path)
 
   const dictation = useDictation({
-    onFinalSegment: (text) => {
-      // Final transcript segments insert at the cursor with a trailing space
-      insertAtCursor(text.endsWith(' ') ? text : text + ' ')
-    },
+    // Insert each transcript chunk raw — insertAtCursor handles spacing.
+    onText: (text) => insertAtCursor(text),
   })
 
   const handleImagePick = async (file: File | null | undefined) => {

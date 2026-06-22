@@ -57,13 +57,22 @@ async function eventsToMessages(
       if (isTombstone) {
         const redaction = (event.unsigned as Record<string, unknown> | undefined)
           ?.redacted_because as { sender?: string } | undefined
+        // Preserve any previously-cached decrypted body so a re-pagination of
+        // a deleted message still shows the original text struck through,
+        // matching the live-sync path (src/matrix/sync.ts). The tombstone
+        // itself carries no content — the server stripped it — so the only
+        // recoverable text is what we'd decrypted before the delete arrived.
+        // A bare "🔒 Encrypted message" placeholder counts as nothing.
+        const prior = await db.chatMessages.get(event.event_id)
+        const placeholder = prior?.body === '\u{1F512} Encrypted message'
+        const keepBody = prior && !placeholder ? prior.body : ''
         messages.push({
           id: event.event_id,
           roomId,
           senderId: event.sender,
           senderName,
           senderAvatar,
-          body: '',
+          body: keepBody,
           timestamp: event.origin_server_ts,
           type: 'text',
           isEdited: false,

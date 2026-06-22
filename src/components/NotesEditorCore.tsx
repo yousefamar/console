@@ -15,7 +15,6 @@ import { livePreview } from '@/notes/live-preview'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
-import { showConfirm } from '@/dialog'
 import { pushFromEditor, pushNow as pushMirrorNow, isEnabled as isMirrorEnabled } from '@/glasses/mirror'
 
 /**
@@ -192,16 +191,14 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       // Intercept app-level shortcuts BEFORE vim consumes them
       Prec.highest(EditorView.domEventHandlers({
         keydown(event) {
-          if ((event.ctrlKey || event.metaKey) && event.key === 'p') {
-            event.preventDefault()
-            useNotesStore.getState().openQuickSwitcher('filename')
-            return true
-          }
-          if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'f' || event.key === 'F')) {
-            event.preventDefault()
-            useNotesStore.getState().openQuickSwitcher('content')
-            return true
-          }
+          // NOTE: app-level shortcuts (Ctrl+P/N/W, Ctrl+Shift+P/F/T, palette,
+          // quick switcher, close/reopen tab) are owned SOLELY by the global
+          // window handler in useKeybindings.ts. They must NOT be duplicated
+          // here: a CM domEventHandler returning `true` only preventDefaults —
+          // it does NOT stopPropagation — so the event still bubbles to window
+          // and both handlers fire (Ctrl+W closed two tabs). Keep this handler
+          // to editor-text operations only.
+
           // Ctrl+J / Ctrl+K → half-page scroll (clamped, no wrap)
           if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'j' || event.key === 'k')) {
             event.preventDefault()
@@ -214,43 +211,6 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
               const pos = view.state.doc.line(targetLine).from
               view.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
             }
-            return true
-          }
-          // Ctrl+Shift+T → reopen closed tab
-          if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 't' || event.key === 'T')) {
-            event.preventDefault()
-            useNotesStore.getState().reopenLastClosedTab()
-            return true
-          }
-          // Ctrl+Shift+P → command palette
-          if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'p' || event.key === 'P')) {
-            event.preventDefault()
-            useNotesStore.getState().openCommandPalette()
-            return true
-          }
-          // Ctrl+W → close current tab (matching nvim config)
-          if ((event.ctrlKey || event.metaKey) && event.key === 'w') {
-            event.preventDefault()
-            const state = useNotesStore.getState()
-            if (state.activeFilePath) {
-              const closed = state.closeFile(state.activeFilePath, false)
-              if (!closed) {
-                // File is dirty — ask to save first
-                void showConfirm('Save changes before closing?', { title: 'Unsaved changes', confirmLabel: 'Save & close', cancelLabel: 'Discard' }).then((save) => {
-                  if (save) {
-                    state.saveFile().then(() => state.closeFile(state.activeFilePath!, true))
-                  } else {
-                    state.closeFile(state.activeFilePath!, true)
-                  }
-                })
-              }
-            }
-            return true
-          }
-          // Ctrl+N → new note
-          if ((event.ctrlKey || event.metaKey) && event.key === 'n' && !event.shiftKey) {
-            event.preventDefault()
-            useNotesStore.getState().openNewFileForm()
             return true
           }
           // Ctrl+B → bold

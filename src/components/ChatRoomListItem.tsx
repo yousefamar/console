@@ -55,7 +55,16 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
   }, [room.id])
 
   const handleReload = useCallback(async () => {
-    await db.chatMessages.where('roomId').equals(room.id).delete()
+    // Delete everything EXCEPT deleted messages that still carry a body.
+    // Their text is irreplaceable — the server stripped the content on
+    // redaction, so re-pagination returns only an empty tombstone. Blindly
+    // wiping them turns recoverable struck-through text into "Message
+    // deleted" permanently (the bug that ate Katie's "back garden" message).
+    const stale = await db.chatMessages
+      .where('roomId').equals(room.id)
+      .filter((m) => !(m.isDeleted && !!m.body))
+      .primaryKeys()
+    await db.chatMessages.bulkDelete(stale as string[])
     await db.chatRooms.update(room.id, { prevBatch: undefined })
     try {
       const state = await getRoomState(room.id)
