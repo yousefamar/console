@@ -364,7 +364,11 @@ function UserPromptBlock({ content, images }: { content: string; images?: string
               ))}
             </div>
           )}
-          <p className="text-sm text-text-primary whitespace-pre-wrap break-words">{content}</p>
+          {/* Render markdown so hub-injected images (e.g. the WhatsApp pairing
+              QR, sent as a `![](data:image/png;base64,…)` user_prompt) show as
+              an <img> instead of raw base64. A <div> (not <p>) since the image
+              is display:block — block-in-<p> is invalid and React closes the p early. */}
+          <div className="text-sm text-text-primary whitespace-pre-wrap break-words">{renderInlineMarkdown(content)}</div>
         </div>
       </div>
     </div>
