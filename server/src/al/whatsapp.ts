@@ -163,6 +163,11 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
   sock.ev.on('connection.update', (update) => {
     try {
       if (update.qr) {
+        // A QR means the socket connected fine and is just waiting to be scanned
+        // — not a failure. Reset the backoff so repeated QR-wait timeouts (408)
+        // don't inflate it; otherwise the post-pairing 515 reconnect inherits a
+        // 60s delay and the fresh pairing expires before we reconnect.
+        reconnectAttempt = 0
         QRCode.toDataURL(update.qr, { width: 300 }, (err, dataUrl) => {
           if (err) {
             console.error('[al/wa] QR data URL render failed:', err.message)
@@ -206,6 +211,21 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
               console.error('[al/wa] self-heal failed:', (err as Error)?.message)
               scheduleReconnect()
             })
+        } else if (statusCode === DisconnectReason.restartRequired) {
+          // 515 — the MANDATORY post-pairing stream restart. Creds are already
+          // saved; WhatsApp drops the stream and expects an IMMEDIATE reconnect
+          // to finish login. Do NOT route this through scheduleReconnect's
+          // exponential backoff — a delayed reconnect here lets WhatsApp expire
+          // the fresh pairing, which comes back as loggedOut and loops to the QR
+          // (the exact "stuck logging in → error" symptom). Reset the counter
+          // (this is a pairing milestone, not a failure) and reconnect now.
+          console.log('[al/wa] restart required (515) — reconnecting immediately to finish login')
+          reconnectAttempt = 0
+          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+          startWhatsApp(cb).catch((err) => {
+            console.error('[al/wa] 515 reconnect failed:', (err as Error)?.message)
+            scheduleReconnect()
+          })
         } else {
           // Log the status code so stdout and health envelopes tell the same
           // story (428 = benign server-initiated close; 440 = session replaced).
