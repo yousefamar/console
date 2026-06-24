@@ -107,7 +107,7 @@ function toastControlError(e: unknown): void {
   let message = 'Spotify control failed'
   if (/device not found|no_active_device|no active device/i.test(blob)) {
     message = 'No playback device'
-    detail = 'spotifyd is offline — open Spotify on a device (or wait for it to reconnect), then try again.'
+    detail = 'Open Spotify on a device, pick amarhp-spotifyd in the Connect menu and play, then try again.'
   } else if (/restriction|\b403\b/i.test(blob)) {
     message = 'Not supported by this device'
     detail = undefined
