@@ -94,6 +94,11 @@ export function MusicDrawer({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <div className="flex flex-1 flex-col overflow-y-auto">
+          {snap.devices.length === 0 && (
+            <div className="mx-3 mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-500">
+              No playback device — spotifyd is offline. Open Spotify on a device (or wait for it to reconnect), then try again.
+            </div>
+          )}
           {/* Now playing */}
           <div className="flex flex-col items-center gap-3 px-4 pt-4">
             <div className="aspect-square w-44 overflow-hidden rounded bg-surface-2">

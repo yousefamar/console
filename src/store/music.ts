@@ -5,6 +5,7 @@
 
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
+import { useUiStore } from '@/store/ui'
 
 export interface MusicDevice {
   id: string | null
@@ -92,8 +93,39 @@ interface MusicState {
   clearSearch: () => void
 }
 
+/** Map a hub control error to a friendly toast. Never let control fail silently. */
+function toastControlError(e: unknown): void {
+  const raw = e instanceof Error ? e.message : String(e)
+  let detail: string | undefined
+  try {
+    const parsed = JSON.parse(raw) as { error?: string }
+    if (parsed.error) detail = parsed.error
+  } catch {
+    detail = raw
+  }
+  const blob = `${detail ?? ''} ${raw}`
+  let message = 'Spotify control failed'
+  if (/device not found|no_active_device|no active device/i.test(blob)) {
+    message = 'No playback device'
+    detail = 'spotifyd is offline — open Spotify on a device (or wait for it to reconnect), then try again.'
+  } else if (/restriction|\b403\b/i.test(blob)) {
+    message = 'Not supported by this device'
+    detail = undefined
+  } else if (/not linked|not configured|\b401\b/i.test(blob)) {
+    message = 'Spotify not linked'
+    detail = 'Reconnect Spotify from the music drawer.'
+  }
+  useUiStore.getState().pushToast({ kind: 'error', message, detail })
+}
+
 async function post(path: string, body?: unknown): Promise<void> {
-  await hubFetch(path, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) }).catch(() => {})
+  try {
+    await hubFetch(path, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) })
+  } catch (e) {
+    toastControlError(e)
+    // Re-sync so optimistic UI doesn't keep lying after a failure.
+    void useMusicStore.getState().refresh()
+  }
 }
 
 export const useMusicStore = create<MusicState>((set, get) => ({
