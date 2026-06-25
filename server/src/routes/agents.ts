@@ -953,23 +953,21 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         const historyMsg = { type: 'session_history' as const, sessionId: session.id, messages: history }
         broadcast(clients, historyMsg)
       }
-      // UI forks (seed:true) get a branch-point marker injected once the fork has
-      // initialised — so the fork KNOWS where its own work begins (the inherited
-      // history above vs its branch below). `con agent chat` forks pass no seed
-      // (they inject their own richer side-conversation seed). Post-init timing
-      // mirrors ensureAlSession so the message isn't lost before the subprocess
-      // is ready.
+      // UI forks (seed:true) get a branch-point marker so the fork KNOWS where
+      // its own work begins (the inherited history above vs its branch below).
+      // CRITICAL: `claude --fork-session` emits NO `system` init — and therefore
+      // never hands the hub the forked claudeSessionId — until it receives a
+      // first message. So we must send the seed IMMEDIATELY (not wait for
+      // session_init, which would deadlock: no message → no init → no csid → a
+      // dead, unusable fork). Sending the seed both kicks the fork into
+      // initialising and marks the branch point. `con agent chat` forks pass no
+      // seed because they send their own richer side-conversation seed instead.
       if (msg.seed) {
         const seed = buildForkSeed(sourceSession.name ?? 'your parent')
-        const onInit = (m: HubMessage) => {
-          if (m.type !== 'session_init') return
-          session.off('hub_message', onInit)
-          const pm = { type: 'user_prompt' as const, sessionId: session.id, content: seed }
-          broadcast(clients, pm)
-          session.logMessage(pm)
-          session.sendMessage(seed)
-        }
-        session.on('hub_message', onInit)
+        const pm = { type: 'user_prompt' as const, sessionId: session.id, content: seed }
+        broadcast(clients, pm)
+        session.logMessage(pm)
+        session.sendMessage(seed)
       }
       log(`Session forked: ${session.id} from ${msg.sessionId} (claude: ${sourceSession.claudeSessionId})`)
       break
