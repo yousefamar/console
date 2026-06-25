@@ -79,7 +79,19 @@ export class SpotifyClient {
       body = JSON.stringify(opts.body)
     }
 
-    const res = await fetch(url.toString(), { method, headers, body })
+    // Hard timeout so a hung Spotify/network call can't seize every control
+    // path (the hub has one client; an indefinite fetch would block all of it).
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
+    let res: Response
+    try {
+      res = await fetch(url.toString(), { method, headers, body, signal: controller.signal })
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') throw new SpotifyApiError(504, 'Spotify request timed out')
+      throw e
+    } finally {
+      clearTimeout(timer)
+    }
 
     if (res.status === 401 && !_retried) {
       // Token went stale mid-flight — force a refresh and retry once.
