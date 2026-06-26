@@ -15,6 +15,7 @@ Services:
   money        Monzo banking — balance, transactions, pots, spending
   agent        Claude Code sessions — create, send, tail, approve/deny
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
+  pen          Neo smartpen — status, devices, connect, scan, unlock, research
 
 System:
   auth         Manage accounts — login, logout, status
@@ -235,6 +236,43 @@ Examples:
   con glasses scan observations    # what names were advertising (debug)
   con glasses research tail 200    # recent frames (jq-friendly NDJSON)
   con glasses research on          # also log heartbeats
+`.trim(),
+
+  pen: `
+con pen — Neo smartpen
+
+Commands:
+  status       Connection, battery, storage, lock/auth state snapshot
+  devices      List bonded/known candidate pens
+  connect      Connect to a pen (mac optional → last/known)
+  disconnect   Drop the BLE link but keep pairing
+  scan         Trigger a BLE scan, or dump recent observations
+  unlock       Unlock a password-locked pen
+  research     Reverse-engineering frame log: on|off|tail [N]
+  offline      Rescue stored offline data (non-destructive)
+
+The pen is owned by the phone's APK — the hub talks to it over the push
+WebSocket. If the APK isn't connected you'll get a 503 'APK not connected'.
+
+Offline rescue (non-destructive — the APK forces keep + saves-before-ack):
+  con pen offline notes                        # list stored notes
+  con pen offline pages <section> <owner> <note>   # page ids in a note
+  con pen offline pull <section> <owner> <note> <page>  # rescue a page to disk
+  con pen offline files                        # saved .bin files
+  con pen offline progress                     # current transfer progress
+Rescued bytes land in ~/.config/console/pen/offline/<s>-<o>-<n>-<p>.bin.
+
+Examples:
+  con pen status
+  con pen devices
+  con pen connect                  # connect to the last/known pen
+  con pen scan                     # trigger phone-side BLE scan
+  con pen scan observations        # what names were advertising (debug)
+  con pen unlock 0000
+  con pen research tail 200        # recent frames (jq-friendly NDJSON)
+  con pen research on              # also log heartbeats
+  con pen offline notes            # enumerate stored notes
+  con pen offline pull 0 27 1 1    # rescue note (0,27,1) page 1
 `.trim(),
 
   agent: `

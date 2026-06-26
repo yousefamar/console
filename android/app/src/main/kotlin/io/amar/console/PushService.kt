@@ -31,6 +31,10 @@ import android.util.Base64
 import io.amar.console.glasses.BleManager
 import io.amar.console.glasses.G1Protocol
 import io.amar.console.glasses.GlassesController
+import io.amar.console.pen.PenBleManager
+import io.amar.console.pen.PenController
+import io.amar.console.pen.PenProtocol
+import io.amar.console.pen.PenState
 import io.amar.console.glasses.GlassesState
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -245,6 +249,104 @@ class PushService : Service() {
         }
     }
 
+    // --- Pen (Neo smartpen) — mirrors the glasses listeners above ----------
+    /** Streams PenState snapshots to the hub on every change. */
+    private val penListener: () -> Unit = {
+        val ws = webSocket
+        if (ws != null) {
+            try { ws.send(JSONObject().put("type", "pen_state").put("state", PenState.toJson()).toString()) }
+            catch (_: Exception) { /* ignore */ }
+        }
+    }
+
+    /** Forwards pen BLE frames + scan observations to the hub research pipeline. */
+    private val penBleListener = object : PenBleManager.Listener {
+        override fun onFrame(body: ByteArray, kind: String) {
+            if (kind == "heartbeat" && !researchVerbose) return
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject()
+                        .put("type", "pen_frame").put("kind", kind)
+                        .put("hex", body.toHex()).put("ts", System.currentTimeMillis())
+                        .toString(),
+                )
+            } catch (_: Exception) { /* ignore */ }
+        }
+        override fun onRaw(data: ByteArray) {
+            // Raw GATT notifications only when verbose — the safety net if framing looks wrong.
+            if (!researchVerbose) return
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject()
+                        .put("type", "pen_frame").put("kind", "raw")
+                        .put("hex", data.toHex()).put("ts", System.currentTimeMillis())
+                        .toString(),
+                )
+            } catch (_: Exception) { /* ignore */ }
+        }
+        override fun onScanObservation(name: String, mac: String, rssi: Int, has19f1: Boolean) {
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject()
+                        .put("type", "pen_scan_observation")
+                        .put("name", name).put("mac", mac).put("rssi", rssi).put("has19f1", has19f1)
+                        .put("ts", System.currentTimeMillis()).toString(),
+                )
+            } catch (_: Exception) { /* ignore */ }
+        }
+        override fun onOfflineNotes(notes: List<PenProtocol.OfflineNote>) {
+            val ws = webSocket ?: return
+            val arr = org.json.JSONArray()
+            for (n in notes) arr.put(JSONObject().put("section", n.section).put("owner", n.owner).put("note", n.note))
+            try { ws.send(JSONObject().put("type", "pen_offline_notes").put("notes", arr).toString()) } catch (_: Exception) {}
+        }
+        override fun onOfflinePages(pages: PenProtocol.OfflinePages) {
+            val ws = webSocket ?: return
+            val arr = org.json.JSONArray()
+            for (p in pages.pages) arr.put(p)
+            try {
+                ws.send(
+                    JSONObject().put("type", "pen_offline_pages")
+                        .put("section", pages.section).put("owner", pages.owner).put("note", pages.note)
+                        .put("pages", arr).toString(),
+                )
+            } catch (_: Exception) {}
+        }
+        override fun onOfflineXferStart(section: Int, owner: Int, note: Long, page: Long, header: PenProtocol.OfflineHeader) {
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject().put("type", "pen_offline_start")
+                        .put("section", section).put("owner", owner).put("note", note).put("page", page)
+                        .put("strokeCount", header.strokeCount).put("totalSize", header.totalSize)
+                        .put("compressed", header.compressed).toString(),
+                )
+            } catch (_: Exception) {}
+        }
+        override fun onOfflineChunk(section: Int, owner: Int, note: Long, page: Long, packetId: Int, position: Int, raw: ByteArray) {
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject().put("type", "pen_offline_chunk")
+                        .put("section", section).put("owner", owner).put("note", note).put("page", page)
+                        .put("packetId", packetId).put("position", position).put("hex", raw.toHex()).toString(),
+                )
+            } catch (_: Exception) {}
+        }
+        override fun onOfflineDone(section: Int, owner: Int, note: Long, page: Long) {
+            val ws = webSocket ?: return
+            try {
+                ws.send(
+                    JSONObject().put("type", "pen_offline_done")
+                        .put("section", section).put("owner", owner).put("note", note).put("page", page).toString(),
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
     /**
      * Enqueue a serialized audio frame and attempt to flush. Holding the
      * monitor on `audioBuffer` for the whole transaction keeps the queue's
@@ -269,6 +371,14 @@ class PushService : Service() {
         }
     }
 
+    private fun hexToBytes(s: String): ByteArray {
+        val clean = s.trim().replace(" ", "")
+        if (clean.isEmpty() || clean.length % 2 != 0) return ByteArray(0)
+        return try {
+            ByteArray(clean.length / 2) { ((clean[it * 2].digitToInt(16) shl 4) or clean[it * 2 + 1].digitToInt(16)).toByte() }
+        } catch (_: Throwable) { ByteArray(0) }
+    }
+
     private fun ByteArray.toHex(): String {
         val sb = StringBuilder(size * 2)
         for (b in this) {
@@ -288,6 +398,8 @@ class PushService : Service() {
         // Forward BLE audio + touch to the hub. BleManager may not be ready
         // yet (GlassesService starts async); poll until it is.
         attachBleListener()
+        PenState.addListener(penListener)
+        attachPenListener()
         registerPttProbe()
     }
 
@@ -433,6 +545,16 @@ class PushService : Service() {
             .postDelayed({ attachBleListener(attempt + 1) }, 100L)
     }
 
+    private fun attachPenListener(attempt: Int = 0) {
+        if (PenController.isReady()) {
+            try { PenController.requireBle().addListener(penBleListener) } catch (_: Throwable) {}
+            return
+        }
+        if (attempt >= 50) return
+        android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed({ attachPenListener(attempt + 1) }, 100L)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_KICK) {
             // SPA just set a new hub bearer — reconnect with the fresh token.
@@ -451,6 +573,10 @@ class PushService : Service() {
         GlassesState.removeListener(glassesListener)
         if (GlassesController.isReady()) {
             try { GlassesController.requireBle().removeListener(bleListener) } catch (_: Throwable) {}
+        }
+        PenState.removeListener(penListener)
+        if (PenController.isReady()) {
+            try { PenController.requireBle().removeListener(penBleListener) } catch (_: Throwable) {}
         }
         reconnectHandler.removeCallbacksAndMessages(null)
         try { unregisterReceiver(pttReceiver) } catch (_: Throwable) {}
@@ -850,6 +976,7 @@ class PushService : Service() {
         val id = json.optString("id").takeIf { it.isNotEmpty() } ?: return
         val method = json.optString("method")
         val params = json.optJSONObject("params") ?: JSONObject()
+        if (method.startsWith("pen_")) { handlePenRpc(id, method, params); return }
         try {
             if (!GlassesController.isReady()) {
                 replyRpcError(id, "glasses controller not initialized")
@@ -914,6 +1041,58 @@ class PushService : Service() {
                     // always forwarded regardless (APK-side policy).
                     researchVerbose = params.optBoolean("verbose", false)
                     replyRpc(id, JSONObject().put("verbose", researchVerbose))
+                }
+                else -> replyRpcError(id, "unknown method: $method")
+            }
+        } catch (t: Throwable) {
+            replyRpcError(id, t.message ?: t.toString())
+        }
+    }
+
+    private fun handlePenRpc(id: String, method: String, params: JSONObject) {
+        try {
+            if (!PenController.isReady()) { replyRpcError(id, "pen controller not initialized"); return }
+            when (method) {
+                "pen_status" -> replyRpc(id, PenState.toJson())
+                "pen_listDevices" -> replyRpc(id, JSONObject().put("devices", PenController.listDevices()))
+                "pen_connect" -> {
+                    val mac = params.optString("mac").takeIf { it.isNotEmpty() }
+                    PenController.connect(mac)
+                    replyRpc(id, JSONObject().put("ok", true).put("mac", mac ?: JSONObject.NULL))
+                }
+                "pen_disconnect" -> { PenController.disconnect(); replyRpc(id, JSONObject().put("ok", true)) }
+                "pen_scan" -> {
+                    val durationMs = params.optLong("durationMs", 15_000L)
+                    PenController.startScan(durationMs)
+                    replyRpc(id, JSONObject().put("ok", true).put("durationMs", durationMs))
+                }
+                "pen_stopScan" -> { PenController.stopScan(); replyRpc(id, JSONObject().put("ok", true)) }
+                "pen_unlock" -> {
+                    val pw = params.optString("password")
+                    if (pw.isEmpty()) { replyRpcError(id, "password required"); return }
+                    PenController.sendPassword(pw)
+                    replyRpc(id, JSONObject().put("ok", true))
+                }
+                "pen_setResearch" -> {
+                    researchVerbose = params.optBoolean("verbose", false)
+                    replyRpc(id, JSONObject().put("verbose", researchVerbose))
+                }
+                "pen_offline_notes" -> { PenController.reqOfflineNotes(); replyRpc(id, JSONObject().put("ok", true)) }
+                "pen_offline_pages" -> {
+                    PenController.reqOfflinePages(params.optInt("section"), params.optInt("owner"), params.optLong("note"))
+                    replyRpc(id, JSONObject().put("ok", true))
+                }
+                "pen_offline_pull" -> {
+                    PenController.pullPage(
+                        params.optInt("section"), params.optInt("owner"), params.optLong("note"), params.optLong("page"),
+                    )
+                    replyRpc(id, JSONObject().put("ok", true))
+                }
+                "pen_raw" -> {
+                    val cmd = params.optInt("cmd", -1)
+                    if (cmd < 0) { replyRpcError(id, "cmd required"); return }
+                    val ok = PenController.sendRaw(cmd, hexToBytes(params.optString("data")))
+                    replyRpc(id, JSONObject().put("ok", ok))
                 }
                 else -> replyRpcError(id, "unknown method: $method")
             }

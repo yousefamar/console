@@ -438,9 +438,11 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
           : pane === 'notes'
             ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
             : 0
-  // Agents: a session emitting @amar shows a high-priority red dot on the tab,
-  // visible from any other pane.
-  const attention = useAgentStore((s) => pane === 'agents' && s.sessions.some((sess) => sess.needsAttention))
+  // Red dot on a tab: Agents when a session emits @amar; Notes when the pen is
+  // streaming new strokes you haven't seen. Visible from any other pane.
+  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
+  const penStreaming = useNotesStore((s) => s.penStreaming)
+  const attention = (pane === 'agents' && agentsAttention) || (pane === 'notes' && penStreaming)
 
   return (
     <button
@@ -455,7 +457,10 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
         <span className="text-blue-500">({count})</span>
       )}
       {attention && (
-        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500" title="A session wants your attention (@amar)" />
+        <span
+          className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500"
+          title={pane === 'notes' ? 'Pen is streaming into Notes' : 'A session wants your attention (@amar)'}
+        />
       )}
     </button>
   )

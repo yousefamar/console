@@ -39,12 +39,18 @@ export const NotesTab = memo(function NotesTab() {
     void useBlogStore.getState().refreshProjects()
   }, [])
 
-  // Rescan vault when switching to notes tab
+  // On switching TO the Notes tab: rescan the vault, auto-open the page the pen
+  // is actively writing, and clear the pen red-dot marker.
   useEffect(() => {
     let prev = useUiStore.getState().activePane
     return useUiStore.subscribe((s) => {
-      if (s.activePane === 'notes' && prev !== 'notes' && useNotesStore.getState().vaultConnected) {
-        useNotesStore.getState().loadVaultFiles()
+      if (s.activePane === 'notes' && prev !== 'notes') {
+        const ns = useNotesStore.getState()
+        if (ns.vaultConnected) ns.loadVaultFiles()
+        // Auto-open the page the pen is actively writing (strokes < 60s ago).
+        if (ns.penActivePagePath && Date.now() - ns.penActiveAt < 60_000) {
+          void ns.openFile(ns.penActivePagePath)
+        }
       }
       prev = s.activePane
     })

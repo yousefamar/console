@@ -91,7 +91,10 @@ export class FsaVaultAdapter implements VaultAdapter {
       if (handle.kind === 'directory') {
         if (SKIP_DIRS.has(name)) continue
         await this.walkDir(handle as FileSystemDirectoryHandle, path, out)
-      } else if (handle.kind === 'file' && name.endsWith('.md')) {
+      } else if (
+        handle.kind === 'file' &&
+        (name.endsWith('.md') || (name.endsWith('.svg') && path.startsWith('scratch/pen/')))
+      ) {
         const file = await (handle as FileSystemFileHandle).getFile()
         out.push({
           path,

@@ -5,6 +5,7 @@ import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Download } from 'lucide-react'
 import { GlassesSettings } from './GlassesSettings'
+import { PenSettings } from './PenSettings'
 import { glassesSupported } from '@/glasses/bridge'
 import { importFromOrigin, type MigrationResult } from '@/migration'
 import { ApkPairSection } from './ApkPairSection'
@@ -134,6 +135,13 @@ export function AccountModal() {
             <>
               <div className="border-t border-border" />
               <GlassesSettings />
+            </>
+          )}
+
+          {isNative() && (
+            <>
+              <div className="border-t border-border" />
+              <PenSettings />
             </>
           )}
 

@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { db } from '@/db'
 import type { DbFeedItem, DbFeedRead } from '@/db'
+import { useUiStore } from '@/store/ui'
+import { extractYoutubeId } from '@/utils/youtube'
 
 // --------------------------------------------------------------------------
 // Types
@@ -73,6 +75,7 @@ interface FeedState {
   markUnread: (itemId: string) => Promise<void>
   markFeedRead: (feedId: string) => Promise<void>
   markFolderRead: (folder: string) => Promise<void>
+  markAllRead: () => Promise<void>
   toggleFolder: (folder: string) => void
   toggleUnreadOnly: () => void
   setSearchQuery: (q: string) => void
@@ -151,13 +154,19 @@ export const useFeedStore = create<FeedState>((set, get) => ({
 
       // Reconcile: hub is source of truth for the current item set.
       // Drop local items the hub no longer surfaces (rolled off the source feed).
+      // CRITICAL: never delete the corresponding feedRead entries. Read state is
+      // keyed by stable item id and is precious + durable — keeping a read marker
+      // for a rolled-off item means that if it ever re-appears (e.g. a feed
+      // transiently failed to fetch so its items briefly vanished from the hub
+      // snapshot), it stays read instead of resurfacing as unread. Deleting read
+      // entries here previously wiped huge swathes of read history. Read ids are
+      // tiny; an unbounded read set is a non-issue versus losing read state.
       if (data.currentItemIds) {
         const hubSet = new Set(data.currentItemIds)
         const localIds = (await db.feedItems.toCollection().primaryKeys()) as string[]
         const orphans = localIds.filter((id) => !hubSet.has(id))
         if (orphans.length > 0) {
           await db.feedItems.bulkDelete(orphans)
-          await db.feedRead.bulkDelete(orphans)
         }
       }
 
@@ -166,6 +175,24 @@ export const useFeedStore = create<FeedState>((set, get) => ({
       if (data.readIds.length > 0) {
         const readEntries: DbFeedRead[] = data.readIds.map((id) => ({ itemId: id }))
         await db.feedRead.bulkPut(readEntries)
+      }
+
+      // Converge UP to the union: push any read ids this device has that the hub
+      // doesn't back to the hub. Read state is additive and durable, so the most
+      // complete device repairs the hub (and thereby the other devices). This is
+      // what recovers read history after the hub's read set was over-pruned.
+      const hubReadSet = new Set(data.readIds)
+      const localReadIds = (await db.feedRead.toCollection().primaryKeys()) as string[]
+      const localOnly = localReadIds.filter((id) => !hubReadSet.has(id))
+      if (localOnly.length > 0) {
+        const CHUNK = 500
+        for (let i = 0; i < localOnly.length; i += CHUNK) {
+          hubFetch('/feeds/read', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ add: localOnly.slice(i, i + CHUNK) }),
+          }).catch(() => {})
+        }
       }
 
       set({ lastSync: new Date().toISOString() })
@@ -214,6 +241,17 @@ export const useFeedStore = create<FeedState>((set, get) => ({
   markRead: async (itemId?) => {
     const id = itemId ?? get().selectedItemId
     if (!id) return
+
+    // If this item is the currently-playing video, dismiss it rather than
+    // letting the auto-advance below pop it into a floating PiP — marking read
+    // means "watched/dismissed".
+    const markedItem = get().items.find((i) => i.id === id)
+    if (markedItem) {
+      const { pipVideo, setPipVideo } = useUiStore.getState()
+      if (pipVideo && extractYoutubeId(markedItem.link) === pipVideo.youtubeId) {
+        setPipVideo(null)
+      }
+    }
 
     // Optimistic: add to local read set
     await db.feedRead.put({ itemId: id })
@@ -285,6 +323,38 @@ export const useFeedStore = create<FeedState>((set, get) => ({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ add: toMark }),
+      }).catch(() => {})
+    }
+  },
+
+  markAllRead: async () => {
+    const { selectedFeedId, selectedFolderId, feeds } = get()
+    // Scope to the current view: a feed, a folder, or everything.
+    let feedItems: DbFeedItem[]
+    if (selectedFeedId) {
+      feedItems = await db.feedItems.where('feedId').equals(selectedFeedId).toArray()
+    } else if (selectedFolderId) {
+      const ids = feeds.filter((f) => f.folder === selectedFolderId).map((f) => f.id)
+      feedItems = await db.feedItems.where('feedId').anyOf(ids).toArray()
+    } else {
+      feedItems = await db.feedItems.toArray()
+    }
+
+    const readSet = new Set((await db.feedRead.toArray()).map((r) => r.itemId))
+    const toMark = feedItems.filter((i) => !readSet.has(i.id)).map((i) => i.id)
+    if (toMark.length === 0) return
+
+    await db.feedRead.bulkPut(toMark.map((id) => ({ itemId: id })))
+    await get().loadItemsFromDb()
+    await get().computeUnreadCounts()
+
+    // Push to hub in chunks (cross-device sync)
+    const CHUNK = 500
+    for (let i = 0; i < toMark.length; i += CHUNK) {
+      hubFetch('/feeds/read', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ add: toMark.slice(i, i + CHUNK) }),
       }).catch(() => {})
     }
   },
@@ -469,8 +539,9 @@ async function trimItems(feeds: FeedSubscription[]) {
     if (items.length > cap) {
       const toDelete = items.slice(cap).map((i) => i.id)
       await db.feedItems.bulkDelete(toDelete)
-      // Also clean unread for deleted items
-      await db.feedRead.bulkDelete(toDelete)
+      // Intentionally keep feedRead entries — read state is durable and keyed by
+      // stable item id, so a trimmed-then-resurfaced item stays read. (See the
+      // reconcile note in refreshItems.)
     }
   }
 }

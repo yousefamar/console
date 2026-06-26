@@ -8,6 +8,10 @@ import {
   glassesSupported,
   startScan as bridgeStartScan,
   stopScan as bridgeStopScan,
+  reconnect as bridgeReconnect,
+  disconnect as bridgeDisconnect,
+  pair as bridgePair,
+  unpair as bridgeUnpair,
   setMirrorDim,
 } from './bridge'
 import {
@@ -36,6 +40,14 @@ interface GlassesStore {
   setScanning: (v: boolean) => void
   startScan: (durationMs?: number) => void
   stopScan: () => void
+  /** Reconnect the already-saved L/R pair (no scan) — the primary action. */
+  connect: () => void
+  /** Sever the BLE link, keeping the saved pair (DND-style). */
+  disconnect: () => void
+  /** Pair (and connect) a freshly-scanned L/R candidate. */
+  pair: (leftMac: string, rightMac: string, channel: string) => void
+  /** Forget the saved pair. */
+  unpair: () => void
   setMirrorEnabled: (v: boolean) => void
   setComposerText: (pane: ComposerPane, text: string) => void
   /** Trigger a mirror re-render when state changed outside Zustand (async
@@ -69,6 +81,23 @@ export const useGlassesStore = create<GlassesStore>((set, get) => ({
   stopScan: () => {
     bridgeStopScan()
     set({ scanning: false })
+  },
+
+  connect: () => {
+    if (!get().supported) return
+    bridgeReconnect()
+  },
+
+  disconnect: () => {
+    bridgeDisconnect()
+  },
+
+  pair: (leftMac, rightMac, channel) => {
+    bridgePair(leftMac, rightMac, channel)
+  },
+
+  unpair: () => {
+    bridgeUnpair()
   },
 
   setMirrorEnabled: (v) => {

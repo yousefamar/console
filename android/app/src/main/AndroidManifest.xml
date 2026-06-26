@@ -71,6 +71,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- Pen (Neo smartpen) BLE foreground service -->
+        <service
+            android:name=".pen.PenService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
         <!-- Restart push + glasses services after reboot -->
         <receiver
             android:name=".BootReceiver"

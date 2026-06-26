@@ -216,7 +216,9 @@ export class FeedStore {
     this.saveConfig()
     this.cache.delete(id)
 
-    // Read state for this feed's items will be pruned on next refresh
+    // We no longer prune the read set on fetch (that wiped read history when a
+    // feed transiently failed). The deleted feed's read ids simply linger —
+    // harmless (ids are tiny) and self-corrects if the feed is ever re-added.
     return true
   }
 
@@ -355,15 +357,16 @@ export class FeedStore {
       ? allItems.filter((item) => new Date(item.publishedAt).getTime() > sinceDate)
       : allItems
 
-    // Prune read set: remove IDs that are no longer in any feed
     const allItemIds = new Set(allItems.map((i) => i.id))
-    for (const id of read) {
-      if (!allItemIds.has(id)) {
-        read.delete(id)
-      }
-    }
 
-    this.saveRead()
+    // NOTE: we deliberately do NOT prune the read set against the current items.
+    // A feed transiently failing to fetch (network/timeout/rate-limit — common
+    // with 100+ feeds) makes its items briefly vanish from `allItems`; pruning
+    // here would then permanently drop those items' read markers, so they'd
+    // resurface as unread on the next successful fetch. Read ids are tiny, so an
+    // unbounded read set is fine. Read entries are cleaned only when a feed is
+    // explicitly deleted (see `delete()`), not on every fetch.
+
     return { items: filtered, readIds: Array.from(read), currentItemIds: Array.from(allItemIds) }
   }
 

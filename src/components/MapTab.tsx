@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon } from 'lucide-react'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
@@ -118,7 +118,13 @@ export function MapTab() {
 
   const [showCreds, setShowCreds] = useState(false)
   const [showLayers, setShowLayers] = useState(false)
+  const [rangeSel, setRangeSel] = useState('1') // days; '1' = last 24h, 'custom' = date pickers
   const fittedRef = useRef<Set<string>>(new Set())
+
+  const onRangeChange = (v: string) => {
+    setRangeSel(v)
+    if (v !== 'custom') void loadHistory(Date.now() - Number(v) * 86400000, Date.now())
+  }
 
   // --- init map (once) ------------------------------------------------------
   useEffect(() => {
@@ -218,79 +224,61 @@ export function MapTab() {
       <div ref={containerRef} className="flex-1 min-h-0" />
 
       {/* top toolbar */}
-      <div className="absolute top-2 left-2 right-14 flex flex-wrap items-center gap-2 text-xs">
-        <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur">
-          <input
-            type="date" value={ymd(rangeFrom)}
-            onChange={(e) => e.target.value && void loadHistory(new Date(e.target.value).getTime(), rangeTo)}
-            className="bg-transparent outline-none w-[7.5rem]"
-          />
-          <span className="text-text-tertiary">→</span>
-          <input
-            type="date" value={ymd(rangeTo)}
-            onChange={(e) => e.target.value && void loadHistory(rangeFrom, new Date(e.target.value).getTime())}
-            className="bg-transparent outline-none w-[7.5rem]"
-          />
+      <div className="absolute top-2 left-2 right-14 flex flex-wrap items-center gap-1.5 text-xs">
+        {/* time range */}
+        <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border pl-2 pr-1 py-1 backdrop-blur">
+          {loadingHistory ? <Loader2 size={12} className="animate-spin text-text-tertiary" /> : <Clock size={12} className="text-text-tertiary" />}
+          <select value={rangeSel} onChange={(e) => onRangeChange(e.target.value)} className="bg-transparent outline-none cursor-pointer">
+            <option value="1">Last 24h</option>
+            <option value="2">Last 48h</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last year</option>
+            <option value="custom">Custom…</option>
+          </select>
+          {rangeSel === 'custom' && (
+            <>
+              <input type="date" value={ymd(rangeFrom)} onChange={(e) => e.target.value && void loadHistory(new Date(e.target.value).getTime(), rangeTo)} className="bg-transparent outline-none w-[7rem]" />
+              <span className="text-text-tertiary">→</span>
+              <input type="date" value={ymd(rangeTo)} onChange={(e) => e.target.value && void loadHistory(rangeFrom, new Date(e.target.value).getTime())} className="bg-transparent outline-none w-[7rem]" />
+            </>
+          )}
           {devices.length > 1 && (
-            <select
-              value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)}
-              className="bg-transparent outline-none"
-            >
+            <select value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)} className="bg-transparent outline-none border-l border-border pl-1">
               {devices.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           )}
-          <button onClick={() => void loadHistory()} className="ml-1 px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface-3">
-            {loadingHistory ? <Loader2 size={12} className="animate-spin" /> : 'History'}
-          </button>
-          {([['7d', 7], ['30d', 30], ['90d', 90], ['1y', 365]] as const).map(([lbl, n]) => (
-            <button
-              key={lbl}
-              onClick={() => void loadHistory(Date.now() - n * 86400000, Date.now())}
-              className="px-1 py-0.5 rounded hover:bg-surface-2 text-text-tertiary"
-            >
-              {lbl}
-            </button>
-          ))}
         </div>
 
-        <button
-          onClick={() => mapController.fetchHere?.()}
-          disabled={fetching || !gcStatus?.loggedIn}
-          title={gcStatus?.loggedIn ? 'Fetch geocaches in the current view' : 'Set geocaching.com credentials first'}
-          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2 disabled:opacity-50"
-        >
-          {fetching ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Fetch here
+        {/* my location */}
+        <button onClick={() => mapController.flyToMe?.()} title="Centre on my location"
+          className="flex items-center rounded bg-surface-0/90 border border-border p-1.5 backdrop-blur hover:bg-surface-2">
+          <Crosshair size={13} />
         </button>
 
-        <button
-          onClick={() => mapController.flyToMe?.()}
-          title="Centre on my location"
-          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2"
-        >
-          <Crosshair size={12} /> Me
+        {/* layers */}
+        <button onClick={() => setShowLayers((v) => !v)} title="Toggle map layers"
+          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2">
+          <LayersIcon size={13} />{layers.length > 0 && <span className="text-text-tertiary">{layers.length}</span>}
         </button>
 
-        <button
-          onClick={() => setShowCreds((v) => !v)}
-          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2"
-        >
-          <KeyRound size={12} />
-          {gcStatus?.loggedIn ? gcStatus.username : 'Sign in'}
-        </button>
+        {/* geocaching: sign-in + (when logged in) fetch */}
+        <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
+          <button onClick={() => setShowCreds((v) => !v)} title="geocaching.com account"
+            className="flex items-center gap-1 px-2 py-1 hover:bg-surface-2">
+            <KeyRound size={13} />{gcStatus?.loggedIn ? gcStatus.username : 'Sign in'}
+          </button>
+          {gcStatus?.loggedIn && (
+            <button onClick={() => mapController.fetchHere?.()} disabled={fetching}
+              title={`Fetch geocaches in view · ${budget?.remaining ?? '?'} requests left today`}
+              className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
+              {fetching ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
+              {budget && <span className="text-text-tertiary">{budget.remaining}</span>}
+            </button>
+          )}
+        </div>
 
-        <button
-          onClick={() => setShowLayers((v) => !v)}
-          title="Toggle map layers"
-          className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2"
-        >
-          <LayersIcon size={12} /> Layers{layers.length ? ` (${layers.length})` : ''}
-        </button>
-
-        {budget && (
-          <span className="rounded bg-surface-0/90 border border-border px-2 py-1 text-text-tertiary backdrop-blur">
-            {budget.remaining}/{budget.cap} left · {pins.length} caches
-          </span>
-        )}
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
 
