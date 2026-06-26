@@ -1,11 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase } from 'lucide-react'
+import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase, Plug } from 'lucide-react'
 import { useGlassesStore } from '@/glasses/store'
 import { showConfirm } from '@/dialog'
 import {
-  disconnect as bridgeDisconnect,
-  pair as bridgePair,
-  unpair as bridgeUnpair,
   sendText,
   clear as bridgeClear,
   type ScanCandidate,
@@ -28,11 +25,16 @@ export function GlassesSettings() {
   const candidates = useGlassesStore((s) => s.candidates)
   const startScan = useGlassesStore((s) => s.startScan)
   const stopScan = useGlassesStore((s) => s.stopScan)
+  const connect = useGlassesStore((s) => s.connect)
+  const disconnect = useGlassesStore((s) => s.disconnect)
+  const pairPair = useGlassesStore((s) => s.pair)
+  const unpair = useGlassesStore((s) => s.unpair)
   const refresh = useGlassesStore((s) => s.refresh)
 
   const [testOpen, setTestOpen] = useState(false)
   const [testText, setTestText] = useState('Hello from Console')
   const [eventsOpen, setEventsOpen] = useState(false)
+  const [pairOpen, setPairOpen] = useState(false)
   const [events, setEvents] = useState<readonly RawG1Event[]>(() => getRecentEvents())
   const mirrorEnabled = useGlassesStore((s) => s.mirrorEnabled)
   const setMirrorEnabled = useGlassesStore((s) => s.setMirrorEnabled)
@@ -66,7 +68,7 @@ export function GlassesSettings() {
 
   function handlePair(c: ScanCandidate) {
     if (!c.leftMac || !c.rightMac) return
-    bridgePair(c.leftMac, c.rightMac, c.channel)
+    pairPair(c.leftMac, c.rightMac, c.channel)
   }
 
   return (
@@ -78,34 +80,41 @@ export function GlassesSettings() {
             {connected ? 'G1 connected' : pairing ? 'Connecting…' : paired ? 'G1 disconnected' : 'No glasses paired'}
           </span>
         </div>
-        {paired ? (
+        {connected ? (
+          // Connected: Pause (disconnect, keep pairing) + Unpair (forget).
           <div className="flex items-center gap-2 flex-shrink-0">
-            {connected && (
-              <button
-                onClick={() => bridgeDisconnect()}
-                className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
-                title="Temporarily disconnect (keeps pairing)"
-              >
-                <EyeOff size={11} />
-                <span>Pause</span>
-              </button>
-            )}
             <button
-              onClick={async () => { if (await showConfirm('Forget these glasses?', { title: 'Forget glasses', danger: true, confirmLabel: 'Forget' })) bridgeUnpair() }}
+              onClick={() => disconnect()}
+              className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+              title="Temporarily disconnect (keeps pairing)"
+            >
+              <EyeOff size={11} />
+              <span>Pause</span>
+            </button>
+            <button
+              onClick={async () => { if (await showConfirm('Forget these glasses?', { title: 'Forget glasses', danger: true, confirmLabel: 'Forget' })) unpair() }}
               className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
             >
               <LogOut size={11} />
               <span>Unpair</span>
             </button>
           </div>
-        ) : (
+        ) : paired ? (
+          // Saved but not connected: primary "Connect" reconnects the saved
+          // pair with NO scan (mirrors PenSettings). Scanning is demoted to the
+          // "Pair new glasses" disclosure below.
           <button
-            onClick={() => (scanning ? stopScan() : startScan())}
-            className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast flex-shrink-0"
+            onClick={() => connect()}
+            disabled={pairing}
+            className="flex items-center gap-1.5 text-xs text-text-primary bg-surface-2 hover:bg-surface-3 border border-border rounded-sm px-2.5 py-1 transition-colors duration-fast flex-shrink-0 disabled:opacity-50"
+            title="Reconnect the saved glasses"
           >
-            <Radar size={11} className={scanning ? 'animate-pulse' : ''} />
-            <span>{scanning ? 'Stop' : 'Scan'}</span>
+            <Plug size={12} className={pairing ? 'animate-pulse' : ''} />
+            <span>{pairing ? 'Connecting…' : 'Connect'}</span>
           </button>
+        ) : (
+          // Nothing saved: the scan/pair disclosure (below) is the only path.
+          <span className="text-[11px] text-text-tertiary flex-shrink-0">not paired</span>
         )}
       </div>
 
@@ -142,25 +151,46 @@ export function GlassesSettings() {
         </div>
       )}
 
-      {/* Scan results */}
-      {!paired && candidates.length > 0 && (
-        <div className="ml-[21px] space-y-1">
-          {candidates.map((c) => (
-            <button
-              key={c.channel}
-              disabled={!c.ready}
-              onClick={() => handlePair(c)}
-              className="block w-full text-left text-xs text-text-secondary hover:text-text-primary disabled:text-text-tertiary disabled:cursor-not-allowed"
-            >
-              <span className="font-mono">G1 #{c.channel}</span>
-              {!c.ready && <span className="text-text-tertiary"> (need both arms)</span>}
-              {c.rssi != null && <span className="text-text-tertiary"> · {c.rssi} dBm</span>}
-            </button>
-          ))}
+      {/* Secondary: pair new glasses. Collapsed by default — the saved-pair
+          "Connect" above is the primary path and needs no scan. Hidden while
+          connected (there's nothing to pair). */}
+      {!connected && (
+        <div className="ml-[21px]">
+          <button
+            onClick={() => {
+              const next = !pairOpen
+              setPairOpen(next)
+              if (next) startScan()
+              else if (scanning) stopScan()
+            }}
+            className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+          >
+            <Radar size={10} className={scanning ? 'animate-pulse' : ''} />
+            <span>{pairOpen ? (scanning ? 'Scanning…' : 'Re-scan') : paired ? 'Pair different glasses' : 'Pair new glasses'}</span>
+          </button>
+
+          {pairOpen && (
+            <div className="mt-1 space-y-1">
+              {candidates.map((c) => (
+                <button
+                  key={c.channel}
+                  disabled={!c.ready}
+                  onClick={() => handlePair(c)}
+                  className="block w-full text-left text-xs text-text-secondary hover:text-text-primary disabled:text-text-tertiary disabled:cursor-not-allowed"
+                >
+                  <span className="font-mono">G1 #{c.channel}</span>
+                  {!c.ready && <span className="text-text-tertiary"> (need both arms)</span>}
+                  {c.rssi != null && <span className="text-text-tertiary"> · {c.rssi} dBm</span>}
+                </button>
+              ))}
+              {candidates.length === 0 && (
+                <div className="text-[11px] text-text-tertiary italic">
+                  {scanning ? 'Scanning… wake the glasses (open + put on).' : 'No glasses found.'}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      )}
-      {!paired && scanning && candidates.length === 0 && (
-        <div className="ml-[21px] text-[11px] text-text-tertiary italic">Scanning… wake the glasses (open + put on).</div>
       )}
 
       {/* App-wide mirror — whichever pane is active, renders status + body

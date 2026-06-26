@@ -164,7 +164,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   devices: [],
   device: null,
   track: [],
-  rangeFrom: Date.now() - 30 * DAY,
+  rangeFrom: Date.now() - 1 * DAY,
   rangeTo: Date.now(),
   loadingHistory: false,
 

@@ -212,6 +212,7 @@ class MainActivity : ComponentActivity() {
         checkForUpdateAsync()
         PushService.start(this)
         GlassesService.start(this)
+        io.amar.console.pen.PenService.start(this)
 
         GlassesState.addListener(glassesStateListener)
         attachGlassesBleListener()

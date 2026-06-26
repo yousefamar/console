@@ -2,9 +2,10 @@ import { useRef, useEffect } from 'react'
 import { useFeedStore } from '@/store/feeds'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { usePullToRefresh } from '@/hooks/usePullToRefresh'
+import { showConfirm } from '@/dialog'
 import { FeedItemListEntry } from './FeedItemListEntry'
 import { SwipeableRow } from './SwipeableRow'
-import { Search, Eye, EyeOff, Check } from 'lucide-react'
+import { Search, Eye, EyeOff, Check, CheckCheck } from 'lucide-react'
 
 export function FeedItemList() {
   const items = useFeedStore((s) => s.items)
@@ -19,7 +20,30 @@ export function FeedItemList() {
   const feeds = useFeedStore((s) => s.feeds)
 
   const markRead = useFeedStore((s) => s.markRead)
+  const markAllRead = useFeedStore((s) => s.markAllRead)
+  const totalUnread = useFeedStore((s) => s.totalUnread)
+  const unreadCounts = useFeedStore((s) => s.unreadCounts)
   const isMobile = useIsMobile()
+
+  // Unread count for the current scope (feed / folder / all)
+  let scopeUnread = totalUnread
+  if (selectedFeedId) {
+    scopeUnread = unreadCounts[selectedFeedId] ?? 0
+  } else if (selectedFolderId) {
+    scopeUnread = feeds
+      .filter((f) => f.folder === selectedFolderId)
+      .reduce((sum, f) => sum + (unreadCounts[f.id] ?? 0), 0)
+  }
+
+  const onMarkAllRead = async () => {
+    if (scopeUnread === 0) return
+    const scope = selectedFeedId ? 'this feed' : selectedFolderId ? `“${selectedFolderId}”` : 'all feeds'
+    const ok = await showConfirm(`Mark ${scopeUnread} unread article${scopeUnread === 1 ? '' : 's'} in ${scope} as read?`, {
+      title: 'Mark all read',
+      confirmLabel: 'Mark all read',
+    })
+    if (ok) await markAllRead()
+  }
   const listRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -46,6 +70,16 @@ export function FeedItemList() {
       {/* Header */}
       <div className="flex items-center gap-2 px-2 py-1.5 border-b border-border">
         <span className="text-xs font-medium text-text-primary truncate flex-1">{title}</span>
+        {scopeUnread > 0 && (
+          <button
+            onClick={onMarkAllRead}
+            className="flex items-center gap-0.5 text-text-tertiary hover:text-text-secondary transition-colors"
+            title={`Mark all read (${scopeUnread})`}
+          >
+            <CheckCheck size={12} />
+            <span className="text-[10px]">{scopeUnread}</span>
+          </button>
+        )}
         <button
           onClick={toggleUnreadOnly}
           className="text-text-tertiary hover:text-text-secondary transition-colors"

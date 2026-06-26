@@ -69,6 +69,8 @@ import { PushServer } from './push.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
+import { PenHub } from './pen-hub.js'
+import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession } from './al/al-session.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
@@ -161,11 +163,19 @@ const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
 )
 const glassesHub = new GlassesHub(pushServer, (msg: string) => { log(msg) }, glassesResearchLog)
+// Neo smartpen — same `/push` WS RPC pipe as glasses, single-device, reusing the
+// shared research log (frames tagged `arm: 'pen'`). Register the pen inbound
+// handler BEFORE glasses: glasses' handleMessage returns true for ANY
+// rpc_response (even ids not in its pending map), which would otherwise swallow
+// pen's responses; pen returns false on an unknown id so glasses' own responses
+// still fall through to it.
+const syncBus = new SyncBus((msg: string) => { log(msg) })
+const penHub = new PenHub(pushServer, (msg: string) => { log(msg) }, glassesResearchLog, noteStore, syncBus)
+pushServer.onInbound((ws, frame) => penHub.handleMessage(ws, frame))
 pushServer.onInbound((ws, frame) => glassesHub.handleMessage(ws, frame))
 // Auto-arm mic on right long-press (see docs/g1-mic-stt-recipe.md). Subscriber
 // lives for the process lifetime; no unsubscribe needed.
 wireTouchToMic(glassesHub, (msg: string) => { log(msg) })
-const syncBus = new SyncBus((msg: string) => { log(msg) })
 setReadStateLogger((m: string) => { log(m) })
 
 // Watch canvas dir + islands subdir as two separate non-recursive watchers
@@ -1015,6 +1025,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
+  if (path.startsWith('/pen') && handlePenRoutes(req, res, path, penHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {

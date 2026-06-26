@@ -130,6 +130,11 @@ async function main() {
         await glasses(verb, rest, flags)
         break
       }
+      case 'pen': {
+        const { pen } = await import('./commands/pen.js')
+        await pen(verb, rest, flags)
+        break
+      }
       case 'whatsapp': {
         const { whatsapp } = await import('./commands/whatsapp.js')
         await whatsapp(verb, rest, flags)

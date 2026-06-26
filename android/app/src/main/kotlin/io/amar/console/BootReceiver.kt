@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import io.amar.console.glasses.GlassesService
+import io.amar.console.pen.PenService
 
 /**
  * Restarts the push + glasses foreground services after device reboot or app
@@ -17,6 +18,7 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 PushService.start(context)
                 GlassesService.start(context)
+                PenService.start(context)
             }
         }
     }

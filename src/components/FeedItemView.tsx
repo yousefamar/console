@@ -4,6 +4,7 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getHubUrl } from '@/hub'
 import DOMPurify from 'dompurify'
+import { extractYoutubeId } from '@/utils/youtube'
 import { ExternalLink, Rss, MessageSquare, X, Play, ChevronDown, ChevronRight, MoreHorizontal, Trash2, Check } from 'lucide-react'
 import { showConfirm } from '@/dialog'
 
@@ -14,11 +15,6 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     node.setAttribute('rel', 'noopener noreferrer')
   }
 })
-
-function extractYoutubeId(url: string): string | null {
-  const match = url?.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/)
-  return match?.[1] ?? null
-}
 
 function isRedditUrl(url: string): boolean {
   return /reddit\.com\/r\//.test(url)
@@ -141,8 +137,9 @@ export function YouTubePiP() {
   const items = useFeedStore((s) => s.items)
   const isMobile = useIsMobile()
   const pipRef = useRef<HTMLDivElement>(null)
+  const [resized, setResized] = useState(false)
   const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
-  const resizeState = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null)
+  const resizeState = useRef<{ corner: 'se' | 'nw'; startX: number; startY: number; origLeft: number; origTop: number; origW: number; origH: number } | null>(null)
 
   // Determine if we should overlay the placeholder (inline mode)
   const selectedItem = items.find((i) => i.id === selectedItemId)
@@ -174,24 +171,27 @@ export function YouTubePiP() {
     return () => cancelAnimationFrame(rafId)
   }, [isInline])
 
-  // Reset to corner position when switching to PiP mode
+  // Reset to corner position when switching to PiP mode / on a new video.
+  // Height is left auto so the 16:9 iframe drives the content area size; the
+  // container is just title-bar + 16:9 content.
   useEffect(() => {
     const pip = pipRef.current
     if (!pip || isInline) return
+    setResized(false)
     pip.style.left = ''
     pip.style.top = ''
     pip.style.right = '16px'
     pip.style.bottom = '80px'
-    pip.style.width = isMobile ? '100%' : '360px'
+    pip.style.width = isMobile ? '100%' : '440px'
     pip.style.height = ''
-    pip.style.aspectRatio = '16/9'
+    pip.style.aspectRatio = 'auto'
     pip.style.borderRadius = isMobile ? '0' : '0.5rem'
     if (isMobile) {
       pip.style.left = '0'
       pip.style.right = '0'
       pip.style.bottom = '56px'
     }
-  }, [isInline, isMobile])
+  }, [isInline, isMobile, pipVideo?.youtubeId])
 
   const closePip = useCallback(() => setPipVideo(null), [setPipVideo])
 
@@ -221,22 +221,44 @@ export function YouTubePiP() {
     resizeState.current = null
   }, [])
 
-  const onResizePointerDown = useCallback((e: React.PointerEvent) => {
+  const onResizePointerDown = useCallback((corner: 'se' | 'nw') => (e: React.PointerEvent) => {
     const pip = pipRef.current
     if (!pip) return
     e.preventDefault()
     e.stopPropagation()
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-    resizeState.current = { startX: e.clientX, startY: e.clientY, origW: pip.offsetWidth, origH: pip.offsetHeight }
+    const rect = pip.getBoundingClientRect()
+    // Pin the current geometry explicitly before flipping to free-resize mode.
+    pip.style.left = `${rect.left}px`
+    pip.style.top = `${rect.top}px`
+    pip.style.right = 'auto'
+    pip.style.bottom = 'auto'
+    pip.style.width = `${pip.offsetWidth}px`
+    pip.style.height = `${pip.offsetHeight}px`
+    pip.style.aspectRatio = 'auto'
+    setResized(true)
+    resizeState.current = { corner, startX: e.clientX, startY: e.clientY, origLeft: rect.left, origTop: rect.top, origW: pip.offsetWidth, origH: pip.offsetHeight }
   }, [])
 
   const onResizePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!resizeState.current) return
+    const rs = resizeState.current
     const pip = pipRef.current
-    if (!pip) return
-    pip.style.width = `${Math.max(240, resizeState.current.origW + (e.clientX - resizeState.current.startX))}px`
-    pip.style.height = `${Math.max(160, resizeState.current.origH + (e.clientY - resizeState.current.startY))}px`
-    pip.style.aspectRatio = 'auto'
+    if (!rs || !pip) return
+    const dx = e.clientX - rs.startX
+    const dy = e.clientY - rs.startY
+    const MINW = 240, MINH = 160
+    if (rs.corner === 'se') {
+      pip.style.width = `${Math.max(MINW, rs.origW + dx)}px`
+      pip.style.height = `${Math.max(MINH, rs.origH + dy)}px`
+    } else {
+      // Top-left: keep the bottom-right corner anchored.
+      const newW = Math.max(MINW, rs.origW - dx)
+      const newH = Math.max(MINH, rs.origH - dy)
+      pip.style.width = `${newW}px`
+      pip.style.height = `${newH}px`
+      pip.style.left = `${rs.origLeft + (rs.origW - newW)}px`
+      pip.style.top = `${rs.origTop + (rs.origH - newH)}px`
+    }
   }, [])
 
   if (!pipVideo) return null
@@ -260,20 +282,28 @@ export function YouTubePiP() {
       )}
       <iframe
         src={`https://www.youtube-nocookie.com/embed/${pipVideo.youtubeId}?autoplay=1`}
-        className="w-full flex-1"
+        className={`w-full ${isInline || resized ? 'flex-1' : 'aspect-video'}`}
         style={{ pointerEvents: 'auto' }}
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowFullScreen
         title="YouTube video"
       />
-      {/* Resize handle — PiP desktop only */}
+      {/* Resize handles — PiP desktop only (top-left + bottom-right) */}
       {!isInline && !isMobile && (
-        <div
-          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
-          onPointerDown={onResizePointerDown}
-          onPointerMove={onResizePointerMove}
-          onPointerUp={onPointerUp}
-        />
+        <>
+          <div
+            className="absolute top-0 left-0 w-4 h-4 cursor-nw-resize z-10"
+            onPointerDown={onResizePointerDown('nw')}
+            onPointerMove={onResizePointerMove}
+            onPointerUp={onPointerUp}
+          />
+          <div
+            className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+            onPointerDown={onResizePointerDown('se')}
+            onPointerMove={onResizePointerMove}
+            onPointerUp={onPointerUp}
+          />
+        </>
       )}
     </div>
   )

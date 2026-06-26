@@ -9,6 +9,8 @@ import {
 } from '@/notes/vault-adapter'
 import { NotesSearchIndex, type FilenameResult, type SearchResult } from '@/notes/search-index'
 import { getPref, setPref } from '@/prefs'
+import { hubBus } from '@/sync-bus'
+import { hubFetch } from '@/hub'
 
 const EXPANDED_DIRS_PREF = 'notesExpandedDirs'
 const VIEW_MODE_PREF = 'notesViewMode'
@@ -111,6 +113,30 @@ export function getDirectoriesByRecency(files: VaultFile[]): string[] {
   return dirs
 }
 
+/** A pen-page file written by the live-stream pipeline: scratch/pen/<note>/page-<n>.svg */
+export function isPenPagePath(path: string | null | undefined): boolean {
+  return !!path && path.startsWith('scratch/pen/') && path.endsWith('.svg')
+}
+
+function penPageNum(path: string): number {
+  const m = path.match(/page-(\d+)\.svg$/)
+  return m ? parseInt(m[1]!, 10) : 0
+}
+
+/** Open the prev/next pen page in the same notebook folder (ordered by page number). */
+async function stepPenPage(get: () => NotesState, dir: 1 | -1): Promise<void> {
+  const { activeFilePath, files, openFile } = get()
+  if (!activeFilePath || !isPenPagePath(activeFilePath)) return
+  const folder = activeFilePath.split('/').slice(0, -1).join('/')
+  const siblings = files
+    .filter((f) => isPenPagePath(f.path) && f.path.split('/').slice(0, -1).join('/') === folder)
+    .sort((a, b) => penPageNum(a.path) - penPageNum(b.path))
+  const idx = siblings.findIndex((f) => f.path === activeFilePath)
+  if (idx < 0) return
+  const target = siblings[idx + dir]
+  if (target) await openFile(target.path)
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -122,6 +148,11 @@ interface NotesState {
   files: VaultFile[]
   fileTree: TreeNode[]
   loading: boolean
+
+  // Live pen activity — drives the Notes tab red dot + auto-open-on-switch.
+  penActivePagePath: string | null  // page currently/most-recently getting strokes
+  penActiveAt: number               // ms timestamp of last pen activity
+  penStreaming: boolean             // pen is live-streaming into Notes (drives the tab dot)
 
   // Open files — use a plain object for Zustand compatibility
   openFiles: Record<string, OpenFile>
@@ -166,6 +197,9 @@ interface NotesState {
   setActiveFile: (path: string) => void
   nextTab: () => void
   prevTab: () => void
+  nextPageInFolder: () => Promise<void>
+  prevPageInFolder: () => Promise<void>
+  notePageSaved: (relPath: string) => void
   toggleDir: (path: string) => void
   setSelectedPath: (path: string | null) => void
   setViewMode: (mode: NotesViewMode) => void
@@ -222,6 +256,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   files: [],
   fileTree: [],
   loading: false,
+  penActivePagePath: null,
+  penActiveAt: 0,
+  penStreaming: false,
   openFiles: {},
   activeFilePath: null,
   recentlyClosedPaths: [],
@@ -502,6 +539,20 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     set({ activeFilePath: paths[(idx - 1 + paths.length) % paths.length] })
   },
 
+  nextPageInFolder: async () => { await stepPenPage(get, 1) },
+  prevPageInFolder: async () => { await stepPenPage(get, -1) },
+
+  notePageSaved: (relPath) => {
+    if (!isPenPagePath(relPath)) return
+    const { files } = get()
+    if (files.some((f) => f.path === relPath)) return
+    const name = relPath.split('/').pop() ?? relPath
+    const dir = relPath.split('/').slice(0, -1).join('/')
+    const vf: VaultFile = { path: relPath, name, dir, mtime: Date.now(), size: 0 }
+    const next = [...files, vf].sort((a, b) => a.path.localeCompare(b.path))
+    set({ files: next, fileTree: buildFileTree(next) })
+  },
+
   toggleDir: (path) => {
     set((s) => {
       const next = new Set(s.expandedDirs)
@@ -674,3 +725,44 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     }
   },
 }))
+
+// Live pen pages → Notes integration:
+//  • page_saved registers the new page file in the tree (no manual rescan).
+//  • any activity tracks the actively-written page (for auto-open on tab switch)
+//    and sets a sticky red-dot marker when strokes arrive while you're elsewhere.
+// (PenPageRenderer subscribes to 'pen' independently for the live stroke overlay.)
+if (typeof window !== 'undefined') {
+  const penPath = (d: unknown): string | null => {
+    const o = d as { relPath?: string; note?: number; page?: number } | null
+    if (o?.relPath) return o.relPath
+    if (o && o.note != null && o.page != null) return `scratch/pen/${o.note}/page-${o.page}.svg`
+    return null
+  }
+  let lastWrite = 0
+  const noteActivity = (data: unknown) => {
+    const relPath = penPath(data)
+    if (!relPath) return
+    const now = Date.now()
+    const pageChanged = useNotesStore.getState().penActivePagePath !== relPath
+    // Throttle the high-frequency stroke_delta writes; always write on a change.
+    if (!pageChanged && now - lastWrite < 1000) return
+    lastWrite = now
+    useNotesStore.setState({ penActivePagePath: relPath, penActiveAt: now })
+  }
+  hubBus.on('pen', 'page_open', noteActivity)
+  hubBus.on('pen', 'stroke_delta', noteActivity)
+  hubBus.on('pen', 'page_saved', (data) => {
+    const relPath = penPath(data)
+    if (relPath) useNotesStore.getState().notePageSaved(relPath)
+    noteActivity(data)
+  })
+
+  // Streaming-active state drives the Notes-tab red dot. The hub broadcasts on
+  // change; fetch once on load since SyncBus broadcasts aren't replayed.
+  hubBus.on('pen', 'streaming', (d) => {
+    useNotesStore.setState({ penStreaming: (d as { active?: boolean } | null)?.active === true })
+  })
+  hubFetch<{ active?: boolean }>('/pen/stream')
+    .then((r) => useNotesStore.setState({ penStreaming: r?.active === true }))
+    .catch(() => {})
+}

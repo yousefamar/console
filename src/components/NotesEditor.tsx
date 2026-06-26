@@ -1,7 +1,8 @@
 import { memo, useEffect, useState } from 'react'
-import { useNotesStore } from '@/store/notes'
+import { useNotesStore, isPenPagePath } from '@/store/notes'
 import { useBlogStore, enclosingProjectSlug } from '@/store/blog'
 import { NotesEditorCore } from './NotesEditorCore'
+import { PenPageRenderer } from './notes/PenPageRenderer'
 import { ProjectPill } from './notes/ProjectPill'
 import { ProjectPanel } from './notes/ProjectPanel'
 import { WriteMetaBar } from './notes/WriteMetaBar'
@@ -169,12 +170,16 @@ export const NotesEditor = memo(function NotesEditor() {
 
       {/* Editor + side panel overlay */}
       <div className="relative flex flex-col flex-1 min-h-0">
-        <NotesEditorCore
-          key={activeFilePath!}
-          filePath={activeFilePath!}
-          content={activeFile.content}
-          options={isMobile ? { vim: mobileVim, gutters: false } : (isWritingFile ? { gutters: false } : undefined)}
-        />
+        {isPenPagePath(activeFilePath) ? (
+          <PenPageRenderer filePath={activeFilePath!} content={activeFile.content} />
+        ) : (
+          <NotesEditorCore
+            key={activeFilePath!}
+            filePath={activeFilePath!}
+            content={activeFile.content}
+            options={isMobile ? { vim: mobileVim, gutters: false } : (isWritingFile ? { gutters: false } : undefined)}
+          />
+        )}
         {showPanel && slug && (
           <ProjectPanel slug={slug} onClose={() => setPanelOpen(false)} />
         )}

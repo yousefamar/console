@@ -41,7 +41,11 @@ export class NoteStore {
 
       if (entry.isDirectory()) {
         await this.walkDir(absPath, relPath, out)
-      } else if (entry.isFile() && extname(entry.name) === '.md') {
+      } else if (
+        entry.isFile() &&
+        (extname(entry.name) === '.md' ||
+          (extname(entry.name) === '.svg' && relPath.startsWith('scratch/pen/')))
+      ) {
         try {
           const st = await stat(absPath)
           out.push({
