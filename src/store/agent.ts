@@ -801,7 +801,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     sendWs({
       type: 'fork_session',
       sessionId,
-      seed: true, // UI fork → inject a branch-point marker so it knows its own work
+      seed: true,     // inject a branch-point marker so the fork knows its own work
+      seedRole: true, // mint a child role (reporting to the source) so the fork
+                      // appears in the org chart, not just the session list. The
+                      // chart is role-keyed; a role-less fork has no node.
       ...(session.cwd ? { cwd: session.cwd } : {}),
     })
     set({
