@@ -472,6 +472,16 @@ export const COMMANDS: CommandDef[] = [
     args: [{ name: 'verb', required: false, description: 'on | off | tail (default: tail 50)' },
            { name: 'n', required: false, description: 'Line count when verb=tail' }],
     examples: ['con glasses research tail 200', 'con glasses research on', 'con glasses research off'] },
+  { name: 'glasses hud', description: 'Toggle the idle head-tilt HUD on|off', safety: 'write',
+    args: [{ name: 'state', required: true, description: 'on or off' }],
+    examples: ['con glasses hud on', 'con glasses hud off'] },
+  { name: 'glasses config', description: 'Show/set HUD + notification config', safety: 'write',
+    flags: {
+      notify: { type: 'string', description: 'Master notifications toggle: on|off' },
+      channel: { type: 'string', description: 'Per-source: --channel <mail|chat|calendar|agent|money> on|off' },
+      angle: { type: 'number', description: 'Head-up tilt threshold in degrees (0-60)' },
+    },
+    examples: ['con glasses config', 'con glasses config --notify off', 'con glasses config --channel money off', 'con glasses config --angle 35'] },
 
   // pen (Neo smartpen — routed through the phone's APK, like glasses)
   { name: 'pen status', description: 'Show pen connection, battery, storage, lock state', safety: 'read',

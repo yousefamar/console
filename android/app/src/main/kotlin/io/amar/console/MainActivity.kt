@@ -324,6 +324,12 @@ class MainActivity : ComponentActivity() {
             if (GlassesController.isReady()) GlassesController.requireBle().disconnect()
         }
 
+        @JavascriptInterface
+        fun glassesReconnect() {
+            if (!maybeRequestBlePermissions()) return
+            if (GlassesController.isReady()) GlassesController.requireBle().reconnect()
+        }
+
         // --- Glasses: display commands -------------------------------------
 
         @JavascriptInterface

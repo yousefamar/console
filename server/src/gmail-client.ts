@@ -216,6 +216,12 @@ export class GmailClient {
       .map((l) => ({ id: l.id, name: l.name }))
   }
 
+  /** Unread thread count for the INBOX label (for the glasses HUD glance). */
+  async getInboxUnread(account?: string): Promise<number> {
+    const r = await this.request<{ threadsUnread?: number; messagesUnread?: number }>('/labels/INBOX', { account })
+    return r.threadsUnread ?? r.messagesUnread ?? 0
+  }
+
   // -------------------------------------------------------------------------
   // Send-As aliases
   // -------------------------------------------------------------------------

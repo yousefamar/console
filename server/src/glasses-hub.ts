@@ -42,12 +42,17 @@ export interface GlassesSnapshot {
   caseBattery: number | null
   /** Charging-case charging state from 0xF5 subcmd 0x0E. */
   caseCharging: boolean | null
+  /** Phone battery % (0..100), injected by PushService; null if unknown. */
+  phoneBattery?: number | null
   lastError: string | null
   lastUpdatedMs: number
 }
 
 export interface GlassesNotifyRequest {
   appIdentifier: string
+  /** Human-readable source shown on the card (e.g. "Mail", "Chat"). Rides the
+   *  0x4B `display_name`; the appIdentifier itself stays the whitelisted id. */
+  displayName?: string
   title: string
   subtitle: string
   message: string
@@ -262,6 +267,11 @@ export class GlassesHub {
 
   async setMic(active: boolean): Promise<void> {
     await this.rpc('setMic', { active })
+  }
+
+  /** Push the head-up tilt threshold (degrees, 0..60) to both arms at runtime. */
+  async setHeadUpAngle(deg: number): Promise<void> {
+    await this.rpc('setHeadUpAngle', { deg })
   }
 
   async disconnect(): Promise<void> {

@@ -19,6 +19,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GlassesHub, GlassesNotifyRequest } from '../glasses-hub.js'
+import type { GlassesConfig } from '../glasses/config.js'
 
 export function handleGlassesRoutes(
   req: IncomingMessage,
@@ -26,8 +27,35 @@ export function handleGlassesRoutes(
   path: string,
   glassesHub: GlassesHub,
   readBody: (req: IncomingMessage) => Promise<string>,
+  config: GlassesConfig,
 ): boolean {
   if (!path.startsWith('/glasses')) return false
+
+  // --- HUD + notification config (no APK needed; pure hub state) -----------
+  if (path === '/glasses/config' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(config.get()))
+    return true
+  }
+  if (path === '/glasses/config' && req.method === 'POST') {
+    ;(async () => {
+      try {
+        const body = JSON.parse((await readBody(req)) || '{}')
+        const prevAngle = config.get().headUpAngleDeg
+        const merged = config.merge(body)
+        // Push a runtime head-up-angle change to the glasses if connected.
+        if (merged.headUpAngleDeg !== prevAngle && glassesHub.hasClient()) {
+          glassesHub.setHeadUpAngle(merged.headUpAngleDeg).catch(() => {})
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(merged))
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      }
+    })()
+    return true
+  }
 
   // --- scan observations (in-memory ring buffer; no APK needed) -----------
   if (path === '/glasses/scan/observations' && req.method === 'GET') {
@@ -118,7 +146,10 @@ export function handleGlassesRoutes(
         }
         case 'notify': {
           const n: GlassesNotifyRequest = {
-            appIdentifier: String(body.appIdentifier ?? 'com.console'),
+            // Default to the whitelisted id — firmware drops 0x4B for any
+            // app_identifier not in the on-connect whitelist (io.amar.console).
+            appIdentifier: String(body.appIdentifier ?? 'io.amar.console'),
+            displayName: typeof body.displayName === 'string' ? body.displayName : undefined,
             title: String(body.title ?? ''),
             subtitle: String(body.subtitle ?? ''),
             message: String(body.message ?? ''),

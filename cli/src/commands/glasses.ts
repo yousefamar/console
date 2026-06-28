@@ -20,6 +20,8 @@ export async function glasses(verb: string | undefined, args: string[], flags: G
     case 'disconnect': return glassesDisconnect(flags)
     case 'scan': return glassesScan(args, flags)
     case 'research': return glassesResearch(args, flags)
+    case 'hud': return glassesHud(args, flags)
+    case 'config': return glassesConfig(args, flags)
     default:
       exitWithError('USAGE', `Unknown glasses command: ${verb}. Run 'con help glasses'.`, flags)
   }
@@ -69,7 +71,9 @@ async function glassesNotify(args: string[], flags: GlobalFlags): Promise<void> 
     exitWithError('USAGE', 'Usage: con glasses notify --title "<t>" [--subtitle "<s>"] [--message "<m>"] [--app com.example]', flags)
   }
   const body = {
-    appIdentifier: opts.app ?? 'com.console',
+    // Must match a whitelisted id (default io.amar.console) or firmware drops it.
+    appIdentifier: opts.app ?? 'io.amar.console',
+    displayName: opts.source,
     title: opts.title ?? '',
     subtitle: opts.subtitle ?? '',
     message: opts.message ?? '',
@@ -91,6 +95,41 @@ async function glassesMic(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function glassesDisconnect(flags: GlobalFlags): Promise<void> {
   const data = await hubFetch('/glasses/disconnect', { method: 'POST' })
+  output(data, flags)
+}
+
+// con glasses hud on|off            — toggle the idle head-tilt HUD
+async function glassesHud(args: string[], flags: GlobalFlags): Promise<void> {
+  const positional = args.find((a) => !a.startsWith('--'))
+  const state = positional ?? parseFlags(args).state
+  if (state !== 'on' && state !== 'off') {
+    exitWithError('USAGE', 'Usage: con glasses hud on|off', flags)
+  }
+  const data = await hubFetch('/glasses/config', { method: 'POST', body: { hudEnabled: state === 'on' } })
+  output(data, flags)
+}
+
+// con glasses config                              — show current config
+// con glasses config --notify on|off              — master notification toggle
+// con glasses config --channel <name> on|off      — per-source opt-out
+// con glasses config --angle <0-60>               — head-up tilt threshold
+async function glassesConfig(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const patch: Record<string, unknown> = {}
+  if (opts.notify === 'on' || opts.notify === 'off') patch.notifyEnabled = opts.notify === 'on'
+  if (opts.angle != null) patch.headUpAngleDeg = Number(opts.angle)
+  if (opts.channel) {
+    // Shape: --channel mail off  (value is the channel; on/off is positional)
+    const onoff = args.find((a) => a === 'on' || a === 'off')
+    if (onoff !== 'on' && onoff !== 'off') {
+      exitWithError('USAGE', 'Usage: con glasses config --channel <mail|chat|calendar|agent|money> on|off', flags)
+    }
+    patch.channels = { [opts.channel]: onoff === 'on' }
+  }
+  // No patch flags → just read+print the current config.
+  const data = Object.keys(patch).length === 0
+    ? await hubFetch('/glasses/config')
+    : await hubFetch('/glasses/config', { method: 'POST', body: patch })
   output(data, flags)
 }
 

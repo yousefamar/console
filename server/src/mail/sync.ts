@@ -83,6 +83,36 @@ export class MailSync {
     return { ok: true }
   }
 
+  // ---- inbox unread + latest subject (for the glasses HUD) ----
+  private unreadCache: { count: number; at: number } | null = null
+  private static readonly UNREAD_TTL_MS = 30_000
+  /** Most recent arrival's "From: Subject", set when a mail push fires.
+   *  Empty until the first new mail after boot. */
+  private latestSubject = ''
+  getLatestSubject(): string { return this.latestSubject }
+
+  /** Total unread INBOX threads across all Google accounts. Cached ~30s so a
+   *  HUD refresh loop doesn't hammer the Gmail labels API. Returns 0 on error
+   *  (the HUD treats this as "nothing unread" rather than failing the frame). */
+  async getInboxUnreadCount(): Promise<number> {
+    const now = Date.now()
+    if (this.unreadCache && now - this.unreadCache.at < MailSync.UNREAD_TTL_MS) {
+      return this.unreadCache.count
+    }
+    let total = 0
+    try {
+      const accounts = await this.listAccounts()
+      const counts = await Promise.all(
+        accounts.map((a) => this.gmail.getInboxUnread(a).catch(() => 0)),
+      )
+      total = counts.reduce((s, n) => s + n, 0)
+    } catch {
+      total = this.unreadCache?.count ?? 0
+    }
+    this.unreadCache = { count: total, at: now }
+    return total
+  }
+
   // ---- internals ----
 
   private async tick(): Promise<void> {
@@ -221,6 +251,8 @@ export class MailSync {
         const subject = headers.find((h) => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)'
         const { name: fromName, email: fromEmail } = parseFrom(from)
         const snippet = msg.snippet ?? ''
+        // Remember the most recent arrival for the glasses HUD preview row.
+        this.latestSubject = `${fromName || fromEmail}: ${subject}`.trim()
         this.push.broadcast({
           type: 'mail',
           title: fromName || fromEmail || account,

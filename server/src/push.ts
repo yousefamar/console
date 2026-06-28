@@ -84,6 +84,16 @@ export class PushServer {
     this.inboundHandlers.push(handler)
   }
 
+  /** Observers fired for every {@link broadcast} message (after it's sent to
+   *  clients). Used to fan a push out to additional sinks — e.g. the glasses
+   *  notification forwarder — without touching each call site. Fires even when
+   *  no push clients are connected, so a sink with its own transport still
+   *  sees the message. */
+  private readonly broadcastObservers: Array<(msg: PushMessage) => void> = []
+  onBroadcast(handler: (msg: PushMessage) => void): void {
+    this.broadcastObservers.push(handler)
+  }
+
   /** Fired once per client connection, after the hello is sent. Used to sweep
    *  stale notifications (cancel anything for rooms now read) — the only way
    *  to clear notifications orphaned by a hub restart, since the in-memory
@@ -122,6 +132,11 @@ export class PushServer {
   }
 
   broadcast(msg: PushMessage): void {
+    // Notify observers first — a sink with its own transport (e.g. glasses)
+    // should still fire even when no APK push client is connected.
+    for (const obs of this.broadcastObservers) {
+      try { obs(msg) } catch (e) { this.log(`[push] broadcast observer failed: ${(e as Error).message}`) }
+    }
     if (this.clients.size === 0) return
     const data = JSON.stringify(msg)
     for (const ws of this.clients) {

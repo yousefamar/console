@@ -312,6 +312,56 @@ object G1Protocol {
         return chunks
     }
 
+    // --- App whitelist (0x04) ----------------------------------------------
+
+    /**
+     * Default app-whitelist JSON. The firmware silently DROPS `0x4B`
+     * notification pushes for any `app_identifier` that isn't whitelisted, so
+     * this must be sent once post-connect before notifications will render.
+     *
+     * We register a single Console app id ([NOTIFY_APP_ID]) and flip the
+     * first-class flags (calendar/call/msg/mail) on for good measure. Every
+     * Console notification rides the one id; the human-readable source goes in
+     * the 0x4B `display_name` / `title`, so one whitelist entry is enough.
+     *
+     * Structure mirrors EvenDemoApp / docs/g1-protocol.md §14.
+     */
+    const val NOTIFY_APP_ID = "io.amar.console"
+    const val NOTIFY_APP_NAME = "Console"
+
+    fun defaultWhitelistJson(): String =
+        """{"calendar_enable":true,"call_enable":true,"msg_enable":true,"ios_mail_enable":true,""" +
+            """"app":{"list":[{"id":"$NOTIFY_APP_ID","name":"$NOTIFY_APP_NAME"}],"enable":true}}"""
+
+    /**
+     * Chunk an app-whitelist JSON payload into 0x04 packets. Header is
+     * 3 bytes `[0x04, totalChunks, seq]` (no msgId, unlike 0x4B/0x4E).
+     */
+    fun encodeAppWhitelistChunks(
+        json: String,
+        max: Int = NOTIFICATION_CHUNK_BODY,
+    ): List<ByteArray> {
+        val bytes = json.toByteArray(Charsets.UTF_8)
+        if (bytes.isEmpty()) return emptyList()
+        val chunks = mutableListOf<ByteArray>()
+        val total = (bytes.size + max - 1) / max
+        var i = 0
+        var seq = 0
+        while (i < bytes.size) {
+            val end = minOf(i + max, bytes.size)
+            val body = bytes.copyOfRange(i, end)
+            val pkt = ByteArray(3 + body.size)
+            pkt[0] = OP_APP_WHITELIST
+            pkt[1] = (total and 0xFF).toByte()
+            pkt[2] = (seq and 0xFF).toByte()
+            System.arraycopy(body, 0, pkt, 3, body.size)
+            chunks.add(pkt)
+            i = end
+            seq++
+        }
+        return chunks
+    }
+
     // --- Mic / exit / serial (single-byte or tiny) -------------------------
 
     fun encodeMic(enable: Boolean): ByteArray =

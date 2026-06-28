@@ -170,6 +170,19 @@ class PushService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** GlassesState snapshot enriched with the phone's own battery %, which the
+     *  pure GlassesState singleton can't read (no Context). Used everywhere we
+     *  ship a `glasses_state` frame / answer the `status` RPC so the HUD can
+     *  show phone battery alongside the glasses arms. */
+    private fun glassesStateJson(): JSONObject =
+        GlassesState.toJson().put("phoneBattery", readPhoneBatteryPct() ?: JSONObject.NULL)
+
+    /** Current phone battery 0..100, or null if unavailable. */
+    private fun readPhoneBatteryPct(): Int? = try {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+    } catch (_: Throwable) { null }
+
     /** Listener that streams GlassesState snapshots to the hub on every change. */
     private val glassesListener: () -> Unit = {
         val ws = webSocket
@@ -177,7 +190,7 @@ class PushService : Service() {
             try {
                 val frame = JSONObject()
                     .put("type", "glasses_state")
-                    .put("state", GlassesState.toJson())
+                    .put("state", glassesStateJson())
                 ws.send(frame.toString())
             } catch (_: Exception) { /* ignore */ }
         }
@@ -694,7 +707,7 @@ class PushService : Service() {
             try {
                 val frame = JSONObject()
                     .put("type", "glasses_state")
-                    .put("state", GlassesState.toJson())
+                    .put("state", glassesStateJson())
                 ws.send(frame.toString())
             } catch (_: Exception) { /* ignore */ }
             // Flush any audio frames that piled up while the hub was down —
@@ -983,7 +996,7 @@ class PushService : Service() {
                 return
             }
             when (method) {
-                "status" -> replyRpc(id, GlassesState.toJson())
+                "status" -> replyRpc(id, glassesStateJson())
                 "sendText" -> {
                     val text = params.optString("text")
                     if (text.isEmpty()) { replyRpcError(id, "text required"); return }
@@ -1007,19 +1020,36 @@ class PushService : Service() {
                     }
                 }
                 "notify" -> {
-                    val payload = JSONObject()
-                        .put("app_identifier", params.optString("appIdentifier", "com.console"))
+                    // app_identifier MUST match a whitelisted id or firmware
+                    // drops the 0x4B push (see BleManager on-connect whitelist).
+                    // We register a single Console id; the human-readable source
+                    // rides display_name so the card still reads "Mail"/"Chat".
+                    val appId = params.optString("appIdentifier", G1Protocol.NOTIFY_APP_ID)
+                    val displayName = params.optString("displayName", G1Protocol.NOTIFY_APP_NAME)
+                    val msgId = (System.currentTimeMillis() and 0xFF).toInt()
+                    val tsMs = params.optLong("timestamp", System.currentTimeMillis())
+                    // Firmware expects the EvenDemoApp NCS envelope — a flat
+                    // object is acked (valid 0x4B chunk) but never rendered.
+                    // See docs/g1-protocol.md §9.
+                    val inner = JSONObject()
+                        .put("msg_id", msgId)
+                        .put("app_identifier", appId)
                         .put("title", params.optString("title"))
                         .put("subtitle", params.optString("subtitle"))
                         .put("message", params.optString("message"))
-                        .put("time_s", (params.optLong("timestamp", System.currentTimeMillis()) / 1000))
-                        .put("display_name", params.optString("appIdentifier", "Console"))
-                    val msgId = (System.currentTimeMillis() and 0xFF).toInt()
+                        .put("time_s", tsMs / 1000)
+                        .put("date", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date(tsMs)))
+                        .put("display_name", displayName)
+                    val payload = JSONObject().put("ncs_notification", inner)
                     GlassesController.sendNotification(msgId, payload.toString())
                     replyRpc(id, JSONObject().put("ok", true))
                 }
                 "setMic" -> {
                     GlassesController.setMic(params.optBoolean("active", false))
+                    replyRpc(id, JSONObject().put("ok", true))
+                }
+                "setHeadUpAngle" -> {
+                    GlassesController.requireBle().setHeadUpAngle(params.optInt("deg", 30))
                     replyRpc(id, JSONObject().put("ok", true))
                 }
                 "disconnect" -> {

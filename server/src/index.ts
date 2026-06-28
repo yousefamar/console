@@ -84,6 +84,9 @@ import { MicState } from './mic.js'
 import { handleMicRoutes } from './routes/mic.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
 import { wireTouchToMic } from './glasses/touch-autowire.js'
+import { GlassesConfig } from './glasses/config.js'
+import { makeNotifyForwarder } from './glasses/notify-forward.js'
+import { wireHud } from './glasses/hud.js'
 import { SyncBus } from './sync-bus.js'
 import { MailSync } from './mail/sync.js'
 import { CalendarSync } from './cal/sync.js'
@@ -163,6 +166,7 @@ const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
 )
 const glassesHub = new GlassesHub(pushServer, (msg: string) => { log(msg) }, glassesResearchLog)
+const glassesConfig = new GlassesConfig(join(feedsConfigDir, 'glasses-config.json'))
 // Neo smartpen — same `/push` WS RPC pipe as glasses, single-device, reusing the
 // shared research log (frames tagged `arm: 'pen'`). Register the pen inbound
 // handler BEFORE glasses: glasses' handleMessage returns true for ANY
@@ -420,8 +424,37 @@ syncBus.register('chat-rooms', {
   markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
   markUnread: async (args) => matrixSync.markUnread(args as { roomId: string }),
   snooze: async (args) => matrixSync.snooze(args as { roomId: string; untilMs?: number }),
+  // Surgical: re-derive one room's metadata from full state (fixes a single
+  // re-link-inflated room without waiting for the boot sweep).
+  refreshRoom: async (args) => matrixSync.refreshRoomState(args as { roomId: string }),
+  // Manual trigger for the inflated-DM sweep (also runs once per deploy on boot).
+  refreshStale: async () => matrixSync.refreshStaleDmRooms(),
 })
 matrixSync.start()
+
+// One-shot sweep (per deploy) to repair DMs whose memberCount got inflated by
+// a WhatsApp/Signal re-link transient — incremental sync never re-derives
+// member fields, so they stick until a full-state refresh. Gated by a version
+// marker file so it runs once after this code ships, not on every restart.
+// Delayed so it lands after the first sync tick has populated the snapshot.
+{
+  const SWEEP_VERSION = 1
+  const markerPath = join(feedsConfigDir, 'chat-rooms-sweep.json')
+  let lastVersion = 0
+  try {
+    if (existsSync(markerPath)) lastVersion = (JSON.parse(readFileSync(markerPath, 'utf-8')) as { version?: number }).version ?? 0
+  } catch { /* treat as never-run */ }
+  if (lastVersion < SWEEP_VERSION) {
+    setTimeout(() => {
+      void matrixSync.refreshStaleDmRooms()
+        .then((r) => {
+          log(`[matrix-sync] boot DM sweep: refreshed ${r.refreshed}/${r.scanned}`)
+          try { writeFileSync(markerPath, JSON.stringify({ version: SWEEP_VERSION, ranAt: Date.now() })) } catch { /* best effort */ }
+        })
+        .catch((e) => log(`[matrix-sync] boot DM sweep failed: ${(e as Error).message}`))
+    }, 30_000)
+  }
+}
 
 // Geocaching: client mirrors the hub's geocache store. Snapshot on connect,
 // delta (summaries only) on every area fetch.
@@ -627,6 +660,53 @@ alBridge.onSessionUpdate = () => {
     if (ws.readyState === WebSocket.OPEN) ws.send(data)
   }
 }
+
+// --------------------------------------------------------------------------
+// Glasses: notification forwarding + idle HUD on head-tilt
+// --------------------------------------------------------------------------
+
+// Every hub push also fans out to the G1 lenses as a native 0x4B card, gated
+// by GlassesConfig + the global DnD pref (the same flag the SPA toggles).
+pushServer.onBroadcast(makeNotifyForwarder({
+  hub: glassesHub,
+  config: glassesConfig,
+  isDnd: () => prefsStore.getAll().dnd === true,
+  log: (m: string) => log(m),
+}))
+
+// HUD data: chat unread (chat-rooms store), agent alerts (sessions needing
+// attention), mail unread (Gmail labels, cached), next event (cal sync), and
+// batteries (latest glasses snapshot + phone battery rider).
+let mailUnreadCached = 0
+const refreshMailUnread = () => {
+  mailSync.getInboxUnreadCount().then((n) => { mailUnreadCached = n }).catch(() => {})
+}
+refreshMailUnread()
+setInterval(refreshMailUnread, 60_000)
+
+wireHud(glassesHub, glassesConfig, {
+  battery: () => {
+    const { state } = glassesHub.getCachedState()
+    const arms = [state?.left.battery, state?.right.battery].filter((b): b is number => typeof b === 'number')
+    return arms.length ? Math.min(...arms) : null
+  },
+  mail: () => ({ count: mailUnreadCached, text: mailSync.getLatestSubject() }),
+  chat: () => {
+    const unread = Object.values(chatRoomsStore.snapshot().data)
+      .filter((r) => r.isUnread && !r.isMuted && !r.isLowPriority)
+      .sort((a, b) => b.lastMessageTime - a.lastMessageTime)
+    const top = unread[0]
+    const text = top ? `${top.lastMessageSender ? top.lastMessageSender + ': ' : ''}${top.lastMessageBody ?? ''}` : ''
+    return { count: unread.length, text }
+  },
+  agents: () => {
+    const att = Array.from(sessions.values()).map((s) => s.getInfo()).filter((i) => !!i.needsAttention)
+      .sort((a, b) => (b.needsAttention?.ts ?? 0) - (a.needsAttention?.ts ?? 0))
+    const top = att[0]
+    const text = top ? `${top.name ? top.name + ': ' : ''}${top.needsAttention?.snippet ?? ''}` : ''
+    return { count: att.length, text }
+  },
+}, (m: string) => log(m))
 
 // --------------------------------------------------------------------------
 // HTTP/HTTPS server
@@ -1024,7 +1104,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
-  if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody)) return
+  if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody, glassesConfig)) return
   if (path.startsWith('/pen') && handlePenRoutes(req, res, path, penHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return

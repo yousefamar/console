@@ -300,4 +300,14 @@ export function wireMirror() {
   import('./store').then(({ useGlassesStore }) => {
     useGlassesStore.subscribe(() => scheduleFrame())
   }).catch(() => {})
+
+  // After a hub-driven HUD (head-up tilt) or a native notification card
+  // clears the lenses, restore the mirror on head-down so the user isn't left
+  // staring at a blank panel. Lazy import keeps events.ts out of the module's
+  // eager dependency graph.
+  import('./events').then(({ onG1Event }) => {
+    onG1Event((e) => {
+      if (e.kind === 'head-down' && enabled) pushNow()
+    })
+  }).catch(() => {})
 }

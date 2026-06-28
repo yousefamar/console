@@ -7,13 +7,18 @@ pipe (text / BMP / notification / mic / touchbar) exposed to hub, SPA, and
 
 ## Feature catalog (unordered)
 
-- **Notifications mirror** — Matrix DMs, Gmail new mail, Calendar reminders,
-  Monzo webhook. Uses the existing push pipeline; sink becomes "glasses"
-  alongside the Android system notification.
+- **Notifications mirror** — *shipped 2026-06-27 (v0.1.36).* Every hub push
+  (mail / chat / calendar / agent / Monzo) forwards to the lenses as a native
+  `0x4B` firmware card, gated by `GlassesConfig` (master + per-source toggles)
+  and the global DnD pref. Hub-driven (`pushServer.onBroadcast` →
+  `notify-forward.ts`), so it fires even when Console is backgrounded. Required
+  the `0x04` app-whitelist (firmware drops `0x4B` otherwise).
 - **Agent glance card** — current agent turn, AskUserQuestion prompts,
   ExitPlanMode prompts surface on the lenses with touchbar y/n.
-- **Calendar next-up** — permanent idle card showing next event time/title,
-  refreshing on the minute.
+- **Calendar next-up** — *shipped 2026-06-27 (v0.1.36)* as part of the idle
+  HUD (head-tilt up). The hub-side HUD (`hud.ts`) renders time + battery, next
+  event, and unread counts (mail / chat / agent); refreshes every 30s while
+  held up. Triggered by `0xF5 0x02` head-up, cleared on `0x03`.
 - **Now-playing / context card** — whatever Console considers "current
   context" for an idle state.
 - **Inbox glance** — unread count per source.
