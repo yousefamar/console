@@ -385,9 +385,10 @@ async function agentRole(args: string[], flags: GlobalFlags): Promise<void> {
   exitWithError('USAGE', `Unknown: con agent role ${sub}. Usage: con agent role [list | get <key> | manager <key> <mgr|--root> | delete <key>]`, flags)
 }
 
-/** `con agent merge <session-id|conv-id|name>` — fold a fork's findings back into
- *  its parent (the fork self-summarises, the digest is injected into the parent),
- *  then close the fork. The reversible alternative to just killing a fork. */
+/** `con agent merge <session-id|conv-id|name>` — fold a child back into its parent:
+ *  the child self-summarises, the digest is injected into the parent, then the
+ *  child is closed. Parent = fork lineage OR the org manager edge (an org child's
+ *  role is also absorbed: its sub-reports reparent up, its role is deleted). */
 async function agentMerge(args: string[], flags: GlobalFlags): Promise<void> {
   const idArg = args[0]
   if (!idArg) { exitWithError('USAGE', 'Usage: con agent merge <session-id|conv-id|name>', flags); return }

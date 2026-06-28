@@ -492,8 +492,9 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       if (live) {
         items.push({ label: 'Open', onClick: () => onPick(role.key) })
         items.push({ label: 'Fork', onClick: () => forkSession(live.id) })
-        // Forks (have a parent) can be folded back into it instead of discarded.
-        if (live.parentClaudeSessionId) items.push({ label: 'Merge into parent', onClick: () => mergeSession(live.id) })
+        // Fold a child into its parent — fork lineage OR org manager edge — so
+        // the parent absorbs its knowledge (and, for an org child, its role).
+        if (live.parentClaudeSessionId || role.manager) items.push({ label: 'Merge into parent', onClick: () => mergeSession(live.id) })
         items.push({ label: 'Reload history', onClick: () => reloadSessionHistory(live.id) })
         items.push({ label: 'Reload role', onClick: () => reloadSession(live.id) })
       } else {
