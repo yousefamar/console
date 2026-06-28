@@ -26,6 +26,8 @@ export interface LayerStyle {
   /** line styling. */
   lineColor?: string
   lineWidth?: number
+  /** animate line dashes (marching ants) — used by flight arcs. */
+  animated?: boolean
   /** ordered popup fields; bare key or {key,label}. Omit → show all props. */
   popup?: Array<string | { key: string; label?: string }>
 }

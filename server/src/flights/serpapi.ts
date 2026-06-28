@@ -176,6 +176,26 @@ export class SerpApiClient {
     return !!this.auth.getSerpApiKey()
   }
 
+  /**
+   * Remaining searches this month, via the FREE /account endpoint (it does not
+   * consume a search). Returns null if not configured or the check failed —
+   * callers treat null as "unknown, proceed". The poller uses this to skip
+   * polling when exhausted, so a dead quota never fires search requests (and
+   * never triggers SerpApi's "you're out of searches" emails).
+   */
+  async searchesLeft(): Promise<number | null> {
+    const key = this.auth.getSerpApiKey()
+    if (!key) return null
+    try {
+      const res = await fetch(`https://serpapi.com/account?api_key=${encodeURIComponent(key)}`)
+      if (!res.ok) return null
+      const data = await res.json() as { total_searches_left?: number }
+      return typeof data.total_searches_left === 'number' ? data.total_searches_left : null
+    } catch {
+      return null
+    }
+  }
+
   async explore(q: ExploreQuery): Promise<ExploreResult> {
     const apiKey = this.requireKey()
     const params: Record<string, string> = {

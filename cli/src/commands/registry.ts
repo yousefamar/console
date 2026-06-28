@@ -220,6 +220,20 @@ export const COMMANDS: CommandDef[] = [
       'con cal flights watch run wl_abcdef',
       'con cal flights watch remove wl_abcdef',
     ] },
+  { name: 'map flights', description: 'Render flight legs as animated great-circle arcs on the Map tab (its own toggle-able layer, labelled with price + date). Legs = JSON array of {from,to,price?,currency?,date?,flight?,label?,color?}.', safety: 'write',
+    args: [{ name: 'verb', required: false, description: 'push (default) | clear' }],
+    flags: {
+      name: { type: 'string', description: 'Layer name (slug under flights/); default "trip"' },
+      legs: { type: 'string', description: 'Inline JSON array of legs' },
+      file: { type: 'string', description: 'Read legs JSON from a file' },
+      stdin: { type: 'boolean', description: 'Read legs JSON from stdin' },
+      color: { type: 'string', description: 'Default arc colour (hex)' },
+      fit: { type: 'string', description: 'false to not auto-zoom to the arcs' },
+    },
+    examples: [
+      'echo \'[{"from":"LHR","to":"AMS","price":73,"date":"2026-07-04"},{"from":"AMS","to":"FRA","price":126,"date":"2026-07-07"}]\' | con map flights push --name plan-c --stdin',
+      'con map flights clear',
+    ] },
 
   // agent
   { name: 'agent list', description: 'List agent sessions', safety: 'read',

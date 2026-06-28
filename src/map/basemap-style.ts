@@ -13,6 +13,10 @@ const CARTO_DARK = ['a', 'b', 'c', 'd'].map(
 export function darkRasterStyle(): StyleSpecification {
   return {
     version: 8,
+    // Keyless glyph server (maplibre demotiles) so symbol text-fields render —
+    // e.g. flight-arc price/date labels. Consistent with the "host nothing"
+    // raster approach; fetched on demand, browser-cached.
+    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
     sources: {
       carto: {
         type: 'raster',
