@@ -26,6 +26,33 @@ function networkFromUserId(userId: string, re: RegExp): string | undefined {
   return raw.replace(/go$/, '')
 }
 
+// Build an "open external profile" link from a bridged ghost member's Beeper
+// metadata. LinkedIn ghosts carry `com.beeper.bridge.network: "linkedin"` and
+// `com.beeper.bridge.remote_id` (the member token, e.g. "ACoAAA…"), which
+// opens at linkedin.com/in/<id>. Returns undefined for networks without a
+// stable web profile URL (WhatsApp/Signal phone numbers, etc.).
+function externalProfileUrl(content: Record<string, unknown>): { network: string; url: string } | undefined {
+  const network = content['com.beeper.bridge.network'] as string | undefined
+  if (!network) return undefined
+  // Prefer the explicit remote_id; fall back to parsing the identifiers array
+  // (["linkedin:ACoAAA…"]).
+  let remoteId = content['com.beeper.bridge.remote_id'] as string | undefined
+  if (!remoteId) {
+    const ids = content['com.beeper.bridge.identifiers']
+    if (Array.isArray(ids)) {
+      const m = (ids as unknown[]).map(String).find((s) => s.includes(':'))
+      if (m) remoteId = m.split(':').slice(1).join(':')
+    }
+  }
+  if (!remoteId) return undefined
+  switch (network) {
+    case 'linkedin':
+      return { network, url: `https://www.linkedin.com/in/${encodeURIComponent(remoteId)}` }
+    default:
+      return undefined
+  }
+}
+
 function detectBridgeNetwork(stateEvents: any[]): string | undefined {
   const joined = stateEvents.filter(
     (e) => e.type === 'm.room.member' && e.content?.membership === 'join',
@@ -323,6 +350,10 @@ export function handleMatrixRoutes(
       let isEncrypted = false
       let memberCount = 0
       const members: Array<{ userId: string; displayName: string }> = []
+      // External profile link for bridged DMs (e.g. LinkedIn "open profile").
+      // Derived from the remote contact's Beeper bridge metadata on their
+      // ghost member event.
+      let externalProfile: { network: string; url: string } | undefined
 
       for (const event of state as any[]) {
         if (event.type === 'm.room.name') name = event.content.name
@@ -331,10 +362,15 @@ export function handleMatrixRoutes(
         if (event.type === 'm.room.member' && event.content.membership === 'join') {
           memberCount++
           members.push({ userId: event.state_key, displayName: event.content.displayname || event.state_key })
+          const c = event.content as Record<string, unknown>
+          if (!externalProfile && !c['com.beeper.bridge.is_bridge_bot']) {
+            const url = externalProfileUrl(c)
+            if (url) externalProfile = url
+          }
         }
       }
 
-      json({ id: roomId, name, topic, isEncrypted, memberCount, members })
+      json({ id: roomId, name, topic, isEncrypted, memberCount, members, externalProfile })
     })
   }
 

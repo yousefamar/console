@@ -487,6 +487,94 @@ export class MatrixSync {
     return { ok: true }
   }
 
+  /**
+   * Re-derive a room's metadata (name, memberCount, isDirect, avatar) from its
+   * FULL current state. Incremental /sync uses lazy_load_members, so these
+   * fields only recompute when a delta happens to carry m.room.create —
+   * otherwise a stale value (e.g. an inflated memberCount from a WhatsApp
+   * re-link transient) sticks forever. Fetching /state gives the complete
+   * member list (incl. m.room.create), so computeRoomState's `hasFullMembers`
+   * branch recomputes correctly. Everything else (unread, preview, tags,
+   * receipts) is preserved because the synthetic delta carries only state.
+   */
+  async refreshRoomState(args: { roomId: string }): Promise<{ ok: true; memberCount: number; isDirect: boolean; name: string }> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg) throw new Error('no matrix credentials')
+    if (!this.chatRoomsStore) throw new Error('chat rooms store not configured')
+    const { roomId } = args
+    if (!roomId) throw new Error('roomId required')
+    const state = await this.matrix.getRoomState(roomId) as MatrixEventLike[]
+    this.chatRoomsStore.applySyncDelta(
+      { [roomId]: { state: { events: state } } } as Record<string, SyncRoomDelta>,
+      { myUserId: cfg.userId, mutedRoomIds: this.mutedRooms },
+    )
+    const room = this.chatRoomsStore.snapshot().data[roomId]
+    return { ok: true, memberCount: room?.memberCount ?? 0, isDirect: room?.isDirect ?? false, name: room?.name ?? roomId }
+  }
+
+  /**
+   * One-shot sweep that finds DMs whose cached memberCount got inflated by a
+   * bridge re-link and re-derives them from full state. Cheap pre-filter: a
+   * lean summary /sync gives `m.joined_member_count` per room without member
+   * state; a room with ≤3 joined (me + contact + bridge bot) but a cached
+   * memberCount > 2 is an inflated DM. Only those get a full /state fetch,
+   * throttled, so we touch a few dozen rooms instead of every bridge group.
+   * Gated by the caller (runs once per deploy via a version marker).
+   */
+  async refreshStaleDmRooms(): Promise<{ scanned: number; refreshed: number }> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg || !this.chatRoomsStore) return { scanned: 0, refreshed: 0 }
+    // Lean summary sync — timeline limit 0, no state/account_data, just the
+    // room summary (joined_member_count) + the joined-room set.
+    const filter = JSON.stringify({
+      room: {
+        timeline: { limit: 1 },
+        state: { lazy_load_members: true, types: ['m.room.create'] },
+        ephemeral: { types: [] },
+        account_data: { types: [] },
+      },
+      account_data: { types: [] },
+      presence: { types: [] },
+    })
+    const url = `${cfg.homeserver}/_matrix/client/v3/sync?timeout=0&filter=${encodeURIComponent(filter)}`
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${cfg.accessToken}` } })
+    if (!resp.ok) {
+      this.log(`[matrix-sync] refreshStaleDmRooms: summary sync failed ${resp.status}`)
+      return { scanned: 0, refreshed: 0 }
+    }
+    const data = await resp.json() as { rooms?: { join?: Record<string, { summary?: { 'm.joined_member_count'?: number } }> } }
+    const joined = data.rooms?.join ?? {}
+    const snapshot = this.chatRoomsStore.snapshot().data
+    const candidates: string[] = []
+    for (const [roomId, r] of Object.entries(joined)) {
+      const cached = snapshot[roomId]
+      if (!cached) continue
+      const joinedCount = r.summary?.['m.joined_member_count']
+      // Inflated DM: server says ≤3 joined (me + contact + bot) but cache
+      // thinks it's a >2-member group.
+      if (typeof joinedCount === 'number' && joinedCount <= 3 && cached.memberCount > 2) {
+        candidates.push(roomId)
+      }
+    }
+    this.log(`[matrix-sync] refreshStaleDmRooms: ${candidates.length} inflated DM(s) of ${Object.keys(joined).length} rooms`)
+    let refreshed = 0
+    const BATCH = 5
+    for (let i = 0; i < candidates.length; i += BATCH) {
+      const batch = candidates.slice(i, i + BATCH)
+      await Promise.all(batch.map(async (roomId) => {
+        try {
+          await this.refreshRoomState({ roomId })
+          refreshed++
+        } catch (e) {
+          this.log(`[matrix-sync] refreshStaleDmRooms: ${roomId} failed: ${(e as Error).message}`)
+        }
+      }))
+      if (i + BATCH < candidates.length) await this.sleep(250)
+    }
+    this.log(`[matrix-sync] refreshStaleDmRooms: refreshed ${refreshed}/${candidates.length}`)
+    return { scanned: candidates.length, refreshed }
+  }
+
   // ---- loop ----
 
   private async runLoop(): Promise<void> {

@@ -7,7 +7,9 @@ import { ChatComposeInput } from './ChatComposeInput'
 import { InboxZero } from './InboxZero'
 import { ImageLightbox } from './ImageLightbox'
 import { PdfLightbox } from './PdfLightbox'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ExternalLink } from 'lucide-react'
+import { FaLinkedin } from 'react-icons/fa'
+import { getHubUrl } from '@/hub'
 import type { DbChatMessage, DbChatRoom } from '@/matrix/types'
 
 export function ChatRoomView() {
@@ -19,6 +21,26 @@ export function ChatRoomView() {
   const matrixUserId = localStorage.getItem('matrix_user_id') ?? ''
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pdfLightbox, setPdfLightbox] = useState<{ src: string; filename: string } | null>(null)
+  // External "open profile" link per room (e.g. LinkedIn), fetched lazily
+  // from the hub /info endpoint when a room is selected. Cached by roomId so
+  // re-selecting doesn't refetch.
+  const [externalProfiles, setExternalProfiles] = useState<Record<string, { network: string; url: string }>>({})
+
+  useEffect(() => {
+    if (!selectedRoomId || externalProfiles[selectedRoomId]) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`${getHubUrl()}/matrix/rooms/${encodeURIComponent(selectedRoomId)}/info`)
+        if (!res.ok) return
+        const data = await res.json() as { externalProfile?: { network: string; url: string } }
+        if (!cancelled && data.externalProfile) {
+          setExternalProfiles((prev) => ({ ...prev, [selectedRoomId]: data.externalProfile! }))
+        }
+      } catch { /* no profile link — header just omits the icon */ }
+    })()
+    return () => { cancelled = true }
+  }, [selectedRoomId, externalProfiles])
 
   const handleReply = useCallback((msg: DbChatMessage) => {
     setReplyingTo(msg)
@@ -74,11 +96,26 @@ export function ChatRoomView() {
               <span className="text-xs text-text-tertiary">{room.memberCount} members</span>
             )}
           </div>
-          {room.networkIcon && (
-            <span className="text-xs text-text-tertiary uppercase tracking-wider">
-              {room.networkIcon}
-            </span>
-          )}
+          <div className="flex items-center gap-2.5 flex-shrink-0">
+            {externalProfiles[room.id] && (
+              <a
+                href={externalProfiles[room.id]!.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-text-tertiary hover:text-text-primary transition-colors"
+                title={`Open ${externalProfiles[room.id]!.network} profile`}
+              >
+                {externalProfiles[room.id]!.network === 'linkedin'
+                  ? <FaLinkedin size={16} />
+                  : <ExternalLink size={15} />}
+              </a>
+            )}
+            {room.networkIcon && (
+              <span className="text-xs text-text-tertiary uppercase tracking-wider">
+                {room.networkIcon}
+              </span>
+            )}
+          </div>
         </div>
       ))}
 
