@@ -26,6 +26,25 @@ export interface DbMapLayer {
   geojson: unknown
 }
 
+/** Client mirror of the hub Meetup events store (summaries; detail on tap). */
+export interface DbMeetupEvent {
+  id: string
+  title: string
+  dateTime: string
+  endTime: string
+  eventUrl: string
+  eventType: string
+  isOnline: boolean
+  going: number
+  groupName: string
+  groupUrlname: string
+  venueName: string
+  venueAddress: string
+  venueCity: string
+  lat: number | null
+  lon: number | null
+}
+
 /** Client mirror of the hub geocache store (summaries; detail fetched on tap). */
 export interface DbGeocache {
   code: string
@@ -58,6 +77,7 @@ class ConsoleDatabase extends Dexie {
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
   geocaches!: Table<DbGeocache, string>
+  meetupEvents!: Table<DbMeetupEvent, string>
   mapLayers!: Table<DbMapLayer, string>
 
   constructor() {
@@ -174,6 +194,11 @@ class ConsoleDatabase extends Dexie {
     // v10: cache agent-authored map-layer GeoJSON for offline rendering
     this.version(10).stores({
       mapLayers: '&slug',
+    })
+
+    // v11: Map pane — Meetup events mirror (summaries; detail fetched on tap)
+    this.version(11).stores({
+      meetupEvents: '&id, [lat+lon], dateTime',
     })
   }
 }

@@ -59,6 +59,8 @@ import { handleApkRoutes } from './routes/apk.js'
 import { handleOwntracksRoutes } from './routes/owntracks.js'
 import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
+import { handleMeetupRoutes } from './routes/meetup.js'
+import { MeetupClient } from './meetup/client.js'
 import { handleSpotifyRoutes } from './routes/spotify.js'
 import { SpotifyClient } from './spotify/client.js'
 import { SpotifyStore } from './spotify/store.js'
@@ -147,6 +149,7 @@ const monzoStore = new MonzoStore(
 )
 const financeStore = new FinanceStore(feedsConfigDir)
 const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
+const meetupClient = new MeetupClient(feedsConfigDir)
 const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // Runtime agent-model config + fallback chain. Inject the resolver into Session
@@ -464,6 +467,17 @@ syncBus.register('geocaching', {
 geocachingClient.onChange = (changed) => {
   syncBus.broadcast('geocaching', 'delta', {
     caches: changed.map(({ detail: _detail, ...summary }) => summary),
+  })
+}
+
+// Meetup events: same mirror shape — snapshot on connect, delta (summaries
+// only) on each area fetch. Anonymous web GraphQL scrape; manual fetch only.
+syncBus.register('meetup', {
+  snapshot: async () => meetupClient.getSnapshot(),
+})
+meetupClient.onChange = (changed) => {
+  syncBus.broadcast('meetup', 'delta', {
+    events: changed.map(({ detail: _detail, ...summary }) => summary),
   })
 }
 
@@ -1101,6 +1115,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
+  if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return

@@ -2,5 +2,6 @@
 // map without a ref. MapTab populates these on mount and clears them on unmount.
 export const mapController: {
   fetchHere?: () => void
+  fetchMeetupHere?: () => void
   flyToMe?: () => void
 } = {}
