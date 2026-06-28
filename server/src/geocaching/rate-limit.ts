@@ -15,8 +15,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from '
 import { dirname } from 'node:path'
 
 export class RateLimitExceededError extends Error {
-  constructor(public used: number, public cap: number) {
-    super(`Daily geocaching.com request budget exhausted (${used}/${cap}). Try again tomorrow.`)
+  constructor(public used: number, public cap: number, label = 'geocaching.com request') {
+    super(`Daily ${label} budget exhausted (${used}/${cap}). Try again tomorrow.`)
     this.name = 'RateLimitExceededError'
   }
 }
@@ -31,6 +31,8 @@ export interface RateLimiterOptions {
   maxDelayMs?: number
   dailyCap?: number
   budgetFile: string
+  /** Label used in the budget-exhausted error message (default geocaching.com). */
+  label?: string
 }
 
 function today(): string {
@@ -46,12 +48,14 @@ export class RateLimiter {
   private readonly maxDelayMs: number
   private readonly dailyCap: number
   private readonly budgetFile: string
+  private readonly label: string
 
   constructor(opts: RateLimiterOptions) {
     this.minDelayMs = opts.minDelayMs ?? 3000
     this.maxDelayMs = opts.maxDelayMs ?? 6000
     this.dailyCap = opts.dailyCap ?? 400
     this.budgetFile = opts.budgetFile
+    this.label = opts.label ?? 'geocaching.com request'
   }
 
   /** Run `fn` once it's this request's turn, after the budget + delay gate. */
@@ -89,7 +93,7 @@ export class RateLimiter {
       state.date = t
       state.count = 0
     }
-    if (state.count >= this.dailyCap) throw new RateLimitExceededError(state.count, this.dailyCap)
+    if (state.count >= this.dailyCap) throw new RateLimitExceededError(state.count, this.dailyCap, this.label)
     state.count += 1
     this.saveBudget(state)
   }

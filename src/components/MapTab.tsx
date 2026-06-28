@@ -3,8 +3,8 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock } from 'lucide-react'
-import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle } from '@/store/map'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Monitor } from 'lucide-react'
+import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type MeetupEvent } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
@@ -77,6 +77,23 @@ function pinsToFC(pins: MapCache[]): FeatureCollection {
   }
 }
 
+// Meetup events are a single calendar glyph (their find-state/type has no map
+// meaning the way a geocache's does). Online events have no venue → no pin.
+const MEETUP_EMOJI = '📅'
+
+function eventsToFC(events: MeetupEvent[], hideOnline: boolean): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: events
+      .filter((e) => e.lat != null && e.lon != null && (!hideOnline || !e.isOnline))
+      .map((e) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [e.lon as number, e.lat as number] },
+        properties: { id: e.id },
+      })),
+  }
+}
+
 function trackToFC(track: OtFix[]): FeatureCollection {
   const coords = track.map((f) => [f.lon, f.lat])
   return {
@@ -114,6 +131,9 @@ export function MapTab() {
     rangeFrom, rangeTo, device, devices, loadingHistory,
     refresh, loadHistory, selectCache, loadLayers,
     layers, layerData, layerVisible,
+    events, selectedEventId, meetupStatus, fetchingMeetup,
+    meetupQuery, meetupDays, meetupHideOnline,
+    selectEvent, setMeetupQuery, setMeetupDays, setMeetupHideOnline,
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
@@ -149,6 +169,7 @@ export function MapTab() {
       readyRef.current = true
       const st = useMapStore.getState()
       pushSource(m, 'gc-pins', pinsToFC(st.pins))
+      pushSource(m, 'meetup-pins', eventsToFC(st.events, st.meetupHideOnline))
       pushSource(m, 'ot-track', trackToFC(st.track))
       pushSource(m, 'ot-current', currentToFC(st.current))
       reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
@@ -162,6 +183,13 @@ export function MapTab() {
     map.on('mouseenter', 'gc-pins', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'gc-pins', () => { map.getCanvas().style.cursor = '' })
 
+    map.on('click', 'meetup-pins', (e) => {
+      const id = e.features?.[0]?.properties?.id as string | undefined
+      if (id) void selectEvent(id)
+    })
+    map.on('mouseenter', 'meetup-pins', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'meetup-pins', () => { map.getCanvas().style.cursor = '' })
+
     mapController.flyToMe = () => {
       const c = useMapStore.getState().current[0]
       if (c) map.flyTo({ center: [c.lon, c.lat], zoom: 14 })
@@ -170,10 +198,15 @@ export function MapTab() {
       const b = map.getBounds()
       void useMapStore.getState().fetchArea([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]).catch(() => {})
     }
+    mapController.fetchMeetupHere = () => {
+      const b = map.getBounds()
+      void useMapStore.getState().fetchMeetupArea([b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]).catch(() => {})
+    }
 
     return () => {
       mapController.flyToMe = undefined
       mapController.fetchHere = undefined
+      mapController.fetchMeetupHere = undefined
       map.remove()
       mapRef.current = null
       readyRef.current = false
@@ -189,6 +222,7 @@ export function MapTab() {
 
   // push store slices → map sources
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'gc-pins', pinsToFC(pins)) }, [pins])
+  useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'meetup-pins', eventsToFC(events, meetupHideOnline)) }, [events, meetupHideOnline])
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-track', trackToFC(track)) }, [track])
   useEffect(() => {
     if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-current', currentToFC(current))
@@ -201,6 +235,10 @@ export function MapTab() {
     const map = mapRef.current
     if (readyRef.current && map) map.setFilter('gc-selected', ['==', ['get', 'code'], selectedCode ?? ''])
   }, [selectedCode])
+  useEffect(() => {
+    const map = mapRef.current
+    if (readyRef.current && map) map.setFilter('meetup-selected', ['==', ['get', 'id'], selectedEventId ?? ''])
+  }, [selectedEventId])
 
   // agent-authored layers → reconcile sources/layers + fit-to-bounds once
   useEffect(() => {
@@ -217,7 +255,9 @@ export function MapTab() {
   }, [layers, layerData, layerVisible])
 
   const selected = pins.find((p) => p.code === selectedCode) ?? null
+  const selectedEvent = events.find((e) => e.id === selectedEventId) ?? null
   const budget = gcStatus?.budget
+  const meetupBudget = meetupStatus?.budget
 
   return (
     <div className="relative flex flex-1 min-h-0">
@@ -279,12 +319,44 @@ export function MapTab() {
           )}
         </div>
 
+        {/* meetup: search + date window + online toggle + fetch */}
+        <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
+          <span className="pl-2 pr-1 text-text-tertiary"><Calendar size={13} /></span>
+          <input
+            value={meetupQuery}
+            onChange={(e) => setMeetupQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') mapController.fetchMeetupHere?.() }}
+            placeholder="Meetup…"
+            title="Keyword (blank = all events near here)"
+            className="bg-transparent outline-none w-24 py-1"
+          />
+          <select value={meetupDays} onChange={(e) => setMeetupDays(Number(e.target.value))}
+            title="Time window" className="bg-transparent outline-none border-l border-border px-1 cursor-pointer">
+            <option value={0}>Upcoming</option>
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+          </select>
+          <button onClick={() => setMeetupHideOnline(!meetupHideOnline)}
+            title={meetupHideOnline ? 'Online events hidden — click to show' : 'Showing online events — click to hide'}
+            className={`flex items-center px-1.5 py-1 border-l border-border hover:bg-surface-2 ${meetupHideOnline ? 'text-text-tertiary' : 'text-blue-400'}`}>
+            <Monitor size={13} />
+          </button>
+          <button onClick={() => mapController.fetchMeetupHere?.()} disabled={fetchingMeetup}
+            title={`Fetch Meetup events in view · ${meetupBudget?.remaining ?? '?'} requests left today`}
+            className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
+            {fetchingMeetup ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
+            {meetupBudget && <span className="text-text-tertiary">{meetupBudget.remaining}</span>}
+          </button>
+        </div>
+
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
 
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
       {showLayers && <LayersPanel onClose={() => setShowLayers(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
+      {selectedEvent && <MeetupEventPanel event={selectedEvent} onClose={() => void selectEvent(null)} />}
     </div>
   )
 }
@@ -339,6 +411,23 @@ function addOverlayLayers(map: maplibregl.Map) {
       id: 'gc-pins', type: 'symbol', source: 'gc-pins',
       layout: {
         'icon-image': ['concat', 'em:', PIN_EMOJI] as unknown as maplibregl.ExpressionSpecification,
+        'icon-size': 0.6,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      },
+    })
+  }
+  if (!map.getSource('meetup-pins')) {
+    map.addSource('meetup-pins', { type: 'geojson', data: eventsToFC([], false) })
+    map.addLayer({
+      id: 'meetup-selected', type: 'circle', source: 'meetup-pins',
+      filter: ['==', ['get', 'id'], ''],
+      paint: { 'circle-radius': 14, 'circle-color': 'rgba(168,85,247,0.20)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+    })
+    map.addLayer({
+      id: 'meetup-pins', type: 'symbol', source: 'meetup-pins',
+      layout: {
+        'icon-image': `em:${MEETUP_EMOJI}`,
         'icon-size': 0.6,
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
@@ -673,6 +762,56 @@ function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => 
         className="mt-2 inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
       >
         <MapPin size={11} /> open on geocaching.com
+      </a>
+    </div>
+  )
+}
+
+function formatEventTime(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function MeetupEventPanel({ event, onClose }: { event: MeetupEvent; onClose: () => void }) {
+  const d = event.detail
+  const venueLine = [event.venueName, event.venueCity].filter(Boolean).join(', ')
+  return (
+    <div className="absolute top-2 right-14 z-10 w-80 max-h-[80%] overflow-y-auto rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+      <div className="flex items-start justify-between mb-1 gap-2">
+        <div>
+          <div className="font-medium leading-tight">{event.title}</div>
+          {event.groupName && <div className="text-text-tertiary text-xs">{event.groupName}</div>}
+        </div>
+        <button onClick={onClose}><X size={14} /></button>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-text-secondary mb-2">
+        <Calendar size={12} className="text-text-tertiary" />
+        <span>{formatEventTime(event.dateTime)}</span>
+      </div>
+      <div className="flex flex-wrap gap-3 text-xs text-text-secondary mb-2">
+        {event.going > 0 && <span className="flex items-center gap-1"><Users size={11} /> {event.going} going</span>}
+        {event.eventType === 'ONLINE' && <span className="text-blue-400">online</span>}
+        {event.eventType === 'HYBRID' && <span className="text-amber-400">hybrid</span>}
+      </div>
+      {venueLine && (
+        <div className="text-xs text-text-tertiary mb-2 flex items-start gap-1">
+          <MapPin size={11} className="mt-0.5 shrink-0" />
+          <span>{venueLine}{event.venueAddress ? ` · ${event.venueAddress}` : ''}</span>
+        </div>
+      )}
+      {!d ? (
+        <div className="text-text-tertiary text-xs flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> loading detail…</div>
+      ) : (
+        d.description && <div className="text-xs text-text-secondary whitespace-pre-line line-clamp-[12] mb-2">{d.description}</div>
+      )}
+      <a
+        href={event.eventUrl} target="_blank" rel="noreferrer"
+        className="mt-1 inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
+      >
+        <Calendar size={11} /> open on meetup.com
       </a>
     </div>
   )

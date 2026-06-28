@@ -54,6 +54,33 @@ export interface GcStatus {
 
 export type BBox = [number, number, number, number] // [s, w, n, e]
 
+// --- Meetup events (mirror of the hub summary shape) ------------------------
+
+export interface MeetupEvent {
+  id: string
+  title: string
+  dateTime: string // ISO 8601 with offset
+  endTime: string
+  eventUrl: string
+  eventType: 'PHYSICAL' | 'ONLINE' | 'HYBRID'
+  isOnline: boolean
+  going: number
+  groupName: string
+  groupUrlname: string
+  venueName: string
+  venueAddress: string
+  venueCity: string
+  lat: number | null
+  lon: number | null
+  detail?: { description: string; fetchedAt: number }
+}
+
+export interface MeetupStatus {
+  budget: { used: number; cap: number; remaining: number }
+  eventCount: number
+  lastFetch: number
+}
+
 // --- Agent-authored layers --------------------------------------------------
 
 export interface MapLayerStyle {
@@ -138,6 +165,15 @@ interface MapState {
   fetching: boolean
   error: string | null
 
+  // Meetup events
+  events: MeetupEvent[]
+  selectedEventId: string | null
+  meetupStatus: MeetupStatus | null
+  fetchingMeetup: boolean
+  meetupQuery: string
+  meetupDays: number // 0 = upcoming (no end bound); else next N days
+  meetupHideOnline: boolean
+
   // actions
   refresh: () => Promise<void>
   loadHistory: (fromMs?: number, toMs?: number, device?: string) => Promise<void>
@@ -146,6 +182,16 @@ interface MapState {
   loadPins: () => Promise<void>
   mergePins: (incoming: MapCache[]) => void
   selectCache: (code: string | null) => Promise<void>
+
+  // Meetup actions
+  fetchMeetupArea: (bbox: BBox) => Promise<void>
+  loadEvents: () => Promise<void>
+  mergeEvents: (incoming: MeetupEvent[]) => void
+  selectEvent: (id: string | null) => Promise<void>
+  selectAdjacentEvent: (dir: 1 | -1) => void
+  setMeetupQuery: (q: string) => void
+  setMeetupDays: (d: number) => void
+  setMeetupHideOnline: (v: boolean) => void
 
   // agent-authored layers
   layers: MapLayerMeta[]
@@ -175,11 +221,20 @@ export const useMapStore = create<MapState>((set, get) => ({
   fetching: false,
   error: null,
 
+  events: [],
+  selectedEventId: null,
+  meetupStatus: null,
+  fetchingMeetup: false,
+  meetupQuery: '',
+  meetupDays: 0,
+  meetupHideOnline: true,
+
   refresh: async () => {
     try {
-      const [last, status] = await Promise.all([
+      const [last, status, meetupStatus] = await Promise.all([
         hubFetch<OtFix[]>('/owntracks/last').catch(() => [] as OtFix[]),
         hubFetch<GcStatus>('/geocaching/status').catch(() => null),
+        hubFetch<MeetupStatus>('/meetup/status').catch(() => null),
       ])
       const devices = [...new Set(last.map((f) => f.device).filter(Boolean) as string[])]
       set((s) => ({
@@ -187,8 +242,9 @@ export const useMapStore = create<MapState>((set, get) => ({
         devices,
         device: s.device && devices.includes(s.device) ? s.device : (devices[0] ?? null),
         gcStatus: status,
+        meetupStatus,
       }))
-      await get().loadPins()
+      await Promise.all([get().loadPins(), get().loadEvents()])
     } catch (err) {
       set({ error: (err as Error).message })
     }
@@ -260,7 +316,7 @@ export const useMapStore = create<MapState>((set, get) => ({
     }),
 
   selectCache: async (code) => {
-    set({ selectedCode: code })
+    set({ selectedCode: code, selectedEventId: null })
     if (!code) return
     const existing = get().pins.find((p) => p.code === code)
     if (existing?.detail) return
@@ -280,6 +336,80 @@ export const useMapStore = create<MapState>((set, get) => ({
     })
     set({ gcStatus: status })
   },
+
+  loadEvents: async () => {
+    try {
+      const snap = await hubFetch<{ events: MeetupEvent[] }>('/meetup/events')
+      get().mergeEvents(snap.events ?? [])
+    } catch (err) {
+      // offline / hub down — the Dexie-hydrated events from the subscriber remain.
+      set({ error: (err as Error).message })
+    }
+  },
+
+  fetchMeetupArea: async (bbox) => {
+    set({ fetchingMeetup: true, error: null })
+    try {
+      const { meetupQuery, meetupDays } = get()
+      const result = await hubFetch<{ added: number; total: number; budget: MeetupStatus['budget'] }>(
+        '/meetup/fetch-area',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            bbox,
+            query: meetupQuery.trim() || undefined,
+            days: meetupDays || undefined,
+          }),
+        },
+      )
+      set((s) => ({ meetupStatus: s.meetupStatus ? { ...s.meetupStatus, budget: result.budget } : s.meetupStatus }))
+      await get().loadEvents()
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    } finally {
+      set({ fetchingMeetup: false })
+    }
+  },
+
+  mergeEvents: (incoming) =>
+    set((s) => {
+      const byId = new Map(s.events.map((e) => [e.id, e]))
+      for (const ev of incoming) {
+        const prev = byId.get(ev.id)
+        // Preserve any locally-loaded detail across a summary refresh.
+        byId.set(ev.id, prev?.detail && !ev.detail ? { ...ev, detail: prev.detail } : ev)
+      }
+      return { events: [...byId.values()] }
+    }),
+
+  selectEvent: async (id) => {
+    set({ selectedEventId: id, selectedCode: null })
+    if (!id) return
+    const existing = get().events.find((e) => e.id === id)
+    if (existing?.detail) return
+    try {
+      const full = await hubFetch<MeetupEvent>(`/meetup/event/${encodeURIComponent(id)}`)
+      set((s) => ({ events: s.events.map((e) => (e.id === id ? { ...e, ...full } : e)) }))
+    } catch (err) {
+      set({ error: (err as Error).message })
+    }
+  },
+
+  selectAdjacentEvent: (dir) => {
+    const { events, selectedEventId, meetupHideOnline } = get()
+    const onMap = events
+      .filter((e) => e.lat != null && e.lon != null && (!meetupHideOnline || !e.isOnline))
+      .sort((a, b) => a.dateTime.localeCompare(b.dateTime))
+    if (onMap.length === 0) return
+    const idx = onMap.findIndex((e) => e.id === selectedEventId)
+    const next = onMap[(idx + dir + onMap.length) % onMap.length]
+    if (next) void get().selectEvent(next.id)
+  },
+
+  setMeetupQuery: (q) => set({ meetupQuery: q }),
+  setMeetupDays: (d) => set({ meetupDays: d }),
+  setMeetupHideOnline: (v) => set({ meetupHideOnline: v }),
 
   layers: [],
   layerData: {},
