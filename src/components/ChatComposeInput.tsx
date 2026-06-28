@@ -51,10 +51,13 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   // (except when hasContent flips or emoji autocomplete is active).
   const textRef = useRef('')
   const [hasContent, setHasContent] = useState(false)
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
-  // Preview is only generated for images so we can render a thumbnail in the
-  // compose UI; non-image attachments show a filename chip instead.
-  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  // Multiple attachments queue. Each carries its file + (for images) an
+  // object-URL preview; non-images render a filename chip. Matrix has no
+  // multi-image event — sending N images is N sequential m.image events
+  // (which is exactly what the Beeper app does under the hood), so the
+  // send loop just dispatches each entry in turn.
+  const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File; preview: string | null }[]>([])
+  const attachIdRef = useRef(0)
   const [emojiQuery, setEmojiQuery] = useState<{ query: string; startIdx: number } | null>(null)
   const [emojiResults, setEmojiResults] = useState<{ shortcode: string; emoji: string }[]>([])
   const [emojiSelectedIdx, setEmojiSelectedIdx] = useState(0)
@@ -156,15 +159,24 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   }, [roomId])
 
   const attachFile = useCallback((file: File) => {
-    setPendingFile(file)
-    setImagePreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null)
+    const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
+    setPendingFiles((prev) => [...prev, { id: `a${attachIdRef.current++}`, file, preview }])
   }, [])
 
-  const clearAttachment = useCallback(() => {
-    if (imagePreview) URL.revokeObjectURL(imagePreview)
-    setPendingFile(null)
-    setImagePreview(null)
-  }, [imagePreview])
+  const removeAttachment = useCallback((id: string) => {
+    setPendingFiles((prev) => {
+      const hit = prev.find((p) => p.id === id)
+      if (hit?.preview) URL.revokeObjectURL(hit.preview)
+      return prev.filter((p) => p.id !== id)
+    })
+  }, [])
+
+  const clearAttachments = useCallback(() => {
+    setPendingFiles((prev) => {
+      for (const p of prev) if (p.preview) URL.revokeObjectURL(p.preview)
+      return []
+    })
+  }, [])
 
   // Replace the in-flight `@query` with `@DisplayName ` and record the
   // mention. The trailing space lets the user keep typing without re-arming
@@ -261,17 +273,24 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       return
     }
 
-    if (pendingFile) {
+    if (pendingFiles.length > 0) {
       sendingRef.current = true
-      const file = pendingFile
+      const files = pendingFiles
+      // The typed text becomes the caption on the FIRST attachment only
+      // (WhatsApp / Beeper behaviour); the rest send bare. Matrix sends each
+      // as its own m.image/m.file event, dispatched in order.
       const caption = textRef.current.trim() || undefined
-      clearAttachment()
+      clearAttachments()
       clearInput()
       try {
-        if (file.type.startsWith('image/')) {
-          await sendImage(roomId, file, caption)
-        } else {
-          await sendFile(roomId, file, caption)
+        for (let i = 0; i < files.length; i++) {
+          const { file } = files[i]!
+          const cap = i === 0 ? caption : undefined
+          if (file.type.startsWith('image/')) {
+            await sendImage(roomId, file, cap)
+          } else {
+            await sendFile(roomId, file, cap)
+          }
         }
       } finally {
         sendingRef.current = false
@@ -294,7 +313,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       sendingRef.current = false
     }
     inputRef.current?.focus()
-  }, [roomId, sendMessage, sendImage, sendFile, pendingFile, clearAttachment, clearInput, editingMessage, editMessage])
+  }, [roomId, sendMessage, sendImage, sendFile, pendingFiles, clearAttachments, clearInput, editingMessage, editMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // @-mention autocomplete keyboard handling (takes priority over emoji
@@ -400,21 +419,22 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
     if (!items) return
-    // Paste prioritises images (the common case — screenshots etc); pasted
-    // arbitrary files are rare and the file-picker handles them.
+    // Attach EVERY pasted image (clipboards can hold several), not just the
+    // first — matches the Agents-tab paste behaviour. preventDefault only
+    // when we actually consumed an image, so pasting plain text still works.
+    let consumed = false
     for (const item of items) {
       if (item.type.startsWith('image/')) {
-        e.preventDefault()
         const file = item.getAsFile()
-        if (file) attachFile(file)
-        return
+        if (file) { attachFile(file); consumed = true }
       }
     }
+    if (consumed) e.preventDefault()
   }, [attachFile])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) attachFile(file)
+    const files = e.target.files
+    if (files) for (const file of Array.from(files)) attachFile(file)
     e.target.value = ''
   }, [attachFile])
 
@@ -499,35 +519,40 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           </div>
         )}
 
-        {/* Attachment preview — thumbnail for images, filename chip for
-            everything else. Either renders only while a file is pending. */}
-        {pendingFile && imagePreview && (
-          <div className="relative inline-block mb-2">
-            <img
-              src={imagePreview}
-              alt="Preview"
-              className="max-h-32 max-w-48 rounded-sm border border-border"
-            />
-            <button
-              onClick={clearAttachment}
-              className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-2 border border-border p-0.5 text-text-tertiary hover:text-text-primary"
-            >
-              <X size={10} />
-            </button>
-          </div>
-        )}
-        {pendingFile && !imagePreview && (
-          <div className="inline-flex items-center gap-2 mb-2 rounded-sm border border-border bg-surface-1 px-2 py-1 text-xs text-text-secondary">
-            <Paperclip size={12} className="text-text-tertiary" />
-            <span className="truncate max-w-[200px]">{pendingFile.name}</span>
-            <span className="text-text-tertiary tabular-nums">
-              {pendingFile.size < 1024 ? `${pendingFile.size}B`
-                : pendingFile.size < 1024 * 1024 ? `${Math.round(pendingFile.size / 1024)}KB`
-                : `${(pendingFile.size / 1024 / 1024).toFixed(1)}MB`}
-            </span>
-            <button onClick={clearAttachment} className="text-text-tertiary hover:text-text-primary" title="Remove">
-              <X size={12} />
-            </button>
+        {/* Attachment previews — a horizontal strip; image thumbnails and
+            filename chips for non-images, each individually removable. */}
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap items-start gap-2 mb-2">
+            {pendingFiles.map((p) => (
+              p.preview ? (
+                <div key={p.id} className="relative inline-block">
+                  <img
+                    src={p.preview}
+                    alt="Preview"
+                    className="max-h-24 max-w-32 rounded-sm border border-border object-cover"
+                  />
+                  <button
+                    onClick={() => removeAttachment(p.id)}
+                    className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-2 border border-border p-0.5 text-text-tertiary hover:text-text-primary"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ) : (
+                <div key={p.id} className="inline-flex items-center gap-2 rounded-sm border border-border bg-surface-1 px-2 py-1 text-xs text-text-secondary">
+                  <Paperclip size={12} className="text-text-tertiary" />
+                  <span className="truncate max-w-[160px]">{p.file.name}</span>
+                  <span className="text-text-tertiary tabular-nums">
+                    {p.file.size < 1024 ? `${p.file.size}B`
+                      : p.file.size < 1024 * 1024 ? `${Math.round(p.file.size / 1024)}KB`
+                      : `${(p.file.size / 1024 / 1024).toFixed(1)}MB`}
+                  </span>
+                  <button onClick={() => removeAttachment(p.id)} className="text-text-tertiary hover:text-text-primary" title="Remove">
+                    <X size={12} />
+                  </button>
+                </div>
+              )
+            ))}
           </div>
         )}
 
@@ -535,6 +560,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -559,7 +585,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
           />
           <button
             onClick={handleSend}
-            disabled={!hasContent && !pendingFile}
+            disabled={!hasContent && pendingFiles.length === 0}
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
             title="Send (Enter)"
           >
