@@ -418,6 +418,11 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
   const markSessionUnread = useAgentStore((s) => s.markSessionUnread)
   const reloadSessionHistory = useAgentStore((s) => s.reloadSessionHistory)
+  // Mergeable up if it's a fork (shares a parent's conversation) OR an org child
+  // (its role has a manager to absorb it). Roots (Al) have no parent.
+  const canMergeUp = useAgentStore((s) =>
+    !!session.parentClaudeSessionId
+    || (!!session.agentKey && session.agentKey !== 'al' && !!s.agentRoles.find((r) => r.key === session.agentKey)?.manager))
   const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
   const isMobile = useIsMobile()
@@ -502,8 +507,9 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     items.push(isMicOwner
       ? { label: 'Release mic to Al', onClick: () => useMicStore.getState().setMic('al') }
       : { label: 'Give mic to this agent', onClick: () => useMicStore.getState().setMic(session.id) })
-    // Forks (have a parent) can be merged back into it instead of just killed.
-    if (session.parentClaudeSessionId && session.status !== 'ended') {
+    // A child folds into its parent (fork lineage) or its manager (org edge) so
+    // the parent absorbs its knowledge — instead of just killing it.
+    if (canMergeUp && session.status !== 'ended') {
       items.push({ label: 'Merge into parent', onClick: () => mergeSession(session.id) })
     }
     if (session.status !== 'ended') {
@@ -514,7 +520,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, isMicOwner, killSession, mergeSession, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, canMergeUp, isMicOwner, killSession, mergeSession, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
 
   return (
     <ContextMenu items={menuItems}>

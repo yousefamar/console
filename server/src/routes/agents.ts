@@ -11,7 +11,7 @@ import type { AgentRegistry } from '../agents/registry.js'
 import type { TaskStore, AgentTask } from '../agents/tasks.js'
 import { checkDelegation, buildChain, chainLabel } from '../agents/delegation.js'
 import { buildDelegationProtocol, buildDelegationEnvelope, buildReportEnvelope, buildOrgPosition, renderOrgRoster, shortDescription } from '../agents/delegation-protocol.js'
-import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
+import { buildMergeRequest, buildChildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -484,29 +484,69 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, ti
   })
 }
 
-/** Merge a fork back into its parent: ask the fork to self-summarise, inject that
- *  digest into the parent (resolved via `parentClaudeSessionId`), then kill the
- *  fork. The summary — not the transcript — keeps the parent's context clean. */
-export async function mergeFork(ctx: AgentContext, forkSessionId: string, timeoutMs = 60_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
-  const fork = ctx.sessions.get(forkSessionId)
-  if (!fork) return { ok: false, error: `session not found: ${forkSessionId}` }
-  const parentCsid = fork.parentClaudeSessionId
-  if (!parentCsid) return { ok: false, error: 'not a fork — it has no parent to merge into' }
-  const parent = [...ctx.sessions.values()].find((s) => s.claudeSessionId === parentCsid && s.status !== 'ended')
-  if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
-  if (fork.status === 'running') return { ok: false, error: 'fork is busy; wait for its current turn to finish, then merge' }
+/** Merge a child back into its parent: ask the child to self-summarise, inject
+ *  that digest into the parent, then close the child. The parent is resolved two
+ *  ways — fork lineage (`parentClaudeSessionId`, same conversation ancestry) OR,
+ *  for a general org child, the role's `manager` edge (reviving a parked manager
+ *  so it can receive the digest). A SUMMARY — not the transcript — keeps the
+ *  parent's context clean. For an org child the parent also absorbs the child's
+ *  ROLE: its sub-reports reparent to the parent and the child's role is deleted. */
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 60_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+  const child = ctx.sessions.get(childSessionId)
+  if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
+  if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
 
-  const summary = await captureNextTurn(ctx, fork, buildMergeRequest(parent.name ?? 'your parent'), timeoutMs)
-  if (!summary) return { ok: false, error: 'fork produced no summary (timed out) — left alive so nothing is lost' }
+  // Resolve the parent. Fork lineage wins (it's the same conversation ancestry);
+  // otherwise fall back to the org manager edge.
+  let parent: Session | undefined
+  let kind: 'fork' | 'agent' = 'fork'
+  let childRoleKey: string | undefined
+  if (child.parentClaudeSessionId) {
+    parent = [...ctx.sessions.values()].find((s) => s.claudeSessionId === child.parentClaudeSessionId && s.status !== 'ended')
+    if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
+  } else if (child.agentKey) {
+    childRoleKey = child.agentKey
+    const mgr = ctx.agentRegistry.get(child.agentKey)?.manager
+    if (!mgr) return { ok: false, error: 'no parent to merge into — this agent has no manager (it is a root)' }
+    parent = liveSessionForRole(ctx, mgr) ?? reviveAgentRole(ctx, mgr) ?? undefined
+    if (!parent) return { ok: false, error: `manager "${mgr}" could not be brought up to receive the merge` }
+    kind = 'agent'
+  } else {
+    return { ok: false, error: 'no parent to merge into (not a fork and has no role)' }
+  }
+  if (parent.id === child.id) return { ok: false, error: 'cannot merge a session into itself' }
 
-  wakeSession(ctx, parent, buildMergeEnvelope(fork.name ?? 'fork', summary))
-  try { fork.kill() } catch { /* ignore */ }
-  ctx.sessions.delete(fork.id)
+  const request = kind === 'fork'
+    ? buildMergeRequest(parent.name ?? 'your parent')
+    : buildChildMergeRequest(parent.name ?? 'your manager')
+  const summary = await captureNextTurn(ctx, child, request, timeoutMs)
+  if (!summary) return { ok: false, error: 'child produced no summary (timed out) — left alive so nothing is lost' }
+
+  wakeSession(ctx, parent, buildMergeEnvelope(child.name ?? kind, summary, kind))
+
+  // Org child: the parent absorbs the role — reparent the child's own reports to
+  // the parent, then delete the child's role file.
+  if (childRoleKey) {
+    const parentKey = parent.agentKey
+    if (parentKey) {
+      for (const r of ctx.agentRegistry.list()) {
+        if (r.manager === childRoleKey) ctx.agentRegistry.setManager(r.key, parentKey)
+      }
+    }
+    ctx.agentRegistry.delete(childRoleKey)
+    broadcastAgentsList(ctx)
+  }
+
+  try { child.kill() } catch { /* ignore */ }
+  ctx.sessions.delete(child.id)
   saveManifest(ctx.sessions)
   broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
-  ctx.log(`[merge] fork ${fork.id} → parent ${parent.id} (${summary.length}-char summary)`)
+  ctx.log(`[merge] ${kind} ${child.id} → parent ${parent.id} (${summary.length}-char summary)`)
   return { ok: true, summary, parentId: parent.id }
 }
+
+/** Back-compat alias — the fork case is just one branch of mergeIntoParent now. */
+export const mergeFork = mergeIntoParent
 
 export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: ClientMessage) {
   const { sessions, clients, log, truncate } = ctx
@@ -828,7 +868,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
 
     case 'merge_session': {
       const id = msg.sessionId
-      mergeFork(ctx, id)
+      mergeIntoParent(ctx, id)
         .then((r) => {
           if (r.ok) broadcast(clients, { type: 'session_merged', forkId: id, parentId: r.parentId!, summary: r.summary! })
           else sendTo(ws, { type: 'hub_error', message: `merge failed: ${r.error}` })
