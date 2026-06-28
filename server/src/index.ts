@@ -263,7 +263,7 @@ syncBus.register('cal', {
 calSync.start()
 const serpApiClient = new SerpApiClient(authStore)
 const flightWatchlists = new WatchlistStore(join(feedsConfigDir, 'flight-watchlists.json'))
-const flightSync = new FlightSync(serpApiClient, flightWatchlists, pushServer, syncBus, (msg: string) => { log(msg) })
+const flightSync = new FlightSync(serpApiClient, flightWatchlists, pushServer, syncBus, mapLayerStore, (msg: string) => { log(msg) })
 flightSync.start()
 const keyBackupStore = new KeyBackupStore(
   join(feedsConfigDir, 'matrix-key-backup.json'),
@@ -976,7 +976,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
-  if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, readBody })) return
+  if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, matrixSync, readBody)) return
   if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
   if (path.startsWith('/finance') && handleFinanceRoutes(req, res, path, url, financeStore, monzoStore, monzoClient, authStore, readBody)) return

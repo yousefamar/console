@@ -35,7 +35,8 @@ async function calFlights(args: string[], flags: GlobalFlags): Promise<void> {
     case 'status': return flightStatus(flags)
     case 'credentials': return flightCredentials(rest, flags)
     default:
-      exitWithError('USAGE', "Usage: con cal flights {explore|search|watch|status|credentials}", flags)
+      // Arc rendering lives under `con map flights` (the Map tab is its home).
+      exitWithError('USAGE', "Usage: con cal flights {explore|search|watch|status|credentials}. For map arcs: con map flights push", flags)
   }
 }
 

@@ -10,8 +10,16 @@
 
 import type { PushServer } from '../push.js'
 import type { SyncBus } from '../sync-bus.js'
+import type { MapLayerStore } from '../map-layers/store.js'
 import type { SerpApiClient } from './serpapi.js'
 import type { Watchlist, WatchlistResult, WatchlistStore } from './store.js'
+import { legsToGeoJSON, type FlightLeg } from './arcs.js'
+
+// Sci-fi cyan for the live-offers arcs on the Map tab.
+const OFFERS_COLOR = '#22d3ee'
+const OFFERS_SLUG = 'flights/offers'
+// Cap arcs per explore watchlist so a big "anywhere" result doesn't carpet the map.
+const MAX_EXPLORE_ARCS = 8
 
 export class FlightSync {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -28,6 +36,7 @@ export class FlightSync {
     private readonly watchlists: WatchlistStore,
     private readonly push: PushServer,
     private readonly bus: SyncBus,
+    private readonly mapLayers: MapLayerStore,
     private readonly log: (msg: string) => void,
   ) {}
 
@@ -52,7 +61,14 @@ export class FlightSync {
   async pollOne(id: string): Promise<Watchlist | undefined> {
     const wl = this.watchlists.get(id)
     if (!wl) return undefined
+    // Same free precheck as the loop — a manual run shouldn't burn a 429 email.
+    const left = await this.serpApi.searchesLeft()
+    if (left !== null && left <= 0) {
+      this.log('[flight-sync] manual run skipped — SerpApi quota exhausted')
+      return wl // leave cached results intact
+    }
     await this.pollWatchlist(wl)
+    this.updateOffersLayer()
     return this.watchlists.get(id)
   }
 
@@ -68,6 +84,14 @@ export class FlightSync {
     if (!this.serpApi.isConfigured()) return // silent skip
     this.running = true
     try {
+      // Free quota precheck — never fire search requests against a dead quota
+      // (that's what spams the "out of searches" emails). null = unknown → try.
+      const left = await this.serpApi.searchesLeft()
+      if (left !== null && left <= 0) {
+        this.log('[flight-sync] skipping poll — SerpApi quota exhausted (0 left)')
+        this.updateOffersLayer() // refresh arcs from cached results
+        return
+      }
       for (const wl of this.watchlists.list()) {
         try {
           await this.pollWatchlist(wl)
@@ -75,8 +99,60 @@ export class FlightSync {
           this.log(`[flight-sync] ${wl.id} failed: ${(e as Error).message}`)
         }
       }
+      this.updateOffersLayer()
     } finally {
       this.running = false
+    }
+  }
+
+  /**
+   * Rebuild the `flights/offers` map layer from every watchlist's latest
+   * results — origin→destination arcs for routes, origin→each-cheap-destination
+   * arcs for explore watchlists. This is the live "good flights on offer" view;
+   * it refreshes whenever the poller (or a manual run) updates results.
+   *
+   * Guard: with zero watchlists there's nothing to manage, so we leave the
+   * layer untouched (a manually-seeded `flights/offers` survives until the
+   * first real watchlist exists).
+   */
+  private updateOffersLayer(): void {
+    const wls = this.watchlists.list()
+    if (wls.length === 0) return
+
+    const legs: FlightLeg[] = []
+    for (const wl of wls) {
+      const results = wl.lastResults ?? []
+      if (results.length === 0) continue
+      if (wl.destination) {
+        // Specific origin→destination monitor (e.g. LHR→FRA): one arc, best fare.
+        const best = results[0]
+        const price = wl.lastPriceMajor ?? best?.priceMajor
+        const date = wl.kind === 'route' ? wl.outboundDate : best?.startDate
+        if (price != null) legs.push({ from: wl.origin, to: wl.destination, price, currency: wl.currency, date })
+      } else {
+        // Region/anywhere discovery: fan out to the cheapest destinations.
+        for (const r of results.slice(0, MAX_EXPLORE_ARCS)) {
+          if (!r.airport) continue
+          legs.push({ from: wl.origin, to: r.airport, price: r.priceMajor, currency: wl.currency, date: r.startDate })
+        }
+      }
+    }
+
+    // No real legs yet (e.g. quota exhausted, nothing polled): leave the layer
+    // as-is rather than blanking it — keeps the last-good board (or the seed)
+    // on screen. Removal is explicit (`con map flights clear`).
+    if (legs.length === 0) return
+
+    try {
+      const { geojson } = legsToGeoJSON(legs, OFFERS_COLOR)
+      this.mapLayers.upsert(OFFERS_SLUG, geojson, {
+        style: { animated: true, lineColor: OFFERS_COLOR, lineWidth: 2, color: OFFERS_COLOR, size: 3, popup: ['route', 'price', 'date'] },
+        fit: false,
+        updatedBy: 'flights',
+      })
+      this.bus.broadcast('map-layers', 'delta', { layers: this.mapLayers.list() })
+    } catch (e) {
+      this.log(`[flight-sync] offers layer update failed: ${(e as Error).message}`)
     }
   }
 

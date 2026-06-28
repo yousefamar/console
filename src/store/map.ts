@@ -65,6 +65,7 @@ export interface MapLayerStyle {
   strokeWidth?: number
   lineColor?: string
   lineWidth?: number
+  animated?: boolean
   popup?: Array<string | { key: string; label?: string }>
 }
 

@@ -361,13 +361,54 @@ const expr = (v: unknown) => v as unknown as Expr
 
 function subIds(slug: string) {
   const b = `layer:${slug}`
-  return { src: b, fill: `${b}:fill`, line: `${b}:line`, circle: `${b}:circle`, symbol: `${b}:symbol` }
+  return { src: b, fill: `${b}:fill`, line: `${b}:line`, circle: `${b}:circle`, symbol: `${b}:symbol`, label: `${b}:label` }
 }
 
 function removeAgentLayer(map: maplibregl.Map, slug: string) {
-  const { src, fill, line, circle, symbol } = subIds(slug)
-  for (const id of [fill, line, circle, symbol]) if (map.getLayer(id)) map.removeLayer(id)
+  const { src, fill, line, circle, symbol, label } = subIds(slug)
+  animatedLineLayers.delete(line)
+  for (const id of [fill, line, circle, symbol, label]) if (map.getLayer(id)) map.removeLayer(id)
   if (map.getSource(src)) map.removeSource(src)
+}
+
+// --- animated line dashes (marching ants) for flight arcs --------------------
+// MapLibre has no runtime lineDashOffset, so we cycle line-dasharray through a
+// precomputed sequence via setPaintProperty — the standard "ant-path" trick.
+// One shared rAF loop drives every layer flagged style.animated; it idles
+// (stops) when none are registered and restarts on the next register.
+const animatedLineLayers = new Map<string, maplibregl.Map>()
+// Constant-period dash sequence (every entry sums to 7) — this is what keeps
+// the march smooth and continuous. Adapted from the canonical MapLibre/Mapbox
+// "animated line" example; cycling these via setPaintProperty gives marching
+// ants without the jank a variable-period sequence produces.
+const DASH_SEQUENCE: number[][] = [
+  [0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5],
+  [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2],
+  [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5],
+]
+const DASH_STEP_MS = 130 // dwell per frame — higher = slower, calmer drift
+let dashStep = -1
+let dashRaf: number | null = null
+function ensureDashLoop() {
+  if (dashRaf != null) return
+  // Timestamp-driven (frame-rate independent): advance only when the step
+  // index changes, so the cadence is even regardless of display refresh rate.
+  const tick = (t: number) => {
+    if (animatedLineLayers.size === 0) { dashRaf = null; dashStep = -1; return }
+    const step = Math.floor(t / DASH_STEP_MS) % DASH_SEQUENCE.length
+    if (step !== dashStep) {
+      dashStep = step
+      for (const [id, m] of animatedLineLayers) {
+        if (m.getLayer(id)) {
+          try { m.setPaintProperty(id, 'line-dasharray', DASH_SEQUENCE[step]) } catch { /* style mid-reload */ }
+        } else {
+          animatedLineLayers.delete(id)
+        }
+      }
+    }
+    dashRaf = requestAnimationFrame(tick)
+  }
+  dashRaf = requestAnimationFrame(tick)
 }
 
 function escapeHtml(s: string): string {
@@ -389,15 +430,33 @@ function buildPopupHtml(props: Record<string, unknown>, style: MapLayerStyle): s
 }
 
 function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ) {
-  const { src, fill, line, circle, symbol } = subIds(meta.slug)
+  const { src, fill, line, circle, symbol, label } = subIds(meta.slug)
   const existing = map.getSource(src) as maplibregl.GeoJSONSource | undefined
   if (existing) { existing.setData(data); return }
   const st = meta.style || {}
   const before = map.getLayer('gc-pins') ? 'gc-pins' : undefined
 
   map.addSource(src, { type: 'geojson', data })
-  map.addLayer({ id: fill, type: 'fill', source: src, paint: { 'fill-color': st.fillColor ?? '#3b82f6', 'fill-opacity': st.fillOpacity ?? 0.15 } }, before)
-  map.addLayer({ id: line, type: 'line', source: src, paint: { 'line-color': expr(['coalesce', ['get', '_color'], st.strokeColor ?? st.lineColor ?? '#3b82f6']), 'line-width': st.strokeWidth ?? st.lineWidth ?? 1.5 } }, before)
+  // Polygon-only guard: without it MapLibre auto-closes LineStrings (arc + chord)
+  // and fills the enclosed wedge — the translucent shadow under flight arcs.
+  // Mirrors the Point guard on the circle sublayer below.
+  map.addLayer({
+    id: fill, type: 'fill', source: src,
+    filter: ['==', ['geometry-type'], 'Polygon'] as maplibregl.FilterSpecification,
+    paint: { 'fill-color': st.fillColor ?? '#3b82f6', 'fill-opacity': st.fillOpacity ?? 0.15 },
+  }, before)
+  map.addLayer({
+    id: line, type: 'line', source: src,
+    // Butt caps on animated lines: round caps turn the sequence's zero-length
+    // dashes into blinking dots. Non-animated lines keep round for smooth bends.
+    layout: { 'line-cap': st.animated ? 'butt' : 'round', 'line-join': 'round' },
+    paint: {
+      'line-color': expr(['coalesce', ['get', '_color'], st.strokeColor ?? st.lineColor ?? '#3b82f6']),
+      'line-width': st.strokeWidth ?? st.lineWidth ?? 1.5,
+      ...(st.animated ? { 'line-dasharray': [0, 4, 3] as unknown as Expr } : {}),
+    },
+  }, before)
+  if (st.animated) { animatedLineLayers.set(line, map); ensureDashLoop() }
   map.addLayer({
     id: circle, type: 'circle', source: src,
     // Point geometries only — without this guard MapLibre draws a circle at
@@ -420,6 +479,24 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
       'icon-ignore-placement': true,
     },
   }, before)
+  // Text labels (e.g. flight price/date). Needs the style's glyphs URL.
+  map.addLayer({
+    id: label, type: 'symbol', source: src,
+    filter: ['all', ['==', ['geometry-type'], 'Point'], ['has', '_label']] as maplibregl.FilterSpecification,
+    layout: {
+      'text-field': expr(['get', '_label']),
+      'text-font': ['Noto Sans Regular'],
+      'text-size': 12,
+      'text-offset': [0, 0.6],
+      'text-anchor': 'top',
+      'text-allow-overlap': false,
+    },
+    paint: {
+      'text-color': expr(['coalesce', ['get', '_color'], '#a5f3fc']),
+      'text-halo-color': '#04141a',
+      'text-halo-width': 1.8,
+    },
+  }, before)
 
   const onClick = (e: maplibregl.MapLayerMouseEvent) => {
     const f = e.features?.[0]
@@ -431,7 +508,7 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
       .setHTML(html)
       .addTo(map)
   }
-  for (const id of [fill, line, circle, symbol]) {
+  for (const id of [fill, line, circle, symbol, label]) {
     map.on('click', id, onClick)
     map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })

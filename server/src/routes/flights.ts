@@ -9,12 +9,15 @@
 // DELETE /flights/watchlists/:id             — remove
 // POST /flights/watchlists/:id/run           — poll immediately (returns updated state)
 // POST /flights/credentials                  — set/rotate SerpApi key
+// POST /flights/map                          — render legs as an animated arc map layer
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AuthStore } from '../auth-store.js'
 import type { SerpApiClient, ExploreQuery, SearchQuery, RegionKey, TripDuration } from '../flights/serpapi.js'
 import type { WatchlistStore, CreateWatchlistInput } from '../flights/store.js'
 import type { FlightSync } from '../flights/sync.js'
+import type { MapLayerStore } from '../map-layers/store.js'
+import { legsToGeoJSON, type FlightLeg } from '../flights/arcs.js'
 
 export function handleFlightRoutes(
   req: IncomingMessage,
@@ -26,10 +29,12 @@ export function handleFlightRoutes(
     serpApi: SerpApiClient
     watchlists: WatchlistStore
     sync: FlightSync
+    mapLayers: MapLayerStore
+    onLayersChange: () => void
     readBody: (req: IncomingMessage) => Promise<string>
   },
 ): boolean {
-  const { authStore, serpApi, watchlists, sync, readBody } = deps
+  const { authStore, serpApi, watchlists, sync, mapLayers, onLayersChange, readBody } = deps
 
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -62,6 +67,49 @@ export function handleFlightRoutes(
       authStore.setSerpApiKey(body.apiKey.trim())
       json({ ok: true })
     })
+  }
+
+  // --------------------------------------------------------------------------
+  // Map layer — render a set of legs as animated great-circle arcs.
+  // Reuses the agent map-layers transport (persistence + sync + toggle).
+  // --------------------------------------------------------------------------
+
+  if (path === '/flights/map' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const body = JSON.parse(await readBody(req) || '{}') as {
+        name?: string
+        legs?: FlightLeg[]
+        color?: string
+        fit?: boolean
+      }
+      if (!Array.isArray(body.legs) || body.legs.length === 0) {
+        return error(400, 'legs[] required')
+      }
+      const name = (body.name || 'trip').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'trip'
+      const { geojson, skipped } = legsToGeoJSON(body.legs, body.color || '#22d3ee')
+      const slug = `flights/${name}`
+      mapLayers.upsert(slug, geojson, {
+        style: {
+          animated: true,
+          lineColor: body.color || '#22d3ee',
+          lineWidth: 2,
+          color: body.color || '#22d3ee',
+          size: 3,
+          popup: ['route', 'price', 'date', 'flight'],
+        },
+        fit: body.fit ?? true,
+        updatedBy: 'flights',
+      })
+      onLayersChange()
+      json({ slug, skipped })
+    })
+  }
+
+  if (path === '/flights/map' && req.method === 'DELETE') {
+    const removed = mapLayers.clear('flights')
+    onLayersChange()
+    json({ removed })
+    return true
   }
 
   // --------------------------------------------------------------------------
