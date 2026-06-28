@@ -86,6 +86,10 @@ class BleManager(private val app: Context) {
     fun addListener(l: Listener) { listeners.add(l) }
     fun removeListener(l: Listener) { listeners.remove(l) }
 
+    /** Pitch threshold (degrees) that triggers a head-up tilt → HUD. Sent to
+     *  both arms on connect; re-sendable at runtime via [setHeadUpAngle]. */
+    @Volatile private var headUpAngleDeg = 30
+
     // --- Threading ----------------------------------------------------------
 
     /** Single shared worker thread for all BLE ops (serialize everything). */
@@ -612,6 +616,16 @@ class BleManager(private val app: Context) {
             // Kick off a battery poll right away so the UI doesn't sit on
             // `battery: null` for the first 80s. Reply lands in handleNotification.
             enqueueOp(arm, WriteOp(G1Protocol.encodeBatteryQuery()))
+            // Register the app whitelist so 0x4B notification pushes actually
+            // render (firmware drops them for non-whitelisted app ids). Chunked
+            // 0x04; fire-and-forget per arm (idempotent — safe to resend on a
+            // reconnect of either side).
+            for (pkt in G1Protocol.encodeAppWhitelistChunks(G1Protocol.defaultWhitelistJson())) {
+                enqueueOp(arm, WriteOp(pkt))
+            }
+            // Configure the head-up tilt threshold so the HUD-on-tilt gesture
+            // fires reliably. Hub renders the HUD on the resulting 0xF5 0x02.
+            enqueueOp(arm, WriteOp(G1Protocol.encodeHeadUpAngle(headUpAngleDeg)))
             // Kick the heartbeat once both sides are up; cheap to call repeatedly.
             startHeartbeat()
             // Pump any queued writes that came in before CCCD finished.
@@ -672,6 +686,38 @@ class BleManager(private val app: Context) {
             stopHeartbeat()
             disconnectInternal(left)
             disconnectInternal(right)
+        }
+    }
+
+    /**
+     * Reconnect the saved L/R pair with no scan — the SPA's primary "Connect"
+     * action. Reuses the same auto-connect path fired on service start / BT
+     * re-enable. No-op if nothing is paired.
+     */
+    fun reconnect() {
+        worker.post { autoConnectFromPairStore() }
+    }
+
+    /**
+     * Re-send the app-whitelist (0x04) to both arms. Idempotent — used if the
+     * firmware ever drops the on-connect registration. Fire-and-forget.
+     */
+    fun sendAppWhitelist(json: String = G1Protocol.defaultWhitelistJson()) {
+        worker.post {
+            for (pkt in G1Protocol.encodeAppWhitelistChunks(json)) {
+                enqueueOp(left, WriteOp(pkt))
+                enqueueOp(right, WriteOp(pkt))
+            }
+        }
+    }
+
+    /** Update the head-up tilt threshold (degrees) and push it to both arms. */
+    fun setHeadUpAngle(deg: Int) {
+        headUpAngleDeg = deg.coerceIn(0, 60)
+        worker.post {
+            val pkt = G1Protocol.encodeHeadUpAngle(headUpAngleDeg)
+            enqueueOp(left, WriteOp(pkt))
+            enqueueOp(right, WriteOp(pkt))
         }
     }
 

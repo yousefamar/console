@@ -17,10 +17,8 @@ declare global {
       glassesDisconnect?: () => void
       /**
        * Reconnect to the already-saved L/R pair WITHOUT a scan — the BLE
-       * equivalent of the pen's "Connect" button. Wraps the APK's existing
-       * `BleManager.autoConnectFromPairStore()`. Not yet exposed by the
-       * native bridge (see `reconnect()` below) — present here so the SPA
-       * compiles and lights up the moment the small RPC is added APK-side.
+       * equivalent of the pen's "Connect" button. Wraps the APK's
+       * `BleManager.reconnect()` → `autoConnectFromPairStore()`. APK v18+.
        */
       glassesReconnect?: () => void
       glassesSendText?: (text: string) => void
@@ -76,6 +74,8 @@ export interface GlassesSnapshot {
   caseBattery: number | null
   /** Whether the charging case is currently plugged in; 0xF5 subcmd 0x0E. */
   caseCharging: boolean | null
+  /** Phone battery % 0..100, injected by the APK PushService; null if unknown. */
+  phoneBattery?: number | null
   lastError: string | null
   lastUpdatedMs: number
 }
@@ -154,14 +154,7 @@ export function disconnect(): void {
 /**
  * Reconnect to the saved L/R pair with no scan — mirrors PenSettings' primary
  * "Connect" action. Both arms reconnect (the dual-arm reality is hidden behind
- * one call, as on pairing).
- *
- * TODO(apk): the native bridge doesn't expose `glassesReconnect` yet. The
- * underlying logic already exists as `BleManager.autoConnectFromPairStore()`
- * (private, only fired on service start / Bluetooth re-enable). Add a
- * `@JavascriptInterface fun glassesReconnect()` to `ConsoleBridge` in
- * MainActivity.kt that calls into it (via the same GlassesService → BleManager
- * path as `glassesDisconnect`). Until then this is a no-op in the field.
+ * one call, as on pairing). Native side: `BleManager.reconnect()` (APK v18+).
  */
 export function reconnect(): void {
   bridge()?.glassesReconnect?.()

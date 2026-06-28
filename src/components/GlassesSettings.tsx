@@ -1,7 +1,35 @@
 import { useEffect, useState } from 'react'
-import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase, Plug } from 'lucide-react'
+import { Glasses, Radar, LogOut, Send, Eye, EyeOff, NotebookPen, Hand, BatteryCharging, Battery, Briefcase, Plug, Bell, LayoutDashboard } from 'lucide-react'
 import { useGlassesStore } from '@/glasses/store'
+import { hubFetch } from '@/hub'
 import { showConfirm } from '@/dialog'
+
+type GlassesChannel = 'mail' | 'chat' | 'calendar' | 'agent' | 'money' | 'generic'
+interface GlassesConfigState {
+  notifyEnabled: boolean
+  channels: Record<GlassesChannel, boolean>
+  hudEnabled: boolean
+  headUpAngleDeg: number
+}
+const NOTIFY_CHANNELS: { key: GlassesChannel; label: string }[] = [
+  { key: 'mail', label: 'Mail' },
+  { key: 'chat', label: 'Chat' },
+  { key: 'calendar', label: 'Calendar' },
+  { key: 'agent', label: 'Agents' },
+  { key: 'money', label: 'Money' },
+]
+
+/** Small pill toggle matching the mirror toggle's styling. */
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative w-7 h-4 rounded-full transition-colors duration-fast flex-shrink-0 ${on ? 'bg-text-secondary' : 'bg-surface-2'}`}
+    >
+      <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-surface-0 transition-transform duration-fast ${on ? 'translate-x-3' : ''}`} />
+    </button>
+  )
+}
 import {
   sendText,
   clear as bridgeClear,
@@ -33,15 +61,33 @@ export function GlassesSettings() {
 
   const [testOpen, setTestOpen] = useState(false)
   const [testText, setTestText] = useState('Hello from Console')
+  const [testNotifyState, setTestNotifyState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [eventsOpen, setEventsOpen] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
   const [events, setEvents] = useState<readonly RawG1Event[]>(() => getRecentEvents())
   const mirrorEnabled = useGlassesStore((s) => s.mirrorEnabled)
   const setMirrorEnabled = useGlassesStore((s) => s.setMirrorEnabled)
 
+  // HUD + notification config (hub-side; fetched once, patched on toggle).
+  const [cfg, setCfg] = useState<GlassesConfigState | null>(null)
+  const [channelsOpen, setChannelsOpen] = useState(false)
+
   // One-shot refresh on mount — snapshot might be stale if the JS bridge was
   // still booting when the store was first initialized.
   useEffect(() => { refresh() }, [refresh])
+
+  // Load the hub-side glasses config once on mount.
+  useEffect(() => {
+    hubFetch<GlassesConfigState>('/glasses/config').then(setCfg).catch(() => {})
+  }, [])
+
+  // Optimistically patch local state + persist to the hub.
+  const patchCfg = (patch: Partial<GlassesConfigState>) => {
+    setCfg((prev) => (prev ? { ...prev, ...patch, channels: { ...prev.channels, ...(patch.channels ?? {}) } } : prev))
+    hubFetch<GlassesConfigState>('/glasses/config', { method: 'POST', body: JSON.stringify(patch) })
+      .then(setCfg)
+      .catch(() => {})
+  }
 
   // Live-subscribe to the event ring buffer only while the panel is open —
   // avoids re-renders on touchbar activity when the user isn't looking.
@@ -201,13 +247,69 @@ export function GlassesSettings() {
             <NotebookPen size={13} className="text-text-tertiary flex-shrink-0" />
             <span className="text-sm text-text-secondary truncate">Mirror current tab</span>
           </div>
-          <button
-            onClick={() => setMirrorEnabled(!mirrorEnabled)}
-            className={`relative w-7 h-4 rounded-full transition-colors duration-fast flex-shrink-0 ${mirrorEnabled ? 'bg-text-secondary' : 'bg-surface-2'}`}
-          >
-            <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-surface-0 transition-transform duration-fast ${mirrorEnabled ? 'translate-x-3' : ''}`} />
-          </button>
+          <Toggle on={mirrorEnabled} onClick={() => setMirrorEnabled(!mirrorEnabled)} />
         </div>
+      )}
+
+      {/* Notifications → glasses. Hub-driven (fires even when Console is
+          backgrounded); native 0x4B firmware card. Per-source opt-out under
+          the expander. */}
+      {connected && cfg && (
+        <>
+          <div className="ml-[21px] flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Bell size={13} className="text-text-tertiary flex-shrink-0" />
+              <span className="text-sm text-text-secondary truncate">Notifications to glasses</span>
+            </div>
+            <Toggle on={cfg.notifyEnabled} onClick={() => patchCfg({ notifyEnabled: !cfg.notifyEnabled })} />
+          </div>
+          {cfg.notifyEnabled && (
+            <div className="ml-[34px]">
+              <button
+                onClick={() => setChannelsOpen((v) => !v)}
+                className="text-[11px] text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+              >
+                {channelsOpen ? 'Hide sources' : 'Sources…'}
+              </button>
+              {channelsOpen && (
+                <div className="mt-1 space-y-1">
+                  {NOTIFY_CHANNELS.map(({ key, label }) => (
+                    <div key={key} className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-text-secondary">{label}</span>
+                      <Toggle
+                        on={cfg.channels[key] ?? true}
+                        onClick={() => patchCfg({ channels: { ...cfg.channels, [key]: !(cfg.channels[key] ?? true) } })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Idle HUD on head-tilt. */}
+          <div className="ml-[21px] flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <LayoutDashboard size={13} className="text-text-tertiary flex-shrink-0" />
+              <span className="text-sm text-text-secondary truncate">HUD on head-tilt</span>
+            </div>
+            <Toggle on={cfg.hudEnabled} onClick={() => patchCfg({ hudEnabled: !cfg.hudEnabled })} />
+          </div>
+          {cfg.hudEnabled && (
+            <div className="ml-[34px] flex items-center gap-2">
+              <span className="text-[11px] text-text-tertiary whitespace-nowrap">Tilt angle {cfg.headUpAngleDeg}°</span>
+              <input
+                type="range"
+                min={10}
+                max={60}
+                step={5}
+                value={cfg.headUpAngleDeg}
+                onChange={(e) => patchCfg({ headUpAngleDeg: Number(e.target.value) })}
+                className="flex-1 accent-text-secondary"
+              />
+            </div>
+          )}
+        </>
       )}
 
       {/* Recent events — diagnostic panel, reveals raw 0xF5 subcmds so we can
@@ -259,26 +361,57 @@ export function GlassesSettings() {
             <span>{testOpen ? 'Hide' : 'Test display'}</span>
           </button>
           {testOpen && (
-            <div className="mt-1 flex items-center gap-1">
-              <input
-                value={testText}
-                onChange={(e) => setTestText(e.target.value)}
-                className="flex-1 min-w-0 bg-surface-2 border border-border rounded-sm px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-text-tertiary"
-                placeholder="Text to show on G1"
-              />
+            <div className="mt-1 space-y-1">
+              <div className="flex items-center gap-1">
+                <input
+                  value={testText}
+                  onChange={(e) => setTestText(e.target.value)}
+                  className="flex-1 min-w-0 bg-surface-2 border border-border rounded-sm px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-text-tertiary"
+                  placeholder="Text to show on G1"
+                />
+                <button
+                  onClick={() => sendText(testText)}
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary border border-border rounded-sm"
+                  title="Send to G1"
+                >
+                  <Send size={10} />
+                </button>
+                <button
+                  onClick={() => bridgeClear()}
+                  className="px-2 py-1 text-[11px] text-text-tertiary hover:text-text-secondary border border-border rounded-sm"
+                  title="Clear display"
+                >
+                  clr
+                </button>
+              </div>
+              {/* Fires a real push through the full pipeline (→ forwarder →
+                  text card on the lenses), so it exercises exactly what an
+                  incoming mail/chat does. */}
               <button
-                onClick={() => sendText(testText)}
+                onClick={() => {
+                  setTestNotifyState('sending')
+                  hubFetch('/push/send', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      type: 'chat',
+                      title: 'Test notification',
+                      body: 'If you can read this on the lenses, notifications work.',
+                      senderName: 'Console',
+                      roomName: 'Test',
+                    }),
+                  })
+                    .then(() => setTestNotifyState('sent'))
+                    .catch(() => setTestNotifyState('error'))
+                }}
                 className="flex items-center gap-1 px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary border border-border rounded-sm"
-                title="Send to G1"
+                title="Fire a test notification through the full pipeline"
               >
-                <Send size={10} />
-              </button>
-              <button
-                onClick={() => bridgeClear()}
-                className="px-2 py-1 text-[11px] text-text-tertiary hover:text-text-secondary border border-border rounded-sm"
-                title="Clear display"
-              >
-                clr
+                <Bell size={10} />
+                <span>
+                  {testNotifyState === 'sending' ? 'Sending…'
+                    : testNotifyState === 'sent' ? 'Sent ✓'
+                    : testNotifyState === 'error' ? 'Failed' : 'Test notification'}
+                </span>
               </button>
             </div>
           )}

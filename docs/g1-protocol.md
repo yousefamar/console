@@ -190,6 +190,69 @@ chunking. Discovered after v9 shipped and "hello from the hub" acked-ok
 with `0xCB` but rendered nothing visible — it was painting line 1 of a
 5-line canvas.
 
+### Font / glyph support (empirically enumerated 2026-06-28)
+
+The firmware text font covers far more than ASCII, but it is **not** a full
+Unicode font — most symbol/emoji ranges fall back to blank (no tofu box;
+missing glyphs render as nothing). Enumerated on-device by paging labelled
+candidate glyphs through `0x4E` and eyeballing the lenses (`/tmp/g1chars.py`).
+**A missing glyph is invisible, so anything not on this list must be avoided
+or it silently corrupts layout.**
+
+**Renders (beyond printable ASCII 0x20–0x7E):**
+- Typography: `…` `—` `–` `•` `·` `«` `»` `‹` `›`
+- Currency: `€` `£` `¢` `¥`
+- Marks: `©` `®` `™` `§` `¶`
+- Fractions: `¼` `½` `¾`
+- Math: `°` `±` `×` `÷` `−` `∞` `≈` `≠` `≤` `≥` `√` `∑` `∏` `′` `″` `‰` `№` `℃`
+- Punctuation: `¿`
+- Arrows: `←` `↑` `→` `↓` `↔` `↕`  (line arrows only)
+- Shapes: `■` `□` `▲` `△` `◆` `◇` `○` `●` `★` `☆`
+- Status: `✓` (U+2713) and `☐` (U+2610)
+- Box-drawing (**single line only**): `─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`
+
+**Does NOT render (silently blank — do not use):**
+- All block / shading elements `█ ▉ … ▏ ░ ▒ ▓` (U+2580–259F) → **no native
+  bar/progress fill; fake bars with `■`/`□` or `[..]` instead**
+- Filled directional triangles `◀ ▶ ▼` — **asymmetric: `▲`/`△` render but
+  `▼` does NOT** (use `↓` or ASCII `v` for "down")
+- Double-line box-drawing `═ ║ ╔ ╗ ╚ ╝ ╬`
+- Cross/heavy dingbats `✗ ✘ ✔ ✖ ✅ ❌ ❤`, checked box `☑`
+- Weather/misc symbols `☀ ☁ ⚠ ⚙ ⌚ ⌛ ♥ ♦ ♠ ⚡ ⚑` (U+2600–26FF essentially all)
+- Small squares `▪ ▫`, half-shaded circles `◐ ◑`, big squares `⬛ ⬜`, `◦`, `∙`
+- Heavy/curved arrows `⇨ ⤴ ➤ ➙ ↺ ↵`
+- `µ` (U+00B5), `¡` (U+00A1), `℉` (U+2109), `♦` (U+2666)
+
+Practical dashboard kit: `■ □ ● ○` for status dots & faked bars, `★ ☆` for
+priority, `✓` for done, `← ↑ → ↓` for trends/direction, `° ℃` for temperature,
+`• ·` for separators, `…` (U+2026) to mark truncated text.
+
+### Text layout behaviour — clip vs wrap, width, alignment (2026-06-28)
+
+Verified on-device. These govern any 5×40-ish text layout:
+
+- **Clip vs wrap depends on payload shape.** A **single-line** payload that
+  overflows the display width is **clipped** (truncated, rest discarded). A
+  **multi-line** payload (any `\n`) **wraps** each overflowing line onto extra
+  physical rows instead. Since the display only shows ~5 physical rows and the
+  render is top-aligned, a wrapped line pushes everything below it off-screen.
+  → **Rule: a dashboard is always multi-line, so keep EVERY line under the
+  width or it wraps and destroys the layout.**
+- **There is no visible edge/margin** — the wearer can only perceive *wrapping*,
+  not where the right edge is. To measure width, send an overflowing multi-line
+  payload and count what lands on the wrapped row.
+- **Width reference: 41 × `—` (em-dash, U+2014) == exactly the full display
+  width.** Measured by sending 50 and removing the 9 that wrapped. This is the
+  canonical horizontal unit — use a 41-em-dash rule as an on-screen alignment
+  ruler while designing (then drop it).
+- **The font is PROPORTIONAL — never align columns with spaces.** A `1` is
+  narrower than a `9`; a space is very narrow and variable. Space-padding to
+  right-align / make columns produces chaotic, non-aligned output. Align by
+  measuring against the em-dash grid (or use inline separators `·` / `|` and
+  left-align), not by padding spaces.
+- `padTextToFiveLines()` prepends blank lines for <5-line payloads; combined
+  with wrapping this wastes rows. For a fixed dashboard, send exactly 5 lines.
+
 ## 7. BMP upload — `0x15` + `0x20` + `0x16`
 
 Image format: **1-bit BMP, 576×136**. Roughly ~9.8 KB on disk.
@@ -302,6 +365,14 @@ Chunked in 176-byte slices:
 ```
 
 Retries up to 6× per EvenDemoApp.
+
+**Load-bearing gotcha (verified on-device 2026-06-27):** the JSON MUST be the
+full `{"ncs_notification": {...}}` envelope with `msg_id` + `date`. A *flat*
+object (`{"app_identifier":…,"title":…}` with no wrapper) is still **acked**
+by the firmware (`4B C9 …` = valid chunk) but renders **nothing** — silent
+drop. The whitelist (`0x04`) being correct is necessary but not sufficient;
+both must be right. Console builds the envelope in `PushService.handleHubRpc`
+"notify" (APK v0.1.37+).
 
 ## 10. Audio — `0xF1` (inbound)
 
@@ -450,6 +521,14 @@ Required before notifications for arbitrary apps will be displayed — without
 a matching whitelist entry the firmware drops `0x4B` pushes. (Calls /
 calendar / msg / iOS-mail have dedicated first-class flags.)
 
+**Implemented in Console (v0.1.36).** `G1Protocol.encodeAppWhitelistChunks` +
+`BleManager.sendAppWhitelist()` register a single Console app id
+(`io.amar.console` / "Console") on connect, right after the `0xF4` init
+handshake (`onDescriptorWrite`). Every Console notification rides that one id;
+the human-readable source ("Mail" / "Chat" / …) goes in the `0x4B`
+`display_name`, so one whitelist entry covers all sources. Re-sendable at
+runtime via `BleManager.sendAppWhitelist()`.
+
 ### Dashboard position — `0x26`
 
 ```
@@ -472,6 +551,14 @@ Moves the dashboard viewport. Does *not* inject widget content.
 Configures the pitch threshold (in degrees) at which a right-arm head-up
 tilt triggers the dashboard. Per MentraOS `G1.java` `sendHeadUpAngleCommand`
 (lines 2603-2620). Applied per-arm with the usual L-then-R sequencing.
+
+**Used by Console's HUD (v0.1.36).** Sent on connect (default 30°) so the
+head-up tilt reliably fires a `0xF5 0x02` event. The hub listens for that on
+the touch stream and renders the idle HUD (time / battery / next event /
+unread counts) via `0x4E` text; head-down `0x03` clears it. Runtime-adjustable
+via `BleManager.setHeadUpAngle()` (hub RPC `setHeadUpAngle` → the settings
+slider). The HUD never uses the un-RE'd `0x22` firmware dashboard — it renders
+its own text frame, so no widget-protocol gap blocks it.
 
 ### Dashboard content / widgets — `0x22` (not publicly RE'd)
 
