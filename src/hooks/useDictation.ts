@@ -41,6 +41,8 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
   const sttWsRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sawDeltaRef = useRef(false)
 
   const emit = useCallback((text: string) => {
@@ -50,11 +52,32 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
   }, [])
 
   const stop = useCallback(() => {
-    recognitionRef.current?.stop()
+    // Tear down robustly: each step is guarded so one failure can't skip the
+    // others — critically track.stop(), which is what frees the OS mic. And the
+    // capture nodes are disconnected explicitly: on Chromium/WebView a connected
+    // ScriptProcessor/MediaStreamSource keeps the mic device "live" (Android's
+    // green mic indicator stays on after you finish) until the graph is torn
+    // down — closing the AudioContext alone doesn't reliably release it.
+    try { recognitionRef.current?.stop() } catch { /* */ }
     recognitionRef.current = null
-    if (sttWsRef.current) { sttWsRef.current.close(); sttWsRef.current = null }
-    if (audioContextRef.current) { audioContextRef.current.close(); audioContextRef.current = null }
-    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach((t) => t.stop()); mediaStreamRef.current = null }
+    try { sttWsRef.current?.close() } catch { /* */ }
+    sttWsRef.current = null
+    if (processorRef.current) {
+      try { processorRef.current.onaudioprocess = null; processorRef.current.disconnect() } catch { /* */ }
+      processorRef.current = null
+    }
+    if (sourceRef.current) {
+      try { sourceRef.current.disconnect() } catch { /* */ }
+      sourceRef.current = null
+    }
+    if (mediaStreamRef.current) {
+      try { mediaStreamRef.current.getTracks().forEach((t) => t.stop()) } catch { /* */ }
+      mediaStreamRef.current = null
+    }
+    if (audioContextRef.current) {
+      try { void audioContextRef.current.close() } catch { /* */ }
+      audioContextRef.current = null
+    }
     sawDeltaRef.current = false
     setRecording(false)
     setInterim('')
@@ -97,6 +120,8 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
         if (audioCtx.state === 'suspended') void audioCtx.resume()
         const source = audioCtx.createMediaStreamSource(stream)
         const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+        sourceRef.current = source
+        processorRef.current = processor
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return
           const pcm = e.inputBuffer.getChannelData(0)
