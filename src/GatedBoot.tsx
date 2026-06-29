@@ -86,6 +86,9 @@ const LazyApp = lazy(async () => {
   const { wireMeetupSubscription } = await import('./meetup/subscribe')
   wireMeetupSubscription()
 
+  const { wireMeetupCalendarOverlay } = await import('./meetup/calendar-overlay')
+  wireMeetupCalendarOverlay()
+
   const { wireMapLayersSubscription } = await import('./map/layers-subscribe')
   wireMapLayersSubscription()
 
