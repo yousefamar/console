@@ -409,7 +409,7 @@ function addOverlayLayers(map: maplibregl.Map) {
     map.addLayer({
       id: 'meetup-selected', type: 'circle', source: 'meetup-pins',
       filter: ['==', ['get', 'id'], ''],
-      paint: { 'circle-radius': 14, 'circle-color': 'rgba(168,85,247,0.20)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+      paint: { 'circle-radius': 14, 'circle-color': 'rgba(245,158,11,0.25)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
     })
     map.addLayer({
       id: 'meetup-pins', type: 'symbol', source: 'meetup-pins',
