@@ -11,7 +11,8 @@
 // routing state — no per-thread session table.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import type { Session } from '../session.js'
 import { createSession, type AgentContext } from '../routes/agents.js'
 import { AL_SESSION_FILE, WORKSPACE_DIR } from './identity.js'
@@ -75,7 +76,29 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
         return s
       }
     }
-    console.log(`[al/session] recorded claudeSessionId ${existing.claudeSessionId} not in manifest`)
+    // Not live in the manifest — but Al's conversation is durable on disk, so
+    // RESUME it (silent, history preserved) rather than abandon it for a fresh
+    // spawn. Abandoning it is exactly how an empty "Online" Al once replaced the
+    // real conversation. The Claude CLI resumes from its own transcript dir
+    // (encoded cwd), independent of the hub manifest. Only fall through to
+    // adopt/fresh if that transcript is genuinely gone.
+    const encodedCwd = WORKSPACE_DIR.replace(/\//g, '-')
+    const transcript = join(homedir(), '.claude', 'projects', encodedCwd, `${existing.claudeSessionId}.jsonl`)
+    if (existsSync(transcript)) {
+      console.log(`[al/session] recorded Al ${existing.claudeSessionId.slice(0, 8)} not live — resuming from transcript (history preserved)`)
+      const session = createSession(ctx, {
+        prompt: '',
+        resume: existing.claudeSessionId,
+        silent: true,
+        cwd: WORKSPACE_DIR,
+        name: 'Al',
+        agentKey: 'al',
+      })
+      currentAlSession = session
+      saveAlSession({ version: 1, claudeSessionId: existing.claudeSessionId, hubSessionId: session.id, createdAt: existing.createdAt })
+      return session
+    }
+    console.log(`[al/session] recorded claudeSessionId ${existing.claudeSessionId} not live and no transcript on disk`)
   }
 
   // The recorded session isn't live (stale al-session.json after reloads/
