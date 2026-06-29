@@ -15,14 +15,16 @@ import type { CalendarEvent, CalendarInfo } from '@/calendar/types'
 import { useMapStore, type MeetupEvent } from '@/store/map'
 import { useCalendarStore } from '@/store/calendar'
 
-// #a855f7 = the purple of the map's meetup-selected ring, so map ↔ calendar match.
+// Amber #f59e0b: the one warm gap in Yousef's calendar palette (which is
+// otherwise blue/green/purple/terracotta) — maximally distinct. Matches the
+// map's meetup-selected ring, so map ↔ calendar read as the same source.
 export const MEETUP_CALENDAR_INFO: CalendarInfo = {
   id: 'meetup',
   accountEmail: 'meetup',
   apiAccountEmail: 'meetup',
   summary: 'Meetup',
-  backgroundColor: '#a855f7',
-  foregroundColor: '#ffffff',
+  backgroundColor: '#f59e0b',
+  foregroundColor: '#1a1a1a', // dark text reads better on amber than white
   selected: true,
   accessRole: 'reader',
   synthetic: true,
