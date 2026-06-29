@@ -1173,9 +1173,20 @@ class PushService : Service() {
         val senderAvatarMxc = json.optString("senderAvatarMxc").takeIf { it.isNotEmpty() }
         val roomAvatarMxc = json.optString("roomAvatarMxc").takeIf { it.isNotEmpty() }
 
-        val personBuilder = Person.Builder().setName(senderName).setKey(senderId)
+        // Render as a group only when we have a distinct room name (computed
+        // up here because the avatar fallback below depends on it).
+        val asGroup = !isDirect && !roomName.isNullOrEmpty() && roomName != senderName
         val senderAvatar = senderAvatarMxc?.let { loadMxcAvatar(it) }
-        if (senderAvatar != null) personBuilder.setIcon(IconCompat.createWithBitmap(senderAvatar))
+        val roomAvatar = roomAvatarMxc?.let { loadMxcAvatar(it) }
+        // For a DM the sender IS the room partner, so the DURABLE room avatar
+        // (resolved hub-side from the chat-rooms snapshot) is a reliable
+        // fallback when the volatile member cache has no sender avatar — which
+        // is exactly the state after a hub restart, when incremental sync
+        // carries no member state. Without it, DM notifications render
+        // avatar-less (the symptom: plain cards vs Beeper's rich per-sender ones).
+        val personBuilder = Person.Builder().setName(senderName).setKey(senderId)
+        val effectiveSenderAvatar = senderAvatar ?: (if (!asGroup) roomAvatar else null)
+        if (effectiveSenderAvatar != null) personBuilder.setIcon(IconCompat.createWithBitmap(effectiveSenderAvatar))
         val person = personBuilder.build()
 
         val room = roomStates.getOrPut(roomId) { RoomState() }
@@ -1190,10 +1201,8 @@ class PushService : Service() {
 
         // Self-person for MessagingStyle (left blank — we're "You" implicitly).
         val me = Person.Builder().setName("You").setKey("me").build()
-        // Render as a group only when we actually have a distinct room name.
         // DMs + un-named rooms → title=senderName (from Person), body=message
         // Named groups → title=roomName, body="Sender: message" (Beeper-style)
-        val asGroup = !isDirect && !roomName.isNullOrEmpty() && roomName != senderName
         val style = NotificationCompat.MessagingStyle(me)
             .setConversationTitle(if (asGroup) roomName else null)
             .setGroupConversation(asGroup)
@@ -1228,10 +1237,10 @@ class PushService : Service() {
                 if (shouldVibrate) NotificationCompat.PRIORITY_HIGH
                 else NotificationCompat.PRIORITY_LOW
             )
-        // Large icon = the GROUP avatar for named rooms (Beeper-style: group
-        // logo on the card, per-sender avatars inline in the stack), else the
-        // sender's avatar for DMs.
-        val largeIcon = (if (asGroup) roomAvatarMxc?.let { loadMxcAvatar(it) } else null) ?: senderAvatar
+        // Large icon = the durable room avatar (group logo for named rooms,
+        // partner avatar for DMs — both resolved hub-side from the chat-rooms
+        // snapshot so they survive a restart), falling back to the sender's.
+        val largeIcon = roomAvatar ?: senderAvatar
         if (largeIcon != null) builder.setLargeIcon(largeIcon)
 
         // ---- Actions: Reply (RemoteInput) + Mark as Read -----------------
