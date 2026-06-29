@@ -52,6 +52,13 @@ export function getAlSession(): Session | null {
   return currentAlSession
 }
 
+/** claudeSessionId recorded as the official Al (from al-session.json), or null.
+ *  The manifest-restore loop uses this to re-instantiate ONLY the official Al
+ *  and skip stale Al duplicates, so a second "Al" never appears on boot. */
+export function getRecordedAlSessionId(): string | null {
+  return loadAlSession()?.claudeSessionId ?? null
+}
+
 /**
  * Bootstrap the Al session. Idempotent: if Al already exists in
  * `ctx.sessions` (restored from manifest), we just record it; otherwise we
@@ -68,9 +75,26 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
         return s
       }
     }
-    console.log(`[al/session] recorded claudeSessionId ${existing.claudeSessionId} not in manifest — spawning fresh`)
+    console.log(`[al/session] recorded claudeSessionId ${existing.claudeSessionId} not in manifest`)
   }
 
+  // The recorded session isn't live (stale al-session.json after reloads/
+  // restarts). Before spawning a fresh Al — which would appear as a DUPLICATE
+  // alongside any Al the manifest already restored (the orphan-Al footgun) —
+  // adopt an existing Al session if one exists and re-point al-session.json to
+  // it. Only spawn fresh when there is genuinely no Al. With the manifest-
+  // restore dedup (index.ts), this guarantees exactly one Al per boot, with no
+  // session ever being killed.
+  for (const s of ctx.sessions.values()) {
+    if ((s.agentKey === 'al' || s.name === 'Al') && s.status !== 'ended' && s.claudeSessionId) {
+      currentAlSession = s
+      saveAlSession({ version: 1, claudeSessionId: s.claudeSessionId, hubSessionId: s.id, createdAt: Date.now() })
+      console.log(`[al/session] adopted existing Al ${s.id} (claude=${s.claudeSessionId.slice(0, 8)}) — re-pointed al-session.json`)
+      return s
+    }
+  }
+
+  console.log('[al/session] no existing Al — spawning fresh')
   const systemPrompt = await buildAlSystemPrompt()
   // Al is the org-chart root. Ensure his role node exists (idempotent — the
   // backfill usually already created it). Its charter is NEVER injected — Al
