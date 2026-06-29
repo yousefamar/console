@@ -11,6 +11,10 @@ import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } fro
 
 const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
 const DEFAULT_CAL_PREF = 'calendar.defaultId'
+// Overlay source ids we've already shown once. Lets a first-time registration
+// default to visible (even when the user has a curated visibleIds pref that
+// predates the overlay) while still respecting a later explicit toggle-off.
+const OVERLAY_SEEN_PREF = 'calendar.overlaySeen'
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -143,6 +147,11 @@ interface CalendarState {
   visibleCalendarIds: Set<string>
   defaultCalendarId: string | null
 
+  // Read-only overlay event sources (e.g. Meetup) keyed by source id. In-memory
+  // only — never persisted to Dexie, never network-fetched. Merged into `events`
+  // by loadEventsFromDb; their CalendarInfo is merged into `calendars`.
+  overlaySources: Record<string, { info: CalendarInfo; events: CalendarEvent[] }>
+
   // Actions
   loadAccounts: () => Promise<void>
   addAccount: (popup?: Window | null) => Promise<void>
@@ -158,6 +167,8 @@ interface CalendarState {
   selectEvent: (id: string | null) => void
   toggleCalendarVisibility: (calId: string) => void
   setDefaultCalendar: (calId: string | null) => void
+  registerOverlaySource: (id: string, info: CalendarInfo, events: CalendarEvent[]) => void
+  unregisterOverlaySource: (id: string) => void
 
   // CRUD
   createEvent: (calendarId: string, accountEmail: string, event: Partial<CalendarEvent>) => Promise<void>
@@ -198,6 +209,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   // Hydrated from hub prefs on boot (initPrefs() runs before App renders).
   visibleCalendarIds: new Set<string>(getPref<string[]>(VISIBLE_CAL_IDS_PREF, [])),
   defaultCalendarId: getPref<string | null>(DEFAULT_CAL_PREF, null),
+  overlaySources: {},
 
   // --- Accounts ---
 
@@ -295,7 +307,8 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         }
       }
 
-      // Persist to IDB
+      // Persist to IDB — only the real (network) calendars. Synthetic overlay
+      // infos are re-appended below but never written to Dexie.
       const dbItems: DbCalendarInfo[] = allCalendars.map((c) => ({
         id: c.id,
         accountEmail: c.accountEmail,
@@ -311,6 +324,11 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       await db.calendarList.clear()
       await db.calendarList.bulkPut(dbItems)
 
+      // Re-append any registered overlay infos so fetchCalendars' rebuild of
+      // `calendars` doesn't drop them (they live only in overlaySources).
+      const overlayInfos = Object.values(get().overlaySources).map((s) => s.info)
+      const withOverlays = [...allCalendars, ...overlayInfos]
+
       // Initialize visibility — use the hub-synced set if present, otherwise
       // keep whatever is in-memory, otherwise default to all calendars visible.
       // Only "default to all + persist" when prefs are confirmed loaded; if
@@ -322,18 +340,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       if (savedIds && Array.isArray(savedIds)) {
         newVisible = new Set(savedIds)
       } else if (visibleCalendarIds.size === 0 && isPrefsLoaded()) {
-        newVisible = new Set(allCalendars.map((c) => c.id))
+        newVisible = new Set(withOverlays.map((c) => c.id))
         setPref(VISIBLE_CAL_IDS_PREF, Array.from(newVisible))
       } else {
         newVisible = visibleCalendarIds
       }
 
-      set({ calendars: allCalendars, connected: true, visibleCalendarIds: newVisible })
+      set({ calendars: withOverlays, connected: true, visibleCalendarIds: newVisible })
     } catch (err) {
       console.error('Failed to fetch calendars:', err)
       const dbItems = await db.calendarList.toArray()
       if (dbItems.length > 0) {
-        set({ calendars: dbItems as CalendarInfo[], connected: false })
+        const overlayInfos = Object.values(get().overlaySources).map((s) => s.info)
+        set({ calendars: [...(dbItems as CalendarInfo[]), ...overlayInfos], connected: false })
       }
     }
   },
@@ -352,7 +371,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
     // Fetch ALL calendars, not just visible — visibility is a display filter only.
     // This ensures toggling a calendar visible instantly shows its events from IDB.
-    const visibleCals = calendars
+    // Skip synthetic overlay sources: they have no Google account, so a fetch
+    // would hit the hub with a bogus account and error.
+    const visibleCals = calendars.filter((c) => !c.synthetic)
 
     try {
       const results = await Promise.allSettled(
@@ -481,6 +502,39 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   setDefaultCalendar: (calId) => {
     set({ defaultCalendarId: calId })
     setPref(DEFAULT_CAL_PREF, calId)
+  },
+
+  // --- Overlay sources (read-only, in-memory, e.g. Meetup) ---
+
+  registerOverlaySource: (id, info, events) => {
+    set((s) => {
+      const overlaySources = { ...s.overlaySources, [id]: { info: { ...info, synthetic: true }, events } }
+      // Merge the synthetic info into `calendars` (dedupe by id) so colour
+      // lookup + the sidebar toggle work. fetchCalendars re-derives this too.
+      const calendars = [...s.calendars.filter((c) => c.id !== id), { ...info, synthetic: true }]
+      // First time we've ever seen this source → default it visible (the user's
+      // curated visibleIds pref predates the overlay, so its absence isn't an
+      // opt-out). On every subsequent register we respect the live set, so a
+      // later toggle-off sticks across reloads.
+      const seen = getPref<string[]>(OVERLAY_SEEN_PREF, [])
+      const next = new Set(s.visibleCalendarIds)
+      if (!seen.includes(id)) {
+        next.add(id)
+        setPref(OVERLAY_SEEN_PREF, [...seen, id])
+        if (isPrefsLoaded()) setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
+      }
+      return { overlaySources, calendars, visibleCalendarIds: next }
+    })
+    get().loadEventsFromDb()
+  },
+
+  unregisterOverlaySource: (id) => {
+    set((s) => {
+      const overlaySources = { ...s.overlaySources }
+      delete overlaySources[id]
+      return { overlaySources, calendars: s.calendars.filter((c) => c.id !== id) }
+    })
+    get().loadEventsFromDb()
   },
 
   // --- CRUD (optimistic: IDB first → enqueue → background sync) ---
@@ -734,6 +788,23 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
 
     merged.sort((a, b) => a.startTime.localeCompare(b.startTime))
-    set({ events: merged.map(fromDbEvent) })
+    const events: CalendarEvent[] = merged.map(fromDbEvent)
+
+    // Merge read-only overlay events (e.g. Meetup) — in-memory, never persisted,
+    // never touched by stale-range cleanup or Google sync. Filtered to the same
+    // range + visibility as the Dexie-backed events. Always timed (the source
+    // adapter guarantees start.dateTime/end.dateTime).
+    const { overlaySources } = get()
+    for (const { events: overlayEvents } of Object.values(overlaySources)) {
+      for (const ev of overlayEvents) {
+        if (!visibleCalendarIds.has(ev.calendarId)) continue
+        const start = ev.start.dateTime || ev.start.date
+        if (!start || start < startStr || start > endStr) continue
+        events.push(ev)
+      }
+    }
+    events.sort((a, b) => (a.start.dateTime || a.start.date || '').localeCompare(b.start.dateTime || b.start.date || ''))
+
+    set({ events })
   },
 }))

@@ -75,7 +75,7 @@ export function CalendarSidebar() {
           <div key={accountEmail}>
             <div className="flex items-center gap-1 px-1 mb-1">
               <span className="text-[10px] text-text-tertiary truncate flex-1">
-                {accountEmail}
+                {cals.every((c) => c.synthetic) ? 'Overlays' : accountEmail}
               </span>
             </div>
             {cals.map((cal) => {

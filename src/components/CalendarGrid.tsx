@@ -164,6 +164,14 @@ export function CalendarGrid() {
     return map
   }, [calendars])
 
+  // Only owner/writer calendars can be dragged/resized. Reader cals (Holidays,
+  // subscribed ICS, synthetic overlays like Meetup) are display-only.
+  const writableCalIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const c of calendars) if (c.accessRole === 'owner' || c.accessRole === 'writer') s.add(c.id)
+    return s
+  }, [calendars])
+
   const days = useMemo(() => {
     if (view === 'day') return [currentDate]
     const start = weekStart(currentDate)
@@ -319,6 +327,7 @@ export function CalendarGrid() {
   // --- Drag-to-move: mousedown on event ---
   const handleEventMouseDown = useCallback((e: React.MouseEvent, ev: PositionedEvent) => {
     if (e.button !== 0) return
+    if (!writableCalIds.has(ev.calendarId)) return  // reader/overlay cals: click-to-open only
     e.stopPropagation()
     didDragRef.current = false
     const col = colRefs.current[ev.column]
@@ -332,11 +341,12 @@ export function CalendarGrid() {
       offsetY: y - ev.top,
     })
     e.preventDefault()
-  }, [])
+  }, [writableCalIds])
 
   // --- Drag-to-resize: mousedown on bottom edge ---
   const handleResizeMouseDown = useCallback((e: React.MouseEvent, ev: PositionedEvent) => {
     if (e.button !== 0) return
+    if (!writableCalIds.has(ev.calendarId)) return  // reader/overlay cals: not resizable
     e.stopPropagation()
     const col = colRefs.current[ev.column]
     if (!col) return
@@ -348,7 +358,7 @@ export function CalendarGrid() {
       eventId: ev.id, eventOrigTop: ev.top, eventOrigHeight: ev.height,
     })
     e.preventDefault()
-  }, [])
+  }, [writableCalIds])
 
   // --- Global mousemove/mouseup for drag ---
   useEffect(() => {
@@ -602,6 +612,7 @@ export function CalendarGrid() {
                   const muted = muteColor(ev.color)
                   const isDragging = drag && (drag.mode === 'move' || drag.mode === 'resize') && drag.eventId === ev.id
                   const unaccepted = !ev.accepted
+                  const isWritable = writableCalIds.has(ev.calendarId)
 
                   const hasMultipleColors = ev.colors.length > 1
                   const stripeWidth = 3 // px per stripe
@@ -612,7 +623,7 @@ export function CalendarGrid() {
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
                       onClick={(e) => { e.stopPropagation(); if (!drag && !didDragRef.current) selectEvent(ev.id); didDragRef.current = false }}
-                      className={`absolute z-10 rounded-sm overflow-hidden text-left cursor-grab ${
+                      className={`absolute z-10 rounded-sm overflow-hidden text-left ${isWritable ? 'cursor-grab' : 'cursor-pointer'} ${
                         unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
                       } ${
                         selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'
@@ -654,11 +665,13 @@ export function CalendarGrid() {
                           </div>
                         )}
                       </div>
-                      {/* Resize handle */}
-                      <div
-                        onMouseDown={(e) => handleResizeMouseDown(e, ev)}
-                        className="absolute bottom-0 left-0 right-0 h-2 cursor-s-resize hover:bg-white/10"
-                      />
+                      {/* Resize handle — writable cals only */}
+                      {isWritable && (
+                        <div
+                          onMouseDown={(e) => handleResizeMouseDown(e, ev)}
+                          className="absolute bottom-0 left-0 right-0 h-2 cursor-s-resize hover:bg-white/10"
+                        />
+                      )}
                     </div>
                   )
                 })}

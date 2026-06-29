@@ -14,6 +14,7 @@ export interface CalendarInfo {
   defaultReminders?: Array<{ method: string; minutes: number }>
   accountEmail: string          // which account section to display under
   apiAccountEmail: string       // which account's token to use for API calls (may differ for subscribed calendars)
+  synthetic?: boolean           // overlay source (e.g. Meetup); never network-fetched, never persisted to Dexie
 }
 
 export interface CalendarEventTime {
