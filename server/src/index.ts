@@ -74,7 +74,7 @@ import { handleGlassesRoutes } from './routes/glasses.js'
 import { PenHub } from './pen-hub.js'
 import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes } from './routes/al.js'
-import { ensureAlSession, reloadAlSession, injectToAl, getAlSession } from './al/al-session.js'
+import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
@@ -1552,12 +1552,28 @@ httpServer.listen(port, host, () => {
       log(`[agents] dir-folders: created ${folders} folder node(s) from directory buckets`)
     }
 
+    // Re-instantiate only ONE Al — the official one per al-session.json (or the
+    // first if none recorded). Stale Al entries (left by prior reloads/restarts)
+    // are skipped so a second "Al" never appears on boot; the saveManifest()
+    // after this loop then prunes them from the file. ensureAlSession (below)
+    // adopts the restored Al or spawns fresh — exactly one Al either way, with
+    // nothing killed.
+    const officialAlId = getRecordedAlSessionId()
+    let alRestored = false
     for (const entry of manifest) {
       // User explicitly ended this session — stay dead. The saveManifest()
       // after the loop prunes it (it never enters the sessions map).
       if (entry.ended) {
         log(`  Skipped (ended by user): ${entry.name ?? entry.claudeSessionId}`)
         continue
+      }
+      if (entry.agentKey === 'al' || entry.name === 'Al') {
+        const isOfficial = officialAlId ? entry.claudeSessionId === officialAlId : !alRestored
+        if (!isOfficial) {
+          log(`  Skipped (stale Al duplicate): ${entry.claudeSessionId}`)
+          continue
+        }
+        alRestored = true
       }
       try {
         const session = createSession(agentCtx, {
