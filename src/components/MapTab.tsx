@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Monitor } from 'lucide-react'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type MeetupEvent } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
@@ -81,11 +81,11 @@ function pinsToFC(pins: MapCache[]): FeatureCollection {
 // meaning the way a geocache's does). Online events have no venue → no pin.
 const MEETUP_EMOJI = '📅'
 
-function eventsToFC(events: MeetupEvent[], hideOnline: boolean): FeatureCollection {
+function eventsToFC(events: MeetupEvent[]): FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: events
-      .filter((e) => e.lat != null && e.lon != null && (!hideOnline || !e.isOnline))
+      .filter((e) => e.lat != null && e.lon != null)
       .map((e) => ({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [e.lon as number, e.lat as number] },
@@ -132,8 +132,8 @@ export function MapTab() {
     refresh, loadHistory, selectCache, loadLayers,
     layers, layerData, layerVisible,
     events, selectedEventId, meetupStatus, fetchingMeetup,
-    meetupDays, meetupHideOnline,
-    selectEvent, setMeetupDays, setMeetupHideOnline,
+    meetupDays,
+    selectEvent, setMeetupDays,
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
@@ -169,7 +169,7 @@ export function MapTab() {
       readyRef.current = true
       const st = useMapStore.getState()
       pushSource(m, 'gc-pins', pinsToFC(st.pins))
-      pushSource(m, 'meetup-pins', eventsToFC(st.events, st.meetupHideOnline))
+      pushSource(m, 'meetup-pins', eventsToFC(st.events))
       pushSource(m, 'ot-track', trackToFC(st.track))
       pushSource(m, 'ot-current', currentToFC(st.current))
       reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
@@ -222,7 +222,7 @@ export function MapTab() {
 
   // push store slices → map sources
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'gc-pins', pinsToFC(pins)) }, [pins])
-  useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'meetup-pins', eventsToFC(events, meetupHideOnline)) }, [events, meetupHideOnline])
+  useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'meetup-pins', eventsToFC(events)) }, [events])
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-track', trackToFC(track)) }, [track])
   useEffect(() => {
     if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-current', currentToFC(current))
@@ -329,11 +329,6 @@ export function MapTab() {
             <option value={30}>30 days</option>
             <option value={90}>90 days</option>
           </select>
-          <button onClick={() => setMeetupHideOnline(!meetupHideOnline)}
-            title={meetupHideOnline ? 'Online events hidden — click to show' : 'Showing online events — click to hide'}
-            className={`flex items-center px-1.5 py-1 border-l border-border hover:bg-surface-2 ${meetupHideOnline ? 'text-text-tertiary' : 'text-blue-400'}`}>
-            <Monitor size={13} />
-          </button>
           <button onClick={() => mapController.fetchMeetupHere?.()} disabled={fetchingMeetup}
             title={`Fetch Meetup events in view · ${meetupBudget?.remaining ?? '?'} requests left today`}
             className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
@@ -410,7 +405,7 @@ function addOverlayLayers(map: maplibregl.Map) {
     })
   }
   if (!map.getSource('meetup-pins')) {
-    map.addSource('meetup-pins', { type: 'geojson', data: eventsToFC([], false) })
+    map.addSource('meetup-pins', { type: 'geojson', data: eventsToFC([]) })
     map.addLayer({
       id: 'meetup-selected', type: 'circle', source: 'meetup-pins',
       filter: ['==', ['get', 'id'], ''],

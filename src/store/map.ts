@@ -172,7 +172,6 @@ interface MapState {
   fetchingMeetup: boolean
   meetupQuery: string
   meetupDays: number // 0 = upcoming (no end bound); else next N days
-  meetupHideOnline: boolean
 
   // actions
   refresh: () => Promise<void>
@@ -191,7 +190,6 @@ interface MapState {
   selectAdjacentEvent: (dir: 1 | -1) => void
   setMeetupQuery: (q: string) => void
   setMeetupDays: (d: number) => void
-  setMeetupHideOnline: (v: boolean) => void
 
   // agent-authored layers
   layers: MapLayerMeta[]
@@ -227,7 +225,6 @@ export const useMapStore = create<MapState>((set, get) => ({
   fetchingMeetup: false,
   meetupQuery: '',
   meetupDays: 0,
-  meetupHideOnline: true,
 
   refresh: async () => {
     try {
@@ -397,9 +394,9 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   selectAdjacentEvent: (dir) => {
-    const { events, selectedEventId, meetupHideOnline } = get()
+    const { events, selectedEventId } = get()
     const onMap = events
-      .filter((e) => e.lat != null && e.lon != null && (!meetupHideOnline || !e.isOnline))
+      .filter((e) => e.lat != null && e.lon != null)
       .sort((a, b) => a.dateTime.localeCompare(b.dateTime))
     if (onMap.length === 0) return
     const idx = onMap.findIndex((e) => e.id === selectedEventId)
@@ -409,7 +406,6 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   setMeetupQuery: (q) => set({ meetupQuery: q }),
   setMeetupDays: (d) => set({ meetupDays: d }),
-  setMeetupHideOnline: (v) => set({ meetupHideOnline: v }),
 
   layers: [],
   layerData: {},
