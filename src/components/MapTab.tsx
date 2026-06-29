@@ -132,8 +132,8 @@ export function MapTab() {
     refresh, loadHistory, selectCache, loadLayers,
     layers, layerData, layerVisible,
     events, selectedEventId, meetupStatus, fetchingMeetup,
-    meetupQuery, meetupDays, meetupHideOnline,
-    selectEvent, setMeetupQuery, setMeetupDays, setMeetupHideOnline,
+    meetupDays, meetupHideOnline,
+    selectEvent, setMeetupDays, setMeetupHideOnline,
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
@@ -268,7 +268,7 @@ export function MapTab() {
         {/* time range */}
         <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border pl-2 pr-1 py-1 backdrop-blur">
           {loadingHistory ? <Loader2 size={12} className="animate-spin text-text-tertiary" /> : <Clock size={12} className="text-text-tertiary" />}
-          <select value={rangeSel} onChange={(e) => onRangeChange(e.target.value)} className="bg-transparent outline-none cursor-pointer">
+          <select value={rangeSel} onChange={(e) => onRangeChange(e.target.value)} className="bg-transparent outline-none cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
             <option value="1">Last 24h</option>
             <option value="2">Last 48h</option>
             <option value="7">Last 7 days</option>
@@ -285,7 +285,7 @@ export function MapTab() {
             </>
           )}
           {devices.length > 1 && (
-            <select value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)} className="bg-transparent outline-none border-l border-border pl-1">
+            <select value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)} className="bg-transparent outline-none border-l border-border pl-1 [&>option]:bg-surface-0 [&>option]:text-text-primary">
               {devices.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           )}
@@ -319,19 +319,11 @@ export function MapTab() {
           )}
         </div>
 
-        {/* meetup: search + date window + online toggle + fetch */}
+        {/* meetup: date window + online toggle + fetch (wildcard search by default) */}
         <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
-          <span className="pl-2 pr-1 text-text-tertiary"><Calendar size={13} /></span>
-          <input
-            value={meetupQuery}
-            onChange={(e) => setMeetupQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') mapController.fetchMeetupHere?.() }}
-            placeholder="Meetup…"
-            title="Keyword (blank = all events near here)"
-            className="bg-transparent outline-none w-24 py-1"
-          />
+          <span className="pl-2 pr-1 text-text-tertiary" title="Meetup events near here"><Calendar size={13} /></span>
           <select value={meetupDays} onChange={(e) => setMeetupDays(Number(e.target.value))}
-            title="Time window" className="bg-transparent outline-none border-l border-border px-1 cursor-pointer">
+            title="Time window" className="bg-transparent outline-none px-1 py-1 cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
             <option value={0}>Upcoming</option>
             <option value={7}>7 days</option>
             <option value={30}>30 days</option>
