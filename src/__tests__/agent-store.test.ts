@@ -216,6 +216,7 @@ describe('message handling', () => {
   it('handles text messages', async () => {
     const ws = await setupSession()
     ws.receiveMessage({ type: 'text', sessionId: 'sess_1', content: 'Hello world' })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     expect(msgs).toHaveLength(1)
@@ -225,6 +226,7 @@ describe('message handling', () => {
   it('handles thinking messages', async () => {
     const ws = await setupSession()
     ws.receiveMessage({ type: 'thinking', sessionId: 'sess_1', content: 'Let me think...' })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     expect(msgs).toHaveLength(1)
@@ -244,6 +246,7 @@ describe('message handling', () => {
       toolName: 'Read',
       input: { file_path: '/src/App.tsx' },
     })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     expect(msgs).toHaveLength(1)
@@ -259,6 +262,7 @@ describe('message handling', () => {
       content: 'file contents here',
       isError: false,
     })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     expect(msgs).toHaveLength(1)
@@ -271,6 +275,7 @@ describe('message handling', () => {
   it('handles error messages', async () => {
     const ws = await setupSession()
     ws.receiveMessage({ type: 'error', sessionId: 'sess_1', message: 'Something broke' })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     expect(msgs).toHaveLength(1)
@@ -288,6 +293,7 @@ describe('message handling', () => {
       duration: 15000,
       sessionIdClaude: 'claude_sess_1',
     })
+    await flush() // messages are RAF-batched in agent.ts
 
     const state = useAgentStore.getState()
     const session = state.sessions.find((s) => s.id === 'sess_1')
@@ -325,6 +331,7 @@ describe('message handling', () => {
     useAgentStore.setState({ pendingTextBySession: { sess_1: 'partial text' } })
 
     ws.receiveMessage({ type: 'text', sessionId: 'sess_1', content: 'Full message' })
+    await flush() // messages are RAF-batched in agent.ts
 
     const state = useAgentStore.getState()
     expect(state.pendingTextBySession['sess_1'] ?? '').toBe('')
@@ -457,6 +464,7 @@ describe('user actions', () => {
   it('sendMessage sends message and adds user prompt', async () => {
     const ws = await setupSession()
     useAgentStore.getState().sendMessage('Do something')
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = ws.sentMessages.map((m) => JSON.parse(m))
     const sendMsg = msgs.find((m: Record<string, unknown>) => m.type === 'send_message')
@@ -491,6 +499,7 @@ describe('toggleThinkingCollapsed', () => {
     useAgentStore.setState({ pendingSessionActivate: true })
     ws.receiveMessage({ type: 'session_created', sessionId: 'sess_1' })
     ws.receiveMessage({ type: 'thinking', sessionId: 'sess_1', content: 'hmm' })
+    await flush() // messages are RAF-batched in agent.ts
 
     const msgs = useAgentStore.getState().messagesBySession['sess_1']!
     const thinkingMsg = msgs[0]!
