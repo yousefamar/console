@@ -447,6 +447,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     // /clear — clear this session's chat history in the UI
     if (content.trim() === '/clear') {
+      dropBufferedMessages(sessionId) // a later flush must not resurrect rows
       const newPending = { ...get().pendingTextBySession }
       const newThinking = { ...get().pendingThinkingBySession }
       delete newPending[sessionId]
@@ -752,6 +753,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // Drop the in-memory view + any pending deltas, then re-pull the full
     // transcript from the hub (loadSessionHistory reads the complete JSONL from
     // disk). The session_history handler prepends onto the now-empty list.
+    dropBufferedMessages(sessionId) // a later flush must not resurrect rows
     set((s) => {
       const messagesBySession = { ...s.messagesBySession }; delete messagesBySession[sessionId]
       const pendingTextBySession = { ...s.pendingTextBySession }; delete pendingTextBySession[sessionId]
@@ -1105,6 +1107,10 @@ function handleHubMessage(msg: Record<string, unknown>) {
           if (newPendingText[oldId]) { newPendingText[newId] = newPendingText[oldId]; delete newPendingText[oldId] }
           if (newPendingThinking[oldId]) { newPendingThinking[newId] = newPendingThinking[oldId]; delete newPendingThinking[oldId] }
           if (remappedActiveId === oldId) remappedActiveId = newId
+          // Not-yet-flushed appends must follow the rename too, or the next
+          // rAF flush would write them under the dead pre-restart id.
+          const buffered = msgBuffer.get(oldId)
+          if (buffered) { msgBuffer.set(newId, [...(msgBuffer.get(newId) ?? []), ...buffered]); msgBuffer.delete(oldId) }
         }
       }
 
@@ -1584,23 +1590,53 @@ function updateSession(sessionId: string, updates: Partial<SessionInfo>) {
   }))
 }
 
+// Message batching — the hub replays ~REPLAY_LIMIT messages PER SESSION on
+// every WS (re)connect (≈1,400 messages with a 48-session fleet). One setState
+// per message = one full-store clone + notify of every Zustand subscriber per
+// message; that burst lands exactly when the phone foregrounds (the sync
+// watchdog reconnects) and visibly stalls typing on mobile. Buffer appends in a
+// plain Map and flush once per animation frame — same pattern as the
+// text-delta buffer below. Order within a session is preserved (per-session
+// FIFO array), and callers never read messagesBySession synchronously after
+// addMessage (verified), so a ≤1-frame flush delay is invisible.
+const msgBuffer = new Map<string, AgentMessage[]>()
+let msgRafHandle: number | null = null
+
+/** Discard not-yet-flushed appends for a session — used by the /clear and
+ *  reload-history paths, where a later flush would resurrect pre-clear rows. */
+function dropBufferedMessages(sessionId: string) {
+  msgBuffer.delete(sessionId)
+}
+
 function addMessage(sessionId: string, block: AgentMessage['block']) {
+  const arr = msgBuffer.get(sessionId)
+  const msg: AgentMessage = { id: nextId(), timestamp: Date.now(), block }
+  if (arr) arr.push(msg)
+  else msgBuffer.set(sessionId, [msg])
+  if (msgRafHandle === null) msgRafHandle = requestAnimationFrame(drainMessageBuffer)
+}
+
+function drainMessageBuffer() {
+  msgRafHandle = null
+  if (msgBuffer.size === 0) return
+  const entries = Array.from(msgBuffer.entries())
+  msgBuffer.clear()
   useAgentStore.setState((s) => {
-    const messages = s.messagesBySession[sessionId] ?? []
-    const newMsg: AgentMessage = { id: nextId(), timestamp: Date.now(), block }
-    const appended = [...messages, newMsg]
-    // Cap the in-memory window when the user is tailing — older entries stay on the hub.
-    const tailing = s.isTailingBySession[sessionId] !== false // default to true if unset
-    if (tailing && appended.length > MAX_VISIBLE_MESSAGES) {
-      const trimmed = appended.slice(appended.length - MAX_VISIBLE_MESSAGES)
-      return {
-        messagesBySession: { ...s.messagesBySession, [sessionId]: trimmed },
-        hasOlderBySession: { ...s.hasOlderBySession, [sessionId]: true },
+    const messagesBySession = { ...s.messagesBySession }
+    let hasOlder: Record<string, boolean> | null = null
+    for (const [sessionId, msgs] of entries) {
+      const appended = [...(messagesBySession[sessionId] ?? []), ...msgs]
+      // Cap the in-memory window when the user is tailing — older entries stay on the hub.
+      const tailing = s.isTailingBySession[sessionId] !== false // default to true if unset
+      if (tailing && appended.length > MAX_VISIBLE_MESSAGES) {
+        messagesBySession[sessionId] = appended.slice(appended.length - MAX_VISIBLE_MESSAGES)
+        if (!hasOlder) hasOlder = { ...s.hasOlderBySession }
+        hasOlder[sessionId] = true
+      } else {
+        messagesBySession[sessionId] = appended
       }
     }
-    return {
-      messagesBySession: { ...s.messagesBySession, [sessionId]: appended },
-    }
+    return hasOlder ? { messagesBySession, hasOlderBySession: hasOlder } : { messagesBySession }
   })
 }
 
