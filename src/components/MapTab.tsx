@@ -475,6 +475,10 @@ function ensureDashLoop() {
     if (step !== dashStep) {
       dashStep = step
       for (const [id, m] of animatedLineLayers) {
+        // Skip while the Map pane is display:none (pre-rendered panes stay
+        // mounted) — each setPaintProperty forces a full maplibre re-render,
+        // which was burning main-thread time under every other pane.
+        if (m.getContainer().offsetParent === null) continue
         if (m.getLayer(id)) {
           try { m.setPaintProperty(id, 'line-dasharray', DASH_SEQUENCE[step]) } catch { /* style mid-reload */ }
         } else {

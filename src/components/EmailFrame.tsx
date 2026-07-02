@@ -39,10 +39,13 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     }
   }, [messageId])
 
-  // Load iframe content — always use the light URL (we toggle dark via DOM)
+  // Load iframe content — always use the light URL (we toggle dark via DOM).
+  // Re-runs on `visible` because the iframe only exists while visible (see
+  // render): the flip to true is what mounts a fresh, unloaded element.
   useEffect(() => {
     const iframe = iframeRef.current
     if (!iframe) return
+    loaded.current = false
 
     let fallbackUrl: string | null = null
 
@@ -89,7 +92,7 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
 
     iframe.addEventListener('load', handleLoad)
     return () => iframe.removeEventListener('load', handleLoad)
-  }, [messageId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messageId, visible]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Toggle dark mode via DOM injection — no iframe reload
   useEffect(() => {
@@ -110,7 +113,8 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
   }, [visible, measure])
 
   // Re-measure (and re-fit width) when iframe size changes — orientation,
-  // sidebar toggle, etc.
+  // sidebar toggle, etc. `visible` in deps: the iframe element is remounted on
+  // each show (placeholder while hidden), so the observer must re-attach.
   useEffect(() => {
     const iframe = iframeRef.current
     if (!iframe || typeof ResizeObserver === 'undefined') return
@@ -119,7 +123,18 @@ export const EmailFrame = memo(function EmailFrame({ messageId, html, visible }:
     })
     ro.observe(iframe)
     return () => ro.disconnect()
-  }, [measure])
+  }, [measure, visible])
+
+  // Hidden frames render a height-preserving placeholder instead of a live
+  // iframe. With the pre-render architecture the Mail pane (and every inbox
+  // thread inside it) stays MOUNTED while display:none — dozens of live email
+  // documents kept the compositor/style machinery busy enough to starve input
+  // events in other panes (measured: recurring ~500ms long tasks that vanished
+  // when the iframes were blanked). The cached height means no layout shift
+  // when the real iframe swaps back in on select.
+  if (!visible) {
+    return <div className="w-full" style={{ height: height > 0 ? `${height}px` : '80vh' }} />
+  }
 
   return (
     <iframe

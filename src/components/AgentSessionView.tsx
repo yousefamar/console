@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useAgentStore } from '@/store/agent'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useAgentStore, type AgentMessage } from '@/store/agent'
 import { AgentMessageBlock, renderMarkdownLite } from './AgentMessageBlock'
 import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
@@ -29,8 +29,15 @@ export function AgentSessionView() {
   const permissionMode = activeSession?.permissionMode ?? null
   const sessionContextWindow = activeSession?.contextWindow ?? 200_000
   const sessionContextUsed = activeSession?.contextUsed ?? 0
-  const pendingText = useAgentStore((s) => s.activeSessionId ? (s.pendingTextBySession[s.activeSessionId] ?? '') : '')
-  const pendingThinking = useAgentStore((s) => s.activeSessionId ? (s.pendingThinkingBySession[s.activeSessionId] ?? '') : '')
+  const rawPendingText = useAgentStore((s) => s.activeSessionId ? (s.pendingTextBySession[s.activeSessionId] ?? '') : '')
+  const rawPendingThinking = useAgentStore((s) => s.activeSessionId ? (s.pendingThinkingBySession[s.activeSessionId] ?? '') : '')
+  // Streaming deltas flush once per animation frame; re-rendering the growing
+  // tail (renderMarkdownLite over the whole accumulated text + reconciling the
+  // message list) at that rate saturates the main thread and starves input
+  // events. Deferring makes the tail render low-priority and interruptible —
+  // keystrokes preempt it instead of queueing behind it.
+  const pendingText = useDeferredValue(rawPendingText)
+  const pendingThinking = useDeferredValue(rawPendingThinking)
   const activeSubagents = useAgentStore((s) => s.activeSessionId ? (s.activeSubagentsBySession[s.activeSessionId] ?? null) : null)
   const subagentCount = activeSubagents?.size ?? 0
   const hasOlder = useAgentStore((s) => s.activeSessionId ? (s.hasOlderBySession[s.activeSessionId] ?? false) : false)
@@ -180,54 +187,10 @@ export function AgentSessionView() {
           </div>
         )}
 
-        {messages.map((msg, i) => {
-          // Skip standalone tool_result — it's rendered inside its tool_use block
-          if (msg.block.type === 'tool_result') return null
-          // Unread divider: show between last-read message and first new one
-          const prevMsg = i > 0 ? messages[i - 1] : undefined
-          const showUnreadDivider = lastReadTs > 0 &&
-            prevMsg && prevMsg.timestamp <= lastReadTs &&
-            msg.timestamp > lastReadTs &&
-            msg.block.type !== 'user_prompt'
-          // Pair tool_use with its following tool_result
-          const toolResult = msg.block.type === 'tool_use'
-            ? messages.slice(i + 1).find((m) => m.block.type === 'tool_result' && (m.block as { toolUseId: string }).toolUseId === (msg.block as { toolUseId: string }).toolUseId)
-            : undefined
-          return (
-            <div key={msg.id}>
-              {showUnreadDivider && (
-                <div data-unread-divider className="flex items-center gap-3 px-3 my-2">
-                  <div className="flex-1 border-t border-red-500/60" />
-                  <span className="text-[10px] font-medium text-red-400 uppercase tracking-wider">New</span>
-                  <div className="flex-1 border-t border-red-500/60" />
-                </div>
-              )}
-              <AgentMessageBlock message={msg} toolResult={toolResult} />
-            </div>
-          )
-        })}
+        <MessageList messages={messages} lastReadTs={lastReadTs} />
 
         {/* Live streaming deltas */}
-        {pendingThinking && (
-          <div className="px-3 py-1">
-            <div className="flex items-center gap-1 text-xs text-text-tertiary">
-              <Loader2 size={11} className="animate-spin" />
-              <span>Thinking...</span>
-            </div>
-            <div className="mt-1 ml-5 text-xs text-text-tertiary italic whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-              {pendingThinking}
-            </div>
-          </div>
-        )}
-
-        {pendingText && (
-          <div className="px-3 py-1.5">
-            <div className="text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed">
-              {renderMarkdownLite(pendingText)}
-              <span className="inline-block w-1.5 h-3.5 bg-text-tertiary ml-0.5 animate-pulse" />
-            </div>
-          </div>
-        )}
+        <StreamingTail pendingThinking={pendingThinking} pendingText={pendingText} />
         </div>
         </div>
         {showScrollToBottom && (
@@ -330,3 +293,87 @@ export function AgentSessionView() {
     </div>
   )
 }
+
+// Memoized: renderMarkdownLite over the full accumulated tail is the expensive
+// bit; the memo means it only re-runs when the DEFERRED value actually commits,
+// not on every urgent render of the parent.
+const StreamingTail = memo(function StreamingTail({ pendingThinking, pendingText }: {
+  pendingThinking: string
+  pendingText: string
+}) {
+  const rendered = useMemo(() => pendingText ? renderMarkdownLite(pendingText) : null, [pendingText])
+  return (
+    <>
+      {pendingThinking && (
+        <div className="px-3 py-1">
+          <div className="flex items-center gap-1 text-xs text-text-tertiary">
+            <Loader2 size={11} className="animate-spin" />
+            <span>Thinking...</span>
+          </div>
+          <div className="mt-1 ml-5 text-xs text-text-tertiary italic whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+            {pendingThinking}
+          </div>
+        </div>
+      )}
+
+      {pendingText && (
+        <div className="px-3 py-1.5">
+          <div className="text-sm text-text-primary whitespace-pre-wrap break-words leading-relaxed">
+            {rendered}
+            <span className="inline-block w-1.5 h-3.5 bg-text-tertiary ml-0.5 animate-pulse" />
+          </div>
+        </div>
+      )}
+    </>
+  )
+})
+
+// Memoized so the finalized message list doesn't re-reconcile on every
+// streaming-delta flush (pendingText changes once per animation frame while an
+// agent responds — only the tail below this list actually changes).
+const MessageList = memo(function MessageList({ messages, lastReadTs }: {
+  messages: AgentMessage[]
+  lastReadTs: number
+}) {
+  // Index tool_results by toolUseId once — the old per-tool_use
+  // `messages.slice(i + 1).find(...)` was O(n²) in list length and allocated a
+  // fresh array per tool block (300 msgs × 100 tool_uses added up).
+  const toolResultsById = useMemo(() => {
+    const map = new Map<string, AgentMessage>()
+    for (const m of messages) {
+      if (m.block.type === 'tool_result' && !map.has(m.block.toolUseId)) map.set(m.block.toolUseId, m)
+    }
+    return map
+  }, [messages])
+
+  return (
+    <>
+      {messages.map((msg, i) => {
+        // Skip standalone tool_result — it's rendered inside its tool_use block
+        if (msg.block.type === 'tool_result') return null
+        // Unread divider: show between last-read message and first new one
+        const prevMsg = i > 0 ? messages[i - 1] : undefined
+        const showUnreadDivider = lastReadTs > 0 &&
+          prevMsg && prevMsg.timestamp <= lastReadTs &&
+          msg.timestamp > lastReadTs &&
+          msg.block.type !== 'user_prompt'
+        // Pair tool_use with its following tool_result
+        const toolResult = msg.block.type === 'tool_use'
+          ? toolResultsById.get(msg.block.toolUseId)
+          : undefined
+        return (
+          <div key={msg.id}>
+            {showUnreadDivider && (
+              <div data-unread-divider className="flex items-center gap-3 px-3 my-2">
+                <div className="flex-1 border-t border-red-500/60" />
+                <span className="text-[10px] font-medium text-red-400 uppercase tracking-wider">New</span>
+                <div className="flex-1 border-t border-red-500/60" />
+              </div>
+            )}
+            <AgentMessageBlock message={msg} toolResult={toolResult} />
+          </div>
+        )
+      })}
+    </>
+  )
+})
