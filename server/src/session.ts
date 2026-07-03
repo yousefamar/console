@@ -570,6 +570,12 @@ export class Session extends EventEmitter {
   private handleClaudeMessage(msg: ClaudeStdoutMessage) {
     switch (msg.type) {
       case 'system': {
+        // Non-init lifecycle subtypes (status, task_*, compact_boundary) — the
+        // init-only bookkeeping below must NOT run for these.
+        if (msg.subtype !== 'init') {
+          this.handleSystemLifecycle(msg)
+          break
+        }
         this.claudeSessionId = msg.session_id
         // Subprocess started cleanly — clear model-failure bookkeeping so a
         // later (different) model death can still trip a fresh fallback.
@@ -623,10 +629,15 @@ export class Session extends EventEmitter {
 
       case 'user':
         this.handleUserMessage(msg.message.content)
+        this.handleToolUseResult(msg)
         break
 
       case 'result':
         this.handleResultMessage(msg)
+        break
+
+      case 'control_response':
+        this.handleControlResponse(msg)
         break
 
       case 'control_request': {
@@ -724,6 +735,18 @@ export class Session extends EventEmitter {
       this.totalTokens.cacheCreation = (this.totalTokens.cacheCreation ?? 0) + msg.usage.cache_creation_input_tokens
     }
 
+    // Per-model breakdown (modelUsage keys are model ids incl. Bedrock ARNs).
+    const modelUsage = msg.modelUsage
+      ? Object.entries(msg.modelUsage).map(([model, u]) => ({
+          model,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          cacheReadInputTokens: u.cacheReadInputTokens,
+          cacheCreationInputTokens: u.cacheCreationInputTokens,
+          costUSD: u.costUSD,
+        }))
+      : undefined
+
     this.emitHub({
       type: 'result',
       sessionId: this.id,
@@ -736,21 +759,50 @@ export class Session extends EventEmitter {
       },
       duration: msg.duration_ms,
       sessionIdClaude: msg.session_id,
+      ttftMs: msg.ttft_ms,
+      stopReason: msg.stop_reason,
+      numTurns: msg.num_turns,
+      modelUsage,
     })
 
-    // Emit context usage update — input_tokens is the current conversation size
-    // (prompt tokens for this turn), NOT cumulative. Add output to approximate total context used.
-    const used = msg.usage.input_tokens + msg.usage.output_tokens
+    // Rough context estimate for immediate UI feedback. input_tokens EXCLUDES
+    // cache reads, so after turn 1 this badly under-reports — the accurate
+    // number comes from the async get_context_usage control request below,
+    // which supersedes this within ~a second.
+    const used = msg.usage.input_tokens
+      + (msg.usage.cache_read_input_tokens ?? 0)
+      + (msg.usage.cache_creation_input_tokens ?? 0)
+      + msg.usage.output_tokens
     this.emitHub({
       type: 'context_update',
       sessionId: this.id,
       used,
       total: this.contextWindow,
     })
+
+    // Ask the CLI for the authoritative, categorized context usage (system
+    // prompt / tools / messages / free space). Response handled in
+    // handleControlResponse → a second, accurate context_update.
+    this.requestContextUsage()
   }
 
   private handleStreamEvent(msg: ClaudeStdoutMessage & { type: 'stream_event' }) {
     const event = msg.event
+    if (event.type === 'content_block_start' && event.content_block) {
+      // Remember which tool call each block index belongs to so the
+      // input_json_delta stream below can be attributed.
+      if (event.content_block.type === 'tool_use' && event.content_block.id && event.index !== undefined) {
+        this.streamingToolBlocks.set(event.index, {
+          toolUseId: event.content_block.id,
+          toolName: event.content_block.name ?? 'tool',
+        })
+      }
+      return
+    }
+    if (event.type === 'content_block_stop' && event.index !== undefined) {
+      this.streamingToolBlocks.delete(event.index)
+      return
+    }
     if (event.type === 'content_block_delta' && event.delta) {
       if (event.delta.type === 'text_delta' && event.delta.text) {
         this.emitHub({
@@ -764,8 +816,172 @@ export class Session extends EventEmitter {
           sessionId: this.id,
           content: event.delta.thinking,
         })
+      } else if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
+        // Tool arguments streaming in — forward so the UI can render an
+        // Edit/Write being typed live. Ephemeral (not logged/replayed).
+        const blk = event.index !== undefined ? this.streamingToolBlocks.get(event.index) : undefined
+        if (blk) {
+          this.emitHub({
+            type: 'tool_input_delta',
+            sessionId: this.id,
+            toolUseId: blk.toolUseId,
+            toolName: blk.toolName,
+            content: event.delta.partial_json,
+          })
+        }
       }
     }
+  }
+
+  // ---- rich-protocol handlers (task lifecycle, diffs, control responses) ----
+
+  /** Block index → tool identity for attributing input_json_delta streams. */
+  private streamingToolBlocks = new Map<number, { toolUseId: string; toolName: string }>()
+
+  /** Monotonic id for control requests we initiate (get_context_usage, set_model). */
+  private controlSeq = 0
+  /** In-flight control requests awaiting a control_response, by request_id. */
+  private pendingControl = new Map<string, { verb: string; resolve: (r: { ok: boolean; response?: Record<string, unknown>; error?: string }) => void; timer: ReturnType<typeof setTimeout> }>()
+
+  /** Non-init system lifecycle events: model-request status, background-task
+   *  (bash/subagent) lifecycle, compaction boundaries. */
+  private handleSystemLifecycle(msg: ClaudeStdoutMessage & { type: 'system' }) {
+    switch (msg.subtype) {
+      case 'status':
+        // 'requesting' = a model request just started — surface as a live
+        // status so the UI spinner is grounded in reality.
+        if (msg.status === 'requesting') {
+          this.emitHub({ type: 'status', sessionId: this.id, text: 'Waiting for model…' })
+        }
+        break
+      case 'task_started':
+        if (msg.task_id) {
+          this.emitHub({
+            type: 'bg_task',
+            sessionId: this.id,
+            taskId: msg.task_id,
+            toolUseId: msg.tool_use_id,
+            status: 'started',
+            description: msg.description,
+            taskType: msg.task_type,
+          })
+        }
+        break
+      case 'task_notification':
+        if (msg.task_id) {
+          const raw = (msg as unknown as { status?: string }).status
+          this.emitHub({
+            type: 'bg_task',
+            sessionId: this.id,
+            taskId: msg.task_id,
+            toolUseId: msg.tool_use_id,
+            status: raw === 'failed' ? 'failed' : 'completed',
+            summary: msg.summary,
+          })
+        }
+        break
+      // task_updated carries incremental patches (e.g. status/end_time) — the
+      // completion signal we care about arrives via task_notification, skip.
+      case 'compact_boundary':
+        this.emitHub({ type: 'status', sessionId: this.id, text: 'Context compacted' })
+        break
+    }
+  }
+
+  /** Mine the CLI's rich tool_use_result for Edit/Write structuredPatch — the
+   *  same ready-made unified diff the terminal renders. */
+  private handleToolUseResult(msg: ClaudeStdoutMessage & { type: 'user' }) {
+    const r = msg.tool_use_result
+    if (!r || !Array.isArray(r.structuredPatch) || r.structuredPatch.length === 0 || !r.filePath) return
+    // Pair the diff to its tool call: the same user message carries the
+    // tool_result block with the tool_use_id.
+    const toolResultBlock = msg.message.content.find((b) => b.type === 'tool_result') as { tool_use_id?: string } | undefined
+    if (!toolResultBlock?.tool_use_id) return
+    this.emitHub({
+      type: 'tool_diff',
+      sessionId: this.id,
+      toolUseId: toolResultBlock.tool_use_id,
+      filePath: r.filePath,
+      hunks: r.structuredPatch,
+    })
+  }
+
+  /** Send a control_request to the CLI and await its control_response. */
+  private sendControlRequest(verb: string, params: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<{ ok: boolean; response?: Record<string, unknown>; error?: string }> {
+    return new Promise((resolve) => {
+      if (!this.process || !this.processAlive || !this.stdinReady) {
+        resolve({ ok: false, error: 'process not available' })
+        return
+      }
+      const requestId = `hub_${++this.controlSeq}_${Date.now()}`
+      const timer = setTimeout(() => {
+        if (this.pendingControl.delete(requestId)) resolve({ ok: false, error: 'control request timeout' })
+      }, timeoutMs)
+      this.pendingControl.set(requestId, { verb, resolve, timer })
+      this.writeStdin({
+        type: 'control_request',
+        request_id: requestId,
+        request: { subtype: verb, ...params },
+      } as any)
+    })
+  }
+
+  private handleControlResponse(msg: ClaudeStdoutMessage & { type: 'control_response' }) {
+    const r = msg.response
+    const pending = this.pendingControl.get(r.request_id)
+    if (!pending) return // response to an approval or an unknown/expired request
+    this.pendingControl.delete(r.request_id)
+    clearTimeout(pending.timer)
+    pending.resolve(r.subtype === 'success'
+      ? { ok: true, response: r.response }
+      : { ok: false, error: r.error ?? 'control request failed' })
+  }
+
+  /** Fetch the CLI's authoritative categorized context usage and re-emit an
+   *  accurate context_update. Fire-and-forget; failures are silent (the rough
+   *  estimate from the result path stays). */
+  private requestContextUsage() {
+    void this.sendControlRequest('get_context_usage').then((res) => {
+      if (!res.ok || !res.response) return
+      const resp = res.response as { totalTokens?: number; maxTokens?: number; categories?: Array<{ name: string; tokens: number }> }
+      if (typeof resp.totalTokens !== 'number') return
+      if (typeof resp.maxTokens === 'number' && resp.maxTokens > 0) this.contextWindow = resp.maxTokens
+      this.emitHub({
+        type: 'context_update',
+        sessionId: this.id,
+        used: resp.totalTokens,
+        total: this.contextWindow,
+        breakdown: (resp.categories ?? [])
+          .filter((c) => c.name !== 'Free space' && c.tokens > 0)
+          .map((c) => ({ name: c.name, tokens: c.tokens })),
+      })
+    })
+  }
+
+  /** Switch the live subprocess's model in place via the CLI's set_model
+   *  control verb — no respawn, context fully preserved. Returns false when
+   *  the fast path isn't possible (process dead / not inited / timeout);
+   *  caller falls back to restartForModelChange(). */
+  async setModelLive(model: string): Promise<boolean> {
+    if (!this.process || !this.processAlive || !this.gotSystemInit || this.status === 'ended') return false
+    const res = await this.sendControlRequest('set_model', { model })
+    if (!res.ok) return false
+    this.spawnedModel = model
+    const { displayName, contextWindow } = parseModelString(model)
+    this.contextWindow = contextWindow
+    // Re-announce init-level metadata so clients update the model label.
+    // (SPA ignores the empty slashCommands and keeps its current context
+    // meter; the follow-up get_context_usage below re-syncs it accurately.)
+    this.emitHub({
+      type: 'session_init',
+      sessionId: this.id,
+      claudeSessionId: this.claudeSessionId ?? '',
+      model: displayName,
+      slashCommands: [],
+      contextWindow,
+    })
+    this.requestContextUsage()
+    return true
   }
 
   /** Log a message that should be replayed to late-joining clients.
@@ -830,8 +1046,10 @@ export class Session extends EventEmitter {
       // Directly-emitted text (e.g. synthetic slash-command output) bypasses the
       // delta buffer — scan it too.
       if (msg.type === 'text') { this.scanForAttention(msg.content); this.scanForHandoff(msg.content) }
-      // Log non-ephemeral messages (skip status, deltas — they're coalesced above)
-      if (msg.type !== 'status') {
+      // Log non-ephemeral messages (skip status + all delta streams — including
+      // tool_input_delta, which fires per-chunk while tool args stream in and
+      // would flood the rolling log)
+      if (msg.type !== 'status' && msg.type !== 'tool_input_delta') {
         this.logMessage(msg as LoggableHubMessage)
       }
     }

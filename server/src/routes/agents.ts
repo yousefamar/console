@@ -127,7 +127,15 @@ export interface AgentContext {
  *  once rather than one-failure-at-a-time. Resume-silent preserves history. */
 export function restartAllSessionsForModel(ctx: AgentContext) {
   for (const s of ctx.sessions.values()) {
-    if (s.status !== 'ended') s.restartForModelChange()
+    if (s.status === 'ended') continue
+    // Fast path: switch the live subprocess's model in place via the CLI's
+    // set_model control verb — no respawn, no context re-read, ~instant for
+    // the whole fleet. Falls back to the kill+respawn cycle when the process
+    // can't take it (dead, pre-init, running a turn that ignores it, timeout).
+    const target = ctx.modelConfig.getModel()
+    void s.setModelLive(target).then((ok) => {
+      if (!ok) s.restartForModelChange()
+    })
   }
 }
 

@@ -25,10 +25,38 @@ export interface AgentMessage {
     | { type: 'thinking'; content: string; collapsed: boolean }
     | { type: 'tool_use'; toolUseId: string; toolName: string; input: Record<string, unknown> }
     | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean }
+    /** Unified diff for an Edit/Write (from the CLI's structuredPatch) —
+     *  rendered terminal-style under the paired tool_use block. */
+    | { type: 'tool_diff'; toolUseId: string; filePath: string; hunks: DiffHunk[] }
+    /** Background bash / Task subagent lifecycle chip. */
+    | { type: 'bg_task'; taskId: string; status: 'started' | 'completed' | 'failed'; description?: string; taskType?: string; summary?: string }
     | { type: 'user_prompt'; content: string; images?: string[] }
     | { type: 'status'; text: string }
     | { type: 'error'; message: string }
-    | { type: 'result'; cost: number; tokens: TokenUsage; duration: number }
+    | { type: 'result'; cost: number; tokens: TokenUsage; duration: number; ttftMs?: number; stopReason?: string | null; numTurns?: number; modelUsage?: ResultModelUsage[] }
+}
+
+export interface DiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  /** Lines carry their own '+' / '-' / ' ' prefixes (jsdiff format). */
+  lines: string[]
+}
+
+export interface ResultModelUsage {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
+  costUSD?: number
+}
+
+export interface ContextBreakdownEntry {
+  name: string
+  tokens: number
 }
 
 export interface TokenUsage {
@@ -63,6 +91,9 @@ export interface SessionInfo {
   model?: string
   contextWindow: number
   contextUsed: number
+  /** Categorized context breakdown from the CLI's get_context_usage (system
+   *  prompt / tools / messages …). Present after the first accurate update. */
+  contextBreakdown?: ContextBreakdownEntry[]
   statusText?: string
   permissionMode?: string
   messageLogLength?: number
@@ -207,6 +238,10 @@ interface AgentState {
   // Streaming accumulators (for deltas) — per session
   pendingTextBySession: Record<string, string>
   pendingThinkingBySession: Record<string, string>
+  /** Live tool-call arguments streaming in (input_json_delta), per session:
+   *  the accumulated raw JSON of the CURRENT tool call being typed. Cleared
+   *  when the finalized tool_use block arrives. */
+  pendingToolInputBySession: Record<string, { toolUseId: string; toolName: string; json: string } | undefined>
 
   // Active sub-agents per session: toolUseId → description (tool_use without matching tool_result)
   activeSubagentsBySession: Record<string, Map<string, string>>
@@ -374,6 +409,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   pendingTextBySession: {},
   pendingThinkingBySession: {},
+  pendingToolInputBySession: {},
 
   activeSubagentsBySession: {},
 
@@ -758,9 +794,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const messagesBySession = { ...s.messagesBySession }; delete messagesBySession[sessionId]
       const pendingTextBySession = { ...s.pendingTextBySession }; delete pendingTextBySession[sessionId]
       const pendingThinkingBySession = { ...s.pendingThinkingBySession }; delete pendingThinkingBySession[sessionId]
+      const pendingToolInputBySession = { ...s.pendingToolInputBySession }; delete pendingToolInputBySession[sessionId]
       const hasOlderBySession = { ...s.hasOlderBySession }; delete hasOlderBySession[sessionId]
       const activeSubagentsBySession = { ...s.activeSubagentsBySession }; delete activeSubagentsBySession[sessionId]
-      return { messagesBySession, pendingTextBySession, pendingThinkingBySession, hasOlderBySession, activeSubagentsBySession }
+      return { messagesBySession, pendingTextBySession, pendingThinkingBySession, pendingToolInputBySession, hasOlderBySession, activeSubagentsBySession }
     })
     sendWs({ type: 'get_session_history', sessionId })
   },
@@ -990,6 +1027,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
       updateSession(sessionId, {
         contextUsed: msg.used as number,
         contextWindow: msg.total as number,
+        ...(msg.breakdown ? { contextBreakdown: msg.breakdown as ContextBreakdownEntry[] } : {}),
       })
       break
     }
@@ -1243,12 +1281,26 @@ function handleHubMessage(msg: Record<string, unknown>) {
       break
     }
 
+    case 'tool_input_delta': {
+      const sessionId = msg.sessionId as string
+      bufferToolInputDelta(sessionId, msg.toolUseId as string, msg.toolName as string, msg.content as string)
+      break
+    }
+
     case 'tool_use': {
       const sessionId = msg.sessionId as string
       const toolName = msg.toolName as string
       const toolUseId = msg.toolUseId as string
       const input = msg.input as Record<string, unknown>
       flushPending(sessionId)
+      // The finalized tool_use supersedes its live input preview.
+      if (useAgentStore.getState().pendingToolInputBySession[sessionId]) {
+        useAgentStore.setState((s) => {
+          const next = { ...s.pendingToolInputBySession }
+          delete next[sessionId]
+          return { pendingToolInputBySession: next }
+        })
+      }
       addMessage(sessionId, {
         type: 'tool_use',
         toolUseId,
@@ -1270,6 +1322,30 @@ function handleHubMessage(msg: Record<string, unknown>) {
           return { activeSubagentsBySession: { ...s.activeSubagentsBySession, [sessionId]: map } }
         })
       }
+      break
+    }
+
+    case 'tool_diff': {
+      const sessionId = msg.sessionId as string
+      addMessage(sessionId, {
+        type: 'tool_diff',
+        toolUseId: msg.toolUseId as string,
+        filePath: msg.filePath as string,
+        hunks: msg.hunks as DiffHunk[],
+      })
+      break
+    }
+
+    case 'bg_task': {
+      const sessionId = msg.sessionId as string
+      addMessage(sessionId, {
+        type: 'bg_task',
+        taskId: msg.taskId as string,
+        status: msg.status as 'started' | 'completed' | 'failed',
+        description: msg.description as string | undefined,
+        taskType: msg.taskType as string | undefined,
+        summary: msg.summary as string | undefined,
+      })
       break
     }
 
@@ -1338,12 +1414,24 @@ function handleHubMessage(msg: Record<string, unknown>) {
       const wasRunning = useAgentStore.getState().sessions.find((s) => s.id === sessionId)?.status === 'running'
 
       flushPending(sessionId)
+      // Turn over — a lingering tool-input preview would be stale.
+      if (useAgentStore.getState().pendingToolInputBySession[sessionId]) {
+        useAgentStore.setState((s) => {
+          const next = { ...s.pendingToolInputBySession }
+          delete next[sessionId]
+          return { pendingToolInputBySession: next }
+        })
+      }
 
       addMessage(sessionId, {
         type: 'result',
         cost,
         tokens,
         duration,
+        ttftMs: msg.ttftMs as number | undefined,
+        stopReason: msg.stopReason as string | null | undefined,
+        numTurns: msg.numTurns as number | undefined,
+        modelUsage: msg.modelUsage as ResultModelUsage[] | undefined,
       })
 
       updateSession(sessionId, {
@@ -1538,9 +1626,11 @@ function hubMsgToBlock(m: Record<string, unknown>): AgentMessage['block'] | null
     case 'thinking': return { type: 'thinking', content: m.content as string, collapsed: true }
     case 'tool_use': return { type: 'tool_use', toolUseId: m.toolUseId as string, toolName: m.toolName as string, input: m.input as Record<string, unknown> }
     case 'tool_result': return { type: 'tool_result', toolUseId: m.toolUseId as string, content: m.content as string, isError: m.isError as boolean }
+    case 'tool_diff': return { type: 'tool_diff', toolUseId: m.toolUseId as string, filePath: m.filePath as string, hunks: m.hunks as DiffHunk[] }
+    case 'bg_task': return { type: 'bg_task', taskId: m.taskId as string, status: m.status as 'started' | 'completed' | 'failed', description: m.description as string | undefined, taskType: m.taskType as string | undefined, summary: m.summary as string | undefined }
     case 'user_prompt': return { type: 'user_prompt', content: m.content as string, ...(m.images ? { images: m.images as string[] } : {}) }
     case 'error': return { type: 'error', message: m.message as string }
-    case 'result': return { type: 'result', cost: m.cost as number, tokens: m.tokens as TokenUsage, duration: m.duration as number }
+    case 'result': return { type: 'result', cost: m.cost as number, tokens: m.tokens as TokenUsage, duration: m.duration as number, ttftMs: m.ttftMs as number | undefined, stopReason: m.stopReason as string | null | undefined, numTurns: m.numTurns as number | undefined, modelUsage: m.modelUsage as ResultModelUsage[] | undefined }
     default: return null
   }
 }
@@ -1644,7 +1734,7 @@ function drainMessageBuffer() {
 // creates a new pendingXBySession map and notifies every Zustand subscriber in
 // the app; during bursts this saturates the main thread and delays input events.
 // Accumulate deltas in a plain Map and flush once per animation frame.
-const deltaBuffer = new Map<string, { text: string; thinking: string }>()
+const deltaBuffer = new Map<string, { text: string; thinking: string; toolInput?: { toolUseId: string; toolName: string; json: string } }>()
 let deltaRafHandle: number | null = null
 
 function bufferDelta(kind: 'text' | 'thinking', sessionId: string, chunk: string) {
@@ -1659,6 +1749,29 @@ function bufferDelta(kind: 'text' | 'thinking', sessionId: string, chunk: string
   }
 }
 
+/** Buffer a chunk of streaming tool-call arguments (input_json_delta) — same
+ *  per-frame coalescing as text/thinking so typing stays smooth. A new
+ *  toolUseId resets the accumulator (one live tool preview per session). */
+function bufferToolInputDelta(sessionId: string, toolUseId: string, toolName: string, chunk: string) {
+  let entry = deltaBuffer.get(sessionId)
+  if (!entry) {
+    entry = { text: '', thinking: '' }
+    deltaBuffer.set(sessionId, entry)
+  }
+  if (!entry.toolInput || entry.toolInput.toolUseId !== toolUseId) {
+    // Chain from what's already in the store when the same call continues
+    // across frames; start fresh when a new tool call begins.
+    const existing = useAgentStore.getState().pendingToolInputBySession[sessionId]
+    entry.toolInput = existing?.toolUseId === toolUseId
+      ? { ...existing }
+      : { toolUseId, toolName, json: '' }
+  }
+  entry.toolInput.json += chunk
+  if (deltaRafHandle === null) {
+    deltaRafHandle = requestAnimationFrame(drainDeltaBuffer)
+  }
+}
+
 function drainDeltaBuffer() {
   deltaRafHandle = null
   if (deltaBuffer.size === 0) return
@@ -1667,11 +1780,16 @@ function drainDeltaBuffer() {
   useAgentStore.setState((s) => {
     const newText = { ...s.pendingTextBySession }
     const newThinking = { ...s.pendingThinkingBySession }
+    let newToolInput = s.pendingToolInputBySession
     for (const [sessionId, buf] of entries) {
       if (buf.text) newText[sessionId] = (newText[sessionId] ?? '') + buf.text
       if (buf.thinking) newThinking[sessionId] = (newThinking[sessionId] ?? '') + buf.thinking
+      if (buf.toolInput) {
+        if (newToolInput === s.pendingToolInputBySession) newToolInput = { ...newToolInput }
+        newToolInput[sessionId] = buf.toolInput
+      }
     }
-    return { pendingTextBySession: newText, pendingThinkingBySession: newThinking }
+    return { pendingTextBySession: newText, pendingThinkingBySession: newThinking, pendingToolInputBySession: newToolInput }
   })
 }
 
