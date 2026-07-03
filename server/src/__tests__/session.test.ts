@@ -441,3 +441,196 @@ describe('Session process exit', () => {
     }
   })
 })
+
+// --------------------------------------------------------------------------
+// Rich protocol: structuredPatch diffs, tool-input streaming, task lifecycle,
+// context usage, set_model fast path
+// --------------------------------------------------------------------------
+
+describe('Session rich protocol', () => {
+  it('emits tool_diff from a user message carrying tool_use_result.structuredPatch', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+
+    sendStdoutJson({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_e1', content: 'The file was updated.' }] },
+      tool_use_result: {
+        filePath: '/tmp/x.py',
+        structuredPatch: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: ['-def a():', '+def b():', '     pass'] }],
+        userModified: false,
+      },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const diff = messages.find((m) => m.type === 'tool_diff')
+    expect(diff).toBeTruthy()
+    if (diff && diff.type === 'tool_diff') {
+      expect(diff.toolUseId).toBe('toolu_e1')
+      expect(diff.filePath).toBe('/tmp/x.py')
+      expect(diff.hunks[0]!.lines[0]).toBe('-def a():')
+    }
+    // Also logged for replay
+    expect(session.messageLog.some((m) => m.type === 'tool_diff')).toBe(true)
+  })
+
+  it('does NOT emit tool_diff for empty/absent structuredPatch', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+    sendStdoutJson({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_e2', content: 'created' }] },
+      tool_use_result: { filePath: '/tmp/new.py', structuredPatch: [], userModified: false },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(messages.find((m) => m.type === 'tool_diff')).toBeUndefined()
+  })
+
+  it('forwards input_json_delta as tool_input_delta attributed via content_block_start', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+
+    sendStdoutJson({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_s1', name: 'Edit' } } })
+    sendStdoutJson({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"file_path": "/tmp' } } })
+    sendStdoutJson({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '/x.py"' } } })
+    sendStdoutJson({ type: 'stream_event', event: { type: 'content_block_stop', index: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const deltas = messages.filter((m) => m.type === 'tool_input_delta')
+    expect(deltas).toHaveLength(2)
+    if (deltas[0]!.type === 'tool_input_delta') {
+      expect(deltas[0]!.toolUseId).toBe('toolu_s1')
+      expect(deltas[0]!.toolName).toBe('Edit')
+    }
+    // Ephemeral — never logged
+    expect(session.messageLog.some((m) => (m as { type: string }).type === 'tool_input_delta')).toBe(false)
+  })
+
+  it('emits bg_task lifecycle from system task events', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+
+    sendStdoutJson({ type: 'system', subtype: 'task_started', session_id: 'x', task_id: 't1', tool_use_id: 'toolu_b1', description: 'sleep 30', task_type: 'local_bash' })
+    sendStdoutJson({ type: 'system', subtype: 'task_notification', session_id: 'x', task_id: 't1', tool_use_id: 'toolu_b1', status: 'completed', summary: 'done' })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const tasks = messages.filter((m) => m.type === 'bg_task')
+    expect(tasks).toHaveLength(2)
+    if (tasks[0]!.type === 'bg_task' && tasks[1]!.type === 'bg_task') {
+      expect(tasks[0]!.status).toBe('started')
+      expect(tasks[0]!.description).toBe('sleep 30')
+      expect(tasks[1]!.status).toBe('completed')
+      expect(tasks[1]!.summary).toBe('done')
+    }
+  })
+
+  it('system status/task events do not clobber init bookkeeping', async () => {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_abc', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.claudeSessionId).toBe('claude_abc')
+    // A later status event must not overwrite claudeSessionId or re-init
+    sendStdoutJson({ type: 'system', subtype: 'status', session_id: 'other_id', status: 'requesting' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.claudeSessionId).toBe('claude_abc')
+  })
+
+  it('re-emits an accurate context_update from get_context_usage after result', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+
+    sendStdoutJson({
+      type: 'result', subtype: 'success', duration_ms: 100, session_id: 'x', total_cost_usd: 0.1,
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 40000, cache_creation_input_tokens: 2000 },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    // The rough estimate now includes cache reads
+    const rough = messages.filter((m) => m.type === 'context_update')
+    expect(rough.length).toBeGreaterThanOrEqual(1)
+    if (rough[0]!.type === 'context_update') {
+      expect(rough[0]!.used).toBe(100 + 50 + 40000 + 2000)
+    }
+
+    // The hub sent a get_context_usage control request — answer it
+    const stdinCalls = mockProcess.stdin.write.mock.calls
+    const ctxReq = stdinCalls.map((c: string[]) => JSON.parse(c[0])).find((p: any) => p.type === 'control_request' && p.request?.subtype === 'get_context_usage')
+    expect(ctxReq).toBeTruthy()
+    sendStdoutJson({
+      type: 'control_response',
+      response: {
+        subtype: 'success', request_id: ctxReq.request_id,
+        response: { totalTokens: 55000, maxTokens: 200000, categories: [
+          { name: 'System prompt', tokens: 2000 }, { name: 'Messages', tokens: 53000 }, { name: 'Free space', tokens: 145000 },
+        ] },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const accurate = messages.filter((m) => m.type === 'context_update').at(-1)
+    expect(accurate).toBeTruthy()
+    if (accurate && accurate.type === 'context_update') {
+      expect(accurate.used).toBe(55000)
+      expect(accurate.total).toBe(200000)
+      expect(accurate.breakdown).toEqual([
+        { name: 'System prompt', tokens: 2000 }, { name: 'Messages', tokens: 53000 },
+      ])
+    }
+  })
+
+  it('result carries modelUsage/ttft/stopReason through to the hub message', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+    sendStdoutJson({
+      type: 'result', subtype: 'success', duration_ms: 100, session_id: 'x', total_cost_usd: 0.2,
+      ttft_ms: 1234, stop_reason: 'end_turn', num_turns: 3,
+      usage: { input_tokens: 10, output_tokens: 5 },
+      modelUsage: {
+        'us.anthropic.claude-fable-5': { inputTokens: 10, outputTokens: 5, costUSD: 0.19 },
+        'claude-haiku-4-5': { inputTokens: 400, outputTokens: 21, costUSD: 0.01 },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    const result = messages.find((m) => m.type === 'result')
+    expect(result).toBeTruthy()
+    if (result && result.type === 'result') {
+      expect(result.ttftMs).toBe(1234)
+      expect(result.stopReason).toBe('end_turn')
+      expect(result.numTurns).toBe(3)
+      expect(result.modelUsage).toHaveLength(2)
+      expect(result.modelUsage![0]!.model).toBe('us.anthropic.claude-fable-5')
+      expect(result.modelUsage![0]!.costUSD).toBe(0.19)
+    }
+  })
+
+  it('setModelLive switches model via set_model control request without respawn', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_m1', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const promise = session.setModelLive('us.anthropic.claude-fable-5')
+    await new Promise((r) => setTimeout(r, 10))
+
+    // Hub wrote a set_model control request
+    const stdinCalls = mockProcess.stdin.write.mock.calls
+    const req = stdinCalls.map((c: string[]) => JSON.parse(c[0])).find((p: any) => p.type === 'control_request' && p.request?.subtype === 'set_model')
+    expect(req).toBeTruthy()
+    expect(req.request.model).toBe('us.anthropic.claude-fable-5')
+
+    sendStdoutJson({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id } })
+    const ok = await promise
+    expect(ok).toBe(true)
+
+    // Re-announced session_init with the new model label; process NOT killed
+    const inits = messages.filter((m) => m.type === 'session_init')
+    expect(inits.length).toBeGreaterThanOrEqual(2)
+    expect(mockProcess.killed).toBe(false)
+  })
+
+  it('setModelLive returns false pre-init (fast path unavailable)', async () => {
+    const session = new Session({ prompt: 'test' })
+    const ok = await session.setModelLive('claude-opus-4-8')
+    expect(ok).toBe(false)
+  })
+})

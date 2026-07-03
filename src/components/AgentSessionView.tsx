@@ -29,6 +29,7 @@ export function AgentSessionView() {
   const permissionMode = activeSession?.permissionMode ?? null
   const sessionContextWindow = activeSession?.contextWindow ?? 200_000
   const sessionContextUsed = activeSession?.contextUsed ?? 0
+  const contextBreakdown = activeSession?.contextBreakdown
   const rawPendingText = useAgentStore((s) => s.activeSessionId ? (s.pendingTextBySession[s.activeSessionId] ?? '') : '')
   const rawPendingThinking = useAgentStore((s) => s.activeSessionId ? (s.pendingThinkingBySession[s.activeSessionId] ?? '') : '')
   // Streaming deltas flush once per animation frame; re-rendering the growing
@@ -38,6 +39,8 @@ export function AgentSessionView() {
   // keystrokes preempt it instead of queueing behind it.
   const pendingText = useDeferredValue(rawPendingText)
   const pendingThinking = useDeferredValue(rawPendingThinking)
+  const rawPendingToolInput = useAgentStore((s) => s.activeSessionId ? s.pendingToolInputBySession[s.activeSessionId] : undefined)
+  const pendingToolInput = useDeferredValue(rawPendingToolInput)
   const activeSubagents = useAgentStore((s) => s.activeSessionId ? (s.activeSubagentsBySession[s.activeSessionId] ?? null) : null)
   const subagentCount = activeSubagents?.size ?? 0
   const hasOlder = useAgentStore((s) => s.activeSessionId ? (s.hasOlderBySession[s.activeSessionId] ?? false) : false)
@@ -190,7 +193,7 @@ export function AgentSessionView() {
         <MessageList messages={messages} lastReadTs={lastReadTs} />
 
         {/* Live streaming deltas */}
-        <StreamingTail pendingThinking={pendingThinking} pendingText={pendingText} />
+        <StreamingTail pendingThinking={pendingThinking} pendingText={pendingText} pendingToolInput={pendingToolInput} />
         </div>
         </div>
         {showScrollToBottom && (
@@ -248,7 +251,13 @@ export function AgentSessionView() {
                   style={{ width: `${Math.min(100, (sessionContextUsed / sessionContextWindow) * 100)}%` }}
                 />
               </div>
-              <span className="text-[10px] text-text-tertiary flex-shrink-0" title={`${sessionContextUsed.toLocaleString()} / ${sessionContextWindow.toLocaleString()} tokens`}>
+              <span
+                className="text-[10px] text-text-tertiary flex-shrink-0"
+                title={[
+                  `${sessionContextUsed.toLocaleString()} / ${sessionContextWindow.toLocaleString()} tokens`,
+                  ...(contextBreakdown ?? []).map((c) => `${c.name}: ${c.tokens.toLocaleString()}`),
+                ].join('\n')}
+              >
                 {sessionContextUsed >= 1_000_000 ? `${(sessionContextUsed / 1_000_000).toFixed(1)}M` :
                  sessionContextUsed >= 1_000 ? `${Math.round(sessionContextUsed / 1_000)}k` :
                  sessionContextUsed}
@@ -297,9 +306,10 @@ export function AgentSessionView() {
 // Memoized: renderMarkdownLite over the full accumulated tail is the expensive
 // bit; the memo means it only re-runs when the DEFERRED value actually commits,
 // not on every urgent render of the parent.
-const StreamingTail = memo(function StreamingTail({ pendingThinking, pendingText }: {
+const StreamingTail = memo(function StreamingTail({ pendingThinking, pendingText, pendingToolInput }: {
   pendingThinking: string
   pendingText: string
+  pendingToolInput?: { toolUseId: string; toolName: string; json: string }
 }) {
   const rendered = useMemo(() => pendingText ? renderMarkdownLite(pendingText) : null, [pendingText])
   return (
@@ -324,9 +334,58 @@ const StreamingTail = memo(function StreamingTail({ pendingThinking, pendingText
           </div>
         </div>
       )}
+
+      {pendingToolInput && <StreamingToolInput info={pendingToolInput} />}
     </>
   )
 })
+
+/** Live preview of a tool call's arguments as they stream in — shows an
+ *  Edit/Write being typed, terminal-style, before the finalized block lands.
+ *  The raw JSON is partial, so we extract the tail of the dominant string
+ *  field heuristically rather than JSON.parse-ing. */
+const StreamingToolInput = memo(function StreamingToolInput({ info }: {
+  info: { toolUseId: string; toolName: string; json: string }
+}) {
+  const preview = useMemo(() => streamingInputPreview(info.json), [info.json])
+  return (
+    <div className="px-3 py-1 min-w-0">
+      <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+        <Loader2 size={11} className="animate-spin flex-shrink-0" />
+        <span className="font-medium text-text-primary">{info.toolName}</span>
+        {preview.label && <span className="font-mono text-text-tertiary truncate">{preview.label}</span>}
+      </div>
+      {preview.body && (
+        <pre className="mt-1 ml-5 p-2 rounded-sm bg-surface-1 border border-border text-[11px] font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto text-text-secondary">
+          {preview.body}
+          <span className="inline-block w-1.5 h-3 bg-text-tertiary ml-0.5 animate-pulse" />
+        </pre>
+      )}
+    </div>
+  )
+})
+
+/** Best-effort extraction from a PARTIAL JSON string: pull `file_path`/
+ *  `command`-style short fields for the label, and stream the tail of the
+ *  long content field (`content`/`new_string`/`command`) as the body. */
+function streamingInputPreview(partial: string): { label?: string; body?: string } {
+  const label = /"(?:file_path|path|url|pattern|query)"\s*:\s*"((?:[^"\\]|\\.){0,200})/.exec(partial)?.[1]
+  const bodyMatch = /"(?:content|new_string|command|prompt|old_string)"\s*:\s*"((?:[^"\\]|\\.)*)$/.exec(partial)
+    ?? /"(?:content|new_string|command|prompt)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial)
+  let body = bodyMatch?.[1]
+  if (body) {
+    // Unescape the common JSON escapes so code reads naturally.
+    body = body.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    // Keep only the visible tail — the interesting part while it types.
+    const MAX = 2000
+    if (body.length > MAX) body = '…' + body.slice(-MAX)
+  }
+  return { label: label ? unescapeJsonFragment(label) : undefined, body: body || undefined }
+}
+
+function unescapeJsonFragment(s: string): string {
+  return s.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+}
 
 // Memoized so the finalized message list doesn't re-reconcile on every
 // streaming-delta flush (pendingText changes once per animation frame while an
@@ -346,20 +405,32 @@ const MessageList = memo(function MessageList({ messages, lastReadTs }: {
     return map
   }, [messages])
 
+  // Diffs (structuredPatch from Edit/Write) pair to their tool_use the same way.
+  const toolDiffsById = useMemo(() => {
+    const map = new Map<string, AgentMessage>()
+    for (const m of messages) {
+      if (m.block.type === 'tool_diff' && !map.has(m.block.toolUseId)) map.set(m.block.toolUseId, m)
+    }
+    return map
+  }, [messages])
+
   return (
     <>
       {messages.map((msg, i) => {
-        // Skip standalone tool_result — it's rendered inside its tool_use block
-        if (msg.block.type === 'tool_result') return null
+        // Skip standalone tool_result / tool_diff — rendered inside their tool_use block
+        if (msg.block.type === 'tool_result' || msg.block.type === 'tool_diff') return null
         // Unread divider: show between last-read message and first new one
         const prevMsg = i > 0 ? messages[i - 1] : undefined
         const showUnreadDivider = lastReadTs > 0 &&
           prevMsg && prevMsg.timestamp <= lastReadTs &&
           msg.timestamp > lastReadTs &&
           msg.block.type !== 'user_prompt'
-        // Pair tool_use with its following tool_result
+        // Pair tool_use with its following tool_result + diff
         const toolResult = msg.block.type === 'tool_use'
           ? toolResultsById.get(msg.block.toolUseId)
+          : undefined
+        const toolDiff = msg.block.type === 'tool_use'
+          ? toolDiffsById.get(msg.block.toolUseId)
           : undefined
         return (
           <div key={msg.id}>
@@ -370,7 +441,7 @@ const MessageList = memo(function MessageList({ messages, lastReadTs }: {
                 <div className="flex-1 border-t border-red-500/60" />
               </div>
             )}
-            <AgentMessageBlock message={msg} toolResult={toolResult} />
+            <AgentMessageBlock message={msg} toolResult={toolResult} toolDiff={toolDiff} />
           </div>
         )
       })}

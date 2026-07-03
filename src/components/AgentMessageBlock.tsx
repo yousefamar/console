@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import type { AgentMessage } from '@/store/agent'
+import type { AgentMessage, DiffHunk } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
@@ -15,9 +15,10 @@ import {
 interface Props {
   message: AgentMessage
   toolResult?: AgentMessage
+  toolDiff?: AgentMessage
 }
 
-export const AgentMessageBlock = memo(function AgentMessageBlock({ message, toolResult }: Props) {
+export const AgentMessageBlock = memo(function AgentMessageBlock({ message, toolResult, toolDiff }: Props) {
   const { block } = message
 
   switch (block.type) {
@@ -27,6 +28,7 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
       return <ThinkingBlock message={message} content={block.content} collapsed={block.collapsed} />
     case 'tool_use': {
       const result = toolResult?.block.type === 'tool_result' ? toolResult.block : undefined
+      const diff = toolDiff?.block.type === 'tool_diff' ? toolDiff.block : undefined
       if (block.toolName === 'EnterPlanMode') {
         return <ModeTransitionBlock label="Entered plan mode" />
       }
@@ -36,10 +38,13 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
       if (block.toolName === 'TodoWrite') {
         return <TodoListBlock input={block.input} />
       }
-      return <ToolUseBlock toolName={block.toolName} input={block.input} result={result} />
+      return <ToolUseBlock toolName={block.toolName} input={block.input} result={result} diff={diff} />
     }
     case 'tool_result':
+    case 'tool_diff':
       return null // Rendered inside tool_use block
+    case 'bg_task':
+      return <BgTaskBlock block={block} />
     case 'user_prompt':
       return <UserPromptBlock content={block.content} images={block.images} />
     case 'status':
@@ -47,7 +52,7 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
     case 'error':
       return <ErrorBlock message={block.message} />
     case 'result':
-      return null
+      return <ResultFooterBlock block={block} />
     default:
       return null
   }
@@ -171,10 +176,11 @@ function ThinkingBlock({ message, content, collapsed }: { message: AgentMessage;
 // Tool use block — shows tool name and input
 // --------------------------------------------------------------------------
 
-function ToolUseBlock({ toolName, input, result }: {
+function ToolUseBlock({ toolName, input, result, diff }: {
   toolName: string
   input: Record<string, unknown>
   result?: { content: string; isError: boolean }
+  diff?: { filePath: string; hunks: DiffHunk[] }
 }) {
   const [expanded, setExpanded] = useState(false)
   const Icon = toolIcon(toolName)
@@ -194,14 +200,172 @@ function ToolUseBlock({ toolName, input, result }: {
         <span className="flex-1 min-w-0 [overflow-wrap:anywhere] [word-break:break-word]">
           <span className="font-medium text-text-primary">{toolName}</span>{' '}
           <span className="text-text-tertiary"><ToolDetail toolName={toolName} input={input} /></span>
+          {diff && <DiffStat hunks={diff.hunks} />}
         </span>
       </button>
+      {/* Edits/Writes render their diff inline by default — the terminal experience */}
+      {diff && <DiffBlock hunks={diff.hunks} />}
       {expanded && result && (
         <pre className={`mt-1 ml-5 p-2 rounded-sm text-[11px] font-mono whitespace-pre-wrap break-words overflow-x-auto max-h-60 overflow-y-auto ${
           result.isError ? 'border border-destructive/30 bg-destructive-muted/30 text-destructive' : 'bg-surface-1 border border-border text-text-secondary'
         }`}>
           {result.content}
         </pre>
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Diff rendering — the CLI's structuredPatch (jsdiff hunks) rendered
+// terminal-style: red/green lines, gutter line numbers, hunk separators.
+// --------------------------------------------------------------------------
+
+function DiffStat({ hunks }: { hunks: DiffHunk[] }) {
+  let added = 0, removed = 0
+  for (const h of hunks) {
+    for (const l of h.lines) {
+      if (l.startsWith('+')) added++
+      else if (l.startsWith('-')) removed++
+    }
+  }
+  return (
+    <span className="ml-1.5 font-mono text-[10px]">
+      {added > 0 && <span className="text-green-500">+{added}</span>}
+      {added > 0 && removed > 0 && ' '}
+      {removed > 0 && <span className="text-red-500">-{removed}</span>}
+    </span>
+  )
+}
+
+function DiffBlock({ hunks }: { hunks: DiffHunk[] }) {
+  // Cap what we render eagerly — a full-file Write can be thousands of lines.
+  const MAX_LINES = 80
+  const [showAll, setShowAll] = useState(false)
+  const totalLines = hunks.reduce((n, h) => n + h.lines.length, 0)
+
+  let budget = showAll ? Infinity : MAX_LINES
+  const rows: Array<{ key: string; kind: 'add' | 'del' | 'ctx' | 'sep'; oldNo?: number; newNo?: number; text: string }> = []
+  for (let hi = 0; hi < hunks.length; hi++) {
+    const h = hunks[hi]!
+    if (hi > 0) rows.push({ key: `sep${hi}`, kind: 'sep', text: '···' })
+    let oldNo = h.oldStart
+    let newNo = h.newStart
+    for (let li = 0; li < h.lines.length; li++) {
+      if (budget-- <= 0) break
+      const l = h.lines[li]!
+      const kind = l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : 'ctx'
+      rows.push({
+        key: `${hi}:${li}`,
+        kind,
+        oldNo: kind === 'add' ? undefined : oldNo,
+        newNo: kind === 'del' ? undefined : newNo,
+        text: l.slice(1),
+      })
+      if (kind !== 'add') oldNo++
+      if (kind !== 'del') newNo++
+    }
+    if (budget <= 0) break
+  }
+
+  return (
+    <div className="mt-1 ml-5 rounded-sm border border-border bg-surface-1 overflow-hidden">
+      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+        <table className="w-full border-collapse font-mono text-[11px] leading-[1.5]">
+          <tbody>
+            {rows.map((r) => r.kind === 'sep' ? (
+              <tr key={r.key}>
+                <td colSpan={3} className="px-2 text-text-quaternary text-center select-none bg-surface-2/50">{r.text}</td>
+              </tr>
+            ) : (
+              <tr key={r.key} className={
+                r.kind === 'add' ? 'bg-green-500/10' : r.kind === 'del' ? 'bg-red-500/10' : ''
+              }>
+                <td className="px-1.5 text-right text-text-quaternary select-none w-8 align-top">{r.newNo ?? r.oldNo ?? ''}</td>
+                <td className={`w-4 text-center select-none align-top ${
+                  r.kind === 'add' ? 'text-green-500' : r.kind === 'del' ? 'text-red-500' : 'text-transparent'
+                }`}>{r.kind === 'add' ? '+' : r.kind === 'del' ? '-' : ' '}</td>
+                <td className={`pr-2 whitespace-pre-wrap break-words align-top ${
+                  r.kind === 'add' ? 'text-green-300' : r.kind === 'del' ? 'text-red-300/80' : 'text-text-secondary'
+                }`}>{r.text || ' '}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!showAll && totalLines > MAX_LINES && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="w-full px-2 py-1 text-[10px] text-text-tertiary hover:text-text-primary bg-surface-2/50 transition-colors duration-fast"
+        >
+          Show all {totalLines} lines
+        </button>
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Background task chip — bash-in-background / Task subagent lifecycle.
+// --------------------------------------------------------------------------
+
+function BgTaskBlock({ block }: { block: { taskId: string; status: 'started' | 'completed' | 'failed'; description?: string; taskType?: string; summary?: string } }) {
+  const isAgent = block.taskType === 'local_agent'
+  const label = block.description || block.summary || (isAgent ? 'Subagent' : 'Background task')
+  return (
+    <div className="px-3 py-0.5">
+      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] ${
+        block.status === 'started' ? 'border-border text-text-tertiary'
+          : block.status === 'failed' ? 'border-destructive/40 text-destructive'
+          : 'border-border text-text-secondary'
+      }`}>
+        {block.status === 'started'
+          ? <Loader2 size={9} className="animate-spin" />
+          : block.status === 'failed'
+            ? <AlertTriangle size={9} />
+            : <Check size={9} className="text-green-500" />}
+        <span className="font-medium">{isAgent ? 'Agent' : 'Shell'}</span>
+        <span className="truncate max-w-[40ch]">{label}</span>
+        {block.status !== 'started' && block.summary && block.summary !== label && (
+          <span className="text-text-quaternary truncate max-w-[40ch]">· {block.summary}</span>
+        )}
+      </span>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Result footer — per-turn cost/latency/model breakdown (subtle single line,
+// expandable when a multi-model breakdown is present).
+// --------------------------------------------------------------------------
+
+function ResultFooterBlock({ block }: { block: { cost: number; tokens: { input: number; output: number; cacheRead?: number; cacheCreation?: number }; duration: number; ttftMs?: number; stopReason?: string | null; numTurns?: number; modelUsage?: Array<{ model: string; inputTokens: number; outputTokens: number; costUSD?: number }> } }) {
+  const [expanded, setExpanded] = useState(false)
+  const models = block.modelUsage?.filter((m) => m.outputTokens > 0 || m.inputTokens > 0) ?? []
+  const shortModel = (id: string) => id.replace(/^arn:aws:bedrock:.*\//, 'arn:…/').replace(/^us\.anthropic\./, '')
+  return (
+    <div className="px-3 py-0.5">
+      <button
+        onClick={() => models.length > 0 && setExpanded(!expanded)}
+        className={`flex items-center gap-2 text-[10px] text-text-quaternary ${models.length > 0 ? 'hover:text-text-tertiary cursor-pointer' : 'cursor-default'} transition-colors duration-fast`}
+      >
+        <span>{(block.duration / 1000).toFixed(1)}s</span>
+        {block.ttftMs !== undefined && <span title="Time to first token">ttft {(block.ttftMs / 1000).toFixed(1)}s</span>}
+        <span>${block.cost.toFixed(4)}</span>
+        <span>{block.tokens.output.toLocaleString()} out</span>
+        {block.stopReason && block.stopReason !== 'end_turn' && (
+          <span className="text-warning">{block.stopReason}</span>
+        )}
+        {models.length > 1 && <span>· {models.length} models</span>}
+      </button>
+      {expanded && models.length > 0 && (
+        <div className="mt-0.5 ml-2 space-y-px">
+          {models.map((m) => (
+            <div key={m.model} className="text-[10px] font-mono text-text-quaternary">
+              {shortModel(m.model)}: {m.inputTokens.toLocaleString()} in · {m.outputTokens.toLocaleString()} out{m.costUSD !== undefined ? ` · $${m.costUSD.toFixed(4)}` : ''}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )

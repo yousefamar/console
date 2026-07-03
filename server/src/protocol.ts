@@ -63,7 +63,7 @@ export type ClientMessage =
 export type HubMessage =
   | { type: 'session_created'; sessionId: string; cwd: string; prompt: string; name?: string }
   | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number; permissionMode?: string }
-  | { type: 'context_update'; sessionId: string; used: number; total: number }
+  | { type: 'context_update'; sessionId: string; used: number; total: number; breakdown?: ContextBreakdownEntry[] }
   | { type: 'sessions_list'; sessions: SessionInfo[] }
   | { type: 'project_dirs'; dirs: string[] }
   | { type: 'text'; sessionId: string; content: string }
@@ -72,8 +72,16 @@ export type HubMessage =
   | { type: 'thinking_delta'; sessionId: string; content: string }
   | { type: 'tool_use'; sessionId: string; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_result'; sessionId: string; toolUseId: string; content: string; isError: boolean }
+  /** The tool call's arguments streaming in (input_json_delta) — lets the UI
+   *  show an Edit/Write being typed live, terminal-style. Ephemeral. */
+  | { type: 'tool_input_delta'; sessionId: string; toolUseId: string; toolName: string; content: string }
+  /** A ready-made unified diff for an Edit/Write, mined from the CLI's
+   *  tool_use_result.structuredPatch. Paired to the tool call by toolUseId. */
+  | { type: 'tool_diff'; sessionId: string; toolUseId: string; filePath: string; hunks: StructuredPatchHunk[] }
+  /** Background bash / Task subagent lifecycle (system/task_* events). */
+  | { type: 'bg_task'; sessionId: string; taskId: string; toolUseId?: string; status: 'started' | 'completed' | 'failed'; description?: string; taskType?: string; summary?: string }
   | { type: 'approval_required'; sessionId: string; requestId: string; toolName: string; input: Record<string, unknown> }
-  | { type: 'result'; sessionId: string; cost: number; tokens: TokenUsage; duration: number; sessionIdClaude: string }
+  | { type: 'result'; sessionId: string; cost: number; tokens: TokenUsage; duration: number; sessionIdClaude: string; ttftMs?: number; stopReason?: string | null; numTurns?: number; modelUsage?: ResultModelUsage[] }
   | { type: 'user_prompt'; sessionId: string; content: string; images?: string[] }
   | { type: 'tool_approved'; sessionId: string; requestId: string; toolName: string }
   | { type: 'tool_denied'; sessionId: string; requestId: string; toolName: string; reason?: string }
@@ -117,6 +125,8 @@ export type LoggableHubMessage = Extract<HubMessage,
   | { type: 'thinking' }
   | { type: 'tool_use' }
   | { type: 'tool_result' }
+  | { type: 'tool_diff' }
+  | { type: 'bg_task' }
   | { type: 'approval_required' }
   | { type: 'result' }
   | { type: 'user_prompt' }
@@ -149,6 +159,23 @@ export interface TokenUsage {
   output: number
   cacheRead?: number
   cacheCreation?: number
+}
+
+/** One category from the CLI's get_context_usage breakdown (system prompt /
+ *  tools / messages / free space …), forwarded on context_update. */
+export interface ContextBreakdownEntry {
+  name: string
+  tokens: number
+}
+
+/** Per-model usage row on the result footer (from the CLI's modelUsage). */
+export interface ResultModelUsage {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
+  costUSD?: number
 }
 
 /** Set when a session emits `@amar` to pull Yousef's attention. Sticky until
@@ -198,12 +225,27 @@ export interface SessionInfo {
 
 export interface ClaudeSystemMessage {
   type: 'system'
-  subtype: 'init'
+  /** `init` on spawn; the CLI also emits lifecycle subtypes we consume:
+   *  `status` (model request started), `task_started`/`task_notification`/
+   *  `task_updated` (background bash + Task subagents), `compact_boundary`
+   *  (auto-compaction happened here). Unknown subtypes are ignored. */
+  subtype: 'init' | 'status' | 'task_started' | 'task_notification' | 'task_updated' | 'compact_boundary' | (string & {})
   session_id: string
   tools?: string[]
   model?: string
   slash_commands?: string[]
   permissionMode?: string
+  // -- subtype: 'status'
+  status?: string
+  // -- subtype: task_* (background bash / Task subagents)
+  task_id?: string
+  tool_use_id?: string
+  description?: string
+  task_type?: string
+  subagent_type?: string
+  summary?: string
+  output_file?: string
+  patch?: { status?: string; [k: string]: unknown }
 }
 
 export interface ClaudeAssistantMessage {
@@ -221,6 +263,27 @@ export interface ClaudeUserMessage {
     role: 'user'
     content: ClaudeContentBlock[]
   }
+  /** Rich tool result the CLI attaches alongside the text tool_result block.
+   *  For Edit/Write it carries `structuredPatch` (a ready-made unified diff)
+   *  + `originalFile`/`userModified` — the same data the terminal's diff view
+   *  renders. Shape varies by tool; we only mine the diff fields. */
+  tool_use_result?: {
+    filePath?: string
+    structuredPatch?: StructuredPatchHunk[]
+    userModified?: boolean
+    [k: string]: unknown
+  }
+  parent_tool_use_id?: string
+}
+
+/** One hunk of the CLI's `structuredPatch` (jsdiff format): `lines` carry
+ *  their own `+`/`-`/` ` prefixes. */
+export interface StructuredPatchHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: string[]
 }
 
 export interface ClaudeResultMessage {
@@ -236,6 +299,22 @@ export interface ClaudeResultMessage {
     cache_creation_input_tokens?: number
   }
   result?: string
+  // -- Rich metadata (present on current CLIs; all optional for back-compat)
+  /** Time to first token, ms. */
+  ttft_ms?: number
+  stop_reason?: string | null
+  /** Why the turn ended from the CLI's perspective (e.g. 'completed'). */
+  terminal_reason?: string
+  num_turns?: number
+  /** Per-model usage/cost breakdown — keys are model ids (incl. Bedrock ARNs). */
+  modelUsage?: Record<string, {
+    inputTokens: number
+    outputTokens: number
+    cacheReadInputTokens?: number
+    cacheCreationInputTokens?: number
+    costUSD?: number
+    contextWindow?: number
+  }>
 }
 
 export interface ClaudeControlRequest {
@@ -251,11 +330,28 @@ export interface ClaudeStreamEvent {
   event: {
     type: string
     index?: number
+    /** On content_block_start — lets us map a block index to its toolUseId so
+     *  later input_json_delta events can be attributed to the right tool call. */
+    content_block?: { type: string; id?: string; name?: string }
     delta?: {
       type: string
       text?: string
       thinking?: string
+      /** input_json_delta — the tool call's arguments streaming in. */
+      partial_json?: string
     }
+  }
+}
+
+/** CLI's reply to a control_request we wrote to stdin (set_model,
+ *  get_context_usage, …). `response.response` is verb-specific. */
+export interface ClaudeControlResponseMessage {
+  type: 'control_response'
+  response: {
+    subtype: 'success' | 'error'
+    request_id: string
+    response?: Record<string, unknown>
+    error?: string
   }
 }
 
@@ -265,6 +361,7 @@ export type ClaudeStdoutMessage =
   | ClaudeUserMessage
   | ClaudeResultMessage
   | ClaudeControlRequest
+  | ClaudeControlResponseMessage
   | ClaudeStreamEvent
 
 // Content blocks within assistant/user messages
