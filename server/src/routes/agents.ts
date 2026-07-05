@@ -128,6 +128,8 @@ export interface AgentContext {
 export function restartAllSessionsForModel(ctx: AgentContext) {
   for (const s of ctx.sessions.values()) {
     if (s.status === 'ended') continue
+    // Sessions pinned to their own model don't follow hub-wide changes.
+    if (s.modelOverride) continue
     // Fast path: switch the live subprocess's model in place via the CLI's
     // set_model control verb — no respawn, no context re-read, ~instant for
     // the whole fleet. Falls back to the kill+respawn cycle when the process
@@ -312,6 +314,17 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
   // per dead model — reportFailure is idempotent for stale reports) and heal
   // the whole fleet; otherwise just restart this one onto the active model.
   session.on('model_failure', (failedModel: string, reason: string) => {
+    // A per-session pin that failed only affects THIS session: drop the pin,
+    // fall back to the hub-wide model, and leave the fleet chain alone.
+    if (session.modelOverride && failedModel === session.modelOverride) {
+      ctx.log(`[model] session ${session.id} pin '${failedModel}' failed (${reason}) → un-pinning, back to hub model`)
+      session.modelOverride = undefined
+      broadcast(ctx.clients, { type: 'error', sessionId: session.id, message: `Pinned model '${failedModel}' is unavailable — falling back to the hub model.` })
+      session.restartForModelChange()
+      saveManifest(ctx.sessions)
+      broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+      return
+    }
     const res = ctx.modelConfig.reportFailure(failedModel)
     if (res.changed) {
       ctx.log(`[model] '${failedModel}' failed (${reason}) → falling back to '${res.model}'`)
@@ -790,6 +803,27 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       applyUserModelChange(ctx, msg.model)
+      break
+    }
+
+    case 'set_session_model': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      const model = msg.model?.trim() || null
+      void session.setSessionModel(model).then((r) => {
+        if (!r.ok) {
+          sendTo(ws, { type: 'hub_error', message: `set session model failed: ${r.error}` })
+          return
+        }
+        log(model
+          ? `Session ${session.id} pinned to model '${model}'`
+          : `Session ${session.id} model pin cleared (follows hub model)`)
+        saveManifest(sessions) // persist the pin
+        broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      })
       break
     }
 
