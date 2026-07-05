@@ -634,3 +634,56 @@ describe('Session rich protocol', () => {
     expect(ok).toBe(false)
   })
 })
+
+describe('Session per-session model pin', () => {
+  it('spawns with modelOverride instead of the resolver model', () => {
+    const session = new Session({ prompt: 'x', modelOverride: 'claude-sonnet-4-6' })
+    const i = lastSpawnArgs!.args.indexOf('--model')
+    expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-4-6')
+    expect(session.getInfo().modelOverride).toBe('claude-sonnet-4-6')
+  })
+
+  it('setSessionModel pins mid-session via the set_model fast path', async () => {
+    const session = new Session({ prompt: 'x' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'c_pin1', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const promise = session.setSessionModel('claude-sonnet-4-6')
+    await new Promise((r) => setTimeout(r, 10))
+    const req = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
+      .find((p: any) => p.type === 'control_request' && p.request?.subtype === 'set_model')
+    expect(req.request.model).toBe('claude-sonnet-4-6')
+    sendStdoutJson({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id } })
+    const res = await promise
+    expect(res.ok).toBe(true)
+    expect(session.modelOverride).toBe('claude-sonnet-4-6')
+    expect(mockProcess.killed).toBe(false) // in place, no respawn
+  })
+
+  it('setSessionModel(null) clears the pin and moves back to the hub model', async () => {
+    const session = new Session({ prompt: 'x', modelOverride: 'claude-sonnet-4-6' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'c_pin2', model: 'claude-sonnet-4-6', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const promise = session.setSessionModel(null) // resolver default = claude-opus-4-8
+    await new Promise((r) => setTimeout(r, 10))
+    const req = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
+      .find((p: any) => p.type === 'control_request' && p.request?.subtype === 'set_model')
+    expect(req.request.model).toBe('claude-opus-4-8')
+    sendStdoutJson({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id } })
+    const res = await promise
+    expect(res.ok).toBe(true)
+    expect(session.modelOverride).toBeUndefined()
+  })
+
+  it('respawn after a pin keeps spawning with the pinned model', async () => {
+    const session = new Session({ prompt: 'x', modelOverride: 'claude-sonnet-4-6' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'c_pin3', model: 'claude-sonnet-4-6', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    // Force the respawn path (as if set_model had failed / process died).
+    session.restartForModelChange()
+    await new Promise((r) => setTimeout(r, 10))
+    const i = lastSpawnArgs!.args.indexOf('--model')
+    expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-4-6')
+  })
+})

@@ -341,7 +341,23 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
     output(state, flags)
     return
   }
-  exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id>]`, flags)
+  // Per-session pin: con agent model pin <session-id|name> <model-id> | unpin <session-id|name>
+  if (sub === 'pin' || sub === 'unpin') {
+    const target = args[1]
+    const model = sub === 'pin' ? args[2] : null
+    if (!target || (sub === 'pin' && !model)) {
+      exitWithError('USAGE', `Usage: con agent model ${sub === 'pin' ? 'pin <session-id|name> <model-id>' : 'unpin <session-id|name>'}`, flags)
+    }
+    let hubId = target!
+    if (!/^session_/.test(hubId)) {
+      try { hubId = (await resolveByName(target!)).id } catch { /* assume it's a hub id */ }
+    }
+    const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
+    await sendAndReceive({ type: 'set_session_model', sessionId: hubId, model }, NO_RESPONSE)
+    output(sub === 'pin' ? { pinned: hubId, model } : { unpinned: hubId }, flags)
+    return
+  }
+  exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id> | pin <session> <model-id> | unpin <session>]`, flags)
 }
 
 interface RoleData { key: string; title: string; manager: string | null; goals: string[]; cwd: string | null; charter: string }

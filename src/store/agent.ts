@@ -94,6 +94,9 @@ export interface SessionInfo {
   /** Categorized context breakdown from the CLI's get_context_usage (system
    *  prompt / tools / messages …). Present after the first accurate update. */
   contextBreakdown?: ContextBreakdownEntry[]
+  /** Per-session model pin (hub-side). Set → this session ignores the hub-wide
+   *  model; undefined → follows it. */
+  modelOverride?: string
   statusText?: string
   permissionMode?: string
   messageLogLength?: number
@@ -294,6 +297,9 @@ interface AgentState {
   listSessions: () => void
   /** Switch the model all hub agents spawn with (restarts live sessions). */
   setAgentModel: (model: string) => void
+  /** Pin ONE session to a model, applied mid-session (in-place set_model with
+   *  respawn fallback). null clears the pin — back to the hub-wide model. */
+  setSessionModel: (sessionId: string, model: string | null) => void
   dismissModelFallbackNotice: () => void
   /** Reparent a role in the org chart (null = make it a root). `record` (default
    *  true) pushes an undo entry; undo/redo pass false. */
@@ -609,6 +615,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setAgentModel: (model) => {
     sendWs({ type: 'set_model', model })
+  },
+
+  setSessionModel: (sessionId, model) => {
+    sendWs({ type: 'set_session_model', sessionId, model })
   },
 
   dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),
@@ -1010,7 +1020,10 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'session_init': {
       const sessionId = msg.sessionId as string
-      useAgentStore.setState({ sessionSlashCommands: msg.slashCommands as string[] })
+      // A model-switch re-announce carries empty slashCommands — don't let it
+      // clobber the real list learned from the true init.
+      const slash = msg.slashCommands as string[]
+      if (slash.length > 0) useAgentStore.setState({ sessionSlashCommands: slash })
       updateSession(sessionId, {
         model: msg.model as string,
         contextWindow: msg.contextWindow as number,

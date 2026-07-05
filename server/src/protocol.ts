@@ -37,6 +37,9 @@ export type ClientMessage =
   | { type: 'clear_attention'; sessionId: string }
   | { type: 'get_model' }
   | { type: 'set_model'; model: string }
+  /** Pin ONE session to a model (mid-session; fast set_model path with respawn
+   *  fallback). `model: null` clears the pin — back to the hub-wide model. */
+  | { type: 'set_session_model'; sessionId: string; model: string | null }
   | { type: 'list_agents' }
   | { type: 'set_manager'; agentKey: string; manager: string | null }
   | { type: 'get_agent_role'; agentKey: string }
@@ -203,6 +206,9 @@ export interface SessionInfo {
   cwd?: string
   totalCost: number
   totalTokens: TokenUsage
+  /** Per-session model pin — set when this session is pinned to a model other
+   *  than the hub-wide one (undefined = follows the hub model). */
+  modelOverride?: string
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null

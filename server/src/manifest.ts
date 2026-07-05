@@ -29,6 +29,9 @@ export interface ManifestEntry {
   /** Absolute message-log high-water — restored into the session's `logOffset`
    *  so the unread marker (messageLogLength > lastReadIndex) survives restart. */
   messageLogLength?: number
+  /** Per-session model pin — survives restart so a pinned session resumes on
+   *  its own model, not the hub-wide one. */
+  modelOverride?: string
 }
 
 /** Write the manifest synchronously and atomically.
@@ -62,6 +65,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.endedByUser ? { ended: true } : {}),
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
       ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),
+      ...(session.modelOverride ? { modelOverride: session.modelOverride } : {}),
     })
   }
   try {

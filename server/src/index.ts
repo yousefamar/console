@@ -61,6 +61,8 @@ import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
 import { handleMeetupRoutes } from './routes/meetup.js'
 import { MeetupClient } from './meetup/client.js'
+import { handleOutdoorLadsRoutes } from './routes/outdoorlads.js'
+import { OutdoorLadsStore } from './outdoorlads.js'
 import { handleSpotifyRoutes } from './routes/spotify.js'
 import { SpotifyClient } from './spotify/client.js'
 import { SpotifyStore } from './spotify/store.js'
@@ -100,6 +102,7 @@ import { KeyBackupStore } from './matrix/key-backup-store.js'
 import { HubMatrixCrypto } from './matrix/crypto.js'
 import { MatrixSync } from './matrix/sync.js'
 import { ChatRoomsStore } from './matrix/chat-rooms-store.js'
+import { MessageArchive } from './matrix/message-archive.js'
 import type { DebugClientMessage } from './debug-protocol.js'
 
 // --------------------------------------------------------------------------
@@ -150,6 +153,7 @@ const monzoStore = new MonzoStore(
 const financeStore = new FinanceStore(feedsConfigDir)
 const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
 const meetupClient = new MeetupClient(feedsConfigDir)
+const outdoorLadsStore = new OutdoorLadsStore()
 const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // Runtime agent-model config + fallback chain. Inject the resolver into Session
@@ -343,6 +347,14 @@ const chatRoomsStore = new ChatRoomsStore({
   bus: syncBus,
   log: (msg: string) => { log(msg) },
 })
+// Append-only archive of every decrypted chat event + media rescue on
+// redaction. The soft-delete-only guarantee: deletes by any party (incl.
+// Yousef) only ever mark content deleted; the original text and attachments
+// stay recoverable here. There is deliberately no delete API on this store.
+const messageArchive = new MessageArchive(
+  join(feedsConfigDir, 'chat-archive'),
+  (msg: string) => { log(msg) },
+)
 // When a push client (the APK) connects, send a reconcile frame so it can
 // drop stale chat + mail notifications — anything it's showing that's no
 // longer unread. This is the only way to clear notifications orphaned by a
@@ -400,6 +412,7 @@ const matrixSync = new MatrixSync(
   join(feedsConfigDir, 'matrix-sync-state.json'),
   (msg: string) => { log(msg) },
   chatRoomsStore,
+  messageArchive,
 )
 syncBus.register('matrix', {
   syncNow: async () => matrixSync.syncNow(),
@@ -432,6 +445,14 @@ syncBus.register('chat-rooms', {
   refreshRoom: async (args) => matrixSync.refreshRoomState(args as { roomId: string }),
   // Manual trigger for the inflated-DM sweep (also runs once per deploy on boot).
   refreshStale: async () => matrixSync.refreshStaleDmRooms(),
+  // Archive lookup: the pre-redaction copy of a deleted event (text + media
+  // pointer). The SPA calls this when rendering a deleted message so the
+  // original content is always viewable — the soft-delete-only guarantee.
+  archivedEvent: async (args) => {
+    const { roomId, eventId } = args as { roomId: string; eventId: string }
+    if (!roomId || !eventId) throw new Error('roomId and eventId required')
+    return messageArchive.getEvent(roomId, eventId) ?? null
+  },
 })
 matrixSync.start()
 
@@ -1071,6 +1092,27 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
   if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
+  // Rescued media from the append-only chat archive (deleted attachments).
+  // GET /matrix/archive/media/<sha1>.bin[?mime=image/jpeg] — filename
+  // validated inside mediaPath. The stored blob has no extension, so the
+  // client passes the archived mime as a query hint; constrained to
+  // image/audio/video/pdf so a crafted hint can't smuggle text/html (XSS).
+  if (path.startsWith('/matrix/archive/media/') && req.method === 'GET') {
+    const file = path.slice('/matrix/archive/media/'.length)
+    const p = messageArchive.mediaPath(file)
+    if (!p) { res.writeHead(404); res.end('not found'); return }
+    const hint = url.searchParams.get('mime') ?? ''
+    const safeMime = /^(image|audio|video)\/[\w.+-]+$/.test(hint) || hint === 'application/pdf'
+      ? hint
+      : 'application/octet-stream'
+    res.writeHead(200, {
+      'Content-Type': safeMime,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, max-age=31536000',
+    })
+    res.end(readFileSync(p))
+    return
+  }
   if (path.startsWith('/matrix') && handleMatrixRoutes(req, res, path, url, matrixClient, keyBackupStore, hubMatrixCrypto, authStore, matrixSync, readBody)) return
   if (path.startsWith('/money') && handleMonzoRoutes(req, res, path, url, monzoClient, monzoStore, authStore, readBody, broadcast, pushServer)) return
   if (path.startsWith('/finance') && handleFinanceRoutes(req, res, path, url, financeStore, monzoStore, monzoClient, authStore, readBody)) return
@@ -1116,6 +1158,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
+  if (path.startsWith('/outdoorlads') && handleOutdoorLadsRoutes(req, res, path, outdoorLadsStore)) return
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
@@ -1586,6 +1629,7 @@ httpServer.listen(port, host, () => {
           agentKey: entry.agentKey ?? (entry.claudeSessionId ? csidToKey.get(entry.claudeSessionId) : undefined),
           needsAttention: entry.needsAttention,
           restoreMessageLogLength: entry.messageLogLength,
+          modelOverride: entry.modelOverride,
         })
         // If the session was mid-turn when the hub stopped, nudge it to
         // continue where it left off. Silent resume alone leaves it idle.

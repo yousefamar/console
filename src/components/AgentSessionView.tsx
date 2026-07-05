@@ -8,7 +8,7 @@ import { CronPanel } from './agent/CronPanel'
 import { useCronStore } from '@/store/cron'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
-import { Loader2, GitBranch, ChevronDown, Check } from 'lucide-react'
+import { Loader2, GitBranch, ChevronDown, Check, Pin } from 'lucide-react'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -210,8 +210,16 @@ export function AgentSessionView() {
       {/* Status bar */}
       {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (
         <div className="flex items-center border-t border-border/50 px-3 py-1 gap-2 overflow-hidden min-w-0">
-          {/* Model name + mode */}
-          {sessionModel && (
+          {/* Model name + mode — the label is a per-session picker: choosing a
+              model PINS this session to it (applied mid-session, in place);
+              "hub" clears the pin back to the fleet-wide model. */}
+          {sessionModel && activeSessionId && activeSessionId !== 'al' ? (
+            <SessionModelPicker
+              sessionId={activeSessionId}
+              sessionModel={sessionModel}
+              modelOverride={activeSession?.modelOverride}
+            />
+          ) : sessionModel && (
             <span className="text-[10px] text-text-tertiary flex-shrink-0">
               {sessionModel}
             </span>
@@ -300,6 +308,56 @@ export function AgentSessionView() {
         <CronPanel claudeSessionId={claudeSessionId} onClose={() => setShowCronPanel(false)} />
       )}
     </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// Per-session model picker — lives in the status bar where the model label
+// was. Selecting a model PINS this session to it and applies mid-session
+// (hub tries the CLI's in-place set_model, falls back to respawn-with-resume).
+// The "hub" option clears the pin so the session follows the fleet model
+// again. Pinned sessions are skipped by fleet-wide model changes.
+// --------------------------------------------------------------------------
+
+const HUB_MODEL_SENTINEL = '__hub__'
+
+function SessionModelPicker({ sessionId, sessionModel, modelOverride }: {
+  sessionId: string
+  sessionModel: string
+  modelOverride?: string
+}) {
+  const chain = useAgentStore((s) => s.agentModelChain)
+  const hubModel = useAgentStore((s) => s.agentModel)
+  const setSessionModel = useAgentStore((s) => s.setSessionModel)
+  // Offer the fallback chain + the hub model + whatever this session is pinned
+  // to (dedup'd) so the current value is always representable.
+  const options = useMemo(() => {
+    const set = new Set<string>()
+    if (hubModel) set.add(hubModel)
+    for (const m of chain) set.add(m)
+    if (modelOverride) set.add(modelOverride)
+    return Array.from(set)
+  }, [chain, hubModel, modelOverride])
+
+  return (
+    <span className="flex items-center gap-1 flex-shrink-0 min-w-0" title={modelOverride
+      ? `Pinned to ${modelOverride} — this session ignores hub-wide model changes. Pick "hub model" to unpin.`
+      : 'Follows the hub-wide model. Pick a model to pin THIS session to it (applied immediately, context preserved).'}>
+      {modelOverride && <Pin size={9} className="text-warning flex-shrink-0" />}
+      <select
+        value={modelOverride ?? HUB_MODEL_SENTINEL}
+        onChange={(e) => {
+          const v = e.target.value
+          setSessionModel(sessionId, v === HUB_MODEL_SENTINEL ? null : v)
+        }}
+        className="bg-transparent text-[10px] text-text-tertiary hover:text-text-secondary font-mono outline-none cursor-pointer max-w-[160px] truncate"
+      >
+        <option value={HUB_MODEL_SENTINEL}>{sessionModel} (hub)</option>
+        {options.map((m) => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </select>
+    </span>
   )
 }
 

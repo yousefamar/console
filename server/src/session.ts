@@ -87,6 +87,10 @@ export interface SessionOptions {
    *  (`messageLogLength > lastReadIndex`) collapses to false for every session
    *  on restart. Persisted in the manifest. */
   restoreMessageLogLength?: number
+  /** Per-session model pin. When set, THIS session spawns with (and stays on)
+   *  this model instead of the hub-wide ModelConfig one, and fleet-wide model
+   *  changes skip it. Persisted in the manifest. */
+  modelOverride?: string
 }
 
 export class Session extends EventEmitter {
@@ -104,6 +108,10 @@ export class Session extends EventEmitter {
   totalCost = 0
   totalTokens: TokenUsage = { input: 0, output: 0 }
   contextWindow = 200_000
+  /** Per-session model pin (see SessionOptions.modelOverride). While set, this
+   *  session ignores the hub-wide model: spawns/respawns use it, and
+   *  restartAllSessionsForModel skips the session. undefined = follow the hub. */
+  modelOverride?: string
 
   /** `@amar` attention flag — set when the session emits `@amar` in assistant
    *  output, cleared when Yousef opens / marks-read the session. */
@@ -147,6 +155,7 @@ export class Session extends EventEmitter {
     this.parentClaudeSessionId = options.parentClaudeSessionId
     this.agentKey = options.agentKey
     this.cwd = options.cwd || process.cwd()
+    this.modelOverride = options.modelOverride
     // Restore the absolute message-log high-water (see SessionOptions). The
     // in-memory log starts empty, so without this messageLogLength would report
     // 0 after a restart and every session's unread marker would be wiped. The
@@ -181,9 +190,10 @@ export class Session extends EventEmitter {
     // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
     // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
     const effort = process.env.CLAUDE_EFFORT || 'high'
-    // Resolved from ModelConfig (runtime-configurable + fallback chain). Record
-    // what we spawned with so a model-unavailable failure reports the right id.
-    const model = resolveAgentModel()
+    // Per-session pin wins; else resolved from ModelConfig (runtime-configurable
+    // + fallback chain). Record what we spawned with so a model-unavailable
+    // failure reports the right id.
+    const model = this.modelOverride ?? resolveAgentModel()
     this.spawnedModel = model
     this.spawnedAt = Date.now()
     this.gotSystemInit = false
@@ -553,6 +563,7 @@ export class Session extends EventEmitter {
       cwd: this.cwd,
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
+      modelOverride: this.modelOverride,
       messageLogLength: this.messageLogLength,
       lastReadIndex: getLastReadIndex(this.claudeSessionId),
       backgroundProcessCount: getChildCountSync(this.process?.pid),
@@ -982,6 +993,23 @@ export class Session extends EventEmitter {
     })
     this.requestContextUsage()
     return true
+  }
+
+  /** Pin THIS session to `model` (or clear the pin with null → back to the
+   *  hub-wide model) and apply it mid-session: setModelLive fast path first,
+   *  kill+respawn fallback (context preserved via --resume). */
+  async setSessionModel(model: string | null): Promise<{ ok: boolean; error?: string }> {
+    if (this.status === 'ended') return { ok: false, error: 'session has ended' }
+    this.modelOverride = model ?? undefined
+    const target = model ?? resolveAgentModel()
+    if (this.spawnedModel === target) return { ok: true } // already there (e.g. clearing a pin that matched)
+    const fast = await this.setModelLive(target)
+    if (fast) return { ok: true }
+    // Fast path unavailable (dead / pre-init / timeout) — respawn onto the
+    // pinned model (spawn() reads modelOverride; resolveAgentModel is the
+    // fallback when the pin was cleared).
+    this.restartForModelChange()
+    return { ok: true }
   }
 
   /** Log a message that should be replayed to late-joining clients.
