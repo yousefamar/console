@@ -19,14 +19,18 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-/** Ordered most-capable-first. Fable 5 is intentionally NOT seeded — it was
- *  pulled; seeding a dead model would re-trigger a failure cycle on every boot.
- *  Re-add it to the top via the picker / CLI if/when it returns. */
+/** Ordered most-capable-first. These are the ids VERIFIED WORKING on Yousef's
+ *  Bedrock deployment (2026-07-06 spawn sweep): bare ids (`claude-opus-4-8`)
+ *  400 with "provided model identifier is invalid" — this deployment needs the
+ *  `us.anthropic.` prefix; sonnet-4-6 isn't enabled (sonnet-5 is); haiku only
+ *  resolves via the fully-versioned id. Re-verify with a spawn sweep before
+ *  editing. */
 export const DEFAULT_MODEL_CHAIN = [
-  'claude-opus-4-8',
-  'claude-opus-4-7',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5',
+  'us.anthropic.claude-fable-5',
+  'us.anthropic.claude-opus-4-8',
+  'us.anthropic.claude-opus-4-7',
+  'us.anthropic.claude-sonnet-5',
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
 ]
 
 export interface ModelConfigState {
