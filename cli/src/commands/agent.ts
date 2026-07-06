@@ -341,6 +341,15 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
     output(state, flags)
     return
   }
+  // Replace the fallback chain: con agent model chain <id1> <id2> …
+  // (first id becomes the active model if the current one isn't in the chain)
+  if (sub === 'chain') {
+    const ids = args.slice(1).map((a) => a.trim()).filter(Boolean)
+    if (ids.length === 0) exitWithError('USAGE', 'Usage: con agent model chain <model-id> [<model-id> …] (most-capable first)', flags)
+    const state = await hubFetch<ModelState>('/agents/model', { method: 'POST', body: { chain: ids } })
+    output(state, flags)
+    return
+  }
   // Per-session pin: con agent model pin <session-id|name> <model-id> | unpin <session-id|name>
   if (sub === 'pin' || sub === 'unpin') {
     const target = args[1]
@@ -357,7 +366,7 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
     output(sub === 'pin' ? { pinned: hubId, model } : { unpinned: hubId }, flags)
     return
   }
-  exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id> | pin <session> <model-id> | unpin <session>]`, flags)
+  exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id> | chain <ids…> | pin <session> <model-id> | unpin <session>]`, flags)
 }
 
 interface RoleData { key: string; title: string; manager: string | null; goals: string[]; cwd: string | null; charter: string }

@@ -29,7 +29,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastModelState, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
 import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -845,10 +845,14 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
       req.on('data', (c) => { raw += c })
       req.on('end', () => {
         try {
-          const { model } = JSON.parse(raw || '{}') as { model?: string }
-          if (!model?.trim()) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'model is required' })); return }
+          const { model, chain } = JSON.parse(raw || '{}') as { model?: string; chain?: string[] }
+          if (!model?.trim() && !Array.isArray(chain)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'model or chain is required' })); return }
           if (modelConfig.getState().lockedByEnv) { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'locked by CLAUDE_MODEL env var' })); return }
-          applyUserModelChange(agentCtx, model)
+          // Replace the fallback chain first (no fleet restart on its own —
+          // it only matters on the next failure), then the active model.
+          if (Array.isArray(chain) && chain.length > 0) modelConfig.setChain(chain)
+          if (model?.trim()) applyUserModelChange(agentCtx, model)
+          else broadcastModelState(agentCtx)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(modelConfig.getState()))
         } catch (e) {
