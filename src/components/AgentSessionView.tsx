@@ -472,11 +472,33 @@ const MessageList = memo(function MessageList({ messages, lastReadTs }: {
     return map
   }, [messages])
 
+  // Background tasks emit one message per lifecycle event (started →
+  // completed/failed). Render ONE chip per taskId — at the position of the
+  // first (started) event, carrying the state of the latest event — so a
+  // finished task doesn't show a spinner chip AND a done chip.
+  const bgTaskRender = useMemo(() => {
+    const firstId = new Map<string, string>()  // taskId → message id to render at
+    const latest = new Map<string, AgentMessage>() // taskId → latest lifecycle message
+    for (const m of messages) {
+      if (m.block.type !== 'bg_task') continue
+      if (!firstId.has(m.block.taskId)) firstId.set(m.block.taskId, m.id)
+      latest.set(m.block.taskId, m)
+    }
+    return { firstId, latest }
+  }, [messages])
+
   return (
     <>
       {messages.map((msg, i) => {
         // Skip standalone tool_result / tool_diff — rendered inside their tool_use block
         if (msg.block.type === 'tool_result' || msg.block.type === 'tool_diff') return null
+        // Background tasks: one chip per taskId (at the started-event position,
+        // showing the LATEST lifecycle state) — later events render nothing.
+        let renderMsg = msg
+        if (msg.block.type === 'bg_task') {
+          if (bgTaskRender.firstId.get(msg.block.taskId) !== msg.id) return null
+          renderMsg = bgTaskRender.latest.get(msg.block.taskId) ?? msg
+        }
         // Unread divider: show between last-read message and first new one
         const prevMsg = i > 0 ? messages[i - 1] : undefined
         const showUnreadDivider = lastReadTs > 0 &&
@@ -499,7 +521,7 @@ const MessageList = memo(function MessageList({ messages, lastReadTs }: {
                 <div className="flex-1 border-t border-red-500/60" />
               </div>
             )}
-            <AgentMessageBlock message={msg} toolResult={toolResult} toolDiff={toolDiff} />
+            <AgentMessageBlock message={renderMsg} toolResult={toolResult} toolDiff={toolDiff} />
           </div>
         )
       })}
