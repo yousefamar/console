@@ -560,8 +560,13 @@ export async function publishDraft(store: NoteStore, fromPath: string): Promise<
     return { ok: false, error: `File move failed: ${(e as Error).message}` }
   }
 
-  // Trigger rebuild. Don't fail publish if syncthing hasn't caught up — just
-  // surface the rebuild status.
+  const { rebuildOk, rebuildBody } = await triggerRebuild()
+  return { ok: true, newPath, rebuildOk, rebuildBody }
+}
+
+/** GET the Eleventy rebuild endpoint. Never throws — surfaces status so a
+ *  publish/re-publish doesn't fail just because syncthing hasn't caught up. */
+async function triggerRebuild(): Promise<{ rebuildOk: boolean; rebuildBody?: string }> {
   let rebuildOk = false
   let rebuildBody: string | undefined
   try {
@@ -569,15 +574,30 @@ export async function publishDraft(store: NoteStore, fromPath: string): Promise<
     rebuildBody = await res.text()
     if (res.ok) {
       try {
-        const json = JSON.parse(rebuildBody) as { success?: boolean }
-        rebuildOk = json.success === true
-      } catch {
-        rebuildOk = false
-      }
+        rebuildOk = (JSON.parse(rebuildBody) as { success?: boolean }).success === true
+      } catch { rebuildOk = false }
     }
   } catch (e) {
     rebuildBody = `rebuild fetch failed: ${(e as Error).message}`
   }
+  return { rebuildOk, rebuildBody }
+}
 
-  return { ok: true, newPath, rebuildOk, rebuildBody }
+/**
+ * Re-publish an already-published post (`log/<name>.md`): persist happens
+ * client-side via the normal save; this just re-triggers the Eleventy build
+ * so edits go live. Does NOT move the file or change its date (publish date
+ * is immutable). `newPath` echoes the unchanged path for a uniform result.
+ */
+export async function republishPost(store: NoteStore, path: string): Promise<PublishResult> {
+  if (!/^log\/[^/]+\.md$/.test(path)) {
+    return { ok: false, error: `Not a published post: ${path}` }
+  }
+  try {
+    await store.read(path) // confirm it exists
+  } catch (e) {
+    return { ok: false, error: `Could not read ${path}: ${(e as Error).message}` }
+  }
+  const { rebuildOk, rebuildBody } = await triggerRebuild()
+  return { ok: true, newPath: path, rebuildOk, rebuildBody }
 }

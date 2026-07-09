@@ -11,6 +11,7 @@ import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { autocompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete'
 import { vim, Vim } from '@replit/codemirror-vim'
 import { consoleEditorTheme } from '@/notes/editor-theme'
+import { insertFootnote } from '@/notes/editor-actions'
 import { livePreview } from '@/notes/live-preview'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
@@ -45,6 +46,12 @@ const activeLineWhenCollapsed = ViewPlugin.fromClass(
   },
   { decorations: (v) => v.decorations },
 )
+
+/** True for a single bare http(s) URL with no internal whitespace — the shape
+ *  we auto-wrap into a markdown link when pasted over a selection. */
+function isBareUrl(s: string): boolean {
+  return /^https?:\/\/\S+$/i.test(s) && !/\s/.test(s)
+}
 
 /** Toggle markdown formatting around selection. If already wrapped, unwrap. */
 function wrapSelection(view: EditorView | null, marker: string) {
@@ -91,6 +98,7 @@ function wrapSelection(view: EditorView | null, marker: string) {
     })
   }
 }
+
 
 /**
  * Tag autocompletion for the YAML frontmatter `tags:` block list. Triggers when
@@ -250,6 +258,13 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
             }
             return true
           }
+          // Ctrl+Shift+6 → footnote (^ = Shift+6 is markdown's footnote glyph).
+          // `event.key` is '^' with Shift held, so match the code too for layouts.
+          if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === '6' || event.key === '^' || event.code === 'Digit6')) {
+            event.preventDefault()
+            insertFootnote(useNotesStore.getState().editorView)
+            return true
+          }
           return false
         },
       })),
@@ -328,10 +343,10 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       // Paste handler for images
       EditorView.domEventHandlers({
         paste: (event, view) => {
-          const items = event.clipboardData?.items
-          if (!items) return false
+          const cd = event.clipboardData
+          if (!cd) return false
 
-          for (const item of items) {
+          for (const item of cd.items) {
             if (item.type.startsWith('image/')) {
               event.preventDefault()
               const blob = item.getAsFile()
@@ -359,6 +374,26 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
               return true
             }
           }
+
+          // Paste-URL-over-selection → markdown link. When the clipboard holds
+          // a bare URL and there's a non-empty selection, wrap the selection
+          // as [selected](url) instead of replacing it. Works for Ctrl+V in
+          // any editor mode (the DOM paste fires regardless of vim state).
+          const sel = view.state.selection.main
+          if (!sel.empty) {
+            const clip = cd.getData('text/plain').trim()
+            if (isBareUrl(clip)) {
+              event.preventDefault()
+              const selected = view.state.sliceDoc(sel.from, sel.to)
+              const insert = `[${selected}](${clip})`
+              view.dispatch({
+                changes: { from: sel.from, to: sel.to, insert },
+                // Place cursor after the whole link
+                selection: { anchor: sel.from + insert.length },
+              })
+              return true
+            }
+          }
           return false
         },
       }),
@@ -374,10 +409,64 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
     Vim.noremap('d', '"+d', 'visual')
     Vim.noremap('p', '"+p', 'normal')
     Vim.noremap('P', '"+P', 'normal')
-    Vim.noremap('p', '"+p', 'visual')
+    // NOTE: visual-mode p/P are NOT noremapped to "+p — they're mapped to the
+    // custom linkOrPasteVisual action below, which linkifies a pasted URL.
+
+    // Visual-mode p/P: if the system clipboard holds a bare URL, wrap the
+    // selection as a markdown link (mirrors the insert-mode DOM-paste
+    // behaviour). Otherwise replace the selection with the clipboard text —
+    // the ordinary characterwise visual-paste. Registered once (idempotent).
+    Vim.defineAction('linkOrPasteVisual', (cm: any) => {
+      const view: EditorView = cm.cm6
+      const sel = view.state.selection.main
+      const done = (insert: string, anchorAfter = true) => {
+        view.dispatch({
+          changes: { from: sel.from, to: sel.to, insert },
+          selection: { anchor: anchorAfter ? sel.from + insert.length : sel.from },
+        })
+        Vim.exitVisualMode(cm, false)
+      }
+      // Read the system clipboard async; fall back to the vim '+' register.
+      const apply = (clip: string) => {
+        const selected = view.state.sliceDoc(sel.from, sel.to)
+        if (isBareUrl(clip.trim())) done(`[${selected}](${clip.trim()})`)
+        else done(clip)
+      }
+      const reg = Vim.getRegisterController().getRegister('+')
+      const regText = reg?.toString?.() ?? ''
+      if (navigator.clipboard?.readText) {
+        navigator.clipboard.readText().then((t) => apply(t || regText)).catch(() => apply(regText))
+      } else {
+        apply(regText)
+      }
+    })
+    Vim.mapCommand('p', 'action', 'linkOrPasteVisual', {}, { context: 'visual' })
+    Vim.mapCommand('P', 'action', 'linkOrPasteVisual', {}, { context: 'visual' })
+
     // j/k navigate wrapped lines (gj/gk)
     Vim.noremap('j', 'gj', 'normal')
     Vim.noremap('k', 'gk', 'normal')
+
+    // FIX upstream bug: codemirror-vim's `moveByDisplayLines` (what gj/gk map
+    // to) mishandles the document edge. On a forward hitSide it recomputes the
+    // target from a point 8px BELOW the last line; CM6's posAtCoords returns
+    // null there, the library's `|| 0` fallback sends the cursor to offset 0,
+    // and `j` past the last line snaps to the TOP. findPosV already returns a
+    // correctly-clamped edge position, so we keep it and drop the broken
+    // recompute. Overriding by name fixes both gj and gk (they resolve the
+    // motion from the shared map at call time). `vim.lastMotion` holds the
+    // motion's function reference, so we compare against our own fn to decide
+    // whether to preserve the goal (horizontal) column across repeats.
+    const clampedDisplayLineMotion = function (cm: any, head: any, motionArgs: any, vim: any) {
+      if (vim.lastMotion !== clampedDisplayLineMotion) {
+        vim.lastHSPos = cm.charCoords(head, 'div').left
+      }
+      const repeat = motionArgs.repeat
+      const res = cm.findPosV(head, motionArgs.forward ? repeat : -repeat, 'line', vim.lastHSPos)
+      vim.lastHPos = res.ch
+      return res
+    }
+    Vim.defineMotion('moveByDisplayLines', clampedDisplayLineMotion)
 
     // Register :link vim ex command
     Vim.defineEx('link', 'link', () => {

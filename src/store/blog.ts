@@ -89,6 +89,8 @@ interface BlogState {
   /** Format dictated text via the hub LLM endpoint. Returns formatted text or null on failure. */
   formatDictation: (text: string) => Promise<{ ok: boolean; text?: string; error?: string }>
   publish: (path: string) => Promise<PublishResult>
+  /** Re-trigger the Eleventy build for an already-published log/ post. */
+  republish: (path: string) => Promise<PublishResult>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
    * Create a new draft in `scratch/blog-drafts/`, write starter frontmatter
@@ -203,6 +205,18 @@ export const useBlogStore = create<BlogState>((set) => ({
         timeoutMs: 30000,
       })
       return result
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  },
+
+  republish: async (path: string): Promise<PublishResult> => {
+    try {
+      return await hubFetch<PublishResult>('/blog/republish', {
+        method: 'POST',
+        body: JSON.stringify({ path }),
+        timeoutMs: 30000,
+      })
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }

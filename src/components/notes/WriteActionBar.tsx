@@ -1,19 +1,21 @@
 // Writing action bar — thumb-zone toolbar for blog drafts/posts.
-// [Photo] [Camera] [Mic] [Format] ………… [Publish ↗ | View live ↗]
+// [Photo] [Camera] [Mic] [Footnote] [Format] … [Publish ↗ | View live ↗]
 // Camera button is mobile-only; desktop has paste for images.
 
 import { useRef, useState } from 'react'
-import { Camera, Image, Loader2, Mic, Send, ExternalLink, Sparkles } from 'lucide-react'
+import { Camera, Image, Loader2, Mic, Send, ExternalLink, Sparkles, Superscript } from 'lucide-react'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useDictation } from '@/hooks/useDictation'
 import { frontmatterRange, permalinkForLogPath, isPublishedPath } from '@/utils/frontmatter'
+import { insertFootnote } from '@/notes/editor-actions'
 
 interface Props {
   path: string
   onPublish: () => void
+  onRepublish: () => void
 }
 
 /** Downscale an image blob to maxDim px on the long edge, JPEG q0.85.
@@ -57,7 +59,7 @@ function insertAtCursor(text: string) {
   })
 }
 
-export function WriteActionBar({ path, onPublish }: Props) {
+export function WriteActionBar({ path, onPublish, onRepublish }: Props) {
   const isMobile = useIsMobile()
   const isFileDirty = useNotesStore((s) => s.isFileDirty)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -177,6 +179,14 @@ export function WriteActionBar({ path, onPublish }: Props) {
         <Mic size={15} className={dictation.recording ? 'animate-pulse' : ''} />
       </button>
       <button
+        onClick={() => insertFootnote(useNotesStore.getState().editorView)}
+        className={btnCls}
+        title="Insert footnote"
+        aria-label="Insert footnote"
+      >
+        <Superscript size={15} />
+      </button>
+      <button
         onClick={() => void handleFormat()}
         className={btnCls}
         disabled={formatting}
@@ -188,16 +198,29 @@ export function WriteActionBar({ path, onPublish }: Props) {
 
       <div className="flex-1" />
 
-      {published && permalink ? (
-        <a
-          href={permalink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 px-3 h-9 text-xs text-text-primary bg-surface-2 hover:bg-surface-0 border border-border rounded-sm transition-colors"
-        >
-          <ExternalLink size={13} />
-          View live
-        </a>
+      {published ? (
+        <>
+          <button
+            onClick={onRepublish}
+            className="flex items-center gap-1.5 px-3 h-9 text-xs text-text-primary bg-surface-2 hover:bg-surface-0 border border-border rounded-sm transition-colors font-medium"
+            title="Re-publish: save edits + rebuild the site"
+          >
+            <Send size={13} />
+            Re-publish{isFileDirty(path) ? '*' : ''}
+          </button>
+          {permalink && (
+            <a
+              href={permalink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center h-9 px-2 text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded-sm transition-colors"
+              title="View live"
+              aria-label="View live"
+            >
+              <ExternalLink size={15} />
+            </a>
+          )}
+        </>
       ) : (
         <button
           onClick={onPublish}
