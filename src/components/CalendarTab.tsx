@@ -22,16 +22,34 @@ export const CalendarTab = memo(function CalendarTab() {
   const isMobile = useIsMobile()
 
   useEffect(() => {
-    if (isSignedIn()) {
-      const store = useCalendarStore.getState()
-      // Load all accounts, then fetch calendars + events for each
-      store.loadAccounts().then(() =>
-        store.fetchCalendars().then(() => store.fetchEvents())
-      )
-      // Initialise flight watchlists so the mobile button shows a fresh count
-      // even before the user opens the sheet. Idempotent.
-      void useFlightsStore.getState().init()
-    }
+    // Bounded-retry boot chain. The pane is pre-rendered at app boot, so this
+    // effect fires while auth is still hydrating and the hub may be mid-restart
+    // — a single failed attempt used to leave the pane stuck on "Loading
+    // calendars..." forever (isSignedIn() flips true later but an []-deps
+    // effect never re-fires). Retry with backoff until accounts land.
+    let cancelled = false
+    const delays = [0, 1500, 4000, 10000, 25000]
+    void (async () => {
+      for (const d of delays) {
+        if (d) await new Promise((r) => setTimeout(r, d))
+        if (cancelled) return
+        if (!isSignedIn()) continue
+        const store = useCalendarStore.getState()
+        try {
+          await store.loadAccounts()
+          if (useCalendarStore.getState().accounts.length === 0) continue
+          await useCalendarStore.getState().fetchCalendars()
+          await useCalendarStore.getState().fetchEvents()
+          // Initialise flight watchlists so the mobile button shows a fresh
+          // count even before the user opens the sheet. Idempotent.
+          void useFlightsStore.getState().init()
+          return
+        } catch {
+          // hub unreachable — next attempt
+        }
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   if (!isSignedIn()) {

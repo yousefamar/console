@@ -17,11 +17,14 @@ export function CalendarSidebar() {
   const setDefaultCalendar = useCalendarStore((s) => s.setDefaultCalendar)
   const addAccount = useCalendarStore((s) => s.addAccount)
 
-  // Group calendars by account
+  // Group calendars by account. All synthetic overlay sources (Meetup,
+  // OutdoorLads, …) collapse into one shared 'Overlays' bucket instead of one
+  // group per fake account — otherwise each renders its own 'Overlays' header.
+  const OVERLAY_KEY = ' overlays'
   const calendarsByAccount = useMemo(() => {
     const groups = new Map<string, typeof calendars>()
     for (const cal of calendars) {
-      const key = cal.accountEmail
+      const key = cal.synthetic ? OVERLAY_KEY : cal.accountEmail
       const arr = groups.get(key) || []
       arr.push(cal)
       groups.set(key, arr)
