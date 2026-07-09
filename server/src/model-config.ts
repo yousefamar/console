@@ -19,18 +19,21 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-/** Ordered most-capable-first. These are the ids VERIFIED WORKING on Yousef's
- *  Bedrock deployment (2026-07-06 spawn sweep): bare ids (`claude-opus-4-8`)
- *  400 with "provided model identifier is invalid" — this deployment needs the
- *  `us.anthropic.` prefix; sonnet-4-6 isn't enabled (sonnet-5 is); haiku only
- *  resolves via the fully-versioned id. Re-verify with a spawn sweep before
- *  editing. */
+/** Ordered most-capable-first. **The correct ids depend on the auth backend**
+ *  (`CLAUDE_CODE_USE_BEDROCK` in `~/.claude/settings.json`): Bedrock wants
+ *  `us.anthropic.*` prefixed ids, the Max/first-party subscription wants BARE
+ *  ids — the same id 400s on the other backend, so switching backends means
+ *  re-seeding this chain (`con agent model chain …`) or nothing spawns. When
+ *  changing either, re-verify each id with a one-shot spawn (`claude --model
+ *  <id> …`) — availability differs per tier (e.g. opus-4-7 isn't served on the
+ *  Max subscription; haiku needs the `-20251001` snapshot id first-party but
+ *  `-20251001-v1:0` on Bedrock; sonnet-4-6 isn't on the Bedrock deployment).
+ *  Current values = first-party (Max subscription), verified 2026-07-09. */
 export const DEFAULT_MODEL_CHAIN = [
-  'us.anthropic.claude-fable-5',
-  'us.anthropic.claude-opus-4-8',
-  'us.anthropic.claude-opus-4-7',
-  'us.anthropic.claude-sonnet-5',
-  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
 ]
 
 export interface ModelConfigState {
