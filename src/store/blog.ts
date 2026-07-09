@@ -91,6 +91,11 @@ interface BlogState {
   publish: (path: string) => Promise<PublishResult>
   /** Re-trigger the Eleventy build for an already-published log/ post. */
   republish: (path: string) => Promise<PublishResult>
+  /** Current ETag/Last-Modified of a live page (null if unreachable). */
+  fetchPageEtag: (url: string) => Promise<string | null>
+  /** Poll a permalink until its ETag moves off the given baseline (build
+   *  landed). Resolves false after ~3 minutes. */
+  waitForSiteUpdate: (url: string, baselineEtag: string | null) => Promise<boolean>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
    * Create a new draft in `scratch/blog-drafts/`, write starter frontmatter
@@ -220,6 +225,32 @@ export const useBlogStore = create<BlogState>((set) => ({
     } catch (e) {
       return { ok: false, error: (e as Error).message }
     }
+  },
+
+  fetchPageEtag: async (url: string): Promise<string | null> => {
+    // Via the hub — the SPA can't HEAD yousefamar.com cross-origin (no CORS).
+    try {
+      const r = await hubFetch<{ etag: string | null }>(`/blog/page-etag?url=${encodeURIComponent(url)}`, { timeoutMs: 12000 })
+      return r.etag
+    } catch {
+      return null
+    }
+  },
+
+  waitForSiteUpdate: async (url: string, baselineEtag: string | null): Promise<boolean> => {
+    // The blog's /rebuild endpoint only QUEUES a build (3s debounce +
+    // Syncthing propagation + Eleventy run), so "queued: true" says nothing
+    // about the page being live. Poll the permalink until its ETag /
+    // Last-Modified moves off the pre-publish baseline — robust to clock
+    // skew and to the site's 200-for-unbuilt-URLs catch-all.
+    const INTERVAL_MS = 5000
+    const MAX_TRIES = 36 // ~3 minutes
+    for (let i = 0; i < MAX_TRIES; i++) {
+      await new Promise((r) => setTimeout(r, INTERVAL_MS))
+      const etag = await useBlogStore.getState().fetchPageEtag(url)
+      if (etag && etag !== baselineEtag) return true
+    }
+    return false
   },
 
   createDraft: async ({ title, project }): Promise<CreateDraftResult> => {

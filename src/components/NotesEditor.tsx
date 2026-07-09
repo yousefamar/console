@@ -110,9 +110,11 @@ export const NotesEditor = memo(function NotesEditor() {
       ui.pushToast({ kind: 'error', message: `Publish failed: ${r.error}` })
       return
     }
+    // `rebuildOk` only means the build was QUEUED (3s debounce + Syncthing +
+    // Eleventy run) — verify the page actually changed before claiming live.
     ui.pushToast({
-      kind: r.rebuildOk ? 'success' : 'error',
-      message: r.rebuildOk ? `Published → ${r.newPath}` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
+      kind: r.rebuildOk ? 'info' : 'error',
+      message: r.rebuildOk ? `Published — build queued (${r.newPath})` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
     })
     notes.closeFile(path, true)
     // Rescan the vault (draft file was moved to log/) then open the published
@@ -123,24 +125,48 @@ export const NotesEditor = memo(function NotesEditor() {
     void blog.refreshDrafts()
     void blog.refreshRecentPosts()
     void blog.refreshProjects()
+    // Background verify: toast again when the post is genuinely live.
+    if (r.rebuildOk && r.newPath) {
+      const url = permalinkForLogPath(r.newPath)
+      if (url) {
+        void (async () => {
+          const baseline = await blog.fetchPageEtag(url)
+          const live = await blog.waitForSiteUpdate(url, baseline)
+          ui.pushToast(live
+            ? { kind: 'success', message: 'Post is live', href: url }
+            : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
+        })()
+      }
+    }
   }
 
   // Re-publish an already-published post: save edits, then re-trigger the
-  // Eleventy build. No move, date unchanged.
+  // Eleventy build. No move, date unchanged. The build is only QUEUED by the
+  // endpoint — capture the page's ETag BEFORE triggering, then poll until it
+  // moves to confirm the edit is actually live.
   const handleRepublish = async () => {
     if (!activeFilePath || !isPublishedPath(activeFilePath)) return
     const ui = useUiStore.getState()
     const blog = useBlogStore.getState()
     const notes = useNotesStore.getState()
     if (isFileDirty(activeFilePath)) await notes.saveFile()
-    ui.pushToast({ kind: 'info', message: 'Re-publishing…' })
+    const baseline = permalink ? await blog.fetchPageEtag(permalink) : null
+    ui.pushToast({ kind: 'info', message: 'Re-publish queued…' })
     const r = await blog.republish(activeFilePath)
     if (!r.ok) { ui.pushToast({ kind: 'error', message: `Re-publish failed: ${r.error}` }); return }
-    ui.pushToast({
-      kind: r.rebuildOk ? 'success' : 'error',
-      message: r.rebuildOk ? 'Re-published — site rebuilt' : `Saved but rebuild failed: ${r.rebuildBody ?? '?'}`,
-      href: permalink ?? undefined,
-    })
+    if (!r.rebuildOk) {
+      ui.pushToast({ kind: 'error', message: `Saved but rebuild failed: ${r.rebuildBody ?? '?'}` })
+      return
+    }
+    if (permalink) {
+      const url = permalink
+      void (async () => {
+        const live = await blog.waitForSiteUpdate(url, baseline)
+        ui.pushToast(live
+          ? { kind: 'success', message: 'Edit is live', href: url }
+          : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
+      })()
+    }
   }
 
   const displayName = (path: string) => {
