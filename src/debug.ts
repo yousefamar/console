@@ -9,6 +9,7 @@ import { useUiStore } from '@/store/ui'
 import { useComposeStore } from '@/store/compose'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useAgentStore } from '@/store/agent'
+import { useCalendarStore } from '@/store/calendar'
 import { db } from '@/db'
 import { hubBus as _hubBus } from '@/sync-bus'
 
@@ -32,6 +33,7 @@ declare global {
         compose: typeof useComposeStore
         bookmarks: typeof useBookmarkStore
         agent: typeof useAgentStore
+        calendar: typeof useCalendarStore
       }
       db: typeof db
       perf: PerfData
@@ -54,6 +56,9 @@ window.__console = {
     compose: useComposeStore,
     bookmarks: useBookmarkStore,
     agent: useAgentStore,
+    // The APP's instance. Debug-eval `import('/src/store/x.ts')` after HMR can
+    // return a FRESH module copy with an empty store — always read via here.
+    calendar: useCalendarStore,
   },
   db,
   perf,
