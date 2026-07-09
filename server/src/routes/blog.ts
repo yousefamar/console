@@ -133,6 +133,24 @@ export function handleBlogRoutes(
     return true
   }
 
+  // GET /blog/page-etag?url=… → ETag/Last-Modified of a live blog page.
+  // Proxied through the hub because the SPA can't HEAD yousefamar.com
+  // cross-origin (no CORS there). Locked to the blog's origin.
+  if (path.startsWith('/blog/page-etag') && req.method === 'GET') {
+    const url = new URL(req.url ?? '', 'http://localhost')
+    const target = url.searchParams.get('url') ?? ''
+    if (!target.startsWith('https://yousefamar.com/')) {
+      json(res, 400, { error: 'URL must be on yousefamar.com' })
+      return true
+    }
+    fetch(target, { method: 'HEAD', signal: AbortSignal.timeout(10000) })
+      .then((r) => {
+        json(res, 200, { etag: r.headers.get('etag') ?? r.headers.get('last-modified') })
+      })
+      .catch((err) => json(res, 502, { error: (err as Error).message }))
+    return true
+  }
+
   // POST /blog/republish { path } → re-trigger the Eleventy build for an
   // already-published post (edits go live; no move, date unchanged).
   if (path === '/blog/republish' && req.method === 'POST') {
