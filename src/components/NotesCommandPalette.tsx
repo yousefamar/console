@@ -192,6 +192,7 @@ export function NotesCommandPalette() {
           try { notes.closeFile(path, true) } catch {}
           void notes.loadVaultFiles()
           void blog.refreshDrafts()
+          void blog.refreshRecentPosts()
           void blog.refreshProjects()
           if (result.rebuildOk) {
             ui.pushToast({

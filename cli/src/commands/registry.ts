@@ -631,6 +631,8 @@ export const COMMANDS: CommandDef[] = [
     examples: ['con blog draft "Why I switched to vim"', 'con blog draft "Memo update" --project memo'] },
   { name: 'blog publish', description: 'Publish a draft → log/<timestamp>.md, stamp `date` + `public:true`, hit /rebuild', safety: 'write',
     args: [{ name: 'path', required: true, description: 'Vault-relative draft path (e.g. scratch/blog-drafts/foo.md)' }] },
+  { name: 'blog republish', description: 'Re-trigger the Eleventy build for an already-published post (edits go live; no move, date unchanged)', safety: 'write',
+    args: [{ name: 'path', required: true, description: 'Published post path (e.g. log/2026-07-09-16-12-35.md)' }] },
   { name: 'blog projects', description: 'List, add, or set status on projects', safety: 'write',
     args: [{ name: 'sub', required: false, description: 'list (default) | add | status' }],
     flags: { status: { type: 'string', description: 'Filter by active|dormant|complete (list)' }, slug: { type: 'string', description: 'Slug override (add)' } },

@@ -115,8 +115,32 @@ export const NotesEditor = memo(function NotesEditor() {
       message: r.rebuildOk ? `Published → ${r.newPath}` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
     })
     notes.closeFile(path, true)
+    // Rescan the vault (draft file was moved to log/) then open the published
+    // post, and refresh every blog list so the post shows as published:
+    // it leaves Drafts, appears in Recent, and updates its project's devlog.
+    await notes.loadVaultFiles()
     if (r.newPath) await notes.openFile(r.newPath)
     void blog.refreshDrafts()
+    void blog.refreshRecentPosts()
+    void blog.refreshProjects()
+  }
+
+  // Re-publish an already-published post: save edits, then re-trigger the
+  // Eleventy build. No move, date unchanged.
+  const handleRepublish = async () => {
+    if (!activeFilePath || !isPublishedPath(activeFilePath)) return
+    const ui = useUiStore.getState()
+    const blog = useBlogStore.getState()
+    const notes = useNotesStore.getState()
+    if (isFileDirty(activeFilePath)) await notes.saveFile()
+    ui.pushToast({ kind: 'info', message: 'Re-publishing…' })
+    const r = await blog.republish(activeFilePath)
+    if (!r.ok) { ui.pushToast({ kind: 'error', message: `Re-publish failed: ${r.error}` }); return }
+    ui.pushToast({
+      kind: r.rebuildOk ? 'success' : 'error',
+      message: r.rebuildOk ? 'Re-published — site rebuilt' : `Saved but rebuild failed: ${r.rebuildBody ?? '?'}`,
+      href: permalink ?? undefined,
+    })
   }
 
   const displayName = (path: string) => {
@@ -187,7 +211,7 @@ export const NotesEditor = memo(function NotesEditor() {
 
       {/* Writing action bar — mobile-first thumb zone for posts */}
       {isWritingFile && (
-        <WriteActionBar path={activeFilePath!} onPublish={() => void handlePublish()} />
+        <WriteActionBar path={activeFilePath!} onPublish={() => void handlePublish()} onRepublish={() => void handleRepublish()} />
       )}
 
       {/* Status bar */}
@@ -204,6 +228,16 @@ export const NotesEditor = memo(function NotesEditor() {
             >
               <Send size={10} />
               publish
+            </button>
+          )}
+          {isPublishedPath(activeFilePath) && !isWritingFile && (
+            <button
+              onClick={() => { void handleRepublish() }}
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded-sm transition-colors"
+              title="Re-publish (save edits + rebuild the site)"
+            >
+              <Send size={10} />
+              re-publish
             </button>
           )}
           {isPublishedPath(activeFilePath) && permalink && (

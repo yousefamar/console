@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
-import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
+import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, republishPost, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -125,6 +125,22 @@ export function handleBlogRoutes(
         const { path: fromPath } = JSON.parse(body) as { path?: string }
         if (!fromPath) return json(res, 400, { ok: false, error: 'Missing `path`' })
         const result = await publishDraft(noteStore, fromPath)
+        json(res, result.ok ? 200 : 400, result)
+      } catch (err) {
+        json(res, 500, { ok: false, error: (err as Error).message })
+      }
+    }).catch((err) => json(res, 500, { ok: false, error: (err as Error).message }))
+    return true
+  }
+
+  // POST /blog/republish { path } → re-trigger the Eleventy build for an
+  // already-published post (edits go live; no move, date unchanged).
+  if (path === '/blog/republish' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      try {
+        const { path: postPath } = JSON.parse(body) as { path?: string }
+        if (!postPath) return json(res, 400, { ok: false, error: 'Missing `path`' })
+        const result = await republishPost(noteStore, postPath)
         json(res, result.ok ? 200 : 400, result)
       } catch (err) {
         json(res, 500, { ok: false, error: (err as Error).message })

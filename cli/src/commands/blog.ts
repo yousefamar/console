@@ -33,6 +33,7 @@ export async function blog(verb: string | undefined, args: string[], flags: Glob
     case 'drafts': return draftsCmd(args, flags)
     case 'draft': return draftCmd(args, flags)
     case 'publish': return publishCmd(args, flags)
+    case 'republish': return republishCmd(args, flags)
     case 'projects': return projectsCmd(args, flags)
     case 'tags': return tagsCmd(flags)
     case 'posts': return postsCmd(args, flags)
@@ -40,7 +41,7 @@ export async function blog(verb: string | undefined, args: string[], flags: Glob
     default:
       exitWithError(
         'USAGE',
-        `Unknown blog command: ${verb ?? ''}. Try: drafts, draft, publish, projects, posts, tags, status.`,
+        `Unknown blog command: ${verb ?? ''}. Try: drafts, draft, publish, republish, projects, posts, tags, status.`,
         flags,
       )
   }
@@ -89,6 +90,20 @@ async function publishCmd(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   const r = await hubFetch<PublishResult>('/blog/publish', {
+    method: 'POST',
+    body: { path },
+  })
+  if (!r.ok) { exitWithError('SERVER', r.error ?? 'unknown error', flags); return }
+  output(r, flags)
+}
+
+async function republishCmd(args: string[], flags: GlobalFlags): Promise<void> {
+  const path = args[0] ?? parseFlags(args).path
+  if (!path) {
+    exitWithError('USAGE', 'Usage: con blog republish <log/…​.md>', flags)
+    return
+  }
+  const r = await hubFetch<PublishResult>('/blog/republish', {
     method: 'POST',
     body: { path },
   })
