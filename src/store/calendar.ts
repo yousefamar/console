@@ -345,6 +345,17 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       } else {
         newVisible = visibleCalendarIds
       }
+      // The saved visibleIds pref predates overlay sources (Meetup, OutdoorLads),
+      // so loading it above would drop their visibility even though the user
+      // never toggled them off. Re-assert visibility for any overlay the user
+      // hasn't explicitly hidden: a first-seen overlay defaults visible (its id
+      // is absent from OVERLAY_SEEN_PREF), which the register step already added
+      // to the in-memory set — union that back in so fetchCalendars can't clobber it.
+      const seenOverlays = getPref<string[]>(OVERLAY_SEEN_PREF, [])
+      for (const id of Object.keys(get().overlaySources)) {
+        // Visible if: not yet seen (defaults on) OR currently in the live set.
+        if (!seenOverlays.includes(id) || visibleCalendarIds.has(id)) newVisible.add(id)
+      }
 
       set({ calendars: withOverlays, connected: true, visibleCalendarIds: newVisible })
     } catch (err) {
@@ -520,8 +531,18 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       const next = new Set(s.visibleCalendarIds)
       if (!seen.includes(id)) {
         next.add(id)
-        setPref(OVERLAY_SEEN_PREF, [...seen, id])
-        if (isPrefsLoaded()) setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
+        // Mark seen and persist visibility ATOMICALLY — both or neither. The old
+        // code marked seen unconditionally but only persisted visibleIds when
+        // prefs were loaded; at boot the register runs before initPrefs resolves,
+        // so the overlay got recorded as "seen" while its visibility was never
+        // saved. Next boot it was seen-but-absent-from-visibleIds → treated as an
+        // intentional opt-out and its toggle silently vanished. Gating both on
+        // isPrefsLoaded keeps them consistent; if prefs aren't ready we defer
+        // marking seen (a later register once prefs load will do it).
+        if (isPrefsLoaded()) {
+          setPref(OVERLAY_SEEN_PREF, [...seen, id])
+          setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
+        }
       }
       return { overlaySources, calendars, visibleCalendarIds: next }
     })
