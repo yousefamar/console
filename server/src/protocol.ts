@@ -215,6 +215,9 @@ export interface SessionInfo {
   /** Hub-persisted: index of the last message the user has marked read.
    *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
   lastReadIndex?: number
+  /** Idle subprocess was reaped to reclaim memory; session wakes (re-spawns
+   *  with --resume) transparently on the next message. */
+  hibernated?: boolean
   /** Live count of direct child processes of the claude subprocess —
    *  approximates background `Bash{run_in_background:true}` shells still
    *  alive. From `ps -eo pid,ppid` via `process-tree.ts`; refreshed on a

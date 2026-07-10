@@ -6,7 +6,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Mic, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
 import { useMicStore } from '@/store/mic'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
@@ -658,6 +658,11 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               )}
               {session.hasUnread && (
                 <Circle size={5} className="fill-current text-blue-500 flex-shrink-0" />
+              )}
+              {session.hibernated && session.status !== 'ended' && (
+                <span title="Hibernated — subprocess reaped to save memory; wakes on next message" className="flex-shrink-0 flex items-center">
+                  <Moon size={9} className="text-text-quaternary" />
+                </span>
               )}
               <StatusDot status={session.status} />
             </div>

@@ -430,6 +430,9 @@ syncBus.register('matrix', {
   // Discard the outbound Megolm session for a room so the next send forces
   // a fresh shareRoomKey round — used when a bridge reports FAIL_RETRIABLE.
   rotateRoomKey: async (args) => matrixSync.rotateRoomKey(args as { roomId: string }),
+  // Auto-recovery from bridge FAIL_RETRIABLE: decrypt the wedged event,
+  // rotate the room key, resend the same plaintext as a fresh event.
+  resendAfterRotate: async (args) => matrixSync.resendAfterRotate(args as { roomId: string; eventId: string }),
 })
 // Hub-owned chat-rooms snapshot RPCs. Clients call `snapshot` on first connect
 // and after reconnect; every other mutation either flows through here
@@ -684,6 +687,23 @@ cronScheduler.start()
 // Delegation watchdog: nudge stalled in-progress tasks, eventually bubble a
 // stall report. 5-min cadence (the staleness threshold inside is 15 min).
 setInterval(() => { try { runTaskWatchdog(agentCtx) } catch (e) { log(`[tasks] watchdog: ${(e as Error).message}`) } }, 5 * 60_000)
+
+// Idle hibernation sweep: every live `claude` subprocess holds ~250MB RSS
+// even while idle — dozens of parked sessions were costing >10GB. Reap the
+// subprocess of sessions idle >30min (session entry, log, and unread state
+// stay; sendMessage transparently re-spawns with --resume). Al is exempt —
+// he's the always-on front door (WhatsApp/voice inbound wants zero wake lag).
+const HIBERNATE_AFTER_MS = 30 * 60_000
+setInterval(() => {
+  try {
+    const now = Date.now()
+    for (const s of sessions.values()) {
+      if (s.agentKey === 'al') continue
+      if (now - s.lastActivityAt < HIBERNATE_AFTER_MS) continue
+      if (s.hibernate()) log(`[hibernate] reaped idle subprocess of ${s.id} (${s.name ?? 'unnamed'})`)
+    }
+  } catch (e) { log(`[hibernate] sweep: ${(e as Error).message}`) }
+}, 5 * 60_000)
 
 // Wire Al session updates to broadcast full session list
 alBridge.onSessionUpdate = () => {
@@ -1634,6 +1654,12 @@ httpServer.listen(port, host, () => {
           needsAttention: entry.needsAttention,
           restoreMessageLogLength: entry.messageLogLength,
           modelOverride: entry.modelOverride,
+          // Idle sessions restore straight into hibernation — no subprocess
+          // until their first message (a restart used to thunder-herd 40+
+          // claude spawns ≈ 12GB RSS). Mid-turn sessions (wasRunning → the
+          // "continue" nudge below wakes them) and Al (always-on front door,
+          // handled by ensureAlSession) spawn live.
+          hibernateOnStart: !entry.wasRunning && entry.agentKey !== 'al',
         })
         // If the session was mid-turn when the hub stopped, nudge it to
         // continue where it left off. Silent resume alone leaves it idle.

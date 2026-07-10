@@ -106,6 +106,9 @@ export interface SessionInfo {
   /** Live child-process count from `ps -eo pid,ppid` on the claude PID —
    *  approximates running background bashes. Refreshed on sessions_list. */
   backgroundProcessCount?: number
+  /** Idle subprocess reaped to reclaim memory — wakes transparently on the
+   *  next message. Purely informational (moon glyph in the list). */
+  hibernated?: boolean
   /** Set when the session emitted `@amar` (wants Yousef's eyes). Sticky red
    *  marker in the sidebar; cleared on open / mark-read. */
   needsAttention?: { ts: number; snippet: string } | null

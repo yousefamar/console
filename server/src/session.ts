@@ -87,6 +87,12 @@ export interface SessionOptions {
    *  (`messageLogLength > lastReadIndex`) collapses to false for every session
    *  on restart. Persisted in the manifest. */
   restoreMessageLogLength?: number
+  /** Restore the session directly into hibernation: NO subprocess is spawned
+   *  until the first message arrives (sendMessage wakes it with --resume).
+   *  Used by the hub-restart restore loop for idle sessions so a restart
+   *  doesn't thunder-herd 40+ claude spawns (~250MB RSS each). Requires
+   *  `resume`; ignored for forks/fresh spawns. */
+  hibernateOnStart?: boolean
   /** Per-session model pin. When set, THIS session spawns with (and stays on)
    *  this model instead of the hub-wide ModelConfig one, and fleet-wide model
    *  changes skip it. Persisted in the manifest. */
@@ -177,6 +183,14 @@ export class Session extends EventEmitter {
     }
     // Restore a pending @amar marker across hub restarts.
     if (options.needsAttention) this.needsAttention = options.needsAttention
+    // Restore-into-hibernation: skip the spawn entirely — the first message
+    // wakes the session with --resume (sendMessage → wakeFromHibernation).
+    // Keeps hub restarts light: 40+ idle sessions = zero claude processes.
+    if (options.hibernateOnStart && options.resume && !options.fork) {
+      this.status = 'idle'
+      this.hibernated = true
+      return
+    }
     this.spawn(options)
     // Send the initial prompt via stdin (since we use --input-format stream-json instead of -p)
     // For silent resumes (hub restart restore), skip — Claude resumes idle, waiting for user input
@@ -280,6 +294,23 @@ export class Session extends EventEmitter {
         this.doModelRespawn()
         return
       }
+      // Hibernation: we killed the subprocess of an idle session to reclaim
+      // its ~250MB RSS. The session stays alive (idle, log + unread intact) —
+      // it re-spawns with --resume the moment a message arrives (sendMessage).
+      // (If the user killed the session while the hibernation SIGKILL was in
+      // flight, endedByUser wins — fall through to the normal ended path.)
+      if (this.hibernating && !this.endedByUser) {
+        this.hibernating = false
+        this.hibernated = true
+        // A message raced in while the process was dying — wake immediately.
+        const pending = this.pendingWakeMessage
+        if (pending) {
+          this.pendingWakeMessage = null
+          this.wakeFromHibernation()
+          this.sendMessage(pending.content, pending.images)
+        }
+        return
+      }
       // If process exited after an interrupt and we have a claudeSessionId,
       // auto-resume instead of ending the session
       if (this.interrupted && this.claudeSessionId) {
@@ -333,6 +364,17 @@ export class Session extends EventEmitter {
 
   /** Send a follow-up user prompt, optionally with images */
   sendMessage(content: string, images?: ImageAttachment[]) {
+    this.lastActivityAt = Date.now()
+    // Hibernated (or mid-hibernation) — bring the subprocess back first.
+    if (this.hibernating) {
+      // SIGKILL in flight; the exit handler wakes + sends this for us.
+      this.pendingWakeMessage = { content, images }
+      this.status = 'running'
+      return
+    }
+    if (this.hibernated) {
+      this.wakeFromHibernation()
+    }
     this.status = 'running'
     if (images && images.length > 0) {
       const blocks: ClaudeStdinContentBlock[] = images.map((img) => ({
@@ -366,6 +408,8 @@ export class Session extends EventEmitter {
         response: inner,
       },
     }
+    this.approvalPending = false
+    this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
   }
 
@@ -379,6 +423,8 @@ export class Session extends EventEmitter {
         response: { behavior: 'deny', message: reason ?? 'Denied by user' },
       },
     }
+    this.approvalPending = false
+    this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
   }
 
@@ -421,6 +467,56 @@ export class Session extends EventEmitter {
   /** Count of consecutive model restarts (reset on successful init). */
   private modelRestarts = 0
 
+  // --- Idle hibernation (see index.ts sweep) ---------------------------------
+  // A live `claude` subprocess holds ~250MB RSS even when idle; dozens of
+  // parked sessions = many GB. Hibernation kills the subprocess of a
+  // long-idle session while keeping the Session entry (message log, unread
+  // state, claudeSessionId) — the process transparently re-spawns with
+  // --resume on the next message.
+  /** Set while the hibernation SIGKILL is in flight (exit handler pending). */
+  private hibernating = false
+  /** True when the subprocess is dead by hibernation (not ended). */
+  hibernated = false
+  /** Message that arrived during the hibernating window — sent after exit→wake. */
+  private pendingWakeMessage: { content: string; images?: ImageAttachment[] } | null = null
+  /** Wall-clock of the last user message or completed turn — the idle clock. */
+  lastActivityAt = Date.now()
+  /** An approval (AskUserQuestion / plan) is outstanding — hibernating now
+   *  would orphan the pending control_request, making it unanswerable. */
+  approvalPending = false
+
+  /** True when this session is safe to hibernate: idle for real (no pending
+   *  approval, not mid-anything), with a resumable claudeSessionId. */
+  canHibernate(): boolean {
+    return this.status === 'idle'
+      && !this.endedByUser
+      && !this.hibernated
+      && !this.hibernating
+      && !this.restartingForModel
+      && !this.reloading
+      && !this.approvalPending
+      && this.processAlive
+      && !!this.claudeSessionId
+  }
+
+  /** Kill the idle subprocess to reclaim its memory. The exit handler flips
+   *  `hibernated`; the session stays 'idle' and wakes on the next message. */
+  hibernate(): boolean {
+    if (!this.canHibernate()) return false
+    this.hibernating = true
+    this.stdinReady = false
+    // SIGKILL: instant, nothing to flush — mirrors restartForModelChange.
+    this.process!.kill('SIGKILL')
+    return true
+  }
+
+  /** Re-spawn a hibernated session with --resume (history preserved, no
+   *  system-prompt re-append — spawn() only appends on fresh starts). */
+  private wakeFromHibernation() {
+    this.hibernated = false
+    this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId!, silent: true, name: this.name })
+  }
+
   /** Kill the session */
   kill() {
     this.endedByUser = true
@@ -429,6 +525,10 @@ export class Session extends EventEmitter {
     // 'running'), so a killed fork could linger as running in the list.
     this.status = 'ended'
     this.stdinReady = false
+    // An explicit end supersedes hibernation state (whatever its phase).
+    this.hibernating = false
+    this.hibernated = false
+    this.pendingWakeMessage = null
     if (this.process) {
       this.process.kill('SIGTERM')
     }
@@ -449,6 +549,9 @@ export class Session extends EventEmitter {
    *  interrupt-resume path). No-op once the per-session restart cap is hit. */
   restartForModelChange() {
     if (this.endedByUser) return
+    // Hibernated sessions have no process to move — they resolve the (new)
+    // model at wake time. Respawning here would wake the whole fleet.
+    if (this.hibernated || this.hibernating) return
     if (this.restartingForModel) return // a restart is already in flight
     if (this.modelRestarts >= MAX_MODEL_RESTARTS) {
       this.emitHub({ type: 'error', sessionId: this.id, message: `Model fallback gave up after ${MAX_MODEL_RESTARTS} restarts — set a working model.` })
@@ -566,6 +669,7 @@ export class Session extends EventEmitter {
       modelOverride: this.modelOverride,
       messageLogLength: this.messageLogLength,
       lastReadIndex: getLastReadIndex(this.claudeSessionId),
+      hibernated: this.hibernated || undefined,
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
       gitBranch: this.gitBranch,
@@ -661,7 +765,10 @@ export class Session extends EventEmitter {
 
         if (subtype === 'can_use_tool') {
           if (toolName === 'AskUserQuestion' || toolName === 'ExitPlanMode') {
-            // These tools need user input/approval — forward to frontend
+            // These tools need user input/approval — forward to frontend.
+            // Blocks hibernation: killing the process now would orphan the
+            // pending control_request and the answer could never be delivered.
+            this.approvalPending = true
             this.emitHub({
               type: 'approval_required',
               sessionId: this.id,
@@ -735,6 +842,7 @@ export class Session extends EventEmitter {
 
   private handleResultMessage(msg: ClaudeStdoutMessage & { type: 'result' }) {
     this.status = 'idle'
+    this.lastActivityAt = Date.now()
     // total_cost_usd is cumulative (session total), not per-turn
     this.totalCost = msg.total_cost_usd
     this.totalTokens.input += msg.usage.input_tokens
