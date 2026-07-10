@@ -145,7 +145,10 @@ export function handleBlogRoutes(
     }
     fetch(target, { method: 'HEAD', signal: AbortSignal.timeout(10000) })
       .then((r) => {
-        json(res, 200, { etag: r.headers.get('etag') ?? r.headers.get('last-modified') })
+        json(res, 200, {
+          etag: r.headers.get('etag') ?? r.headers.get('last-modified'),
+          lastModified: r.headers.get('last-modified'),
+        })
       })
       .catch((err) => json(res, 502, { error: (err as Error).message }))
     return true

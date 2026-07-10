@@ -72,6 +72,8 @@ export interface CreateProjectResult {
   error?: string
 }
 
+export type LiveStatus = 'live' | 'stale' | 'building' | 'unknown'
+
 interface BlogState {
   drafts: DraftSummary[]
   projects: ProjectSummary[]
@@ -96,6 +98,14 @@ interface BlogState {
   /** Poll a permalink until its ETag moves off the given baseline (build
    *  landed). Resolves false after ~3 minutes. */
   waitForSiteUpdate: (url: string, baselineEtag: string | null) => Promise<boolean>
+  /** Persistent live-state per published post path. 'live' = the deployed
+   *  page was built after the local file's last save; 'stale' = local edits
+   *  not yet on the site; 'building' = a queued build is being polled. */
+  liveStatusByPath: Record<string, LiveStatus>
+  setLiveStatus: (path: string, status: LiveStatus) => void
+  /** Probe the permalink and compare its Last-Modified against the local
+   *  file's mtime; updates liveStatusByPath. */
+  checkLiveStatus: (path: string) => Promise<void>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
    * Create a new draft in `scratch/blog-drafts/`, write starter frontmatter
@@ -234,6 +244,34 @@ export const useBlogStore = create<BlogState>((set) => ({
       return r.etag
     } catch {
       return null
+    }
+  },
+
+  liveStatusByPath: {},
+
+  setLiveStatus: (path, status) => {
+    set((s) => ({ liveStatusByPath: { ...s.liveStatusByPath, [path]: status } }))
+  },
+
+  checkLiveStatus: async (path: string) => {
+    const { permalinkForLogPath } = await import('@/utils/frontmatter')
+    const url = permalinkForLogPath(path)
+    if (!url) return
+    try {
+      const r = await hubFetch<{ lastModified: string | null }>(`/blog/page-etag?url=${encodeURIComponent(url)}`, { timeoutMs: 12000 })
+      const pageMs = r.lastModified ? Date.parse(r.lastModified) : NaN
+      const { useNotesStore } = await import('./notes')
+      const fileMtime = useNotesStore.getState().files.find((f) => f.path === path)?.mtime ?? 0
+      if (Number.isNaN(pageMs)) {
+        useBlogStore.getState().setLiveStatus(path, 'unknown')
+      } else {
+        // Page built after the local file's last write → in sync. Small
+        // clock skew between this machine and the VPS can blur the boundary;
+        // a save always flips to 'stale' locally regardless.
+        useBlogStore.getState().setLiveStatus(path, pageMs >= fileMtime ? 'live' : 'stale')
+      }
+    } catch {
+      useBlogStore.getState().setLiveStatus(path, 'unknown')
     }
   },
 
