@@ -434,6 +434,10 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           ...s.openFiles,
           [filePath]: { ...s.openFiles[filePath]!, savedContent: file.content },
         },
+        // Bump the in-memory mtime so consumers that compare against it
+        // (recency sorts, the blog live-status chip) see the write without
+        // waiting for a full vault rescan.
+        files: s.files.map((f) => (f.path === filePath ? { ...f, mtime: Date.now() } : f)),
       }))
 
       // Update search index

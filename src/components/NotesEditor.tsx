@@ -7,6 +7,7 @@ import { ProjectPill } from './notes/ProjectPill'
 import { ProjectPanel } from './notes/ProjectPanel'
 import { WriteMetaBar } from './notes/WriteMetaBar'
 import { WriteActionBar } from './notes/WriteActionBar'
+import { LiveStatusChip } from './notes/LiveStatusChip'
 import { X, ChevronLeft, ExternalLink, Send } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
@@ -125,13 +126,20 @@ export const NotesEditor = memo(function NotesEditor() {
     void blog.refreshDrafts()
     void blog.refreshRecentPosts()
     void blog.refreshProjects()
-    // Background verify: toast again when the post is genuinely live.
+    // Background verify: drive the live-status chip and toast when the post
+    // is genuinely live.
     if (r.rebuildOk && r.newPath) {
-      const url = permalinkForLogPath(r.newPath)
+      const newPath = r.newPath
+      const url = permalinkForLogPath(newPath)
       if (url) {
+        blog.setLiveStatus(newPath, 'building')
         void (async () => {
           const baseline = await blog.fetchPageEtag(url)
           const live = await blog.waitForSiteUpdate(url, baseline)
+          // Resolve the final state via mtime comparison — the user may have
+          // saved MORE edits while the build was in flight, in which case the
+          // chip should land on 'stale', not 'live'.
+          await blog.checkLiveStatus(newPath)
           ui.pushToast(live
             ? { kind: 'success', message: 'Post is live', href: url }
             : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
@@ -160,8 +168,12 @@ export const NotesEditor = memo(function NotesEditor() {
     }
     if (permalink) {
       const url = permalink
+      const path = activeFilePath
+      blog.setLiveStatus(path, 'building')
       void (async () => {
         const live = await blog.waitForSiteUpdate(url, baseline)
+        // mtime comparison is ground truth — covers edits saved mid-build.
+        await blog.checkLiveStatus(path)
         ui.pushToast(live
           ? { kind: 'success', message: 'Edit is live', href: url }
           : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
@@ -255,6 +267,9 @@ export const NotesEditor = memo(function NotesEditor() {
               <Send size={10} />
               publish
             </button>
+          )}
+          {isPublishedPath(activeFilePath) && (
+            <LiveStatusChip path={activeFilePath!} />
           )}
           {isPublishedPath(activeFilePath) && !isWritingFile && (
             <button
