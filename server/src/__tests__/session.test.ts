@@ -687,3 +687,123 @@ describe('Session per-session model pin', () => {
     expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-4-6')
   })
 })
+
+// --------------------------------------------------------------------------
+// Idle hibernation — reap idle subprocesses, wake on demand via --resume
+// --------------------------------------------------------------------------
+
+describe('Session hibernation', () => {
+  async function initedIdleSession(): Promise<Session> {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_hib', model: 'claude-opus-4-8', slash_commands: [] })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_hib', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.status).toBe('idle')
+    return session
+  }
+
+  it('hibernate kills the subprocess but keeps the session idle (no session_ended)', async () => {
+    const session = await initedIdleSession()
+    const messages = collectHubMessages(session)
+    expect(session.hibernate()).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.hibernated).toBe(true)
+    expect(session.status).toBe('idle')
+    expect(messages.find((m) => m.type === 'session_ended')).toBeUndefined()
+    expect(session.getInfo().hibernated).toBe(true)
+  })
+
+  it('sendMessage wakes a hibernated session via --resume and delivers the message', async () => {
+    const session = await initedIdleSession()
+    session.hibernate()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.hibernated).toBe(true)
+
+    session.sendMessage('wake up please')
+    // Re-spawned with --resume of the same claude session
+    expect(lastSpawnArgs!.args).toContain('--resume')
+    expect(lastSpawnArgs!.args).toContain('claude_hib')
+    expect(session.hibernated).toBe(false)
+    expect(session.status).toBe('running')
+    // The message went to the NEW process's stdin
+    const written = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
+    expect(written.some((w: any) => w.type === 'user' && w.message?.content === 'wake up please')).toBe(true)
+  })
+
+  it('does not hibernate while running, ended, or with a pending approval', async () => {
+    const session = await initedIdleSession()
+    // Pending approval blocks
+    sendStdoutJson({ type: 'control_request', request_id: 'r1', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: {} } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.canHibernate()).toBe(false)
+    session.approveTool('r1')
+    expect(session.canHibernate()).toBe(true)
+    // Running blocks
+    session.sendMessage('busy now')
+    expect(session.canHibernate()).toBe(false)
+  })
+
+  it('kill during hibernation wins — session ends', async () => {
+    const session = await initedIdleSession()
+    // Start hibernating, then the user kills before exit fires… simulate by
+    // setting endedByUser via kill() (which also SIGTERMs the dying proc).
+    session.hibernate()
+    session.kill()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.status).toBe('ended')
+    expect(session.hibernated).toBe(false)
+  })
+
+  it('message arriving mid-hibernation (before exit) is queued and delivered after wake', async () => {
+    const session = await initedIdleSession()
+    // MockProcess.kill emits exit synchronously, so simulate the in-flight
+    // window by intercepting kill to delay the exit.
+    const proc = mockProcess
+    const origKill = proc.kill.bind(proc)
+    proc.kill = () => { /* swallow — exit not yet fired */ }
+    session.hibernate()
+    session.sendMessage('queued during death')
+    expect(session.status).toBe('running')
+    // Now the old process finally exits
+    proc.kill = origKill
+    proc.emit('exit', 0)
+    await new Promise((r) => setTimeout(r, 10))
+    // Woke + delivered
+    expect(lastSpawnArgs!.args).toContain('--resume')
+    const written = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
+    expect(written.some((w: any) => w.type === 'user' && w.message?.content === 'queued during death')).toBe(true)
+  })
+})
+
+describe('Session hibernateOnStart (restore path)', () => {
+  it('restores without spawning; first message wakes with --resume', () => {
+    lastSpawnArgs = null
+    const session = new Session({ prompt: 'old prompt', resume: 'claude_cold', silent: true, hibernateOnStart: true, restoreMessageLogLength: 42 })
+    // No subprocess was spawned
+    expect(lastSpawnArgs).toBeNull()
+    expect(session.status).toBe('idle')
+    expect(session.hibernated).toBe(true)
+    expect(session.getInfo().messageLogLength).toBe(42)
+    // First message wakes it
+    session.sendMessage('good morning')
+    expect(lastSpawnArgs).not.toBeNull()
+    expect(lastSpawnArgs!.args).toContain('--resume')
+    expect(lastSpawnArgs!.args).toContain('claude_cold')
+    expect(session.hibernated).toBe(false)
+    const written = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
+    expect(written.some((w: any) => w.type === 'user' && w.message?.content === 'good morning')).toBe(true)
+  })
+
+  it('model changes skip hibernated sessions (no wake); pin stored for wake', async () => {
+    const session = new Session({ prompt: 'x', resume: 'claude_cold2', silent: true, hibernateOnStart: true })
+    lastSpawnArgs = null
+    session.restartForModelChange()
+    expect(lastSpawnArgs).toBeNull() // still asleep
+    const r = await session.setSessionModel('claude-sonnet-5')
+    expect(r.ok).toBe(true)
+    expect(lastSpawnArgs).toBeNull() // pin stored, still asleep
+    session.sendMessage('wake')
+    const i = lastSpawnArgs!.args.indexOf('--model')
+    expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-5') // pin applied at wake
+  })
+})
