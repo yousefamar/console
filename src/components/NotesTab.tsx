@@ -37,6 +37,16 @@ export const NotesTab = memo(function NotesTab() {
     // Without this, opening Console straight into Notes leaves projects=[]
     // and the pill never appears.
     void useBlogStore.getState().refreshProjects()
+    // When the hub reconnects, retry any images that failed to resolve while
+    // it was down — otherwise they'd show "not found" until the negative
+    // cache TTL expires or the page is reloaded.
+    let unsub: (() => void) | undefined
+    void import('@/sync-bus').then(({ hubBus }) => {
+      import('@/notes/live-preview').then(({ retryFailedImages }) => {
+        unsub = hubBus.onConnect(() => retryFailedImages())
+      })
+    })
+    return () => unsub?.()
   }, [])
 
   // On switching TO the Notes tab: rescan the vault, auto-open the page the pen
