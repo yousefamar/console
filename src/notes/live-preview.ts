@@ -83,16 +83,42 @@ class LinkWidget extends WidgetType {
   }
 }
 
-// Image blob URL cache — resolves vault-relative paths to displayable blob URLs
-// Special sentinel for "not found" so we don't retry
+// Image blob URL cache — resolves vault-relative paths to displayable blob URLs.
+// Successful resolutions cache the blob URL forever; misses are cached only
+// briefly (NEGATIVE_TTL) so a TRANSIENT failure — hub restarting, an asset
+// route not yet deployed, a network blip — self-heals on the next render
+// instead of poisoning the image until a full page reload.
 const IMAGE_NOT_FOUND = '__not_found__'
+const NEGATIVE_TTL = 20_000
 const imageBlobCache = new Map<string, string>()
+const imageNotFoundAt = new Map<string, number>()
 const imagePendingLoads = new Set<string>()
 let imageLoadCallback: (() => void) | null = null
 
+/** Synchronous cache read for the widget: returns a blob URL, the not-found
+ *  sentinel (only while the negative entry is still fresh), or undefined. */
+function readImageCache(cacheKey: string): string | undefined {
+  const url = imageBlobCache.get(cacheKey)
+  if (url) return url
+  const missedAt = imageNotFoundAt.get(cacheKey)
+  if (missedAt !== undefined) {
+    if (Date.now() - missedAt < NEGATIVE_TTL) return IMAGE_NOT_FOUND
+    imageNotFoundAt.delete(cacheKey) // expired — allow a retry
+  }
+  return undefined
+}
+
+/** Clear all negative cache entries and re-render, so poisoned images retry
+ *  immediately (e.g. after the hub reconnects). */
+export function retryFailedImages(): void {
+  if (imageNotFoundAt.size === 0) return
+  imageNotFoundAt.clear()
+  imageLoadCallback?.()
+}
+
 async function resolveVaultImage(src: string, fromFile: string): Promise<string | null> {
   const cacheKey = `${fromFile}::${src}`
-  const cached = imageBlobCache.get(cacheKey)
+  const cached = readImageCache(cacheKey)
   if (cached === IMAGE_NOT_FOUND) return null
   if (cached) return cached
   if (imagePendingLoads.has(cacheKey)) return null
@@ -110,8 +136,9 @@ async function resolveVaultImage(src: string, fromFile: string): Promise<string 
   imagePendingLoads.delete(cacheKey)
   if (url) {
     imageBlobCache.set(cacheKey, url)
+    imageNotFoundAt.delete(cacheKey)
   } else {
-    imageBlobCache.set(cacheKey, IMAGE_NOT_FOUND)
+    imageNotFoundAt.set(cacheKey, Date.now())
   }
   // Trigger decoration rebuild either way (to show found image or "not found")
   imageLoadCallback?.()
@@ -125,7 +152,7 @@ class ImageWidget extends WidgetType {
     wrapper.className = 'cm-image-widget'
 
     const cacheKey = `${this.fromFile}::${this.src}`
-    const cached = imageBlobCache.get(cacheKey)
+    const cached = readImageCache(cacheKey)
 
     if (cached && cached !== IMAGE_NOT_FOUND) {
       const img = document.createElement('img')
