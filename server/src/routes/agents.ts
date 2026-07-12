@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
+import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
 import type { AgentRegistry } from '../agents/registry.js'
 import type { TaskStore, AgentTask } from '../agents/tasks.js'
 import { checkDelegation, buildChain, chainLabel } from '../agents/delegation.js'
@@ -141,9 +142,52 @@ export function restartAllSessionsForModel(ctx: AgentContext) {
   }
 }
 
-/** Broadcast the current model state to all clients. */
+/** Force every live session to respawn (never the in-place set_model fast
+ *  path). Required for a BACKEND switch: each `claude` subprocess resolves its
+ *  backend from `~/.claude/settings.json` env at its OWN startup — an
+ *  already-running process can't pick up a rewritten env file, so `set_model`
+ *  alone would leave it authenticated against the OLD backend while trying the
+ *  NEW backend's model id (400). Model-only changes should keep using
+ *  `restartAllSessionsForModel`'s fast path; only use this for `applyBackendSwitch`. */
+function forceRestartAllSessionsForBackend(ctx: AgentContext) {
+  for (const s of ctx.sessions.values()) {
+    if (s.status === 'ended') continue
+    s.restartForModelChange() // no-ops for hibernated/hibernating sessions — they resolve fresh at wake
+  }
+}
+
+/** Switch the auth backend (Claude Max subscription ↔ Amazon Bedrock): rewrite
+ *  settings.json's env, swap the model chain to that backend's verified id
+ *  format, and force every live session to respawn. See auth-backend.ts for
+ *  why this can't use the model-only fast path. */
+export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): BackendPreset {
+  const preset = BACKEND_PRESETS[backend]
+  writeBackendSettings(backend)
+  ctx.modelConfig.setChain(preset.chain)
+  ctx.modelConfig.setModel(preset.chain[0]!)
+  // A per-session model pin carries a bare id.model id from whichever backend
+  // it was set under — it won't auto-translate. Surface any that now look
+  // mismatched (heuristic: Bedrock ids carry the `us.anthropic.` prefix) so
+  // they get noticed instead of silently 400ing after the respawn.
+  const mismatched: string[] = []
+  for (const s of ctx.sessions.values()) {
+    const ov = s.modelOverride
+    if (!ov) continue
+    const looksBedrock = ov.startsWith('us.anthropic.')
+    if (looksBedrock !== (backend === 'bedrock')) mismatched.push(`${s.name ?? s.id} (pinned to '${ov}')`)
+  }
+  if (mismatched.length) {
+    ctx.log(`[backend] WARNING: pinned session(s) using a model id from the other backend, will likely 400 until re-pinned: ${mismatched.join(', ')}`)
+  }
+  ctx.log(`[backend] switched to '${preset.label}' — restarting all live sessions`)
+  broadcastModelState(ctx)
+  forceRestartAllSessionsForBackend(ctx)
+  return preset
+}
+
+/** Broadcast the current model + backend state to all clients. */
 export function broadcastModelState(ctx: AgentContext, extra?: { autoFellBack?: boolean; failedModel?: string }) {
-  broadcast(ctx.clients, { type: 'model_state', ...ctx.modelConfig.getState(), ...extra })
+  broadcast(ctx.clients, { type: 'model_state', ...ctx.modelConfig.getState(), backend: detectActiveBackend(), ...extra })
 }
 
 /** Apply a user-driven model change: persist, broadcast, heal the fleet. */

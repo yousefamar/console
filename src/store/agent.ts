@@ -219,6 +219,10 @@ interface AgentState {
   agentModel: string
   agentModelChain: string[]
   agentModelLockedByEnv: boolean
+  /** Which auth backend the fleet is currently spawning under. Distinct lever
+   *  from agentModel — switching this rewrites ~/.claude/settings.json's env
+   *  and forces a full respawn. Use for Max-subscription session limits. */
+  agentBackend: 'first_party' | 'bedrock' | null
   /** Set when the hub auto-fell-back after a model became unavailable. Drives a
    *  dismissible banner; cleared by dismissModelFallbackNotice. */
   modelFallbackNotice: { failedModel: string; model: string } | null
@@ -300,6 +304,11 @@ interface AgentState {
   listSessions: () => void
   /** Switch the model all hub agents spawn with (restarts live sessions). */
   setAgentModel: (model: string) => void
+  /** Switch the whole fleet's auth backend (Max subscription ↔ Bedrock).
+   *  Rewrites the hub's env + model chain and forces every live session to
+   *  respawn — use when session limits are hit. Resolves once the HTTP call
+   *  completes; the store also updates reactively via the model_state push. */
+  setAgentBackend: (backend: 'first_party' | 'bedrock') => Promise<void>
   /** Pin ONE session to a model, applied mid-session (in-place set_model with
    *  respawn fallback). null clears the pin — back to the hub-wide model. */
   setSessionModel: (sessionId: string, model: string | null) => void
@@ -402,6 +411,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   agentModel: '',
   agentModelChain: [],
   agentModelLockedByEnv: false,
+  agentBackend: null,
   modelFallbackNotice: null,
 
   sessions: [],
@@ -618,6 +628,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setAgentModel: (model) => {
     sendWs({ type: 'set_model', model })
+  },
+
+  setAgentBackend: async (backend) => {
+    const { getHubUrl } = await import('@/hub')
+    const res = await fetch(`${getHubUrl()}/agents/backend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error((body as { error?: string }).error ?? `switch failed (${res.status})`)
+    }
+    // Optimistic — the model_state broadcast (all clients, including us) confirms
+    // shortly after with the full chain, but this avoids a UI flash of stale state.
+    set({ agentBackend: backend })
   },
 
   setSessionModel: (sessionId, model) => {
@@ -1094,6 +1120,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         agentModel: msg.model as string,
         agentModelChain: (msg.chain as string[]) ?? [],
         agentModelLockedByEnv: !!msg.lockedByEnv,
+        ...(msg.backend ? { agentBackend: msg.backend as 'first_party' | 'bedrock' } : {}),
         ...(msg.autoFellBack
           ? { modelFallbackNotice: { failedModel: msg.failedModel as string, model: msg.model as string } }
           : {}),

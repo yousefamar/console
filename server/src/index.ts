@@ -29,7 +29,8 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, broadcastModelState, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
+import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -887,6 +888,43 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     return
   }
 
+  // Auth backend: Claude Max subscription ↔ Amazon Bedrock. See auth-backend.ts
+  // for why this is a distinct lever from /agents/model (env, not just model id).
+  if (path === '/agents/backend') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        backend: detectActiveBackend(),
+        presets: Object.values(BACKEND_PRESETS).map((p) => ({ id: p.id, label: p.label })),
+      }))
+      return
+    }
+    if (req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        try {
+          const { backend } = JSON.parse(raw || '{}') as { backend?: string }
+          if (backend !== 'first_party' && backend !== 'bedrock') {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: "backend must be 'first_party' or 'bedrock'" }))
+            return
+          }
+          const preset = applyBackendSwitch(agentCtx, backend as AuthBackend)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ backend: preset.id, label: preset.label, chain: preset.chain }))
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
   // Org-chart roles. GET inspects roles+tree; POST {agentKey, manager} reparents
   // (surgical frontmatter stamp). The out-of-band lever for `con agent role`.
   if (path === '/agents/roles') {
@@ -1379,8 +1417,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const dirs = discoverProjectDirs()
   sendTo(ws, { type: 'project_dirs', dirs })
 
-  // Send current agent-model config so the picker reflects reality on connect.
-  sendTo(ws, { type: 'model_state', ...modelConfig.getState() })
+  // Send current agent-model + backend config so the pickers reflect reality on connect.
+  sendTo(ws, { type: 'model_state', ...modelConfig.getState(), backend: detectActiveBackend() })
 
   // Send the org-chart roles + tree (mirror model_state; also pushed on change).
   sendTo(ws, { type: 'agents_list', roles: agentRegistry.list(), tree: agentRegistry.tree() })

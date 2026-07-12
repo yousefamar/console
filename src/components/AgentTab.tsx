@@ -6,7 +6,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
 import { useMicStore } from '@/store/mic'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
@@ -330,9 +330,16 @@ export const AgentTab = memo(function AgentTab() {
             })()}
           </div>
 
+          {/* Backend switch — Max subscription vs Bedrock. Distinct from the
+              model picker below: this rewrites the hub's auth env AND swaps the
+              model chain to that backend's id format, then forces every live
+              session to respawn. The lever for "we hit session limits". */}
+          <AgentBackendSwitch />
+
           {/* Model picker — switch the model all agents spawn with. The manual
               recovery lever when a model is pulled; auto-fallback handles the
-              rest. */}
+              rest. Grouped: direct Claude first-party (bare ids), then Bedrock
+              (us.anthropic.* prefixed). */}
           <div className="flex items-center gap-1.5 border-t border-border px-3 py-1.5">
             <span className="text-[10px] text-text-tertiary flex-shrink-0">Model</span>
             <select
@@ -349,6 +356,20 @@ export const AgentTab = memo(function AgentTab() {
               {agentModelChain.map((m, i) => (
                 <option key={m} value={m}>{m}{i === 0 ? '' : ` (fallback ${i})`}</option>
               ))}
+              <optgroup label="──────────"></optgroup>
+              <optgroup label="Direct (first-party)">
+                {!agentModelChain.includes('claude-fable-5') && <option value="claude-fable-5">claude-fable-5</option>}
+                {!agentModelChain.includes('claude-opus-4-8') && <option value="claude-opus-4-8">claude-opus-4-8</option>}
+                {!agentModelChain.includes('claude-sonnet-5') && <option value="claude-sonnet-5">claude-sonnet-5</option>}
+                {!agentModelChain.includes('claude-haiku-4-5-20251001') && <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>}
+              </optgroup>
+              <optgroup label="Bedrock">
+                {!agentModelChain.includes('us.anthropic.claude-fable-5') && <option value="us.anthropic.claude-fable-5">us.anthropic.claude-fable-5</option>}
+                {!agentModelChain.includes('us.anthropic.claude-opus-4-8') && <option value="us.anthropic.claude-opus-4-8">us.anthropic.claude-opus-4-8</option>}
+                {!agentModelChain.includes('us.anthropic.claude-opus-4-7') && <option value="us.anthropic.claude-opus-4-7">us.anthropic.claude-opus-4-7</option>}
+                {!agentModelChain.includes('us.anthropic.claude-sonnet-5') && <option value="us.anthropic.claude-sonnet-5">us.anthropic.claude-sonnet-5</option>}
+                {!agentModelChain.includes('us.anthropic.claude-haiku-4-5-20251001-v1:0') && <option value="us.anthropic.claude-haiku-4-5-20251001-v1:0">us.anthropic.claude-haiku-4-5-20251001-v1:0</option>}
+              </optgroup>
             </select>
             {agentModelLockedByEnv && (
               <span className="text-[9px] uppercase tracking-wider text-amber-400/80 flex-shrink-0" title="Pinned by CLAUDE_MODEL env var">env</span>
@@ -724,6 +745,67 @@ const AlListItem = memo(function AlListItem({ session, isActive, onSelect }: {
     </button>
   )
 })
+
+// --------------------------------------------------------------------------
+// Backend switch — Max subscription ↔ Bedrock. See setAgentBackend for what
+// actually happens (settings.json env rewrite + model chain swap + forced
+// fleet respawn). A segmented two-button control, not a <select>, since
+// there are exactly two options and the active one should read at a glance.
+// --------------------------------------------------------------------------
+
+function AgentBackendSwitch() {
+  const agentBackend = useAgentStore((s) => s.agentBackend)
+  const setAgentBackend = useAgentStore((s) => s.setAgentBackend)
+  const connected = useAgentStore((s) => s.connected)
+  const [switching, setSwitching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const switchTo = useCallback(async (backend: 'first_party' | 'bedrock') => {
+    if (backend === agentBackend || switching) return
+    setSwitching(true)
+    setError(null)
+    try {
+      await setAgentBackend(backend)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSwitching(false)
+    }
+  }, [agentBackend, switching, setAgentBackend])
+
+  const btn = (id: 'first_party' | 'bedrock', label: string, title: string) => (
+    <button
+      onClick={() => switchTo(id)}
+      disabled={!connected || switching}
+      title={title}
+      className={clsx(
+        'flex-1 px-1.5 py-0.5 text-[10px] font-medium transition-colors duration-fast disabled:cursor-not-allowed',
+        agentBackend === id
+          ? 'bg-accent/20 text-accent'
+          : 'text-text-tertiary hover:text-text-secondary disabled:opacity-60',
+      )}
+    >
+      {label}
+    </button>
+  )
+
+  return (
+    <div className="border-t border-border px-3 py-1.5">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] text-text-tertiary flex-shrink-0">Backend</span>
+        <div className="flex-1 flex items-center border border-border rounded-sm overflow-hidden">
+          {btn('first_party', 'Max sub', 'Claude Max subscription — fixed cost, hits 5h/weekly session limits under heavy fleet load')}
+          <div className="w-px bg-border self-stretch" />
+          {btn('bedrock', 'Bedrock', 'Amazon Bedrock — pay-per-token, no session limits')}
+        </div>
+        {switching && <Loader2 size={11} className="animate-spin text-text-tertiary flex-shrink-0" />}
+      </div>
+      {error && (
+        <div className="mt-1 text-[10px] text-destructive">{error}</div>
+      )}
+    </div>
+  )
+}
 
 // --------------------------------------------------------------------------
 // Helpers
