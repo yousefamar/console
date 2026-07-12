@@ -18,6 +18,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'chat': return agentChat(args, flags)
     case 'merge': return agentMerge(args, flags)
     case 'model': return agentModel(args, flags)
+    case 'backend': return agentBackend(args, flags)
     case 'role': return agentRole(args, flags)
     case 'revive': return agentRevive(args, flags)
     case 'delegate': return agentDelegate(args, flags)
@@ -323,6 +324,35 @@ async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 interface ModelState { model: string; chain: string[]; lockedByEnv: boolean }
+interface BackendState { backend: string; presets: Array<{ id: string; label: string }> }
+
+/** `con agent backend [get | set <first_party|bedrock>]` — switch which auth
+ *  backend the whole fleet spawns under. Distinct from `con agent model`: this
+ *  also rewrites ~/.claude/settings.json's env (each `claude` subprocess reads
+ *  its backend from there at its OWN startup) and swaps the model chain to
+ *  that backend's verified id format, then forces every live session to
+ *  respawn (the in-place model-switch fast path can't apply a new backend to
+ *  an already-running process). Use this when Max-subscription session limits
+ *  are hit (switch to bedrock) or once they reset (switch back). */
+async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  if (!sub || sub === 'get' || sub === 'list') {
+    const state = await hubFetch<BackendState>('/agents/backend')
+    output(state, flags)
+    return
+  }
+  if (sub === 'set') {
+    const backend = args[1]
+    if (backend !== 'first_party' && backend !== 'bedrock') {
+      exitWithError('USAGE', 'Usage: con agent backend set <first_party|bedrock>', flags)
+      return
+    }
+    const state = await hubFetch<{ backend: string; label: string; chain: string[] }>('/agents/backend', { method: 'POST', body: { backend } })
+    output(state, flags)
+    return
+  }
+  exitWithError('USAGE', `Unknown: con agent backend ${sub}. Usage: con agent backend [get | set <first_party|bedrock>]`, flags)
+}
 
 /** `con agent model` — inspect or switch the model all hub agents spawn with.
  *  The out-of-band recovery lever when Anthropic pulls a model: change it here,

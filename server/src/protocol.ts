@@ -106,7 +106,7 @@ export type HubMessage =
   /** Active agent model + fallback chain. Broadcast on change (manual set or
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
-  | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; autoFellBack?: boolean; failedModel?: string }
+  | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; backend?: 'first_party' | 'bedrock'; autoFellBack?: boolean; failedModel?: string }
   /** Org-chart roles + derived manager tree. Pushed on connect and on every
    *  registry change (an agent editing its file, a reparent, create/delete). */
   | { type: 'agents_list'; roles: AgentRole[]; tree: OrgNode[] }
