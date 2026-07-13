@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
 import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users } from 'lucide-react'
-import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type MeetupEvent } from '@/store/map'
+import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type MeetupEvent, type BuiltinLayerId } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
@@ -134,6 +134,7 @@ export function MapTab() {
     events, selectedEventId, meetupStatus, fetchingMeetup,
     meetupDays,
     selectEvent, setMeetupDays,
+    builtinVisible,
   } = useMapStore()
 
   const [showCreds, setShowCreds] = useState(false)
@@ -172,6 +173,7 @@ export function MapTab() {
       pushSource(m, 'meetup-pins', eventsToFC(st.events))
       pushSource(m, 'ot-track', trackToFC(st.track))
       pushSource(m, 'ot-current', currentToFC(st.current))
+      applyBuiltinVisibility(m, st.builtinVisible)
       reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
     })
 
@@ -240,6 +242,12 @@ export function MapTab() {
     if (readyRef.current && map) map.setFilter('meetup-selected', ['==', ['get', 'id'], selectedEventId ?? ''])
   }, [selectedEventId])
 
+  // built-in layer visibility → toggle the MapLibre layer `visibility` prop
+  useEffect(() => {
+    const map = mapRef.current
+    if (readyRef.current && map) applyBuiltinVisibility(map, builtinVisible)
+  }, [builtinVisible])
+
   // agent-authored layers → reconcile sources/layers + fit-to-bounds once
   useEffect(() => {
     const map = mapRef.current
@@ -263,79 +271,86 @@ export function MapTab() {
     <div className="relative flex flex-1 min-h-0">
       <div ref={containerRef} className="flex-1 min-h-0" />
 
-      {/* top toolbar */}
+      {/* top toolbar — the Layers button is always present; each layer's own
+          control cluster appears only while that layer is visible. */}
       <div className="absolute top-2 left-2 right-14 flex flex-wrap items-center gap-1.5 text-xs">
-        {/* time range */}
-        <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border pl-2 pr-1 py-1 backdrop-blur">
-          {loadingHistory ? <Loader2 size={12} className="animate-spin text-text-tertiary" /> : <Clock size={12} className="text-text-tertiary" />}
-          <select value={rangeSel} onChange={(e) => onRangeChange(e.target.value)} className="bg-transparent outline-none cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
-            <option value="1">Last 24h</option>
-            <option value="2">Last 48h</option>
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="365">Last year</option>
-            <option value="custom">Custom…</option>
-          </select>
-          {rangeSel === 'custom' && (
-            <>
-              <input type="date" value={ymd(rangeFrom)} onChange={(e) => e.target.value && void loadHistory(new Date(e.target.value).getTime(), rangeTo)} className="bg-transparent outline-none w-[7rem]" />
-              <span className="text-text-tertiary">→</span>
-              <input type="date" value={ymd(rangeTo)} onChange={(e) => e.target.value && void loadHistory(rangeFrom, new Date(e.target.value).getTime())} className="bg-transparent outline-none w-[7rem]" />
-            </>
-          )}
-          {devices.length > 1 && (
-            <select value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)} className="bg-transparent outline-none border-l border-border pl-1 [&>option]:bg-surface-0 [&>option]:text-text-primary">
-              {devices.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-          )}
-        </div>
-
-        {/* my location */}
-        <button onClick={() => mapController.flyToMe?.()} title="Centre on my location"
-          className="flex items-center rounded bg-surface-0/90 border border-border p-1.5 backdrop-blur hover:bg-surface-2">
-          <Crosshair size={13} />
-        </button>
-
         {/* layers */}
-        <button onClick={() => setShowLayers((v) => !v)} title="Toggle map layers"
+        <button onClick={() => setShowLayers((v) => !v)} title="Map layers"
           className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2">
-          <LayersIcon size={13} />{layers.length > 0 && <span className="text-text-tertiary">{layers.length}</span>}
+          <LayersIcon size={13} /><span className="text-text-tertiary">{layers.length + 3}</span>
         </button>
+
+        {/* location: time range + device + centre-on-me */}
+        {builtinVisible.location && (
+          <>
+            <div className="flex items-center gap-1 rounded bg-surface-0/90 border border-border pl-2 pr-1 py-1 backdrop-blur">
+              {loadingHistory ? <Loader2 size={12} className="animate-spin text-text-tertiary" /> : <Clock size={12} className="text-text-tertiary" />}
+              <select value={rangeSel} onChange={(e) => onRangeChange(e.target.value)} className="bg-transparent outline-none cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
+                <option value="1">Last 24h</option>
+                <option value="2">Last 48h</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="365">Last year</option>
+                <option value="custom">Custom…</option>
+              </select>
+              {rangeSel === 'custom' && (
+                <>
+                  <input type="date" value={ymd(rangeFrom)} onChange={(e) => e.target.value && void loadHistory(new Date(e.target.value).getTime(), rangeTo)} className="bg-transparent outline-none w-[7rem]" />
+                  <span className="text-text-tertiary">→</span>
+                  <input type="date" value={ymd(rangeTo)} onChange={(e) => e.target.value && void loadHistory(rangeFrom, new Date(e.target.value).getTime())} className="bg-transparent outline-none w-[7rem]" />
+                </>
+              )}
+              {devices.length > 1 && (
+                <select value={device ?? ''} onChange={(e) => void loadHistory(undefined, undefined, e.target.value)} className="bg-transparent outline-none border-l border-border pl-1 [&>option]:bg-surface-0 [&>option]:text-text-primary">
+                  {devices.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              )}
+            </div>
+            <button onClick={() => mapController.flyToMe?.()} title="Centre on my location"
+              className="flex items-center rounded bg-surface-0/90 border border-border p-1.5 backdrop-blur hover:bg-surface-2">
+              <Crosshair size={13} />
+            </button>
+          </>
+        )}
 
         {/* geocaching: sign-in + (when logged in) fetch */}
-        <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
-          <button onClick={() => setShowCreds((v) => !v)} title="geocaching.com account"
-            className="flex items-center gap-1 px-2 py-1 hover:bg-surface-2">
-            <KeyRound size={13} />{gcStatus?.loggedIn ? gcStatus.username : 'Sign in'}
-          </button>
-          {gcStatus?.loggedIn && (
-            <button onClick={() => mapController.fetchHere?.()} disabled={fetching}
-              title={`Fetch geocaches in view · ${budget?.remaining ?? '?'} requests left today`}
-              className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
-              {fetching ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
-              {budget && <span className="text-text-tertiary">{budget.remaining}</span>}
+        {builtinVisible.geocaches && (
+          <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
+            <button onClick={() => setShowCreds((v) => !v)} title="geocaching.com account"
+              className="flex items-center gap-1 px-2 py-1 hover:bg-surface-2">
+              <KeyRound size={13} />{gcStatus?.loggedIn ? gcStatus.username : 'Sign in'}
             </button>
-          )}
-        </div>
+            {gcStatus?.loggedIn && (
+              <button onClick={() => mapController.fetchHere?.()} disabled={fetching}
+                title={`Fetch geocaches in view · ${budget?.remaining ?? '?'} requests left today`}
+                className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
+                {fetching ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
+                {budget && <span className="text-text-tertiary">{budget.remaining}</span>}
+              </button>
+            )}
+          </div>
+        )}
 
-        {/* meetup: date window + online toggle + fetch (wildcard search by default) */}
-        <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
-          <span className="pl-2 pr-1 text-text-tertiary" title="Meetup events near here"><Calendar size={13} /></span>
-          <select value={meetupDays} onChange={(e) => setMeetupDays(Number(e.target.value))}
-            title="Time window" className="bg-transparent outline-none px-1 py-1 cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
-            <option value={0}>Upcoming</option>
-            <option value={7}>7 days</option>
-            <option value={30}>30 days</option>
-            <option value={90}>90 days</option>
-          </select>
-          <button onClick={() => mapController.fetchMeetupHere?.()} disabled={fetchingMeetup}
-            title={`Fetch Meetup events in view · ${meetupBudget?.remaining ?? '?'} requests left today`}
-            className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
-            {fetchingMeetup ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
-            {meetupBudget && <span className="text-text-tertiary">{meetupBudget.remaining}</span>}
-          </button>
-        </div>
+        {/* meetup: date window + fetch (wildcard search by default) */}
+        {builtinVisible.meetup && (
+          <div className="flex items-center rounded bg-surface-0/90 border border-border backdrop-blur overflow-hidden">
+            <span className="pl-2 pr-1 text-text-tertiary" title="Meetup events near here"><Calendar size={13} /></span>
+            <select value={meetupDays} onChange={(e) => setMeetupDays(Number(e.target.value))}
+              title="Time window" className="bg-transparent outline-none px-1 py-1 cursor-pointer [&>option]:bg-surface-0 [&>option]:text-text-primary">
+              <option value={0}>Upcoming</option>
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+            </select>
+            <button onClick={() => mapController.fetchMeetupHere?.()} disabled={fetchingMeetup}
+              title={`Fetch Meetup events in view · ${meetupBudget?.remaining ?? '?'} requests left today`}
+              className="flex items-center gap-1 px-2 py-1 border-l border-border hover:bg-surface-2 disabled:opacity-50">
+              {fetchingMeetup ? <Loader2 size={12} className="animate-spin" /> : <Download size={13} />}
+              {meetupBudget && <span className="text-text-tertiary">{meetupBudget.remaining}</span>}
+            </button>
+          </div>
+        )}
 
         {error && <span className="rounded bg-red-500/20 text-red-300 border border-red-500/40 px-2 py-1">{error}</span>}
       </div>
@@ -378,6 +393,24 @@ function registerEmojiImages(map: maplibregl.Map) {
 function pushSource(map: maplibregl.Map, id: string, data: FeatureCollection) {
   const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined
   if (src) src.setData(data)
+}
+
+// Built-in layers ↔ their MapLibre sublayer ids. The Layers panel and the
+// toolbar both key off the same three ids, so location/geocaches/meetup toggle
+// exactly like agent layers do.
+const BUILTIN_SUBLAYERS: Record<BuiltinLayerId, string[]> = {
+  location: ['ot-track', 'ot-current'],
+  geocaches: ['gc-selected', 'gc-pins'],
+  meetup: ['meetup-selected', 'meetup-pins'],
+}
+
+function applyBuiltinVisibility(map: maplibregl.Map, visible: Record<BuiltinLayerId, boolean>) {
+  for (const [id, sublayers] of Object.entries(BUILTIN_SUBLAYERS) as [BuiltinLayerId, string[]][]) {
+    const v = visible[id] === false ? 'none' : 'visible'
+    for (const sl of sublayers) {
+      if (map.getLayer(sl)) map.setLayoutProperty(sl, 'visibility', v)
+    }
+  }
 }
 
 /** Idempotently (re)add the OwnTracks + geocache overlay sources/layers. */
@@ -609,23 +642,46 @@ function reconcileAgentLayers(
   for (const l of desired) addOrUpdateAgentLayer(map, l, layerData[l.slug] as GJ)
 }
 
+const BUILTIN_META: { id: BuiltinLayerId; label: string; icon: string }[] = [
+  { id: 'location', label: 'Location history', icon: '🔵' },
+  { id: 'geocaches', label: 'Geocaches', icon: '📦' },
+  { id: 'meetup', label: 'Meetup events', icon: '📅' },
+]
+
 function LayersPanel({ onClose }: { onClose: () => void }) {
-  const { layers, layerVisible, toggleLayer, setGroupVisible } = useMapStore()
+  const { layers, layerVisible, toggleLayer, setGroupVisible, builtinVisible, toggleBuiltin, pins, events } = useMapStore()
   const groups = new Map<string, MapLayerMeta[]>()
   for (const l of layers) {
     const g = l.group || ''
     if (!groups.has(g)) groups.set(g, [])
     groups.get(g)!.push(l)
   }
+  const builtinCount: Record<BuiltinLayerId, number | null> = {
+    location: null,
+    geocaches: pins.filter((p) => p.lat != null && p.lon != null).length,
+    meetup: events.filter((e) => e.lat != null && e.lon != null).length,
+  }
   return (
-    <div className="absolute top-12 right-14 z-10 w-72 max-h-[70%] overflow-y-auto rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+    <div className="absolute top-12 left-2 z-10 w-72 max-h-[70%] overflow-y-auto rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
       <div className="flex items-center justify-between mb-2">
         <span className="font-medium">Layers</span>
         <button onClick={onClose}><X size={14} /></button>
       </div>
-      {layers.length === 0 && (
-        <p className="text-text-tertiary text-xs">No agent layers yet. Push one with <code>con map layer upsert &lt;group/name&gt; --file …</code></p>
-      )}
+
+      {/* built-in hub-backed layers */}
+      <div className="space-y-1 mb-3">
+        {BUILTIN_META.map((b) => (
+          <label key={b.id} className="flex items-center justify-between gap-2 text-xs cursor-pointer">
+            <span className="flex items-center gap-2">
+              <input type="checkbox" checked={builtinVisible[b.id]} onChange={() => toggleBuiltin(b.id)} />
+              <span>{b.icon} {b.label}</span>
+            </span>
+            {builtinCount[b.id] != null && <span className="text-text-tertiary">{builtinCount[b.id]}</span>}
+          </label>
+        ))}
+      </div>
+
+      {layers.length > 0 && <div className="border-t border-border pt-2 mb-1 text-[10px] uppercase tracking-wide text-text-tertiary">Agent layers</div>}
       {[...groups.entries()].map(([g, ls]) => {
         const allOn = ls.every((l) => layerVisible[l.slug] !== false)
         return (
