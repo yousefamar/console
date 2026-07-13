@@ -125,6 +125,28 @@ function saveLayerVis(v: Record<string, boolean>): void {
   }
 }
 
+// The three hub-backed overlays (location history, geocaches, Meetup) are
+// modelled as "built-in layers": they live in the same Layers panel as the
+// agent-pushed layers and each owns a toolbar control cluster that renders
+// only while the layer is visible. Visibility persists like agent layers.
+export type BuiltinLayerId = 'location' | 'geocaches' | 'meetup'
+const BUILTIN_VIS_KEY = 'console:map:builtinVisible'
+function loadBuiltinVis(): Record<BuiltinLayerId, boolean> {
+  const def = { location: true, geocaches: true, meetup: true }
+  try {
+    return { ...def, ...JSON.parse(localStorage.getItem(BUILTIN_VIS_KEY) || '{}') }
+  } catch {
+    return def
+  }
+}
+function saveBuiltinVis(v: Record<BuiltinLayerId, boolean>): void {
+  try {
+    localStorage.setItem(BUILTIN_VIS_KEY, JSON.stringify(v))
+  } catch {
+    /* ignore */
+  }
+}
+
 const DAY = 24 * 60 * 60 * 1000
 const OT_USER = 'amar'
 const MAX_TRACK_POINTS = 4000 // decimate wide ranges so the polyline stays fast
@@ -190,6 +212,10 @@ interface MapState {
   selectAdjacentEvent: (dir: 1 | -1) => void
   setMeetupQuery: (q: string) => void
   setMeetupDays: (d: number) => void
+
+  // built-in layers (hub-backed overlays surfaced in the Layers panel)
+  builtinVisible: Record<BuiltinLayerId, boolean>
+  toggleBuiltin: (id: BuiltinLayerId) => void
 
   // agent-authored layers
   layers: MapLayerMeta[]
@@ -406,6 +432,14 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   setMeetupQuery: (q) => set({ meetupQuery: q }),
   setMeetupDays: (d) => set({ meetupDays: d }),
+
+  builtinVisible: loadBuiltinVis(),
+  toggleBuiltin: (id) =>
+    set((s) => {
+      const next = { ...s.builtinVisible, [id]: !s.builtinVisible[id] }
+      saveBuiltinVis(next)
+      return { builtinVisible: next }
+    }),
 
   layers: [],
   layerData: {},
