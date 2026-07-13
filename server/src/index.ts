@@ -1657,6 +1657,40 @@ httpServer.listen(port, host, () => {
       log(`[agents] dir-folders: created ${folders} folder node(s) from directory buckets`)
     }
 
+    // One-time cleanup: purge the parked fork-role clutter that accumulated
+    // before forks were made disposable (kill_session now reaps a fork role on
+    // end). Deletes any '(fork)'-titled role that (a) isn't in the restore set
+    // and (b) has no live/restorable session behind it — i.e. truly dead forks.
+    // Also stamps `fork: true` on surviving fork roles so the new reap path
+    // recognizes them going forward. Marker-gated so it runs exactly once.
+    const forkCleanupMarker = join(feedsConfigDir, 'agents', '.fork-cleanup-v1')
+    if (!existsSync(forkCleanupMarker)) {
+      const restorableKeys = new Set<string>()
+      for (const entry of manifest) {
+        if (entry.ended || !entry.claudeSessionId) continue
+        const k = entry.agentKey ?? csidToKey.get(entry.claudeSessionId)
+        if (k) restorableKeys.add(k)
+      }
+      let purged = 0, stamped = 0
+      for (const role of agentRegistry.list()) {
+        if (role.folder || !/\(fork\)\s*$/i.test(role.title)) continue
+        if (restorableKeys.has(role.key)) {
+          // Alive/restorable fork — keep it, but mark it so it's reaped on its
+          // eventual end (legacy fork files have no `fork: true`).
+          if (!role.fork) { agentRegistry.setForkFlag(role.key); stamped++ }
+          continue
+        }
+        // Dead parked fork — reparent any children up, then delete.
+        for (const child of agentRegistry.list()) {
+          if (child.manager === role.key) agentRegistry.setManager(child.key, role.manager)
+        }
+        agentRegistry.delete(role.key)
+        purged++
+      }
+      try { writeFileSync(forkCleanupMarker, new Date().toISOString()) } catch { /* best effort */ }
+      log(`[agents] fork-cleanup: purged ${purged} dead parked fork role(s), stamped ${stamped} live one(s)`)
+    }
+
     // Re-instantiate only ONE Al — the official one per al-session.json (or the
     // first if none recorded). Stale Al entries (left by prior reloads/restarts)
     // are skipped so a second "Al" never appears on boot; the saveManifest()

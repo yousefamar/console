@@ -15,7 +15,7 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'agent-reg-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 function role(key: string, manager: string | null, title = key): AgentRole {
-  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }
+  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false }
 }
 
 describe('parseRole', () => {
@@ -159,5 +159,39 @@ describe('buildOrgTree', () => {
     ])
     expect(tree.map((n) => n.role.key)).toEqual(['al', 'solo'])
     expect(tree[0]!.children[0]!.children[0]!.role.key).toBe('fe')
+  })
+})
+
+describe('fork roles', () => {
+  it('create with fork:true persists the flag and parseRole reads it back', () => {
+    const r = reg()
+    const role = r.create('agents-tab-fork', { title: 'Agents tab (fork)', manager: 'agents-tab', fork: true })
+    expect(role.fork).toBe(true)
+    // Persisted to frontmatter, survives a fresh registry load
+    const reloaded = reg().get('agents-tab-fork')
+    expect(reloaded?.fork).toBe(true)
+    expect(readFileSync(join(dir, 'agents-tab-fork.md'), 'utf-8')).toContain('fork: true')
+  })
+
+  it('default create has fork:false', () => {
+    const r = reg()
+    expect(r.create('durable', { title: 'Durable' }).fork).toBe(false)
+  })
+
+  it('setForkFlag stamps a legacy fork role without touching its body', () => {
+    const r = reg()
+    const content = ['---', 'title: Al (fork)', 'manager: al', '---', '', 'Body line.', '', '## Memory', '- a note'].join('\n')
+    writeFileSync(join(dir, 'al-fork.md'), content)
+    r.load()
+    expect(r.get('al-fork')?.fork).toBe(false)
+    const stamped = r.setForkFlag('al-fork')
+    expect(stamped?.fork).toBe(true)
+    const raw = readFileSync(join(dir, 'al-fork.md'), 'utf-8')
+    expect(raw).toContain('fork: true')
+    expect(raw).toContain('Body line.')       // body preserved
+    expect(raw).toContain('- a note')          // memory preserved
+    // Idempotent — a second stamp doesn't duplicate the line
+    r.setForkFlag('al-fork')
+    expect((readFileSync(join(dir, 'al-fork.md'), 'utf-8').match(/fork: true/g) ?? []).length).toBe(1)
   })
 })

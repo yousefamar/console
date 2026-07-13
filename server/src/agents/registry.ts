@@ -45,6 +45,11 @@ export interface AgentRole {
   /** True for an organization-only "folder" node: no session, no charter
    *  injection, not spawnable/revivable — just an org-chart container. */
   folder: boolean
+  /** True for a role minted for a UI fork (seedRole). Forks are disposable —
+   *  unlike a durable role, when a fork's session ends its role is DELETED, not
+   *  parked (a parked fork is just chart clutter — there's nothing to revive it
+   *  for). See kill_session/delete_session in routes/agents.ts. */
+  fork: boolean
 }
 
 export interface OrgNode {
@@ -87,6 +92,7 @@ export function parseRole(key: string, content: string): AgentRole {
     charter: body.trim(),
     hasFile: true,
     folder: fm.folder === true || fm.folder === 'true',
+    fork: fm.fork === true || fm.fork === 'true',
   }
 }
 
@@ -202,7 +208,7 @@ export class AgentRegistry {
   }
 
   /** Create a role (or folder) file. No-op if one already exists (idempotent). */
-  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string; folder?: boolean }): AgentRole {
+  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string; folder?: boolean; fork?: boolean }): AgentRole {
     const existing = this.roles.get(key)
     if (existing || existsSync(this.filePath(key))) {
       this.reloadOne(key)
@@ -211,6 +217,7 @@ export class AgentRegistry {
     const fm: string[] = [`title: ${init.title}`]
     if (init.manager) fm.push(`manager: ${init.manager}`)
     if (init.folder) fm.push('folder: true')
+    if (init.fork) fm.push('fork: true')
     if (init.goals && init.goals.length) {
       fm.push('goals:')
       for (const g of init.goals) fm.push(`  - ${g}`)
@@ -250,6 +257,25 @@ export class AgentRegistry {
    * only the `manager:` line (or inserts after `title:` / removes it), leaving the
    * body and every other frontmatter line byte-identical. Never a yaml round-trip.
    */
+  /** Stamp `fork: true` into a role's frontmatter (surgical, body untouched).
+   *  Used to retroactively mark legacy fork roles so they get reaped on end. */
+  setForkFlag(key: string): AgentRole | undefined {
+    const path = this.filePath(key)
+    if (!existsSync(path)) return undefined
+    const content = readFileSync(path, 'utf-8')
+    const m = content.match(/^---\n([\s\S]*?)\n---(\n[\s\S]*)?$/)
+    if (!m) return undefined
+    const lines = m[1]!.split('\n')
+    const rest = m[2] ?? ''
+    if (!lines.some((l) => /^fork:\s*/.test(l))) {
+      const ti = lines.findIndex((l) => /^title:\s*/.test(l))
+      lines.splice(ti >= 0 ? ti + 1 : 0, 0, 'fork: true')
+    }
+    this.atomicWrite(key, `---\n${lines.join('\n')}\n---${rest}`)
+    this.reloadOne(key)
+    return this.roles.get(key)
+  }
+
   setManager(key: string, manager: string | null): AgentRole | undefined {
     const path = this.filePath(key)
     if (!existsSync(path)) return undefined

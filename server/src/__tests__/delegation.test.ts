@@ -56,9 +56,9 @@ describe('shortDescription', () => {
 
 describe('renderOrgRoster', () => {
   const tree: OrgNode[] = [
-    { role: { key: 'al', title: 'Al', manager: null, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }, children: [
-      { role: { key: 'cg', title: 'Console general', manager: 'al', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }, children: [
-        { role: { key: 'feeds', title: 'Feeds', manager: 'cg', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }, children: [] },
+    { role: { key: 'al', title: 'Al', manager: null, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false }, children: [
+      { role: { key: 'cg', title: 'Console general', manager: 'al', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false }, children: [
+        { role: { key: 'feeds', title: 'Feeds', manager: 'cg', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false }, children: [] },
       ] },
     ] },
   ]
