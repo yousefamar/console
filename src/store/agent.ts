@@ -131,6 +131,8 @@ export interface AgentRole {
   hasFile: boolean
   /** Organization-only folder node (no session, not spawnable). */
   folder?: boolean
+  /** Disposable UI-fork role — deleted (not parked) when its session ends. */
+  fork?: boolean
 }
 
 export interface OrgNode {

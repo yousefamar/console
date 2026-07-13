@@ -217,6 +217,29 @@ export function liveSessionForRole(ctx: AgentContext, agentKey: string): Session
   return undefined
 }
 
+/** When a session with a FORK role ends, delete its role instead of parking it
+ *  — a parked fork is just org-chart clutter (nothing to revive it for). Durable
+ *  roles still park (they're intentionally revivable). Any children of the fork
+ *  (a fork-of-a-fork) reparent up to the fork's own manager so nothing is
+ *  orphaned. No-op unless the session owns a `fork:true` role AND no OTHER live
+ *  session still embodies it (dup-guard). Callers broadcast the agents list. */
+function reapForkRole(ctx: AgentContext, session: Session): void {
+  const key = session.agentKey
+  if (!key) return
+  const role = ctx.agentRegistry.get(key)
+  if (!role?.fork) return
+  // Don't delete a role another live session still embodies (dup during restart).
+  for (const s of ctx.sessions.values()) {
+    if (s !== session && s.agentKey === key && s.status !== 'ended') return
+  }
+  for (const child of ctx.agentRegistry.list()) {
+    if (child.manager === key) ctx.agentRegistry.setManager(child.key, role.manager)
+  }
+  ctx.agentRegistry.delete(key)
+  broadcastAgentsList(ctx)
+  ctx.log(`[agents] reaped fork role ${key} (session ${session.id} ended)`)
+}
+
 /** Spawn a fresh session embodying a (parked) role, charter injected. Focuses an
  *  already-live session instead of duplicating. Returns null if the role is gone. */
 export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | null {
@@ -747,6 +770,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
           if (s !== session && s.claudeSessionId === session.claudeSessionId) s.kill()
         }
       }
+      reapForkRole(ctx, session)
       // Persist endedByUser even when the subprocess was already dead (no
       // exit event will fire to trigger the usual manifest save).
       saveManifest(sessions)
@@ -776,6 +800,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
           }
         }
       }
+      reapForkRole(ctx, session)
       saveManifest(sessions)
       const remaining = Array.from(sessions.values()).map((s) => s.getInfo())
       broadcast(clients, { type: 'sessions_list', sessions: remaining })
@@ -1057,7 +1082,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       let forkAgentKey: string | undefined
       if (msg.seedRole) {
         forkAgentKey = ctx.agentRegistry.mintKey(forkName ?? 'fork')
-        ctx.agentRegistry.create(forkAgentKey, { title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd })
+        ctx.agentRegistry.create(forkAgentKey, { title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd, fork: true })
         broadcastAgentsList(ctx)
       }
       const session = createSession(ctx, {
