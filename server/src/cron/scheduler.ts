@@ -30,11 +30,27 @@ export interface HubCronTask {
   trigger: string
   recurring: boolean
   prompt: string
+  /** Optional shell guard. When set, the scheduler runs it at each trigger and
+   *  only wakes the agent when it exits 0 (a non-zero exit = "nothing to do",
+   *  skipped silently — no tokens spent). Its stdout (trimmed, capped) is
+   *  appended to the prompt so the agent knows WHAT changed. Runs via
+   *  `bash -c` in the session's cwd (or home), `GUARD_TIMEOUT_MS` cap. This is
+   *  the token-free polling primitive: e.g. a script that diffs a URL and exits
+   *  0 only on change. */
+  guard?: string
   createdAt: number
   lastFiredAt?: number
+  /** Last time the guard ran (fired or skipped) — distinct from lastFiredAt,
+   *  which only advances when the agent was actually woken. */
+  lastCheckedAt?: number
+  /** Outcome of the most recent guard evaluation, for the UI/inspection. */
+  lastGuardResult?: 'fired' | 'skipped' | 'error'
   lastSkipReason?: string
   consecutiveSkips: number
   disabledAt?: number
+  /** Transient (never persisted): the current fire's captured guard stdout,
+   *  set by runGuard and consumed by fire when composing the wake prompt. */
+  guardOutput?: string
 }
 
 interface State {
@@ -44,6 +60,10 @@ interface State {
 
 const MAX_SKIPS_BEFORE_DISABLE = 10
 const SAVE_DEBOUNCE_MS = 500
+/** Wall-clock cap for a guard script. A hung guard must not wedge the fire. */
+const GUARD_TIMEOUT_MS = 60_000
+/** Cap on guard stdout appended to the wake prompt (chars). */
+const GUARD_OUTPUT_CAP = 4000
 
 function newId(): string {
   // 8 chars base32 — same shape Claude uses for cron task IDs
@@ -87,7 +107,7 @@ export class HubCronScheduler {
     return this.state.tasks.filter((t) => t.claudeSessionId === filter.claudeSessionId)
   }
 
-  add(input: { claudeSessionId: string; trigger: string; prompt: string; recurring: boolean }): HubCronTask {
+  add(input: { claudeSessionId: string; trigger: string; prompt: string; recurring: boolean; guard?: string }): HubCronTask {
     if (!input.claudeSessionId) throw new Error('claudeSessionId is required')
     if (!input.prompt?.trim()) throw new Error('prompt is required')
     // Validate the trigger by attempting to construct a Cron — throws on bad input
@@ -100,6 +120,7 @@ export class HubCronScheduler {
       trigger: input.trigger,
       recurring: input.recurring,
       prompt: input.prompt,
+      ...(input.guard?.trim() ? { guard: input.guard.trim() } : {}),
       createdAt: Date.now(),
       consecutiveSkips: 0,
     }
@@ -119,8 +140,10 @@ export class HubCronScheduler {
     return true
   }
 
-  /** Manually trigger a task. Same fire path as the scheduled one. */
-  runOnce(id: string): { ok: true } | { ok: false; reason: string } {
+  /** Manually trigger a task. Same fire path as the scheduled one (runs the
+   *  guard too — a manual run of a guarded task only wakes the agent if the
+   *  guard passes, exactly like a scheduled fire). */
+  async runOnce(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     const t = this.state.tasks.find((x) => x.id === id)
     if (!t) return { ok: false, reason: 'task not found' }
     return this.fire(t)
@@ -189,8 +212,28 @@ export class HubCronScheduler {
     }
   }
 
-  private fire(task: HubCronTask): { ok: true } | { ok: false; reason: string } {
+  private async fire(task: HubCronTask): Promise<{ ok: true } | { ok: false; reason: string }> {
     if (task.disabledAt) return { ok: false, reason: 'disabled' }
+
+    // Guard gate: run the script FIRST (cheap, token-free). Only proceed to
+    // wake the agent when it exits 0. A non-zero exit is the normal
+    // "nothing to do" case — skip silently, keep the task scheduled, and do
+    // NOT count it toward the auto-disable skip budget (a guard that says "no
+    // change" for months is working correctly, not failing).
+    if (task.guard) {
+      const g = await this.runGuard(task)
+      task.lastCheckedAt = Date.now()
+      if (!g.proceed) {
+        task.lastGuardResult = g.error ? 'error' : 'skipped'
+        task.lastSkipReason = g.error ? `guard error: ${g.error}` : 'guard: no change'
+        this.persist()
+        return { ok: false, reason: task.lastSkipReason }
+      }
+      task.lastGuardResult = 'fired'
+      // Guard passed — its stdout becomes context for the agent.
+      task.guardOutput = g.output
+    }
+
     const session = [...this.getSessions().values()].find((s) => s.claudeSessionId === task.claudeSessionId)
     if (!session) {
       task.consecutiveSkips++
@@ -213,11 +256,19 @@ export class HubCronScheduler {
       return { ok: false, reason: 'session ended' }
     }
 
+    // Compose the wake prompt: the task prompt, plus the guard's stdout as
+    // context when present (so the agent sees WHAT the guard detected).
+    const guardOut = task.guardOutput
+    const content = guardOut
+      ? `${task.prompt}\n\n--- guard output (\`${task.guard}\`) ---\n${guardOut}`
+      : task.prompt
+    delete task.guardOutput
+
     // Mirror the "Continue." nudge path: broadcast + log + writeStdin
-    const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content: task.prompt }
+    const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content }
     this.broadcast(userMsg)
     session.logMessage(userMsg)
-    session.sendMessage(task.prompt)
+    session.sendMessage(content)
 
     task.lastFiredAt = Date.now()
     task.consecutiveSkips = 0
@@ -231,6 +282,31 @@ export class HubCronScheduler {
 
     this.persist()
     return { ok: true }
+  }
+
+  /** Run a task's guard script. Resolves { proceed } — true only on exit 0.
+   *  Executed via `bash -c` in the session's cwd (falls back to $HOME), with a
+   *  hard timeout. stdout is captured (trimmed + capped) for the wake prompt. */
+  private async runGuard(task: HubCronTask): Promise<{ proceed: boolean; output?: string; error?: string }> {
+    const session = [...this.getSessions().values()].find((s) => s.claudeSessionId === task.claudeSessionId)
+    const cwd = session?.cwd || process.env.HOME || process.cwd()
+    try {
+      const { stdout } = await execFileP('bash', ['-c', task.guard!], {
+        cwd,
+        timeout: GUARD_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      })
+      const out = stdout.trim().slice(0, GUARD_OUTPUT_CAP)
+      return { proceed: true, output: out || undefined }
+    } catch (e) {
+      const err = e as { code?: number; killed?: boolean; signal?: string; message?: string }
+      // Non-zero exit is the EXPECTED "no change / nothing to do" signal — not
+      // an error. A timeout/spawn failure IS an error (surfaced, but still just
+      // skips the fire — never wakes the agent on a broken guard).
+      if (typeof err.code === 'number' && !err.killed) return { proceed: false }
+      return { proceed: false, error: err.killed ? `timed out after ${GUARD_TIMEOUT_MS}ms` : (err.message ?? 'guard failed to run') }
+    }
   }
 
   private unscheduleJob(id: string) {
@@ -264,7 +340,12 @@ export class HubCronScheduler {
   private persistSync(): void {
     try {
       mkdirSync(dirname(this.file), { recursive: true })
-      writeFileSync(this.file, JSON.stringify(this.state, null, 2))
+      // Strip the transient guardOutput — it's per-fire context, not state.
+      const persisted = {
+        ...this.state,
+        tasks: this.state.tasks.map(({ guardOutput, ...t }) => t),
+      }
+      writeFileSync(this.file, JSON.stringify(persisted, null, 2))
     } catch (e) {
       this.log(`[cron] save failed: ${(e as Error).message}`)
     }

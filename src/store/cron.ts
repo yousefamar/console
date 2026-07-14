@@ -12,8 +12,13 @@ export interface HubCronTask {
   trigger: string
   recurring: boolean
   prompt: string
+  /** Optional shell guard — the agent wakes only when it exits 0 (token-free
+   *  polling). See server/src/cron/scheduler.ts. */
+  guard?: string
   createdAt: number
   lastFiredAt?: number
+  lastCheckedAt?: number
+  lastGuardResult?: 'fired' | 'skipped' | 'error'
   lastSkipReason?: string
   consecutiveSkips: number
   disabledAt?: number
