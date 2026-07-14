@@ -54,7 +54,7 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const claudeSessionId = String(opts.session ?? '')
   if (!claudeSessionId) {
-    exitWithError('USAGE', 'Usage: con cron add --session <claudeSessionId> --trigger "<cron-or-iso-or-+15m>" --prompt "<text>" [--once]', flags); return
+    exitWithError('USAGE', 'Usage: con cron add --session <claudeSessionId> --trigger "<cron-or-iso-or-+15m>" --prompt "<text>" [--once] [--guard "<shell cmd>" | --guard-file <path>]', flags); return
   }
   if (claudeSessionId.startsWith(HUB_SESSION_ID_PREFIX)) {
     exitWithError('USAGE', 'Use claudeSessionId (UUID) from `con agent list --json | jq \'.[].claudeSessionId\'`, not the hub session id.', flags); return
@@ -65,6 +65,14 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
 
   let trigger = String(opts.trigger ?? '')
   const prompt = String(opts.prompt ?? '')
+  // Optional token-free guard: a shell command run at each trigger; the agent
+  // is woken ONLY when it exits 0 (non-zero = "nothing to do", skipped). Its
+  // stdout is appended to the prompt. --guard "<cmd>" or --guard-file <path>.
+  let guard = opts.guard ? String(opts.guard) : undefined
+  if (!guard && opts['guard-file']) {
+    const { readFileSync } = await import('node:fs')
+    guard = readFileSync(String(opts['guard-file']), 'utf-8')
+  }
   if (!trigger) { exitWithError('USAGE', '--trigger is required (5-field cron, ISO datetime, or relative shorthand like +30m)', flags); return }
   if (!prompt)  { exitWithError('USAGE', '--prompt is required', flags); return }
 
@@ -81,7 +89,7 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
 
   const task = await hubFetch<HubCronTask>('/cron', {
     method: 'POST',
-    body: { claudeSessionId, trigger, prompt, recurring },
+    body: { claudeSessionId, trigger, prompt, recurring, ...(guard ? { guard } : {}) },
   })
   output(task, flags)
 }

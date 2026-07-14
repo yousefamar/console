@@ -66,6 +66,7 @@ export function handleCronRoutes(
           trigger: String(parsed.trigger ?? ''),
           prompt: String(parsed.prompt ?? ''),
           recurring: parsed.recurring !== false,
+          ...(parsed.guard ? { guard: String(parsed.guard) } : {}),
         })
         json(res, 200, task)
       } catch (e) {
@@ -131,7 +132,7 @@ export function handleCronRoutes(
       return true
     }
     if (req.method === 'POST' && verb === 'run') {
-      json(res, 200, scheduler.runOnce(id))
+      void scheduler.runOnce(id).then((r) => json(res, 200, r)).catch((e) => json(res, 500, { error: (e as Error).message }))
       return true
     }
     methodNotAllowed(res)
