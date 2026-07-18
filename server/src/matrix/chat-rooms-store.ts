@@ -23,12 +23,22 @@ export class ChatRoomsStore {
       defaultValue: {},
       bus: opts.bus,
       log: opts.log,
+      // Per-key patch deltas: the full snapshot is ~300KB and re-broadcast on
+      // every seq bump was real bandwidth on mobile. Consumers (SPA
+      // chat-rooms-subscribe, native app) handle {seq, partial, changed, removed}.
+      patchDeltas: true,
     })
   }
 
   /** Current `{ seq, data }` envelope — used by `chat-rooms.snapshot` RPC. */
   snapshot() {
     return this.store.get()
+  }
+
+  /** Patch since a client-held seq (full snapshot when out of the diff
+   *  window) — used by `chat-rooms.snapshotSince` RPC. */
+  snapshotSince(sinceSeq?: number) {
+    return this.store.snapshotSince(sinceSeq)
   }
 
   /** Apply an incoming /sync delta. Each room is computed against its prior

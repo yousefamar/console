@@ -193,6 +193,31 @@ export function enforce(req: IncomingMessage, store: AuthStore): AuthDecision {
 }
 
 /**
+ * WebSocket upgrade gate — the WS analogue of `enforce()`. Browsers must pass
+ * the Origin allow-list AND carry a valid session cookie; non-browser clients
+ * (no Origin header) must present a bearer or arrive via true loopback.
+ *
+ * `/stt` is temporarily exempt: the v38 APK's PTT path opens it without a
+ * bearer, so enforcing here would break phone push-to-talk. The native app
+ * (M1) attaches the bearer on /stt — remove the exemption once it ships.
+ */
+export function decideWsUpgrade(
+  req: IncomingMessage,
+  store: AuthStore,
+  isOriginAllowed: (origin: string | undefined) => boolean,
+): AuthDecision {
+  const origin = req.headers.origin as string | undefined
+  if (origin && !isOriginAllowed(origin)) {
+    return { allow: false, reason: 'ws-origin-not-allowed' }
+  }
+  const path = (req.url ?? '/').split('?')[0]
+  if (path === '/stt') {
+    return { allow: true, reason: 'ws-stt-exempt-v38-apk' }
+  }
+  return enforce(req, store)
+}
+
+/**
  * CSRF defence-in-depth for cookie-authenticated mutating requests. Bearer
  * requests bypass this (they're not subject to ambient browser-side risk).
  */

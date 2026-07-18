@@ -174,6 +174,34 @@ export class MatrixClient {
     return fetch(url, { headers: { Authorization: `Bearer ${config.accessToken}` } })
   }
 
+  /**
+   * Fetch media, preferring the MSC3916 authenticated endpoint
+   * (/_matrix/client/v1/media/...) and falling back to the legacy unauthed
+   * /_matrix/media/v3/... one. Real-server media (link-preview images, remote
+   * attachments) 404s on v3 now — Beeper only serves it via v1 — while
+   * bridge-local media (`local.beeper.com` avatars) still lives on v3. Trying
+   * v1 first with a v3 fallback covers both. `redirect: 'follow'` handles the
+   * 307 the v1 endpoint returns to the actual bytes.
+   *
+   * @param kind 'download' | 'thumbnail'
+   * @param server media server authority
+   * @param mediaId media id
+   * @param query   thumbnail params (width/height/method), appended verbatim
+   */
+  async mediaFetchAuth(kind: 'download' | 'thumbnail', server: string, mediaId: string, query = ''): Promise<Response> {
+    const config = this.getConfig()
+    const s = encodeURIComponent(server)
+    const m = encodeURIComponent(mediaId)
+    const q = query ? `?${query}` : ''
+    const headers = { Authorization: `Bearer ${config.accessToken}` }
+    const v1 = `${config.homeserver}/_matrix/client/v1/media/${kind}/${s}/${m}${q}`
+    const v1Resp = await fetch(v1, { headers, redirect: 'follow' })
+    if (v1Resp.ok) return v1Resp
+    // Fall back to the legacy endpoint for bridge-local media.
+    const v3 = `${config.homeserver}/_matrix/media/v3/${kind}/${s}/${m}${q}`
+    return fetch(v3, { headers, redirect: 'follow' })
+  }
+
   // -------------------------------------------------------------------------
   // Media
   // -------------------------------------------------------------------------

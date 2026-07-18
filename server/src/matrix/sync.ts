@@ -22,6 +22,7 @@ import type { AuthStore } from '../auth-store.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { ChatRoomsStore } from './chat-rooms-store.js'
+import type { MessageArchive } from './message-archive.js'
 import type { SyncRoomDelta } from './room-state.js'
 
 type MatrixSyncState = { nextBatch?: string; lastSyncMs?: number }
@@ -115,6 +116,9 @@ export class MatrixSync {
      *  computed into a RoomState and written here, making the hub the source
      *  of truth for room metadata across all connected clients. */
     private readonly chatRoomsStore?: ChatRoomsStore,
+    /** Append-only archive of every decrypted event — the soft-delete-only
+     *  guarantee. See message-archive.ts. */
+    private readonly archive?: MessageArchive,
   ) {
     this.loadState()
   }
@@ -285,15 +289,27 @@ export class MatrixSync {
   /**
    * Send any room event. Encrypts transparently if the room is encrypted.
    * Returns the server-assigned event_id.
+   *
+   * `txnId` (optional) is a client-supplied idempotency key used verbatim as
+   * the Matrix transaction id: the homeserver dedups same-token PUTs on the
+   * same access token, and the hub keeps its own txnId→event_id LRU as
+   * belt-and-braces past the homeserver's txn window. This is what makes an
+   * offline outbox safe — N retries of one queued send land exactly one event.
    */
-  async sendRoomEvent(args: { roomId: string; type: string; content: Record<string, unknown> }): Promise<{ event_id: string }> {
+  async sendRoomEvent(args: { roomId: string; type: string; content: Record<string, unknown>; txnId?: string }): Promise<{ event_id: string }> {
     const cfg = this.auth.getMatrixConfig()
     if (!cfg) throw new Error('no matrix credentials')
     const { roomId, type, content } = args
     if (!roomId || !type || typeof content !== 'object') throw new Error('roomId, type, content required')
 
+    const clientTxn = typeof args.txnId === 'string' && /^[A-Za-z0-9._~-]{1,255}$/.test(args.txnId) ? args.txnId : undefined
+    if (clientTxn) {
+      const cached = this.sentTxnIds.get(clientTxn)
+      if (cached) return { event_id: cached }
+    }
+
     const encrypted = await this.roomIsEncrypted(roomId)
-    const txnId = `hub${Date.now()}.${Math.random().toString(36).slice(2)}`
+    const txnId = clientTxn ?? `hub${Date.now()}.${Math.random().toString(36).slice(2)}`
 
     if (encrypted && this.crypto.isReady()) {
       const members = await this.roomJoinedMembers(roomId)
@@ -308,7 +324,9 @@ export class MatrixSync {
       })
       const text = await resp.text()
       if (!resp.ok) throw new Error(`send failed: ${resp.status} ${text}`)
-      return JSON.parse(text) as { event_id: string }
+      const result = JSON.parse(text) as { event_id: string }
+      if (clientTxn) this.rememberTxn(clientTxn, result.event_id)
+      return result
     }
 
     // Unencrypted: PUT directly
@@ -320,7 +338,22 @@ export class MatrixSync {
     })
     const text = await resp.text()
     if (!resp.ok) throw new Error(`send failed: ${resp.status} ${text}`)
-    return JSON.parse(text) as { event_id: string }
+    const result = JSON.parse(text) as { event_id: string }
+    if (clientTxn) this.rememberTxn(clientTxn, result.event_id)
+    return result
+  }
+
+  /** Client-txnId → event_id memo (insertion-ordered Map as LRU, cap 200).
+   *  Outlives the homeserver's own txn dedup window for long-offline queues. */
+  private readonly sentTxnIds = new Map<string, string>()
+  private rememberTxn(txnId: string, eventId: string): void {
+    this.sentTxnIds.delete(txnId)
+    this.sentTxnIds.set(txnId, eventId)
+    while (this.sentTxnIds.size > 200) {
+      const oldest = this.sentTxnIds.keys().next().value
+      if (oldest === undefined) break
+      this.sentTxnIds.delete(oldest)
+    }
   }
 
   /**
@@ -334,6 +367,62 @@ export class MatrixSync {
     if (!args?.roomId) throw new Error('roomId required')
     await this.crypto.invalidateRoomKey(args.roomId)
     return { ok: true }
+  }
+
+  /**
+   * Recover from a bridge FAIL_RETRIABLE (com.beeper.undecryptable_event):
+   * the outbound Megolm session wedged, the bridge couldn't decrypt our
+   * message, and the hub won't re-share the key on its own because it thinks
+   * the bridge already has it. This fetches the failed event, decrypts it
+   * (while we still hold the session), rotates the room key, then resends the
+   * SAME plaintext as a fresh event — which forces a clean re-share. Returns
+   * the new event_id so the caller can drop the wedged duplicate.
+   *
+   * Order is load-bearing: decrypt BEFORE rotate, or invalidating the session
+   * would leave us unable to read our own failed message.
+   */
+  async resendAfterRotate(args: { roomId: string; eventId: string }): Promise<{ ok: true; eventId: string } | { ok: false; reason: string }> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg) throw new Error('no matrix credentials')
+    const { roomId, eventId } = args
+    if (!roomId || !eventId) throw new Error('roomId and eventId required')
+
+    // 1. Fetch the failed event from the homeserver.
+    let raw: Record<string, unknown>
+    try {
+      raw = await this.matrix.getEvent(roomId, eventId) as Record<string, unknown>
+    } catch (e) {
+      return { ok: false, reason: `fetch failed: ${(e as Error).message}` }
+    }
+
+    // 2. Recover the plaintext content + type. Encrypted → decrypt; if the
+    //    event came back already-plaintext (unencrypted room), use it directly.
+    let type: string
+    let content: Record<string, unknown>
+    if (raw.type === 'm.room.encrypted') {
+      const dec = await this.crypto.decryptRoomEvent(raw, roomId)
+      if (!dec) return { ok: false, reason: 'could not decrypt failed event to resend' }
+      type = dec.type
+      content = dec.content
+    } else if (typeof raw.type === 'string' && raw.content && typeof raw.content === 'object') {
+      type = raw.type
+      content = raw.content as Record<string, unknown>
+    } else {
+      return { ok: false, reason: 'unexpected event shape' }
+    }
+
+    // Don't resend an already-redacted / empty event.
+    if (!content || Object.keys(content).length === 0) {
+      return { ok: false, reason: 'event has no content (redacted?)' }
+    }
+
+    // 3. Throw away the wedged outbound session.
+    await this.crypto.invalidateRoomKey(roomId)
+
+    // 4. Resend the plaintext — sendRoomEvent re-shares the fresh key to all
+    //    members, including the bridge bot, before encrypting.
+    const result = await this.sendRoomEvent({ roomId, type, content })
+    return { ok: true, eventId: result.event_id }
   }
 
   /** Redact an event (always unencrypted; redactions are never encrypted). */
@@ -446,6 +535,14 @@ export class MatrixSync {
       } else {
         decryptedChunk.push(ev as MatrixEventLike)
       }
+    }
+    // Archive paginated history too — history loads are how older messages
+    // (sent before the archive existed, or before the hub was watching a
+    // room) get their pre-redaction copies preserved.
+    if (this.archive) {
+      try {
+        this.archive.archiveEvents(args.roomId, decryptedChunk as unknown as Array<Record<string, unknown>>)
+      } catch { /* best effort */ }
     }
     return { chunk: decryptedChunk, state: resp.state as MatrixEventLike[] | undefined, start: resp.start, end: resp.end }
   }
@@ -724,17 +821,33 @@ export class MatrixSync {
           const events = r.timeline?.events ?? []
           if (events.length === 0) continue
 
-          // Mute detection — mirror the browser's logic:
+          // Mute detection:
           //   * server's push rules muted this room → notification_count is 0
           //   * room tagged m.lowpriority / m.archive → only notify on mentions
+          //   * room muted in Console (push-rule) → never notify
           const notifCount = r.unread_notifications?.notification_count ?? 0
           const highlightCount = r.unread_notifications?.highlight_count ?? 0
           // Absent count (the only way to reach here with notifCount 0, since
           // explicit-0 was handled above) → no new unread info; don't push.
           if (notifCount === 0) continue
-          const tagEvent = (r.account_data?.events ?? []).find((e) => e.type === 'm.tag')
-          const tags = (tagEvent?.content as any)?.tags as Record<string, unknown> | undefined
-          const isLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive'])
+
+          // Low-priority / mute must come from the CANONICAL snapshot, not the
+          // delta's account_data. `m.tag` is only delivered when a tag CHANGES,
+          // so a room marked low-priority long ago carries no m.tag in a routine
+          // message delta — the old per-delta check saw undefined and notified
+          // anyway (the bug). The snapshot persists isLowPriority/isMuted and is
+          // always current. Fall back to the delta's m.tag only if the room
+          // isn't in the snapshot yet (first sight).
+          const snapshotRoom = this.chatRoomsStore?.snapshot().data[roomId]
+          let isLowPriority: boolean
+          if (snapshotRoom) {
+            isLowPriority = snapshotRoom.isLowPriority
+            if (snapshotRoom.isMuted) continue // muted → never notify
+          } else {
+            const tagEvent = (r.account_data?.events ?? []).find((e) => e.type === 'm.tag')
+            const tags = (tagEvent?.content as any)?.tags as Record<string, unknown> | undefined
+            isLowPriority = !!(tags?.['m.lowpriority'] || tags?.['m.archive'])
+          }
           if (isLowPriority && highlightCount === 0) continue
 
           const cache = this.roomState.get(roomId)
@@ -950,8 +1063,56 @@ export class MatrixSync {
         account_data: src.account_data ? { events: src.account_data.events as MatrixEventLike[] | undefined } : undefined,
         unread_notifications: src.unread_notifications,
       }
+      // Soft-delete guarantee: archive every decrypted message-bearing event
+      // BEFORE anything downstream sees it, and rescue media the moment a
+      // redaction is observed. Append-only; the archive has no delete API.
+      if (this.archive) {
+        try {
+          this.archive.archiveEvents(roomId, timelineEvents as unknown as Array<Record<string, unknown>>)
+        } catch (e) {
+          this.log(`[archive] archiveEvents failed for ${roomId}: ${(e as Error).message}`)
+        }
+        for (const ev of timelineEvents) {
+          // Two redaction shapes: explicit m.room.redaction events, and
+          // encrypted tombstones (m.room.encrypted with stripped ciphertext).
+          let targetId: string | undefined
+          let redactedBy: string | undefined
+          if (ev.type === 'm.room.redaction') {
+            targetId = ((ev.content as any)?.redacts as string) || ((ev as any).redacts as string)
+            redactedBy = ev.sender
+          } else if (ev.type === 'm.room.encrypted' && typeof (ev.content as any)?.ciphertext !== 'string' && ev.event_id) {
+            targetId = ev.event_id
+            redactedBy = ((ev.unsigned as any)?.redacted_because?.sender as string) ?? ev.sender
+          }
+          if (targetId) {
+            void this.archive.recordRedaction(roomId, targetId, redactedBy, (mxc) => this.fetchMediaBlob(mxc))
+              .then((file) => { if (file) this.log(`[archive] rescued media for redacted ${targetId} → ${file}`) })
+              .catch(() => {})
+          }
+        }
+      }
     }
     return { rooms, totalEvents, failedDecrypts }
+  }
+
+  /** Download a raw media blob from the homeserver (authenticated MSC3916
+   *  endpoint with legacy fallback). Used by the archive's media rescue. */
+  private async fetchMediaBlob(mxcUrl: string): Promise<Buffer | undefined> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg || !mxcUrl.startsWith('mxc://')) return undefined
+    const [server, mediaId] = mxcUrl.slice(6).split('/', 2)
+    if (!server || !mediaId) return undefined
+    const urls = [
+      `${cfg.homeserver}/_matrix/client/v1/media/download/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}`,
+      `${cfg.homeserver}/_matrix/media/v3/download/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}`,
+    ]
+    for (const url of urls) {
+      try {
+        const resp = await fetch(url, { headers: { Authorization: `Bearer ${cfg.accessToken}` } })
+        if (resp.ok) return Buffer.from(await resp.arrayBuffer())
+      } catch { /* try next */ }
+    }
+    return undefined
   }
 
   private async decryptJoinedRooms(joined: Record<string, unknown>): Promise<Record<string, MatrixJoinedRoomDelta>> {
