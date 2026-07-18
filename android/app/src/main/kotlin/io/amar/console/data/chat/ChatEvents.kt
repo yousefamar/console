@@ -61,7 +61,15 @@ object ChatEvents {
             "m.sticker" -> "m.image"
             else -> effectiveContent.str("msgtype") ?: "m.text"
         }
+        // WhatsApp bridge noise: transient decrypt-failure notices.
+        if (msgtype == "m.notice" &&
+            effectiveContent.str("body")?.contains("Decrypting message from WhatsApp failed") == true
+        ) return null
         val body = effectiveContent.str("body") ?: ""
+        // formatted_body: strip the mx-reply quote block bridges prepend.
+        val formatted = effectiveContent.str("formatted_body")
+            ?.replace(Regex("<mx-reply>.*?</mx-reply>", RegexOption.DOT_MATCHES_ALL), "")
+            ?.takeIf { it.isNotBlank() && effectiveContent.str("format") == "org.matrix.custom.html" }
 
         // Media: unencrypted rooms carry `url` (mxc://); E2EE rooms carry
         // `file` (EncryptedFile json — url + AES key material).
@@ -78,6 +86,7 @@ object ChatEvents {
             senderId = sender,
             senderName = senderFallbackName(sender),
             body = body,
+            formattedBody = formatted,
             msgtype = msgtype,
             mediaMxc = mediaMxc,
             mediaMime = mediaMime,

@@ -511,6 +511,18 @@ class ChatRepository(
             }
         }.toString()
 
+    /** Cold-room fill on open: paginate until ~20 messages cached (SPA
+     *  ensureMessages parity). No-op offline or when already warm. */
+    suspend fun ensureMessages(roomId: String, target: Int = 20) {
+        if (!syncBus.connected) return
+        var guard = 0
+        while (db.chatMessages().countForRoom(roomId) < target && guard < 5) {
+            val fetched = loadOlder(roomId, limit = 30)
+            if (fetched == 0) break
+            guard++
+        }
+    }
+
     /** Scroll-up pagination via matrix.paginate; events go into the cache. */
     suspend fun loadOlder(roomId: String, limit: Int = 30): Int {
         if (!syncBus.connected) return 0
