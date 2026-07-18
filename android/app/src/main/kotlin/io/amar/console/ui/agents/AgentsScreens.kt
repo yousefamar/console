@@ -65,14 +65,19 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         )
     }
 
+    val connected by repo.connectedFlow.collectAsState()
     Column(Modifier.fillMaxSize()) {
+        io.amar.console.ui.components.PaneTopBar(
+            title = "Agents",
+            subtitle = if (connected) "${sorted.size} sessions · live" else "${sorted.size} cached · offline",
+        )
         if (approvals.isNotEmpty()) {
             ApprovalBanner(repo, approvals.first())
         }
         if (sorted.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No cached sessions — connect once", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            io.amar.console.ui.components.EmptyState(
+                Icons.Filled.Circle, "No sessions yet", "Connect once to sync the fleet",
+            )
             return
         }
         LazyColumn(Modifier.fillMaxSize()) {
@@ -166,16 +171,27 @@ private fun SessionRow(session: AgentSessionRow, onClick: () -> Unit) {
 }
 
 @Composable
-fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onComposerChange: (String) -> Unit = {}) {
+fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> Unit = {}, onComposerChange: (String) -> Unit = {}) {
     val messages by repo.observeMessages(sessionId).collectAsState(initial = emptyList())
     val approvals by repo.approvals.collectAsState()
     val sessionApprovals = remember(approvals) { approvals.filter { it.sessionId == sessionId } }
     val scope = rememberCoroutineScope()
-    var draft by remember { mutableStateOf("") }
+    val sessions by repo.observeSessions().collectAsState(initial = emptyList())
+    val session = remember(sessions) { sessions.firstOrNull { it.id == sessionId } }
+    val connected by repo.connectedFlow.collectAsState()
 
     LaunchedEffect(sessionId) { repo.markRead(sessionId) }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        io.amar.console.ui.components.PaneTopBar(
+            title = session?.name ?: "…",
+            subtitle = listOfNotNull(
+                session?.status,
+                session?.modelLabel,
+                if (!connected) "offline — sends queue" else null,
+            ).joinToString(" · ").ifEmpty { null },
+            onBack = onBack,
+        )
         if (sessionApprovals.isNotEmpty()) {
             ApprovalBanner(repo, sessionApprovals.first())
         }
@@ -188,28 +204,12 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onComposerChan
                 AgentMessageBlock(msg)
             }
         }
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it; onComposerChange(it) },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Prompt — queues offline") },
-                maxLines = 5,
-            )
-            IconButton(onClick = {
-                val text = draft.trim()
-                if (text.isNotEmpty()) {
-                    draft = ""
-                    scope.launch { repo.sendPrompt(sessionId, text) }
-                }
-            }) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = MaterialTheme.colorScheme.primary)
-            }
-        }
+        io.amar.console.ui.components.Composer(
+            placeholder = "Prompt — queues offline",
+            draftKey = "agent:$sessionId",
+            onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) } },
+            onTextChange = onComposerChange,
+        )
     }
 }
 
