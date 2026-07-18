@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { CalendarClient } from '../calendar-client.js'
 import type { AuthStore } from '../auth-store.js'
+import type { DedupStore } from '../dedup-store.js'
 
 export function handleCalendarRoutes(
   req: IncomingMessage,
@@ -12,6 +13,7 @@ export function handleCalendarRoutes(
   calendar: CalendarClient,
   authStore: AuthStore,
   readBody: (req: IncomingMessage) => Promise<string>,
+  createDedup?: DedupStore,
 ): boolean {
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -110,14 +112,20 @@ export function handleCalendarRoutes(
   }
 
   // POST /cal/events
+  // Optional `clientToken`: offline-outbox idempotency — replaying a queued
+  // create with the same token returns the recorded event, not a duplicate.
   if (path === '/cal/events' && req.method === 'POST') {
     return handleAsync(async () => {
       const body = JSON.parse(await readBody(req))
       const calendarId = body.calendarId
       const acc = body.account || account
+      const clientToken = typeof body.clientToken === 'string' ? body.clientToken : undefined
       delete body.calendarId
       delete body.account
-      const data = await calendar.createEvent(acc, calendarId, body)
+      delete body.clientToken
+      const data = createDedup
+        ? await createDedup.once(clientToken, () => calendar.createEvent(acc, calendarId, body))
+        : await calendar.createEvent(acc, calendarId, body)
       json(data)
     })
   }

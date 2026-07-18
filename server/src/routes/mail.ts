@@ -2,6 +2,25 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GmailClient } from '../gmail-client.js'
+import type { DedupStore } from '../dedup-store.js'
+
+/**
+ * Bounded-concurrency map — the batched-hydration endpoints fan out N thread
+ * fetches; 6-way keeps Gmail rate limits happy while cutting the mobile
+ * client's 1+N round-trips to one request.
+ */
+export async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i]!)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
 
 export function handleMailRoutes(
   req: IncomingMessage,
@@ -10,6 +29,7 @@ export function handleMailRoutes(
   url: URL,
   gmail: GmailClient,
   readBody: (req: IncomingMessage) => Promise<string>,
+  sendDedup?: DedupStore,
 ): boolean {
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -32,15 +52,46 @@ export function handleMailRoutes(
   const account = url.searchParams.get('account') || undefined
 
   // GET /mail/threads
+  // `?full=1&limit=N` — batched hydration for offline-first clients: lists
+  // inbox thread ids then fetches each FULL thread at bounded concurrency,
+  // returning `{threads: [full thread objects], historyId}` in one response
+  // (the plain form is Gmail's id+snippet stubs, 1+N round-trips to hydrate).
   if (path === '/mail/threads' && req.method === 'GET') {
     return handleAsync(async () => {
+      const full = url.searchParams.get('full') === '1'
       const data = await gmail.listThreads({
-        q: url.searchParams.get('q') || undefined,
-        maxResults: url.searchParams.get('maxResults') || undefined,
+        q: url.searchParams.get('q') || (full ? 'in:inbox' : undefined),
+        maxResults: url.searchParams.get('limit') || url.searchParams.get('maxResults') || undefined,
         pageToken: url.searchParams.get('pageToken') || undefined,
         account,
+      }) as { threads?: Array<{ id: string }>; nextPageToken?: string }
+      if (!full) {
+        json(data)
+        return
+      }
+      const ids = (data.threads ?? []).map((t) => t.id)
+      const threads = await mapConcurrent(ids, 6, (id) =>
+        gmail.getThread(id, { account }).catch(() => null),
+      )
+      const profile = await gmail.getProfile(account) as { historyId?: string }
+      json({
+        threads: threads.filter(Boolean),
+        historyId: profile.historyId ?? null,
+        nextPageToken: data.nextPageToken,
       })
-      json(data)
+    })
+  }
+
+  // POST /mail/threads/batch {ids: [...]} — hydrate specific threads (the
+  // delta-driven path: mail.delta / history catch-up hands the client ids).
+  if (path === '/mail/threads/batch' && req.method === 'POST') {
+    return handleAsync(async () => {
+      const body = JSON.parse(await readBody(req)) as { ids?: string[] }
+      const ids = (body.ids ?? []).slice(0, 100)
+      const threads = await mapConcurrent(ids, 6, (id) =>
+        gmail.getThread(id, { account }).catch(() => null),
+      )
+      json({ threads: threads.filter(Boolean) })
     })
   }
 
@@ -136,10 +187,12 @@ export function handleMailRoutes(
   }
 
   // POST /mail/send
+  // Optional `clientToken`: offline-outbox idempotency — a retry with the
+  // same token returns the recorded result instead of re-sending.
   if (path === '/mail/send' && req.method === 'POST') {
     return handleAsync(async () => {
       const body = JSON.parse(await readBody(req))
-      const result = await gmail.sendEmail({
+      const result = await dedupOnce(sendDedup, body.clientToken, () => gmail.sendEmail({
         from: body.from || '',
         to: body.to,
         cc: body.cc,
@@ -150,7 +203,7 @@ export function handleMailRoutes(
         threadId: body.threadId,
         attachments: body.attachments,
         account,
-      })
+      }))
       json(result)
     })
   }
@@ -159,6 +212,10 @@ export function handleMailRoutes(
   if (path === '/mail/reply' && req.method === 'POST') {
     return handleAsync(async () => {
       const body = JSON.parse(await readBody(req))
+      // Replay short-circuit BEFORE the thread fetch — a dedup hit must not
+      // re-run anything.
+      const replayed = body.clientToken ? sendDedup?.get(body.clientToken) : undefined
+      if (replayed !== undefined) { json(replayed); return }
       // Get thread to find the last message headers for In-Reply-To/References
       const thread = await gmail.getThread(body.threadId, { account }) as any
       const messages = thread.messages || []
@@ -219,6 +276,7 @@ export function handleMailRoutes(
         threadId: body.threadId,
         account,
       })
+      if (body.clientToken) sendDedup?.record(body.clientToken, result)
       json(result)
     })
   }
@@ -227,6 +285,8 @@ export function handleMailRoutes(
   if (path === '/mail/forward' && req.method === 'POST') {
     return handleAsync(async () => {
       const body = JSON.parse(await readBody(req))
+      const replayed = body.clientToken ? sendDedup?.get(body.clientToken) : undefined
+      if (replayed !== undefined) { json(replayed); return }
       const thread = await gmail.getThread(body.threadId, { account }) as any
       const lastMsg = (thread.messages || []).at(-1)
       let subject = ''
@@ -253,6 +313,7 @@ export function handleMailRoutes(
         threadId: body.threadId,
         account,
       })
+      if (body.clientToken) sendDedup?.record(body.clientToken, result)
       json(result)
     })
   }
@@ -327,6 +388,12 @@ export function handleMailRoutes(
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** DedupStore.once when a store is wired, plain execution otherwise. */
+async function dedupOnce<T>(store: DedupStore | undefined, token: string | undefined, fn: () => Promise<T>): Promise<T> {
+  if (store) return store.once(token, fn)
+  return fn()
 }
 
 function walkParts(

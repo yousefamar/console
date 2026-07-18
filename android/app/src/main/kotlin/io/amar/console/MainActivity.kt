@@ -105,10 +105,10 @@ class MainActivity : ComponentActivity() {
                 val paneName = data.path?.trim('/') ?: return
                 val pane = Pane.fromPushPane(paneName)
                 val itemId = data.getQueryParameter("roomId") ?: data.getQueryParameter("itemId")
-                val route = if (!itemId.isNullOrEmpty() && pane == Pane.Chat) {
-                    "chat/${Uri.encode(itemId)}"
-                } else {
-                    pane.route
+                val route = when {
+                    !itemId.isNullOrEmpty() && pane == Pane.Chat -> "chat/${Uri.encode(itemId)}"
+                    !itemId.isNullOrEmpty() && pane == Pane.Mail -> "mail/${Uri.encode(itemId)}"
+                    else -> pane.route
                 }
                 try {
                     nav.navigate(route) { launchSingleTop = true }

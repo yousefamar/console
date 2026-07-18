@@ -29,6 +29,8 @@ import io.amar.console.R
 import io.amar.console.core.AppLifecycle
 import io.amar.console.ui.chat.ChatRoomListScreen
 import io.amar.console.ui.chat.ChatRoomScreen
+import io.amar.console.ui.mail.MailInboxScreen
+import io.amar.console.ui.mail.MailThreadScreen
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.panes.PlaceholderPane
 import io.amar.console.ui.settings.SettingsScreen
@@ -133,7 +135,16 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     val roomId = android.net.Uri.decode(entry.arguments?.getString("roomId") ?: "")
                     ChatRoomScreen(app.graph.chat, roomId)
                 }
-                for (pane in Pane.entries.filter { it != Pane.Chat }) {
+                composable(Pane.Mail.route) {
+                    MailInboxScreen(app.graph.mail, onOpenThread = { threadId ->
+                        navController.navigate("mail/${android.net.Uri.encode(threadId)}")
+                    })
+                }
+                composable("mail/{threadId}") { entry ->
+                    val threadId = android.net.Uri.decode(entry.arguments?.getString("threadId") ?: "")
+                    MailThreadScreen(app.graph.mail, threadId, onBack = { navController.popBackStack() })
+                }
+                for (pane in Pane.entries.filter { it != Pane.Chat && it != Pane.Mail }) {
                     composable(pane.route) { PlaceholderPane(pane) }
                 }
                 composable("settings") { SettingsScreen(app) }
