@@ -47,6 +47,15 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.amar.console.core.Dictation
 
+/** Imperative handle: lets a parent read/replace the draft text from
+ *  outside (mention autocomplete insertion). */
+class ComposerHandle {
+    internal var getter: () -> String = { "" }
+    internal var setter: (String) -> Unit = {}
+    val text: String get() = getter()
+    fun setText(value: String) = setter(value)
+}
+
 /**
  * WhatsApp-style composer: pill input (grows to 5 lines), attach button
  * (system picker, any file type), dictation mic (hub /stt, live transcript
@@ -55,6 +64,8 @@ import io.amar.console.core.Dictation
  * [onSendWithAttachments] receives (text, uris) — text may be empty when
  * only attachments are sent. When null, attach UI is hidden (plain text
  * composer, e.g. agents until image prompts land).
+ *
+ * [aboveInput] renders directly above the input row (mention suggestions).
  */
 @Composable
 fun Composer(
@@ -63,11 +74,17 @@ fun Composer(
     onSend: (String) -> Unit,
     onTextChange: (String) -> Unit = {},
     onSendWithAttachments: ((String, List<Uri>) -> Unit)? = null,
+    handle: ComposerHandle? = null,
+    aboveInput: (@Composable () -> Unit)? = null,
 ) {
     var draft by rememberSaveable(draftKey) { mutableStateOf("") }
     var attachments by remember(draftKey) { mutableStateOf<List<Uri>>(emptyList()) }
     val dictation by Dictation.state.collectAsState()
     val context = LocalContext.current
+    if (handle != null) {
+        handle.getter = { draft }
+        handle.setter = { draft = it; onTextChange(it) }
+    }
 
     // While dictating, the live transcript renders appended to the draft.
     val displayText = if (dictation.active && dictation.transcript.isNotEmpty()) {
@@ -128,6 +145,7 @@ fun Composer(
                 maxLines = 2,
             )
         }
+        aboveInput?.invoke()
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.Bottom,

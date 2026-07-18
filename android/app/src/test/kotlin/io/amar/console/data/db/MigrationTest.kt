@@ -97,6 +97,9 @@ class MigrationTest {
     fun `migrate 6 to latest`() = migrateFrom(6)
 
     @Test
+    fun `migrate 7 to latest`() = migrateFrom(7)
+
+    @Test
     fun `migrate 1 to latest`() = migrateFrom(1)
 
     @Test

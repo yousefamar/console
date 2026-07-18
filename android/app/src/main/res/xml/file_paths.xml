@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="mail_attachments" path="mail-attachments/" />
+    <cache-path name="e2ee_media" path="e2ee-media/" />
 </paths>

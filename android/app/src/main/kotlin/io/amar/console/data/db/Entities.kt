@@ -59,6 +59,10 @@ data class ChatRoomRow(
     val prevBatch: String?,         // pagination cursor for loadOlder
     @androidx.room.ColumnInfo(defaultValue = "0")
     val isPinned: Boolean = false,  // m.favourite tag — always-visible section
+    /** Timestamp of the latest message when the room was last marked read —
+     *  drives the "— New —" unread divider (SPA: DbChatRoom.lastReadTs). */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val lastReadTs: Long? = null,
     val rawJson: String,            // full RoomState — fields we don't model survive round-trips
 )
 
@@ -80,6 +84,9 @@ data class ChatMessageRow(
     val msgtype: String,            // m.text | m.image | m.file | ...
     val mediaMxc: String?,
     val mediaMime: String?,
+    /** Audio/video duration from content.info (ms) — audio bubble label. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val mediaDurationMs: Long? = null,
     val encryptedFileJson: String?, // EncryptedFile info for E2EE media download
     val replyToJson: String?,
     val isEdited: Boolean = false,
