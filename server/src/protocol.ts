@@ -14,7 +14,7 @@ import type { AgentTask } from './agents/tasks.js'
 
 export type ClientMessage =
   | { type: 'create_session'; prompt: string; images?: Array<{ media_type: string; data: string }>; cwd?: string; name?: string; asAgent?: boolean }
-  | { type: 'send_message'; sessionId: string; content: string; images?: Array<{ media_type: string; data: string }> }
+  | { type: 'send_message'; sessionId: string; content: string; images?: Array<{ media_type: string; data: string }>; dedupeKey?: string }
   | { type: 'approve_tool'; sessionId: string; requestId: string; modifiedInput?: Record<string, unknown> }
   | { type: 'deny_tool'; sessionId: string; requestId: string; reason?: string }
   | { type: 'interrupt'; sessionId: string }

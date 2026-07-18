@@ -21,12 +21,18 @@ import androidx.room.RoomDatabase
         CalendarRow::class,
         CalEventRow::class,
         NoteFileRow::class,
+        FeedRow::class,
+        FeedItemRow::class,
+        FeedReadRow::class,
+        AgentSessionRow::class,
+        AgentMessageRow::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
+        AutoMigration(from = 3, to = 4),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {
@@ -38,6 +44,8 @@ abstract class ConsoleDb : RoomDatabase() {
     abstract fun mailMessages(): MailMessageDao
     abstract fun calendar(): CalendarDao
     abstract fun notes(): NotesDao
+    abstract fun feeds(): FeedsDao
+    abstract fun agents(): AgentsDao
 
     companion object {
         fun build(context: Context): ConsoleDb =

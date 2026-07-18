@@ -21,6 +21,8 @@ class ConsoleApp : Application(), ImageLoaderFactory {
         Connectivity.install(this)
         graph = AppGraph(this)
         graph.syncEngine.start()
+        // WorkManager is absent in Robolectric unit tests (no initializer).
+        runCatching { io.amar.console.sync.PruneWorker.schedule(this) }
     }
 
     // Coil's global loader: attach the hub bearer so hub media-proxy URLs

@@ -27,9 +27,13 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import io.amar.console.ConsoleApp
 import io.amar.console.R
 import io.amar.console.core.AppLifecycle
+import io.amar.console.ui.agents.AgentSessionListScreen
+import io.amar.console.ui.agents.AgentSessionScreen
 import io.amar.console.ui.cal.CalendarScreen
 import io.amar.console.ui.chat.ChatRoomListScreen
 import io.amar.console.ui.chat.ChatRoomScreen
+import io.amar.console.ui.feeds.FeedItemScreen
+import io.amar.console.ui.feeds.FeedsScreen
 import io.amar.console.ui.mail.MailInboxScreen
 import io.amar.console.ui.mail.MailThreadScreen
 import io.amar.console.ui.nav.Pane
@@ -157,7 +161,25 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     val path = android.net.Uri.decode(entry.arguments?.getString("path") ?: "")
                     NoteEditorScreen(app.graph.notes, path, onBack = { navController.popBackStack() })
                 }
-                val built = setOf(Pane.Chat, Pane.Mail, Pane.Calendar, Pane.Notes)
+                composable(Pane.Feeds.route) {
+                    FeedsScreen(app.graph.feeds, onOpenItem = { itemId ->
+                        navController.navigate("feeds/${android.net.Uri.encode(itemId)}")
+                    })
+                }
+                composable("feeds/{itemId}") { entry ->
+                    val itemId = android.net.Uri.decode(entry.arguments?.getString("itemId") ?: "")
+                    FeedItemScreen(app.graph.feeds, itemId, onBack = { navController.popBackStack() })
+                }
+                composable(Pane.Agents.route) {
+                    AgentSessionListScreen(app.graph.agents, onOpenSession = { sessionId ->
+                        navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
+                    })
+                }
+                composable("agents/{sessionId}") { entry ->
+                    val sessionId = android.net.Uri.decode(entry.arguments?.getString("sessionId") ?: "")
+                    AgentSessionScreen(app.graph.agents, sessionId)
+                }
+                val built = setOf(Pane.Chat, Pane.Mail, Pane.Calendar, Pane.Notes, Pane.Feeds, Pane.Agents)
                 for (pane in Pane.entries.filter { it !in built }) {
                     composable(pane.route) { PlaceholderPane(pane) }
                 }
