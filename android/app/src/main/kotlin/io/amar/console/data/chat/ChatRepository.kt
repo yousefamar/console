@@ -45,6 +45,7 @@ class ChatRepository(
         const val TYPE_MARK_UNREAD = "chatMarkUnread"
         const val TYPE_SNOOZE = "chatSnooze"
         const val TYPE_SEND_FILE = "chatSendFile"
+        const val TYPE_REACT = "chatReact"
         /** Timeline cache bound per room (paginate loads more transiently). */
         const val ROOM_CACHE_LIMIT = 100
     }
@@ -60,17 +61,28 @@ class ChatRepository(
     // ---------------------------------------------------------------- //
     // Mutations (optimistic + outbox)
 
-    /** Send text: local echo row now, durable queue, flush when online. */
-    suspend fun sendText(roomId: String, body: String) {
+    /** Send text: local echo row now, durable queue, flush when online.
+     *  [replyToEventId] adds the m.in_reply_to relation. */
+    suspend fun sendText(roomId: String, body: String, replyToEventId: String? = null) {
         val txnId = outbox.mintToken()
         val echoId = "~${System.currentTimeMillis()}.${(0..999999).random()}"
+        val replyMeta = replyToEventId?.let { target ->
+            val t = db.chatMessages().byId(target)
+            buildJsonObject {
+                put("eventId", target)
+                t?.let {
+                    put("sender", it.senderName ?: it.senderId)
+                    put("body", (it.body ?: "").take(120))
+                }
+            }.toString()
+        }
         db.chatMessages().upsertAll(
             listOf(
                 ChatMessageRow(
                     id = echoId, roomId = roomId, timestamp = System.currentTimeMillis(),
                     senderId = "me", senderName = "me", body = body, msgtype = "m.text",
                     mediaMxc = null, mediaMime = null, encryptedFileJson = null,
-                    replyToJson = null, localEcho = true, txnId = txnId,
+                    replyToJson = replyMeta, localEcho = true, txnId = txnId,
                 )
             )
         )
@@ -78,8 +90,27 @@ class ChatRepository(
             put("roomId", roomId)
             put("echoId", echoId)
             put("body", body)
+            replyToEventId?.let { put("replyTo", it) }
         }
         outbox.enqueue(TYPE_SEND, payload.toString(), entityId = roomId, dedupeToken = txnId)
+    }
+
+    /** Send an emoji reaction (m.annotation). Optimistic aggregate + queued. */
+    suspend fun sendReaction(roomId: String, targetEventId: String, emoji: String) {
+        val row = db.chatMessages().byId(targetEventId)
+        if (row != null) {
+            val reactions = parseReactions(row.reactionsJson).toMutableMap()
+            val senders = (reactions[emoji] ?: emptyList()).toMutableList()
+            if ("me" !in senders) senders.add("me")
+            reactions[emoji] = senders
+            db.chatMessages().upsertAll(listOf(row.copy(reactionsJson = encodeReactions(reactions))))
+        }
+        val payload = buildJsonObject {
+            put("roomId", roomId)
+            put("targetEventId", targetEventId)
+            put("emoji", emoji)
+        }
+        outbox.enqueue(TYPE_REACT, payload.toString(), entityId = roomId)
     }
 
     suspend fun markRead(roomId: String) {
@@ -183,12 +214,18 @@ class ChatRepository(
             val echoId = p["echoId"]!!.jsonPrimitive.content
             val body = p["body"]!!.jsonPrimitive.content
             try {
+                val replyTo = p["replyTo"]?.jsonPrimitive?.content
                 val result = syncBus.rpc("matrix", "sendEvent", buildJsonObject {
                     put("roomId", roomId)
                     put("type", "m.room.message")
                     putJsonObject("content") {
                         put("msgtype", "m.text")
                         put("body", body)
+                        if (replyTo != null) {
+                            putJsonObject("m.relates_to") {
+                                putJsonObject("m.in_reply_to") { put("event_id", replyTo) }
+                            }
+                        }
                     }
                     put("txnId", row.dedupeToken)
                 })
@@ -257,6 +294,26 @@ class ChatRepository(
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             p["echoId"]?.jsonPrimitive?.content?.let { db.chatMessages().setSendFailed(it, true) }
             Outbox.Result.Done
+        }
+        outbox.register(TYPE_REACT) { row, _ ->
+            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            try {
+                syncBus.rpc("matrix", "sendEvent", buildJsonObject {
+                    put("roomId", p["roomId"]!!.jsonPrimitive.content)
+                    put("type", "m.reaction")
+                    putJsonObject("content") {
+                        putJsonObject("m.relates_to") {
+                            put("rel_type", "m.annotation")
+                            put("event_id", p["targetEventId"]!!.jsonPrimitive.content)
+                            put("key", p["emoji"]!!.jsonPrimitive.content)
+                        }
+                    }
+                })
+                Outbox.Result.Done
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "react failed")
+            }
         }
         outbox.register(TYPE_MARK_READ, rpcHandler("markRead"))
         outbox.register(TYPE_MARK_UNREAD, rpcHandler("markUnread"))
@@ -358,20 +415,53 @@ class ChatRepository(
         val events = ChatEvents.timelineEvents(roomDelta)
         if (events.isEmpty()) return
         val toUpsert = mutableListOf<ChatMessageRow>()
+        // In-batch working view: later events (reaction #2, edit-after-msg)
+        // must see earlier ones from THIS delta, not the stale DB row.
+        suspend fun lookup(id: String): ChatMessageRow? =
+            toUpsert.lastOrNull { it.id == id } ?: db.chatMessages().byId(id)
+        fun upsert(row: ChatMessageRow) {
+            toUpsert.removeAll { it.id == row.id }
+            toUpsert.add(row)
+        }
         for (event in events) {
             // Redactions / tombstones → flip isDeleted on the original row.
             if (ChatEvents.isRedaction(event)) {
                 val target = ChatEvents.redactsEventId(event)
                 if (target != null) {
-                    db.chatMessages().byId(target)?.let {
-                        toUpsert.add(it.copy(isDeleted = true))
-                    }
+                    lookup(target)?.let { upsert(it.copy(isDeleted = true)) }
                 }
                 continue
             }
             if (ChatEvents.isEncryptedTombstone(event)) {
                 val id = event["event_id"]?.jsonPrimitive?.content
-                if (id != null) db.chatMessages().byId(id)?.let { toUpsert.add(it.copy(isDeleted = true)) }
+                if (id != null) lookup(id)?.let { upsert(it.copy(isDeleted = true)) }
+                continue
+            }
+            // Reactions aggregate onto the target row (emoji → [senders]).
+            if (ChatEvents.isReaction(event)) {
+                val parts = ChatEvents.reactionParts(event) ?: continue
+                val (target, key, sender) = parts
+                val row = lookup(target) ?: continue
+                val reactions = parseReactions(row.reactionsJson).toMutableMap()
+                val senders = (reactions[key] ?: emptyList()).toMutableList()
+                if (sender !in senders) senders.add(sender)
+                reactions[key] = senders
+                upsert(row.copy(reactionsJson = encodeReactions(reactions)))
+                continue
+            }
+            // Edits UPDATE the original row in place (SPA parity) — inserting
+            // under the edit-event id duplicated the message (audit item 6).
+            if (ChatEvents.isEdit(event)) {
+                val targetId = ChatEvents.relatesToEventId(event)
+                val edited = ChatEvents.eventToMessage(event, roomId) ?: continue
+                if (targetId != null) {
+                    val original = lookup(targetId)
+                    if (original != null) {
+                        upsert(original.copy(body = edited.body, isEdited = true))
+                        continue
+                    }
+                }
+                // Original not cached — skip rather than duplicate.
                 continue
             }
             // Our own sends echo back with our txnId — swap the local echo.
@@ -382,10 +472,44 @@ class ChatRepository(
                     .firstOrNull { it.localEcho && it.txnId == txn }
                 if (echo != null) db.chatMessages().delete(echo.id)
             }
-            toUpsert.add(msg)
+            // Enrich replyTo with the quoted body/sender from the local cache.
+            upsert(enrichReply(msg))
         }
         if (toUpsert.isNotEmpty()) db.chatMessages().upsertAll(toUpsert)
     }
+
+    private suspend fun enrichReply(msg: ChatMessageRow): ChatMessageRow {
+        val replyJson = msg.replyToJson ?: return msg
+        if (replyJson.contains("\"body\"")) return msg // already enriched
+        val eventId = runCatching {
+            json.parseToJsonElement(replyJson).jsonObject["eventId"]?.jsonPrimitive?.content
+        }.getOrNull() ?: return msg
+        val target = db.chatMessages().byId(eventId) ?: return msg
+        val enriched = buildJsonObject {
+            put("eventId", eventId)
+            put("sender", target.senderName ?: target.senderId)
+            put("body", (target.body ?: "").take(120))
+        }
+        return msg.copy(replyToJson = enriched.toString())
+    }
+
+    internal fun parseReactions(jsonStr: String?): Map<String, List<String>> {
+        jsonStr ?: return emptyMap()
+        return runCatching {
+            json.parseToJsonElement(jsonStr).jsonObject.entries.associate { (k, v) ->
+                k to ((v as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
+                    runCatching { it.jsonPrimitive.content }.getOrNull()
+                } ?: emptyList())
+            }
+        }.getOrElse { emptyMap() }
+    }
+
+    private fun encodeReactions(map: Map<String, List<String>>): String =
+        buildJsonObject {
+            for ((k, senders) in map) {
+                put(k, kotlinx.serialization.json.JsonArray(senders.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            }
+        }.toString()
 
     /** Scroll-up pagination via matrix.paginate; events go into the cache. */
     suspend fun loadOlder(roomId: String, limit: Int = 30): Int {

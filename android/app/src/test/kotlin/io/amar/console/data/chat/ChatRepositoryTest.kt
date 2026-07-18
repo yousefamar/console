@@ -189,4 +189,92 @@ class ChatRepositoryTest {
         assertEquals(echo.txnId, again[0].dedupeToken) // SAME token → idempotent
         assertEquals(false, db.chatMessages().byId(echo.id)!!.sendFailed)
     }
+
+    // ------------------------------------------------------------------ //
+    // Batch 2: reactions, edit-in-place, reply enrichment
+
+    @Test
+    fun `edit updates the original row in place — no duplicate`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}orig","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"typo"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}edit","sender":"@a:x","type":"m.room.message","origin_server_ts":2,
+                  "content":{"msgtype":"m.text","body":"* fixed",
+                             "m.new_content":{"msgtype":"m.text","body":"fixed"},
+                             "m.relates_to":{"rel_type":"m.replace","event_id":"${'$'}orig"}}}]}}}}"""
+        ))
+        assertEquals(1, db.chatMessages().countForRoom("!r:x"))
+        val row = db.chatMessages().byId("\$orig")!!
+        assertEquals("fixed", row.body)
+        assertTrue(row.isEdited)
+        assertNull(db.chatMessages().byId("\$edit"))
+    }
+
+    @Test
+    fun `reactions aggregate emoji to senders on the target row`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m1","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"hi"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}r1","sender":"@b:x","type":"m.reaction","origin_server_ts":2,
+                  "content":{"m.relates_to":{"rel_type":"m.annotation","event_id":"${'$'}m1","key":"👍"}}},
+                 {"event_id":"${'$'}r2","sender":"@c:x","type":"m.reaction","origin_server_ts":3,
+                  "content":{"m.relates_to":{"rel_type":"m.annotation","event_id":"${'$'}m1","key":"👍"}}}]}}}}"""
+        ))
+        val reactions = repo.parseReactions(db.chatMessages().byId("\$m1")!!.reactionsJson)
+        assertEquals(listOf("@b:x", "@c:x"), reactions["👍"])
+        assertEquals(1, db.chatMessages().countForRoom("!r:x")) // reactions aren't rows
+    }
+
+    @Test
+    fun `reply gets enriched with quoted sender and body from cache`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}q","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"original question"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}a","sender":"@b:x","type":"m.room.message","origin_server_ts":2,
+                  "content":{"msgtype":"m.text","body":"the answer",
+                             "m.relates_to":{"m.in_reply_to":{"event_id":"${'$'}q"}}}}]}}}}"""
+        ))
+        val reply = db.chatMessages().byId("\$a")!!
+        assertTrue(reply.replyToJson!!.contains("original question"))
+        assertTrue(reply.replyToJson!!.contains("@a:x") || reply.replyToJson!!.contains("\"a\""))
+    }
+
+    @Test
+    fun `sendText with replyTo carries the relation into the queue payload`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}t","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"target"}}]}}}}"""
+        ))
+        repo.sendText("!r:x", "my reply", replyToEventId = "\$t")
+        val q = db.outbox().pending().first { it.type == ChatRepository.TYPE_SEND }
+        assertTrue(q.payloadJson.contains("\"replyTo\":\"\$t\""))
+        val echo = db.chatMessages().recent("!r:x", 5).first { it.localEcho }
+        assertTrue(echo.replyToJson!!.contains("target"))
+    }
+
+    @Test
+    fun `sendReaction is optimistic and queues chatReact`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"react to me"}}]}}}}"""
+        ))
+        repo.sendReaction("!r:x", "\$m", "❤️")
+        val reactions = repo.parseReactions(db.chatMessages().byId("\$m")!!.reactionsJson)
+        assertEquals(listOf("me"), reactions["❤️"])
+        assertEquals(ChatRepository.TYPE_REACT, db.outbox().pending().first().type)
+    }
 }

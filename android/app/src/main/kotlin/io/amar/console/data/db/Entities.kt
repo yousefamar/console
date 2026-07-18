@@ -57,6 +57,8 @@ data class ChatRoomRow(
     val networkIcon: String?,       // bridge glyph (whatsapp/linkedin/...)
     val snoozedUntil: Long?,
     val prevBatch: String?,         // pagination cursor for loadOlder
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val isPinned: Boolean = false,  // m.favourite tag — always-visible section
     val rawJson: String,            // full RoomState — fields we don't model survive round-trips
 )
 
