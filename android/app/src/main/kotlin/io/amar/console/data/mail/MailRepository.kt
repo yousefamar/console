@@ -54,6 +54,7 @@ class MailRepository(
         const val TYPE_TRASH = "mailTrash"
         const val TYPE_SEND = "mailSend"
         const val TYPE_REPLY = "mailReply"
+        const val TYPE_FORWARD = "mailForward"
     }
 
     // ---------------------------------------------------------------- //
@@ -63,6 +64,9 @@ class MailRepository(
         db.mailThreads().observeInbox(System.currentTimeMillis())
 
     fun observeThread(id: String): Flow<MailThreadRow?> = db.mailThreads().observeThread(id)
+    fun observeSnoozed(): Flow<List<MailThreadRow>> =
+        db.mailThreads().observeSnoozed(System.currentTimeMillis())
+    suspend fun search(q: String): List<MailThreadRow> = db.mailThreads().search(q)
     fun observeMessages(threadId: String): Flow<List<MailMessageRow>> =
         db.mailMessages().observeForThread(threadId)
 
@@ -139,15 +143,28 @@ class MailRepository(
         archive(threadId)
     }
 
-    suspend fun send(to: String, subject: String, body: String) {
+    suspend fun send(to: String, subject: String, body: String, cc: String? = null) {
         val account = db.meta().get(ACCOUNT_KEY) ?: ""
         val payload = buildJsonObject {
             put("to", to)
             put("subject", subject)
             put("body", body)
+            cc?.takeIf { it.isNotBlank() }?.let { put("cc", it) }
             put("account", account)
         }
         outbox.enqueue(TYPE_SEND, payload.toString())
+    }
+
+    /** Forward a thread (hub builds Fwd: subject + header block). */
+    suspend fun forward(threadId: String, to: String, note: String?) {
+        val account = db.meta().get(ACCOUNT_KEY) ?: ""
+        val payload = buildJsonObject {
+            put("threadId", threadId)
+            put("to", to)
+            note?.takeIf { it.isNotBlank() }?.let { put("body", it) }
+            put("account", account)
+        }
+        outbox.enqueue(TYPE_FORWARD, payload.toString(), entityId = threadId)
     }
 
     // ---------------------------------------------------------------- //
@@ -208,6 +225,24 @@ class MailRepository(
             }
         }
 
+        outbox.register(TYPE_FORWARD) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val account = p["account"]?.jsonPrimitive?.content ?: ""
+            try {
+                val body = buildJsonObject {
+                    put("threadId", p["threadId"]!!.jsonPrimitive.content)
+                    put("to", p["to"]!!.jsonPrimitive.content)
+                    p["body"]?.jsonPrimitive?.content?.let { put("body", it) }
+                    put("clientToken", row.dedupeToken)
+                }
+                hub.post("/mail/forward${accountQuery(account)}", body.toString())
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
         outbox.register(TYPE_SEND) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             val account = p["account"]?.jsonPrimitive?.content ?: ""
@@ -216,6 +251,7 @@ class MailRepository(
                     put("to", p["to"]!!.jsonPrimitive.content)
                     put("subject", p["subject"]!!.jsonPrimitive.content)
                     put("body", p["body"]!!.jsonPrimitive.content)
+                    p["cc"]?.jsonPrimitive?.content?.let { put("cc", it) }
                     put("clientToken", row.dedupeToken)
                 }
                 hub.post("/mail/send${accountQuery(account)}", sendBody.toString())
