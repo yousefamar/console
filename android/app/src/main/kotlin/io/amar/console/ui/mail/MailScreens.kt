@@ -83,6 +83,9 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(threads, key = { it.id }) { thread ->
                         val dismissState = rememberSwipeToDismissBoxState(
+                            // Half-the-row drag required — the default ~56dp threshold
+                            // made accidental snoozes while scrolling far too easy.
+                            positionalThreshold = { totalDistance -> totalDistance * 0.5f },
                             confirmValueChange = { value ->
                                 when (value) {
                                     SwipeToDismissBoxValue.StartToEnd -> {
