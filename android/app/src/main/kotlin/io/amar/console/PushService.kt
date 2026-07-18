@@ -1169,6 +1169,10 @@ class PushService : Service() {
             handleGenericPush(json, "chat")
             return
         }
+        // Suppress the notification when the user is looking at this exact
+        // room right now (native app foreground + route match). Mark-read
+        // from the repository will clear the unread hub-side momentarily.
+        if (io.amar.console.core.AppLifecycle.isViewing("chat", roomId)) return
         val body = json.optString("body")
         if (body.isEmpty()) return
         val senderName = json.optString("senderName").takeIf { it.isNotEmpty() } ?: "Unknown"
