@@ -128,7 +128,7 @@ const feedsConfigDir = getArg('--feeds', join(homedir(), '.config', 'console'))
 // --------------------------------------------------------------------------
 
 const bookmarkStore = new BookmarkStore(bookmarkVault)
-const noteStore = new NoteStore(notesVault)
+const noteStore = new NoteStore(notesVault, join(feedsConfigDir, 'notes-tombstones.json'))
 const feedStore = new FeedStore(
   join(feedsConfigDir, 'feeds.json'),
   join(feedsConfigDir, 'feed-read.json'),

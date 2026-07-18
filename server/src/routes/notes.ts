@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { NoteStore, contentTypeFor } from '../notes.js'
+import { NoteStore, NoteConflictError, contentTypeFor } from '../notes.js'
 
 function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -22,6 +22,19 @@ export function handleNoteRoutes(
   readBody: (req: IncomingMessage) => Promise<string>,
 ): boolean {
   if (path === '/notes' && req.method === 'GET') {
+    // `?since=<ms>` — changed-files listing + deletion tombstones, the cheap
+    // offline-client polling primitive. Plain form stays the full listing.
+    const sinceParam = /[?&]since=(\d+)/.exec(req.url ?? '')?.[1]
+    if (sinceParam) {
+      noteStore.listSince(Number(sinceParam)).then((delta) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(delta))
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      })
+      return true
+    }
     noteStore.list().then((files) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(files))
@@ -74,11 +87,19 @@ export function handleNoteRoutes(
       return true
     }
     readBody(req).then(async (body) => {
-      const { content } = JSON.parse(body)
-      await noteStore.write(filePath, content)
+      const { content, baseMtime } = JSON.parse(body) as { content: string; baseMtime?: number }
+      // Conditional write: stale baseMtime → 409 with the server copy so the
+      // client can merge instead of clobbering (offline-edit safety). No
+      // baseMtime → legacy last-writer-wins (SPA/CLI unchanged).
+      const { mtime } = await noteStore.writeConditional(filePath, content, baseMtime)
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true }))
+      res.end(JSON.stringify({ ok: true, mtime }))
     }).catch((err) => {
+      if (err instanceof NoteConflictError) {
+        res.writeHead(409, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'conflict', serverMtime: err.serverMtime, serverContent: err.serverContent }))
+        return
+      }
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
     })
