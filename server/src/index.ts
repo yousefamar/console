@@ -42,6 +42,7 @@ import { enforce as enforceHubAuth, authEnforcementActive, decideWsUpgrade } fro
 import { ensureLocalTokens } from './local-tokens.js'
 import { GmailClient } from './gmail-client.js'
 import { handleMailRoutes } from './routes/mail.js'
+import { DedupStore } from './dedup-store.js'
 import { CalendarClient } from './calendar-client.js'
 import { handleCalendarRoutes } from './routes/calendar.js'
 import { MatrixClient } from './matrix-client.js'
@@ -144,6 +145,10 @@ try {
 const debugLog = new DebugLog(join(feedsConfigDir, 'debug.log'))
 const debugClients = new Set<WebSocket>()
 const gmailClient = new GmailClient(authStore)
+// Offline-outbox idempotency: clientToken → recorded result (mail send /
+// cal create are non-idempotent upstream; a queued retry must not double-do).
+const mailSendDedup = new DedupStore(join(feedsConfigDir, 'mail-send-dedup.json'))
+const calCreateDedup = new DedupStore(join(feedsConfigDir, 'cal-create-dedup.json'))
 const calendarClient = new CalendarClient(authStore)
 const matrixClient = new MatrixClient(authStore)
 const monzoClient = new MonzoClient(authStore)
@@ -1156,8 +1161,8 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
 
   // Route to handlers — each returns true if it handled the request
   if (path.startsWith('/auth') && handleAuthRoutes(req, res, path, authStore, readBody, port as number)) return
-  if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody)) return
-  if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody)) return
+  if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody, mailSendDedup)) return
+  if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody, calCreateDedup)) return
   if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   // Rescued media from the append-only chat archive (deleted attachments).
   // GET /matrix/archive/media/<sha1>.bin[?mime=image/jpeg] — filename

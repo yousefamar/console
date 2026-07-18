@@ -883,6 +883,8 @@ class PushService : Service() {
             handleGenericPush(json, "mail")
             return
         }
+        // Suppress when the user is reading this exact thread right now.
+        if (io.amar.console.core.AppLifecycle.isViewing("mail", threadId)) return
         val subject = json.optString("subject").takeIf { it.isNotEmpty() }
             ?: json.optString("body").takeIf { it.isNotEmpty() }
             ?: "(no subject)"
@@ -900,7 +902,7 @@ class PushService : Service() {
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             action = Intent.ACTION_VIEW
-            data = Uri.parse("console://pane/mail")
+            data = Uri.parse("console://pane/mail?itemId=" + Uri.encode(threadId))
         }
         val tapPi = PendingIntent.getActivity(
             this, notifId, tapIntent,
