@@ -76,6 +76,18 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     // Route change → re-render the glasses mirror (no-op when disabled).
     app.graph.mirror.poke()
 
+    // Remote debug nav hooks: `nav <route>` / `back` from the hub /debug RPC.
+    androidx.compose.runtime.DisposableEffect(navController) {
+        io.amar.console.core.DebugAgent.navigate = { route ->
+            runCatching { navController.navigate(route) { launchSingleTop = true } }.isSuccess
+        }
+        io.amar.console.core.DebugAgent.goBack = { navController.popBackStack() }
+        onDispose {
+            io.amar.console.core.DebugAgent.navigate = null
+            io.amar.console.core.DebugAgent.goBack = null
+        }
+    }
+
     var showOverflow by remember { mutableStateOf(false) }
 
     Scaffold(

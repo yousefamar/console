@@ -25,6 +25,26 @@ class HubClient(
     val okHttp: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        // Net events → DebugAgent so failed hub calls show in /debug/log.
+        .addInterceptor { chain ->
+            val started = System.currentTimeMillis()
+            val req = chain.request()
+            try {
+                val resp = chain.proceed(req)
+                DebugAgent.log(
+                    "net", method = req.method, url = req.url.encodedPath,
+                    status = resp.code, duration = System.currentTimeMillis() - started,
+                )
+                resp
+            } catch (e: java.io.IOException) {
+                DebugAgent.log(
+                    "net", method = req.method, url = req.url.encodedPath,
+                    status = -1, duration = System.currentTimeMillis() - started,
+                    message = e.message,
+                )
+                throw e
+            }
+        }
         .build(),
 ) {
 
