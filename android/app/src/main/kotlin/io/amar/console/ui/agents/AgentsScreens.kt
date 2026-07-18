@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.NotificationImportant
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,13 +68,14 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     }
 
     val connected by repo.connectedFlow.collectAsState()
+    val activityMap by repo.activity.collectAsState()
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
             title = "Agents",
             subtitle = if (connected) "${sorted.size} sessions · live" else "${sorted.size} cached · offline",
         )
         if (approvals.isNotEmpty()) {
-            ApprovalBanner(repo, approvals.first())
+            ApprovalCard(repo, approvals.first())
         }
         if (sorted.isEmpty()) {
             io.amar.console.ui.components.EmptyState(
@@ -83,42 +85,18 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         }
         LazyColumn(Modifier.fillMaxSize()) {
             items(sorted, key = { it.id }) { session ->
-                SessionRow(session, onClick = { onOpenSession(session.id) })
+                SessionRow(
+                    session,
+                    isWorking = activityMap[session.id]?.running == true,
+                    onClick = { onOpenSession(session.id) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ApprovalBanner(repo: AgentsRepository, approval: AgentsRepository.Approval) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(
-            "Approval: ${approval.toolName}",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Text(
-            approval.inputPreview,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { repo.approve(approval.sessionId, approval.requestId) }) { Text("Approve") }
-            OutlinedButton(onClick = { repo.deny(approval.sessionId, approval.requestId) }) { Text("Deny") }
-        }
-    }
-}
-
-@Composable
-private fun SessionRow(session: AgentSessionRow, onClick: () -> Unit) {
+private fun SessionRow(session: AgentSessionRow, isWorking: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -127,16 +105,23 @@ private fun SessionRow(session: AgentSessionRow, onClick: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            if (session.hibernated) Icons.Filled.Bedtime else Icons.Filled.Circle,
-            contentDescription = session.status,
-            tint = when {
-                session.status == "running" -> MaterialTheme.colorScheme.primary
-                session.hibernated -> MaterialTheme.colorScheme.onSurfaceVariant
-                else -> MaterialTheme.colorScheme.surfaceVariant
-            },
-            modifier = Modifier.size(10.dp),
-        )
+        if (isWorking) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+            )
+        } else {
+            Icon(
+                if (session.hibernated) Icons.Filled.Bedtime else Icons.Filled.Circle,
+                contentDescription = session.status,
+                tint = when {
+                    session.status == "running" -> MaterialTheme.colorScheme.primary
+                    session.hibernated -> MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                },
+                modifier = Modifier.size(10.dp),
+            )
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 session.name,
@@ -185,15 +170,28 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
     // marker — only the explicit ✓✓ action (or sending a prompt) does.
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        val activityMap by repo.activity.collectAsState()
+        val act = activityMap[sessionId]
         io.amar.console.ui.components.PaneTopBar(
             title = session?.name ?: "…",
             subtitle = listOfNotNull(
-                session?.status,
+                if (act?.running == true) "working…" else session?.status,
+                act?.currentTool?.let { "⚙ $it" },
                 session?.modelLabel,
                 if (!connected) "offline — sends queue" else null,
             ).joinToString(" · ").ifEmpty { null },
             onBack = onBack,
             actions = {
+                if (act?.running == true) {
+                    IconButton(onClick = { repo.interrupt(sessionId) }) {
+                        Icon(
+                            Icons.Filled.StopCircle,
+                            contentDescription = "Interrupt",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
                 if (session?.hasUnread == true || session?.needsAttention == true) {
                     IconButton(onClick = { repo.markRead(sessionId) }) {
                         Icon(
@@ -207,7 +205,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             },
         )
         if (sessionApprovals.isNotEmpty()) {
-            ApprovalBanner(repo, sessionApprovals.first())
+            ApprovalCard(repo, sessionApprovals.first())
         }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
@@ -215,7 +213,26 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp),
         ) {
             items(messages, key = { it.pk }) { msg ->
-                AgentMessageBlock(msg)
+                TranscriptBlock(msg)
+            }
+        }
+        if (act?.running == true || act?.statusText != null) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                )
+                Text(
+                    act?.statusText ?: act?.currentTool?.let { "running $it" } ?: "thinking…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         io.amar.console.ui.components.Composer(
@@ -224,52 +241,5 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) }; repo.markRead(sessionId) },
             onTextChange = onComposerChange,
         )
-    }
-}
-
-@Composable
-private fun AgentMessageBlock(msg: AgentMessageRow) {
-    val payload = remember(msg.pk) {
-        runCatching { jsonLenient.parseToJsonElement(msg.payloadJson).jsonObject }.getOrNull()
-    }
-    val content = payload?.get("content")?.jsonPrimitive?.content
-        ?: payload?.get("text")?.jsonPrimitive?.content
-        ?: ""
-    when (msg.kind) {
-        "user_prompt" -> Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Text(
-                content,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
-        }
-        "text" -> Text(
-            content,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
-        )
-        "tool_use" -> {
-            val tool = payload?.get("toolName")?.jsonPrimitive?.content ?: "tool"
-            Text(
-                "⚙ $tool",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-            )
-        }
-        "result" -> Text(
-            "— turn complete —",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-        )
-        else -> { /* thinking / tool_result / diffs: skipped in the v1 mobile transcript */ }
     }
 }

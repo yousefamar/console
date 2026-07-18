@@ -55,12 +55,31 @@ class AgentsRepository(
 
     // Live approval requests (transient — not persisted; approvals are
     // meaningless offline since the CLI is blocked waiting).
-    data class Approval(val sessionId: String, val requestId: String, val toolName: String, val inputPreview: String)
+    data class Approval(
+        val sessionId: String,
+        val requestId: String,
+        val toolName: String,
+        val inputJson: String,       // FULL input — echoed back on approve (CLI requires it)
+    )
     private val _approvals = MutableStateFlow<List<Approval>>(emptyList())
     val approvals: StateFlow<List<Approval>> = _approvals
 
     private val _connected = MutableStateFlow(false)
     val connectedFlow: StateFlow<Boolean> = _connected
+
+    /** Live per-session activity — THE "is the agent doing something" signal
+     *  (streaming, current tool, status line). Transient; not persisted. */
+    data class Activity(
+        val running: Boolean = false,
+        val currentTool: String? = null,
+        val statusText: String? = null,
+        val streamingText: String = "",
+    )
+    private val _activity = MutableStateFlow<Map<String, Activity>>(emptyMap())
+    val activity: StateFlow<Map<String, Activity>> = _activity
+    private fun setActivity(sessionId: String, fn: (Activity) -> Activity) {
+        _activity.value = _activity.value + (sessionId to fn(_activity.value[sessionId] ?: Activity()))
+    }
 
     /** Sessions whose REST catch-up has run this connection. Stream messages
      *  for sessions NOT in this set are skipped: the hub replays the last 50
@@ -176,22 +195,34 @@ class AgentsRepository(
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 if (sessionId !in caughtUp) return
                 val chunk = msg["content"]?.jsonPrimitive?.content ?: return
-                pendingText.getOrPut(sessionId) { StringBuilder() }.append(chunk)
+                val sb = pendingText.getOrPut(sessionId) { StringBuilder() }.append(chunk)
+                setActivity(sessionId) { it.copy(running = true, streamingText = sb.toString().takeLast(2000)) }
                 // Live-render the partial: upsert a rolling `text` row at the
                 // NEXT index (replaced in place until the flush finalizes it).
                 upsertPendingTextRow(sessionId)
             }
             // Loggable stream messages — persist at the next absolute index.
             // Gated on catch-up so the hub's connect replay can't double-append.
-            "text", "user_prompt", "tool_use", "tool_result", "thinking", "result", "tool_diff", "bg_task" -> {
+            "text", "user_prompt", "tool_use", "tool_result", "thinking", "result", "tool_diff", "bg_task", "session_ended" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 if (sessionId !in caughtUp) return
-                if (msg["type"]?.jsonPrimitive?.content == "text") {
-                    // Finalized text supersedes the delta buffer (same content,
-                    // coalesced hub-side) — replace the rolling row.
-                    pendingText.remove(sessionId)
-                    replacePendingTextRow(sessionId, msg)
-                    return
+                when (msg["type"]?.jsonPrimitive?.content) {
+                    "text" -> {
+                        // Finalized text supersedes the delta buffer (same content,
+                        // coalesced hub-side) — replace the rolling row.
+                        pendingText.remove(sessionId)
+                        replacePendingTextRow(sessionId, msg)
+                        setActivity(sessionId) { it.copy(streamingText = "") }
+                        return
+                    }
+                    "tool_use" -> setActivity(sessionId) {
+                        it.copy(running = true, currentTool = msg["toolName"]?.jsonPrimitive?.content)
+                    }
+                    "tool_result" -> setActivity(sessionId) { it.copy(currentTool = null) }
+                    "user_prompt" -> setActivity(sessionId) { it.copy(running = true) }
+                    "result" -> setActivity(sessionId) {
+                        it.copy(running = false, currentTool = null, statusText = null, streamingText = "")
+                    }
                 }
                 flushPendingText(sessionId)
                 appendMessage(sessionId, msg)
@@ -200,12 +231,33 @@ class AgentsRepository(
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 val requestId = msg["requestId"]?.jsonPrimitive?.content ?: return
                 val toolName = msg["toolName"]?.jsonPrimitive?.content ?: "tool"
-                val preview = msg["input"]?.toString()?.take(200) ?: ""
-                _approvals.value = _approvals.value + Approval(sessionId, requestId, toolName, preview)
+                val inputJson = msg["input"]?.toString() ?: "{}"
+                val approval = Approval(sessionId, requestId, toolName, inputJson)
+                if (toolName in autoApproveTools) {
+                    _approvals.value = _approvals.value + approval // approve() reads input from the list
+                    approve(sessionId, requestId)
+                } else {
+                    _approvals.value = _approvals.value + approval
+                }
             }
             "tool_approved", "tool_denied" -> {
                 val requestId = msg["requestId"]?.jsonPrimitive?.content ?: return
                 _approvals.value = _approvals.value.filter { it.requestId != requestId }
+            }
+            "status" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                val text = msg["text"]?.jsonPrimitive?.content ?: ""
+                setActivity(sessionId) { it.copy(statusText = text) }
+            }
+            "session_init" -> {
+                // Turn started / respawned — mark running.
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                setActivity(sessionId) { it.copy(running = false, statusText = null) }
+            }
+            "error" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                appendMessage(sessionId, msg)
+                setActivity(sessionId) { it.copy(running = false, currentTool = null, statusText = null) }
             }
             "session_read_state" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
@@ -339,12 +391,36 @@ class AgentsRepository(
         outbox.enqueue(TYPE_SEND, payload.toString(), entityId = sessionId)
     }
 
-    /** Approve/deny — online-only by design (single-shot requestId). */
-    fun approve(sessionId: String, requestId: String) {
+    /** Approve/deny — online-only by design (single-shot requestId).
+     *  The Claude CLI REQUIRES the input echoed back in the approve response
+     *  (`modifiedInput`), so pass the approval's original input (or an edited
+     *  version) — approving with nothing silently breaks the tool call. */
+    fun approve(sessionId: String, requestId: String, modifiedInputJson: String? = null) {
+        val approval = _approvals.value.firstOrNull { it.requestId == requestId }
+        val inputJson = modifiedInputJson ?: approval?.inputJson ?: "{}"
+        val inputEl = runCatching { json.parseToJsonElement(inputJson) }.getOrNull()
+            ?: kotlinx.serialization.json.JsonObject(emptyMap())
         sendWs(buildJsonObject {
             put("type", "approve_tool")
             put("sessionId", sessionId)
             put("requestId", requestId)
+            put("modifiedInput", inputEl)
+        })
+    }
+
+    /** Client-side "always allow <tool>" set (session-scoped, like the SPA). */
+    private val autoApproveTools = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun approveAlways(sessionId: String, requestId: String, toolName: String) {
+        autoApproveTools.add(toolName)
+        approve(sessionId, requestId)
+    }
+
+    /** Interrupt the session's running turn (Esc / stop button). */
+    fun interrupt(sessionId: String) {
+        sendWs(buildJsonObject {
+            put("type", "interrupt")
+            put("sessionId", sessionId)
         })
     }
 
@@ -360,6 +436,12 @@ class AgentsRepository(
     fun markRead(sessionId: String) {
         sendWs(buildJsonObject {
             put("type", "mark_session_read")
+            put("sessionId", sessionId)
+        })
+        // The @amar attention marker is sticky hub-side until explicitly
+        // cleared — without this, other clients keep the red badge forever.
+        sendWs(buildJsonObject {
+            put("type", "clear_attention")
             put("sessionId", sessionId)
         })
         scope.launch {
