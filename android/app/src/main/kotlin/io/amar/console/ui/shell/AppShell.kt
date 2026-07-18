@@ -171,7 +171,11 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("chat/{roomId}") { entry ->
                     val roomId = android.net.Uri.decode(entry.arguments?.getString("roomId") ?: "")
-                    ChatRoomScreen(app.graph.chat, roomId, onComposerChange = { app.graph.mirror.setComposerText(it) })
+                    ChatRoomScreen(
+                        app.graph.chat, roomId,
+                        onBack = { navController.popBackStack() },
+                        onComposerChange = { app.graph.mirror.setComposerText(it) },
+                    )
                 }
                 composable(Pane.Mail.route) {
                     MailInboxScreen(app.graph.mail, onOpenThread = { threadId ->
@@ -208,7 +212,11 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("agents/{sessionId}") { entry ->
                     val sessionId = android.net.Uri.decode(entry.arguments?.getString("sessionId") ?: "")
-                    AgentSessionScreen(app.graph.agents, sessionId, onComposerChange = { app.graph.mirror.setComposerText(it) })
+                    AgentSessionScreen(
+                        app.graph.agents, sessionId,
+                        onBack = { navController.popBackStack() },
+                        onComposerChange = { app.graph.mirror.setComposerText(it) },
+                    )
                 }
                 composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks) }
                 composable(Pane.Map.route) { MapScreen(app.graph.map) }

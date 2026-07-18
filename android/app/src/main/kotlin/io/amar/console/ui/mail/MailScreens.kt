@@ -16,22 +16,26 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Snooze
+import androidx.compose.material.icons.outlined.Email
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,23 +44,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import io.amar.console.data.db.MailMessageRow
 import io.amar.console.data.db.MailThreadRow
 import io.amar.console.data.mail.MailRepository
+import io.amar.console.ui.components.Avatar
+import io.amar.console.ui.components.Composer
+import io.amar.console.ui.components.EmptyState
+import io.amar.console.ui.components.PaneTopBar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
 // ---------------------------------------------------------------------- //
-// Inbox
+// Inbox — swipe right = archive (undoable), swipe left = snooze
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
     val threads by repo.observeInbox().collectAsState(initial = emptyList())
@@ -64,29 +72,45 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
     var undoThread by remember { mutableStateOf<String?>(null) }
 
     Box(Modifier.fillMaxSize()) {
-        if (threads.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Inbox zero 🎉", style = MaterialTheme.typography.titleMedium)
-            }
-        } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(threads, key = { it.id }) { thread ->
-                    ThreadRow(
-                        thread,
-                        onClick = { onOpenThread(thread.id) },
-                        onArchive = {
-                            scope.launch {
-                                repo.archive(thread.id)
-                                undoThread = thread.id
-                                delay(5000)
-                                if (undoThread == thread.id) undoThread = null
+        Column(Modifier.fillMaxSize()) {
+            PaneTopBar(
+                title = "Mail",
+                subtitle = if (threads.isEmpty()) null else "${threads.size} in inbox · ${threads.count { it.isUnread }} unread",
+            )
+            if (threads.isEmpty()) {
+                EmptyState(Icons.Outlined.Email, "Inbox zero", "Swipe → archive · swipe ← snooze")
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(threads, key = { it.id }) { thread ->
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                when (value) {
+                                    SwipeToDismissBoxValue.StartToEnd -> {
+                                        scope.launch {
+                                            repo.archive(thread.id)
+                                            undoThread = thread.id
+                                            delay(5000)
+                                            if (undoThread == thread.id) undoThread = null
+                                        }
+                                        true
+                                    }
+                                    SwipeToDismissBoxValue.EndToStart -> {
+                                        scope.launch { repo.snooze(thread.id, tomorrowMorning()) }
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            },
+                        )
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            backgroundContent = { MailSwipeBackground(dismissState.dismissDirection) },
+                        ) {
+                            Box(Modifier.background(MaterialTheme.colorScheme.background)) {
+                                ThreadRow(thread, onClick = { onOpenThread(thread.id) })
                             }
-                        },
-                        onSnooze = {
-                            // Default snooze: tomorrow 08:00 (long-press menu later).
-                            scope.launch { repo.snooze(thread.id, tomorrowMorning()) }
-                        },
-                    )
+                        }
+                    }
                 }
             }
         }
@@ -105,60 +129,65 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
 }
 
 @Composable
-private fun ThreadRow(
-    thread: MailThreadRow,
-    onClick: () -> Unit,
-    onArchive: () -> Unit,
-    onSnooze: () -> Unit,
-) {
+private fun MailSwipeBackground(direction: SwipeToDismissBoxValue) {
+    val (color, icon, align) = when (direction) {
+        SwipeToDismissBoxValue.StartToEnd ->
+            Triple(MaterialTheme.colorScheme.primary, Icons.Filled.Archive, Alignment.CenterStart)
+        SwipeToDismissBoxValue.EndToStart ->
+            Triple(MaterialTheme.colorScheme.tertiary, Icons.Filled.Snooze, Alignment.CenterEnd)
+        else -> return
+    }
+    Box(
+        Modifier.fillMaxSize().background(color.copy(alpha = 0.25f)).padding(horizontal = 24.dp),
+        contentAlignment = align,
+    ) {
+        Icon(icon, contentDescription = null, tint = color)
+    }
+}
+
+@Composable
+private fun ThreadRow(thread: MailThreadRow, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                thread.fromName.take(1).uppercase(),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
+        Avatar(name = thread.fromName, imageUrl = null, size = 42.dp)
         Column(Modifier.weight(1f)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     thread.fromName,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (thread.isUnread) FontWeight.SemiBold else FontWeight.Normal,
+                    fontWeight = if (thread.isUnread) FontWeight.Bold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f),
                 )
-                if (thread.messageCount > 1) {
-                    Text(
-                        "${thread.messageCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (thread.hasAttachments) {
+                    Icon(
+                        Icons.Filled.AttachFile, contentDescription = "Has attachments",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp),
                     )
                 }
                 Text(
-                    formatDate(thread.date),
+                    formatListTime(thread.date),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (thread.isUnread) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp),
                 )
             }
             Text(
-                thread.subject,
+                buildString {
+                    append(thread.subject)
+                    if (thread.messageCount > 1) append("  ·  ${thread.messageCount}")
+                },
                 style = MaterialTheme.typography.bodySmall,
-                fontWeight = if (thread.isUnread) FontWeight.Medium else FontWeight.Normal,
+                fontWeight = if (thread.isUnread) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -166,15 +195,9 @@ private fun ThreadRow(
                 thread.snippet,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-        IconButton(onClick = onSnooze) {
-            Icon(Icons.Filled.Snooze, contentDescription = "Snooze", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-        }
-        IconButton(onClick = onArchive) {
-            Icon(Icons.Filled.Archive, contentDescription = "Archive", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -188,126 +211,115 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
     val messages by repo.observeMessages(threadId).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var replying by remember { mutableStateOf(false) }
-    var draft by remember { mutableStateOf("") }
 
-    androidx.compose.runtime.LaunchedEffect(threadId, thread?.isUnread) {
+    LaunchedEffect(threadId, thread?.isUnread) {
         if (thread?.isUnread == true) repo.markRead(threadId)
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                thread?.subject ?: "",
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { scope.launch { repo.markUnread(threadId) } }) {
-                Icon(Icons.Filled.MarkEmailUnread, contentDescription = "Mark unread", modifier = Modifier.size(18.dp))
-            }
-            IconButton(onClick = {
-                scope.launch { repo.archive(threadId) }
-                onBack()
-            }) {
-                Icon(Icons.Filled.Archive, contentDescription = "Archive", modifier = Modifier.size(18.dp))
-            }
-            IconButton(onClick = { replying = !replying }) {
-                Icon(Icons.Filled.Reply, contentDescription = "Reply", modifier = Modifier.size(18.dp))
-            }
-        }
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()),
-        ) {
-            for (msg in messages) {
-                MessageCard(msg)
+        PaneTopBar(
+            title = thread?.subject ?: "…",
+            subtitle = thread?.fromName,
+            onBack = onBack,
+            actions = {
+                IconButton(onClick = { scope.launch { repo.markUnread(threadId) }; onBack() }) {
+                    Icon(Icons.Filled.MarkEmailUnread, "Mark unread", modifier = Modifier.size(19.dp))
+                }
+                IconButton(onClick = { scope.launch { repo.archive(threadId) }; onBack() }) {
+                    Icon(Icons.Filled.Archive, "Archive", modifier = Modifier.size(19.dp))
+                }
+                IconButton(onClick = { replying = !replying }) {
+                    Icon(
+                        Icons.Filled.Reply, "Reply",
+                        tint = if (replying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+            },
+        )
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            for ((i, msg) in messages.withIndex()) {
+                MessageCard(msg, expandedInitially = i == messages.lastIndex)
             }
         }
         if (replying) {
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Reply — sends when online, auto-archives") },
-                    maxLines = 6,
-                )
-                IconButton(onClick = {
-                    val text = draft.trim()
-                    if (text.isNotEmpty()) {
-                        draft = ""
-                        replying = false
-                        scope.launch { repo.reply(threadId, text) }
-                        onBack()
-                    }
-                }) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = MaterialTheme.colorScheme.primary)
-                }
-            }
+            Composer(
+                placeholder = "Reply — sends when online, auto-archives",
+                draftKey = "mail:$threadId",
+                onSend = { text ->
+                    replying = false
+                    scope.launch { repo.reply(threadId, text) }
+                    onBack()
+                },
+            )
         }
     }
 }
 
 @Composable
-private fun MessageCard(msg: MailMessageRow) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                msg.fromHeader.substringBefore('<').trim().ifEmpty { msg.fromHeader },
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                formatDate(msg.date),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+private fun MessageCard(msg: MailMessageRow, expandedInitially: Boolean) {
+    var expanded by remember { mutableStateOf(expandedInitially) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(name = msg.fromHeader.substringBefore('<').trim().ifEmpty { msg.fromHeader }, imageUrl = null, size = 32.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    msg.fromHeader.substringBefore('<').trim().ifEmpty { msg.fromHeader },
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    formatListTime(msg.date),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
-        if (msg.bodyHtml != null) {
-            MailBodyWebView(msg.bodyHtml!!)
+        if (expanded) {
+            if (msg.bodyHtml != null) {
+                MailBodyWebView(msg.bodyHtml!!)
+            } else {
+                Text(
+                    msg.bodyText ?: "(body not cached — open online to fetch)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
         } else {
             Text(
-                msg.bodyText ?: "(body not cached — open online to fetch)",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(vertical = 4.dp),
+                msg.bodyText?.take(120) ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 42.dp),
             )
         }
     }
 }
 
-/**
- * Per-message body render — the ONE place a WebView survives the rewrite
- * (HTML mail needs a real engine). Strict template: JS off, no network
- * loads beyond inline/img, dark-scheme wrapper, links open externally.
- */
+/** Strict per-message HTML render: JS off, dark template, links → browser. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun MailBodyWebView(html: String) {
-    AndroidView(
+    androidx.compose.ui.viewinterop.AndroidView(
         modifier = Modifier.fillMaxWidth(),
         factory = { ctx ->
             WebView(ctx).apply {
                 settings.javaScriptEnabled = false
-                settings.loadWithOverviewMode = true
-                settings.useWideViewPort = false
-                settings.builtInZoomControls = false
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 webViewClient = object : android.webkit.WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: android.webkit.WebResourceRequest,
                     ): Boolean {
-                        // Links open in the system browser, never in-place.
                         runCatching {
                             ctx.startActivity(
                                 android.content.Intent(android.content.Intent.ACTION_VIEW, request.url)
@@ -332,18 +344,23 @@ private fun MailBodyWebView(html: String) {
     )
 }
 
-private fun formatDate(ts: Long): String {
+private fun formatListTime(ts: Long): String {
     if (ts <= 0) return ""
-    val now = System.currentTimeMillis()
-    val fmt = if (now - ts < 20 * 60 * 60 * 1000L) "HH:mm" else "d MMM"
-    return SimpleDateFormat(fmt, Locale.UK).format(Date(ts))
+    val cal = Calendar.getInstance()
+    val msgCal = Calendar.getInstance().apply { timeInMillis = ts }
+    return when {
+        cal.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR) &&
+            cal.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) ->
+            SimpleDateFormat("HH:mm", Locale.UK).format(Date(ts))
+        cal.timeInMillis - ts < 6 * 24 * 3600_000L ->
+            SimpleDateFormat("EEE", Locale.UK).format(Date(ts))
+        else -> SimpleDateFormat("d MMM", Locale.UK).format(Date(ts))
+    }
 }
 
 private fun tomorrowMorning(): Long {
-    val cal = java.util.Calendar.getInstance()
-    cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
-    cal.set(java.util.Calendar.HOUR_OF_DAY, 8)
-    cal.set(java.util.Calendar.MINUTE, 0)
-    cal.set(java.util.Calendar.SECOND, 0)
+    val cal = Calendar.getInstance()
+    cal.add(Calendar.DAY_OF_YEAR, 1)
+    cal.set(Calendar.HOUR_OF_DAY, 8); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0)
     return cal.timeInMillis
 }
