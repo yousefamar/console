@@ -105,6 +105,9 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(visible, key = { it.id }) { room ->
                 val dismissState = rememberSwipeToDismissBoxState(
+                    // Half-the-row drag required — the default ~56dp threshold
+                    // made accidental snoozes while scrolling far too easy.
+                    positionalThreshold = { totalDistance -> totalDistance * 0.5f },
                     confirmValueChange = { value ->
                         when (value) {
                             SwipeToDismissBoxValue.StartToEnd -> {
