@@ -222,10 +222,9 @@ fun ChatRoomScreen(
     val listState = rememberLazyListState()
     var loadingOlder by remember { mutableStateOf(false) }
 
-    LaunchedEffect(roomId, room?.isUnread) {
-        if (room?.isUnread == true) repo.markRead(roomId)
-    }
-
+    // Opening a room does NOT mark it read — read is an explicit act
+    // (the ✓✓ button, or swipe on the list). Sending a message does mark
+    // read (you've obviously seen the conversation).
     Column(Modifier.fillMaxSize().imePadding()) {
         PaneTopBar(
             title = room?.name ?: "…",
@@ -234,6 +233,17 @@ fun ChatRoomScreen(
                 room?.memberCount?.takeIf { it > 2 && room?.isDirect == false }?.let { "$it members" },
             ).joinToString(" · ").ifEmpty { null },
             onBack = onBack,
+            actions = {
+                if (room?.isUnread == true) {
+                    androidx.compose.material3.IconButton(onClick = { scope.launch { repo.markRead(roomId) } }) {
+                        Icon(
+                            Icons.Filled.DoneAll, contentDescription = "Mark read",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            },
         )
         LazyColumn(
             state = listState,
@@ -280,7 +290,7 @@ fun ChatRoomScreen(
         Composer(
             placeholder = "Message",
             draftKey = "chat:$roomId",
-            onSend = { text -> scope.launch { repo.sendText(roomId, text) } },
+            onSend = { text -> scope.launch { repo.sendText(roomId, text); repo.markRead(roomId) } },
             onTextChange = onComposerChange,
         )
     }
