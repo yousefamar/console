@@ -83,4 +83,6 @@ data class ChatMessageRow(
     val localEcho: Boolean = false,
     val sendFailed: Boolean = false,
     val txnId: String? = null,      // outbox dedupe token that produced this echo
+    /** Spooled outgoing media (echo renders this before upload completes). */
+    val localMediaPath: String? = null,
 )

@@ -287,11 +287,21 @@ fun ChatRoomScreen(
                 }
             }
         }
+        val context = androidx.compose.ui.platform.LocalContext.current
         Composer(
             placeholder = "Message",
             draftKey = "chat:$roomId",
             onSend = { text -> scope.launch { repo.sendText(roomId, text); repo.markRead(roomId) } },
             onTextChange = onComposerChange,
+            onSendWithAttachments = { text, uris ->
+                scope.launch {
+                    // Caption rides the first attachment (SPA convention).
+                    uris.forEachIndexed { i, uri ->
+                        repo.sendAttachment(context, roomId, uri, if (i == 0) text.ifBlank { null } else null)
+                    }
+                    repo.markRead(roomId)
+                }
+            },
         )
     }
 }
@@ -334,7 +344,16 @@ private fun MessageBubble(
                     color = androidx.compose.ui.graphics.Color.hsv(hue.toFloat(), 0.5f, 0.9f),
                 )
             }
-            if (msg.msgtype == "m.image" && msg.mediaMxc != null && !msg.isDeleted) {
+            if (msg.msgtype == "m.image" && msg.localMediaPath != null && !msg.isDeleted) {
+                AsyncImage(
+                    model = java.io.File(msg.localMediaPath!!),
+                    contentDescription = msg.body,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(9.dp))
+                        .padding(vertical = 2.dp),
+                )
+            } else if (msg.msgtype == "m.image" && msg.mediaMxc != null && !msg.isDeleted) {
                 AsyncImage(
                     model = MatrixMedia.thumbnailUrl(msg.mediaMxc, 512, 512),
                     contentDescription = msg.body,
