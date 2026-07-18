@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Circle
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.NotificationImportant
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -180,7 +181,8 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
     val session = remember(sessions) { sessions.firstOrNull { it.id == sessionId } }
     val connected by repo.connectedFlow.collectAsState()
 
-    LaunchedEffect(sessionId) { repo.markRead(sessionId) }
+    // Desktop parity: opening a session does NOT clear its unread/attention
+    // marker — only the explicit ✓✓ action (or sending a prompt) does.
 
     Column(Modifier.fillMaxSize().imePadding()) {
         io.amar.console.ui.components.PaneTopBar(
@@ -191,6 +193,18 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 if (!connected) "offline — sends queue" else null,
             ).joinToString(" · ").ifEmpty { null },
             onBack = onBack,
+            actions = {
+                if (session?.hasUnread == true || session?.needsAttention == true) {
+                    IconButton(onClick = { repo.markRead(sessionId) }) {
+                        Icon(
+                            Icons.Filled.DoneAll,
+                            contentDescription = "Mark read",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            },
         )
         if (sessionApprovals.isNotEmpty()) {
             ApprovalBanner(repo, sessionApprovals.first())
@@ -207,7 +221,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
         io.amar.console.ui.components.Composer(
             placeholder = "Prompt — queues offline",
             draftKey = "agent:$sessionId",
-            onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) } },
+            onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) }; repo.markRead(sessionId) },
             onTextChange = onComposerChange,
         )
     }
