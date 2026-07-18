@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,6 +50,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.fromHtml
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -288,6 +291,8 @@ fun ChatRoomScreen(
     // Opening a room does NOT mark it read — read is an explicit act
     // (the ✓✓ button, or swipe on the list). Sending a message does mark
     // read (you've obviously seen the conversation).
+    LaunchedEffect(roomId) { repo.ensureMessages(roomId) }
+
     Column(Modifier.fillMaxSize().imePadding()) {
         PaneTopBar(
             title = room?.name ?: "…",
@@ -308,9 +313,10 @@ fun ChatRoomScreen(
                 }
             },
         )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier.fillMaxSize(),
             reverseLayout = true,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp),
         ) {
@@ -339,6 +345,21 @@ fun ChatRoomScreen(
                     }
                 }
             }
+        }
+        val showJump by remember {
+            androidx.compose.runtime.derivedStateOf { listState.firstVisibleItemIndex > 3 }
+        }
+        if (showJump) {
+            androidx.compose.material3.SmallFloatingActionButton(
+                onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            ) {
+                Icon(
+                    androidx.compose.material.icons.Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "Jump to bottom",
+                )
+            }
+        }
         }
         LaunchedEffect(listState, messages.size) {
             androidx.compose.runtime.snapshotFlow {
@@ -565,16 +586,30 @@ private fun MessageBubble(
                 msg.msgtype == "m.file" -> "📎 ${msg.body ?: "file"}"
                 msg.msgtype == "m.audio" -> "🎙 voice message"
                 msg.msgtype == "m.video" -> "🎬 ${msg.body ?: "video"}"
+                msg.msgtype == "m.emote" -> "* ${msg.senderName ?: ""} ${msg.body ?: ""}"
                 else -> msg.body?.takeIf { it.isNotEmpty() }
             }
             if (bodyText != null) {
-                Text(
-                    bodyText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    textDecoration = if (msg.isDeleted) TextDecoration.LineThrough else null,
-                    color = if (msg.isDeleted) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onSurface,
-                )
+                if (msg.formattedBody != null && !msg.isDeleted) {
+                    // HTML body (bold/italic/links/lists) via the platform
+                    // Html parser — links are tappable, opens the browser.
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val html = remember(msg.formattedBody) {
+                        androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
+                            msg.formattedBody!!,
+                            linkStyles = androidx.compose.ui.text.TextLinkStyles(
+                                style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                            ),
+                        )
+                    }
+                    Text(html, style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    LinkifiedText(
+                        bodyText,
+                        strikethrough = msg.isDeleted,
+                        dim = msg.isDeleted,
+                    )
+                }
             }
             msg.reactionsJson?.let { rj ->
                 val reactions = remember(rj) {
@@ -634,6 +669,38 @@ private fun MessageBubble(
 }
 
 // ---------------------------------------------------------------------- //
+
+/** Plain text with tappable URLs (linkification parity). */
+@Composable
+private fun LinkifiedText(text: String, strikethrough: Boolean, dim: Boolean) {
+    val urlRegex = remember { Regex("https?://[^\\s]+") }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val annotated = remember(text) {
+        androidx.compose.ui.text.buildAnnotatedString {
+            var last = 0
+            for (m in urlRegex.findAll(text)) {
+                append(text.substring(last, m.range.first))
+                withLink(
+                    androidx.compose.ui.text.LinkAnnotation.Url(
+                        m.value,
+                        androidx.compose.ui.text.TextLinkStyles(
+                            style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                        ),
+                    )
+                ) { append(m.value) }
+                last = m.range.last + 1
+            }
+            append(text.substring(last))
+        }
+    }
+    Text(
+        annotated,
+        style = MaterialTheme.typography.bodyMedium.let {
+            if (strikethrough) it.copy(textDecoration = TextDecoration.LineThrough) else it
+        },
+        color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+    )
+}
 
 private fun formatListTime(ts: Long): String {
     if (ts <= 0) return ""

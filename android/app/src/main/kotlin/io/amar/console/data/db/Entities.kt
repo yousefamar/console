@@ -74,6 +74,9 @@ data class ChatMessageRow(
     val senderId: String,
     val senderName: String?,
     val body: String?,
+    /** Matrix org.matrix.custom.html formatted_body (sanitized at render). */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val formattedBody: String? = null,
     val msgtype: String,            // m.text | m.image | m.file | ...
     val mediaMxc: String?,
     val mediaMime: String?,
