@@ -51,5 +51,9 @@ object HubConfig {
     val pushWsUrl: String get() = "$wsBase/push"
     val syncWsUrl: String get() = "$wsBase/sync"
     val sttWsUrl: String get() = "$wsBase/stt"
-    val agentsWsUrl: String get() = wsBase
+    // NOT bare `/hub`: Caddy's `handle_path /hub/*` needs a path segment, so a
+    // bare-`/hub` upgrade never reaches the hub (times out). `/agents` doesn't
+    // match any named hub WS path → lands on the default (agent-protocol)
+    // dispatch — same trick as the SPA (src/store/agent.ts agentWsUrl).
+    val agentsWsUrl: String get() = "$wsBase/agents"
 }

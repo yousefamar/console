@@ -62,6 +62,20 @@ class AgentsRepository(
     private val _connected = MutableStateFlow(false)
     val connectedFlow: StateFlow<Boolean> = _connected
 
+    /** Sessions whose REST catch-up has run this connection. Stream messages
+     *  for sessions NOT in this set are skipped: the hub replays the last 50
+     *  messages per session right after `sessions_list` on every connect, and
+     *  appending those at maxIndex+1 would duplicate what the REST catch-up
+     *  (which has authoritative absolute indices) also delivers. */
+    private val caughtUp = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Live-turn delta buffer per session. The hub streams `text_delta`
+     *  chunks; the coalesced `text` goes only into its LOG (replay/REST), not
+     *  the live wire — so without local coalescing a live reply never renders.
+     *  Mirrors server/src/session.ts flushPendingDeltas: accumulate, flush to
+     *  a Room row when a non-delta message arrives for the session. */
+    private val pendingText = java.util.concurrent.ConcurrentHashMap<String, StringBuilder>()
+
     private var ws: WebSocket? = null
     private var wantConnected = false
     private var reconnectJob: Job? = null
@@ -98,7 +112,10 @@ class AgentsRepository(
         HubTokenStore.get()?.let { builder.header("Authorization", "Bearer $it") }
         ws = okHttp.newWebSocket(builder.build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                caughtUp.clear() // fresh replay burst incoming — re-gate appends
                 _connected.value = true
+                // Flush any prompts queued while offline now that sends can land.
+                outbox.scheduleDrain()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -141,17 +158,42 @@ class AgentsRepository(
                 val rows = sessions.mapNotNull { sessionRow(it) }
                 db.agents().upsertSessions(rows)
                 db.agents().deleteAbsent(rows.map { it.id })
-                // Catch up transcripts for sessions we lag on.
+                // Catch up transcripts for sessions we lag on (REST — indices
+                // are authoritative); then open the live-append gate.
                 for (row in rows) {
                     val cached = db.agents().maxIndex(row.id) ?: -1L
                     if (row.messageLogLength - 1 > cached) {
                         catchUpSession(row.id, cached + 1)
                     }
+                    caughtUp.add(row.id)
                 }
             }
+            // Live streaming: the hub sends text as `text_delta` chunks (the
+            // coalesced `text` only lands in its log for replay/REST).
+            // Accumulate per session; flush on any non-delta message —
+            // mirrors server/src/session.ts flushPendingDeltas.
+            "text_delta" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                if (sessionId !in caughtUp) return
+                val chunk = msg["content"]?.jsonPrimitive?.content ?: return
+                pendingText.getOrPut(sessionId) { StringBuilder() }.append(chunk)
+                // Live-render the partial: upsert a rolling `text` row at the
+                // NEXT index (replaced in place until the flush finalizes it).
+                upsertPendingTextRow(sessionId)
+            }
             // Loggable stream messages — persist at the next absolute index.
+            // Gated on catch-up so the hub's connect replay can't double-append.
             "text", "user_prompt", "tool_use", "tool_result", "thinking", "result", "tool_diff", "bg_task" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                if (sessionId !in caughtUp) return
+                if (msg["type"]?.jsonPrimitive?.content == "text") {
+                    // Finalized text supersedes the delta buffer (same content,
+                    // coalesced hub-side) — replace the rolling row.
+                    pendingText.remove(sessionId)
+                    replacePendingTextRow(sessionId, msg)
+                    return
+                }
+                flushPendingText(sessionId)
                 appendMessage(sessionId, msg)
             }
             "approval_required" -> {
@@ -173,6 +215,47 @@ class AgentsRepository(
                     db.agents().upsertSessions(listOf(it.copy(hasUnread = len > lastRead, messageLogLength = len)))
                 }
             }
+        }
+    }
+
+    /** Fixed index the current streaming turn's text row occupies. */
+    private val pendingRowIndex = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private suspend fun upsertPendingTextRow(sessionId: String) {
+        val buffer = pendingText[sessionId]?.toString() ?: return
+        val index = pendingRowIndex.getOrPut(sessionId) { (db.agents().maxIndex(sessionId) ?: -1L) + 1 }
+        db.agents().replaceMessage(
+            AgentMessageRow(
+                sessionId = sessionId, absIndex = index, kind = "text",
+                payloadJson = buildJsonObject {
+                    put("type", "text")
+                    put("sessionId", sessionId)
+                    put("content", buffer)
+                }.toString(),
+            )
+        )
+    }
+
+    /** Finalized `text` message replaces the rolling row (or appends fresh). */
+    private suspend fun replacePendingTextRow(sessionId: String, msg: JsonObject) {
+        val index = pendingRowIndex.remove(sessionId) ?: (db.agents().maxIndex(sessionId) ?: -1L) + 1
+        db.agents().replaceMessage(
+            AgentMessageRow(sessionId = sessionId, absIndex = index, kind = "text", payloadJson = msg.toString())
+        )
+        bumpCachedIndex(sessionId, index)
+    }
+
+    private suspend fun flushPendingText(sessionId: String) {
+        val buffer = pendingText.remove(sessionId)?.toString()?.takeIf { it.isNotEmpty() }
+        val index = pendingRowIndex.remove(sessionId)
+        if (buffer != null && index != null) bumpCachedIndex(sessionId, index)
+    }
+
+    private suspend fun bumpCachedIndex(sessionId: String, index: Long) {
+        db.agents().byId(sessionId)?.let {
+            db.agents().upsertSessions(
+                listOf(it.copy(lastCachedIndex = maxOf(it.lastCachedIndex, index), messageLogLength = maxOf(it.messageLogLength, index + 1)))
+            )
         }
     }
 
