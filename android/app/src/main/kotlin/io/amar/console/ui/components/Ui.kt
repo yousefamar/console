@@ -103,6 +103,10 @@ fun PaneTopBar(
         },
         actions = { actions() },
         expandedHeight = 52.dp,
+        // The shell's Scaffold already consumes the status-bar inset;
+        // TopAppBar's default statusBars inset would double it (the huge
+        // top margin in Yousef's screenshot).
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
         ),

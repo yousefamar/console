@@ -1,6 +1,7 @@
 package io.amar.console.ui.shell
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -117,7 +118,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                // Without consuming, each screen's imePadding() re-adds the
+                // bottom-bar height on top of the keyboard inset.
+                .consumeWindowInsets(padding)
+        ) {
             if (!connected) {
                 StatusBanner(
                     icon = Icons.Outlined.CloudOff,

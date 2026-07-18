@@ -56,9 +56,38 @@ abstract class ConsoleDb : RoomDatabase() {
     abstract fun map(): MapDao
 
     companion object {
-        fun build(context: Context): ConsoleDb =
-            Room.databaseBuilder(context.applicationContext, ConsoleDb::class.java, "console.db")
+        /**
+         * Build + PROBE the database synchronously, self-healing on failure.
+         *
+         * Room validates the schema lazily at first open; a migration that
+         * produced a mismatched table throws IllegalStateException from
+         * whatever DAO call happens to run first — in v55 that was a
+         * background coroutine, which crash-looped the app at startup.
+         *
+         * The local DB is strictly a CACHE of hub state (chat/mail/cal all
+         * re-sync via cursors; the outbox is the only loss, and a corrupted
+         * DB can't flush anyway) — so on ANY open failure we delete the file
+         * and start fresh rather than ever refusing to launch.
+         */
+        fun build(context: Context): ConsoleDb {
+            val appCtx = context.applicationContext
+            var db = builder(appCtx).build()
+            try {
+                // Force open + migration + validation NOW, on this thread.
+                db.openHelper.writableDatabase
+            } catch (e: Exception) {
+                android.util.Log.e("ConsoleDb", "schema open failed — resetting cache DB", e)
+                runCatching { io.amar.console.core.DebugAgent.log("error", message = "DB self-heal: ${e.message?.take(200)}") }
+                runCatching { db.close() }
+                appCtx.deleteDatabase("console.db")
+                db = builder(appCtx).build()
+                db.openHelper.writableDatabase // fresh create — must succeed
+            }
+            return db
+        }
+
+        private fun builder(appCtx: Context) =
+            Room.databaseBuilder(appCtx, ConsoleDb::class.java, "console.db")
                 .fallbackToDestructiveMigrationOnDowngrade()
-                .build()
     }
 }

@@ -102,6 +102,29 @@ class CalendarRepository(
         outbox.enqueue(TYPE_DELETE, payload.toString(), entityId = compoundKey)
     }
 
+    /** Edit summary/times/location on an existing event (queued PATCH). */
+    suspend fun updateEvent(
+        compoundKey: String,
+        summary: String,
+        startMs: Long,
+        endMs: Long,
+        location: String?,
+    ) {
+        val row = db.calendar().byKey(compoundKey) ?: return
+        if (row.eventId.startsWith("~")) return // still queued — edit unsupported until created
+        // Optimistic local update.
+        db.calendar().upsertEvents(
+            listOf(row.copy(summary = summary, startTime = startMs, endTime = endMs, location = location))
+        )
+        val payload = buildJsonObject {
+            put("account", row.accountEmail)
+            put("calendarId", row.calendarId)
+            put("eventId", row.eventId)
+            put("event", buildEventJson(summary, startMs, endMs, row.isAllDay, location))
+        }
+        outbox.enqueue(TYPE_UPDATE, payload.toString(), entityId = compoundKey)
+    }
+
     suspend fun rsvp(compoundKey: String, status: String) {
         val row = db.calendar().byKey(compoundKey) ?: return
         val payload = buildJsonObject {
@@ -159,6 +182,22 @@ class CalendarRepository(
             }
         }
 
+        outbox.register(TYPE_UPDATE) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            try {
+                val body = buildJsonObject {
+                    p["event"]!!.jsonObject.forEach { (k, v) -> put(k, v) }
+                    put("calendarId", p["calendarId"]!!.jsonPrimitive.content)
+                    put("account", p["account"]!!.jsonPrimitive.content)
+                }
+                hub.patch("/cal/events/${enc(p["eventId"]!!.jsonPrimitive.content)}", body.toString())
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
         outbox.register(TYPE_DELETE) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             try {
