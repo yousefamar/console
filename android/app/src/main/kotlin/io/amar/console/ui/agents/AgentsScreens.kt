@@ -235,11 +235,16 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 )
             }
         }
+        val ctx = androidx.compose.ui.platform.LocalContext.current
         io.amar.console.ui.components.Composer(
             placeholder = "Prompt — queues offline",
             draftKey = "agent:$sessionId",
             onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) }; repo.markRead(sessionId) },
             onTextChange = onComposerChange,
+            onSendWithAttachments = { text, uris ->
+                scope.launch { repo.sendPrompt(sessionId, text, uris, ctx) }
+                repo.markRead(sessionId)
+            },
         )
     }
 }

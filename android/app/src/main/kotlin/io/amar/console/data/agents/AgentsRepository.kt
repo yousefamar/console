@@ -376,11 +376,36 @@ class AgentsRepository(
     // ---------------------------------------------------------------- //
     // Mutations
 
-    /** Send a prompt — queued offline, deduped by key on the hub. */
-    suspend fun sendPrompt(sessionId: String, content: String) {
+    /** Send a prompt — queued offline, deduped by key on the hub.
+     *  [imageUris] are spooled to app-private files now, base64'd at flush
+     *  (the hub send_message images field). */
+    suspend fun sendPrompt(
+        sessionId: String,
+        content: String,
+        imageUris: List<android.net.Uri> = emptyList(),
+        context: android.content.Context? = null,
+    ) {
+        val imagePaths = mutableListOf<String>()
+        if (context != null) {
+            val spool = java.io.File(context.filesDir, "outbox-media").apply { mkdirs() }
+            for (uri in imageUris) {
+                val mime = context.contentResolver.getType(uri) ?: continue
+                if (!mime.startsWith("image/")) continue
+                val f = java.io.File(spool, "agent-${System.currentTimeMillis()}-${imagePaths.size}.img")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    f.outputStream().use { input.copyTo(it) }
+                } ?: continue
+                imagePaths.add(f.absolutePath + "|" + mime)
+            }
+        }
         val payload = buildJsonObject {
             put("sessionId", sessionId)
             put("content", content)
+            if (imagePaths.isNotEmpty()) {
+                put("imagePaths", kotlinx.serialization.json.JsonArray(
+                    imagePaths.map { kotlinx.serialization.json.JsonPrimitive(it) }
+                ))
+            }
         }
         // Optimistic local user_prompt row so the transcript shows it now.
         appendMessage(sessionId, buildJsonObject {
@@ -456,14 +481,31 @@ class AgentsRepository(
     fun registerOutboxHandlers() {
         outbox.register(TYPE_SEND) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val images = (p["imagePaths"] as? JsonArray)?.mapNotNull { el ->
+                val spec = runCatching { el.jsonPrimitive.content }.getOrNull() ?: return@mapNotNull null
+                val path = spec.substringBeforeLast('|')
+                val mime = spec.substringAfterLast('|')
+                val f = java.io.File(path)
+                if (!f.exists()) return@mapNotNull null
+                buildJsonObject {
+                    put("media_type", mime)
+                    put("data", android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP))
+                }
+            } ?: emptyList()
             val sent = sendWs(buildJsonObject {
                 put("type", "send_message")
                 put("sessionId", p["sessionId"]!!.jsonPrimitive.content)
                 put("content", p["content"]!!.jsonPrimitive.content)
                 put("dedupeKey", row.dedupeToken)
+                if (images.isNotEmpty()) put("images", kotlinx.serialization.json.JsonArray(images))
             })
-            if (sent && _connected.value) Outbox.Result.Done
-            else Outbox.Result.Retry("agents ws disconnected")
+            if (sent && _connected.value) {
+                // Clean the spool now that the frames are on the wire.
+                (p["imagePaths"] as? JsonArray)?.forEach { el ->
+                    runCatching { java.io.File(el.jsonPrimitive.content.substringBeforeLast('|')).delete() }
+                }
+                Outbox.Result.Done
+            } else Outbox.Result.Retry("agents ws disconnected")
         }
     }
 

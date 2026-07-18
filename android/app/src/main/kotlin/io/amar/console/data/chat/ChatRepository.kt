@@ -44,6 +44,7 @@ class ChatRepository(
         const val TYPE_MARK_READ = "chatMarkRead"
         const val TYPE_MARK_UNREAD = "chatMarkUnread"
         const val TYPE_SNOOZE = "chatSnooze"
+        const val TYPE_SEND_FILE = "chatSendFile"
         /** Timeline cache bound per room (paginate loads more transiently). */
         const val ROOM_CACHE_LIMIT = 100
     }
@@ -106,6 +107,57 @@ class ChatRepository(
         }
         outbox.enqueue(TYPE_SNOOZE, payload.toString(), entityId = roomId)
     }
+
+    /**
+     * Send an attachment (image/file/video/audio — hub picks msgtype by MIME).
+     * The bytes are copied into an app-private spool file NOW (content URIs
+     * don't survive process death), then a durable outbox row uploads via
+     * POST /matrix/rooms/:id/send-file when online. Local echo shows the
+     * spooled file immediately.
+     */
+    suspend fun sendAttachment(context: android.content.Context, roomId: String, uri: android.net.Uri, caption: String?) {
+        val resolver = context.contentResolver
+        val mime = resolver.getType(uri) ?: "application/octet-stream"
+        val filename = queryDisplayName(resolver, uri) ?: "attachment"
+        val spool = java.io.File(context.filesDir, "outbox-media").apply { mkdirs() }
+        val spoolFile = java.io.File(spool, "${System.currentTimeMillis()}-$filename")
+        resolver.openInputStream(uri)?.use { input ->
+            spoolFile.outputStream().use { input.copyTo(it) }
+        } ?: return
+
+        val txnId = outbox.mintToken()
+        val echoId = "~${System.currentTimeMillis()}.${(0..999999).random()}"
+        db.chatMessages().upsertAll(
+            listOf(
+                ChatMessageRow(
+                    id = echoId, roomId = roomId, timestamp = System.currentTimeMillis(),
+                    senderId = "me", senderName = "me",
+                    body = caption ?: filename,
+                    msgtype = if (mime.startsWith("image/")) "m.image" else "m.file",
+                    mediaMxc = null, mediaMime = mime,
+                    encryptedFileJson = null, replyToJson = null,
+                    localEcho = true, txnId = txnId,
+                    localMediaPath = spoolFile.absolutePath,
+                )
+            )
+        )
+        val payload = buildJsonObject {
+            put("roomId", roomId)
+            put("echoId", echoId)
+            put("path", spoolFile.absolutePath)
+            put("filename", filename)
+            put("mimeType", mime)
+            caption?.let { put("caption", it) }
+        }
+        outbox.enqueue(TYPE_SEND_FILE, payload.toString(), entityId = roomId, dedupeToken = txnId)
+    }
+
+    private fun queryDisplayName(resolver: android.content.ContentResolver, uri: android.net.Uri): String? =
+        runCatching {
+            resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull()
 
     /** Retry a failed echo: re-enqueue with the SAME txnId (safe — idempotent). */
     suspend fun retryFailed(echoId: String) {
@@ -171,6 +223,40 @@ class ChatRepository(
                     Outbox.Result.Retry(e.message ?: "$op failed")
                 }
             }
+        }
+        outbox.register(TYPE_SEND_FILE) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]!!.jsonPrimitive.content
+            val echoId = p["echoId"]!!.jsonPrimitive.content
+            val path = p["path"]!!.jsonPrimitive.content
+            val file = java.io.File(path)
+            if (!file.exists()) return@register Outbox.Result.Fail("spool file gone")
+            try {
+                val b64 = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                val body = buildJsonObject {
+                    put("content", b64)
+                    put("filename", p["filename"]!!.jsonPrimitive.content)
+                    put("mimeType", p["mimeType"]!!.jsonPrimitive.content)
+                    p["caption"]?.jsonPrimitive?.content?.let { put("caption", it) }
+                }
+                val resp = hub.post("/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/send-file", body.toString())
+                val eventId = json.parseToJsonElement(resp).jsonObject["event_id"]?.jsonPrimitive?.content
+                val echo = db.chatMessages().byId(echoId)
+                if (echo != null && eventId != null) {
+                    db.chatMessages().replaceEcho(echoId, echo.copy(id = eventId, localEcho = false))
+                }
+                file.delete()
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+        outbox.register("$TYPE_SEND_FILE:onFailed") { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            p["echoId"]?.jsonPrimitive?.content?.let { db.chatMessages().setSendFailed(it, true) }
+            Outbox.Result.Done
         }
         outbox.register(TYPE_MARK_READ, rpcHandler("markRead"))
         outbox.register(TYPE_MARK_UNREAD, rpcHandler("markUnread"))

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "b4159b3065a0289a2373f6519b99f8a1",
+    "identityHash": "0a96853e53aecc4f638f3aec59e7807a",
     "entities": [
       {
         "tableName": "outbox",
@@ -266,7 +266,7 @@
       },
       {
         "tableName": "chat_messages",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `roomId` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `senderId` TEXT NOT NULL, `senderName` TEXT, `body` TEXT, `msgtype` TEXT NOT NULL, `mediaMxc` TEXT, `mediaMime` TEXT, `encryptedFileJson` TEXT, `replyToJson` TEXT, `isEdited` INTEGER NOT NULL, `isDeleted` INTEGER NOT NULL, `reactionsJson` TEXT, `localEcho` INTEGER NOT NULL, `sendFailed` INTEGER NOT NULL, `txnId` TEXT, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `roomId` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `senderId` TEXT NOT NULL, `senderName` TEXT, `body` TEXT, `msgtype` TEXT NOT NULL, `mediaMxc` TEXT, `mediaMime` TEXT, `encryptedFileJson` TEXT, `replyToJson` TEXT, `isEdited` INTEGER NOT NULL, `isDeleted` INTEGER NOT NULL, `reactionsJson` TEXT, `localEcho` INTEGER NOT NULL, `sendFailed` INTEGER NOT NULL, `txnId` TEXT, `localMediaPath` TEXT, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -367,6 +367,12 @@
           {
             "fieldPath": "txnId",
             "columnName": "txnId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "localMediaPath",
+            "columnName": "localMediaPath",
             "affinity": "TEXT",
             "notNull": false
           }
@@ -1281,7 +1287,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b4159b3065a0289a2373f6519b99f8a1')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0a96853e53aecc4f638f3aec59e7807a')"
     ]
   }
 }
