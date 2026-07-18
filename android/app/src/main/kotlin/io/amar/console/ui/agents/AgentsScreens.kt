@@ -2,6 +2,7 @@ package io.amar.console.ui.agents
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -69,6 +71,8 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
 
     val connected by repo.connectedFlow.collectAsState()
     val activityMap by repo.activity.collectAsState()
+    var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
+    var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
             title = "Agents",
@@ -83,24 +87,117 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
             )
             return
         }
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(sorted, key = { it.id }) { session ->
-                SessionRow(
-                    session,
-                    isWorking = activityMap[session.id]?.running == true,
-                    onClick = { onOpenSession(session.id) },
-                )
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(sorted, key = { it.id }) { session ->
+                    SessionRow(
+                        session,
+                        isWorking = activityMap[session.id]?.running == true,
+                        onClick = { onOpenSession(session.id) },
+                        onLongPress = { menuTarget = session },
+                    )
+                }
             }
+            androidx.compose.material3.FloatingActionButton(
+                onClick = { creating = true },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            ) { Text("+") }
+        }
+    }
+
+    menuTarget?.let { target ->
+        SessionActionsSheet(
+            session = target,
+            onDismiss = { menuTarget = null },
+            onRename = { newName -> repo.renameSession(target.id, newName) },
+            onKill = { repo.killSession(target.id) },
+            onMarkUnread = { repo.markUnread(target.id) },
+            onMarkRead = { repo.markRead(target.id) },
+        )
+    }
+    if (creating) {
+        NewSessionDialog(
+            onDismiss = { creating = false },
+            onCreate = { prompt, cwd ->
+                creating = false
+                repo.createSession(prompt, cwd)
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SessionActionsSheet(
+    session: AgentSessionRow,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+    onKill: () -> Unit,
+    onMarkUnread: () -> Unit,
+    onMarkRead: () -> Unit,
+) {
+    var renaming by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf(session.name) }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(session.name, style = MaterialTheme.typography.titleMedium)
+            if (renaming) {
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Button(onClick = { onRename(name.trim()); onDismiss() }, enabled = name.isNotBlank()) { Text("Save") }
+            } else {
+                androidx.compose.material3.TextButton(onClick = { renaming = true }) { Text("✎ Rename") }
+                androidx.compose.material3.TextButton(onClick = { onMarkRead(); onDismiss() }) { Text("✓✓ Mark read") }
+                androidx.compose.material3.TextButton(onClick = { onMarkUnread(); onDismiss() }) { Text("● Mark unread") }
+                androidx.compose.material3.TextButton(onClick = { onKill(); onDismiss() }) {
+                    Text("■ End session", color = MaterialTheme.colorScheme.error)
+                }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(28.dp))
         }
     }
 }
 
 @Composable
-private fun SessionRow(session: AgentSessionRow, isWorking: Boolean = false, onClick: () -> Unit) {
+private fun NewSessionDialog(onDismiss: () -> Unit, onCreate: (prompt: String, cwd: String) -> Unit) {
+    var prompt by remember { mutableStateOf("") }
+    var cwd by remember { mutableStateOf("/home/amar/proj/code/console") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New session") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = cwd, onValueChange = { cwd = it },
+                    label = { Text("Working directory") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = prompt, onValueChange = { prompt = it },
+                    label = { Text("Prompt") }, minLines = 3, maxLines = 8,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = prompt.isNotBlank() && cwd.isNotBlank(),
+                onClick = { onCreate(prompt.trim(), cwd.trim()) },
+            ) { Text("Start") }
+        },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun SessionRow(session: AgentSessionRow, isWorking: Boolean = false, onClick: () -> Unit, onLongPress: () -> Unit = {}) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -204,6 +301,19 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 }
             },
         )
+        val usage = (repo.contextUsage.collectAsState().value)[sessionId]
+        if (usage != null && usage.maxTokens > 0) {
+            val frac = (usage.totalTokens.toFloat() / usage.maxTokens).coerceIn(0f, 1f)
+            androidx.compose.material3.LinearProgressIndicator(
+                progress = { frac },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                color = when {
+                    frac > 0.9f -> MaterialTheme.colorScheme.error
+                    frac > 0.7f -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.primary
+                },
+            )
+        }
         if (sessionApprovals.isNotEmpty()) {
             ApprovalCard(repo, sessionApprovals.first())
         }
