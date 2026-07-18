@@ -141,6 +141,11 @@ interface AgentsDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessages(rows: List<AgentMessageRow>)
 
+    /** REPLACE variant for the live-streaming rolling text row (updated in
+     *  place at a fixed absIndex while deltas accumulate). */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun replaceMessage(row: AgentMessageRow)
+
     @Query("SELECT * FROM agent_messages WHERE sessionId = :sessionId ORDER BY absIndex DESC LIMIT :limit")
     fun observeRecent(sessionId: String, limit: Int): Flow<List<AgentMessageRow>>
 
