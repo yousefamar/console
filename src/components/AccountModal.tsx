@@ -145,12 +145,10 @@ export function AccountModal() {
             </>
           )}
 
-          {isNative() && (
-            <>
-              <div className="border-t border-border" />
-              <ApkPairSection />
-            </>
-          )}
+          {/* APK pairing: legacy WebView bridge when native; QR + one-shot
+              token for pairing the v39+ native app from any browser. */}
+          <div className="border-t border-border" />
+          <ApkPairSection />
 
           <div className="border-t border-border" />
           <MigrationSection />
