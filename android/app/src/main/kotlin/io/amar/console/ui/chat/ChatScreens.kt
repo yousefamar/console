@@ -154,7 +154,7 @@ private fun RoomRow(room: ChatRoomRow, onClick: () -> Unit) {
 // Room view
 
 @Composable
-fun ChatRoomScreen(repo: ChatRepository, roomId: String) {
+fun ChatRoomScreen(repo: ChatRepository, roomId: String, onComposerChange: (String) -> Unit = {}) {
     val room by repo.observeRoom(roomId).collectAsState(initial = null)
     var windowSize by remember { mutableIntStateOf(30) }
     val messages by repo.observeMessages(roomId, windowSize).collectAsState(initial = emptyList())
@@ -214,7 +214,7 @@ fun ChatRoomScreen(repo: ChatRepository, roomId: String) {
         ) {
             OutlinedTextField(
                 value = draft,
-                onValueChange = { draft = it },
+                onValueChange = { draft = it; onComposerChange(it) },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Message") },
                 maxLines = 5,

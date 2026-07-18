@@ -56,7 +56,7 @@ fun UpdateBanner(versionName: String, onInstall: () -> Unit, onDismiss: () -> Un
 }
 
 @Composable
-fun OverflowRow(onSelect: (Pane) -> Unit, onSettings: () -> Unit) {
+fun OverflowRow(onSelect: (Pane) -> Unit, onSettings: () -> Unit, onMusic: () -> Unit = {}, onHardware: () -> Unit = {}) {
     LazyRow(
         Modifier
             .fillMaxWidth()
@@ -70,6 +70,20 @@ fun OverflowRow(onSelect: (Pane) -> Unit, onSettings: () -> Unit) {
                 onClick = { onSelect(pane) },
                 label = { Text(pane.label) },
                 leadingIcon = { Icon(pane.icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = false,
+                onClick = onMusic,
+                label = { Text("Music") },
+            )
+        }
+        item {
+            FilterChip(
+                selected = false,
+                onClick = onHardware,
+                label = { Text("Glasses/Pen") },
             )
         }
         item {

@@ -144,6 +144,9 @@ interface AgentsDao {
     @Query("SELECT * FROM agent_messages WHERE sessionId = :sessionId ORDER BY absIndex DESC LIMIT :limit")
     fun observeRecent(sessionId: String, limit: Int): Flow<List<AgentMessageRow>>
 
+    @Query("SELECT * FROM agent_messages WHERE sessionId = :sessionId ORDER BY absIndex DESC LIMIT :limit")
+    suspend fun recent(sessionId: String, limit: Int): List<AgentMessageRow>
+
     @Query("SELECT MAX(absIndex) FROM agent_messages WHERE sessionId = :sessionId")
     suspend fun maxIndex(sessionId: String): Long?
 

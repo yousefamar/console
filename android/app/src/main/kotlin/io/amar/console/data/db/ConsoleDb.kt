@@ -26,13 +26,17 @@ import androidx.room.RoomDatabase
         FeedReadRow::class,
         AgentSessionRow::class,
         AgentMessageRow::class,
+        BookmarkRow::class,
+        GeocacheRow::class,
+        MeetupEventRow::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
         AutoMigration(from = 3, to = 4),
+        AutoMigration(from = 4, to = 5),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {
@@ -46,6 +50,8 @@ abstract class ConsoleDb : RoomDatabase() {
     abstract fun notes(): NotesDao
     abstract fun feeds(): FeedsDao
     abstract fun agents(): AgentsDao
+    abstract fun bookmarks(): BookmarksDao
+    abstract fun map(): MapDao
 
     companion object {
         fun build(context: Context): ConsoleDb =

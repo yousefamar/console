@@ -17,7 +17,7 @@ android {
         // Keep the patch segment synced to versionCode so the user-visible
         // string directly reveals the integer version. If you bump one,
         // bump the other.
-        val vCode = 43
+        val vCode = 44
         versionCode = vCode
         versionName = "0.2.$vCode"
     }
@@ -116,6 +116,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.maplibre)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
