@@ -8,8 +8,13 @@ import io.amar.console.data.cal.CalendarRepository
 import io.amar.console.data.chat.ChatRepository
 import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.feeds.FeedsRepository
+import io.amar.console.data.longtail.BookmarksRepository
+import io.amar.console.data.longtail.HomeRepository
+import io.amar.console.data.longtail.MapRepository
+import io.amar.console.data.longtail.MusicRepository
 import io.amar.console.data.mail.MailRepository
 import io.amar.console.data.notes.NotesRepository
+import io.amar.console.glasses.mirror.GlassesMirror
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import io.amar.console.sync.SyncBusClient
@@ -39,6 +44,11 @@ class AppGraph(context: Context) {
     val notes = NotesRepository(db, hub, syncBus, outbox)
     val feeds = FeedsRepository(db, hub, outbox)
     val agents = AgentsRepository(appScope, db, hub, outbox)
+    val bookmarks = BookmarksRepository(db, hub)
+    val map = MapRepository(db, hub)
+    val music = MusicRepository(hub)
+    val home = HomeRepository(hub)
+    val mirror = GlassesMirror(context, appScope, db)
 
     init {
         chat.registerOutboxHandlers()
@@ -67,5 +77,8 @@ class AppGraph(context: Context) {
                 if (fg) agents.start() else agents.stop()
             }
         }
+
+        syncEngine.addDomain("bookmarks") { bookmarks.reconcile() }
+        syncEngine.addDomain("map") { map.reconcile() }
     }
 }

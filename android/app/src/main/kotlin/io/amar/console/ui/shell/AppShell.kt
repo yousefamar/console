@@ -34,11 +34,16 @@ import io.amar.console.ui.chat.ChatRoomListScreen
 import io.amar.console.ui.chat.ChatRoomScreen
 import io.amar.console.ui.feeds.FeedItemScreen
 import io.amar.console.ui.feeds.FeedsScreen
+import io.amar.console.ui.longtail.BookmarksScreen
+import io.amar.console.ui.longtail.HomeScreen
+import io.amar.console.ui.longtail.MapScreen
+import io.amar.console.ui.longtail.MusicScreen
 import io.amar.console.ui.mail.MailInboxScreen
 import io.amar.console.ui.mail.MailThreadScreen
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.notes.NoteEditorScreen
 import io.amar.console.ui.notes.NotesBrowserScreen
+import io.amar.console.ui.settings.HardwareSettingsScreen
 import io.amar.console.ui.panes.PlaceholderPane
 import io.amar.console.ui.settings.SettingsScreen
 
@@ -62,8 +67,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
             val roomId = backStack?.arguments?.getString("roomId")
             if (roomId != null) "chat/${android.net.Uri.decode(roomId)}" else currentRoute
         }
+        currentRoute.startsWith("agents/") -> {
+            val sid = backStack?.arguments?.getString("sessionId")
+            if (sid != null) "agents/${android.net.Uri.decode(sid)}" else currentRoute
+        }
         else -> currentRoute
     }
+    // Route change → re-render the glasses mirror (no-op when disabled).
+    app.graph.mirror.poke()
 
     var showOverflow by remember { mutableStateOf(false) }
 
@@ -125,6 +136,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         showOverflow = false
                         navController.navigate("settings") { launchSingleTop = true }
                     },
+                    onMusic = {
+                        showOverflow = false
+                        navController.navigate("music") { launchSingleTop = true }
+                    },
+                    onHardware = {
+                        showOverflow = false
+                        navController.navigate("settings/hardware") { launchSingleTop = true }
+                    },
                 )
             }
 
@@ -140,7 +159,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("chat/{roomId}") { entry ->
                     val roomId = android.net.Uri.decode(entry.arguments?.getString("roomId") ?: "")
-                    ChatRoomScreen(app.graph.chat, roomId)
+                    ChatRoomScreen(app.graph.chat, roomId, onComposerChange = { app.graph.mirror.setComposerText(it) })
                 }
                 composable(Pane.Mail.route) {
                     MailInboxScreen(app.graph.mail, onOpenThread = { threadId ->
@@ -177,13 +196,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("agents/{sessionId}") { entry ->
                     val sessionId = android.net.Uri.decode(entry.arguments?.getString("sessionId") ?: "")
-                    AgentSessionScreen(app.graph.agents, sessionId)
+                    AgentSessionScreen(app.graph.agents, sessionId, onComposerChange = { app.graph.mirror.setComposerText(it) })
                 }
-                val built = setOf(Pane.Chat, Pane.Mail, Pane.Calendar, Pane.Notes, Pane.Feeds, Pane.Agents)
-                for (pane in Pane.entries.filter { it !in built }) {
-                    composable(pane.route) { PlaceholderPane(pane) }
-                }
+                composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks) }
+                composable(Pane.Map.route) { MapScreen(app.graph.map) }
+                composable(Pane.Home.route) { HomeScreen(app.graph.home) }
+                composable("music") { MusicScreen(app.graph.music) }
                 composable("settings") { SettingsScreen(app) }
+                composable("settings/hardware") { HardwareSettingsScreen(app) }
             }
         }
     }

@@ -166,7 +166,7 @@ private fun SessionRow(session: AgentSessionRow, onClick: () -> Unit) {
 }
 
 @Composable
-fun AgentSessionScreen(repo: AgentsRepository, sessionId: String) {
+fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onComposerChange: (String) -> Unit = {}) {
     val messages by repo.observeMessages(sessionId).collectAsState(initial = emptyList())
     val approvals by repo.approvals.collectAsState()
     val sessionApprovals = remember(approvals) { approvals.filter { it.sessionId == sessionId } }
@@ -195,7 +195,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String) {
         ) {
             OutlinedTextField(
                 value = draft,
-                onValueChange = { draft = it },
+                onValueChange = { draft = it; onComposerChange(it) },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Prompt — queues offline") },
                 maxLines = 5,

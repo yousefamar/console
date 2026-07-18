@@ -69,6 +69,11 @@ class MainActivity : ComponentActivity() {
         maybeRequestBlePermissions()
         CoroutineScope(Dispatchers.IO).launch { Updater.check() }
 
+        // Glasses mirror owns the stealth-dim window state; re-assert the
+        // persisted toggle on boot.
+        (application as ConsoleApp).graph.mirror.applyDim = { enabled -> applyMirrorDim(enabled) }
+        (application as ConsoleApp).graph.mirror.onBoot()
+
         PushService.start(this)
         GlassesService.start(this)
         io.amar.console.pen.PenService.start(this)
