@@ -38,7 +38,7 @@ import { handleCronRoutes } from './routes/cron.js'
 import { STT_REALTIME_URL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
-import { enforce as enforceHubAuth, authEnforcementActive } from './auth-middleware.js'
+import { enforce as enforceHubAuth, authEnforcementActive, decideWsUpgrade } from './auth-middleware.js'
 import { ensureLocalTokens } from './local-tokens.js'
 import { GmailClient } from './gmail-client.js'
 import { handleMailRoutes } from './routes/mail.js'
@@ -423,8 +423,9 @@ syncBus.register('matrix', {
   // so the client can tell a resume-merge from a cold-start reset.
   resume: async (args) => matrixSync.resume(args as { since?: string } | undefined),
   state: async () => matrixSync.getState(),
-  // Unified send: hub picks encrypted vs plaintext based on room state
-  sendEvent: async (args) => matrixSync.sendRoomEvent(args as { roomId: string; type: string; content: Record<string, unknown> }),
+  // Unified send: hub picks encrypted vs plaintext based on room state.
+  // Optional `txnId` = client idempotency key (offline outbox retry safety).
+  sendEvent: async (args) => matrixSync.sendRoomEvent(args as { roomId: string; type: string; content: Record<string, unknown>; txnId?: string }),
   redact: async (args) => matrixSync.redactEvent(args as { roomId: string; eventId: string; reason?: string }),
   markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
   paginate: async (args) => matrixSync.paginate(args as { roomId: string; from?: string; dir?: 'b' | 'f'; limit?: number }),
@@ -441,6 +442,10 @@ syncBus.register('matrix', {
 // MatrixSync. All paths persist + broadcast via SnapshotStore.update.
 syncBus.register('chat-rooms', {
   snapshot: async () => chatRoomsStore.snapshot(),
+  // Bandwidth-friendly catch-up: pass your last-seen seq, get back either a
+  // coalesced patch {seq, partial, changed, removed} or the full snapshot
+  // when too far behind. Mobile clients use this instead of `snapshot`.
+  snapshotSince: async (args) => chatRoomsStore.snapshotSince((args as { since?: number } | undefined)?.since),
   markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
   markUnread: async (args) => matrixSync.markUnread(args as { roomId: string }),
   snooze: async (args) => matrixSync.snooze(args as { roomId: string; untilMs?: number }),
@@ -1256,12 +1261,32 @@ const httpServer = tlsOpts
 // WebSocket server
 // --------------------------------------------------------------------------
 
-// WS Origin gate. Browsers always send `Origin`; Node-side clients (CLI, Al,
-// glasses, debug) don't. Reject browser connections from unknown origins so a
-// malicious site can't bypass CORS via WebSocket.
+// WS auth gate. Browsers must pass the Origin allow-list AND carry a valid
+// session cookie; non-browser clients (APK PushService, CLI, Al) must present
+// a bearer or arrive via true loopback. Same enforcement flag as HTTP
+// (CONSOLE_AUTH_ENABLED) — log-only otherwise. Rejection surfaces as HTTP 401
+// on the upgrade, which the APK already maps to its "needs re-pair" flow.
 const wss = new WebSocketServer({
   server: httpServer,
-  verifyClient: (info: { origin: string }) => !info.origin || originAllowed(info.origin),
+  verifyClient: (info: { origin: string; req: IncomingMessage }, cb: (ok: boolean, code?: number, msg?: string) => void) => {
+    try {
+      const decision = decideWsUpgrade(info.req, authStore, originAllowed)
+      const enforcing = authEnforcementActive()
+      if (!decision.allow && !enforcing) {
+        console.log(`[auth] ws would-reject ${info.req.url} reason=${decision.reason}`)
+      }
+      if (!decision.allow && enforcing) {
+        console.log(`[auth] ws REJECT ${info.req.url} reason=${decision.reason} ua=${info.req.headers['user-agent'] ?? '-'}`)
+        cb(false, 401, 'unauthorized')
+        return
+      }
+      cb(true)
+    } catch (err) {
+      // A middleware bug must never take down every WS client — fail open.
+      console.error('[auth] ws verifyClient exception (forcing allow):', (err as Error)?.message)
+      cb(true)
+    }
+  },
 })
 
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {

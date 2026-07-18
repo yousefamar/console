@@ -436,7 +436,7 @@ export function handleMatrixRoutes(
     return handleAsync(async () => {
       const server = decodeURIComponent(dlMatch[1]!)
       const mediaId = decodeURIComponent(dlMatch[2]!)
-      const resp = await matrix.mediaFetch(`/_matrix/media/v3/download/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}`)
+      const resp = await matrix.mediaFetchAuth('download', server, mediaId)
       if (!resp.ok) return error(resp.status, `media download failed: ${resp.status}`)
       const headers: Record<string, string> = {}
       const ct = resp.headers.get('content-type')
@@ -461,9 +461,7 @@ export function handleMatrixRoutes(
       const w = url.searchParams.get('width') ?? '48'
       const h = url.searchParams.get('height') ?? '48'
       const method = url.searchParams.get('method') ?? 'crop'
-      const resp = await matrix.mediaFetch(
-        `/_matrix/media/v3/thumbnail/${encodeURIComponent(server)}/${encodeURIComponent(mediaId)}?width=${w}&height=${h}&method=${method}`,
-      )
+      const resp = await matrix.mediaFetchAuth('thumbnail', server, mediaId, `width=${w}&height=${h}&method=${method}`)
       if (!resp.ok) return error(resp.status, `thumbnail failed: ${resp.status}`)
       const headers: Record<string, string> = {}
       const ct = resp.headers.get('content-type')
