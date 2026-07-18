@@ -27,11 +27,14 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import io.amar.console.ConsoleApp
 import io.amar.console.R
 import io.amar.console.core.AppLifecycle
+import io.amar.console.ui.cal.CalendarScreen
 import io.amar.console.ui.chat.ChatRoomListScreen
 import io.amar.console.ui.chat.ChatRoomScreen
 import io.amar.console.ui.mail.MailInboxScreen
 import io.amar.console.ui.mail.MailThreadScreen
 import io.amar.console.ui.nav.Pane
+import io.amar.console.ui.notes.NoteEditorScreen
+import io.amar.console.ui.notes.NotesBrowserScreen
 import io.amar.console.ui.panes.PlaceholderPane
 import io.amar.console.ui.settings.SettingsScreen
 
@@ -144,7 +147,18 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     val threadId = android.net.Uri.decode(entry.arguments?.getString("threadId") ?: "")
                     MailThreadScreen(app.graph.mail, threadId, onBack = { navController.popBackStack() })
                 }
-                for (pane in Pane.entries.filter { it != Pane.Chat && it != Pane.Mail }) {
+                composable(Pane.Calendar.route) { CalendarScreen(app.graph.calendar) }
+                composable(Pane.Notes.route) {
+                    NotesBrowserScreen(app.graph.notes, onOpenFile = { path ->
+                        navController.navigate("notes/${android.net.Uri.encode(path)}")
+                    })
+                }
+                composable("notes/{path}") { entry ->
+                    val path = android.net.Uri.decode(entry.arguments?.getString("path") ?: "")
+                    NoteEditorScreen(app.graph.notes, path, onBack = { navController.popBackStack() })
+                }
+                val built = setOf(Pane.Chat, Pane.Mail, Pane.Calendar, Pane.Notes)
+                for (pane in Pane.entries.filter { it !in built }) {
                     composable(pane.route) { PlaceholderPane(pane) }
                 }
                 composable("settings") { SettingsScreen(app) }

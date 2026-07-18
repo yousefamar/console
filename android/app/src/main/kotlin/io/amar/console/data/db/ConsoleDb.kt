@@ -18,11 +18,15 @@ import androidx.room.RoomDatabase
         ChatMessageRow::class,
         MailThreadRow::class,
         MailMessageRow::class,
+        CalendarRow::class,
+        CalEventRow::class,
+        NoteFileRow::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
+        AutoMigration(from = 2, to = 3),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {
@@ -32,6 +36,8 @@ abstract class ConsoleDb : RoomDatabase() {
     abstract fun chatMessages(): ChatMessageDao
     abstract fun mailThreads(): MailThreadDao
     abstract fun mailMessages(): MailMessageDao
+    abstract fun calendar(): CalendarDao
+    abstract fun notes(): NotesDao
 
     companion object {
         fun build(context: Context): ConsoleDb =

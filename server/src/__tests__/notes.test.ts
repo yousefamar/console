@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { NoteStore } from '../notes'
+import { NoteStore, NoteConflictError } from '../notes'
 
 const TEST_DIR = join(tmpdir(), 'notes-test-' + Date.now())
 
@@ -166,5 +166,84 @@ describe('NoteStore', () => {
 
   it('rejects absolute path traversal', async () => {
     await expect(store.write('../../escape.md', 'bad')).rejects.toThrow('Path escapes vault directory')
+  })
+})
+
+// --------------------------------------------------------------------------
+// Offline-first additions (M4): conditional writes + since-listing/tombstones
+// --------------------------------------------------------------------------
+
+describe('NoteStore conditional writes + since-listing', () => {
+  let store: NoteStore
+  const TOMBSTONES = join(TEST_DIR, 'tombstones.json')
+
+  beforeEach(() => {
+    setupTestVault()
+    store = new NoteStore(TEST_DIR, TOMBSTONES)
+  })
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  it('writeConditional with fresh baseMtime succeeds and returns new mtime', async () => {
+    const files = await store.list()
+    const foo = files.find((f) => f.path === 'notes/guides/foo.md')!
+    const { mtime } = await store.writeConditional('notes/guides/foo.md', '# Foo v2', foo.mtime)
+    expect(mtime).toBeGreaterThan(0)
+    expect(await store.read('notes/guides/foo.md')).toBe('# Foo v2')
+  })
+
+  it('writeConditional with stale baseMtime throws 409 conflict with server copy', async () => {
+    const files = await store.list()
+    const foo = files.find((f) => f.path === 'notes/guides/foo.md')!
+    // Someone else edits after our base…
+    await new Promise((r) => setTimeout(r, 10))
+    await store.write('notes/guides/foo.md', '# Foo edited elsewhere')
+    // …our offline save must NOT clobber.
+    let conflict: NoteConflictError | null = null
+    try {
+      await store.writeConditional('notes/guides/foo.md', '# my offline edit', foo.mtime)
+    } catch (e) {
+      conflict = e as NoteConflictError
+    }
+    expect(conflict).toBeInstanceOf(NoteConflictError)
+    expect(conflict!.serverContent).toBe('# Foo edited elsewhere')
+    expect(await store.read('notes/guides/foo.md')).toBe('# Foo edited elsewhere')
+  })
+
+  it('writeConditional without baseMtime is legacy last-writer-wins', async () => {
+    await store.writeConditional('notes/guides/foo.md', 'clobbered', undefined)
+    expect(await store.read('notes/guides/foo.md')).toBe('clobbered')
+  })
+
+  it('writeConditional on a new file never conflicts', async () => {
+    const { mtime } = await store.writeConditional('brand/new.md', 'hello', 12345)
+    expect(mtime).toBeGreaterThan(0)
+  })
+
+  it('listSince returns only files newer than the cursor', async () => {
+    const before = Date.now()
+    await new Promise((r) => setTimeout(r, 10))
+    await store.write('notes/guides/foo.md', 'updated')
+    const delta = await store.listSince(before)
+    expect(delta.files.map((f) => f.path)).toEqual(['notes/guides/foo.md'])
+  })
+
+  it('delete and rename record tombstones surfaced by listSince', async () => {
+    const before = Date.now() - 5
+    await store.delete('notes/guides/bar.md')
+    await store.rename('scratch/quick.md', 'scratch/renamed.md')
+    const delta = await store.listSince(before)
+    expect(delta.deleted).toContain('notes/guides/bar.md')
+    expect(delta.deleted).toContain('scratch/quick.md')
+    expect(delta.files.map((f) => f.path)).toContain('scratch/renamed.md')
+  })
+
+  it('tombstones persist across store reloads', async () => {
+    await store.delete('notes/guides/bar.md')
+    const reloaded = new NoteStore(TEST_DIR, TOMBSTONES)
+    const delta = await reloaded.listSince(Date.now() - 60_000)
+    expect(delta.deleted).toContain('notes/guides/bar.md')
   })
 })
