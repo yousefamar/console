@@ -79,8 +79,9 @@ class PushService : Service() {
         const val MAIL_GROUP_KEY = "console.mail"
         const val MAIL_SUMMARY_ID = 101
 
-        private const val PUSH_URL = "wss://con.amar.io/hub/push"
-        private const val HUB_HTTPS = "https://con.amar.io/hub"
+        // Endpoints resolve from HubConfig (set on the pairing screen).
+        private val PUSH_URL: String get() = io.amar.console.core.HubConfig.pushWsUrl
+        private val HUB_HTTPS: String get() = io.amar.console.core.HubConfig.hubBase
         private const val RECONNECT_MIN_MS = 2_000L
         private const val RECONNECT_MAX_MS = 60_000L
         private const val VIBRATE_DEBOUNCE_MS = 60_000L
@@ -403,6 +404,10 @@ class PushService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // The service can start in a fresh process (BootReceiver path) where
+        // Application.onCreate hasn't run these; init is idempotent + cheap.
+        io.amar.console.core.HubConfig.init(this)
+        HubTokenStore.init(this)
         ensureChannels()
         startForegroundCompat()
         connect()
@@ -475,7 +480,9 @@ class PushService : Service() {
         hubPost("/mic/hot", "{\"hot\":true}")
         // Stream to the hub /stt realtime transcription WS (origin-gated; a
         // no-origin native client passes verifyClient).
-        val req = Request.Builder().url("wss://con.amar.io/hub/stt").build()
+        val reqB = Request.Builder().url(io.amar.console.core.HubConfig.sttWsUrl)
+        HubTokenStore.get()?.let { reqB.header("Authorization", "Bearer $it") }
+        val req = reqB.build()
         pttWs = client.newWebSocket(req, object : WebSocketListener() {
             override fun onMessage(ws: WebSocket, text: String) {
                 try {
@@ -530,7 +537,7 @@ class PushService : Service() {
                 val payload = JSONObject().put("text", text).toString()
                 // Compose into the SPA composer when Console is foreground (its
                 // sync-bus is live); otherwise auto-send so it isn't lost.
-                hubPost(if (MainActivity.foreground) "/mic/compose" else "/mic/say", payload)
+                hubPost(if (io.amar.console.core.AppLifecycle.foreground) "/mic/compose" else "/mic/say", payload)
             }
         }, 700)
     }

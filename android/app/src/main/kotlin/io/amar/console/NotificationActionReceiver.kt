@@ -38,7 +38,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val EXTRA_THREAD_IDS = "threadIds"
         const val KEY_REPLY_TEXT = "replyText"
 
-        private const val HUB_HTTPS = "https://con.amar.io/hub"
+        private val HUB_HTTPS: String get() = io.amar.console.core.HubConfig.hubBase
         private const val TAG = "NotifAction"
     }
 
@@ -50,6 +50,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         // The receiver can run in a fresh process where the token store was
         // never initialised; init is idempotent + cheap.
         HubTokenStore.init(appCtx)
+        io.amar.console.core.HubConfig.init(appCtx)
 
         Thread {
             try {

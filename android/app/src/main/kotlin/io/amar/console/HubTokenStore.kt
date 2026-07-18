@@ -29,16 +29,23 @@ object HubTokenStore {
         if (prefs != null) return
         synchronized(this) {
             if (prefs != null) return
-            val masterKey = MasterKey.Builder(ctx.applicationContext)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            prefs = EncryptedSharedPreferences.create(
-                ctx.applicationContext,
-                PREFS_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
+            prefs = try {
+                val masterKey = MasterKey.Builder(ctx.applicationContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    ctx.applicationContext,
+                    PREFS_NAME,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                )
+            } catch (e: Exception) {
+                // Keystore unavailable (JVM tests) or wedged (rare device-side
+                // corruption). A plain-prefs fallback keeps the app usable —
+                // losing at-rest encryption beats losing push + sync entirely.
+                ctx.applicationContext.getSharedPreferences("${PREFS_NAME}_plain", Context.MODE_PRIVATE)
+            }
             cached = prefs?.getString(KEY_TOKEN, null)
         }
     }
