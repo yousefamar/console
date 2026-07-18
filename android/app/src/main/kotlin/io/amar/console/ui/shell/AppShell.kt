@@ -27,6 +27,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import io.amar.console.ConsoleApp
 import io.amar.console.R
 import io.amar.console.core.AppLifecycle
+import io.amar.console.ui.chat.ChatRoomListScreen
+import io.amar.console.ui.chat.ChatRoomScreen
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.panes.PlaceholderPane
 import io.amar.console.ui.settings.SettingsScreen
@@ -44,9 +46,15 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
 
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Pane.Chat.route
-    // Feed the current route to AppLifecycle so PushService can suppress
-    // notifications for the visible room/thread.
-    AppLifecycle.currentRoute = currentRoute
+    // Feed the RESOLVED route (args substituted) to AppLifecycle so
+    // PushService can suppress notifications for the visible room/thread.
+    AppLifecycle.currentRoute = when {
+        currentRoute.startsWith("chat/") -> {
+            val roomId = backStack?.arguments?.getString("roomId")
+            if (roomId != null) "chat/${android.net.Uri.decode(roomId)}" else currentRoute
+        }
+        else -> currentRoute
+    }
 
     var showOverflow by remember { mutableStateOf(false) }
 
@@ -116,10 +124,17 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 startDestination = Pane.Chat.route,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                for (pane in Pane.entries) {
+                composable(Pane.Chat.route) {
+                    ChatRoomListScreen(app.graph.chat, onOpenRoom = { roomId ->
+                        navController.navigate("chat/${android.net.Uri.encode(roomId)}")
+                    })
+                }
+                composable("chat/{roomId}") { entry ->
+                    val roomId = android.net.Uri.decode(entry.arguments?.getString("roomId") ?: "")
+                    ChatRoomScreen(app.graph.chat, roomId)
+                }
+                for (pane in Pane.entries.filter { it != Pane.Chat }) {
                     composable(pane.route) { PlaceholderPane(pane) }
-                    // Item-detail routes land in their milestone; the shell
-                    // registers the pane root only.
                 }
                 composable("settings") { SettingsScreen(app) }
             }

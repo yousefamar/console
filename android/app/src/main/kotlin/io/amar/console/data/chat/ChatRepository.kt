@@ -1,0 +1,341 @@
+package io.amar.console.data.chat
+
+import androidx.room.withTransaction
+import io.amar.console.core.HubClient
+import io.amar.console.data.db.ChatMessageRow
+import io.amar.console.data.db.ChatRoomRow
+import io.amar.console.data.db.ConsoleDb
+import io.amar.console.data.db.MetaRow
+import io.amar.console.sync.SyncBusClient
+import io.amar.console.sync.outbox.Outbox
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+
+/**
+ * Chat domain: hub-authoritative room list + client-cached message windows +
+ * offline outbox sends. The SPA equivalents are chat-rooms-subscribe.ts
+ * (rooms), matrix/sync.ts ingestHubDelta (messages), store/chat.ts
+ * sendMessage (echo + queue).
+ *
+ * Cursor rule (load-bearing): `matrix:lastBatch` advances in the SAME Room
+ * transaction as the ingested events, so a crash can't skip a gap.
+ */
+class ChatRepository(
+    private val db: ConsoleDb,
+    private val hub: HubClient,
+    private val syncBus: SyncBusClient,
+    private val outbox: Outbox,
+) {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    companion object {
+        const val CURSOR_KEY = "matrix:lastBatch"
+        const val ROOMS_SEQ_KEY = "chatRooms:seq"
+        const val TYPE_SEND = "chatSend"
+        const val TYPE_MARK_READ = "chatMarkRead"
+        const val TYPE_MARK_UNREAD = "chatMarkUnread"
+        const val TYPE_SNOOZE = "chatSnooze"
+        /** Timeline cache bound per room (paginate loads more transiently). */
+        const val ROOM_CACHE_LIMIT = 100
+    }
+
+    // ---------------------------------------------------------------- //
+    // Reads (UI)
+
+    fun observeRooms(): Flow<List<ChatRoomRow>> = db.chatRooms().observeAll()
+    fun observeRoom(id: String): Flow<ChatRoomRow?> = db.chatRooms().observeRoom(id)
+    fun observeMessages(roomId: String, limit: Int): Flow<List<ChatMessageRow>> =
+        db.chatMessages().observeRecent(roomId, limit)
+
+    // ---------------------------------------------------------------- //
+    // Mutations (optimistic + outbox)
+
+    /** Send text: local echo row now, durable queue, flush when online. */
+    suspend fun sendText(roomId: String, body: String) {
+        val txnId = outbox.mintToken()
+        val echoId = "~${System.currentTimeMillis()}.${(0..999999).random()}"
+        db.chatMessages().upsertAll(
+            listOf(
+                ChatMessageRow(
+                    id = echoId, roomId = roomId, timestamp = System.currentTimeMillis(),
+                    senderId = "me", senderName = "me", body = body, msgtype = "m.text",
+                    mediaMxc = null, mediaMime = null, encryptedFileJson = null,
+                    replyToJson = null, localEcho = true, txnId = txnId,
+                )
+            )
+        )
+        val payload = buildJsonObject {
+            put("roomId", roomId)
+            put("echoId", echoId)
+            put("body", body)
+        }
+        outbox.enqueue(TYPE_SEND, payload.toString(), entityId = roomId, dedupeToken = txnId)
+    }
+
+    suspend fun markRead(roomId: String) {
+        val latest = db.chatMessages().recent(roomId, 1).firstOrNull()
+        val room = db.chatRooms().byId(roomId) ?: return
+        // Optimistic local flip; the hub snapshot confirms via delta.
+        db.chatRooms().upsertAll(listOf(room.copy(isUnread = false, unreadCount = 0, manualUnread = false)))
+        val eventId = latest?.takeUnless { it.localEcho }?.id ?: room.lastReadEventId ?: return
+        val payload = buildJsonObject { put("roomId", roomId); put("eventId", eventId) }
+        outbox.enqueue(TYPE_MARK_READ, payload.toString(), entityId = roomId)
+    }
+
+    suspend fun markUnread(roomId: String) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(isUnread = true, manualUnread = true, unreadCount = maxOf(1, room.unreadCount))))
+        outbox.enqueue(TYPE_MARK_UNREAD, buildJsonObject { put("roomId", roomId) }.toString(), entityId = roomId)
+    }
+
+    suspend fun snooze(roomId: String, untilMs: Long?) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(snoozedUntil = untilMs)))
+        val payload = buildJsonObject {
+            put("roomId", roomId)
+            untilMs?.let { put("untilMs", it) }
+        }
+        outbox.enqueue(TYPE_SNOOZE, payload.toString(), entityId = roomId)
+    }
+
+    /** Retry a failed echo: re-enqueue with the SAME txnId (safe — idempotent). */
+    suspend fun retryFailed(echoId: String) {
+        val echo = db.chatMessages().byId(echoId) ?: return
+        val txnId = echo.txnId ?: outbox.mintToken()
+        db.chatMessages().setSendFailed(echoId, false)
+        val payload = buildJsonObject {
+            put("roomId", echo.roomId)
+            put("echoId", echoId)
+            put("body", echo.body ?: "")
+        }
+        outbox.enqueue(TYPE_SEND, payload.toString(), entityId = echo.roomId, dedupeToken = txnId)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Outbox handlers
+
+    fun registerOutboxHandlers() {
+        outbox.register(TYPE_SEND) { row, _ ->
+            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]!!.jsonPrimitive.content
+            val echoId = p["echoId"]!!.jsonPrimitive.content
+            val body = p["body"]!!.jsonPrimitive.content
+            try {
+                val result = syncBus.rpc("matrix", "sendEvent", buildJsonObject {
+                    put("roomId", roomId)
+                    put("type", "m.room.message")
+                    putJsonObject("content") {
+                        put("msgtype", "m.text")
+                        put("body", body)
+                    }
+                    put("txnId", row.dedupeToken)
+                })
+                val eventId = result.jsonObject["event_id"]?.jsonPrimitive?.content
+                if (eventId != null) {
+                    val echo = db.chatMessages().byId(echoId)
+                    if (echo != null) {
+                        db.chatMessages().replaceEcho(echoId, echo.copy(id = eventId, localEcho = false, sendFailed = false))
+                    }
+                }
+                Outbox.Result.Done
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "send failed")
+            }
+        }
+        // Terminal failure → sendFailed badge on the echo (WhatsApp model:
+        // message stays visible with a retry affordance).
+        outbox.register("$TYPE_SEND:onFailed") { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val echoId = p["echoId"]?.jsonPrimitive?.content
+            if (echoId != null) db.chatMessages().setSendFailed(echoId, true)
+            Outbox.Result.Done
+        }
+
+        val rpcHandler = { op: String ->
+            Outbox.Handler { row, _ ->
+                if (!syncBus.connected) return@Handler Outbox.Result.Retry("hub disconnected")
+                try {
+                    syncBus.rpc("chat-rooms", op, json.parseToJsonElement(row.payloadJson))
+                    Outbox.Result.Done
+                } catch (e: Exception) {
+                    Outbox.Result.Retry(e.message ?: "$op failed")
+                }
+            }
+        }
+        outbox.register(TYPE_MARK_READ, rpcHandler("markRead"))
+        outbox.register(TYPE_MARK_UNREAD, rpcHandler("markUnread"))
+        outbox.register(TYPE_SNOOZE, rpcHandler("snooze"))
+    }
+
+    // ---------------------------------------------------------------- //
+    // Sync: live deltas + reconcile
+
+    fun wireLiveDeltas(scope: kotlinx.coroutines.CoroutineScope) {
+        // Handlers fire on the OkHttp WS reader thread — hop to a coroutine.
+        syncBus.on("chat-rooms", "delta") { data ->
+            scope.launch { runCatching { applyRoomsDelta(data.jsonObject) } }
+        }
+        syncBus.on("matrix", "delta") { data ->
+            scope.launch { runCatching { ingestMatrixDelta(data.jsonObject) } }
+        }
+    }
+
+    /** Connect-time reconcile: rooms via seq patch, messages via resume cursor. */
+    suspend fun reconcile() {
+        if (!syncBus.connected) return
+        // 1. Rooms: snapshotSince with our persisted seq.
+        val seq = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull()
+        val args = buildJsonObject { seq?.let { put("since", it) } }
+        runCatching {
+            val result = syncBus.rpc("chat-rooms", "snapshotSince", args)
+            applyRoomsDelta(result.jsonObject, isSnapshot = true)
+        }
+        // 2. Messages: matrix.resume with our persisted next_batch.
+        val since = db.meta().get(CURSOR_KEY)
+        runCatching {
+            val resumeArgs = buildJsonObject { since?.let { put("since", it) } }
+            val delta = syncBus.rpc("matrix", "resume", resumeArgs, timeoutMs = 120_000)
+            ingestMatrixDelta(delta.jsonObject)
+        }
+    }
+
+    /** Apply a chat-rooms envelope: patch {seq,partial,changed,removed} or
+     *  full {seq,data}. Full snapshots prune rooms the hub no longer has. */
+    internal suspend fun applyRoomsDelta(env: JsonObject, isSnapshot: Boolean = false) {
+        val seq = env["seq"]?.jsonPrimitive?.longOrNull ?: return
+        val lastSeen = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull() ?: 0L
+        if (seq <= lastSeen) return
+        val partial = env["partial"]?.jsonPrimitive?.booleanOrNull == true
+
+        db.withTransaction {
+            if (partial) {
+                val changed = env["changed"] as? JsonObject
+                val removed = (env["removed"] as? kotlinx.serialization.json.JsonArray)
+                    ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+                    ?: emptyList()
+                // Live-delta gap check: patches are per-seq; a gap means we
+                // missed a broadcast → trust nothing, full refetch next
+                // reconcile (skip applying, DON'T advance the cursor).
+                if (!isSnapshot && lastSeen > 0 && seq > lastSeen + 1) return@withTransaction
+                if (changed != null) {
+                    val rows = changed.entries.mapNotNull { (id, state) ->
+                        (state as? JsonObject)?.let { ChatEvents.roomFromState(id, it) }
+                    }
+                    if (rows.isNotEmpty()) db.chatRooms().upsertAll(rows)
+                }
+                if (removed.isNotEmpty()) db.chatRooms().deleteByIds(removed)
+            } else {
+                val data = env["data"] as? JsonObject ?: return@withTransaction
+                val rows = data.entries.mapNotNull { (id, state) ->
+                    (state as? JsonObject)?.let { ChatEvents.roomFromState(id, it) }
+                }
+                if (isSnapshot) {
+                    val serverIds = rows.map { it.id }.toSet()
+                    val stale = db.chatRooms().allIds().filter { it !in serverIds }
+                    if (stale.isNotEmpty()) db.chatRooms().deleteByIds(stale)
+                }
+                if (rows.isNotEmpty()) db.chatRooms().upsertAll(rows)
+            }
+            db.meta().put(MetaRow(ROOMS_SEQ_KEY, seq.toString()))
+        }
+    }
+
+    /** Ingest a hub MatrixDelta {nextBatch, rooms{id→{timeline,...}}}. */
+    internal suspend fun ingestMatrixDelta(delta: JsonObject) {
+        val nextBatch = delta["nextBatch"]?.jsonPrimitive?.content
+        val rooms = delta["rooms"] as? JsonObject
+        db.withTransaction {
+            if (rooms != null) {
+                for ((roomId, roomDeltaEl) in rooms.entries) {
+                    val roomDelta = roomDeltaEl as? JsonObject ?: continue
+                    ingestRoomTimeline(roomId, roomDelta)
+                }
+            }
+            // Cursor advances IN the same transaction as the events.
+            if (!nextBatch.isNullOrEmpty()) {
+                db.meta().put(MetaRow(CURSOR_KEY, nextBatch))
+            }
+        }
+    }
+
+    private suspend fun ingestRoomTimeline(roomId: String, roomDelta: JsonObject) {
+        val events = ChatEvents.timelineEvents(roomDelta)
+        if (events.isEmpty()) return
+        val toUpsert = mutableListOf<ChatMessageRow>()
+        for (event in events) {
+            // Redactions / tombstones → flip isDeleted on the original row.
+            if (ChatEvents.isRedaction(event)) {
+                val target = ChatEvents.redactsEventId(event)
+                if (target != null) {
+                    db.chatMessages().byId(target)?.let {
+                        toUpsert.add(it.copy(isDeleted = true))
+                    }
+                }
+                continue
+            }
+            if (ChatEvents.isEncryptedTombstone(event)) {
+                val id = event["event_id"]?.jsonPrimitive?.content
+                if (id != null) db.chatMessages().byId(id)?.let { toUpsert.add(it.copy(isDeleted = true)) }
+                continue
+            }
+            // Our own sends echo back with our txnId — swap the local echo.
+            val txn = ChatEvents.transactionId(event)
+            val msg = ChatEvents.eventToMessage(event, roomId) ?: continue
+            if (txn != null) {
+                val echo = db.chatMessages().recent(roomId, 50)
+                    .firstOrNull { it.localEcho && it.txnId == txn }
+                if (echo != null) db.chatMessages().delete(echo.id)
+            }
+            toUpsert.add(msg)
+        }
+        if (toUpsert.isNotEmpty()) db.chatMessages().upsertAll(toUpsert)
+    }
+
+    /** Scroll-up pagination via matrix.paginate; events go into the cache. */
+    suspend fun loadOlder(roomId: String, limit: Int = 30): Int {
+        if (!syncBus.connected) return 0
+        val room = db.chatRooms().byId(roomId) ?: return 0
+        val from = room.prevBatch ?: return 0
+        val result = runCatching {
+            syncBus.rpc("matrix", "paginate", buildJsonObject {
+                put("roomId", roomId)
+                put("from", from)
+                put("dir", "b")
+                put("limit", limit)
+            })
+        }.getOrNull() ?: return 0
+        val obj = result.jsonObject
+        // paginate returns {chunk, state?, start?, end?} (decrypted events);
+        // with dir='b', `end` is the token for the NEXT older page.
+        val messages = (obj["chunk"] as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { (it as? JsonObject)?.let { e -> ChatEvents.eventToMessage(e, roomId) } }
+            ?: emptyList()
+        val newPrev = obj["end"]?.jsonPrimitive?.content
+        db.withTransaction {
+            if (messages.isNotEmpty()) db.chatMessages().upsertAll(messages)
+            if (newPrev != null) {
+                db.chatRooms().byId(roomId)?.let {
+                    db.chatRooms().upsertAll(listOf(it.copy(prevBatch = newPrev)))
+                }
+            }
+        }
+        return messages.size
+    }
+
+    /** Daily prune: bound every room's cached timeline. */
+    suspend fun prune() {
+        for (roomId in db.chatMessages().roomsWithMessages()) {
+            db.chatMessages().pruneRoom(roomId, ROOM_CACHE_LIMIT)
+        }
+    }
+}

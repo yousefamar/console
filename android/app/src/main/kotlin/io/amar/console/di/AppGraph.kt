@@ -2,6 +2,7 @@ package io.amar.console.di
 
 import android.content.Context
 import io.amar.console.core.HubClient
+import io.amar.console.data.chat.ChatRepository
 import io.amar.console.data.db.ConsoleDb
 import io.amar.console.sync.SyncBusClient
 import io.amar.console.sync.SyncEngine
@@ -23,4 +24,12 @@ class AppGraph(context: Context) {
     val syncBus = SyncBusClient(appScope)
     val outbox = Outbox(context, appScope, db, hub, syncBus)
     val syncEngine = SyncEngine(appScope, db, hub, syncBus, outbox)
+
+    val chat = ChatRepository(db, hub, syncBus, outbox)
+
+    init {
+        chat.registerOutboxHandlers()
+        chat.wireLiveDeltas(appScope)
+        syncEngine.addDomain("chat") { chat.reconcile() }
+    }
 }
