@@ -38,6 +38,19 @@ interface MailThreadDao {
     @Query("SELECT COUNT(*) FROM mail_threads WHERE isInbox = 1 AND isUnread = 1")
     fun observeUnreadCount(): Flow<Int>
 
+    /** Search all cached threads (inbox or not) by subject/from/snippet. */
+    @Query(
+        """SELECT * FROM mail_threads WHERE subject LIKE '%' || :q || '%'
+             OR fromName LIKE '%' || :q || '%' OR fromEmail LIKE '%' || :q || '%'
+             OR snippet LIKE '%' || :q || '%'
+           ORDER BY date DESC LIMIT 50"""
+    )
+    suspend fun search(q: String): List<MailThreadRow>
+
+    /** Currently-snoozed threads (for the snoozed section toggle). */
+    @Query("SELECT * FROM mail_threads WHERE snoozedUntil IS NOT NULL AND snoozedUntil > :now ORDER BY snoozedUntil ASC")
+    fun observeSnoozed(now: Long): Flow<List<MailThreadRow>>
+
     /** Snoozed threads whose timer expired (re-inbox check). */
     @Query("SELECT * FROM mail_threads WHERE snoozedUntil IS NOT NULL AND snoozedUntil < :now")
     suspend fun expiredSnoozes(now: Long): List<MailThreadRow>

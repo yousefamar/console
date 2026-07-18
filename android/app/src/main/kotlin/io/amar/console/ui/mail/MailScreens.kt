@@ -19,8 +19,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.MarkEmailUnread
+import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.automirrored.filled.ReplyAll
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.outlined.Email
@@ -68,15 +73,72 @@ import java.util.Locale
 @Composable
 fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
     val threads by repo.observeInbox().collectAsState(initial = emptyList())
+    val snoozed by repo.observeSnoozed().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var undoThread by remember { mutableStateOf<String?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<MailThreadRow>>(emptyList()) }
+    var showSnoozed by remember { mutableStateOf(false) }
+    var composing by remember { mutableStateOf(false) }
+
+    LaunchedEffect(searchQuery) {
+        searchResults = if (searchQuery.length >= 2) repo.search(searchQuery) else emptyList()
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             PaneTopBar(
                 title = "Mail",
                 subtitle = if (threads.isEmpty()) null else "${threads.size} in inbox · ${threads.count { it.isUnread }} unread",
+                actions = {
+                    if (snoozed.isNotEmpty()) {
+                        androidx.compose.material3.TextButton(onClick = { showSnoozed = !showSnoozed }) {
+                            Text("${snoozed.size} snoozed", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    IconButton(onClick = { searching = !searching; searchQuery = "" }) {
+                        Icon(
+                            if (searching) Icons.Filled.Close
+                            else Icons.Filled.Search,
+                            contentDescription = "Search mail",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                },
             )
+            if (searching) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search all cached mail") },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    singleLine = true,
+                )
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(searchResults, key = { it.id }) { thread ->
+                        ThreadRow(thread, onClick = { searching = false; onOpenThread(thread.id) })
+                    }
+                }
+                return
+            }
+            if (showSnoozed) {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(snoozed, key = { it.id }) { thread ->
+                        Column {
+                            ThreadRow(thread, onClick = { onOpenThread(thread.id) })
+                            Text(
+                                "⏰ wakes " + java.text.SimpleDateFormat("EEE d MMM HH:mm", java.util.Locale.UK)
+                                    .format(java.util.Date(thread.snoozedUntil ?: 0)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.padding(start = 68.dp, bottom = 6.dp),
+                            )
+                        }
+                    }
+                }
+                return
+            }
             if (threads.isEmpty()) {
                 EmptyState(Icons.Outlined.Email, "Inbox zero", "Swipe → archive · swipe ← snooze")
             } else {
@@ -117,6 +179,12 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
                 }
             }
         }
+        androidx.compose.material3.FloatingActionButton(
+            onClick = { composing = true },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+        ) {
+            Icon(Icons.Filled.Edit, contentDescription = "Compose")
+        }
         undoThread?.let { id ->
             Snackbar(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
@@ -129,6 +197,71 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
             ) { Text("Archived") }
         }
     }
+    if (composing) {
+        ComposeMailDialog(
+            title = "New mail",
+            showTo = true, showSubject = true,
+            onDismiss = { composing = false },
+            onSend = { to, subject, body ->
+                composing = false
+                scope.launch { repo.send(to, subject, body) }
+            },
+        )
+    }
+}
+
+/** Compose/forward dialog — plain text; sends queue offline like all else. */
+@Composable
+private fun ComposeMailDialog(
+    title: String,
+    showTo: Boolean,
+    showSubject: Boolean,
+    onDismiss: () -> Unit,
+    onSend: (to: String, subject: String, body: String) -> Unit,
+) {
+    var to by remember { mutableStateOf("") }
+    var subject by remember { mutableStateOf("") }
+    var body by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (showTo) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = to, onValueChange = { to = it },
+                        label = { Text("To") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (showSubject) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = subject, onValueChange = { subject = it },
+                        label = { Text("Subject") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                androidx.compose.material3.OutlinedTextField(
+                    value = body, onValueChange = { body = it },
+                    label = { Text("Message") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 4, maxLines = 10,
+                )
+                Text(
+                    "Queues offline — sends when connected.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.Button(
+                enabled = (!showTo || to.isNotBlank()) && body.isNotBlank(),
+                onClick = { onSend(to.trim(), subject.trim(), body) },
+            ) { Text("Send") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -214,6 +347,8 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
     val messages by repo.observeMessages(threadId).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var replying by remember { mutableStateOf(false) }
+    var replyAll by remember { mutableStateOf(false) }
+    var forwarding by remember { mutableStateOf(false) }
 
     LaunchedEffect(threadId, thread?.isUnread) {
         if (thread?.isUnread == true) repo.markRead(threadId)
@@ -231,10 +366,23 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
                 IconButton(onClick = { scope.launch { repo.archive(threadId) }; onBack() }) {
                     Icon(Icons.Filled.Archive, "Archive", modifier = Modifier.size(19.dp))
                 }
-                IconButton(onClick = { replying = !replying }) {
+                IconButton(onClick = { replying = !replying; replyAll = false }) {
                     Icon(
                         Icons.Filled.Reply, "Reply",
-                        tint = if (replying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        tint = if (replying && !replyAll) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                IconButton(onClick = { replying = true; replyAll = true }) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ReplyAll, "Reply all",
+                        tint = if (replying && replyAll) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                IconButton(onClick = { forwarding = true }) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Forward, "Forward",
                         modifier = Modifier.size(19.dp),
                     )
                 }
@@ -247,15 +395,27 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
         }
         if (replying) {
             Composer(
-                placeholder = "Reply — sends when online, auto-archives",
+                placeholder = if (replyAll) "Reply all — sends when online, auto-archives" else "Reply — sends when online, auto-archives",
                 draftKey = "mail:$threadId",
                 onSend = { text ->
                     replying = false
-                    scope.launch { repo.reply(threadId, text) }
+                    scope.launch { repo.reply(threadId, text, replyAll) }
                     onBack()
                 },
             )
         }
+    }
+    if (forwarding) {
+        ComposeMailDialog(
+            title = "Forward",
+            showTo = true, showSubject = false,
+            onDismiss = { forwarding = false },
+            onSend = { to, _, body ->
+                forwarding = false
+                scope.launch { repo.forward(threadId, to, body.ifBlank { null }) }
+                onBack()
+            },
+        )
     }
 }
 
@@ -286,6 +446,45 @@ private fun MessageCard(msg: MailMessageRow, expandedInitially: Boolean) {
             }
         }
         if (expanded) {
+            Column(Modifier.padding(start = 42.dp)) {
+                Text(
+                    "to ${msg.toHeader}" + (msg.ccHeader?.let { " · cc $it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            msg.attachmentsJson?.let { aj ->
+                val atts = remember(aj) {
+                    runCatching {
+                        (kotlinx.serialization.json.Json.parseToJsonElement(aj) as? kotlinx.serialization.json.JsonArray)
+                            ?.mapNotNull { el ->
+                                val o = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+                                fun str(k: String): String? = (o[k] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                                Triple(str("filename") ?: "file", str("messageId") ?: "", str("attachmentId") ?: "")
+                            }
+                    }.getOrNull() ?: emptyList()
+                }
+                if (atts.isNotEmpty()) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    Row(
+                        Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        for ((name, mid, aid) in atts.take(4)) {
+                            androidx.compose.material3.AssistChip(
+                                onClick = {
+                                    // Open via the system browser → hub attachment URL
+                                    // (bearer won't ride a browser; use the app downloader).
+                                    io.amar.console.data.mail.AttachmentOpener.open(ctx, mid, aid, name)
+                                },
+                                label = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { Icon(Icons.Filled.AttachFile, null, modifier = Modifier.size(14.dp)) },
+                            )
+                        }
+                    }
+                }
+            }
             if (msg.bodyHtml != null) {
                 MailBodyWebView(msg.bodyHtml!!)
             } else {

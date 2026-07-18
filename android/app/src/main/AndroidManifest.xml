@@ -88,6 +88,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- Attachment open-with: serves downloaded mail attachments to viewers -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Notification action handler: Mark as Read / Reply / Archive -->
         <receiver
             android:name=".NotificationActionReceiver"
