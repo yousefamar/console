@@ -74,6 +74,8 @@ class MainActivity : ComponentActivity() {
         (application as ConsoleApp).graph.mirror.applyDim = { enabled -> applyMirrorDim(enabled) }
         (application as ConsoleApp).graph.mirror.onBoot()
 
+        io.amar.console.core.DebugAgent.onActivity(this)
+
         PushService.start(this)
         GlassesService.start(this)
         io.amar.console.pen.PenService.start(this)
