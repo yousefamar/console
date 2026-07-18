@@ -94,6 +94,22 @@ object ChatEvents {
     fun relatesToEventId(event: JsonObject): String? =
         event.obj("content")?.obj("m.relates_to")?.str("event_id")
 
+    fun isReaction(event: JsonObject): Boolean = event.str("type") == "m.reaction"
+
+    /** For m.reaction: (targetEventId, emojiKey, sender). */
+    fun reactionParts(event: JsonObject): Triple<String, String, String>? {
+        val rel = event.obj("content")?.obj("m.relates_to") ?: return null
+        if (rel.str("rel_type") != "m.annotation") return null
+        val target = rel.str("event_id") ?: return null
+        val key = rel.str("key") ?: return null
+        val sender = event.str("sender") ?: return null
+        return Triple(target, key, sender)
+    }
+
+    /** True when this m.room.message is an edit (m.replace). */
+    fun isEdit(event: JsonObject): Boolean =
+        event.str("type") == "m.room.message" && relType(event) == "m.replace"
+
     fun isRedaction(event: JsonObject): Boolean = event.str("type") == "m.room.redaction"
 
     fun redactsEventId(event: JsonObject): String? =
@@ -135,6 +151,8 @@ object ChatEvents {
         networkIcon = state.str("networkIcon"),
         snoozedUntil = state["snoozedUntil"]?.jsonPrimitive?.longOrNull,
         prevBatch = state.str("prevBatch"),
+        isPinned = (state["tags"] as? kotlinx.serialization.json.JsonArray)
+            ?.any { runCatching { it.jsonPrimitive.content }.getOrNull() == "m.favourite" } ?: false,
         rawJson = state.toString(),
     )
 

@@ -2,6 +2,7 @@ package io.amar.console.ui.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,8 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +62,10 @@ import io.amar.console.ui.components.CountPill
 import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.PaneTopBar
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -83,9 +90,27 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit) {
     val rooms by repo.observeRooms().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     val now = System.currentTimeMillis()
+    var searchQuery by remember { mutableStateOf("") }
+    var searching by remember { mutableStateOf(false) }
+
+    // Search reaches EVERY cached room (read/snoozed/muted included) —
+    // the list itself is inbox-zero: pinned section + unread section.
+    val searchResults = remember(rooms, searchQuery) {
+        if (searchQuery.isBlank()) emptyList()
+        else {
+            val q = searchQuery.lowercase()
+            rooms.filter { it.name.lowercase().contains(q) }
+                .sortedByDescending { it.name.lowercase().startsWith(q) }
+                .take(30)
+        }
+    }
+    val pinned = remember(rooms) {
+        rooms.filter { it.isPinned && !it.isMuted }.sortedBy { it.name.lowercase() }
+    }
     val visible = remember(rooms) {
         rooms.filter { r ->
-            r.isUnread && !r.isMuted && (r.snoozedUntil == null || r.snoozedUntil < now)
+            r.isUnread && !r.isMuted && !r.isLowPriority && !r.isPinned &&
+                (r.snoozedUntil == null || r.snoozedUntil < now)
         }
     }
 
@@ -93,16 +118,51 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit) {
         PaneTopBar(
             title = "Chat",
             subtitle = if (visible.isEmpty()) "${rooms.size} rooms cached" else "${visible.size} unread",
+            actions = {
+                androidx.compose.material3.IconButton(onClick = { searching = !searching; searchQuery = "" }) {
+                    Icon(
+                        if (searching) Icons.Filled.Close else androidx.compose.material.icons.Icons.Filled.Search,
+                        contentDescription = "Search rooms",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            },
         )
-        if (visible.isEmpty()) {
+        if (searching) {
+            androidx.compose.material3.OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search all rooms") },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                singleLine = true,
+            )
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(searchResults, key = { it.id }) { room ->
+                    RoomRow(room, onClick = { searching = false; searchQuery = ""; onOpenRoom(room.id) })
+                }
+            }
+            return
+        }
+        if (visible.isEmpty() && pinned.isEmpty()) {
             EmptyState(
                 Icons.AutoMirrored.Outlined.Chat,
                 "Inbox zero",
-                "Unread conversations appear here",
+                "Unread conversations appear here — search reaches everything",
             )
             return
         }
         LazyColumn(Modifier.fillMaxSize()) {
+            if (pinned.isNotEmpty()) {
+                items(pinned, key = { "pin-" + it.id }) { room ->
+                    RoomRow(room, onClick = { onOpenRoom(room.id) })
+                }
+                item(key = "divider") {
+                    androidx.compose.material3.HorizontalDivider(
+                        Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
             items(visible, key = { it.id }) { room ->
                 val dismissState = rememberSwipeToDismissBoxState(
                     // Half-the-row drag required — the default ~56dp threshold
@@ -221,6 +281,9 @@ fun ChatRoomScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var loadingOlder by remember { mutableStateOf(false) }
+    var replyingTo by remember { mutableStateOf<ChatMessageRow?>(null) }
+    var reactTarget by remember { mutableStateOf<ChatMessageRow?>(null) }
+    var lightboxUrl by remember { mutableStateOf<String?>(null) }
 
     // Opening a room does NOT mark it read — read is an explicit act
     // (the ✓✓ button, or swipe on the list). Sending a message does mark
@@ -263,6 +326,10 @@ fun ChatRoomScreen(
                     isMine = isMine,
                     showSender = groupStart && !isMine && room?.isDirect == false,
                     onRetry = { scope.launch { repo.retryFailed(msg.id) } },
+                    onLongPress = { reactTarget = msg },
+                    onReply = { replyingTo = msg },
+                    onImageTap = { url -> lightboxUrl = url },
+                    onReact = { emoji -> scope.launch { repo.sendReaction(roomId, msg.id, emoji) } },
                 )
             }
             item {
@@ -287,11 +354,42 @@ fun ChatRoomScreen(
                 }
             }
         }
+        replyingTo?.let { target ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Replying to ${target.senderName ?: target.senderId}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        target.body ?: "", style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    Icons.Filled.Close, contentDescription = "Cancel reply",
+                    modifier = Modifier.size(16.dp).clickable { replyingTo = null },
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         val context = androidx.compose.ui.platform.LocalContext.current
         Composer(
             placeholder = "Message",
             draftKey = "chat:$roomId",
-            onSend = { text -> scope.launch { repo.sendText(roomId, text); repo.markRead(roomId) } },
+            onSend = { text ->
+                val replyId = replyingTo?.id
+                replyingTo = null
+                scope.launch { repo.sendText(roomId, text, replyId); repo.markRead(roomId) }
+            },
             onTextChange = onComposerChange,
             onSendWithAttachments = { text, uris ->
                 scope.launch {
@@ -304,14 +402,79 @@ fun ChatRoomScreen(
             },
         )
     }
+
+    reactTarget?.let { target ->
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        QuickReactSheet(
+            target = target,
+            onDismiss = { reactTarget = null },
+            onReact = { emoji -> scope.launch { repo.sendReaction(roomId, target.id, emoji) } },
+            onReply = { replyingTo = target },
+            onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(target.body ?: "")) },
+        )
+    }
+    lightboxUrl?.let { url ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { lightboxUrl = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(
+                Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)
+                    .clickable { lightboxUrl = null },
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(model = url, contentDescription = null, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
 }
 
+
+// Quick-react sheet (long-press a bubble) + reply action.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun QuickReactSheet(
+    target: ChatMessageRow,
+    onDismiss: () -> Unit,
+    onReact: (String) -> Unit,
+    onReply: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            for (emoji in listOf("👍", "❤️", "😂", "😮", "😢", "🙏")) {
+                Text(
+                    emoji,
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.clickable { onReact(emoji); onDismiss() }.padding(6.dp),
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            androidx.compose.material3.TextButton(onClick = { onReply(); onDismiss() }) { Text("↩ Reply") }
+            androidx.compose.material3.TextButton(onClick = { onCopy(); onDismiss() }) { Text("⧉ Copy text") }
+        }
+        androidx.compose.foundation.layout.Spacer(Modifier.size(24.dp))
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
     msg: ChatMessageRow,
     isMine: Boolean,
     showSender: Boolean,
     onRetry: () -> Unit,
+    onLongPress: () -> Unit = {},
+    onReply: () -> Unit = {},
+    onImageTap: (String) -> Unit = {},
+    onReact: (String) -> Unit = {},
 ) {
     Row(
         Modifier
@@ -333,8 +496,40 @@ private fun MessageBubble(
                     if (isMine) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                     else MaterialTheme.colorScheme.surfaceVariant
                 )
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongPress,
+                )
                 .padding(horizontal = 11.dp, vertical = 6.dp),
         ) {
+            // Reply quote (m.in_reply_to context)
+            msg.replyToJson?.let { rj ->
+                val reply = remember(rj) {
+                    runCatching { Json.parseToJsonElement(rj).jsonObject }.getOrNull()
+                }
+                val rSender = reply?.get("sender")?.jsonPrimitive?.content
+                val rBody = reply?.get("body")?.jsonPrimitive?.content
+                if (rBody != null || rSender != null) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        rSender?.let {
+                            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                        rBody?.let {
+                            Text(
+                                it, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
             if (showSender && msg.senderName != null) {
                 val hue = ((msg.senderId.hashCode() % 360) + 360) % 360
                 Text(
@@ -360,6 +555,7 @@ private fun MessageBubble(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(9.dp))
+                        .clickable { MatrixMedia.downloadUrl(msg.mediaMxc)?.let(onImageTap) }
                         .padding(vertical = 2.dp),
                 )
             }
@@ -379,6 +575,30 @@ private fun MessageBubble(
                     color = if (msg.isDeleted) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.onSurface,
                 )
+            }
+            msg.reactionsJson?.let { rj ->
+                val reactions = remember(rj) {
+                    runCatching {
+                        Json.parseToJsonElement(rj).jsonObject.entries.map { (k, v) ->
+                            k to ((v as? JsonArray)?.size ?: 0)
+                        }
+                    }.getOrElse { emptyList() }
+                }
+                if (reactions.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 2.dp)) {
+                        for ((emoji, count) in reactions.take(6)) {
+                            Text(
+                                if (count > 1) "$emoji $count" else emoji,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.5f))
+                                    .clickable { onReact(emoji) }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
