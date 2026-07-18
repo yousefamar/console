@@ -672,6 +672,11 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
         return
       }
+      // Offline-outbox retry safety: a mobile client re-delivering a queued
+      // prompt carries the same dedupeKey — drop the duplicate silently.
+      if (msg.dedupeKey && session.hasSeenDedupeKey(msg.dedupeKey)) {
+        return
+      }
       // /clear — clear the session's message log so replays start fresh
       if (msg.content.trim() === '/clear') {
         session.clearLog()

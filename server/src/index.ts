@@ -853,6 +853,40 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     return
   }
 
+  // GET /agents/sessions/:id/messages?since=<absIndex>&limit=N — REST catch-up
+  // for the native mobile client: page FORWARD from an absolute index over the
+  // in-memory window (get_older_messages pages backward over the same window).
+  // A `since` older than the rolled-off boundary returns from the boundary with
+  // `truncated: true` so the client knows there's an unfetchable gap.
+  {
+    const m = path.match(/^\/agents\/sessions\/([^/]+)\/messages$/)
+    if (m && req.method === 'GET') {
+      const session = sessions.get(m[1]!)
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'session not found' }))
+        return
+      }
+      const since = Number(url.searchParams.get('since') ?? 0)
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 500)
+      const offset = session.messageLogOffset
+      const total = session.messageLogLength
+      const from = Math.max(since, offset)
+      const memStart = from - offset
+      const memEnd = Math.min(memStart + limit, session.messageLog.length)
+      const slice = memStart < memEnd ? session.messageLog.slice(memStart, memEnd) : []
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        messages: slice,
+        fromIndex: from,
+        totalLength: total,
+        hasMore: from + slice.length < total,
+        truncated: since < offset,
+      }))
+      return
+    }
+  }
+
   // Filesystem directory autocomplete for the agent prompt's "new session" picker.
   // Returns subdirectories matching `?q=<partial path>`. The prefix is split into
   // (parent dir, name fragment); we list parent and filter by case-insensitive prefix.

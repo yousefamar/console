@@ -1138,6 +1138,16 @@ export class Session extends EventEmitter {
     return this.logOffset + this.messageLog.length
   }
 
+  // Offline-outbox send dedup: last ~50 client dedupeKeys. Checking marks the
+  // key as seen, so the FIRST delivery wins and retries drop.
+  private readonly seenDedupeKeys: string[] = []
+  hasSeenDedupeKey(key: string): boolean {
+    if (this.seenDedupeKeys.includes(key)) return true
+    this.seenDedupeKeys.push(key)
+    if (this.seenDedupeKeys.length > 50) this.seenDedupeKeys.shift()
+    return false
+  }
+
   /** Absolute index of `messageLog[0]`. Used by get_older_messages to map
    *  the client's absolute beforeIndex into the in-memory window. */
   get messageLogOffset(): number {
