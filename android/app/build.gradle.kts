@@ -17,7 +17,7 @@ android {
         // Keep the patch segment synced to versionCode so the user-visible
         // string directly reveals the integer version. If you bump one,
         // bump the other.
-        val vCode = 55
+        val vCode = 57
         versionCode = vCode
         versionName = "0.2.$vCode"
     }
@@ -80,6 +80,9 @@ android {
             isIncludeAndroidResources = true
         }
     }
+
+    // Room schema JSONs reach MigrationTestHelper via a symlink at
+    // src/test/assets/io.amar.console.data.db.ConsoleDb → ../schemas/…
 }
 
 // Room: export schema JSON for migration tests.

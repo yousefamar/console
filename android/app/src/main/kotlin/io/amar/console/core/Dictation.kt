@@ -63,7 +63,10 @@ object Dictation {
                 runCatching {
                     val m = JSONObject(text)
                     when (m.optString("type")) {
-                        "interim" -> { interim = m.optString("text"); publish() }
+                        // Interims stream as incremental DELTAS (same wire as
+                        // PushService PTT) — accumulate or you only ever see
+                        // the newest word.
+                        "interim" -> { interim += m.optString("text"); publish() }
                         "final" -> {
                             val t = m.optString("text")
                             if (t.isNotEmpty()) finals.append(t).append(' ')
