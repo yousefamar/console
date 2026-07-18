@@ -75,7 +75,9 @@ object ChatEvents {
         // `file` (EncryptedFile json — url + AES key material).
         val file = effectiveContent.obj("file")
         val mediaMxc = effectiveContent.str("url") ?: file?.str("url")
-        val mediaMime = effectiveContent.obj("info")?.str("mimetype")
+        val info = effectiveContent.obj("info")
+        val mediaMime = info?.str("mimetype")
+        val durationMs = info?.get("duration")?.jsonPrimitive?.longOrNull
 
         val replyToId = content.obj("m.relates_to")?.obj("m.in_reply_to")?.str("event_id")
 
@@ -90,6 +92,7 @@ object ChatEvents {
             msgtype = msgtype,
             mediaMxc = mediaMxc,
             mediaMime = mediaMime,
+            mediaDurationMs = durationMs,
             encryptedFileJson = file?.toString(),
             replyToJson = replyToId?.let { """{"eventId":"$it"}""" },
         )
@@ -162,8 +165,88 @@ object ChatEvents {
         prevBatch = state.str("prevBatch"),
         isPinned = (state["tags"] as? kotlinx.serialization.json.JsonArray)
             ?.any { runCatching { it.jsonPrimitive.content }.getOrNull() == "m.favourite" } ?: false,
+        lastReadTs = state["lastReadTs"]?.jsonPrimitive?.longOrNull,
         rawJson = state.toString(),
     )
+
+    /** A read receipt for one OTHER user (server RoomState.readReceipts). */
+    data class ReadReceipt(
+        val userId: String,
+        val eventId: String,
+        val ts: Long,
+        val displayName: String?,
+        val avatarMxc: String?,
+    )
+
+    /**
+     * Parse `readReceipts` from a room's rawJson (the verbatim server
+     * RoomState): map userId → {eventId, ts, displayName?, avatar?}.
+     * The hub already filters out my own user + bridge bots.
+     */
+    fun parseReadReceipts(rawJson: String?): List<ReadReceipt> {
+        rawJson ?: return emptyList()
+        val state = runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(rawJson).jsonObject
+        }.getOrNull() ?: return emptyList()
+        val receipts = state.obj("readReceipts") ?: return emptyList()
+        return receipts.entries.mapNotNull { (userId, el) ->
+            val r = el as? JsonObject ?: return@mapNotNull null
+            val eventId = r.str("eventId") ?: return@mapNotNull null
+            ReadReceipt(
+                userId = userId,
+                eventId = eventId,
+                ts = r["ts"]?.jsonPrimitive?.longOrNull ?: 0L,
+                displayName = r.str("displayName"),
+                avatarMxc = r.str("avatar"),
+            )
+        }
+    }
+
+    /**
+     * For each receipt, resolve the NEWEST message row the reader has seen —
+     * exact event-id match when cached, else newest message at-or-before the
+     * receipt ts (receipts often point at events outside our window). Returns
+     * messageId → receipts, receipts sorted by ts descending.
+     */
+    fun receiptsByMessage(
+        receipts: List<ReadReceipt>,
+        messages: List<ChatMessageRow>, // any order
+    ): Map<String, List<ReadReceipt>> {
+        if (receipts.isEmpty() || messages.isEmpty()) return emptyMap()
+        val byTime = messages.filter { !it.localEcho }.sortedBy { it.timestamp }
+        val byId = byTime.associateBy { it.id }
+        val out = mutableMapOf<String, MutableList<ReadReceipt>>()
+        for (r in receipts) {
+            val target = byId[r.eventId]
+                ?: byTime.lastOrNull { it.timestamp <= r.ts }
+                ?: continue
+            out.getOrPut(target.id) { mutableListOf() }.add(r)
+        }
+        for (list in out.values) list.sortByDescending { it.ts }
+        return out
+    }
+
+    /**
+     * Unread divider position: the id of the first message strictly newer
+     * than [lastReadTs] that isn't mine — the "— New —" row renders above it
+     * (SPA ChatRoomView showUnreadDivider parity). Null when nothing unread.
+     * [myUserId] is the full MXID (real rows carry it; echoes carry "me").
+     */
+    fun unreadDividerMessageId(
+        messages: List<ChatMessageRow>, // any order
+        lastReadTs: Long?,
+        myUserId: String? = null,
+    ): String? {
+        if (lastReadTs == null || lastReadTs <= 0) return null
+        return messages
+            .filter {
+                !it.localEcho && it.senderId != "me" &&
+                    (myUserId == null || it.senderId != myUserId) &&
+                    it.timestamp > lastReadTs
+            }
+            .minByOrNull { it.timestamp }
+            ?.id
+    }
 
     /** Timeline events array from a hub MatrixDelta room entry. */
     fun timelineEvents(roomDelta: JsonObject): List<JsonObject> =

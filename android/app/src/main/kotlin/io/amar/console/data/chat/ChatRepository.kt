@@ -46,6 +46,8 @@ class ChatRepository(
         const val TYPE_SNOOZE = "chatSnooze"
         const val TYPE_SEND_FILE = "chatSendFile"
         const val TYPE_REACT = "chatReact"
+        const val TYPE_PIN = "chatPin"
+        const val TYPE_MUTE = "chatMute"
         /** Timeline cache bound per room (paginate loads more transiently). */
         const val ROOM_CACHE_LIMIT = 100
     }
@@ -117,7 +119,15 @@ class ChatRepository(
         val latest = db.chatMessages().recent(roomId, 1).firstOrNull()
         val room = db.chatRooms().byId(roomId) ?: return
         // Optimistic local flip; the hub snapshot confirms via delta.
-        db.chatRooms().upsertAll(listOf(room.copy(isUnread = false, unreadCount = 0, manualUnread = false)))
+        // lastReadTs pins the "— New —" divider for the next unread open.
+        db.chatRooms().upsertAll(
+            listOf(
+                room.copy(
+                    isUnread = false, unreadCount = 0, manualUnread = false,
+                    lastReadTs = latest?.timestamp ?: room.lastMessageTime,
+                )
+            )
+        )
         val eventId = latest?.takeUnless { it.localEcho }?.id ?: room.lastReadEventId ?: return
         val payload = buildJsonObject { put("roomId", roomId); put("eventId", eventId) }
         outbox.enqueue(TYPE_MARK_READ, payload.toString(), entityId = roomId)
@@ -138,6 +148,62 @@ class ChatRepository(
         }
         outbox.enqueue(TYPE_SNOOZE, payload.toString(), entityId = roomId)
     }
+
+    /** Pin/unpin: m.favourite room tag via hub REST (chat-rooms has no pin
+     *  RPC). Optimistic local flip; sync's account_data confirms. */
+    suspend fun setPinned(roomId: String, pinned: Boolean) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(isPinned = pinned)))
+        val payload = buildJsonObject { put("roomId", roomId); put("pinned", pinned) }
+        outbox.enqueue(TYPE_PIN, payload.toString(), entityId = roomId)
+    }
+
+    /** Mute/unmute: room-kind push rule via hub REST. Optimistic flip. */
+    suspend fun setMuted(roomId: String, muted: Boolean) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(isMuted = muted)))
+        val payload = buildJsonObject { put("roomId", roomId); put("muted", muted) }
+        outbox.enqueue(TYPE_MUTE, payload.toString(), entityId = roomId)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Room members (mention autocomplete) — in-memory per-room cache
+
+    data class RoomMember(val userId: String, val displayName: String)
+
+    private val membersCache = mutableMapOf<String, List<RoomMember>>()
+    private var cachedMyUserId: String? = null
+
+    /** Own MXID from GET /matrix/hub/status (cached). Real (non-echo) rows
+     *  carry the full MXID as sender — needed for isMine/divider checks. */
+    suspend fun myUserId(): String? {
+        cachedMyUserId?.let { return it }
+        return runCatching {
+            json.parseToJsonElement(hub.get("/matrix/hub/status"))
+                .jsonObject["userId"]?.jsonPrimitive?.content
+        }.getOrNull()?.also { cachedMyUserId = it }
+    }
+
+    /** GET /matrix/rooms/:id/info members, cached in memory per room. */
+    suspend fun roomMembers(roomId: String): List<RoomMember> {
+        membersCache[roomId]?.let { return it }
+        val members = runCatching {
+            val resp = hub.get("/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/info")
+            (json.parseToJsonElement(resp).jsonObject["members"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { el ->
+                    val m = el as? JsonObject ?: return@mapNotNull null
+                    val userId = m["userId"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val name = m["displayName"]?.jsonPrimitive?.content ?: userId
+                    RoomMember(userId, name)
+                } ?: emptyList()
+        }.getOrElse { emptyList() }
+        if (members.isNotEmpty()) membersCache[roomId] = members
+        return members
+    }
+
+    /** Local plaintext file for a media message (decrypts E2EE attachments). */
+    suspend fun mediaFile(context: android.content.Context, msg: ChatMessageRow): java.io.File =
+        E2eeMedia.mediaFile(context, hub, msg)
 
     /**
      * Send an attachment (image/file/video/audio — hub picks msgtype by MIME).
@@ -318,6 +384,34 @@ class ChatRepository(
         outbox.register(TYPE_MARK_READ, rpcHandler("markRead"))
         outbox.register(TYPE_MARK_UNREAD, rpcHandler("markUnread"))
         outbox.register(TYPE_SNOOZE, rpcHandler("snooze"))
+        outbox.register(TYPE_PIN) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = java.net.URLEncoder.encode(p["roomId"]!!.jsonPrimitive.content, "UTF-8")
+            val pinned = p["pinned"]?.jsonPrimitive?.booleanOrNull == true
+            try {
+                if (pinned) hub.put("/matrix/rooms/$roomId/tags/m.favourite", "{}")
+                else hub.delete("/matrix/rooms/$roomId/tags/m.favourite")
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+        outbox.register(TYPE_MUTE) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = java.net.URLEncoder.encode(p["roomId"]!!.jsonPrimitive.content, "UTF-8")
+            val muted = p["muted"]?.jsonPrimitive?.booleanOrNull == true
+            try {
+                if (muted) hub.put("/matrix/rooms/$roomId/mute", "{}")
+                else hub.delete("/matrix/rooms/$roomId/mute")
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
     }
 
     // ---------------------------------------------------------------- //
