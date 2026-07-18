@@ -259,6 +259,12 @@ class AgentsRepository(
                 appendMessage(sessionId, msg)
                 setActivity(sessionId) { it.copy(running = false, currentTool = null, statusText = null) }
             }
+            "context_update" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                val total = msg["totalTokens"]?.jsonPrimitive?.longOrNull ?: return
+                val max = msg["maxTokens"]?.jsonPrimitive?.longOrNull ?: return
+                _contextUsage.value = _contextUsage.value + (sessionId to ContextUsage(total, max))
+            }
             "session_read_state" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 val lastRead = msg["lastReadIndex"]?.jsonPrimitive?.longOrNull ?: return
@@ -431,6 +437,65 @@ class AgentsRepository(
             put("requestId", requestId)
             put("modifiedInput", inputEl)
         })
+    }
+
+    /** Per-session context usage (from context_update): used/max tokens. */
+    data class ContextUsage(val totalTokens: Long, val maxTokens: Long)
+    private val _contextUsage = MutableStateFlow<Map<String, ContextUsage>>(emptyMap())
+    val contextUsage: StateFlow<Map<String, ContextUsage>> = _contextUsage
+
+    /** Create a fresh session (prompt + cwd). */
+    fun createSession(prompt: String, cwd: String, name: String? = null) {
+        sendWs(buildJsonObject {
+            put("type", "create_session")
+            put("prompt", prompt)
+            put("cwd", cwd)
+            name?.let { put("name", it) }
+        })
+    }
+
+    fun killSession(sessionId: String) {
+        sendWs(buildJsonObject { put("type", "kill_session"); put("sessionId", sessionId) })
+    }
+
+    fun renameSession(sessionId: String, name: String) {
+        sendWs(buildJsonObject {
+            put("type", "rename_session")
+            put("sessionId", sessionId)
+            put("name", name)
+        })
+        scope.launch {
+            db.agents().byId(sessionId)?.let { db.agents().upsertSessions(listOf(it.copy(name = name))) }
+        }
+    }
+
+    fun markUnread(sessionId: String) {
+        sendWs(buildJsonObject { put("type", "mark_session_unread"); put("sessionId", sessionId) })
+        scope.launch {
+            db.agents().byId(sessionId)?.let { db.agents().upsertSessions(listOf(it.copy(hasUnread = true))) }
+        }
+    }
+
+    /** Page older transcript history via the REST window (backward). */
+    suspend fun loadOlder(sessionId: String, limit: Int = 100): Int {
+        val oldest = db.agents().minIndex(sessionId) ?: return 0
+        if (oldest <= 0) return 0
+        val from = maxOf(0, oldest - limit)
+        val resp = runCatching {
+            hub.get("/agents/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/messages?since=$from&limit=${(oldest - from).toInt()}")
+        }.getOrNull() ?: return 0
+        val obj = json.parseToJsonElement(resp).jsonObject
+        val messages = (obj["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return 0
+        val fromIndex = obj["fromIndex"]?.jsonPrimitive?.longOrNull ?: from
+        val rows = messages.mapIndexed { i, m ->
+            AgentMessageRow(
+                sessionId = sessionId, absIndex = fromIndex + i,
+                kind = m["type"]?.jsonPrimitive?.content ?: "unknown",
+                payloadJson = m.toString(),
+            )
+        }.filter { it.absIndex < oldest }
+        if (rows.isNotEmpty()) db.agents().insertMessages(rows)
+        return rows.size
     }
 
     /** Client-side "always allow <tool>" set (session-scoped, like the SPA). */

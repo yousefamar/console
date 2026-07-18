@@ -155,6 +155,9 @@ interface AgentsDao {
     @Query("SELECT MAX(absIndex) FROM agent_messages WHERE sessionId = :sessionId")
     suspend fun maxIndex(sessionId: String): Long?
 
+    @Query("SELECT MIN(absIndex) FROM agent_messages WHERE sessionId = :sessionId")
+    suspend fun minIndex(sessionId: String): Long?
+
     @Query(
         """DELETE FROM agent_messages WHERE sessionId = :sessionId AND absIndex NOT IN (
              SELECT absIndex FROM agent_messages WHERE sessionId = :sessionId ORDER BY absIndex DESC LIMIT :keep

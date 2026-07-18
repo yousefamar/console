@@ -17,7 +17,7 @@ android {
         // Keep the patch segment synced to versionCode so the user-visible
         // string directly reveals the integer version. If you bump one,
         // bump the other.
-        val vCode = 54
+        val vCode = 55
         versionCode = vCode
         versionName = "0.2.$vCode"
     }
