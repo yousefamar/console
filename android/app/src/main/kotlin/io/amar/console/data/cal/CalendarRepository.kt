@@ -127,6 +127,27 @@ class CalendarRepository(
 
     suspend fun rsvp(compoundKey: String, status: String) {
         val row = db.calendar().byKey(compoundKey) ?: return
+        // Optimistic: flip our own attendee's responseStatus in rawJson so the
+        // detail sheet reflects the choice before the queue flushes.
+        runCatching {
+            val e = json.parseToJsonElement(row.rawJson).jsonObject
+            val attendees = (e["attendees"] as? JsonArray)?.map { a ->
+                val o = a as? JsonObject ?: return@map a
+                if ((o["self"] as? kotlinx.serialization.json.JsonPrimitive)?.content == "true") {
+                    buildJsonObject {
+                        o.forEach { (k, v) -> if (k != "responseStatus") put(k, v) }
+                        put("responseStatus", status)
+                    }
+                } else o
+            }
+            if (attendees != null) {
+                val updated = buildJsonObject {
+                    e.forEach { (k, v) -> if (k != "attendees") put(k, v) }
+                    put("attendees", kotlinx.serialization.json.JsonArray(attendees))
+                }
+                db.calendar().upsertEvents(listOf(row.copy(rawJson = updated.toString())))
+            }
+        }
         val payload = buildJsonObject {
             put("account", row.accountEmail)
             put("calendarId", row.calendarId)
@@ -134,6 +155,27 @@ class CalendarRepository(
             put("status", status)
         }
         outbox.enqueue(TYPE_RSVP, payload.toString(), entityId = compoundKey)
+    }
+
+    /**
+     * Undo a just-issued delete (5s snackbar window): restore the row and drop
+     * the queued server call. A ~temp row's delete cancelled its CREATE, so
+     * undo re-enqueues the create from the row's rawJson (which IS the event
+     * body for queued creates).
+     */
+    suspend fun undoDelete(row: CalEventRow) {
+        db.calendar().upsertEvents(listOf(row))
+        if (row.eventId.startsWith("~")) {
+            val payload = buildJsonObject {
+                put("tempKey", row.compoundKey)
+                put("account", row.accountEmail)
+                put("calendarId", row.calendarId)
+                put("event", json.parseToJsonElement(row.rawJson).jsonObject)
+            }
+            outbox.enqueue(TYPE_CREATE, payload.toString(), entityId = row.compoundKey, dedupeToken = outbox.mintToken())
+        } else {
+            outbox.cancel(row.compoundKey, TYPE_DELETE)
+        }
     }
 
     private fun buildEventJson(summary: String, startMs: Long, endMs: Long, isAllDay: Boolean, location: String?): JsonObject =

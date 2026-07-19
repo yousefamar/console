@@ -116,6 +116,70 @@ class NotesRepositoryTest {
     }
 
     @Test
+    fun `create writes a dirty cache row and queues a save`() = runTest {
+        repo.create("scratch/new-idea.md", "# hi")
+        val row = db.notes().byPath("scratch/new-idea.md")!!
+        assertEquals("# hi", row.cachedContent)
+        assertTrue(row.dirty)
+        assertEquals("scratch", row.dir)
+        val q = db.outbox().pending()
+        assertEquals(1, q.size)
+        assertEquals(NotesRepository.TYPE_SAVE, q[0].type)
+        assertFalse(q[0].payloadJson.contains("baseMtime")) // new file, no precondition
+    }
+
+    @Test
+    fun `rename moves the row locally and queues the server rename`() = runTest {
+        db.notes().upsertAll(listOf(row("scratch/old.md", content = "body", contentMtime = 5)))
+        repo.rename("scratch/old.md", "scratch/new.md")
+        assertEquals(null, db.notes().byPath("scratch/old.md"))
+        val moved = db.notes().byPath("scratch/new.md")!!
+        assertEquals("body", moved.cachedContent)
+        assertEquals("new.md", moved.name)
+        val q = db.outbox().pending()
+        assertEquals(NotesRepository.TYPE_RENAME, q[0].type)
+        assertTrue(q[0].payloadJson.contains("\"to\":\"scratch/new.md\""))
+    }
+
+    @Test
+    fun `delete removes the row, drops queued saves, queues the server delete`() = runTest {
+        db.notes().upsertAll(listOf(row("scratch/bye.md", content = "x", contentMtime = 5)))
+        repo.save("scratch/bye.md", "x2")
+        repo.delete("scratch/bye.md")
+        assertEquals(null, db.notes().byPath("scratch/bye.md"))
+        val q = db.outbox().pending()
+        assertEquals(1, q.size) // the queued save was cancelled
+        assertEquals(NotesRepository.TYPE_DELETE, q[0].type)
+    }
+
+    @Test
+    fun `full-text search hits cached bodies only, newest first`() = runTest {
+        db.notes().upsertAll(
+            listOf(
+                row("a.md", mtime = 100, content = "the quick brown fox", contentMtime = 1),
+                row("b.md", mtime = 200, content = "lazy dog and Quick wit", contentMtime = 1),
+                row("c.md", mtime = 300, content = null), // not cached — never matches
+            )
+        )
+        val hits = repo.searchContent("quick")
+        assertEquals(listOf("b.md", "a.md"), hits.map { it.path })
+        assertTrue(repo.searchContent("  ").isEmpty())
+    }
+
+    @Test
+    fun `conflict rows are observable per path and cleared by keep-mine`() = runTest {
+        db.notes().upsertAll(listOf(row("scratch/k.md", content = "x", contentMtime = 5)))
+        outbox.register(NotesRepository.TYPE_SAVE) { _, _ -> Outbox.Result.Conflict("nope") }
+        repo.save("scratch/k.md", "clash")
+        outbox.drain()
+        assertEquals("conflict", db.outbox().byId(1L)!!.status)
+        repo.resolveKeepMine("scratch/k.md", "clash")
+        // Parked conflict row cleared; only the fresh forced save remains.
+        assertEquals(null, db.outbox().byId(1L))
+        assertEquals(1, db.outbox().pending().size)
+    }
+
+    @Test
     fun `dirty local edit survives a server mtime advance (no clobber)`() = runTest {
         db.notes().upsertAll(listOf(row("log/g.md", mtime = 100, content = "my edit", contentMtime = 100, dirty = true)))
         val existing = db.notes().byPath("log/g.md")!!

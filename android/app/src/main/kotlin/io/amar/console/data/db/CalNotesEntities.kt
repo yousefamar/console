@@ -117,4 +117,15 @@ interface NotesDao {
     /** Listing metadata upsert that PRESERVES cached content columns. */
     @Query("UPDATE notes_files SET mtime = :mtime, size = :size WHERE path = :path")
     suspend fun updateMeta(path: String, mtime: Long, size: Long)
+
+    /** Full-text search over cached bodies (offline notes only, newest first). */
+    @Query(
+        """SELECT * FROM notes_files
+           WHERE cachedContent IS NOT NULL AND cachedContent LIKE '%' || :query || '%'
+           ORDER BY mtime DESC LIMIT :limit"""
+    )
+    suspend fun searchContent(query: String, limit: Int): List<NoteFileRow>
+
+    @Query("DELETE FROM notes_files WHERE path = :path")
+    suspend fun deleteByPath(path: String)
 }
