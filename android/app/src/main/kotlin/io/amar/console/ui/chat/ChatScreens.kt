@@ -97,7 +97,7 @@ private fun networkEmoji(networkIcon: String?): String? = when (networkIcon) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit) {
+fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGrid: () -> Unit = {}) {
     val rooms by repo.observeRooms().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     val now = System.currentTimeMillis()
@@ -130,6 +130,7 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit) {
     Column(Modifier.fillMaxSize()) {
         PaneTopBar(
             title = "Chat",
+            onGrid = onGrid,
             subtitle = if (visible.isEmpty()) "${rooms.size} rooms cached" else "${visible.size} unread",
             actions = {
                 androidx.compose.material3.IconButton(onClick = { searching = !searching; searchQuery = "" }) {

@@ -88,7 +88,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookmarksScreen(repo: BookmarksRepository) {
+fun BookmarksScreen(repo: BookmarksRepository, onGrid: () -> Unit = {}) {
     val bookmarks by repo.observeAll().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
 
@@ -319,7 +319,7 @@ private fun BookmarkDetailSheet(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun HomeScreen(repo: HomeRepository, onOpenAgentSession: (String) -> Unit = {}) {
+fun HomeScreen(repo: HomeRepository, onOpenAgentSession: (String) -> Unit = {}, onGrid: () -> Unit = {}) {
     val snapshot by repo.snapshot.collectAsState()
 
     // Auto-refresh every 30s while the pane is visible (LaunchedEffect dies
@@ -522,7 +522,7 @@ private fun AlertsCard(alerts: List<DashboardAlert>, onOpenAgentSession: (String
 // Music — Spotify remote (online-only)
 
 @Composable
-fun MusicScreen(repo: MusicRepository) {
+fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
     val state by repo.state.collectAsState()
     val scope = rememberCoroutineScope()
     var volume by remember { mutableStateOf<Float?>(null) }

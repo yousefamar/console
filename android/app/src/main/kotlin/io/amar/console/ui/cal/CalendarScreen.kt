@@ -94,7 +94,7 @@ private const val PREF_HIDDEN = "hiddenCalendars"  // Set<accountEmail:calendarI
 private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
 @Composable
-fun CalendarScreen(repo: CalendarRepository) {
+fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val calendars by repo.observeCalendars().collectAsState(initial = emptyList())

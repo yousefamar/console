@@ -49,7 +49,7 @@ import org.json.JSONObject
  * are hub-side (GET/POST /glasses/config, /pen/stream) so they match desktop.
  */
 @Composable
-fun HardwareSettingsScreen(app: ConsoleApp) {
+fun HardwareSettingsScreen(app: ConsoleApp, onBack: () -> Unit = {}) {
     // Native state ticks — re-serialize the singletons on every change.
     var glassesTick by remember { mutableStateOf(0) }
     var penTick by remember { mutableStateOf(0) }
@@ -86,6 +86,12 @@ fun HardwareSettingsScreen(app: ConsoleApp) {
     var pinInput by remember { mutableStateOf("") }
     var angle by remember { mutableStateOf<Float?>(null) }
 
+    Column(Modifier.fillMaxSize()) {
+    io.amar.console.ui.components.PaneTopBar(
+        title = "Hardware",
+        subtitle = "Glasses · Pen · PTT",
+        onBack = onBack,
+    )
     Column(
         Modifier
             .fillMaxSize()
@@ -286,6 +292,7 @@ fun HardwareSettingsScreen(app: ConsoleApp) {
             },
             dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } },
         )
+    }
     }
 }
 

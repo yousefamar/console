@@ -35,13 +35,15 @@ import kotlinx.coroutines.launch
  * Glasses/pen settings screens land in M6.
  */
 @Composable
-fun SettingsScreen(app: ConsoleApp) {
+fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var hubUrl by remember { mutableStateOf(HubConfig.hubBase) }
     var token by remember { mutableStateOf("") }
     var hasToken by remember { mutableStateOf(HubTokenStore.get() != null) }
     var status by remember { mutableStateOf("") }
 
+    Column(Modifier.fillMaxSize()) {
+    io.amar.console.ui.components.PaneTopBar(title = "Settings", onGrid = onGrid)
     Column(
         Modifier
             .fillMaxSize()
@@ -49,6 +51,12 @@ fun SettingsScreen(app: ConsoleApp) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        OutlinedButton(onClick = onHardware, modifier = Modifier.fillMaxWidth()) {
+            Text("Glasses · Pen · PTT →")
+        }
+
+        HorizontalDivider()
+
         Text("Hub pairing", style = MaterialTheme.typography.titleMedium)
         Text(
             if (hasToken) "Paired — bearer token stored." else "Not paired. Mint an apk-scope token from the desktop SPA (Account → Pair this APK) and paste it here.",
@@ -137,5 +145,6 @@ fun SettingsScreen(app: ConsoleApp) {
             onClick = { scope.launch { Updater.check(); status = "Checked for updates." } },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Check for updates") }
+    }
     }
 }

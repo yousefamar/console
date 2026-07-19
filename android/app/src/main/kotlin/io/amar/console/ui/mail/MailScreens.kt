@@ -71,7 +71,7 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
+fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid: () -> Unit = {}) {
     val threads by repo.observeInbox().collectAsState(initial = emptyList())
     val snoozed by repo.observeSnoozed().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -90,6 +90,7 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit) {
         Column(Modifier.fillMaxSize()) {
             PaneTopBar(
                 title = "Mail",
+                onGrid = onGrid,
                 subtitle = if (threads.isEmpty()) null else "${threads.size} in inbox · ${threads.count { it.isUnread }} unread",
                 actions = {
                     if (snoozed.isNotEmpty()) {

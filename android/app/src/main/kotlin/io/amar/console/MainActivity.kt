@@ -19,6 +19,7 @@ import io.amar.console.core.Updater
 import io.amar.console.glasses.GlassesService
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.shell.AppShell
+import io.amar.console.ui.shell.openApp
 import io.amar.console.ui.theme.ConsoleTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,16 +113,18 @@ class MainActivity : ComponentActivity() {
                 val paneName = data.path?.trim('/') ?: return
                 val pane = Pane.fromPushPane(paneName)
                 val itemId = data.getQueryParameter("roomId") ?: data.getQueryParameter("itemId")
-                val route = when {
+                val detail = when {
                     !itemId.isNullOrEmpty() && pane == Pane.Chat -> "chat/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Mail -> "mail/${Uri.encode(itemId)}"
-                    else -> pane.route
+                    !itemId.isNullOrEmpty() && pane == Pane.Agents -> "agents/${Uri.encode(itemId)}"
+                    else -> null
                 }
-                try {
-                    nav.navigate(route) { launchSingleTop = true }
-                } catch (_: IllegalArgumentException) {
-                    // Detail route not registered yet (pre-milestone) — pane root.
-                    nav.navigate(pane.route) { launchSingleTop = true }
+                // Hierarchy contract: build the REAL stack (grid → root →
+                // detail) so back from a notification-opened detail walks
+                // root → grid, never exits the app sideways.
+                nav.openApp(pane)
+                if (detail != null) {
+                    runCatching { nav.navigate(detail) { launchSingleTop = true } }
                 }
             }
             "pair" -> {
@@ -133,7 +136,7 @@ class MainActivity : ComponentActivity() {
                     HubTokenStore.set(token)
                     PushService.kick(this)
                 }
-                nav.navigate("settings") { launchSingleTop = true }
+                nav.openApp(Pane.Settings)
             }
         }
     }
