@@ -33,6 +33,8 @@ class SyncEngine(
     private val domains = mutableListOf<Pair<String, DomainReconciler>>()
 
     private val reconciler = Reconciler(scope) {
+        // Hub-synced prefs first (cheap; DND gates notifications).
+        runCatching { io.amar.console.core.HubPrefs.refresh(hub) }
         for ((_, domain) in domains) {
             runCatching { domain.reconcile() }
         }
