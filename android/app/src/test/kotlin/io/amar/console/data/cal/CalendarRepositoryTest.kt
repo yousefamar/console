@@ -110,6 +110,81 @@ class CalendarRepositoryTest {
     }
 
     @Test
+    fun `undoDelete of a real event restores the row and cancels the queued delete`() = runTest {
+        val row = repo.eventRowFromGoogle(
+            Json.parseToJsonElement(
+                """{"id":"evt2","summary":"Lunch","status":"confirmed",
+                    "start":{"dateTime":"2026-07-21T12:00:00+01:00"},
+                    "end":{"dateTime":"2026-07-21T13:00:00+01:00"}}"""
+            ).jsonObject, "me@x.com", "me@x.com",
+        )!!
+        db.calendar().upsertEvents(listOf(row))
+        repo.deleteEvent(row.compoundKey)
+        assertNull(db.calendar().byKey(row.compoundKey))
+        assertEquals(1, db.outbox().pending().size)
+        repo.undoDelete(row)
+        assertNotNull(db.calendar().byKey(row.compoundKey))
+        assertEquals(0, db.outbox().pending().size)
+    }
+
+    @Test
+    fun `undoDelete of a queued temp event re-enqueues its create`() = runTest {
+        repo.createEvent("me@x.com", "me@x.com", "Temp", 1000L, 2000L)
+        val tempKey = db.calendar().keysInRange(0, 10_000).first()
+        val row = db.calendar().byKey(tempKey)!!
+        repo.deleteEvent(tempKey) // cancels the pending create
+        assertEquals(0, db.outbox().pending().size)
+        repo.undoDelete(row)
+        assertNotNull(db.calendar().byKey(tempKey))
+        val q = db.outbox().pending()
+        assertEquals(1, q.size)
+        assertEquals(CalendarRepository.TYPE_CREATE, q[0].type)
+    }
+
+    @Test
+    fun `rsvp flips own attendee status optimistically and queues the call`() = runTest {
+        val row = repo.eventRowFromGoogle(
+            Json.parseToJsonElement(
+                """{"id":"evt3","summary":"Party","status":"confirmed",
+                    "start":{"dateTime":"2026-07-22T18:00:00+01:00"},
+                    "end":{"dateTime":"2026-07-22T20:00:00+01:00"},
+                    "attendees":[
+                      {"email":"host@x.com","responseStatus":"accepted","organizer":true},
+                      {"email":"me@x.com","responseStatus":"needsAction","self":true}
+                    ]}"""
+            ).jsonObject, "me@x.com", "me@x.com",
+        )!!
+        db.calendar().upsertEvents(listOf(row))
+        repo.rsvp(row.compoundKey, "accepted")
+        val updated = db.calendar().byKey(row.compoundKey)!!
+        val details = parseEventDetails(updated.rawJson)
+        assertEquals("accepted", details.selfAttendee?.responseStatus)
+        assertEquals("accepted", details.attendees.first { it.organizer }.responseStatus) // untouched
+        assertEquals(CalendarRepository.TYPE_RSVP, db.outbox().pending().first().type)
+    }
+
+    @Test
+    fun `day-grid lane assignment splits overlapping events`() {
+        fun evt(id: String, start: Long, end: Long) = io.amar.console.data.db.CalEventRow(
+            compoundKey = id, accountEmail = "a", calendarId = "c", eventId = id,
+            summary = id, location = null, startTime = start, endTime = end,
+            isAllDay = false, status = "confirmed", rawJson = "{}",
+        )
+        val lanes = io.amar.console.ui.cal.assignLanes(
+            listOf(
+                evt("a", 0, 100),      // lane 0
+                evt("b", 50, 150),     // overlaps a → lane 1
+                evt("c", 100, 200),    // a ended → lane 0
+                evt("d", 120, 130),    // overlaps b+c → lane 1? b ends 150 → no; lane 2
+            )
+        )
+        assertEquals(0, lanes["a"])
+        assertEquals(1, lanes["b"])
+        assertEquals(0, lanes["c"])
+        assertEquals(2, lanes["d"])
+    }
+
+    @Test
     fun `prune drops events outside the window`() = runTest {
         val now = System.currentTimeMillis()
         val old = repo.eventRowFromGoogle(

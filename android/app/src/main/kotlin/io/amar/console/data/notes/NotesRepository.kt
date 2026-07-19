@@ -41,10 +41,20 @@ class NotesRepository(
     companion object {
         const val CURSOR_KEY = "notes:lastSync"
         const val TYPE_SAVE = "noteSave"
+        const val TYPE_RENAME = "noteRename"
+        const val TYPE_DELETE = "noteDelete"
     }
 
     fun observeFiles(): Flow<List<NoteFileRow>> = db.notes().observeAll()
     fun observeFile(path: String): Flow<NoteFileRow?> = db.notes().observeFile(path)
+
+    /** Parked conflict rows for the editor's banner. */
+    fun observeConflict(path: String): Flow<List<io.amar.console.data.db.OutboxRow>> =
+        db.outbox().observeByEntityStatus(TYPE_SAVE, path, "conflict")
+
+    /** Full-text search over offline-cached bodies. */
+    suspend fun searchContent(query: String): List<NoteFileRow> =
+        if (query.isBlank()) emptyList() else db.notes().searchContent(query.trim(), 50)
 
     /** Body for the editor: cached copy or fetch-and-cache. */
     suspend fun openFile(path: String): String? {
@@ -76,6 +86,7 @@ class NotesRepository(
 
     /** Conflict resolution: keep mine = force save without precondition. */
     suspend fun resolveKeepMine(path: String, content: String) {
+        db.outbox().removeByEntityAllStatuses(path, TYPE_SAVE) // incl. the parked conflict row
         db.notes().setContent(path, content, null, dirty = true)
         val payload = buildJsonObject {
             put("path", path)
@@ -87,8 +98,63 @@ class NotesRepository(
 
     /** Conflict resolution: take server copy. */
     suspend fun resolveTakeServer(path: String) {
-        outbox.cancel(path, TYPE_SAVE)
+        db.outbox().removeByEntityAllStatuses(path, TYPE_SAVE) // incl. the parked conflict row
+        db.notes().setContent(path, null, null, dirty = false)
         fetchBody(path)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Create / rename / delete
+
+    /** New note: optimistic cache row + queued save (server creates on PUT). */
+    suspend fun create(path: String, content: String = "") {
+        val now = System.currentTimeMillis()
+        db.notes().upsertAll(
+            listOf(
+                NoteFileRow(
+                    path = path, name = path.substringAfterLast('/'),
+                    dir = path.substringBeforeLast('/', ""), mtime = now, size = content.length.toLong(),
+                    cachedContent = content, contentMtime = null, dirty = true,
+                )
+            )
+        )
+        val payload = buildJsonObject {
+            put("path", path)
+            put("content", content)
+            // No baseMtime — new file, nothing to conflict with.
+        }
+        outbox.enqueue(TYPE_SAVE, payload.toString(), entityId = path)
+    }
+
+    /** Rename: optimistic row move + queued POST /notes/rename. */
+    suspend fun rename(from: String, to: String) {
+        val row = db.notes().byPath(from) ?: return
+        db.withTransaction {
+            db.notes().deleteByPath(from)
+            db.notes().upsertAll(
+                listOf(
+                    row.copy(
+                        path = to, name = to.substringAfterLast('/'),
+                        dir = to.substringBeforeLast('/', ""),
+                    )
+                )
+            )
+        }
+        val payload = buildJsonObject {
+            put("from", from)
+            put("to", to)
+        }
+        outbox.enqueue(TYPE_RENAME, payload.toString(), entityId = from)
+    }
+
+    /** Delete: optimistic row removal + queued DELETE /notes/file/<path>. */
+    suspend fun delete(path: String) {
+        db.notes().deleteByPath(path)
+        // A never-flushed local create just cancels; deleting server-side too is
+        // harmless (404 = done) so always queue.
+        db.outbox().removeByEntityAllStatuses(path, TYPE_SAVE)
+        val payload = buildJsonObject { put("path", path) }
+        outbox.enqueue(TYPE_DELETE, payload.toString(), entityId = path)
     }
 
     fun registerOutboxHandlers() {
@@ -116,6 +182,35 @@ class NotesRepository(
                 } else {
                     Outbox.Result.Retry("HTTP ${e.code}")
                 }
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+
+        outbox.register(TYPE_RENAME) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            try {
+                hub.post("/notes/rename", buildJsonObject {
+                    put("from", p["from"]!!.jsonPrimitive.content)
+                    put("to", p["to"]!!.jsonPrimitive.content)
+                }.toString())
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+
+        outbox.register(TYPE_DELETE) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            try {
+                hub.delete("/notes/file/${encPath(p["path"]!!.jsonPrimitive.content)}")
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code == 404 || e.code == 410) Outbox.Result.Done // already gone
+                else if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
+                else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
                 Outbox.Result.Retry(e.message ?: "network")
             }

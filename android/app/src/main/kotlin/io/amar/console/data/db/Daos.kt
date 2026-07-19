@@ -40,6 +40,14 @@ interface OutboxDao {
 
     @Query("SELECT * FROM outbox WHERE id = :id")
     suspend fun byId(id: Long): OutboxRow?
+
+    /** Conflict banner: watch a path's parked noteSave row (etc.) live. */
+    @Query("SELECT * FROM outbox WHERE type = :type AND entityId = :entityId AND status = :status")
+    fun observeByEntityStatus(type: String, entityId: String, status: String): Flow<List<OutboxRow>>
+
+    /** Conflict resolution: clear an entity's rows in ANY non-terminal state. */
+    @Query("DELETE FROM outbox WHERE entityId = :entityId AND type = :type")
+    suspend fun removeByEntityAllStatuses(entityId: String, type: String)
 }
 
 @Dao
