@@ -44,10 +44,11 @@ class AppGraph(context: Context) {
     val notes = NotesRepository(db, hub, syncBus, outbox)
     val feeds = FeedsRepository(db, hub, outbox)
     val agents = AgentsRepository(appScope, db, hub, outbox)
-    val bookmarks = BookmarksRepository(db, hub)
+    val bookmarks = BookmarksRepository(db, hub, outbox)
     val map = MapRepository(db, hub)
     val music = MusicRepository(hub)
     val home = HomeRepository(hub)
+    val hardware = io.amar.console.data.longtail.HardwareRepository(hub)
     val mirror = GlassesMirror(context, appScope, db)
 
     init {
@@ -78,6 +79,7 @@ class AppGraph(context: Context) {
             }
         }
 
+        bookmarks.registerOutboxHandlers()
         syncEngine.addDomain("bookmarks") { bookmarks.reconcile() }
         syncEngine.addDomain("map") { map.reconcile() }
     }

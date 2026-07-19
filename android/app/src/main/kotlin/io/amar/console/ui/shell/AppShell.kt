@@ -228,7 +228,11 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks) }
                 composable(Pane.Map.route) { MapScreen(app.graph.map) }
-                composable(Pane.Home.route) { HomeScreen(app.graph.home) }
+                composable(Pane.Home.route) {
+                    HomeScreen(app.graph.home, onOpenAgentSession = { sessionId ->
+                        navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
+                    })
+                }
                 composable("music") { MusicScreen(app.graph.music) }
                 composable("settings") { SettingsScreen(app) }
                 composable("settings/hardware") { HardwareSettingsScreen(app) }
