@@ -18,6 +18,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +78,9 @@ fun PaneTopBar(
     title: String,
     subtitle: String? = null,
     onBack: (() -> Unit)? = null,
+    /** L1 app roots pass this: renders the grid glyph → launcher. Detail
+     *  screens pass onBack instead — never both (hierarchy contract). */
+    onGrid: (() -> Unit)? = null,
     actions: @Composable () -> Unit = {},
 ) {
     TopAppBar(
@@ -95,9 +99,12 @@ fun PaneTopBar(
             }
         },
         navigationIcon = {
-            if (onBack != null) {
-                IconButton(onClick = onBack) {
+            when {
+                onBack != null -> IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+                onGrid != null -> IconButton(onClick = onGrid) {
+                    Icon(Icons.Filled.Apps, contentDescription = "App grid")
                 }
             }
         },

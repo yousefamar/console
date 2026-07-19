@@ -22,7 +22,7 @@ import org.maplibre.android.annotations.MarkerOptions
  * system (agent layers, OwnTracks history) stays desktop.
  */
 @Composable
-fun MapScreen(repo: MapRepository) {
+fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     val context = LocalContext.current
     remember { MapLibre.getInstance(context) }
 

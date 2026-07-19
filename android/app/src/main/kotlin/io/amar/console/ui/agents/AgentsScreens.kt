@@ -57,7 +57,7 @@ import kotlinx.serialization.json.jsonPrimitive
 private val jsonLenient = Json { ignoreUnknownKeys = true }
 
 @Composable
-fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Unit) {
+fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Unit, onGrid: () -> Unit = {}) {
     val sessions by repo.observeSessions().collectAsState(initial = emptyList())
     val approvals by repo.approvals.collectAsState()
 
@@ -76,6 +76,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
             title = "Agents",
+            onGrid = onGrid,
             subtitle = if (connected) "${sorted.size} sessions · live" else "${sorted.size} cached · offline",
         )
         if (approvals.isNotEmpty()) {

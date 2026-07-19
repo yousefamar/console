@@ -80,7 +80,7 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit) {
+fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGrid: () -> Unit = {}) {
     val files by repo.observeFiles().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var currentDir by remember { mutableStateOf("") }

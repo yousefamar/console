@@ -70,7 +70,7 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit) {
+fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () -> Unit = {}) {
     val items by repo.observeItems().collectAsState(initial = emptyList())
     val feeds by repo.observeFeeds().collectAsState(initial = emptyList())
     val readIds by repo.observeReadIds().collectAsState(initial = emptyList())

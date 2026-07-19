@@ -6,27 +6,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudOff
-import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import io.amar.console.ConsoleApp
-import io.amar.console.R
 import io.amar.console.core.AppLifecycle
 import io.amar.console.ui.agents.AgentSessionListScreen
 import io.amar.console.ui.agents.AgentSessionScreen
@@ -41,17 +31,23 @@ import io.amar.console.ui.longtail.MapScreen
 import io.amar.console.ui.longtail.MusicScreen
 import io.amar.console.ui.mail.MailInboxScreen
 import io.amar.console.ui.mail.MailThreadScreen
+import io.amar.console.ui.nav.GRID_ROUTE
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.notes.NoteEditorScreen
 import io.amar.console.ui.notes.NotesBrowserScreen
 import io.amar.console.ui.settings.HardwareSettingsScreen
-import io.amar.console.ui.panes.PlaceholderPane
 import io.amar.console.ui.settings.SettingsScreen
 
 /**
- * The app shell: NavHost + bottom pane bar + offline banner + outbox chip.
- * Panes register their real screens per milestone; anything not yet built
- * renders a PlaceholderPane.
+ * The app shell — app-grid navigation architecture (see ui/nav/AppNav.kt for
+ * the full hierarchy contract).
+ *
+ *   grid (L0) → app root (L1) → detail (L2)
+ *
+ * There is NO bottom bar and NO overflow row: the grid is the only switcher.
+ * Every L1 screen shows a grid glyph in its top bar (wired via PaneTopBar's
+ * onGrid); back pops linearly. Banners (offline/queued/update) render above
+ * the NavHost on every surface. Sheets/dialogs stay inside their screens.
  */
 @Composable
 fun AppShell(app: ConsoleApp, navController: NavHostController) {
@@ -60,7 +56,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     val update by io.amar.console.core.Updater.available.collectAsState()
 
     val backStack by navController.currentBackStackEntryAsState()
-    val currentRoute = backStack?.destination?.route ?: Pane.Chat.route
+    val currentRoute = backStack?.destination?.route ?: GRID_ROUTE
     // Feed the RESOLVED route (args substituted) to AppLifecycle so
     // PushService can suppress notifications for the visible room/thread.
     AppLifecycle.currentRoute = when {
@@ -80,7 +76,10 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     // Remote debug nav hooks: `nav <route>` / `back` from the hub /debug RPC.
     androidx.compose.runtime.DisposableEffect(navController) {
         io.amar.console.core.DebugAgent.navigate = { route ->
-            runCatching { navController.navigate(route) { launchSingleTop = true } }.isSuccess
+            runCatching {
+                if (route == GRID_ROUTE) navController.navigateToGrid()
+                else navController.navigate(route) { launchSingleTop = true }
+            }.isSuccess
         }
         io.amar.console.core.DebugAgent.goBack = { navController.popBackStack() }
         onDispose {
@@ -89,41 +88,16 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         }
     }
 
-    var showOverflow by remember { mutableStateOf(false) }
+    // Grid navigation helper shared by every L1 top bar.
+    val toGrid: () -> Unit = { navController.navigateToGrid() }
 
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                for (pane in Pane.primary) {
-                    NavigationBarItem(
-                        selected = currentRoute.startsWith(pane.route),
-                        onClick = {
-                            showOverflow = false
-                            navController.navigate(pane.route) {
-                                popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        icon = { Icon(pane.icon, contentDescription = pane.label) },
-                        label = { Text(pane.label) },
-                    )
-                }
-                NavigationBarItem(
-                    selected = showOverflow || Pane.overflow.any { currentRoute.startsWith(it.route) },
-                    onClick = { showOverflow = !showOverflow },
-                    icon = { Icon(Icons.Outlined.MoreHoriz, contentDescription = stringResource(R.string.more)) },
-                    label = { Text(stringResource(R.string.more)) },
-                )
-            }
-        },
-    ) { padding ->
+    Scaffold { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
                 // Without consuming, each screen's imePadding() re-adds the
-                // bottom-bar height on top of the keyboard inset.
+                // (zero) scaffold inset on top of the keyboard inset.
                 .consumeWindowInsets(padding)
         ) {
             if (!connected) {
@@ -142,40 +116,24 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     onDismiss = { io.amar.console.core.Updater.dismiss() },
                 )
             }
-            if (showOverflow) {
-                OverflowRow(
-                    onSelect = { pane ->
-                        showOverflow = false
-                        navController.navigate(pane.route) {
-                            popUpTo(navController.graph.startDestinationId) { saveState = true }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    },
-                    onSettings = {
-                        showOverflow = false
-                        navController.navigate("settings") { launchSingleTop = true }
-                    },
-                    onMusic = {
-                        showOverflow = false
-                        navController.navigate("music") { launchSingleTop = true }
-                    },
-                    onHardware = {
-                        showOverflow = false
-                        navController.navigate("settings/hardware") { launchSingleTop = true }
-                    },
-                )
-            }
 
             NavHost(
                 navController = navController,
-                startDestination = Pane.Chat.route,
+                startDestination = GRID_ROUTE,
                 modifier = Modifier.fillMaxSize(),
             ) {
+                // L0 — launcher
+                composable(GRID_ROUTE) {
+                    GridScreen(app, onOpen = { pane -> navController.openApp(pane) })
+                }
+
+                // L1 roots + L2 details, one pair per app.
                 composable(Pane.Chat.route) {
-                    ChatRoomListScreen(app.graph.chat, onOpenRoom = { roomId ->
-                        navController.navigate("chat/${android.net.Uri.encode(roomId)}")
-                    })
+                    ChatRoomListScreen(
+                        app.graph.chat,
+                        onOpenRoom = { roomId -> navController.navigate("chat/${android.net.Uri.encode(roomId)}") },
+                        onGrid = toGrid,
+                    )
                 }
                 composable("chat/{roomId}") { entry ->
                     val roomId = android.net.Uri.decode(entry.arguments?.getString("roomId") ?: "")
@@ -186,37 +144,22 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     )
                 }
                 composable(Pane.Mail.route) {
-                    MailInboxScreen(app.graph.mail, onOpenThread = { threadId ->
-                        navController.navigate("mail/${android.net.Uri.encode(threadId)}")
-                    })
+                    MailInboxScreen(
+                        app.graph.mail,
+                        onOpenThread = { threadId -> navController.navigate("mail/${android.net.Uri.encode(threadId)}") },
+                        onGrid = toGrid,
+                    )
                 }
                 composable("mail/{threadId}") { entry ->
                     val threadId = android.net.Uri.decode(entry.arguments?.getString("threadId") ?: "")
                     MailThreadScreen(app.graph.mail, threadId, onBack = { navController.popBackStack() })
                 }
-                composable(Pane.Calendar.route) { CalendarScreen(app.graph.calendar) }
-                composable(Pane.Notes.route) {
-                    NotesBrowserScreen(app.graph.notes, onOpenFile = { path ->
-                        navController.navigate("notes/${android.net.Uri.encode(path)}")
-                    })
-                }
-                composable("notes/{path}") { entry ->
-                    val path = android.net.Uri.decode(entry.arguments?.getString("path") ?: "")
-                    NoteEditorScreen(app.graph.notes, path, onBack = { navController.popBackStack() })
-                }
-                composable(Pane.Feeds.route) {
-                    FeedsScreen(app.graph.feeds, onOpenItem = { itemId ->
-                        navController.navigate("feeds/${android.net.Uri.encode(itemId)}")
-                    })
-                }
-                composable("feeds/{itemId}") { entry ->
-                    val itemId = android.net.Uri.decode(entry.arguments?.getString("itemId") ?: "")
-                    FeedItemScreen(app.graph.feeds, itemId, onBack = { navController.popBackStack() })
-                }
                 composable(Pane.Agents.route) {
-                    AgentSessionListScreen(app.graph.agents, onOpenSession = { sessionId ->
-                        navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
-                    })
+                    AgentSessionListScreen(
+                        app.graph.agents,
+                        onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
+                        onGrid = toGrid,
+                    )
                 }
                 composable("agents/{sessionId}") { entry ->
                     val sessionId = android.net.Uri.decode(entry.arguments?.getString("sessionId") ?: "")
@@ -226,17 +169,71 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         onComposerChange = { app.graph.mirror.setComposerText(it) },
                     )
                 }
-                composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks) }
-                composable(Pane.Map.route) { MapScreen(app.graph.map) }
-                composable(Pane.Home.route) {
-                    HomeScreen(app.graph.home, onOpenAgentSession = { sessionId ->
-                        navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
-                    })
+                composable(Pane.Calendar.route) { CalendarScreen(app.graph.calendar, onGrid = toGrid) }
+                composable(Pane.Notes.route) {
+                    NotesBrowserScreen(
+                        app.graph.notes,
+                        onOpenFile = { path -> navController.navigate("notes/${android.net.Uri.encode(path)}") },
+                        onGrid = toGrid,
+                    )
                 }
-                composable("music") { MusicScreen(app.graph.music) }
-                composable("settings") { SettingsScreen(app) }
-                composable("settings/hardware") { HardwareSettingsScreen(app) }
+                composable("notes/{path}") { entry ->
+                    val path = android.net.Uri.decode(entry.arguments?.getString("path") ?: "")
+                    NoteEditorScreen(app.graph.notes, path, onBack = { navController.popBackStack() })
+                }
+                composable(Pane.Feeds.route) {
+                    FeedsScreen(
+                        app.graph.feeds,
+                        onOpenItem = { itemId -> navController.navigate("feeds/${android.net.Uri.encode(itemId)}") },
+                        onGrid = toGrid,
+                    )
+                }
+                composable("feeds/{itemId}") { entry ->
+                    val itemId = android.net.Uri.decode(entry.arguments?.getString("itemId") ?: "")
+                    FeedItemScreen(app.graph.feeds, itemId, onBack = { navController.popBackStack() })
+                }
+                composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks, onGrid = toGrid) }
+                composable(Pane.Map.route) { MapScreen(app.graph.map, onGrid = toGrid) }
+                composable(Pane.Home.route) {
+                    HomeScreen(
+                        app.graph.home,
+                        onOpenAgentSession = { sessionId ->
+                            // Cross-app tap-through: build the real stack so
+                            // back walks agents-root → grid, not back to Home.
+                            navController.openApp(Pane.Agents)
+                            navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
+                        },
+                        onGrid = toGrid,
+                    )
+                }
+                composable(Pane.Music.route) { MusicScreen(app.graph.music, onGrid = toGrid) }
+                composable(Pane.Settings.route) {
+                    SettingsScreen(
+                        app, onGrid = toGrid,
+                        onHardware = { navController.navigate("settings/hardware") { launchSingleTop = true } },
+                    )
+                }
+                composable("settings/hardware") {
+                    HardwareSettingsScreen(app, onBack = { navController.popBackStack() })
+                }
             }
         }
+    }
+}
+
+/** Open an app root from the grid: single top, per-app state restored. */
+fun NavHostController.openApp(pane: Pane) {
+    navigate(pane.route) {
+        popUpTo(GRID_ROUTE) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
+
+/** Return to the launcher, keeping each app's stack state for restoration. */
+fun NavHostController.navigateToGrid() {
+    navigate(GRID_ROUTE) {
+        popUpTo(GRID_ROUTE) { inclusive = false; saveState = true }
+        launchSingleTop = true
     }
 }
