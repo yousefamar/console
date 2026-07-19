@@ -31,6 +31,9 @@ interface BookmarksDao {
 
     @Query("DELETE FROM bookmarks WHERE file NOT IN (:files)")
     suspend fun deleteAbsent(files: List<String>)
+
+    @Query("DELETE FROM bookmarks WHERE file = :file")
+    suspend fun deleteByFile(file: String)
 }
 
 // ---------------------------------------------------------------------- //

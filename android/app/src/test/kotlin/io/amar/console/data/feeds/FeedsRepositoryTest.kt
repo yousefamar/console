@@ -100,4 +100,35 @@ class FeedsRepositoryTest {
         val pending = db.feeds().pendingReadIds()
         assertEquals(listOf("local-only"), pending)
     }
+
+    @Test
+    fun `markAllRead marks every id pending in one coalesced sync row`() = runTest {
+        db.feeds().upsertItems(listOf(item("i1"), item("i2"), item("i3")))
+        repo.markAllRead(listOf("i1", "i2", "i3"))
+        assertEquals(listOf("i1", "i2", "i3"), db.feeds().pendingReadIds().sorted())
+        assertEquals(1, db.outbox().pending().size)
+    }
+
+    @Test
+    fun `markUnread tracks a pending removal that a later markRead cancels`() = runTest {
+        db.feeds().upsertRead(listOf(FeedReadRow("i1", pendingSync = false)))
+        repo.markUnread("i1")
+        assertEquals(listOf("i1"), repo.pendingRemoveIds())
+        // Re-reading the item cancels the queued removal.
+        repo.markRead("i1")
+        assertEquals(emptyList<String>(), repo.pendingRemoveIds())
+    }
+
+    @Test
+    fun `search matches title and snippet`() = runTest {
+        db.feeds().upsertItems(
+            listOf(
+                item("i1").copy(title = "Kotlin coroutines deep dive"),
+                item("i2").copy(snippet = "all about kotlin flows"),
+                item("i3").copy(title = "Rust borrow checker"),
+            )
+        )
+        val hits = db.feeds().searchItems("kotlin").map { it.id }
+        assertEquals(setOf("i1", "i2"), hits.toSet())
+    }
 }

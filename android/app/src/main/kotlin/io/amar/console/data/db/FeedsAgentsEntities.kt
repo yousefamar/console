@@ -58,6 +58,14 @@ interface FeedsDao {
     @Query("SELECT * FROM feed_items WHERE id = :id")
     suspend fun itemById(id: String): FeedItemRow?
 
+    /** Search over cached items (title/snippet), newest first. */
+    @Query(
+        """SELECT * FROM feed_items WHERE title LIKE '%' || :q || '%'
+             OR snippet LIKE '%' || :q || '%'
+           ORDER BY publishedAt DESC LIMIT :limit"""
+    )
+    suspend fun searchItems(q: String, limit: Int = 100): List<FeedItemRow>
+
     @Query("DELETE FROM feed_items WHERE id IN (:ids)")
     suspend fun deleteItems(ids: List<String>)
 

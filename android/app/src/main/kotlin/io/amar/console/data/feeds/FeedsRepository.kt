@@ -6,11 +6,13 @@ import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.db.FeedItemRow
 import io.amar.console.data.db.FeedReadRow
 import io.amar.console.data.db.FeedRow
+import io.amar.console.data.db.MetaRow
 import io.amar.console.sync.outbox.Outbox
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -36,22 +38,55 @@ class FeedsRepository(
         const val TYPE_READ_SYNC = "feedsReadSync"
         const val ITEMS_PER_FEED = 50
         const val VIEW_LIMIT = 200
+        /** Meta KV key holding pending "mark unread" removals (JSON string array). */
+        const val META_PENDING_REMOVE = "feeds:pendingRemove"
     }
 
     fun observeItems(): Flow<List<FeedItemRow>> = db.feeds().observeRecent(VIEW_LIMIT)
     fun observeFeeds(): Flow<List<FeedRow>> = db.feeds().observeFeeds()
     fun observeReadIds(): Flow<List<String>> = db.feeds().observeReadIds()
     suspend fun itemById(id: String): FeedItemRow? = db.feeds().itemById(id)
+    suspend fun search(q: String): List<FeedItemRow> = db.feeds().searchItems(q)
 
     suspend fun markRead(itemId: String) {
         db.feeds().upsertRead(listOf(FeedReadRow(itemId, pendingSync = true)))
+        removePendingRemove(listOf(itemId))
+        enqueueReadSync()
+    }
+
+    /** Mark-all for the ids currently visible (folder/scope filtering is the UI's). */
+    suspend fun markAllRead(itemIds: List<String>) {
+        if (itemIds.isEmpty()) return
+        db.feeds().upsertRead(itemIds.map { FeedReadRow(it, pendingSync = true) })
+        removePendingRemove(itemIds)
         enqueueReadSync()
     }
 
     suspend fun markUnread(itemId: String) {
         db.feeds().deleteRead(itemId)
-        // Removal also rides the coalesced sync (as `remove`).
+        // Removal also rides the coalesced sync (as `remove`) — tracked in the
+        // meta KV (no dedicated table; schema is frozen at v8 for this batch).
+        addPendingRemove(itemId)
         enqueueReadSync()
+    }
+
+    internal suspend fun pendingRemoveIds(): List<String> =
+        db.meta().get(META_PENDING_REMOVE)?.let { raw ->
+            runCatching {
+                (json.parseToJsonElement(raw) as? JsonArray)
+                    ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+            }.getOrNull()
+        } ?: emptyList()
+
+    private suspend fun addPendingRemove(itemId: String) {
+        val ids = (pendingRemoveIds() + itemId).distinct()
+        db.meta().put(MetaRow(META_PENDING_REMOVE, JsonArray(ids.map { JsonPrimitive(it) }).toString()))
+    }
+
+    private suspend fun removePendingRemove(itemIds: List<String>) {
+        val ids = pendingRemoveIds() - itemIds.toSet()
+        if (ids.isEmpty()) db.meta().delete(META_PENDING_REMOVE)
+        else db.meta().put(MetaRow(META_PENDING_REMOVE, JsonArray(ids.map { JsonPrimitive(it) }).toString()))
     }
 
     private suspend fun enqueueReadSync() {
@@ -64,12 +99,19 @@ class FeedsRepository(
         outbox.register(TYPE_READ_SYNC) { _, _ ->
             try {
                 val pending = db.feeds().pendingReadIds()
-                if (pending.isNotEmpty()) {
+                val removals = pendingRemoveIds()
+                if (pending.isNotEmpty() || removals.isNotEmpty()) {
                     val body = buildJsonObject {
-                        put("add", buildJsonArray { pending.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                        if (pending.isNotEmpty()) {
+                            put("add", buildJsonArray { pending.forEach { add(JsonPrimitive(it)) } })
+                        }
+                        if (removals.isNotEmpty()) {
+                            put("remove", buildJsonArray { removals.forEach { add(JsonPrimitive(it)) } })
+                        }
                     }
                     hub.put("/feeds/read", body.toString())
                     db.feeds().markSynced(pending)
+                    db.meta().delete(META_PENDING_REMOVE)
                 }
                 Outbox.Result.Done
             } catch (e: Exception) {
@@ -101,18 +143,21 @@ class FeedsRepository(
             val readIds = (obj["readIds"] as? JsonArray)
                 ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList()
 
+            val pendingRemove = pendingRemoveIds().toSet()
             db.withTransaction {
                 val rows = items.mapNotNull { itemRow(it) }
                 if (rows.isNotEmpty()) db.feeds().upsertItems(rows)
-                // Hub read-state merges DOWN (additive; local pending stays).
-                if (readIds.isNotEmpty()) {
-                    db.feeds().upsertRead(readIds.map { FeedReadRow(it, pendingSync = false) })
+                // Hub read-state merges DOWN (additive; local pending stays —
+                // and a local "mark unread" that hasn't flushed yet must not
+                // be resurrected by the hub's stale read set).
+                val down = readIds.filter { it !in pendingRemove }
+                if (down.isNotEmpty()) {
+                    db.feeds().upsertRead(down.map { FeedReadRow(it, pendingSync = false) })
                 }
             }
         }
-        // Push any local-only read marks up.
-        val pending = db.feeds().pendingReadIds()
-        if (pending.isNotEmpty()) enqueueReadSync()
+        // Push any local-only read marks (or unread removals) up.
+        if (db.feeds().pendingReadIds().isNotEmpty() || pendingRemoveIds().isNotEmpty()) enqueueReadSync()
     }
 
     private fun itemRow(item: JsonObject): FeedItemRow? {
