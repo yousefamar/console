@@ -486,7 +486,18 @@ private fun MessageCard(msg: MailMessageRow, expandedInitially: Boolean) {
                 }
             }
             if (msg.bodyHtml != null) {
-                MailBodyWebView(msg.bodyHtml!!)
+                // Resolve cid: inline images to data URIs before render.
+                var resolvedHtml by remember(msg.id) { mutableStateOf(msg.bodyHtml!!) }
+                LaunchedEffect(msg.id) {
+                    val cids = io.amar.console.data.mail.CidResolver.parseCidAttachments(msg.attachmentsJson)
+                    if (cids.isNotEmpty() && io.amar.console.data.mail.CidResolver.findCidRefs(msg.bodyHtml!!).isNotEmpty()) {
+                        resolvedHtml = io.amar.console.data.mail.CidResolver.inline(
+                            msg.bodyHtml!!, cids,
+                            io.amar.console.data.mail.CidResolver.hubFetcher(io.amar.console.core.HubClient()),
+                        )
+                    }
+                }
+                MailBodyWebView(resolvedHtml)
             } else {
                 Text(
                     msg.bodyText ?: "(body not cached — open online to fetch)",

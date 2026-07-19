@@ -14,6 +14,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,6 +97,32 @@ fun SettingsScreen(app: ConsoleApp) {
         }
         if (status.isNotEmpty()) {
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+
+        HorizontalDivider()
+
+        Text("Notifications", style = MaterialTheme.typography.titleMedium)
+        val hubPrefs by io.amar.console.core.HubPrefs.prefs.collectAsState()
+        val dnd = (hubPrefs["dnd"] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.content == "true"
+        androidx.compose.foundation.layout.Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Do Not Disturb", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Synced across devices (hub pref)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            androidx.compose.material3.Switch(
+                checked = dnd,
+                onCheckedChange = { enabled ->
+                    scope.launch { io.amar.console.core.HubPrefs.setDnd(app.graph.hub, enabled) }
+                },
+            )
         }
 
         HorizontalDivider()

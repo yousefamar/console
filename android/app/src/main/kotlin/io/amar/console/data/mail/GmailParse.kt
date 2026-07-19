@@ -87,9 +87,17 @@ object GmailParse {
                 if (any) out.append(',')
                 any = true
                 val size = (part["body"] as? JsonObject)?.get("size")?.jsonPrimitive?.intOrNull ?: 0
+                // Content-ID header → inline cid: image resolution at render.
+                val cid = (part["headers"] as? JsonArray)
+                    ?.mapNotNull { it as? JsonObject }
+                    ?.firstOrNull { it.str("name")?.lowercase() == "content-id" }
+                    ?.str("value")
+                    ?.trim('<', '>')
                 out.append(
-                    """{"messageId":"${msg.str("id")}","attachmentId":"$attId","filename":${jsonQuote(filename)},"mimeType":"${part.str("mimeType") ?: ""}","size":$size}"""
+                    """{"messageId":"${msg.str("id")}","attachmentId":"$attId","filename":${jsonQuote(filename)},"mimeType":"${part.str("mimeType") ?: ""}","size":$size"""
                 )
+                if (cid != null) out.append(""","contentId":${jsonQuote(cid)}""")
+                out.append('}')
             }
             ((part["parts"]) as? JsonArray)?.forEach { c -> (c as? JsonObject)?.let { walk(it) } }
         }
