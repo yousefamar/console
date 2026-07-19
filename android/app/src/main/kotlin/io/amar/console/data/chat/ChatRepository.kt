@@ -174,14 +174,22 @@ class ChatRepository(
     private val membersCache = mutableMapOf<String, List<RoomMember>>()
     private var cachedMyUserId: String? = null
 
-    /** Own MXID from GET /matrix/hub/status (cached). Real (non-echo) rows
-     *  carry the full MXID as sender — needed for isMine/divider checks. */
+    /** Own MXID — memory → meta table (offline-durable) → network. Persisted
+     *  on first successful fetch so "mine" bubbles render correctly offline
+     *  and on first composition (no live-fetch dependency). */
     suspend fun myUserId(): String? {
         cachedMyUserId?.let { return it }
+        db.meta().get("matrix:myUserId")?.let {
+            cachedMyUserId = it
+            return it
+        }
         return runCatching {
             json.parseToJsonElement(hub.get("/matrix/hub/status"))
                 .jsonObject["userId"]?.jsonPrimitive?.content
-        }.getOrNull()?.also { cachedMyUserId = it }
+        }.getOrNull()?.also {
+            cachedMyUserId = it
+            db.meta().put(MetaRow("matrix:myUserId", it))
+        }
     }
 
     /** GET /matrix/rooms/:id/info members, cached in memory per room. */
@@ -430,6 +438,8 @@ class ChatRepository(
     /** Connect-time reconcile: rooms via seq patch, messages via resume cursor. */
     suspend fun reconcile() {
         if (!syncBus.connected) return
+        // Own-MXID warm-up (meta-persisted; cheap no-op once cached).
+        runCatching { myUserId() }
         // 1. Rooms: snapshotSince with our persisted seq.
         val seq = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull()
         val args = buildJsonObject { seq?.let { put("since", it) } }

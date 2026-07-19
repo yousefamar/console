@@ -470,6 +470,11 @@ fun ChatRoomScreen(
     var frozenLastReadTs by remember(roomId) { mutableStateOf<Long?>(null) }
     var myUserId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { myUserId = repo.myUserId() }
+    // Meta/network may not have had it at first composition — retry once
+    // messages land so own bubbles can't stick to the left.
+    LaunchedEffect(messages.isNotEmpty()) {
+        if (myUserId == null) myUserId = repo.myUserId()
+    }
     LaunchedEffect(room?.id) {
         if (frozenLastReadTs == null && room != null && room!!.isUnread) {
             frozenLastReadTs = room!!.lastReadTs
