@@ -45,9 +45,10 @@ class TranscriptHelpersTest {
             Triple(10, 10, listOf(" more")),
         )
         val rows = TranscriptHelpers.buildDiffRows(hunks)
-        // first: ctx@1, del@1, add@1 (new numbering for add), then sep, then ctx@10
+        // ctx@1 (old&new=1), del shows old-num (now 2 after ctx bumped it),
+        // add shows new-num (2), then sep, then next hunk's ctx@10.
         assertEquals("ctx", rows[0].kind); assertEquals(1, rows[0].lineNo)
-        assertEquals("del", rows[1].kind); assertEquals(1, rows[1].lineNo)
+        assertEquals("del", rows[1].kind); assertEquals(2, rows[1].lineNo)
         assertEquals("add", rows[2].kind); assertEquals(2, rows[2].lineNo)
         assertEquals("sep", rows[3].kind)
         assertEquals("ctx", rows[4].kind); assertEquals(10, rows[4].lineNo)
