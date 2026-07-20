@@ -45,6 +45,10 @@ class MailRepository(
     companion object {
         const val CURSOR_PREFIX = "mail:historyId:"
         const val ACCOUNT_KEY = "mail:primaryAccount"
+        const val ALIASES_KEY = "mail:sendAsAliases"
+        const val LABEL_MAP_KEY = "mail:labelMap"
+        const val CAL_PREFIX = "mail:cal:"        // per-message calendar invite JSON
+        const val LABELS_PREFIX = "mail:labels:"  // per-thread user-label id list (JSON array)
         const val INITIAL_LIMIT = 50
         const val BODY_KEEP = 50
         const val TYPE_ARCHIVE = "mailArchive"
@@ -53,7 +57,8 @@ class MailRepository(
         const val TYPE_UNREAD = "mailUnread"
         const val TYPE_TRASH = "mailTrash"
         const val TYPE_SEND = "mailSend"
-        const val TYPE_REPLY = "mailReply"
+        const val TYPE_REPLY = "mailReply"       // legacy text-only reply (hub builds headers)
+        const val TYPE_REPLY_SEND = "mailReplySend" // reply/forward with attachments + explicit fields
         const val TYPE_FORWARD = "mailForward"
     }
 
@@ -69,6 +74,91 @@ class MailRepository(
     suspend fun search(q: String): List<MailThreadRow> = db.mailThreads().search(q)
     fun observeMessages(threadId: String): Flow<List<MailMessageRow>> =
         db.mailMessages().observeForThread(threadId)
+
+    /** Cached send-as aliases (compose From picker). Recency-sorted by hydrate. */
+    suspend fun aliases(): List<MailFormat.Alias> {
+        val raw = db.meta().get(ALIASES_KEY) ?: return emptyList()
+        return runCatching {
+            (json.parseToJsonElement(raw) as JsonArray).mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val email = o["email"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                MailFormat.Alias(
+                    email = email,
+                    name = o["name"]?.jsonPrimitive?.content ?: "",
+                    isDefault = o["isDefault"]?.jsonPrimitive?.content == "true",
+                )
+            }
+        }.getOrElse { emptyList() }
+    }
+
+    suspend fun userEmail(): String = db.meta().get(ACCOUNT_KEY) ?: ""
+
+    /** id→name map for Gmail user labels (thread-row tags). */
+    suspend fun labelMap(): Map<String, String> {
+        val raw = db.meta().get(LABEL_MAP_KEY) ?: return emptyMap()
+        return runCatching {
+            (json.parseToJsonElement(raw) as JsonObject).mapValues { it.value.jsonPrimitive.content }
+        }.getOrElse { emptyMap() }
+    }
+
+    /** User-label ids stored for a thread during hydration (Label_* only). */
+    suspend fun threadLabels(threadId: String): List<String> {
+        val raw = db.meta().get("$LABELS_PREFIX$threadId") ?: return emptyList()
+        return runCatching {
+            (json.parseToJsonElement(raw) as JsonArray).mapNotNull { it.jsonPrimitive.content }
+        }.getOrElse { emptyList() }
+    }
+
+    /** Parsed calendar invite for a message (rendered as an invite card), or null. */
+    suspend fun calendarInvite(messageId: String): CalendarInvite? {
+        val raw = db.meta().get("$CAL_PREFIX$messageId") ?: return null
+        return runCatching { json.decodeFromString(CalendarInvite.serializer(), raw) }.getOrNull()
+    }
+
+    /** Local contacts (from/to/cc across cached messages), recency-sorted. */
+    suspend fun localContacts(): List<MailContact> {
+        val seen = LinkedHashMap<String, MailContact>()
+        fun upsert(email: String, name: String, date: Long) {
+            val key = email.lowercase()
+            val existing = seen[key]
+            if (existing == null) seen[key] = MailContact(name, email, date)
+            else if (date > existing.lastSeen) {
+                seen[key] = existing.copy(
+                    lastSeen = date,
+                    name = if (existing.name.isBlank() && name.isNotBlank()) name else existing.name,
+                )
+            }
+        }
+        // Scan cached messages across all retained threads. search("") → LIKE '%%'
+        // returns every cached thread (limit 50 — the whole inbox cache), giving a
+        // practical contact pool without a schema/DAO change.
+        for (t in db.mailThreads().search("")) {
+            for (m in db.mailMessages().forThread(t.id)) {
+                val (fn, fe) = GmailParse.parseAddress(m.fromHeader)
+                if (fe.contains('@')) upsert(fe, fn, m.date)
+                for (addr in MailFormat.splitAddresses(listOfNotNull(m.toHeader, m.ccHeader).joinToString(", "))) {
+                    val (n, e) = GmailParse.parseAddress(addr)
+                    if (e.contains('@')) upsert(e, n, m.date)
+                }
+            }
+        }
+        return seen.values.sortedByDescending { it.lastSeen }
+    }
+
+    /** Remote contact search via hub People proxy; empty/errors → []. */
+    suspend fun searchContacts(q: String): List<MailContact> {
+        if (q.isBlank()) return emptyList()
+        return runCatching {
+            val resp = hub.get("/mail/contacts?q=${enc(q)}")
+            (json.parseToJsonElement(resp) as? JsonArray)?.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val email = o["email"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                MailContact(o["name"]?.jsonPrimitive?.content ?: "", email, 0, remote = true)
+            } ?: emptyList()
+        }.getOrElse { emptyList() }
+    }
+
+    data class MailContact(val name: String, val email: String, val lastSeen: Long, val remote: Boolean = false)
 
     // ---------------------------------------------------------------- //
     // Triage mutations — optimistic + queued (all idempotent hub-side)
@@ -155,7 +245,69 @@ class MailRepository(
         outbox.enqueue(TYPE_SEND, payload.toString())
     }
 
-    /** Forward a thread (hub builds Fwd: subject + header block). */
+    /** An attachment to send: base64-encoded body (built UI-side from a Uri). */
+    data class OutAttachment(val filename: String, val mimeType: String, val data: String)
+
+    private fun attachmentsArray(attachments: List<OutAttachment>) = buildJsonArray {
+        for (a in attachments) add(buildJsonObject {
+            put("filename", a.filename); put("mimeType", a.mimeType); put("data", a.data)
+        })
+    }
+
+    /**
+     * Full compose (new email) with cc, explicit from, html body, and
+     * attachments — POSTs /mail/send (multipart) at flush. `html=true` so the
+     * body is treated as HTML by the hub's RFC822 builder.
+     */
+    suspend fun sendCompose(
+        to: String, cc: String?, subject: String, html: String,
+        from: String?, attachments: List<OutAttachment> = emptyList(),
+    ) {
+        val account = db.meta().get(ACCOUNT_KEY) ?: ""
+        val payload = buildJsonObject {
+            put("to", to)
+            cc?.takeIf { it.isNotBlank() }?.let { put("cc", it) }
+            put("subject", subject)
+            put("body", html)
+            put("html", true)
+            from?.takeIf { it.isNotBlank() }?.let { put("from", it) }
+            if (attachments.isNotEmpty()) put("attachments", attachmentsArray(attachments))
+            put("account", account)
+        }
+        outbox.enqueue(TYPE_SEND, payload.toString())
+    }
+
+    /**
+     * Reply / reply-all / forward carrying an already-assembled HTML body
+     * (user text + quoted original), explicit To/Cc/Subject/From, and
+     * attachments. Threaded via the thread's last-message headers, which the
+     * flush handler derives (the message row has no Message-ID column).
+     * Records baseMessageCount for conflict detection. Auto-archives the thread
+     * when [autoArchive] (reply/replyAll — SPA parity).
+     */
+    suspend fun sendReply(
+        threadId: String, to: String, cc: String?, subject: String, html: String,
+        from: String?, attachments: List<OutAttachment> = emptyList(), autoArchive: Boolean = true,
+    ) {
+        val thread = db.mailThreads().byId(threadId)
+        val account = db.meta().get(ACCOUNT_KEY) ?: ""
+        val payload = buildJsonObject {
+            put("threadId", threadId)
+            put("to", to)
+            cc?.takeIf { it.isNotBlank() }?.let { put("cc", it) }
+            put("subject", subject)
+            put("body", html)
+            put("html", true)
+            from?.takeIf { it.isNotBlank() }?.let { put("from", it) }
+            if (attachments.isNotEmpty()) put("attachments", attachmentsArray(attachments))
+            thread?.messageCount?.let { put("baseMessageCount", it) }
+            put("account", account)
+        }
+        outbox.enqueue(TYPE_REPLY_SEND, payload.toString(), entityId = threadId)
+        if (autoArchive) archive(threadId)
+    }
+
+    /** Forward a thread (hub builds Fwd: subject + header block; text-only, legacy). */
     suspend fun forward(threadId: String, to: String, note: String?) {
         val account = db.meta().get(ACCOUNT_KEY) ?: ""
         val payload = buildJsonObject {
@@ -165,6 +317,19 @@ class MailRepository(
             put("account", account)
         }
         outbox.enqueue(TYPE_FORWARD, payload.toString(), entityId = threadId)
+    }
+
+    /** Delete → Gmail trash. Optimistic remove from inbox; undoable pre-flush. */
+    suspend fun deleteThread(threadId: String) {
+        db.mailThreads().setInbox(threadId, false)
+        enqueueSimple(TYPE_TRASH, threadId)
+    }
+
+    /** Undo delete within the toast window: restore + drop the queued trash.
+     *  (Gmail has no untrash route — like the SPA, undo only reverses pre-flush.) */
+    suspend fun undoDelete(threadId: String) {
+        db.mailThreads().setInbox(threadId, true)
+        outbox.cancel(threadId, TYPE_TRASH)
     }
 
     // ---------------------------------------------------------------- //
@@ -225,6 +390,60 @@ class MailRepository(
             }
         }
 
+        // Reply / reply-all / forward WITH attachments + a client-assembled HTML
+        // body. Derives threading headers from the live thread, does the same
+        // conflict check as TYPE_REPLY, then POSTs /mail/send (multipart-capable).
+        outbox.register(TYPE_REPLY_SEND) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val threadId = p["threadId"]!!.jsonPrimitive.content
+            val account = p["account"]?.jsonPrimitive?.content ?: ""
+            val baseCount = p["baseMessageCount"]?.jsonPrimitive?.content?.toIntOrNull()
+            try {
+                var inReplyTo: String? = null
+                var references: String? = null
+                runCatching {
+                    val fresh = hub.get("/mail/threads/${enc(threadId)}${accountQuery(account)}")
+                    val msgs = (json.parseToJsonElement(fresh).jsonObject["messages"] as? JsonArray)
+                    if (baseCount != null && (msgs?.size ?: 0) > baseCount) {
+                        return@register Outbox.Result.Conflict("New messages arrived — review before sending")
+                    }
+                    val last = msgs?.lastOrNull() as? JsonObject
+                    val headers = ((last?.get("payload") as? JsonObject)?.get("headers") as? JsonArray)
+                    headers?.forEach { h ->
+                        val o = h as? JsonObject ?: return@forEach
+                        when (o["name"]?.jsonPrimitive?.content?.lowercase()) {
+                            "message-id" -> inReplyTo = o["value"]?.jsonPrimitive?.content
+                            "references" -> references = o["value"]?.jsonPrimitive?.content
+                        }
+                    }
+                }
+                val refs = when {
+                    inReplyTo != null && references != null -> "$references $inReplyTo"
+                    inReplyTo != null -> inReplyTo
+                    else -> references
+                }
+                val sendBody = buildJsonObject {
+                    put("to", p["to"]!!.jsonPrimitive.content)
+                    p["cc"]?.jsonPrimitive?.content?.let { put("cc", it) }
+                    put("subject", p["subject"]?.jsonPrimitive?.content ?: "")
+                    put("body", p["body"]!!.jsonPrimitive.content)
+                    put("html", true)
+                    p["from"]?.jsonPrimitive?.content?.let { put("from", it) }
+                    put("threadId", threadId)
+                    inReplyTo?.let { put("inReplyTo", it) }
+                    refs?.let { put("references", it) }
+                    (p["attachments"] as? JsonArray)?.let { put("attachments", it) }
+                    put("clientToken", row.dedupeToken)
+                }
+                hub.post("/mail/send${accountQuery(account)}", sendBody.toString())
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+
         outbox.register(TYPE_FORWARD) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             val account = p["account"]?.jsonPrimitive?.content ?: ""
@@ -249,9 +468,13 @@ class MailRepository(
             try {
                 val sendBody = buildJsonObject {
                     put("to", p["to"]!!.jsonPrimitive.content)
-                    put("subject", p["subject"]!!.jsonPrimitive.content)
+                    put("subject", p["subject"]?.jsonPrimitive?.content ?: "")
                     put("body", p["body"]!!.jsonPrimitive.content)
                     p["cc"]?.jsonPrimitive?.content?.let { put("cc", it) }
+                    p["from"]?.jsonPrimitive?.content?.let { put("from", it) }
+                    // html=true → hub treats body as HTML instead of wrapping in <pre>.
+                    if (p["html"]?.jsonPrimitive?.content == "true") put("html", true)
+                    (p["attachments"] as? JsonArray)?.let { put("attachments", it) }
                     put("clientToken", row.dedupeToken)
                 }
                 hub.post("/mail/send${accountQuery(account)}", sendBody.toString())
@@ -294,15 +517,56 @@ class MailRepository(
             val profile = runCatching { json.parseToJsonElement(hub.get("/mail/profile")).jsonObject }.getOrNull() ?: return
             val email = profile["emailAddress"]?.jsonPrimitive?.content ?: return
             db.meta().put(MetaRow(ACCOUNT_KEY, email))
+            syncAuxData(email)
             fullHydrate(email)
             return
         }
+        syncAuxData(account)
         val cursor = db.meta().get("$CURSOR_PREFIX$account")
         if (cursor == null) {
             fullHydrate(account)
         } else {
             catchUp(account)
         }
+    }
+
+    /** Fetch send-as aliases (recency-sorted) + label id→name map; store in meta.
+     *  Failures are independent (parity with the SPA's allSettled). */
+    internal suspend fun syncAuxData(account: String) {
+        runCatching {
+            val resp = hub.get("/mail/aliases${accountQuery(account)}")
+            val arr = json.parseToJsonElement(resp) as? JsonArray ?: return@runCatching
+            db.meta().put(MetaRow(ALIASES_KEY, sortAliasesByRecency(arr).toString()))
+        }
+        runCatching {
+            val resp = hub.get("/mail/labels${accountQuery(account)}")
+            val arr = json.parseToJsonElement(resp) as? JsonArray ?: return@runCatching
+            val map = buildJsonObject {
+                for (el in arr) {
+                    val o = el as? JsonObject ?: continue
+                    val id = o["id"]?.jsonPrimitive?.content ?: continue
+                    put(id, o["name"]?.jsonPrimitive?.content ?: id)
+                }
+            }
+            db.meta().put(MetaRow(LABEL_MAP_KEY, map.toString()))
+        }
+    }
+
+    /** Sort aliases by recency of appearance in cached messages' To/Cc (ComposeEditor). */
+    private suspend fun sortAliasesByRecency(arr: JsonArray): JsonArray {
+        val aliases = arr.mapNotNull { it as? JsonObject }
+        if (aliases.size <= 1) return arr
+        val emails = aliases.mapNotNull { it["email"]?.jsonPrimitive?.content?.lowercase() }
+        val recency = HashMap<String, Long>()
+        outer@ for (t in db.mailThreads().search("")) {
+            for (m in db.mailMessages().forThread(t.id)) {
+                val recipients = listOfNotNull(m.toHeader, m.ccHeader).joinToString(", ").lowercase()
+                for (e in emails) if (e !in recency && recipients.contains(e)) recency[e] = m.date
+                if (recency.size >= emails.size) break@outer
+            }
+        }
+        val sorted = aliases.sortedByDescending { recency[it["email"]?.jsonPrimitive?.content?.lowercase()] ?: 0L }
+        return buildJsonArray { sorted.forEach { add(it) } }
     }
 
     /** One-request initial hydrate via the M3 batch endpoint. */
@@ -334,7 +598,44 @@ class MailRepository(
             }
             if (historyId != null) db.meta().put(MetaRow("$CURSOR_PREFIX$account", historyId))
         }
+        persistThreadAux(threads, account)
     }
+
+    /**
+     * Store per-thread aux data in the meta KV table (no schema change):
+     *  - user Gmail label ids (Label_*) for the thread-row tags,
+     *  - parsed calendar invite per message carrying a text/calendar part
+     *    (fetching the ICS attachment body when it's not inlined).
+     */
+    private suspend fun persistThreadAux(threads: List<JsonObject>, account: String) {
+        for (thread in threads) {
+            val tid = thread["id"]?.jsonPrimitive?.content ?: continue
+            val labels = GmailParse.userLabelIds(thread)
+            if (labels.isNotEmpty()) {
+                db.meta().put(MetaRow("$LABELS_PREFIX$tid",
+                    buildJsonArray { labels.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }.toString()))
+            } else {
+                db.meta().delete("$LABELS_PREFIX$tid")
+            }
+            val messages = (thread["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: continue
+            for (msg in messages) {
+                val part = GmailParse.calendarPart(msg) ?: continue
+                val (inlineData, attId, mid) = part
+                val icsBase64 = inlineData ?: attId?.let { fetchAttachmentData(mid, it) } ?: continue
+                val ics = runCatching {
+                    String(android.util.Base64.decode(icsBase64, android.util.Base64.URL_SAFE), Charsets.UTF_8)
+                }.getOrNull() ?: continue
+                val invite = runCatching { IcsParser.parse(ics) }.getOrNull() ?: continue
+                db.meta().put(MetaRow("$CAL_PREFIX$mid",
+                    json.encodeToString(CalendarInvite.serializer(), invite)))
+            }
+        }
+    }
+
+    private suspend fun fetchAttachmentData(messageId: String, attachmentId: String): String? = runCatching {
+        val resp = hub.get("/mail/messages/${enc(messageId)}/attachments/${enc(attachmentId)}")
+        json.parseToJsonElement(resp).jsonObject["data"]?.jsonPrimitive?.content
+    }.getOrNull()
 
     /** History catch-up from the persisted cursor; expired → full re-init. */
     internal suspend fun catchUp(account: String) {
@@ -388,6 +689,7 @@ class MailRepository(
             db.mailThreads().upsertAll(withSnooze)
             db.mailMessages().upsertAll(parsed.flatMap { it.second })
         }
+        persistThreadAux(threads, account)
     }
 
     /** Daily prune: evict bodies outside the newest N inbox threads. */
