@@ -61,9 +61,7 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 
 private const val PREFS = "console.cal"
-private const val PREF_VIEW = "viewMode"                // "month" | "week" | "day"
-private const val PREF_HIDDEN = "hiddenCalendars"       // Set<accountEmail:calendarId>
-private const val PREF_DEFAULT = "defaultCalendarId"
+private const val PREF_VIEW = "viewMode"                // "month" | "week" | "day" (local only)
 
 private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -86,8 +84,10 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     val flightWatchlists by flights.watchlists.collectAsState(initial = emptyList())
 
     var viewMode by remember { mutableStateOf(prefs(context).getString(PREF_VIEW, "week") ?: "week") }
-    var hiddenCals by remember { mutableStateOf(prefs(context).getStringSet(PREF_HIDDEN, emptySet())?.toSet() ?: emptySet()) }
-    var defaultCalId by remember { mutableStateOf(prefs(context).getString(PREF_DEFAULT, null)) }
+    // Visibility + default calendar are hub-synced (cross-device). visibleIds
+    // null = not-yet-loaded → treat all calendars visible (first-load default).
+    val visibleIds by repo.visibleIds.collectAsState(initial = null)
+    val defaultCalId by repo.defaultCalendarId.collectAsState(initial = null)
 
     // currentDate anchor (local midnight of the focused day).
     var anchorMs by remember { mutableLongStateOf(startOfDay(System.currentTimeMillis())) }
@@ -104,7 +104,12 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     var locationPick by remember { mutableStateOf<Pair<CalEventRow?, Long>?>(null) }
 
     val calByKey = remember(calendars) { calendars.associateBy { it.id } }
-    fun isVisible(e: CalEventRow) = "${e.accountEmail}:${e.calendarId}" !in hiddenCals
+    // null visibleIds → all visible (first load). Otherwise it's the allow-list.
+    fun isVisible(e: CalEventRow) = visibleIds?.contains("${e.accountEmail}:${e.calendarId}") ?: true
+    val hiddenCals = remember(visibleIds, calendars) {
+        val vis = visibleIds ?: return@remember emptySet()
+        calendars.map { it.id }.filter { it !in vis }.toSet()
+    }
 
     // Fetch range covers the whole visible view (month grid spans 6 weeks).
     val (rangeStart, rangeEnd) = remember(viewMode, anchorMs) {
@@ -118,7 +123,7 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
         }
     }
     val allEvents by repo.observeEvents(rangeStart - DAY_MS, rangeEnd + DAY_MS).collectAsState(initial = emptyList())
-    val events = remember(allEvents, hiddenCals) { allEvents.filter { isVisible(it) } }
+    val events = remember(allEvents, visibleIds) { allEvents.filter { isVisible(it) } }
 
     fun deleteWithUndo(row: CalEventRow) {
         scope.launch {
@@ -340,13 +345,11 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
         CalendarSidebarSheet(
             calendars = calendars, accounts = accounts, hidden = hiddenCals, defaultCalendarId = defaultCalId,
             onToggle = { calKey ->
-                hiddenCals = if (calKey in hiddenCals) hiddenCals - calKey else hiddenCals + calKey
-                prefs(context).edit().putStringSet(PREF_HIDDEN, hiddenCals).apply()
+                // Toggle within the visible allow-list (all-visible when null).
+                val current = visibleIds ?: calendars.map { it.id }.toSet()
+                repo.setVisibleIds(if (calKey in current) current - calKey else current + calKey)
             },
-            onSetDefault = { calId ->
-                defaultCalId = calId
-                prefs(context).edit().putString(PREF_DEFAULT, calId).apply()
-            },
+            onSetDefault = { calId -> repo.setDefaultCalendar(calId) },
             onAddAccount = { showVisibility = false; openOAuth() },
             onRemoveAccount = { email -> scope.launch { repo.removeAccount(email); repo.getAccounts() } },
             onDismiss = { showVisibility = false },

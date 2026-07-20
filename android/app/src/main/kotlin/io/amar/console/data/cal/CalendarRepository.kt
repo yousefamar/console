@@ -107,6 +107,43 @@ class CalendarRepository(
     private val accountsFlow = MutableStateFlow<List<CalendarAccount>>(emptyList())
 
     // ---------------------------------------------------------------- //
+    // Hub-synced calendar prefs (cross-device): visible calendar allow-list +
+    // default calendar id. Mirrors the SPA keys calendar.visibleIds /
+    // calendar.defaultId under /config. null visibleIds = "not yet loaded /
+    // all visible" (first-load default). Optimistic local write + /config PUT.
+
+    private val _visibleIds = MutableStateFlow<Set<String>?>(null)
+    val visibleIds: StateFlow<Set<String>?> = _visibleIds
+    private val _defaultCalendarId = MutableStateFlow<String?>(null)
+    val defaultCalendarId: StateFlow<String?> = _defaultCalendarId
+
+    private suspend fun hydratePrefs() {
+        runCatching {
+            val cfg = json.parseToJsonElement(hub.get("/config")).jsonObject
+            (cfg["calendar.visibleIds"] as? JsonArray)?.let { arr ->
+                _visibleIds.value = arr.mapNotNull { it.jsonPrimitive.content }.toSet()
+            }
+            _defaultCalendarId.value = cfg["calendar.defaultId"]?.jsonPrimitive?.content
+        }
+    }
+
+    fun setVisibleIds(ids: Set<String>) {
+        _visibleIds.value = ids
+        putConfig(buildJsonObject { putJsonArray("calendar.visibleIds") { ids.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } } })
+    }
+
+    fun setDefaultCalendar(id: String?) {
+        _defaultCalendarId.value = id
+        putConfig(buildJsonObject { put("calendar.defaultId", id ?: "") })
+    }
+
+    private var appScope: CoroutineScope? = null
+
+    private fun putConfig(patch: JsonObject) {
+        appScope?.launch { runCatching { hub.put("/config", patch.toString()) } }
+    }
+
+    // ---------------------------------------------------------------- //
     // Accounts (OAuth add / remove) — port of src/calendar/accounts.ts
 
     data class CalendarAccount(val email: String, val isPrimary: Boolean)
@@ -702,12 +739,14 @@ class CalendarRepository(
     // Sync
 
     fun wireLiveDeltas(scope: CoroutineScope) {
+        appScope = scope
         syncBus.on("cal", "delta") { _ ->
             scope.launch { runCatching { reconcile() } }
         }
         // Flights mirror lives on the same bus.
         flights.wireLiveDeltas()
         scope.launch { runCatching { flights.init() } }
+        scope.launch { runCatching { hydratePrefs() } }
     }
 
     /** Boot/reconnect refresh of the overlay sources (Meetup + OutdoorLads). */
@@ -785,6 +824,7 @@ class CalendarRepository(
 
         getAccounts()
         refreshOverlays()
+        hydratePrefs()
     }
 
     suspend fun prune() {
