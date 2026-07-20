@@ -1,5 +1,6 @@
 package io.amar.console.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -118,6 +119,25 @@ data class AgentSessionRow(
     /** Absolute index high-water of locally-cached messages. */
     val lastCachedIndex: Long,
     val messageLogLength: Long,
+    // --- v9: full session metadata for the parity sweep ---
+    @ColumnInfo(defaultValue = "0") val lastReadIndex: Long = 0,
+    /** claudeSessionId of the parent, when this session is a fork (lineage nesting). */
+    @ColumnInfo(defaultValue = "NULL") val parentClaudeSessionId: String? = null,
+    /** The session's own claudeSessionId (needed for cron/resume keying). */
+    @ColumnInfo(defaultValue = "NULL") val claudeSessionId: String? = null,
+    /** Per-session model pin (null → follows the hub-wide model). */
+    @ColumnInfo(defaultValue = "NULL") val modelOverride: String? = null,
+    /** Current permission mode ('default' | 'plan' | 'acceptEdits' …). */
+    @ColumnInfo(defaultValue = "NULL") val permissionMode: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val gitBranch: String? = null,
+    @ColumnInfo(defaultValue = "0") val gitDirty: Boolean = false,
+    @ColumnInfo(defaultValue = "-1") val gitAdded: Int = -1,
+    @ColumnInfo(defaultValue = "-1") val gitDeleted: Int = -1,
+    /** Live child-process count on the claude PID (background bashes). */
+    @ColumnInfo(defaultValue = "0") val backgroundProcessCount: Int = 0,
+    @ColumnInfo(defaultValue = "0") val createdAt: Long = 0,
+    @ColumnInfo(defaultValue = "0") val isAl: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val totalCostMicros: Long = 0,
 )
 
 @Entity(
@@ -137,14 +157,22 @@ interface AgentsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSessions(rows: List<AgentSessionRow>)
 
-    @Query("SELECT * FROM agent_sessions WHERE status != 'ended' ORDER BY name ASC")
+    /** Ended sessions stay visible while unread (a killed fork survives for audit
+     *  until acknowledged) — mirrors AgentTab's `status!=='ended' || hasUnread`. */
+    @Query("SELECT * FROM agent_sessions WHERE status != 'ended' OR hasUnread = 1 ORDER BY name ASC")
     fun observeSessions(): Flow<List<AgentSessionRow>>
 
     @Query("SELECT * FROM agent_sessions WHERE id = :id")
     suspend fun byId(id: String): AgentSessionRow?
 
+    @Query("SELECT * FROM agent_sessions")
+    suspend fun allSessions(): List<AgentSessionRow>
+
     @Query("DELETE FROM agent_sessions WHERE id NOT IN (:ids)")
     suspend fun deleteAbsent(ids: List<String>)
+
+    @Query("DELETE FROM agent_sessions WHERE id = :id")
+    suspend fun deleteSession(id: String)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessages(rows: List<AgentMessageRow>)
@@ -165,6 +193,14 @@ interface AgentsDao {
 
     @Query("SELECT MIN(absIndex) FROM agent_messages WHERE sessionId = :sessionId")
     suspend fun minIndex(sessionId: String): Long?
+
+    @Query("DELETE FROM agent_messages WHERE sessionId = :sessionId")
+    suspend fun clearMessages(sessionId: String)
+
+    /** Hub restart mints a new hub id for the same claudeSessionId — carry the
+     *  cached transcript over so it doesn't look like a brand-new session. */
+    @Query("UPDATE OR REPLACE agent_messages SET sessionId = :newId WHERE sessionId = :oldId")
+    suspend fun remapMessages(oldId: String, newId: String)
 
     @Query(
         """DELETE FROM agent_messages WHERE sessionId = :sessionId AND absIndex NOT IN (

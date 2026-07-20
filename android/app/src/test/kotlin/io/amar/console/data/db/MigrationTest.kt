@@ -100,6 +100,20 @@ class MigrationTest {
     fun `migrate 7 to latest`() = migrateFrom(7)
 
     @Test
+    fun `migrate 8 to latest`() = migrateFrom(8)
+
+    @Test
+    fun `migrate 8 to latest with agent session`() = migrateFrom(8) { db ->
+        db.execSQL(
+            """INSERT INTO agent_sessions
+               (id, name, status, hasUnread, needsAttention, attentionSnippet,
+                agentKey, modelLabel, hibernated, cwd, lastCachedIndex, messageLogLength)
+               VALUES ('session_1', 'test', 'idle', 0, 0, NULL,
+                       NULL, NULL, 0, '/home/amar', 5, 6)"""
+        )
+    }
+
+    @Test
     fun `migrate 1 to latest`() = migrateFrom(1)
 
     @Test
