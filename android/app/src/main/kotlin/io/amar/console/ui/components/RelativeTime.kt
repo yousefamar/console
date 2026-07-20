@@ -23,23 +23,18 @@ object RelativeTime {
         val abs = kotlin.math.abs(diff)
         return when {
             abs < MIN -> "now"
-            diff < 0 -> pastLabel(abs, ts, now)
-            else -> "in " + futureLabel(abs, ts, now)
+            // Beyond 7 days (either direction) → plain short date, no prefix.
+            abs >= 7 * DAY -> shortDate(ts, now)
+            diff < 0 -> relLabel(abs)
+            else -> "in " + relLabel(abs)
         }
     }
 
-    private fun pastLabel(abs: Long, ts: Long, now: Long): String = when {
+    /** Nm / Nh / Nd for a sub-week magnitude. */
+    private fun relLabel(abs: Long): String = when {
         abs < HOUR -> "${abs / MIN}m"
         abs < DAY -> "${abs / HOUR}h"
-        abs < 7 * DAY -> "${abs / DAY}d"
-        else -> shortDate(ts, now)
-    }
-
-    private fun futureLabel(abs: Long, ts: Long, now: Long): String = when {
-        abs < HOUR -> "${abs / MIN}m"
-        abs < DAY -> "${abs / HOUR}h"
-        abs < 7 * DAY -> "${abs / DAY}d"
-        else -> shortDate(ts, now)
+        else -> "${abs / DAY}d"
     }
 
     /** 'MMM d', with ', yyyy' appended when the year differs from [now]. */
