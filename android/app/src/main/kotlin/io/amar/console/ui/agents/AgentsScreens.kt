@@ -667,9 +667,7 @@ private fun pairMessages(messages: List<AgentMessageRow>): List<PairedRow> {
             "tool_diff" -> p["toolUseId"]?.jsonPrimitive?.content?.let { if (it !in diffByToolUse) diffByToolUse[it] = m }
             "bg_task" -> {
                 val taskId = p["taskId"]?.jsonPrimitive?.content ?: continue
-                // messages are DESC; the chronologically-first row is the one with the smallest absIndex.
-                val prev = bgFirstPk[taskId]
-                if (prev == null || m.absIndex < (bgLatest[taskId]?.absIndex ?: Long.MAX_VALUE)) { /* handled below */ }
+                // Track the LATEST payload per taskId (highest absIndex).
                 if (taskId !in bgLatest || m.absIndex > (bgLatest[taskId]?.absIndex ?: -1)) bgLatest[taskId] = m
             }
         }

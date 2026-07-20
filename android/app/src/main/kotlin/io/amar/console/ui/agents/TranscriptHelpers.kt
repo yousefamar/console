@@ -60,7 +60,9 @@ object TranscriptHelpers {
                     l.startsWith("-") -> "del"
                     else -> "ctx"
                 }
-                val no = if (kind == "add") newNo else oldNo
+                // Gutter number: del → old line no; add/ctx → new line no
+                // (mirrors the SPA's `r.newNo ?? r.oldNo`).
+                val no = if (kind == "del") oldNo else newNo
                 rows.add(DiffRow(kind, no, if (kind == "add") "+" else if (kind == "del") "-" else " ", l.drop(1)))
                 if (kind != "add") oldNo++
                 if (kind != "del") newNo++
@@ -77,9 +79,30 @@ object TranscriptHelpers {
      *  content/new_string/command/prompt/old_string as body. Mirrors
      *  AgentSessionView.tsx:401-446 (regex heuristic over unfinished JSON). */
     fun mineToolInput(partialJson: String): ToolInputPreview {
+        // Manual scan (not a backtracking regex — a 3000-char unterminated
+        // string blows the stack on `(?:[^"\\]|\\.)*`). Find `"key"` then the
+        // opening quote of its value, then read to the next UNescaped quote (or
+        // end of string, since the JSON is still streaming/unterminated).
         fun field(key: String): String? {
-            val m = Regex(""""$key"\s*:\s*"((?:[^"\\]|\\.)*)""").find(partialJson) ?: return null
-            return m.groupValues[1]
+            val marker = "\"$key\""
+            var i = partialJson.indexOf(marker)
+            if (i < 0) return null
+            i += marker.length
+            // skip whitespace + ':' + whitespace, then the opening quote
+            while (i < partialJson.length && (partialJson[i] == ' ' || partialJson[i] == '\t')) i++
+            if (i >= partialJson.length || partialJson[i] != ':') return null
+            i++
+            while (i < partialJson.length && (partialJson[i] == ' ' || partialJson[i] == '\t')) i++
+            if (i >= partialJson.length || partialJson[i] != '"') return null
+            i++
+            val sb = StringBuilder()
+            while (i < partialJson.length) {
+                val c = partialJson[i]
+                if (c == '\\') { if (i + 1 < partialJson.length) { sb.append(c); sb.append(partialJson[i + 1]); i += 2 } else { i++ } ; continue }
+                if (c == '"') break
+                sb.append(c); i++
+            }
+            return sb.toString()
         }
         val label = field("file_path") ?: field("path") ?: field("url") ?: field("pattern") ?: field("query")
         var body = field("content") ?: field("new_string") ?: field("command") ?: field("prompt") ?: field("old_string")
