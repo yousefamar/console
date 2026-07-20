@@ -22,8 +22,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.ManageSearch
-import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
@@ -64,11 +67,19 @@ import kotlinx.coroutines.launch
  * with recency autocomplete), long-press rename/delete. The editor lives in
  * NoteEditor.kt; the pen-page viewer in PenPageScreen.kt.
  */
+enum class NotesViewMode { TREE, CIRCLES, BLOG }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGrid: () -> Unit = {}) {
     val files by repo.observeFiles().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("notes_view", android.content.Context.MODE_PRIVATE) }
+    var viewMode by remember {
+        mutableStateOf(runCatching { NotesViewMode.valueOf(prefs.getString("viewMode", "TREE")!!) }.getOrDefault(NotesViewMode.TREE))
+    }
+    fun setViewMode(m: NotesViewMode) { viewMode = m; prefs.edit().putString("viewMode", m.name).apply() }
     var currentDir by remember { mutableStateOf("") }
     var searching by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) } // false = filename, true = content
@@ -76,6 +87,32 @@ fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGr
     var actionTarget by remember { mutableStateOf<NoteFileRow?>(null) }
     var renameTarget by remember { mutableStateOf<NoteFileRow?>(null) }
     var deleteTarget by remember { mutableStateOf<NoteFileRow?>(null) }
+    val accent = MaterialTheme.colorScheme.primary
+
+    // Non-tree views render full-screen (blog/circles) with their own chrome.
+    if (viewMode == NotesViewMode.BLOG) {
+        Column(Modifier.fillMaxSize()) {
+            ViewModeBar(viewMode, onMode = { setViewMode(it) }, onRescan = { scope.launch { repo.reconcile() } })
+            BlogView(repo, onOpenFile = onOpenFile, modifier = Modifier.weight(1f))
+        }
+        return
+    }
+    if (viewMode == NotesViewMode.CIRCLES) {
+        Column(Modifier.fillMaxSize()) {
+            ViewModeBar(viewMode, onMode = { setViewMode(it) }, onRescan = { scope.launch { repo.reconcile() } })
+            CirclesView(
+                files = files,
+                accent = accent,
+                onOpenFile = onOpenFile,
+                onMove = { from, toDir ->
+                    val to = (if (toDir.isEmpty() || toDir == CirclesLayoutRoot) "" else "$toDir/") + from.substringAfterLast('/')
+                    scope.launch { repo.rename(from, to); repo.tabs.renamed(from, to) }
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        return
+    }
 
     val dirs = remember(files, currentDir) {
         files.asSequence()
@@ -113,6 +150,15 @@ fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGr
                 }
                 IconButton(onClick = { searchMode = true; searching = true }) {
                     Icon(Icons.Filled.ManageSearch, "Search in files")
+                }
+                IconButton(onClick = { scope.launch { repo.reconcile() } }) {
+                    Icon(Icons.Filled.Refresh, "Rescan vault")
+                }
+                IconButton(onClick = { setViewMode(NotesViewMode.CIRCLES) }) {
+                    Icon(Icons.Filled.BubbleChart, "Circles view")
+                }
+                IconButton(onClick = { setViewMode(NotesViewMode.BLOG) }) {
+                    Icon(Icons.Filled.MenuBook, "Blog view")
                 }
             }
             if (files.isEmpty()) {
@@ -338,6 +384,26 @@ internal fun NotesQuickSwitcher(
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+internal const val CirclesLayoutRoot = "__root__"
+
+/** Toolbar for the blog / circles views: switch back to tree/other + rescan. */
+@Composable
+private fun ViewModeBar(current: NotesViewMode, onMode: (NotesViewMode) -> Unit, onRescan: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (current == NotesViewMode.BLOG) "Blog" else "Circles",
+            style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onRescan) { Icon(Icons.Filled.Refresh, "Rescan vault") }
+        if (current != NotesViewMode.CIRCLES) IconButton(onClick = { onMode(NotesViewMode.CIRCLES) }) { Icon(Icons.Filled.BubbleChart, "Circles view") }
+        if (current != NotesViewMode.BLOG) IconButton(onClick = { onMode(NotesViewMode.BLOG) }) { Icon(Icons.Filled.MenuBook, "Blog view") }
+        IconButton(onClick = { onMode(NotesViewMode.TREE) }) { Icon(Icons.Filled.AccountTree, "Tree view") }
+    }
 }
 
 /** Matching line + a little context (SPA switcher parity). */

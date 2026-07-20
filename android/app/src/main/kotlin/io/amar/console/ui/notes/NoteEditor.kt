@@ -116,6 +116,7 @@ fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
     var linkPicker by remember { mutableStateOf<LinkPickerRequest?>(null) }
     var closeConfirm by remember { mutableStateOf<String?>(null) }
     var vimEnabled by remember { mutableStateOf(false) }
+    var projectPanelSlug by remember { mutableStateOf<String?>(null) }
 
     // Push live edits into the tab model (drives the dirty dot).
     fun applyEdit(newTfv: TextFieldValue) {
@@ -260,6 +261,21 @@ fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
             queued = row?.dirty == true,
             vimEnabled = vimEnabled,
             onToggleVim = { vimEnabled = !vimEnabled },
+            projectSlug = FrontmatterParser.enclosingProjectSlug(activePath),
+            projectPill = { slug ->
+                ProjectPill(repo, slug, open = projectPanelSlug == slug, onToggle = {
+                    projectPanelSlug = if (projectPanelSlug == slug) null else slug
+                })
+            },
+        )
+    }
+
+    projectPanelSlug?.let { slug ->
+        ProjectPanelDialog(
+            repo = repo,
+            slug = slug,
+            onDismiss = { projectPanelSlug = null },
+            onOpenFile = { p -> scope.launch { repo.tabs.open(p, repo.openFile(p) ?: "") } },
         )
     }
 
@@ -427,6 +443,8 @@ private fun NoteStatusBar(
     queued: Boolean,
     vimEnabled: Boolean,
     onToggleVim: () -> Unit,
+    projectSlug: String?,
+    projectPill: @Composable (String) -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
@@ -441,6 +459,7 @@ private fun NoteStatusBar(
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        if (projectSlug != null) projectPill(projectSlug)
         if (dirty) Text("modified", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         if (queued) Text("queued", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
