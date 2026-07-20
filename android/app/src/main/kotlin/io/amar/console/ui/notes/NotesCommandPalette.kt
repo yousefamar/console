@@ -53,12 +53,14 @@ fun NotesCommandPalette(
      *  commands are omitted. */
     agents: io.amar.console.data.agents.AgentsRepository? = null,
     onOpenAgentSession: (String) -> Unit = {},
+    /** Hoisted so it survives the palette dismiss — NoteEditor opens its own
+     *  first-message prompt (FEATURES notes #10). */
+    onStartAgentInProject: (slug: String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var newDraftPrompt by remember { mutableStateOf(false) }
     var newProjectPrompt by remember { mutableStateOf(false) }
-    var startAgentPrompt by remember { mutableStateOf(false) }
 
     // Project slug of the active file (for the agent cwd).
     val projectSlug = activePath?.let { FrontmatterParser.enclosingProjectSlug(it) }
@@ -76,10 +78,10 @@ fun NotesCommandPalette(
             add(Cmd("Insert Link", onLink))
             add(Cmd("Insert Footnote", onFootnote))
             if (agents != null && projectSlug != null) {
-                add(Cmd("Start Agent in ${BlogHelpers.humaniseSlug(projectSlug)}") { startAgentPrompt = true })
+                add(Cmd("Start Agent in ${BlogHelpers.humaniseSlug(projectSlug)}") { onStartAgentInProject(projectSlug) })
                 for (s in liveSessions) {
                     add(Cmd("Jump to agent · ${s.name.ifBlank { s.id }.removeSuffix(" (fork)")}") {
-                        onDismiss(); onOpenAgentSession(s.id)
+                        onOpenAgentSession(s.id)
                     })
                 }
             }
@@ -140,27 +142,6 @@ fun NotesCommandPalette(
         )
         return
     }
-    if (startAgentPrompt && agents != null && projectSlug != null) {
-        TitlePromptDialog(
-            title = "Start agent in ${BlogHelpers.humaniseSlug(projectSlug)}",
-            inheritProject = null,
-            confirmLabel = "Start",
-            fieldLabel = "First message",
-            onDismiss = { startAgentPrompt = false },
-            onConfirm = { firstMessage ->
-                startAgentPrompt = false; onDismiss()
-                scope.launch {
-                    val vault = repo.getVaultPath()
-                    if (vault != null) {
-                        agents.createSession(firstMessage, "$vault/projects/$projectSlug", BlogHelpers.humaniseSlug(projectSlug))
-                        onToast("Starting agent…")
-                    } else onToast("Vault path not loaded — try again")
-                }
-            },
-        )
-        return
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Commands") },
