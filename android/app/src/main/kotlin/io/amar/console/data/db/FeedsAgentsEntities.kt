@@ -18,6 +18,14 @@ data class FeedRow(
     @PrimaryKey val id: String,
     val title: String,
     val folder: String?,
+    // v11: metadata the /feeds endpoint carries — needed for the feed-info sheet,
+    // per-feed item-limit menu, and copy-URL / open-site actions, all offline.
+    @ColumnInfo(defaultValue = "NULL") val xmlUrl: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val siteUrl: String? = null,
+    @ColumnInfo(defaultValue = "0") val fullText: Boolean = false,
+    /** null → default cap (50); a positive value overrides. */
+    @ColumnInfo(defaultValue = "NULL") val maxItems: Int? = null,
+    @ColumnInfo(defaultValue = "NULL") val addedAt: String? = null,
 )
 
 @Entity(
@@ -33,6 +41,8 @@ data class FeedItemRow(
     val snippet: String?,
     val publishedAt: Long,
     val imageUrl: String?,
+    // v11: author line + search-by-author parity with the SPA.
+    @ColumnInfo(defaultValue = "NULL") val author: String? = null,
 )
 
 /** Read markers: additive set, pendingSync=true rows await the hub PUT. */
@@ -50,6 +60,12 @@ interface FeedsDao {
     @Query("SELECT * FROM feed_list")
     fun observeFeeds(): Flow<List<FeedRow>>
 
+    @Query("SELECT * FROM feed_list WHERE id = :id")
+    suspend fun feedById(id: String): FeedRow?
+
+    @Query("DELETE FROM feed_list WHERE id = :id")
+    suspend fun deleteFeed(id: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertItems(rows: List<FeedItemRow>)
 
@@ -59,10 +75,21 @@ interface FeedsDao {
     @Query("SELECT * FROM feed_items WHERE id = :id")
     suspend fun itemById(id: String): FeedItemRow?
 
-    /** Search over cached items (title/snippet), newest first. */
+    /** Item ids belonging to a feed — mark-feed-read + delete-feed source set. */
+    @Query("SELECT id FROM feed_items WHERE feedId = :feedId")
+    suspend fun itemIdsForFeed(feedId: String): List<String>
+
+    @Query("SELECT id FROM feed_items WHERE feedId IN (:feedIds)")
+    suspend fun itemIdsForFeeds(feedIds: List<String>): List<String>
+
+    @Query("DELETE FROM feed_items WHERE feedId = :feedId")
+    suspend fun deleteItemsForFeed(feedId: String)
+
+    /** Search over cached items (title/snippet/author), newest first. */
     @Query(
         """SELECT * FROM feed_items WHERE title LIKE '%' || :q || '%'
              OR snippet LIKE '%' || :q || '%'
+             OR author LIKE '%' || :q || '%'
            ORDER BY publishedAt DESC LIMIT :limit"""
     )
     suspend fun searchItems(q: String, limit: Int = 100): List<FeedItemRow>

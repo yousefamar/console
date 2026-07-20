@@ -106,6 +106,22 @@ class MigrationTest {
     fun `migrate 9 to latest`() = migrateFrom(9)
 
     @Test
+    fun `migrate 10 to latest`() = migrateFrom(10)
+
+    @Test
+    fun `migrate 10 to latest with bookmark and feed data`() = migrateFrom(10) { db ->
+        db.execSQL(
+            "INSERT INTO bookmarks (file, title, url, tagsJson, addedAt) " +
+                "VALUES ('a.md', 'A', 'https://a', '[\"x\"]', 5)"
+        )
+        db.execSQL("INSERT INTO feed_list (id, title, folder) VALUES ('f1', 'Feed', NULL)")
+        db.execSQL(
+            "INSERT INTO feed_items (id, feedId, title, link, content, snippet, publishedAt, imageUrl) " +
+                "VALUES ('i1', 'f1', 'T', NULL, NULL, 's', 9, NULL)"
+        )
+    }
+
+    @Test
     fun `migrate 9 to latest with chat message data`() = migrateFrom(9) { db ->
         db.execSQL(
             """INSERT INTO chat_messages

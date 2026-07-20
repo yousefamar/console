@@ -74,4 +74,80 @@ class FeedsLogicTest {
         val names = folderNames(linkedMapOf("f1" to "Tech", "f2" to null, "f3" to "News", "f4" to "Tech"))
         assertEquals(listOf("Tech", "News"), names)
     }
+
+    // --- feedUnreadCounts --- //
+
+    @Test
+    fun `per-feed unread counts`() {
+        val items = listOf(item("a", "f1"), item("b", "f1"), item("c", "f2"))
+        val counts = feedUnreadCounts(items, readIds = setOf("b"))
+        assertEquals(1, counts["f1"])
+        assertEquals(1, counts["f2"])
+    }
+
+    // --- relativeTime (port of FeedItemListEntry) --- //
+
+    @Test
+    fun `relative time buckets`() {
+        val now = 1_000_000_000_000L
+        assertEquals("now", relativeTime(now - 30_000, now))            // <1m
+        assertEquals("5m", relativeTime(now - 5 * 60_000, now))
+        assertEquals("3h", relativeTime(now - 3 * 3600_000, now))
+        assertEquals("2d", relativeTime(now - 2 * 86_400_000L, now))
+        assertEquals("", relativeTime(0, now))                          // no date
+        assertEquals("now", relativeTime(now + 5000, now))              // future clamps to now
+    }
+
+    // --- HN comment parsing --- //
+
+    @Test
+    fun `extract HN item id from content`() {
+        assertEquals("12345", extractHnItemId("<a href=\"https://news.ycombinator.com/item?id=12345\">c</a>"))
+        assertNull(extractHnItemId("no link here"))
+        assertNull(extractHnItemId(null))
+    }
+
+    @Test
+    fun `parse HN tree nests comments`() {
+        val raw = """
+        {"id": 1, "descendants": 2, "score": 42, "children": [
+          {"id": 2, "by": "alice", "text": "hello", "time": 100, "children": [
+            {"id": 3, "by": "bob", "text": "reply", "time": 200, "children": []}
+          ]}
+        ]}
+        """.trimIndent()
+        val tree = parseHnTree(raw)!!
+        assertEquals(2, tree.descendants)
+        assertEquals(42, tree.score)
+        assertEquals(1, tree.children.size)
+        val top = tree.children[0]
+        assertEquals("alice", top.by)
+        assertEquals("hello", top.text)
+        assertEquals(1, top.children.size)
+        assertEquals("bob", top.children[0].by)
+    }
+
+    @Test
+    fun `parse HN tree tolerates garbage`() {
+        assertNull(parseHnTree(null))
+        assertNull(parseHnTree(""))
+        assertNull(parseHnTree("not json"))
+    }
+
+    @Test
+    fun `hn time ago buckets`() {
+        val now = 1_000_000L
+        assertEquals("just now", hnTimeAgo(now - 30, now))
+        assertEquals("5m ago", hnTimeAgo(now - 300, now))
+        assertEquals("2h ago", hnTimeAgo(now - 7200, now))
+        assertEquals("3d ago", hnTimeAgo(now - 3 * 86400, now))
+    }
+
+    // --- stripDomain --- //
+
+    @Test
+    fun `stripDomain strips www`() {
+        assertEquals("example.com", stripDomain("https://www.example.com/x"))
+        assertEquals("", stripDomain(null))
+    }
 }
