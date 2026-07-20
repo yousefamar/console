@@ -21,6 +21,12 @@ interface OutboxDao {
     @Query("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','failed','conflict')")
     fun observeBacklogCount(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','processing')")
+    fun observePendingCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM outbox WHERE status IN ('failed','conflict')")
+    fun observeStuckCount(): Flow<Int>
+
     @Query("UPDATE outbox SET status = :status, error = :error WHERE id = :id")
     suspend fun setStatus(id: Long, status: String, error: String? = null)
 

@@ -441,9 +441,14 @@ class MailRepository(
                     hub.post("/mail/threads/${enc(threadId)}/$pathSuffix${accountQuery(account)}")
                     Outbox.Result.Done
                 } catch (e: HubClient.HttpException) {
-                    // 4xx = permanent (thread gone etc.) — don't retry forever.
-                    if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
-                    else Outbox.Result.Retry("HTTP ${e.code}")
+                    when {
+                        // Thread already gone from Gmail — the label op is moot;
+                        // treat as success or the row wedges the sync banner.
+                        e.code == 404 || e.code == 410 -> Outbox.Result.Done
+                        // Other 4xx = permanent — don't retry forever.
+                        e.code in 400..499 -> Outbox.Result.Fail("HTTP ${e.code}")
+                        else -> Outbox.Result.Retry("HTTP ${e.code}")
+                    }
                 } catch (e: Exception) {
                     Outbox.Result.Retry(e.message ?: "network")
                 }

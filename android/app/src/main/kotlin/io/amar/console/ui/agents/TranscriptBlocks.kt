@@ -3,6 +3,7 @@ package io.amar.console.ui.agents
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -643,36 +645,38 @@ private fun splitBlocks(text: String): List<MdBlock> {
     return out
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun CodeFence(lang: String, code: String) {
+    // Long-press anywhere on the block copies it — no dedicated button row
+    // stealing vertical space. A transient overlay chip confirms the copy.
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1200); copied = false } }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { clipboard.setText(AnnotatedString(code)); copied = true },
+            ),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 3.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(lang.ifEmpty { "code" }.uppercase(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(
-                Modifier.clickable {
-                    clipboard.setText(AnnotatedString(code)); copied = true
-                },
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy, contentDescription = "Copy", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(11.dp))
-                Text(if (copied) "copied" else "copy", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
         Text(
             code,
             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
             fontFamily = FontFamily.Monospace,
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp),
         )
+        if (lang.isNotEmpty() || copied) {
+            Text(
+                if (copied) "copied" else lang.uppercase(),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                color = if (copied) GREEN else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.align(Alignment.TopEnd).padding(horizontal = 5.dp, vertical = 1.dp),
+            )
+        }
     }
 }
 

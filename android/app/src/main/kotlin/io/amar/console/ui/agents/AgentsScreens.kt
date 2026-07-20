@@ -94,7 +94,9 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     val micOwner by Mic.owner.collectAsState()
     val micHot by Mic.hot.collectAsState()
 
-    var filterAlerted by remember { mutableStateOf(false) }
+    val prefsCtx = androidx.compose.ui.platform.LocalContext.current
+    val filterPrefs = remember { prefsCtx.getSharedPreferences("agents_view", android.content.Context.MODE_PRIVATE) }
+    var filterAlerted by remember { mutableStateOf(filterPrefs.getBoolean("filterAlerted", false)) }
     var showTasks by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
     var showOrg by remember { mutableStateOf(false) }
@@ -155,7 +157,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                 IconButton(onClick = { showModelSheet = true }) {
                     Icon(Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
                 }
-                IconButton(onClick = { filterAlerted = !filterAlerted }) {
+                IconButton(onClick = { filterAlerted = !filterAlerted; filterPrefs.edit().putBoolean("filterAlerted", filterAlerted).apply() }) {
                     Icon(
                         Icons.Filled.FilterList, contentDescription = "Needs me",
                         tint = if (filterAlerted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,

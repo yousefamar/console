@@ -78,7 +78,9 @@ import org.maplibre.android.maps.MapView
 fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     val context = androidx.compose.ui.platform.LocalContext.current
     remember { MapLibre.getInstance(context) }
-    val mapView = remember { MapView(context) }
+    // MapLibre requires the full lifecycle from onCreate — without it the GL
+    // surface never initialises and the pane renders as a white rectangle.
+    val mapView = remember { MapView(context).apply { onCreate(null) } }
     val renderer = remember { MapRenderer() }
     val scope = rememberCoroutineScope()
     val state by repo.state.collectAsState()
