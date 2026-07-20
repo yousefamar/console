@@ -129,15 +129,47 @@ object GmailParse {
         )
     }
 
-    /** Full thread JSON → (thread row, message rows). Null when malformed. */
+    /** Base64url content of the first `text/calendar` part, or an attachmentId
+     *  to fetch. Returns Triple(inlineData?, attachmentId?, messageId). Null when
+     *  the message carries no calendar part. */
+    fun calendarPart(msg: JsonObject): Triple<String?, String?, String>? {
+        val mid = msg.str("id") ?: return null
+        var found: Triple<String?, String?, String>? = null
+        fun walk(part: JsonObject) {
+            if (found != null) return
+            if (part.str("mimeType") == "text/calendar") {
+                val body = part["body"] as? JsonObject
+                val data = body?.str("data")
+                val attId = body?.str("attachmentId")
+                if (data != null || attId != null) { found = Triple(data, attId, mid); return }
+            }
+            (part["parts"] as? JsonArray)?.forEach { c -> (c as? JsonObject)?.let { walk(it) } }
+        }
+        (msg["payload"] as? JsonObject)?.let { walk(it) }
+        return found
+    }
+
+    private fun isDraft(msg: JsonObject): Boolean = "DRAFT" in labelIds(msg)
+
+    /** User-defined Gmail label ids (Label_*) across a thread's messages. */
+    fun userLabelIds(thread: JsonObject): List<String> {
+        val messages = (thread["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return emptyList()
+        return messages.flatMap { labelIds(it) }.filter { it.startsWith("Label_") }.distinct()
+    }
+
+    /** Full thread JSON → (thread row, message rows). Null when malformed.
+     *  DRAFT messages are excluded (parity with gmailMessageToDbThread). */
     fun threadRows(thread: JsonObject, account: String): Pair<MailThreadRow, List<MailMessageRow>>? {
         val id = thread.str("id") ?: return null
-        val messages = (thread["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
-        if (messages.isEmpty()) return null
+        val allMessages = (thread["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
+        if (allMessages.isEmpty()) return null
+        // Drop DRAFT-labelled messages; fall back to all if the thread is only drafts.
+        val nonDraft = allMessages.filterNot { isDraft(it) }
+        val messages = nonDraft.ifEmpty { allMessages }
         val last = messages.last()
         val h = headers(last)
         val (fromName, fromEmail) = parseAddress(h["from"] ?: "")
-        val allLabels = messages.flatMap { labelIds(it) }.toSet()
+        val allLabels = allMessages.flatMap { labelIds(it) }.toSet()
         val rows = messages.mapNotNull { messageRow(it, id) }
         val threadRow = MailThreadRow(
             id = id,
