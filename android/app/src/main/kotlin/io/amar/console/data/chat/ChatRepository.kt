@@ -318,6 +318,26 @@ class ChatRepository(
     /** Warm the member cache (compose mount) so autocomplete has data. */
     suspend fun primeRoomMembers(roomId: String) { runCatching { roomMembers(roomId) } }
 
+    private val externalProfileCache = mutableMapOf<String, Pair<String, String>?>()
+
+    /**
+     * External profile (network, url) for a bridged room, from
+     * GET /matrix/rooms/:id/info externalProfile (SPA room header link).
+     * Cached per room; fetch failure → null (icon omitted).
+     */
+    suspend fun externalProfile(roomId: String): Pair<String, String>? {
+        if (externalProfileCache.containsKey(roomId)) return externalProfileCache[roomId]
+        val result = runCatching {
+            val resp = hub.get("/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/info")
+            val ep = json.parseToJsonElement(resp).jsonObject["externalProfile"] as? JsonObject ?: return@runCatching null
+            val network = ep["network"]?.jsonPrimitive?.content ?: return@runCatching null
+            val url = ep["url"]?.jsonPrimitive?.content ?: return@runCatching null
+            network to url
+        }.getOrNull()
+        externalProfileCache[roomId] = result
+        return result
+    }
+
     /** Local plaintext file for a media message (decrypts E2EE attachments). */
     suspend fun mediaFile(context: android.content.Context, msg: ChatMessageRow): java.io.File =
         E2eeMedia.mediaFile(context, hub, msg)
@@ -770,6 +790,14 @@ class ChatRepository(
         syncBus.on("matrix", "delta") { data ->
             scope.launch { runCatching { ingestMatrixDelta(data.jsonObject) } }
         }
+    }
+
+    /** Manual sync (pull-to-refresh): nudge the hub /sync loop then reconcile
+     *  (SPA hubBus.rpc('matrix','syncNow')). */
+    suspend fun syncNow() {
+        if (!syncBus.connected) return
+        runCatching { syncBus.rpc("matrix", "syncNow", kotlinx.serialization.json.JsonNull, timeoutMs = 30_000) }
+        reconcile()
     }
 
     /** Connect-time reconcile: rooms via seq patch, messages via resume cursor. */
