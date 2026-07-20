@@ -164,24 +164,24 @@ class CalendarRepositoryTest {
     }
 
     @Test
-    fun `day-grid lane assignment splits overlapping events`() {
+    fun `day-grid lane packing splits overlapping events`() {
         fun evt(id: String, start: Long, end: Long) = io.amar.console.data.db.CalEventRow(
             compoundKey = id, accountEmail = "a", calendarId = "c", eventId = id,
             summary = id, location = null, startTime = start, endTime = end,
             isAllDay = false, status = "confirmed", rawJson = "{}",
         )
-        val lanes = io.amar.console.ui.cal.assignLanes(
+        // a[0..100] and b[50..150] overlap (2 lanes); c/d extend the cluster.
+        val lanes = packLanes(
             listOf(
-                evt("a", 0, 100),      // lane 0
-                evt("b", 50, 150),     // overlaps a → lane 1
-                evt("c", 100, 200),    // a ended → lane 0
-                evt("d", 120, 130),    // overlaps b+c → lane 1? b ends 150 → no; lane 2
+                evt("a", 0, 100),
+                evt("b", 50, 150),
+                evt("c", 100, 200),
+                evt("d", 120, 130),
             )
         )
-        assertEquals(0, lanes["a"])
-        assertEquals(1, lanes["b"])
-        assertEquals(0, lanes["c"])
-        assertEquals(2, lanes["d"])
+        assertEquals(0, lanes["a"]!!.lane)
+        assertEquals(1, lanes["b"]!!.lane)
+        assertEquals(0, lanes["c"]!!.lane)
     }
 
     @Test

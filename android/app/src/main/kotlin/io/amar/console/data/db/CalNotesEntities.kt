@@ -72,6 +72,13 @@ interface CalendarDao {
 
     @Query("DELETE FROM cal_events WHERE endTime < :cutoffMs OR startTime > :horizonMs")
     suspend fun pruneOutsideWindow(cutoffMs: Long, horizonMs: Long)
+
+    // Account removal: purge that account's cached calendars + events.
+    @Query("DELETE FROM cal_list WHERE accountEmail = :account")
+    suspend fun deleteCalendarsForAccount(account: String)
+
+    @Query("DELETE FROM cal_events WHERE accountEmail = :account")
+    suspend fun deleteEventsForAccount(account: String)
 }
 
 // ---------------------------------------------------------------------- //
