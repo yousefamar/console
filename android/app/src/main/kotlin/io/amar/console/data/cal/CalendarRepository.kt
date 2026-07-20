@@ -164,7 +164,10 @@ class CalendarRepository(
     private var appScope: CoroutineScope? = null
 
     private fun putConfig(patch: JsonObject) {
-        appScope?.launch { runCatching { hub.put("/config", patch.toString()) } }
+        // Route through HubPrefs so the shared /config mirror stays consistent
+        // (setPrefs shallow-merges locally + PUTs), rather than a bare hub.put
+        // that leaves HubPrefs.prefs stale.
+        appScope?.launch { runCatching { HubPrefs.setPrefs(hub, patch) } }
     }
 
     // ---------------------------------------------------------------- //
