@@ -24,13 +24,40 @@ object AttachmentOpener {
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(Dispatchers.IO)
 
+    private fun dirOf(ctx: Context): File = File(ctx.applicationContext.cacheDir, "mail-attachments").apply { mkdirs() }
+    private fun fileOf(ctx: Context, attachmentId: String, filename: String): File {
+        val safe = filename.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(dirOf(ctx), "${attachmentId.take(16).replace('/', '_')}-$safe")
+    }
+
+    /** Fetch+cache one attachment (no-op if already cached). Returns the file or null. */
+    suspend fun cacheOne(ctx: Context, messageId: String, attachmentId: String, filename: String): File? {
+        val file = fileOf(ctx, attachmentId, filename)
+        if (file.exists()) return file
+        return runCatching {
+            val hub = HubClient()
+            val resp = hub.get(
+                "/mail/messages/${java.net.URLEncoder.encode(messageId, "UTF-8")}/attachments/${java.net.URLEncoder.encode(attachmentId, "UTF-8")}"
+            )
+            val data = json.parseToJsonElement(resp).jsonObject["data"]?.jsonPrimitive?.content ?: return@runCatching null
+            file.writeBytes(Base64.decode(data, Base64.URL_SAFE))
+            file
+        }.getOrNull()
+    }
+
+    /** Delete cached blobs for the given attachment ids (eviction on thread removal). */
+    fun evict(ctx: Context, attachmentIds: List<String>) {
+        val prefixes = attachmentIds.map { it.take(16).replace('/', '_') + "-" }
+        dirOf(ctx).listFiles()?.forEach { f ->
+            if (prefixes.any { f.name.startsWith(it) }) runCatching { f.delete() }
+        }
+    }
+
     fun open(context: Context, messageId: String, attachmentId: String, filename: String) {
         val appCtx = context.applicationContext
         scope.launch {
             try {
-                val dir = File(appCtx.cacheDir, "mail-attachments").apply { mkdirs() }
-                val safe = filename.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val file = File(dir, "${attachmentId.take(16).replace('/', '_')}-$safe")
+                val file = fileOf(appCtx, attachmentId, filename)
                 if (!file.exists()) {
                     val hub = HubClient()
                     val resp = hub.get(

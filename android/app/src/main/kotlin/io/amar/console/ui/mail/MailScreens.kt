@@ -106,10 +106,32 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
     LaunchedEffect(searchQuery) {
         searchResults = if (searchQuery.length >= 2) repo.search(searchQuery) else emptyList()
     }
+    // Background-preload inbox attachments so they open instantly + offline
+    // (parity with the SPA's preloadAttachments). cacheDir is OS-evictable, so
+    // no explicit cap needed; yield between fetches to keep the UI smooth.
+    val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    LaunchedEffect(threads.size) {
+        if (threads.isEmpty()) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            for ((mid, aid, name) in repo.inboxAttachmentTargets()) {
+                io.amar.console.data.mail.AttachmentOpener.cacheOne(appCtx, mid, aid, name)
+                kotlinx.coroutines.yield()
+            }
+        }
+    }
 
     fun scheduleUndo(u: UndoState) {
         undo = u
-        scope.launch { delay(5000); if (undo?.threadId == u.threadId && undo?.kind == u.kind) undo = null }
+        scope.launch {
+            delay(5000)
+            if (undo?.threadId == u.threadId && undo?.kind == u.kind) {
+                undo = null
+                // Undo window elapsed → the thread really left the inbox; evict its
+                // cached attachment blobs to bound offline storage (entry #103).
+                val ids = runCatching { repo.threadAttachments(u.threadId).map { it.second } }.getOrDefault(emptyList())
+                if (ids.isNotEmpty()) io.amar.console.data.mail.AttachmentOpener.evict(appCtx, ids)
+            }
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
