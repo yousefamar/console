@@ -186,6 +186,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             onToggleLayers = { showLayers = !showLayers },
             onToggleCreds = { showCreds = !showCreds },
             onRangeDays = { days -> scope.launch { repo.loadHistory(System.currentTimeMillis() - days * MapUiState.DAY_MS, System.currentTimeMillis()) } },
+            onCustomRange = { from, to -> scope.launch { repo.loadHistory(from, to) } },
             onDevice = { dev -> scope.launch { repo.loadHistory(device = dev) } },
             onFlyToMe = {
                 state.current.firstOrNull()?.let { fix ->
@@ -255,6 +256,7 @@ private fun MapToolbar(
     onToggleLayers: () -> Unit,
     onToggleCreds: () -> Unit,
     onRangeDays: (Long) -> Unit,
+    onCustomRange: (Long, Long) -> Unit,
     onDevice: (String) -> Unit,
     onFlyToMe: () -> Unit,
     onFetchHere: () -> Unit,
@@ -285,7 +287,7 @@ private fun MapToolbar(
 
             // Location cluster (only while the Location built-in is on).
             if (state.builtinVisible[BuiltinLayer.LOCATION] != false) {
-                LocationRangeChip(state, onRangeDays, onDevice)
+                LocationRangeChip(state, onRangeDays, onCustomRange, onDevice)
                 ToolbarChip(onClick = onFlyToMe) {
                     Icon(Icons.Filled.MyLocation, "Centre on my location", modifier = Modifier.size(15.dp))
                 }
@@ -334,10 +336,21 @@ private fun ToolbarChip(onClick: () -> Unit, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun LocationRangeChip(state: MapUiState, onRangeDays: (Long) -> Unit, onDevice: (String) -> Unit) {
+private fun LocationRangeChip(state: MapUiState, onRangeDays: (Long) -> Unit, onCustomRange: (Long, Long) -> Unit, onDevice: (String) -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var open by remember { mutableStateOf(false) }
     var devOpen by remember { mutableStateOf(false) }
+    var custom by remember { mutableStateOf(false) }
     val ranges = listOf(1L to "Last 24h", 2L to "Last 48h", 7L to "Last 7 days", 30L to "Last 30 days", 90L to "Last 90 days", 365L to "Last year")
+
+    // Custom range: pick from-date, then to-date; each pick reloads history.
+    if (custom) {
+        custom = false
+        pickDate(ctx, state.rangeFrom) { fromMs ->
+            pickDate(ctx, state.rangeTo) { toMs -> onCustomRange(fromMs, toMs) }
+        }
+    }
+
     Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), tonalElevation = 2.dp) {
         Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             if (state.loadingHistory) {
@@ -355,6 +368,7 @@ private fun LocationRangeChip(state: MapUiState, onRangeDays: (Long) -> Unit, on
                     for ((d, label) in ranges) {
                         DropdownMenuItem(text = { Text(label) }, onClick = { open = false; onRangeDays(d) })
                     }
+                    DropdownMenuItem(text = { Text("Custom…") }, onClick = { open = false; custom = true })
                 }
             }
             if (state.devices.size > 1) {
@@ -698,6 +712,24 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
 
 private fun openUrl(ctx: android.content.Context, url: String) {
     runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+}
+
+/** Native date picker seeded from [initialMs]; calls back with the chosen day's
+ *  epoch-ms (local midnight). Used by the custom history range. */
+private fun pickDate(ctx: android.content.Context, initialMs: Long, onPicked: (Long) -> Unit) {
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = initialMs }
+    android.app.DatePickerDialog(
+        ctx,
+        { _, year, month, day ->
+            val c = java.util.Calendar.getInstance().apply {
+                clear(); set(year, month, day, 0, 0, 0)
+            }
+            onPicked(c.timeInMillis)
+        },
+        cal.get(java.util.Calendar.YEAR),
+        cal.get(java.util.Calendar.MONTH),
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
+    ).show()
 }
 
 /** Colour a log entry by its type (mirrors logColor in MapTab.tsx). */
