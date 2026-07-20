@@ -240,6 +240,28 @@ fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () 
             onFeedMenu = { feedMenuFor = it },
         )
 
+        // Onboarding: no feeds at all → prompt to add / import.
+        if (feeds.isEmpty() && items.isEmpty()) {
+            Column(
+                Modifier.fillMaxSize().padding(32.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(Icons.Outlined.RssFeed, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("No feeds yet", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    "Add a feed or import an OPML file to get started.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { showAdd = true }, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Import OPML or Add Feed")
+                }
+            }
+            if (showAdd) FeedAddModal(repo = repo, onDismiss = { showAdd = false })
+            return
+        }
+
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = {
