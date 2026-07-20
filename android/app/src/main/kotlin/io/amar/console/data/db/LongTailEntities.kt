@@ -1,5 +1,6 @@
 package io.amar.console.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -19,6 +20,13 @@ data class BookmarkRow(
     val url: String?,
     val tagsJson: String?,              // ["tag", ...]
     val addedAt: Long,
+    // v11: the /bookmarks list endpoint already carries these — cache them so
+    // the detail sheet (archive link + Added date) and search work offline and
+    // don't blank while the lazy body fetch is in flight.
+    @ColumnInfo(defaultValue = "NULL") val description: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val archive: String? = null,
+    /** Raw `added` string (ISO or date) for en-GB display; addedAt is the sort key. */
+    @ColumnInfo(defaultValue = "NULL") val addedRaw: String? = null,
 )
 
 @Dao
@@ -26,8 +34,17 @@ interface BookmarksDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(rows: List<BookmarkRow>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(row: BookmarkRow)
+
     @Query("SELECT * FROM bookmarks ORDER BY addedAt DESC")
     fun observeAll(): Flow<List<BookmarkRow>>
+
+    @Query("SELECT * FROM bookmarks WHERE file = :file")
+    suspend fun byFile(file: String): BookmarkRow?
+
+    @Query("UPDATE bookmarks SET tagsJson = :tagsJson WHERE file = :file")
+    suspend fun updateTags(file: String, tagsJson: String)
 
     @Query("DELETE FROM bookmarks WHERE file NOT IN (:files)")
     suspend fun deleteAbsent(files: List<String>)

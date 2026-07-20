@@ -9,10 +9,12 @@ import io.amar.console.data.db.FeedRow
 import io.amar.console.data.db.MetaRow
 import io.amar.console.sync.outbox.Outbox
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -46,7 +48,100 @@ class FeedsRepository(
     fun observeFeeds(): Flow<List<FeedRow>> = db.feeds().observeFeeds()
     fun observeReadIds(): Flow<List<String>> = db.feeds().observeReadIds()
     suspend fun itemById(id: String): FeedItemRow? = db.feeds().itemById(id)
+    suspend fun feedById(id: String): FeedRow? = db.feeds().feedById(id)
     suspend fun search(q: String): List<FeedItemRow> = db.feeds().searchItems(q)
+
+    /** Mark every unread item of one feed read (bulk), coalesced sync. */
+    suspend fun markFeedRead(feedId: String) {
+        val ids = db.feeds().itemIdsForFeed(feedId)
+        if (ids.isEmpty()) return
+        markAllRead(ids)
+    }
+
+    /** Mark every unread item across a folder's feeds read. */
+    suspend fun markFolderRead(feedIds: List<String>) {
+        if (feedIds.isEmpty()) return
+        val ids = db.feeds().itemIdsForFeeds(feedIds)
+        if (ids.isEmpty()) return
+        markAllRead(ids)
+    }
+
+    // --- Subscription CRUD (online; refetch on success, matches SPA) --- //
+
+    /** POST /feeds {xmlUrl, folder?, fullText?}; returns true on success. */
+    suspend fun addFeed(xmlUrl: String, folder: String?, fullText: Boolean): Boolean {
+        val body = buildJsonObject {
+            put("xmlUrl", JsonPrimitive(xmlUrl))
+            if (!folder.isNullOrBlank()) put("folder", JsonPrimitive(folder))
+            if (fullText) put("fullText", JsonPrimitive(true))
+        }
+        return runCatching {
+            hub.post("/feeds", body.toString())
+            reconcile()
+            true
+        }.getOrDefault(false)
+    }
+
+    /** PUT /feeds/:id {title?, folder?, fullText?, maxItems?}; retrims on maxItems. */
+    suspend fun updateFeed(
+        feedId: String,
+        title: String? = null,
+        folder: String? = null,
+        fullText: Boolean? = null,
+        maxItems: Int? = null,
+        clearMaxItems: Boolean = false,
+    ): Boolean = runCatching {
+        val body = buildJsonObject {
+            if (title != null) put("title", JsonPrimitive(title))
+            if (folder != null) put("folder", JsonPrimitive(folder))
+            if (fullText != null) put("fullText", JsonPrimitive(fullText))
+            if (clearMaxItems) put("maxItems", kotlinx.serialization.json.JsonNull)
+            else if (maxItems != null) put("maxItems", JsonPrimitive(maxItems))
+        }
+        hub.put("/feeds/$feedId", body.toString())
+        // Reflect locally + retrim so the item cap applies without a full sync.
+        db.feeds().feedById(feedId)?.let { existing ->
+            db.feeds().upsertFeeds(listOf(existing.copy(
+                title = title ?: existing.title,
+                folder = folder ?: existing.folder,
+                fullText = fullText ?: existing.fullText,
+                maxItems = if (clearMaxItems) null else (maxItems ?: existing.maxItems),
+            )))
+        }
+        db.feeds().pruneFeed(feedId, effectiveCap(feedId))
+        true
+    }.getOrDefault(false)
+
+    /** DELETE /feeds/:id; purge the feed's items + read entries locally. */
+    suspend fun deleteFeed(feedId: String): Boolean = runCatching {
+        hub.delete("/feeds/$feedId")
+        val ids = db.feeds().itemIdsForFeed(feedId)
+        db.feeds().deleteItemsForFeed(feedId)
+        for (id in ids) db.feeds().deleteRead(id)
+        db.feeds().deleteFeed(feedId)
+        true
+    }.getOrDefault(false)
+
+    /** POST /feeds/import-opml {opmlXml}; refetch feeds only (items would be slow). */
+    suspend fun importOpml(opmlXml: String): Boolean = runCatching {
+        val body = buildJsonObject { put("opmlXml", JsonPrimitive(opmlXml)) }
+        hub.post("/feeds/import-opml", body.toString())
+        reconcileFeedsOnly()
+        true
+    }.getOrDefault(false)
+
+    /** Existing folder names (for the add-feed folder autocomplete). */
+    suspend fun folderNames(): List<String> =
+        db.feeds().observeFeeds().first().mapNotNull { it.folder }.distinct().sorted()
+
+    private suspend fun effectiveCap(feedId: String): Int {
+        val cap = db.feeds().feedById(feedId)?.maxItems
+        return if (cap != null && cap > 0) cap else ITEMS_PER_FEED
+    }
+
+    /** HN comment tree (depth 3) — raw JSON from GET /feeds/hn/:id. */
+    suspend fun hnComments(itemId: String): String? =
+        runCatching { hub.get("/feeds/hn/$itemId?depth=3") }.getOrNull()
 
     suspend fun markRead(itemId: String) {
         db.feeds().upsertRead(listOf(FeedReadRow(itemId, pendingSync = true)))
@@ -120,16 +215,42 @@ class FeedsRepository(
         }
     }
 
-    suspend fun reconcile() {
-        // Subscriptions (names/folders for grouping).
+    /** Refetch just the subscription list (folders/metadata) — used by OPML
+     *  import, which deliberately skips the slow all-items refetch. */
+    suspend fun reconcileFeedsOnly() {
         runCatching {
             val resp = hub.get("/feeds")
             val feeds = (json.parseToJsonElement(resp) as? JsonArray)
                 ?.mapNotNull { it as? JsonObject } ?: emptyList()
-            val rows = feeds.mapNotNull { f ->
-                val id = f["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                FeedRow(id, f["title"]?.jsonPrimitive?.content ?: id, f["folder"]?.jsonPrimitive?.content)
+            val rows = feeds.mapNotNull { feedRow(it) }
+            if (rows.isNotEmpty()) {
+                db.feeds().upsertFeeds(rows)
+                db.feeds().observeFeeds().first() // no-op; keeps flow warm
             }
+        }
+    }
+
+    private fun feedRow(f: JsonObject): FeedRow? {
+        val id = f["id"]?.jsonPrimitive?.content ?: return null
+        return FeedRow(
+            id = id,
+            title = f["title"]?.jsonPrimitive?.content ?: id,
+            folder = f["folder"]?.jsonPrimitive?.content,
+            xmlUrl = f["xmlUrl"]?.jsonPrimitive?.content,
+            siteUrl = f["siteUrl"]?.jsonPrimitive?.content,
+            fullText = f["fullText"]?.jsonPrimitive?.booleanOrNull ?: false,
+            maxItems = f["maxItems"]?.jsonPrimitive?.content?.toIntOrNull(),
+            addedAt = f["addedAt"]?.jsonPrimitive?.content,
+        )
+    }
+
+    suspend fun reconcile() {
+        // Subscriptions (names/folders/metadata for grouping + info sheet).
+        runCatching {
+            val resp = hub.get("/feeds")
+            val feeds = (json.parseToJsonElement(resp) as? JsonArray)
+                ?.mapNotNull { it as? JsonObject } ?: emptyList()
+            val rows = feeds.mapNotNull { feedRow(it) }
             if (rows.isNotEmpty()) db.feeds().upsertFeeds(rows)
         }
 
@@ -177,6 +298,7 @@ class FeedsRepository(
             snippet = item["contentSnippet"]?.jsonPrimitive?.content,
             publishedAt = publishedMs,
             imageUrl = item["imageUrl"]?.jsonPrimitive?.content,
+            author = item["author"]?.jsonPrimitive?.content,
         )
     }
 

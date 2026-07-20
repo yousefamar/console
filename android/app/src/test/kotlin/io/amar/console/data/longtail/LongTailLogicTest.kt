@@ -155,4 +155,23 @@ class LongTailLogicTest {
         assertEquals("Al", s.ownerName)
         assertTrue(s.hot)
     }
+
+    // --- music control error classification (mirrors music.ts toastControlError) --- //
+
+    @Test
+    fun `music error maps device, restriction, not-linked, generic`() {
+        assertTrue(classifyMusicError(RuntimeException("no_active_device")).startsWith("No playback device"))
+        assertTrue(classifyMusicError(RuntimeException("Restriction violated")).contains("Not supported"))
+        assertTrue(classifyMusicError(RuntimeException("not linked")).contains("not linked"))
+        assertEquals("Spotify control failed", classifyMusicError(RuntimeException("boom")))
+        assertEquals("Spotify control failed", classifyMusicError(null))
+    }
+
+    @Test
+    fun `music error reads HttpException code`() {
+        val e = io.amar.console.core.HubClient.HttpException(403, "Player command failed: Restriction violated")
+        assertTrue(classifyMusicError(e).contains("Not supported"))
+        val e401 = io.amar.console.core.HubClient.HttpException(401, "unauthorized")
+        assertTrue(classifyMusicError(e401).contains("not linked"))
+    }
 }
