@@ -110,19 +110,23 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         while (true) { io.amar.console.data.agents.Cron.refreshAll(); kotlinx.coroutines.delay(30_000) }
     }
 
+    val sessionOrder by repo.sessionOrder.collectAsState()
+    val collapsedGroups by repo.collapsedGroups.collectAsState()
+
     fun alerted(s: AgentSessionRow): Boolean =
         s.hasUnread || s.needsAttention || approvals.any { it.sessionId == s.id } || activityMap[s.id]?.running == true
 
-    val sorted = remember(sessions, filterAlerted, approvals, activityMap) {
-        sessions
-            .filter { !filterAlerted || alerted(it) }
-            .sortedWith(
-                compareByDescending<AgentSessionRow> { it.isAl }
-                    .thenByDescending { it.needsAttention }
-                    .thenByDescending { it.hasUnread }
-                    .thenBy { it.name.lowercase() }
-            )
+    // Al pinned first; rest clustered by cwd into an indented tree (fork lineage
+    // nested). The "needs me" filter collapses to a flat alerted list.
+    val al = remember(sessions) { sessions.firstOrNull { it.isAl } }
+    val rows = remember(sessions, filterAlerted, sessionOrder, collapsedGroups, approvals, activityMap) {
+        val rest = sessions.filter { !it.isAl }
+        if (filterAlerted) rest.filter { alerted(it) }.sortedWith(
+            compareByDescending<AgentSessionRow> { it.needsAttention }.thenByDescending { it.hasUnread }.thenBy { it.name.lowercase() }
+        ).map { SidebarRow.Session(it, 0) }
+        else flattenSidebar(rest, sessionOrder, collapsedGroups)
     }
+    val visibleCount = rows.count { it is SidebarRow.Session } + (if (al != null && !filterAlerted) 1 else 0)
     val openTaskCount = tasks.count { it.status in setOf("pending", "in_progress", "blocked") }
 
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
@@ -131,7 +135,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         io.amar.console.ui.components.PaneTopBar(
             title = "Agents",
             onGrid = onGrid,
-            subtitle = if (connected) "${sorted.size} sessions · live" else "${sorted.size} cached · offline",
+            subtitle = if (connected) "$visibleCount sessions · live" else "$visibleCount cached · offline",
             actions = {
                 IconButton(onClick = { showSwitcher = true }) {
                     Icon(Icons.Filled.Search, contentDescription = "Quick switch", modifier = Modifier.size(20.dp))
@@ -178,7 +182,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         }
         if (approvals.isNotEmpty()) ApprovalCard(repo, approvals.first())
 
-        if (sorted.isEmpty()) {
+        if (visibleCount == 0) {
             io.amar.console.ui.components.EmptyState(
                 Icons.Filled.Circle,
                 if (filterAlerted) "Nothing needs you" else "No sessions yet",
@@ -187,22 +191,45 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         } else {
             Box(Modifier.fillMaxSize()) {
                 LazyColumn(Modifier.fillMaxSize()) {
-                    items(sorted, key = { it.id }) { session ->
-                        SessionRow(
-                            session,
-                            isWorking = activityMap[session.id]?.running == true,
-                            subtitle = sessionSubtitle(session, activityMap[session.id]),
-                            bgProcCount = session.backgroundProcessCount,
-                            micState = when {
-                                micOwner == session.id && micHot -> "hot"
-                                micOwner == session.id -> "owner"
-                                else -> null
-                            },
-                            generatingTitle = session.id in generatingTitles,
-                            onClick = { onOpenSession(session.id) },
-                            onLongPress = { menuTarget = session },
-                            onMic = { Mic.setMic(if (micOwner == session.id) "al" else session.id) },
-                        )
+                    if (al != null && !filterAlerted) {
+                        item(key = "al") {
+                            SessionRow(
+                                al,
+                                isWorking = activityMap[al.id]?.running == true,
+                                subtitle = sessionSubtitle(al, activityMap[al.id]),
+                                bgProcCount = 0,
+                                micState = when {
+                                    micOwner == al.id && micHot -> "hot"; micOwner == al.id -> "owner"; else -> null
+                                },
+                                generatingTitle = false,
+                                onClick = { onOpenSession(al.id) },
+                                onMic = { Mic.setMic(if (micOwner == al.id) "al" else al.id) },
+                            )
+                        }
+                    }
+                    items(rows, key = { row -> when (row) { is SidebarRow.Group -> "g:${row.node.cwd}"; is SidebarRow.Session -> row.session.id } }) { row ->
+                        when (row) {
+                            is SidebarRow.Group -> GroupHeader(row.node, collapsedGroups.contains(row.node.cwd)) { repo.toggleGroupCollapsed(row.node.cwd) }
+                            is SidebarRow.Session -> {
+                                val session = row.session
+                                SessionRow(
+                                    session,
+                                    isWorking = activityMap[session.id]?.running == true,
+                                    subtitle = sessionSubtitle(session, activityMap[session.id]),
+                                    bgProcCount = session.backgroundProcessCount,
+                                    indent = row.depth,
+                                    micState = when {
+                                        micOwner == session.id && micHot -> "hot"
+                                        micOwner == session.id -> "owner"
+                                        else -> null
+                                    },
+                                    generatingTitle = session.id in generatingTitles,
+                                    onClick = { onOpenSession(session.id) },
+                                    onLongPress = { menuTarget = session },
+                                    onMic = { Mic.setMic(if (micOwner == session.id) "al" else session.id) },
+                                )
+                            }
+                        }
                     }
                 }
                 androidx.compose.material3.FloatingActionButton(
@@ -335,6 +362,7 @@ private fun SessionRow(
     bgProcCount: Int = 0,
     micState: String? = null,
     generatingTitle: Boolean = false,
+    indent: Int = 0,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
     onMic: () -> Unit = {},
@@ -346,7 +374,7 @@ private fun SessionRow(
             .fillMaxWidth()
             .then(if (session.needsAttention) Modifier.background(MaterialTheme.colorScheme.error.copy(alpha = 0.05f)) else Modifier)
             .combinedClickable(onClick = onClick, onLongClick = onLongPress)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(start = (12 + indent * 12).dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -405,6 +433,31 @@ private fun SessionRow(
             Icon(Icons.Filled.NotificationImportant, contentDescription = "Needs attention", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
         }
         if (session.hasUnread) Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+    }
+}
+
+/** Collapsible cwd group header with aggregate badges (running / unread / total
+ *  rolled up over descendants). */
+@Composable
+private fun GroupHeader(node: SessionGroupNode, collapsed: Boolean, onToggle: () -> Unit) {
+    fun rollup(n: SessionGroupNode): Triple<Int, Int, Int> {
+        var running = n.sessions.count { it.status == "running" }
+        var unread = n.sessions.count { it.hasUnread }
+        var total = n.sessions.size
+        for (c in n.children) { val (r, u, t) = rollup(c); running += r; unread += u; total += t }
+        return Triple(running, unread, total)
+    }
+    val (running, unread, total) = rollup(node)
+    Row(
+        Modifier.fillMaxWidth().clickable { onToggle() }.padding(start = (8 + node.depth * 12).dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(if (collapsed) "▸" else "▾", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(node.label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        if (running > 0) Box(Modifier.size(6.dp).clip(CircleShape).background(AMBER))
+        if (unread > 0) Text("$unread", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        Text("$total", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
     }
 }
 
