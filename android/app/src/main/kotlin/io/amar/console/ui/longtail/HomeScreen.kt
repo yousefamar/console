@@ -91,7 +91,13 @@ fun HomeScreen(
 ) {
     val state by repo.state.collectAsState()
     val scope = rememberCoroutineScope()
-    var subTab by remember { mutableStateOf(HomeSubTab.ALERTS) }
+    val ctx = LocalContext.current
+    // Persisted sub-tab choice (mirror of localStorage 'console:home:subtab').
+    val prefs = remember { ctx.getSharedPreferences("home_view", android.content.Context.MODE_PRIVATE) }
+    var subTab by remember {
+        mutableStateOf(runCatching { HomeSubTab.valueOf(prefs.getString("subtab", "ALERTS")!!) }.getOrDefault(HomeSubTab.ALERTS))
+    }
+    fun setSubTab(t: HomeSubTab) { subTab = t; prefs.edit().putString("subtab", t.name).apply() }
 
     LaunchedEffect(Unit) {
         repo.refreshSnapshot(); repo.refreshAlerts(); repo.refreshCanvasMeta()
@@ -112,7 +118,7 @@ fun HomeScreen(
             IconButton(onClick = onGrid) { Icon(Icons.Filled.Apps, "App grid", modifier = Modifier.size(20.dp)) }
             TabRow(selectedTabIndex = subTab.ordinal, modifier = Modifier.weight(1f)) {
                 for (t in HomeSubTab.entries) {
-                    Tab(selected = subTab == t, onClick = { subTab = t }, text = {
+                    Tab(selected = subTab == t, onClick = { setSubTab(t) }, text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(t.label, style = MaterialTheme.typography.labelMedium)
                             if (t == HomeSubTab.ALERTS && state.alerts.isNotEmpty()) CountBadge(state.alerts.size)
