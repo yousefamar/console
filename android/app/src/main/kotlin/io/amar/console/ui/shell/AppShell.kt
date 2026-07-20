@@ -54,6 +54,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     val connected by app.graph.syncBus.connectedFlow.collectAsState()
     val backlog by app.graph.db.outbox().observeBacklogCount().collectAsState(initial = 0)
     val update by io.amar.console.core.Updater.available.collectAsState()
+    val authExpired by io.amar.console.core.AuthState.expired.collectAsState()
 
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: GRID_ROUTE
@@ -115,6 +116,11 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     onInstall = { io.amar.console.core.Updater.downloadAndInstall(app, u.url) },
                     onDismiss = { io.amar.console.core.Updater.dismiss() },
                 )
+            }
+            if (authExpired) {
+                // Foreground re-pair prompt (a dead bearer surfaced as 401/403).
+                // Tapping opens Settings, where pairing lives.
+                ReAuthBanner(onFix = { navController.openApp(Pane.Settings) })
             }
 
             NavHost(
@@ -179,7 +185,16 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("notes/{path}") { entry ->
                     val path = android.net.Uri.decode(entry.arguments?.getString("path") ?: "")
-                    NoteEditorScreen(app.graph.notes, path, onBack = { navController.popBackStack() })
+                    NoteEditorScreen(
+                        app.graph.notes, path,
+                        onBack = { navController.popBackStack() },
+                        agents = app.graph.agents,
+                        onOpenAgentSession = { sessionId ->
+                            navController.openApp(Pane.Agents)
+                            navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
+                        },
+                        mirror = app.graph.mirror,
+                    )
                 }
                 composable(Pane.Feeds.route) {
                     FeedsScreen(

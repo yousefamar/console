@@ -14,6 +14,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,6 +22,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.amar.console.data.notes.BlogHelpers
 import io.amar.console.data.notes.FrontmatterParser
 import io.amar.console.data.notes.Fuzzy
 import io.amar.console.data.notes.NotesRepository
@@ -47,11 +49,24 @@ fun NotesCommandPalette(
     onLink: () -> Unit,
     onFootnote: () -> Unit,
     onToast: (String) -> Unit,
+    /** Agent cross-pane wiring (FEATURES notes #9/#10) — when null those
+     *  commands are omitted. */
+    agents: io.amar.console.data.agents.AgentsRepository? = null,
+    onOpenAgentSession: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var newDraftPrompt by remember { mutableStateOf(false) }
     var newProjectPrompt by remember { mutableStateOf(false) }
+    var startAgentPrompt by remember { mutableStateOf(false) }
+
+    // Project slug of the active file (for the agent cwd).
+    val projectSlug = activePath?.let { FrontmatterParser.enclosingProjectSlug(it) }
+    // Live sessions under the active project (for "Jump to agent").
+    val liveSessions by (if (agents != null && projectSlug != null)
+        agents.observeSessionsUnderCwd("/projects/$projectSlug")
+    else kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
 
     data class Cmd(val label: String, val run: () -> Unit)
     val commands = buildList {
@@ -60,6 +75,14 @@ fun NotesCommandPalette(
             add(Cmd("Close File", onCloseFile))
             add(Cmd("Insert Link", onLink))
             add(Cmd("Insert Footnote", onFootnote))
+            if (agents != null && projectSlug != null) {
+                add(Cmd("Start Agent in ${BlogHelpers.humaniseSlug(projectSlug)}") { startAgentPrompt = true })
+                for (s in liveSessions) {
+                    add(Cmd("Jump to agent · ${s.name.ifBlank { s.id }.removeSuffix(" (fork)")}") {
+                        onDismiss(); onOpenAgentSession(s.id)
+                    })
+                }
+            }
             if (FrontmatterParser.isDraftPath(activePath)) {
                 add(Cmd("Publish Draft") {
                     scope.launch {
@@ -117,6 +140,26 @@ fun NotesCommandPalette(
         )
         return
     }
+    if (startAgentPrompt && agents != null && projectSlug != null) {
+        TitlePromptDialog(
+            title = "Start agent in ${BlogHelpers.humaniseSlug(projectSlug)}",
+            inheritProject = null,
+            confirmLabel = "Start",
+            fieldLabel = "First message",
+            onDismiss = { startAgentPrompt = false },
+            onConfirm = { firstMessage ->
+                startAgentPrompt = false; onDismiss()
+                scope.launch {
+                    val vault = repo.getVaultPath()
+                    if (vault != null) {
+                        agents.createSession(firstMessage, "$vault/projects/$projectSlug", BlogHelpers.humaniseSlug(projectSlug))
+                        onToast("Starting agent…")
+                    } else onToast("Vault path not loaded — try again")
+                }
+            },
+        )
+        return
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -155,6 +198,8 @@ internal fun TitlePromptDialog(
     inheritProject: String?,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    confirmLabel: String = "Create",
+    fieldLabel: String = "Title",
 ) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
@@ -163,12 +208,12 @@ internal fun TitlePromptDialog(
         text = {
             OutlinedTextField(
                 value = text, onValueChange = { text = it },
-                label = { Text("Title") }, singleLine = true,
+                label = { Text(fieldLabel) }, singleLine = fieldLabel == "Title",
                 modifier = Modifier.fillMaxWidth(),
             )
         },
         confirmButton = {
-            TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()) }) { Text("Create") }
+            TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()) }) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

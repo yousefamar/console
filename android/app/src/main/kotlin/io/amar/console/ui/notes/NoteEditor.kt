@@ -78,7 +78,14 @@ import kotlinx.coroutines.launch
  * Delegates pen pages to PenPageScreen.
  */
 @Composable
-fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
+fun NoteEditorScreen(
+    repo: NotesRepository,
+    path: String,
+    onBack: () -> Unit,
+    agents: io.amar.console.data.agents.AgentsRepository? = null,
+    onOpenAgentSession: (String) -> Unit = {},
+    mirror: io.amar.console.glasses.mirror.GlassesMirror? = null,
+) {
     if (PenPage.isPenPagePath(path)) {
         PenPageScreen(repo, path, onBack)
         return
@@ -118,10 +125,35 @@ fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
     var vimEnabled by remember { mutableStateOf(false) }
     var projectPanelSlug by remember { mutableStateOf<String?>(null) }
 
+    // Push the doc + cursor to the glasses notes mirror (cursor-follow window).
+    fun pushEditorMirror(v: TextFieldValue) {
+        val m = mirror ?: return
+        val caret = v.selection.start.coerceIn(0, v.text.length)
+        val before = v.text.substring(0, caret)
+        val cursorLine = before.count { it == '\n' } + 1
+        val cursorCol = caret - (before.lastIndexOf('\n') + 1)
+        m.setEditorCursor(
+            io.amar.console.glasses.mirror.GlassesMirror.EditorSnapshot(
+                path = activePath,
+                lines = v.text.split('\n'),
+                cursorLine = cursorLine,
+                cursorCol = cursorCol,
+            )
+        )
+    }
+
     // Push live edits into the tab model (drives the dirty dot).
     fun applyEdit(newTfv: TextFieldValue) {
         tfv = newTfv
         repo.tabs.setContent(activePath, newTfv.text)
+        pushEditorMirror(newTfv)
+    }
+
+    // Feed the glasses notes mirror on tab switch; clear it when the editor
+    // leaves composition (mirror falls back to the pane status line).
+    LaunchedEffect(activePath) { pushEditorMirror(tfv) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { mirror?.setEditorCursor(null) }
     }
 
     fun applyAction(edit: EditorActions.Edit) {
@@ -276,6 +308,8 @@ fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
             slug = slug,
             onDismiss = { projectPanelSlug = null },
             onOpenFile = { p -> scope.launch { repo.tabs.open(p, repo.openFile(p) ?: "") } },
+            agents = agents,
+            onOpenAgentSession = onOpenAgentSession,
         )
     }
 
@@ -294,6 +328,8 @@ fun NoteEditorScreen(repo: NotesRepository, path: String, onBack: () -> Unit) {
             onLink = { linkPicker = LinkPickerRequest(tfv.text.substring(tfv.selection.min, tfv.selection.max), tfv.selection.min, tfv.selection.max, wikiOnly = false) },
             onFootnote = { applyAction(EditorActions.insertFootnote(tfv.text, tfv.selection.end)) },
             onToast = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+            agents = agents,
+            onOpenAgentSession = onOpenAgentSession,
         )
     }
 
