@@ -33,6 +33,22 @@ class FuzzyTest {
     }
 
     @Test
+    fun `score returns null for non-subsequence, positions for a match`() {
+        assertEquals(null, Fuzzy.score("xyz", "meeting.md"))
+        val s = Fuzzy.score("mtg", "meeting.md")!!
+        assertEquals(listOf(0, 3, 6), s.positions) // m(0) t(3) g(6)
+    }
+
+    @Test
+    fun `rank prefers a consecutive run over a scattered subsequence`() {
+        val items = listOf("m-e-e-t.md", "meet.md")
+        val ranked = Fuzzy.rank(items, "meet") { it }
+        assertEquals("meet.md", ranked.first().item) // consecutive run scores higher
+        assertTrue(Fuzzy.rank(emptyList<String>(), "x") { it }.isEmpty())
+        assertTrue(Fuzzy.rank(items, "  ") { it }.isEmpty()) // blank → none
+    }
+
+    @Test
     fun `slugify produces filename-safe slugs`() {
         assertEquals("my-note-draft", slugify("My Note: Draft!"))
         assertEquals("hello-world", slugify("  Hello,   World  "))

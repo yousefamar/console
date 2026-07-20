@@ -89,6 +89,21 @@ fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGr
     var deleteTarget by remember { mutableStateOf<NoteFileRow?>(null) }
     val accent = MaterialTheme.colorScheme.primary
 
+    // Wire the SyncBus 'pen' service once (red-dot + auto-open live page). The
+    // AppGraph doesn't own this wiring, so the Notes pane self-arms it on mount
+    // (idempotent). Auto-open the pen's live page when arriving on the pane and
+    // a stroke landed in the last 60s.
+    val penActivePath by repo.penActivePagePath.collectAsState()
+    val penActiveAt by repo.penActiveAt.collectAsState()
+    LaunchedEffect(Unit) {
+        repo.wirePenActivity(scope)
+        val p = penActivePath
+        if (p != null && System.currentTimeMillis() - penActiveAt < 60_000) {
+            repo.clearPenActivity()
+            onOpenFile(p)
+        }
+    }
+
     // Non-tree views render full-screen (blog/circles) with their own chrome.
     if (viewMode == NotesViewMode.BLOG) {
         Column(Modifier.fillMaxSize()) {
@@ -305,8 +320,8 @@ internal fun NotesQuickSwitcher(
     }
 
     val filenameResults = remember(files, query) {
-        val sorted = files.sortedByDescending { it.mtime }
-        Fuzzy.filter(sorted, query) { it.path }.take(30)
+        if (query.isBlank()) files.sortedByDescending { it.mtime }.take(30)
+        else Fuzzy.rank(files, query, limit = 50) { it.path }.map { it.item }
     }
     val results = if (contentMode) contentResults else filenameResults
 

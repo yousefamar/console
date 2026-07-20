@@ -72,7 +72,7 @@ fun LinkPickerSheet(
 
     val wikiResults = remember(files, query) {
         if (query.isBlank()) files.sortedByDescending { it.mtime }.take(30)
-        else Fuzzy.filter(files.sortedByDescending { it.mtime }, query) { it.path }.take(30)
+        else Fuzzy.rank(files, query, limit = 30) { it.path }.map { it.item }
     }
 
     AlertDialog(
