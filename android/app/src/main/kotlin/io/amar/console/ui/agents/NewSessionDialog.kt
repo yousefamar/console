@@ -103,6 +103,7 @@ fun NewSessionDialog(
                 OutlinedTextField(
                     value = prompt, onValueChange = { prompt = it },
                     label = { Text(if (resumeId != null) "Send a message to resume…" else "Prompt") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                     minLines = 3, maxLines = 8, modifier = Modifier.fillMaxWidth(),
                 )
             }

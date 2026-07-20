@@ -104,6 +104,7 @@ fun WriteMetaBar(
                 value = titleField,
                 onValueChange = { titleField = it },
                 label = { Text("Title") }, singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                 modifier = Modifier.fillMaxWidth()
                     .onFocusChangedCompatMeta { focused -> if (!focused && titleField != (fm.title ?: "")) onStamp(listOf("title" to titleField)) },
             )

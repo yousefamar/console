@@ -129,6 +129,7 @@ private fun AskUserQuestionUi(
             value = otherDrafts[qText] ?: "",
             onValueChange = { otherDrafts = otherDrafts + (qText to it) },
             placeholder = { Text("Other…", style = MaterialTheme.typography.bodySmall) },
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
             modifier = Modifier.fillMaxWidth(),
             textStyle = MaterialTheme.typography.bodySmall,
             singleLine = true,

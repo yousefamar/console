@@ -160,7 +160,7 @@ private fun CronCreateForm(claudeSessionId: String, onDone: () -> Unit) {
                 Text("next: " + it.joinToString(" · ") { ms -> fmt.format(Date(ms)) }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        OutlinedTextField(value = prompt, onValueChange = { prompt = it }, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth(), label = { Text("Prompt (sent each fire)") })
+        OutlinedTextField(value = prompt, onValueChange = { prompt = it }, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth(), label = { Text("Prompt (sent each fire)") }, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences))
         error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
         Button(
             enabled = prompt.isNotBlank() && triggerValid && !submitting,

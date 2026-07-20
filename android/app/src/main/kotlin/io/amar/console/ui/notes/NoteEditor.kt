@@ -271,6 +271,7 @@ fun NoteEditorScreen(
                         } else applyEdit(new)
                     },
                     modifier = Modifier.fillMaxSize().padding(8.dp),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 )
             }
