@@ -356,7 +356,14 @@ private fun ThreadRow(thread: MailThreadRow, labels: List<String>, onClick: () -
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit) {
+fun MailThreadScreen(
+    repo: MailRepository,
+    threadId: String,
+    onBack: () -> Unit,
+    /** Surface a 5s undo at the shell level after a thread-view archive/delete
+     *  navigates back. kind = "archive" | "delete". */
+    onRemovedWithUndo: (threadId: String, kind: String) -> Unit = { _, _ -> },
+) {
     val thread by repo.observeThread(threadId).collectAsState(initial = null)
     val messages by repo.observeMessages(threadId).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
@@ -389,10 +396,10 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
                 IconButton(onClick = { snoozing = true }) {
                     Icon(Icons.Filled.Snooze, "Snooze", modifier = Modifier.size(19.dp))
                 }
-                IconButton(onClick = { scope.launch { repo.archive(threadId) }; onBack() }) {
+                IconButton(onClick = { scope.launch { repo.archive(threadId) }; onRemovedWithUndo(threadId, "archive"); onBack() }) {
                     Icon(Icons.Filled.Archive, "Archive", modifier = Modifier.size(19.dp))
                 }
-                IconButton(onClick = { scope.launch { repo.deleteThread(threadId) }; onBack() }) {
+                IconButton(onClick = { scope.launch { repo.deleteThread(threadId) }; onRemovedWithUndo(threadId, "delete"); onBack() }) {
                     Icon(Icons.Filled.Delete, "Delete", modifier = Modifier.size(19.dp))
                 }
                 IconButton(onClick = { composeState = ComposeMode.REPLY to contextFor(messages.lastOrNull()) }) {
