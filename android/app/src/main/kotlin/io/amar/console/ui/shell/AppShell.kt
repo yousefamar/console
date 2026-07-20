@@ -92,14 +92,11 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     // Grid navigation helper shared by every L1 top bar.
     val toGrid: () -> Unit = { navController.navigateToGrid() }
 
+    val shellScope = androidx.compose.runtime.rememberCoroutineScope()
     Scaffold { padding ->
+        androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
         Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                // Without consuming, each screen's imePadding() re-adds the
-                // (zero) scaffold inset on top of the keyboard inset.
-                .consumeWindowInsets(padding)
+            Modifier.fillMaxSize()
         ) {
             if (!connected) {
                 StatusBanner(
@@ -158,7 +155,15 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable("mail/{threadId}") { entry ->
                     val threadId = android.net.Uri.decode(entry.arguments?.getString("threadId") ?: "")
-                    MailThreadScreen(app.graph.mail, threadId, onBack = { navController.popBackStack() })
+                    MailThreadScreen(
+                        app.graph.mail, threadId,
+                        onBack = { navController.popBackStack() },
+                        onRemovedWithUndo = { id, kind ->
+                            UndoController.offer(if (kind == "delete") "Deleted" else "Archived") {
+                                if (kind == "delete") app.graph.mail.undoDelete(id) else app.graph.mail.undoArchive(id)
+                            }
+                        },
+                    )
                 }
                 composable(Pane.Agents.route) {
                     AgentSessionListScreen(
@@ -218,6 +223,10 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                             navController.openApp(Pane.Agents)
                             navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
                         },
+                        onOpenNote = { path ->
+                            navController.openApp(Pane.Notes)
+                            navController.navigate("notes/${android.net.Uri.encode(path)}")
+                        },
                         onGrid = toGrid,
                     )
                 }
@@ -232,6 +241,9 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     HardwareSettingsScreen(app, onBack = { navController.popBackStack() })
                 }
             }
+        }
+        // App-wide undo affordance (survives detail→list pops).
+        UndoHost(shellScope)
         }
     }
 }

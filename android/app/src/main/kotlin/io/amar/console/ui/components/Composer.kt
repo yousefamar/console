@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
@@ -46,6 +48,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.amar.console.core.Dictation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Imperative handle: lets a parent read/replace the draft text from
  *  outside (mention autocomplete insertion). */
@@ -111,27 +115,65 @@ fun Composer(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(attachments) { uri ->
-                    Box {
-                        AsyncImage(
-                            model = uri,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .size(64.dp)
+                    // Resolve display metadata off the main thread (name/size/mime).
+                    val meta by androidx.compose.runtime.produceState<AttachmentMeta?>(null, uri) {
+                        value = withContext(Dispatchers.IO) { queryAttachmentMeta(context, uri) }
+                    }
+                    if (meta?.isImage != false) {
+                        // Image (or still-resolving): thumbnail with a remove badge.
+                        Box {
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = meta?.name,
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                            )
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Remove",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.7f))
+                                    .clickable { attachments = attachments - uri }
+                                    .padding(3.dp),
+                            )
+                        }
+                    } else {
+                        // Non-image: paperclip + filename + human size chip.
+                        val m = meta!!
+                        Row(
+                            Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                        )
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "Remove",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.7f))
-                                .clickable { attachments = attachments - uri }
-                                .padding(3.dp),
-                        )
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(Icons.Filled.AttachFile, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column {
+                                Text(
+                                    m.name, style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    modifier = Modifier.widthIn(max = 140.dp),
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                                if (m.sizeBytes >= 0) Text(
+                                    formatBytes(m.sizeBytes),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Icon(
+                                Icons.Filled.Close, "Remove",
+                                Modifier.size(16.dp).clip(CircleShape).clickable { attachments = attachments - uri },
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -157,6 +199,23 @@ fun Composer(
                         Icons.Filled.AttachFile, contentDescription = "Attach",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp),
+                    )
+                }
+                // Paste ALL clipboard images (FEATURES chat #8). The button is
+                // always shown when attach is enabled (reading the clipboard on
+                // every recomposition would spam Android 12+'s paste toast); the
+                // read happens only on tap.
+                IconButton(
+                    onClick = {
+                        val imgs = clipboardImageUris(context).filter { it !in attachments }
+                        if (imgs.isNotEmpty()) attachments = attachments + imgs
+                    },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.ContentPaste, contentDescription = "Paste image",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
             }
@@ -242,4 +301,19 @@ fun Composer(
             }
         }
     }
+}
+
+/** All image content:// URIs currently on the clipboard (FEATURES chat #8:
+ *  "paste attaches ALL clipboard images"). Reads every ClipData item, keeping
+ *  those whose URI resolves to an image mime type. */
+private fun clipboardImageUris(context: android.content.Context): List<Uri> {
+    val cm = context.getSystemService(android.content.ClipboardManager::class.java) ?: return emptyList()
+    val clip = cm.primaryClip ?: return emptyList()
+    val out = mutableListOf<Uri>()
+    for (i in 0 until clip.itemCount) {
+        val uri = clip.getItemAt(i)?.uri ?: continue
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        if (mime?.startsWith("image/") == true) out.add(uri)
+    }
+    return out
 }
