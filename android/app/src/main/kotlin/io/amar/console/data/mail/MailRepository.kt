@@ -49,6 +49,7 @@ class MailRepository(
         const val LABEL_MAP_KEY = "mail:labelMap"
         const val CAL_PREFIX = "mail:cal:"        // per-message calendar invite JSON
         const val LABELS_PREFIX = "mail:labels:"  // per-thread user-label id list (JSON array)
+        const val DRAFT_PREFIX = "mail:draft:"    // per-context compose draft (JSON)
         const val INITIAL_LIMIT = 50
         const val BODY_KEEP = 50
         const val TYPE_ARCHIVE = "mailArchive"
@@ -159,6 +160,32 @@ class MailRepository(
     }
 
     data class MailContact(val name: String, val email: String, val lastSeen: Long, val remote: Boolean = false)
+
+    // ---------------------------------------------------------------- //
+    // Compose drafts (mail #89) — persisted in the meta KV so an in-progress
+    // compose survives sheet dismiss AND process death. Text fields only:
+    // attachment content-Uri permission grants don't outlive the process, so
+    // persisting them would restore dead references.
+
+    @kotlinx.serialization.Serializable
+    data class ComposeDraft(
+        val from: String = "", val to: String = "", val cc: String = "",
+        val bcc: String = "", val subject: String = "", val body: String = "",
+    ) {
+        fun isEmpty() = to.isBlank() && cc.isBlank() && bcc.isBlank() && subject.isBlank() && body.isBlank()
+    }
+
+    suspend fun saveDraft(key: String, draft: ComposeDraft) {
+        if (draft.isEmpty()) { db.meta().delete("$DRAFT_PREFIX$key"); return }
+        db.meta().put(MetaRow("$DRAFT_PREFIX$key", json.encodeToString(ComposeDraft.serializer(), draft)))
+    }
+
+    suspend fun loadDraft(key: String): ComposeDraft? {
+        val raw = db.meta().get("$DRAFT_PREFIX$key") ?: return null
+        return runCatching { json.decodeFromString(ComposeDraft.serializer(), raw) }.getOrNull()?.takeIf { !it.isEmpty() }
+    }
+
+    suspend fun clearDraft(key: String) = db.meta().delete("$DRAFT_PREFIX$key")
 
     /** (messageId, attachmentId, filename) for every non-inline attachment in a thread. */
     suspend fun threadAttachments(threadId: String): List<Triple<String, String, String>> {
