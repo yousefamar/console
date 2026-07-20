@@ -104,6 +104,13 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     var locationPick by remember { mutableStateOf<Pair<CalEventRow?, Long>?>(null) }
 
     val calByKey = remember(calendars) { calendars.associateBy { it.id } }
+    // First-seen overlays default visible even against a saved allow-list.
+    androidx.compose.runtime.LaunchedEffect(calendars, visibleIds) {
+        val overlayIds = calendars.filter {
+            it.accessRole == "reader" && (it.calendarId == "meetup" || it.calendarId == "outdoorlads")
+        }.map { it.id }.toSet()
+        if (overlayIds.isNotEmpty()) repo.ensureOverlaysVisible(overlayIds)
+    }
     // null visibleIds → all visible (first load). Otherwise it's the allow-list.
     fun isVisible(e: CalEventRow) = visibleIds?.contains("${e.accountEmail}:${e.calendarId}") ?: true
     val hiddenCals = remember(visibleIds, calendars) {
