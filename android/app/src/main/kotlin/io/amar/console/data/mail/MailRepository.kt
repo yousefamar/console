@@ -679,15 +679,6 @@ class MailRepository(
         val threads = (obj["threads"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
         val historyId = obj["historyId"]?.jsonPrimitive?.content
 
-        // Threads with a queued unarchive/unsnooze must never be de-inboxed by a
-        // racing hydrate — the local optimistic re-inbox would otherwise flap
-        // (SPA sync.ts respects pending unarchive/unsnooze). Gathered outside the
-        // txn since it's a read of the outbox.
-        val pendingReinbox = db.outbox().pending()
-            .filter { it.type == TYPE_UNARCHIVE }
-            .mapNotNull { it.entityId }
-            .toSet()
-
         db.withTransaction {
             val parsed = threads.mapNotNull { GmailParse.threadRows(it, account) }
             val threadRows = parsed.map { it.first }
@@ -698,18 +689,13 @@ class MailRepository(
             }
             db.mailThreads().upsertAll(withSnooze)
             db.mailMessages().upsertAll(parsed.flatMap { it.second })
-            // Threads no longer in the inbox listing leave the inbox (keep
-            // snoozed rows — they're deliberately archived server-side — and keep
-            // rows with a queued unarchive/unsnooze so an undo isn't clobbered).
-            val listedIds = threadRows.map { it.id }.toSet()
-            val stale = db.mailThreads().inboxIds().filter { it !in listedIds }
-            for (id in stale) {
-                val row = db.mailThreads().byId(id)
-                if (row?.snoozedUntil == null && id !in pendingReinbox) db.mailThreads().setInbox(id, false)
-            }
             if (historyId != null) db.meta().put(MetaRow("$CURSOR_PREFIX$account", historyId))
         }
         persistThreadAux(threads, account)
+        // Stale rows are handled by the bidirectional membership sweep, which
+        // keys off the id-LISTING — never off which threads happened to
+        // hydrate successfully (a flaky per-thread fetch is not an archive).
+        reconcileInboxMembership(account)
     }
 
     /**
@@ -781,9 +767,14 @@ class MailRepository(
         reconcileInboxMembership(account)
     }
 
-    /** Cheap membership sweep: history catch-up never reports threads that were
-     *  DELETED outright (spam purge, other-client trash) — their rows would sit
-     *  in the local inbox forever. One plain id-listing per reconcile fixes it. */
+    /** BIDIRECTIONAL membership sweep against a cheap in:inbox id-listing —
+     *  the listing is the authority on what belongs in the inbox.
+     *  Remove: local rows Gmail no longer lists (outright deletions never show
+     *  in history catch-up). Restore: listed threads that are locally
+     *  de-inboxed (e.g. a past partial hydrate dropped them — hydration
+     *  failures must never masquerade as archives) or missing entirely.
+     *  Local intent wins: snoozed rows and rows with a queued archive/trash/
+     *  unarchive keep their optimistic state. */
     internal suspend fun reconcileInboxMembership(account: String) {
         val resp = runCatching {
             hub.get("/mail/threads?q=${enc("in:inbox")}&limit=$INITIAL_LIMIT&account=${enc(account)}")
@@ -792,15 +783,28 @@ class MailRepository(
             .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.content }
             .toSet()
         if (listed.isEmpty()) return // implausible empty inbox — likely an API hiccup; don't wipe
-        val pendingReinbox = db.outbox().pending()
+        val pending = db.outbox().pending()
+        val pendingDeinbox = pending
+            .filter { it.type == TYPE_ARCHIVE || it.type == TYPE_TRASH }
+            .mapNotNull { it.entityId }.toSet()
+        val pendingReinbox = pending
             .filter { it.type == TYPE_UNARCHIVE }
-            .mapNotNull { it.entityId }
-            .toSet()
+            .mapNotNull { it.entityId }.toSet()
         for (id in db.mailThreads().inboxIds()) {
             if (id in listed || id in pendingReinbox) continue
             val row = db.mailThreads().byId(id)
             if (row?.snoozedUntil == null) db.mailThreads().setInbox(id, false)
         }
+        val toHydrate = mutableListOf<String>()
+        for (id in listed) {
+            if (id in pendingDeinbox) continue
+            val row = db.mailThreads().byId(id)
+            when {
+                row == null -> toHydrate.add(id)
+                !row.isInbox && row.snoozedUntil == null -> db.mailThreads().setInbox(id, true)
+            }
+        }
+        if (toHydrate.isNotEmpty()) hydrateThreads(toHydrate, account)
     }
 
     /** Batch-hydrate specific thread ids (delta/catch-up path). */

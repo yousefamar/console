@@ -140,6 +140,7 @@ fun EventFormDialog(
                 OutlinedTextField(
                     value = summary, onValueChange = { summary = it },
                     label = { Text("Title") }, singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,7 +165,8 @@ fun EventFormDialog(
                 }
                 OutlinedTextField(
                     value = location, onValueChange = { location = it },
-                    label = { Text("Location") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Location") }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+                    modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = guests, onValueChange = { guests = it },
@@ -205,6 +207,7 @@ fun EventFormDialog(
                 OutlinedTextField(
                     value = description, onValueChange = { description = it },
                     label = { Text("Description") }, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                     minLines = 2, maxLines = 4,
                 )
                 // Calendar picker (only when >1 writable, or moving in edit mode).
