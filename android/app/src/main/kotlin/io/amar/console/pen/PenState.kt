@@ -25,9 +25,34 @@ object PenState {
     @Volatile var lastDotY: Float? = null; private set
     @Volatile var lastUpdatedMs: Long = 0L; private set
 
+    /** Whether a BLE scan is currently in flight (drives the settings spinner). */
+    @Volatile var scanning: Boolean = false; private set
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
+
+    // --- Scan observation bag (transient; cleared on scan start) -------------
+
+    data class ScanObservation(val name: String, val mac: String, val rssi: Int, val has19f1: Boolean)
+    @Volatile private var scanObservations: Map<String, ScanObservation> = emptyMap()
+
+    @Synchronized fun setScanning(v: Boolean) { scanning = v; touch() }
+
+    @Synchronized fun clearScanObservations() { scanObservations = emptyMap(); touch() }
+
+    @Synchronized fun addScanObservation(o: ScanObservation) {
+        // Key by MAC; keep the strongest RSSI seen for a device.
+        val existing = scanObservations[o.mac]
+        if (existing == null || o.rssi > existing.rssi) {
+            scanObservations = scanObservations + (o.mac to o)
+            touch()
+        }
+    }
+
+    /** Newest/strongest-first observations for the settings pair list. */
+    fun scanObservationsList(): List<ScanObservation> =
+        scanObservations.values.sortedByDescending { it.rssi }
 
     @Synchronized fun setStatus(s: Status, mac: String? = this.mac) {
         status = s; this.mac = mac

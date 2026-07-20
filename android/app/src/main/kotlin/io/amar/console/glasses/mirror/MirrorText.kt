@@ -18,6 +18,44 @@ object MirrorText {
         return if (flat.length <= DISPLAY_COLS) flat else flat.take(DISPLAY_COLS - 1) + "…"
     }
 
+    /**
+     * Hard-wrap [text] into rows of at most [cols] chars, preferring a word
+     * boundary in the right half of the window (`spaceIdx > width/2`) so words
+     * aren't split mid-character; else hard-splits. First row optionally gets
+     * [firstPrefix]; continuation rows get [contPrefix] (usually equal-width
+     * spaces for gutter alignment). Port of src/glasses/mirror.ts wrapLine.
+     * Operates on raw text (no whitespace-flatten) so the notes cursor-follow
+     * window keeps its column math.
+     */
+    fun wrapLine(
+        text: String,
+        firstPrefix: String = "",
+        contPrefix: String = "",
+        cols: Int = DISPLAY_COLS,
+    ): List<String> {
+        val widthFirst = maxOf(1, cols - firstPrefix.length)
+        val widthCont = maxOf(1, cols - contPrefix.length)
+        if (text.isEmpty()) return listOf(firstPrefix)
+        val rows = ArrayList<String>()
+        var remaining = text
+        var first = true
+        while (remaining.isNotEmpty()) {
+            val prefix = if (first) firstPrefix else contPrefix
+            val width = if (first) widthFirst else widthCont
+            if (remaining.length <= width) {
+                rows.add(prefix + remaining)
+                break
+            }
+            // lastIndexOf(' ', width) — last space at or before index `width`.
+            val spaceIdx = remaining.lastIndexOf(' ', width)
+            val breakIdx = if (spaceIdx > width / 2) spaceIdx else width
+            rows.add(prefix + remaining.substring(0, breakIdx))
+            remaining = remaining.substring(if (spaceIdx > width / 2) breakIdx + 1 else breakIdx)
+            first = false
+        }
+        return rows
+    }
+
     /** `Pane · focus · meta` status row from non-null parts. */
     fun buildStatus(parts: List<String?>): String =
         clipRow(parts.filterNotNull().filter { it.isNotEmpty() }.joinToString(" · "))
@@ -31,12 +69,20 @@ object MirrorText {
         return "> $tail|"
     }
 
-    /** Assemble the 5-line payload: status + body padded/clipped to 4 rows. */
-    fun assemble(frame: Frame): String {
-        val body = frame.body.take(BODY_ROWS).map { clipRow(it) }
-        val padded = List(BODY_ROWS - body.size) { "" } + body // bottom-align like the G1 text opcode
-        return (listOf(clipRow(frame.status)) + padded).joinToString("\n")
+    /**
+     * Pad/clip a body to exactly [BODY_ROWS]. Bottom-biased: on overflow the
+     * NEWEST rows (the tail) survive, older rows drop off the top; on underflow
+     * blanks are unshifted on top. Mirrors src/glasses/mirror.ts padBottom.
+     */
+    fun padBottom(rows: List<String>): List<String> {
+        val out = rows.takeLast(BODY_ROWS).map { clipRow(it) }.toMutableList()
+        while (out.size < BODY_ROWS) out.add(0, "")
+        return out
     }
+
+    /** Assemble the 5-line payload: status + body padded/clipped to 4 rows. */
+    fun assemble(frame: Frame): String =
+        (listOf(clipRow(frame.status)) + padBottom(frame.body)).joinToString("\n")
 
     /** Strip a matrix userId to its local part for readability. */
     fun shortName(name: String): String =
