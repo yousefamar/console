@@ -363,6 +363,8 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
     // Active composer: (mode, context). Null = button bar only.
     var composeState by remember { mutableStateOf<Pair<ComposeMode, ReplyContext?>?>(null) }
     var snoozing by remember { mutableStateOf(false) }
+    // Per-thread email dark-mode toggle (Dark ⇄ Original), default dark.
+    var emailDark by remember { mutableStateOf(true) }
 
     LaunchedEffect(threadId, thread?.isUnread) {
         if (thread?.isUnread == true) repo.markRead(threadId)
@@ -378,6 +380,9 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
             subtitle = thread?.fromName,
             onBack = onBack,
             actions = {
+                TextButton(onClick = { emailDark = !emailDark }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
+                    Text(if (emailDark) "Dark" else "Original", style = MaterialTheme.typography.labelSmall)
+                }
                 IconButton(onClick = { scope.launch { repo.markUnread(threadId) }; onBack() }) {
                     Icon(Icons.Filled.MarkEmailUnread, "Mark unread", modifier = Modifier.size(19.dp))
                 }
@@ -404,7 +409,7 @@ fun MailThreadScreen(repo: MailRepository, threadId: String, onBack: () -> Unit)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             for ((i, msg) in messages.withIndex()) {
                 MessageCard(
-                    repo, msg, expandedInitially = i == messages.lastIndex,
+                    repo, msg, expandedInitially = i == messages.lastIndex, emailDark = emailDark,
                     onReply = { composeState = ComposeMode.REPLY to contextFor(msg) },
                     onReplyAll = { composeState = ComposeMode.REPLY_ALL to contextFor(msg) },
                     onForward = { composeState = ComposeMode.FORWARD to contextFor(msg) },
@@ -437,6 +442,7 @@ private fun MessageCard(
     repo: MailRepository,
     msg: MailMessageRow,
     expandedInitially: Boolean,
+    emailDark: Boolean,
     onReply: () -> Unit,
     onReplyAll: () -> Unit,
     onForward: () -> Unit,
@@ -503,7 +509,7 @@ private fun MessageCard(
                         )
                     }
                 }
-                MailBodyWebView(resolvedHtml)
+                MailBodyWebView(resolvedHtml, emailDark)
             } else {
                 Text(
                     msg.bodyText ?: "(body not cached — open online to fetch)",
@@ -524,10 +530,14 @@ private fun MessageCard(
     }
 }
 
-/** Strict per-message HTML render: JS off, sanitized + linearized + dark, links → browser. */
+/**
+ * Strict per-message HTML render: JS off, sanitized + linearized, links → browser.
+ * [dark] toggles the SPA's invert+hue-rotate dark mode (re-inverts media so photos
+ * stay natural) over a white base; Original renders the email's own light styling.
+ */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun MailBodyWebView(html: String) {
+private fun MailBodyWebView(html: String, dark: Boolean) {
     androidx.compose.ui.viewinterop.AndroidView(
         modifier = Modifier.fillMaxWidth(),
         factory = { ctx ->
@@ -549,12 +559,13 @@ private fun MailBodyWebView(html: String) {
         },
         update = { wv ->
             val safe = io.amar.console.data.mail.MailFormat.sanitizeHtml(html)
+            val darkCss = if (dark) io.amar.console.data.mail.MailFormat.darkModeCss() else ""
             val doc = """
                 <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
                 <style>
-                  body { background:#0a0a0a; color:#e5e5e5; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
-                  a { color:#60a5fa; }
+                  body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
                   ${io.amar.console.data.mail.MailFormat.linearizeCss()}
+                  $darkCss
                 </style></head><body>$safe</body></html>
             """.trimIndent()
             wv.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)

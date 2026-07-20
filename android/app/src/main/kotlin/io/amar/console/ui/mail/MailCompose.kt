@@ -87,6 +87,8 @@ fun MailComposeSheet(
     var body by remember { mutableStateOf("") }
     var quotedHtml by remember { mutableStateOf<String?>(null) }
     var attachments by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    // Attachments carried from a forwarded message (already base64, no Uri).
+    var carried by remember { mutableStateOf<List<MailRepository.OutAttachment>>(emptyList()) }
     var showFromPicker by remember { mutableStateOf(false) }
     var showCc by remember { mutableStateOf(mode == ComposeMode.REPLY_ALL || mode == ComposeMode.COMPOSE) }
     var sending by remember { mutableStateOf(false) }
@@ -104,6 +106,12 @@ fun MailComposeSheet(
         subject = pf.subject
         quotedHtml = pf.quotedHtml
         if (pf.cc.isNotBlank()) showCc = true
+        // Forward carries over the original's non-inline attachments (SPA parity).
+        if (mode == ComposeMode.FORWARD && replyContext != null) {
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                carried = runCatching { repo.forwardAttachments(replyContext.messageId) }.getOrDefault(emptyList())
+            }
+        }
     }
 
     val filePicker = rememberLauncherForActivityResult(
@@ -117,7 +125,7 @@ fun MailComposeSheet(
             // Plain-text body → minimal HTML paragraphs so the quote nests below.
             val userHtml = bodyToHtml(body)
             val html = MailFormat.assembleSendHtml(userHtml, quotedHtml)
-            val outAtts = withContext(Dispatchers.IO) { attachments.mapNotNull { readAttachment(ctx, it) } }
+            val outAtts = carried + withContext(Dispatchers.IO) { attachments.mapNotNull { readAttachment(ctx, it) } }
             when (mode) {
                 ComposeMode.COMPOSE -> repo.sendCompose(
                     to = to.trim(), cc = cc.ifBlank { null }, subject = subject.trim(),
@@ -214,9 +222,12 @@ fun MailComposeSheet(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        // Attachment chips
-        if (attachments.isNotEmpty()) {
+        // Attachment chips (carried-over forward attachments + newly picked files)
+        if (attachments.isNotEmpty() || carried.isNotEmpty()) {
             FlowRow(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (a in carried) {
+                    AttachmentChip(a.filename, base64Size(a.data), onRemove = { carried = carried - a })
+                }
                 for (uri in attachments) {
                     AttachmentChip(displayName(ctx, uri), attachmentSize(ctx, uri), onRemove = { attachments = attachments - uri })
                 }
@@ -345,6 +356,9 @@ private fun bodyToHtml(text: String): String {
         "<p>" + esc(para).replace("\n", "<br>") + "</p>"
     }
 }
+
+/** Approx decoded byte size of a base64 string (for the chip's size label). */
+private fun base64Size(b64: String): Long = (b64.length.toLong() * 3) / 4
 
 private fun displayName(ctx: android.content.Context, uri: Uri): String =
     queryName(ctx, uri) ?: uri.lastPathSegment ?: "attachment"

@@ -185,6 +185,45 @@ class MailRepository(
         return out
     }
 
+    /**
+     * Non-inline attachments of a specific message, fetched + re-encoded to
+     * standard base64 as [OutAttachment]s — used to carry a forwarded message's
+     * files into the new send (SPA loadForwardAttachments). Best-effort: a
+     * failed fetch is skipped.
+     */
+    suspend fun forwardAttachments(messageId: String): List<OutAttachment> {
+        val msg = db.mailMessages().forThread(threadIdOf(messageId) ?: return emptyList())
+            .firstOrNull { it.id == messageId } ?: return emptyList()
+        val aj = msg.attachmentsJson ?: return emptyList()
+        val arr = runCatching { json.parseToJsonElement(aj) as? JsonArray }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<OutAttachment>()
+        for (el in arr) {
+            val o = el as? JsonObject ?: continue
+            if (o["contentId"] != null) continue // inline CID
+            val aid = o["attachmentId"]?.jsonPrimitive?.content ?: continue
+            val name = o["filename"]?.jsonPrimitive?.content ?: "file"
+            val mime = o["mimeType"]?.jsonPrimitive?.content ?: "application/octet-stream"
+            val urlSafe = fetchAttachmentData(messageId, aid) ?: continue
+            // Gmail returns URL-safe base64; the RFC822 builder needs standard base64.
+            val std = runCatching {
+                android.util.Base64.encodeToString(
+                    android.util.Base64.decode(urlSafe, android.util.Base64.URL_SAFE),
+                    android.util.Base64.NO_WRAP,
+                )
+            }.getOrNull() ?: continue
+            out.add(OutAttachment(name, mime, std))
+        }
+        return out
+    }
+
+    /** Find which thread a message belongs to (scan cached threads). */
+    private suspend fun threadIdOf(messageId: String): String? {
+        for (t in db.mailThreads().search("")) {
+            if (db.mailMessages().forThread(t.id).any { it.id == messageId }) return t.id
+        }
+        return null
+    }
+
     // ---------------------------------------------------------------- //
     // Triage mutations — optimistic + queued (all idempotent hub-side)
 
