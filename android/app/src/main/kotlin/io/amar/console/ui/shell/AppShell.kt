@@ -235,10 +235,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     SettingsScreen(
                         app, onGrid = toGrid,
                         onHardware = { navController.navigate("settings/hardware") { launchSingleTop = true } },
+                        onOutbox = { navController.navigate("settings/outbox") { launchSingleTop = true } },
                     )
                 }
                 composable("settings/hardware") {
                     HardwareSettingsScreen(app, onBack = { navController.popBackStack() })
+                }
+                composable("settings/outbox") {
+                    io.amar.console.ui.settings.OutboxInspectorScreen(app, onBack = { navController.popBackStack() })
                 }
             }
         }
