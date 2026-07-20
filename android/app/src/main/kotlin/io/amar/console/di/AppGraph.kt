@@ -63,6 +63,16 @@ class AppGraph(context: Context) {
         calendar.registerOutboxHandlers()
         calendar.wireLiveDeltas(appScope)
         syncEngine.addDomain("calendar") { calendar.reconcile() }
+        // 15-min periodic fallback refetch (parity with the SPA useSync timer) —
+        // catches drift when neither cal.delta nor a reconnect fired.
+        appScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(15 * 60 * 1000L)
+                if (io.amar.console.core.AppLifecycle.foregroundFlow.value) {
+                    runCatching { calendar.reconcile() }
+                }
+            }
+        }
 
         notes.registerOutboxHandlers()
         syncEngine.addDomain("notes") { notes.reconcile() }
