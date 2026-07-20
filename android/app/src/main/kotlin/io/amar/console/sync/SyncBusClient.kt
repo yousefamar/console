@@ -52,6 +52,10 @@ class SyncBusClient(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // WS: no read timeout, heartbeat handles staleness
         .build(),
+    /** Initial reconnect backoff (ms). Injectable so tests can drive the
+     *  reconnect deterministically (0 = reconnect on the next scheduler tick)
+     *  instead of sleeping through the 500ms production default. */
+    private val initialBackoffMs: Long = 500L,
 ) {
     val json = Json { ignoreUnknownKeys = true }
 
@@ -61,7 +65,7 @@ class SyncBusClient(
 
     private var ws: WebSocket? = null
     private var wantConnected = false
-    private var backoffMs = 500L
+    private var backoffMs = initialBackoffMs
     private var reconnectJob: Job? = null
     private var heartbeatJob: Job? = null
     @Volatile private var lastInboundAt = 0L
@@ -147,7 +151,7 @@ class SyncBusClient(
         ws = okHttp.newWebSocket(builder.build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (gen != generation.get()) { webSocket.close(1000, "stale"); return }
-                backoffMs = 500L
+                backoffMs = initialBackoffMs
                 lastInboundAt = System.currentTimeMillis()
                 _connected.value = true
                 // Re-subscribe every service with live handlers.
