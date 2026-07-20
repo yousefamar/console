@@ -681,6 +681,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       if (msg.content.trim() === '/clear') {
         session.clearLog()
       }
+      // A real user prompt supersedes any scheduled 429/503 auto-resume.
+      session.cancelTransientResume()
       const userMsg = { type: 'user_prompt' as const, sessionId: msg.sessionId, content: msg.content, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
       broadcastExcept(clients, ws, userMsg)
       session.logMessage(userMsg)
