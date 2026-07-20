@@ -54,6 +54,12 @@ class ChatRepository(
         const val ROOM_CACHE_LIMIT = 100
     }
 
+    /** True only during the hub's first-boot initial sync with an empty local
+     *  cache (SPA "Matrix: hub initial sync" banner). A cursor-less reconcile
+     *  against a populated cache stays false so users don't fear a rebuild. */
+    private val _initialSyncing = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val initialSyncing: kotlinx.coroutines.flow.StateFlow<Boolean> = _initialSyncing
+
     // ---------------------------------------------------------------- //
     // Reads (UI)
 
@@ -814,11 +820,17 @@ class ChatRepository(
         }
         // 2. Messages: matrix.resume with our persisted next_batch.
         val since = db.meta().get(CURSOR_KEY)
+        // Initial-sync banner only on TRUE first boot (empty cache + hub says
+        // isInitial). A populated cache stays silent (SPA parity).
+        val cacheEmpty = db.chatRooms().allIds().isEmpty()
         runCatching {
             val resumeArgs = buildJsonObject { since?.let { put("since", it) } }
-            val delta = syncBus.rpc("matrix", "resume", resumeArgs, timeoutMs = 120_000)
-            ingestMatrixDelta(delta.jsonObject)
+            val delta = syncBus.rpc("matrix", "resume", resumeArgs, timeoutMs = 120_000).jsonObject
+            val isInitial = delta["isInitial"]?.jsonPrimitive?.booleanOrNull == true
+            _initialSyncing.value = isInitial && cacheEmpty
+            ingestMatrixDelta(delta)
         }
+        _initialSyncing.value = false
     }
 
     /** Apply a chat-rooms envelope: patch {seq,partial,changed,removed} or

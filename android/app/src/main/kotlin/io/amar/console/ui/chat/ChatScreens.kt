@@ -108,6 +108,7 @@ private fun networkEmoji(networkIcon: String?): String? =
 @Composable
 fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGrid: () -> Unit = {}) {
     val rooms by repo.observeRooms().collectAsState(initial = emptyList())
+    val initialSyncing by repo.initialSyncing.collectAsState()
     val scope = rememberCoroutineScope()
     val now = System.currentTimeMillis()
     var searchQuery by remember { mutableStateOf("") }
@@ -162,6 +163,22 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGri
                 }
             },
         )
+        if (initialSyncing) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text(
+                    "Hub initial sync — loading your chats…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         if (searching) {
             androidx.compose.material3.OutlinedTextField(
                 value = searchQuery,
