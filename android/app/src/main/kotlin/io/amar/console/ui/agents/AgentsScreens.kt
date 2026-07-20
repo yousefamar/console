@@ -112,6 +112,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
 
     val sessionOrder by repo.sessionOrder.collectAsState()
     val collapsedGroups by repo.collapsedGroups.collectAsState()
+    val snippets by repo.observeLastSnippets().collectAsState(initial = emptyMap())
 
     fun alerted(s: AgentSessionRow): Boolean =
         s.hasUnread || s.needsAttention || approvals.any { it.sessionId == s.id } || activityMap[s.id]?.running == true
@@ -196,7 +197,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                             SessionRow(
                                 al,
                                 isWorking = activityMap[al.id]?.running == true,
-                                subtitle = sessionSubtitle(al, activityMap[al.id]),
+                                subtitle = sessionSubtitle(al, activityMap[al.id], snippets[al.id]),
                                 bgProcCount = 0,
                                 micState = when {
                                     micOwner == al.id && micHot -> "hot"; micOwner == al.id -> "owner"; else -> null
@@ -215,7 +216,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                                 SessionRow(
                                     session,
                                     isWorking = activityMap[session.id]?.running == true,
-                                    subtitle = sessionSubtitle(session, activityMap[session.id]),
+                                    subtitle = sessionSubtitle(session, activityMap[session.id], snippets[session.id]),
                                     bgProcCount = session.backgroundProcessCount,
                                     indent = row.depth,
                                     micState = when {
@@ -294,9 +295,9 @@ private fun Badge(count: Int, color: Color, modifier: Modifier = Modifier) {
     }
 }
 
-/** Session-row subtitle: statusText or attention snippet. */
-private fun sessionSubtitle(session: AgentSessionRow, act: AgentsRepository.Activity?): String? =
-    act?.statusText ?: session.attentionSnippet
+/** Session-row subtitle: statusText, else attention snippet, else last message. */
+private fun sessionSubtitle(session: AgentSessionRow, act: AgentsRepository.Activity?, snippet: String? = null): String? =
+    act?.statusText ?: session.attentionSnippet ?: snippet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -211,4 +211,18 @@ interface AgentsDao {
 
     @Query("SELECT DISTINCT sessionId FROM agent_messages")
     suspend fun sessionsWithMessages(): List<String>
+
+    /** Latest text / user_prompt payload per session — the sidebar subtitle
+     *  snippet source. One row per session (the highest absIndex of a snippet
+     *  kind). */
+    @Query(
+        """SELECT m.sessionId AS sessionId, m.payloadJson AS payloadJson FROM agent_messages m
+           JOIN (SELECT sessionId, MAX(absIndex) AS mx FROM agent_messages
+                 WHERE kind IN ('text','user_prompt') GROUP BY sessionId) t
+           ON m.sessionId = t.sessionId AND m.absIndex = t.mx"""
+    )
+    fun observeLastSnippets(): Flow<List<SessionSnippet>>
 }
+
+/** Projection for observeLastSnippets. */
+data class SessionSnippet(val sessionId: String, val payloadJson: String)
