@@ -70,8 +70,13 @@ class HubClient(
                     response.use {
                         val body = it.body?.string() ?: ""
                         if (!it.isSuccessful) {
+                            // A dead bearer surfaces as 401/403 on this deployment
+                            // (no cookie challenge for the APK). Flip the global
+                            // auth-expired flag so the shell prompts a re-pair.
+                            if (it.code == 401 || it.code == 403) AuthState.markExpired()
                             if (cont.isActive) cont.resumeWithException(HttpException(it.code, body))
                         } else {
+                            AuthState.markHealthy()
                             if (cont.isActive) cont.resume(body)
                         }
                     }
@@ -99,10 +104,20 @@ class HubClient(
         if (!resp.isSuccessful) {
             val body = resp.body?.string() ?: ""
             resp.close()
+            if (resp.code == 401 || resp.code == 403) AuthState.markExpired()
             throw HttpException(resp.code, body)
         }
+        AuthState.markHealthy()
         resp
     }
+
+    /**
+     * PUT raw bytes (image/attachment uploads → e.g. /notes/asset). Shared
+     * helper so callers don't hand-roll an OkHttp Request against [okHttp]
+     * (was duplicated in NotesRepository). Returns the response body text.
+     */
+    suspend fun putRaw(path: String, bytes: ByteArray, contentType: String): String =
+        execute(request(path).put(bytes.toRequestBody(contentType.toMediaType())).build())
 
     companion object {
         private val JSON = "application/json".toMediaType()

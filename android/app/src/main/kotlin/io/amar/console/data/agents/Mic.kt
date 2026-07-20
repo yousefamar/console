@@ -2,6 +2,7 @@ package io.amar.console.data.agents
 
 import io.amar.console.HubTokenStore
 import io.amar.console.core.HubConfig
+import io.amar.console.sync.SyncBusClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,8 +64,46 @@ object Mic {
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
-    /** Idempotent — subscribe to the mic service + fetch current owner. */
+    /** When attached (AppGraph.init), the shared SyncBusClient carries the mic
+     *  service and we never open our own /sync socket. Falls back to the
+     *  standalone WS below only if this is null (e.g. a unit test constructs
+     *  Mic directly). */
+    @Volatile private var sharedBus: SyncBusClient? = null
+
+    /**
+     * Wire the mic service onto the app's shared SyncBusClient (one socket for
+     * the whole app) instead of Mic's own /sync WS. Idempotent; called once
+     * from AppGraph.init. Subscribes to `mic` events and fetches the current
+     * owner on every (re)connect.
+     */
+    fun attach(bus: SyncBusClient) {
+        if (sharedBus === bus) return
+        sharedBus = bus
+        wantConnected = true
+        bus.on("mic", "state") { data -> (data as? JsonObject)?.let { applyState(it) } }
+        bus.on("mic", "compose") { data ->
+            val d = data as? JsonObject ?: return@on
+            val t = d["text"]?.jsonPrimitive?.content ?: return@on
+            if (t.isNotEmpty()) _compose.value = Compose(d["owner"]?.jsonPrimitive?.content, t, seq.incrementAndGet())
+        }
+        // The bus buffers nothing for the disconnected — refetch owner on connect.
+        bus.onConnect { fetchStatusVia(bus) }
+        if (bus.connected) fetchStatusVia(bus)
+    }
+
+    private fun fetchStatusVia(bus: SyncBusClient) {
+        scope.launch {
+            runCatching {
+                val r = bus.rpc("mic", "status")
+                (r as? JsonObject)?.let { applyState(it) }
+            }
+        }
+    }
+
+    /** Idempotent — subscribe to the mic service + fetch current owner. When a
+     *  shared bus is attached this is a no-op (the shared path is authoritative). */
     fun init() {
+        if (sharedBus != null) return
         if (wantConnected) return
         wantConnected = true
         open()
@@ -146,6 +185,11 @@ object Mic {
 
     /** Hand the mic to a target (session id / name / agentKey; 'al' resets to Al). */
     fun setMic(target: String) {
+        val bus = sharedBus
+        if (bus != null) {
+            scope.launch { runCatching { bus.rpc("mic", "set", buildJsonObject { put("target", target) }) } }
+            return
+        }
         ws?.send(buildJsonObject {
             put("t", "rpc"); put("id", rpcId.getAndIncrement()); put("service", "mic"); put("op", "set")
             put("args", buildJsonObject { put("target", target) })

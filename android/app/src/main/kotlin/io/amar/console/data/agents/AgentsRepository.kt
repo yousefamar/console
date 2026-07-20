@@ -180,6 +180,17 @@ class AgentsRepository(
     fun observeMessages(sessionId: String, limit: Int = 300): Flow<List<AgentMessageRow>> =
         db.agents().observeRecent(sessionId, limit)
 
+    /**
+     * Live (non-ended) sessions whose cwd sits under a given vault subpath —
+     * powers Notes' "Jump to agent" / "Start agent in <project>" (FEATURES
+     * notes #9/#10/#119/#120). Additive projection over the existing session
+     * stream; matches when the session cwd equals or contains [pathFragment]
+     * (e.g. "/projects/<slug>"). */
+    fun observeSessionsUnderCwd(pathFragment: String): Flow<List<AgentSessionRow>> =
+        db.agents().observeSessions().map { rows ->
+            rows.filter { it.status != "ended" && (it.cwd?.contains(pathFragment) == true) }
+        }
+
     /** sessionId → latest text/user_prompt snippet (100 chars) for the sidebar. */
     fun observeLastSnippets(): Flow<Map<String, String>> =
         db.agents().observeLastSnippets().map { rows ->

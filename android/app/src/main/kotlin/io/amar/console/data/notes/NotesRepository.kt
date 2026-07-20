@@ -2,8 +2,6 @@ package io.amar.console.data.notes
 
 import androidx.room.withTransaction
 import io.amar.console.core.HubClient
-import io.amar.console.core.HubConfig
-import io.amar.console.HubTokenStore
 import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.db.MetaRow
 import io.amar.console.data.db.NoteFileRow
@@ -28,9 +26,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * Notes domain: vault listing mirror + cached bodies + conditional saves.
@@ -211,15 +206,10 @@ class NotesRepository(
      */
     suspend fun pasteImage(bytes: ByteArray, filename: String, contentType: String): AssetResult? =
         withContext(Dispatchers.IO) {
-            // Preferred: hub PUT to the sibling assets dir.
+            // Preferred: hub PUT to the sibling assets dir (shared putRaw helper).
             runCatching {
-                val url = "${HubConfig.hubBase}/notes/asset/${enc("images/$filename")}"
-                val req = Request.Builder().url(url)
-                    .put(bytes.toRequestBody(contentType.toMediaType()))
-                HubTokenStore.get()?.let { req.header("Authorization", "Bearer $it") }
-                hub.okHttp.newCall(req.build()).execute().use { resp ->
-                    if (resp.isSuccessful) return@withContext AssetResult(filename, wikiEmbed = true)
-                }
+                hub.putRaw("/notes/asset/${enc("images/$filename")}", bytes, contentType)
+                return@withContext AssetResult(filename, wikiEmbed = true)
             }
             // Offline fallback: write inside the vault via a queued save. Won't
             // publish, but the content isn't lost. Store as base64 in a save-
