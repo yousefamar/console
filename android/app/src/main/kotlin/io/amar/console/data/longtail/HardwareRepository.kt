@@ -48,6 +48,24 @@ fun parseMicStatus(raw: String): MicStatus? {
     )
 }
 
+/** Matrix connection status — GET /matrix/hub/status (server/src/routes/matrix.ts). */
+data class MatrixStatus(
+    val connected: Boolean,
+    val userId: String?,
+    val deviceId: String?,
+    val homeserver: String?,
+)
+
+fun parseMatrixStatus(raw: String): MatrixStatus? {
+    val obj = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
+    return MatrixStatus(
+        connected = obj["hasCredentials"]?.jsonPrimitive?.booleanOrNull ?: false,
+        userId = obj["userId"]?.jsonPrimitive?.content,
+        deviceId = obj["deviceId"]?.jsonPrimitive?.content,
+        homeserver = obj["homeserver"]?.jsonPrimitive?.content,
+    )
+}
+
 /** Thin online-only client for the hardware-adjacent hub routes. */
 class HardwareRepository(private val hub: HubClient) {
 
@@ -97,4 +115,43 @@ class HardwareRepository(private val hub: HubClient) {
         )
         true
     }.getOrDefault(false)
+
+    // ---- Account management (Settings screen) ---------------------------- //
+
+    /** Signed-in Google email (GET /auth/session → email), or "" when unknown. */
+    suspend fun googleEmail(): String = runCatching {
+        (json.parseToJsonElement(hub.get("/auth/session")) as? JsonObject)
+            ?.get("email")?.jsonPrimitive?.content ?: ""
+    }.getOrDefault("")
+
+    /** Sign out of all Google accounts hub-side (POST /auth/logout/google). */
+    suspend fun signOutGoogle(): Boolean =
+        runCatching { hub.post("/auth/logout/google", "{}"); true }.getOrDefault(false)
+
+    suspend fun matrixStatus(): MatrixStatus? =
+        runCatching { parseMatrixStatus(hub.get("/matrix/hub/status")) }.getOrNull()
+
+    /** Log the hub into Matrix (POST /matrix/hub/login). Returns null on success,
+     *  else an error message for inline display. */
+    suspend fun matrixLogin(homeserver: String, userId: String, password: String): String? =
+        try {
+            hub.post(
+                "/matrix/hub/login",
+                buildJsonObject {
+                    put("homeserver", homeserver)
+                    put("userId", userId)
+                    put("password", password)
+                }.toString(),
+            )
+            null
+        } catch (e: HubClient.HttpException) {
+            runCatching {
+                (json.parseToJsonElement(e.body) as? JsonObject)?.get("error")?.jsonPrimitive?.content
+            }.getOrNull() ?: "login failed (HTTP ${e.code})"
+        } catch (e: Exception) {
+            e.message ?: "network error"
+        }
+
+    suspend fun matrixLogout(): Boolean =
+        runCatching { hub.post("/matrix/hub/logout", "{}"); true }.getOrDefault(false)
 }
