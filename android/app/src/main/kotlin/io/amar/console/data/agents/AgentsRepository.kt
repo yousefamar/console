@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -178,6 +179,17 @@ class AgentsRepository(
     fun observeSessions(): Flow<List<AgentSessionRow>> = db.agents().observeSessions()
     fun observeMessages(sessionId: String, limit: Int = 300): Flow<List<AgentMessageRow>> =
         db.agents().observeRecent(sessionId, limit)
+
+    /** sessionId → latest text/user_prompt snippet (100 chars) for the sidebar. */
+    fun observeLastSnippets(): Flow<Map<String, String>> =
+        db.agents().observeLastSnippets().map { rows ->
+            rows.associate { r ->
+                val content = runCatching {
+                    json.parseToJsonElement(r.payloadJson).jsonObject["content"]?.jsonPrimitive?.content
+                }.getOrNull() ?: ""
+                r.sessionId to content.replace('\n', ' ').take(100)
+            }
+        }
 
     // ---------------------------------------------------------------- //
     // WS lifecycle (foreground-gated by SyncEngine-style start/stop)
