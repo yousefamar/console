@@ -130,7 +130,7 @@ class MailRepositoryTest {
     }
 
     @Test
-    fun `delete removes from inbox and queues trash; undo restores and cancels`() = runTest {
+    fun `delete removes from inbox and queues trash then undo restores`() = runTest {
         db.mailThreads().upsertAll(listOf(threadRow("t1")))
         db.meta().put(io.amar.console.data.db.MetaRow(MailRepository.ACCOUNT_KEY, "me@x.com"))
         repo.deleteThread("t1")
