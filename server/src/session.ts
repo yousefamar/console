@@ -27,6 +27,7 @@ import { getChildCountSync } from './process-tree.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
+import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 
 let sessionCounter = 0
 
@@ -362,6 +363,52 @@ export class Session extends EventEmitter {
     this.process.stdin.write(json + '\n')
   }
 
+  // ------------------------------------------------------------------ //
+  // Transient-error auto-resume (429/503/overloaded). One pending timer per
+  // session; consecutive failures walk RESUME_BACKOFF_MS; an hourly cap stops
+  // a persistent outage from burning tokens; any real user prompt cancels
+  // (their message continues the turn anyway) and resets the backoff.
+
+  private transientResumeTimer: ReturnType<typeof setTimeout> | null = null
+  private transientResumeAttempt = 0
+  private transientResumeTimestamps: number[] = []
+
+  private scheduleTransientResume(errorText: string): void {
+    if (this.status === 'ended') return
+    if (this.transientResumeTimer) return // one in flight is enough
+    const hourAgo = Date.now() - 3_600_000
+    this.transientResumeTimestamps = this.transientResumeTimestamps.filter((t) => t > hourAgo)
+    if (this.transientResumeTimestamps.length >= MAX_AUTO_RESUMES_PER_HOUR) {
+      console.log(`[auto-resume] ${this.id}: hourly cap reached, staying idle (${errorText.slice(0, 80)})`)
+      return
+    }
+    const wait = RESUME_BACKOFF_MS[Math.min(this.transientResumeAttempt, RESUME_BACKOFF_MS.length - 1)]
+    this.transientResumeAttempt++
+    console.log(`[auto-resume] ${this.id}: transient API error, resuming in ${Math.round(wait / 1000)}s (attempt ${this.transientResumeAttempt})`)
+    this.transientResumeTimer = setTimeout(() => {
+      this.transientResumeTimer = null
+      if (this.status === 'ended' || this.status === 'running') return
+      this.transientResumeTimestamps.push(Date.now())
+      const content = 'The previous request hit a transient API error (rate limit / overloaded). Continue from where you left off.'
+      const userMsg = { type: 'user_prompt' as const, sessionId: this.id, content }
+      this.emitHub(userMsg)
+      this.logMessage(userMsg)
+      this.sendMessage(content)
+    }, wait)
+    this.transientResumeTimer.unref?.()
+  }
+
+  /** A real user message supersedes any pending auto-resume. Called from the
+   *  send_message route (NOT from the nudge itself — it nulls the timer
+   *  before sending). */
+  cancelTransientResume(): void {
+    if (this.transientResumeTimer) {
+      clearTimeout(this.transientResumeTimer)
+      this.transientResumeTimer = null
+    }
+    this.transientResumeAttempt = 0
+  }
+
   /** Send a follow-up user prompt, optionally with images */
   sendMessage(content: string, images?: ImageAttachment[]) {
     this.lastActivityAt = Date.now()
@@ -519,6 +566,8 @@ export class Session extends EventEmitter {
 
   /** Kill the session */
   kill() {
+    if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
+
     this.endedByUser = true
     // Mark ended unconditionally — not only when a live process exists. If the
     // subprocess had already exited, the old guard left status untouched (e.g.
@@ -731,7 +780,14 @@ export class Session extends EventEmitter {
             .trim()
           if (text) {
             if (anyMsg.isApiErrorMessage) {
-              if (looksLikeModelError(text)) this.signalModelFailure(`api error: ${text.slice(0, 200)}`)
+              if (isTransientApiError(text)) {
+                // 429/503/overloaded: the turn died but the session is fine.
+                // Schedule a backoff "Continue." nudge instead of sitting
+                // idle until someone notices (auto-resume, like hub restarts).
+                this.scheduleTransientResume(text)
+              } else if (looksLikeModelError(text)) {
+                this.signalModelFailure(`api error: ${text.slice(0, 200)}`)
+              }
               this.emitHub({ type: 'error', sessionId: this.id, message: text })
             } else {
               this.emitHub({ type: 'text', sessionId: this.id, content: text })
@@ -841,6 +897,8 @@ export class Session extends EventEmitter {
   }
 
   private handleResultMessage(msg: ClaudeStdoutMessage & { type: 'result' }) {
+    // A completed turn = the API is healthy; reset auto-resume backoff.
+    this.transientResumeAttempt = 0
     this.status = 'idle'
     this.lastActivityAt = Date.now()
     // total_cost_usd is cumulative (session total), not per-turn
