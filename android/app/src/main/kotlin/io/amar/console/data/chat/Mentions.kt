@@ -41,4 +41,46 @@ object Mentions {
             .sortedByDescending { it.displayName.lowercase().startsWith(q) }
             .take(limit)
     }
+
+    data class Mention(val displayName: String, val userId: String)
+
+    /**
+     * MSC3952 intentional-mention build (SPA buildMentionsFormatted parity):
+     * from a set of candidate `@Name → userId` mentions, keep only those still
+     * present in [body] as a discrete `@Name` token, replace each with a
+     * matrix.to anchor in an HTML formatted_body, and return the surviving
+     * userIds for `m.mentions.user_ids`. Longer names replace first so
+     * "@Alice Smith" wins over a bare "@Alice". Returns null when no mention
+     * survives (send a plain-text message).
+     */
+    data class Formatted(val formattedBody: String, val userIds: List<String>)
+
+    fun buildMentionsFormatted(body: String, mentions: List<Mention>): Formatted? {
+        // Dedup by userId keeping first (picked) occurrence.
+        val seen = HashSet<String>()
+        val uniq = mentions.filter { seen.add(it.userId) }
+        val active = uniq.filter { m -> tokenRegex(m.displayName).containsMatchIn(body) }
+        if (active.isEmpty()) return null
+        val sorted = active.sortedByDescending { it.displayName.length }
+        var html = escapeHtml(body)
+        for (m in sorted) {
+            // Re-scan the escaped HTML — display names are escaped identically.
+            val re = tokenRegex(escapeHtml(m.displayName))
+            val link = "<a href=\"https://matrix.to/#/${uriEncode(m.userId)}\">@${escapeHtml(m.displayName)}</a>"
+            html = re.replace(html) { mr -> "${mr.groupValues[1]}$link" }
+        }
+        return Formatted(html, active.map { it.userId })
+    }
+
+    private fun tokenRegex(displayName: String): Regex =
+        Regex("(^|\\s|[.,!?:;])@${Regex.escape(displayName)}(?=$|\\s|[.,!?:;])")
+
+    private fun escapeHtml(s: String): String = s
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+
+    private fun uriEncode(s: String): String =
+        java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 }

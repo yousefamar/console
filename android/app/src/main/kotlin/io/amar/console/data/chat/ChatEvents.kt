@@ -77,7 +77,19 @@ object ChatEvents {
         val mediaMxc = effectiveContent.str("url") ?: file?.str("url")
         val info = effectiveContent.obj("info")
         val mediaMime = info?.str("mimetype")
-        val durationMs = info?.get("duration")?.jsonPrimitive?.longOrNull
+        // Audio metadata: MSC1767 org.matrix.msc1767.audio.duration OR
+        // info.duration; waveform + MSC3245 voice-note flag ride content.
+        val msc1767 = effectiveContent.obj("org.matrix.msc1767.audio")
+        val durationMs = if (msgtype == "m.audio") {
+            msc1767?.get("duration")?.jsonPrimitive?.longOrNull
+                ?: info?.get("duration")?.jsonPrimitive?.longOrNull
+        } else info?.get("duration")?.jsonPrimitive?.longOrNull
+        val waveform = if (msgtype == "m.audio") {
+            (msc1767?.get("waveform") as? kotlinx.serialization.json.JsonArray)?.toString()
+        } else null
+        val isVoiceNote = msgtype == "m.audio" && effectiveContent.containsKey("org.matrix.msc3245.voice")
+        val mediaWidth = info?.get("w")?.jsonPrimitive?.intOrNull
+        val mediaHeight = info?.get("h")?.jsonPrimitive?.intOrNull
 
         val replyToId = content.obj("m.relates_to")?.obj("m.in_reply_to")?.str("event_id")
 
@@ -93,9 +105,25 @@ object ChatEvents {
             mediaMxc = mediaMxc,
             mediaMime = mediaMime,
             mediaDurationMs = durationMs,
+            waveformJson = waveform,
+            isVoiceNote = isVoiceNote,
+            mediaWidth = mediaWidth,
+            mediaHeight = mediaHeight,
             encryptedFileJson = file?.toString(),
             replyToJson = replyToId?.let { """{"eventId":"$it"}""" },
         )
+    }
+
+    /**
+     * Bridge "SenderName: message" prefix stripping (SPA
+     * ChatMessageBubble displayBody): WhatsApp/Slack bridges prepend the
+     * sender's display name to the body in group rooms. Strip only when the
+     * prefix exactly matches the resolved sender name.
+     */
+    fun displayBody(body: String, senderName: String?): String {
+        if (senderName.isNullOrBlank()) return body
+        val prefix = "$senderName: "
+        return if (body.startsWith(prefix)) body.substring(prefix.length) else body
     }
 
     /** m.relates_to rel_type of an event, if any ("m.replace" / "m.annotation"). */
@@ -122,6 +150,20 @@ object ChatEvents {
     fun isEdit(event: JsonObject): Boolean =
         event.str("type") == "m.room.message" && relType(event) == "m.replace"
 
+    /** Replacement body + formatted_body from an m.replace event's
+     *  m.new_content (falls back to the outer content). */
+    data class EditContent(val body: String, val formattedBody: String?)
+
+    fun editContent(event: JsonObject): EditContent? {
+        val content = event.obj("content") ?: return null
+        val nc = content.obj("m.new_content") ?: content
+        val body = nc.str("body") ?: return null
+        val formatted = nc.str("formatted_body")
+            ?.replace(Regex("<mx-reply>.*?</mx-reply>", RegexOption.DOT_MATCHES_ALL), "")
+            ?.takeIf { it.isNotBlank() && nc.str("format") == "org.matrix.custom.html" }
+        return EditContent(body, formatted)
+    }
+
     fun isRedaction(event: JsonObject): Boolean = event.str("type") == "m.room.redaction"
 
     fun redactsEventId(event: JsonObject): String? =
@@ -137,6 +179,19 @@ object ChatEvents {
     /** The local-echo transaction id the homeserver echoes back to the sender. */
     fun transactionId(event: JsonObject): String? =
         event.obj("unsigned")?.str("transaction_id")
+
+    /** Beeper bridge send-status event (references the original send). */
+    fun isSendStatus(event: JsonObject): Boolean =
+        event.str("type") == "com.beeper.message_send_status"
+
+    /** (targetEventId, status, reason?) from a send-status event. */
+    fun sendStatusParts(event: JsonObject): Triple<String, String, String?>? {
+        val content = event.obj("content") ?: return null
+        val target = content.obj("m.relates_to")?.str("event_id") ?: return null
+        val status = content.str("status") ?: return null
+        val reason = content.str("reason") ?: content.str("error")
+        return Triple(target, status, reason)
+    }
 
     private fun senderFallbackName(sender: String): String =
         sender.removePrefix("@").substringBefore(':')
