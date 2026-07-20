@@ -769,6 +769,10 @@ class PushService : Service() {
             handleCancelPush(json, type)
             return
         }
+        // DND gate (FEATURES app-wide #81): a hub-synced DND pref silences ALL
+        // notification-posting pushes on the phone. Cancels / rpc / reconcile
+        // handled above are unaffected. Mirrors src/notifications.ts.
+        if (io.amar.console.core.HubPrefs.dnd) return
         if (type == "chat") {
             handleChatPush(json)
             return
@@ -1344,6 +1348,15 @@ class PushService : Service() {
             "money" -> "money"
             else -> null
         }
+        // Pane suppression (FEATURES app-wide #77): when the app is foreground on
+        // the target pane, drop the notification. Exception — an agent push for a
+        // session the user is NOT currently viewing still fires (per SPA), so we
+        // only suppress agent pushes when viewing that exact session (handled by
+        // the item-level isViewing) and suppress other panes on pane match.
+        if (pane != null && type != "agent" &&
+            io.amar.console.core.AppLifecycle.isViewing(pane, null)
+        ) return
+
         val idStr = json.optString("id").takeIf { it.isNotEmpty() } ?: "$title|$body"
         val notifId = idStr.hashCode()
         val channel = when (type) {

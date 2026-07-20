@@ -44,7 +44,7 @@ import kotlinx.coroutines.launch
  * AccountModal + ApkPairSection.
  */
 @Composable
-fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> Unit = {}) {
+fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> Unit = {}, onOutbox: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var hubUrl by remember { mutableStateOf(HubConfig.hubBase) }
     var token by remember { mutableStateOf("") }
@@ -132,11 +132,8 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
                             // reconnect doesn't show stale data (SPA parity:
                             // db.chatRooms.clear() + db.chatMessages.clear()).
                             runCatching {
-                                val ids = app.graph.db.chatRooms().allIds()
-                                if (ids.isNotEmpty()) app.graph.db.chatRooms().deleteByIds(ids)
-                                for (rid in app.graph.db.chatMessages().roomsWithMessages()) {
-                                    app.graph.db.chatMessages().pruneRoom(rid, 0)
-                                }
+                                app.graph.db.chatRooms().deleteAll()
+                                app.graph.db.chatMessages().deleteAll()
                             }
                             refreshAccounts()
                             signingOut = null
@@ -243,6 +240,26 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
                     scope.launch { io.amar.console.core.HubPrefs.setDnd(app.graph.hub, enabled) }
                 },
             )
+        }
+
+        HorizontalDivider()
+
+        // ---- Sync queue ---- //
+        val backlog by app.graph.db.outbox().observeBacklogCount().collectAsState(initial = 0)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Sync queue", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (backlog > 0) "$backlog pending / failed" else "All actions flushed",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (backlog > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onOutbox) { Text("View") }
         }
 
         HorizontalDivider()
