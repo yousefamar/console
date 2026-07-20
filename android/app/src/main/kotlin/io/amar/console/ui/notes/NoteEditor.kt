@@ -124,6 +124,8 @@ fun NoteEditorScreen(
     var closeConfirm by remember { mutableStateOf<String?>(null) }
     var vimEnabled by remember { mutableStateOf(false) }
     var projectPanelSlug by remember { mutableStateOf<String?>(null) }
+    // Hoisted 'Start agent in <project>' prompt (survives palette dismiss).
+    var startAgentSlug by remember { mutableStateOf<String?>(null) }
 
     // Push the doc + cursor to the glasses notes mirror (cursor-follow window).
     fun pushEditorMirror(v: TextFieldValue) {
@@ -330,6 +332,29 @@ fun NoteEditorScreen(
             onToast = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
             agents = agents,
             onOpenAgentSession = onOpenAgentSession,
+            onStartAgentInProject = { slug -> startAgentSlug = slug },
+        )
+    }
+
+    startAgentSlug?.let { slug ->
+        TitlePromptDialog(
+            title = "Start agent in ${io.amar.console.data.notes.BlogHelpers.humaniseSlug(slug)}",
+            inheritProject = null,
+            confirmLabel = "Start",
+            fieldLabel = "First message",
+            onDismiss = { startAgentSlug = null },
+            onConfirm = { firstMessage ->
+                startAgentSlug = null
+                scope.launch {
+                    val vault = repo.getVaultPath()
+                    if (vault != null && agents != null) {
+                        agents.createSession(firstMessage, "$vault/projects/$slug", io.amar.console.data.notes.BlogHelpers.humaniseSlug(slug))
+                        Toast.makeText(context, "Starting agent…", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Vault path not loaded — try again", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
         )
     }
 
