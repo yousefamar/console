@@ -263,11 +263,21 @@ class FeedsRepository(
             val items = (obj["items"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
             val readIds = (obj["readIds"] as? JsonArray)
                 ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList()
+            val currentItemIds = (obj["currentItemIds"] as? JsonArray)
+                ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
 
             val pendingRemove = pendingRemoveIds().toSet()
             db.withTransaction {
                 val rows = items.mapNotNull { itemRow(it) }
                 if (rows.isNotEmpty()) db.feeds().upsertItems(rows)
+                // Hub-authoritative reconciliation: drop items the hub no longer
+                // surfaces (rolled off the source feed). NEVER delete feedRead
+                // entries — a rolled-off-then-resurfaced item must stay read.
+                if (currentItemIds != null && currentItemIds.isNotEmpty()) {
+                    val hubSet = currentItemIds.toSet()
+                    val orphans = db.feeds().allItemIds().filter { it !in hubSet }
+                    if (orphans.isNotEmpty()) db.feeds().deleteItems(orphans)
+                }
                 // Hub read-state merges DOWN (additive; local pending stays —
                 // and a local "mark unread" that hasn't flushed yet must not
                 // be resurrected by the hub's stale read set).
@@ -303,8 +313,9 @@ class FeedsRepository(
     }
 
     suspend fun prune() {
+        // Per-feed cap honours a feed's maxItems override, else the 50 default.
         for (feedId in db.feeds().feedsWithItems()) {
-            db.feeds().pruneFeed(feedId, ITEMS_PER_FEED)
+            db.feeds().pruneFeed(feedId, effectiveCap(feedId))
         }
     }
 }

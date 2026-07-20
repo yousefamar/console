@@ -133,6 +133,14 @@ fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () 
     LaunchedEffect(searchQuery) {
         searchResults = if (searchQuery.length >= 2) repo.search(searchQuery) else emptyList()
     }
+    // Auto-refresh every 15 min while the feed pane is open (SPA useSync parity;
+    // the background SyncEngine reconcile still covers foreground/reconnect).
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(15 * 60 * 1000L)
+            runCatching { repo.reconcile() }
+        }
+    }
 
     fun scopeFeedIds(s: FeedScope): List<String>? = when (s) {
         FeedScope.All -> null

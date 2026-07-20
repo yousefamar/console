@@ -224,6 +224,7 @@ class MusicRepository(private val hub: HubClient) {
         val progressMs: Long,
         val durationMs: Long,
         val device: String?,
+        val deviceId: String?,
         val volumePercent: Int?,
         val albumArt: String?,
         val trackId: String?,
@@ -309,6 +310,7 @@ class MusicRepository(private val hub: HubClient) {
             progressMs = snap["progressMs"]?.jsonPrimitive?.longOrNull ?: 0L,
             durationMs = item?.get("durationMs")?.jsonPrimitive?.longOrNull ?: 0L,
             device = device?.get("name")?.jsonPrimitive?.content,
+            deviceId = device?.get("id")?.jsonPrimitive?.content,
             volumePercent = device?.get("volumePercent")?.jsonPrimitive?.content?.toIntOrNull(),
             albumArt = item?.get("albumArt")?.jsonPrimitive?.content,
             trackId = trackId,
@@ -326,7 +328,7 @@ class MusicRepository(private val hub: HubClient) {
 
     private fun emptyNotPlaying(linked: Boolean) = NowPlaying(
         linked = linked, track = null, artist = "", isPlaying = false, progressMs = 0, durationMs = 0,
-        device = null, volumePercent = null, albumArt = null, trackId = null, trackUri = null,
+        device = null, deviceId = null, volumePercent = null, albumArt = null, trackId = null, trackUri = null,
         shuffle = false, repeat = "off", disallows = emptyList(), liked = null,
         fetchedAt = System.currentTimeMillis(), devices = emptyList(), spotifydDeviceId = null,
     )
