@@ -52,7 +52,8 @@ import io.amar.console.ui.settings.SettingsScreen
 @Composable
 fun AppShell(app: ConsoleApp, navController: NavHostController) {
     val connected by app.graph.syncBus.connectedFlow.collectAsState()
-    val backlog by app.graph.db.outbox().observeBacklogCount().collectAsState(initial = 0)
+    val pendingCount by app.graph.db.outbox().observePendingCount().collectAsState(initial = 0)
+    val stuckCount by app.graph.db.outbox().observeStuckCount().collectAsState(initial = 0)
     val update by io.amar.console.core.Updater.available.collectAsState()
     val authExpired by io.amar.console.core.AuthState.expired.collectAsState()
 
@@ -98,14 +99,30 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         Column(
             Modifier.fillMaxSize()
         ) {
+            // Banner semantics: "Syncing" only for rows that will actually
+            // drain (pending/processing). failed/conflict rows show as "need
+            // attention" instead of an eternal never-decrementing "Syncing N".
+            // Both are tappable → outbox inspector, so the count is explorable.
+            val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
             if (!connected) {
                 StatusBanner(
                     icon = Icons.Outlined.CloudOff,
-                    text = if (backlog > 0) "Offline — $backlog queued" else "Offline — showing cached data",
+                    text = if (pendingCount > 0) "Offline — $pendingCount queued" else "Offline",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = if (pendingCount > 0) toOutbox else null,
                 )
-            } else if (backlog > 0) {
-                StatusBanner(text = "Syncing $backlog queued…", tint = MaterialTheme.colorScheme.primary)
+            } else if (pendingCount > 0) {
+                StatusBanner(
+                    text = "Syncing $pendingCount…",
+                    tint = MaterialTheme.colorScheme.primary,
+                    onClick = toOutbox,
+                )
+            } else if (stuckCount > 0) {
+                StatusBanner(
+                    text = "$stuckCount ${if (stuckCount == 1) "action" else "actions"} failed — tap to review",
+                    tint = MaterialTheme.colorScheme.error,
+                    onClick = toOutbox,
+                )
             }
             update?.let { u ->
                 UpdateBanner(
@@ -124,6 +141,12 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 navController = navController,
                 startDestination = GRID_ROUTE,
                 modifier = Modifier.fillMaxSize(),
+                // Instant switches — navigation-compose defaults to a cross-fade
+                // on every push/pop, which reads as lag on each tap.
+                enterTransition = { androidx.compose.animation.EnterTransition.None },
+                exitTransition = { androidx.compose.animation.ExitTransition.None },
+                popEnterTransition = { androidx.compose.animation.EnterTransition.None },
+                popExitTransition = { androidx.compose.animation.ExitTransition.None },
             ) {
                 // L0 — launcher
                 composable(GRID_ROUTE) {

@@ -87,6 +87,7 @@ class AgentsRepository(
          *  partial JSON of the current tool being typed. Cleared when the
          *  finalized tool_use lands or the turn ends. */
         val toolInputName: String? = null,
+        val toolInputId: String? = null,
         val toolInputJson: String = "",
         /** Active sub-agents: toolUseId → description (tool_use w/o result). */
         val subagents: Map<String, String> = emptyMap(),
@@ -166,6 +167,15 @@ class AgentsRepository(
      *  a Room row when a non-delta message arrives for the session. */
     private val pendingText = java.util.concurrent.ConcurrentHashMap<String, StringBuilder>()
 
+    /** WS messages are handled on a single-consumer channel: OkHttp delivers
+     *  onMessage in order, but fanning each one out via scope.launch on the
+     *  multi-threaded Default dispatcher let text_delta chunks (and the final
+     *  text swap) race — the cause of visibly mangled streamed replies. */
+    private val inbound = kotlinx.coroutines.channels.Channel<String>(capacity = kotlinx.coroutines.channels.Channel.UNLIMITED)
+    private val inboundJob = scope.launch {
+        for (text in inbound) runCatching { handleHubMessage(text) }
+    }
+
     private var ws: WebSocket? = null
     private var wantConnected = false
     private var reconnectJob: Job? = null
@@ -241,7 +251,7 @@ class AgentsRepository(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                scope.launch { runCatching { handleHubMessage(text) } }
+                inbound.trySend(text)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -381,9 +391,10 @@ class AgentsRepository(
                 val toolName = msg["toolName"]?.jsonPrimitive?.content ?: ""
                 val chunk = msg["content"]?.jsonPrimitive?.content ?: return
                 setActivity(sessionId) {
-                    // A new toolUseId resets the accumulator.
-                    val base = if (it.toolInputName == null || it.toolInputJson.isEmpty()) it else it
-                    it.copy(running = true, toolInputName = toolName, toolInputJson = (it.toolInputJson + chunk).takeLast(4000))
+                    // A new toolUseId resets the accumulator — without this,
+                    // consecutive edits concatenate into garbled previews.
+                    val prior = if (it.toolInputId == toolUseId) it.toolInputJson else ""
+                    it.copy(running = true, toolInputId = toolUseId, toolInputName = toolName, toolInputJson = (prior + chunk).takeLast(4000))
                 }
             }
             // Loggable stream messages — persist at the next absolute index.

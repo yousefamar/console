@@ -1,6 +1,7 @@
 package io.amar.console.ui.shell
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,11 +19,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun StatusBanner(text: String, tint: Color, icon: ImageVector? = null) {
+fun StatusBanner(text: String, tint: Color, icon: ImageVector? = null, onClick: (() -> Unit)? = null) {
     Row(
         Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

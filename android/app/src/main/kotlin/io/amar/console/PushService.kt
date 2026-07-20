@@ -466,12 +466,29 @@ class PushService : Service() {
         } catch (_: Exception) {}
     }
 
+    /** True while a PTT hold is being serviced by the in-app Dictation object
+     *  (agent chat open → live transcript in that composer) instead of the
+     *  service-side capture (→ /mic/say to the mic owner). */
+    @Volatile private var pttViaDictation = false
+
+    private fun agentChatOpen(): Boolean =
+        io.amar.console.core.AppLifecycle.foreground &&
+            io.amar.console.core.AppLifecycle.currentRoute.startsWith("agents/")
+
     private fun pttDown() {
         if (pttActive) return
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             // No mic permission — the WebView grant doesn't cover a background
             // service. Nudge the user to open the app + grant it.
             postNeedsPairNotification() // reuse the open-app notification path
+            return
+        }
+        // Agent chat on screen → the hardware key acts exactly like tapping the
+        // composer mic: Dictation streams the live transcript into the open
+        // composer and commits into the draft on release. Same process, direct call.
+        if (agentChatOpen()) {
+            pttViaDictation = true
+            io.amar.console.core.Dictation.start()
             return
         }
         pttActive = true
@@ -521,6 +538,11 @@ class PushService : Service() {
     }
 
     private fun pttUp() {
+        if (pttViaDictation) {
+            pttViaDictation = false
+            io.amar.console.core.Dictation.stop()
+            return
+        }
         if (!pttActive) return
         pttActive = false
         try { pttRecord?.stop() } catch (_: Throwable) {}
@@ -534,10 +556,9 @@ class PushService : Service() {
             pttWs = null
             val text = pttFullText()
             if (text.isNotEmpty()) {
-                val payload = JSONObject().put("text", text).toString()
-                // Compose into the SPA composer when Console is foreground (its
-                // sync-bus is live); otherwise auto-send so it isn't lost.
-                hubPost(if (io.amar.console.core.AppLifecycle.foreground) "/mic/compose" else "/mic/say", payload)
+                // No agent chat on screen → auto-send to whichever session
+                // holds the mic (hub /mic/say routes to the owner).
+                hubPost("/mic/say", JSONObject().put("text", text).toString())
             }
         }, 700)
     }

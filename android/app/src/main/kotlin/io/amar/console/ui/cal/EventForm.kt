@@ -243,11 +243,6 @@ fun EventFormDialog(
                         ScopeChip("All events", scope == "all") { scope = "all" }
                     }
                 }
-                Text(
-                    "Queued offline — lands in Google Calendar when connected.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         },
         confirmButton = {

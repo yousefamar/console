@@ -32,6 +32,12 @@ object Dictation {
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state
 
+    /** Committed transcripts (fired from [stop]). The active composer collects
+     *  this and appends to its draft — so BOTH the in-composer mic button and
+     *  the hardware PTT key (PushService) land text the same way. */
+    private val _committed = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val committed: kotlinx.coroutines.flow.SharedFlow<String> = _committed
+
     private var ws: WebSocket? = null
     private var record: AudioRecord? = null
     @Volatile private var running = false
@@ -115,8 +121,9 @@ object Dictation {
         }.start()
     }
 
-    /** Stop and return the final transcript (after a short flush grace). */
-    fun stop(onDone: (String) -> Unit) {
+    /** Stop and commit the final transcript (after a short flush grace). The
+     *  text is emitted on [committed]; the optional callback also receives it. */
+    fun stop(onDone: (String) -> Unit = {}) {
         if (!running) { onDone(""); return }
         running = false
         runCatching { record?.stop(); record?.release() }
@@ -128,6 +135,7 @@ object Dictation {
             ws = null
             val text = _state.value.transcript
             _state.value = State()
+            if (text.isNotEmpty()) _committed.tryEmit(text)
             onDone(text)
         }.start()
     }

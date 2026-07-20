@@ -34,6 +34,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,6 +95,15 @@ fun Composer(
     val displayText = if (dictation.active && dictation.transcript.isNotEmpty()) {
         (draft.trimEnd() + " " + dictation.transcript).trim()
     } else draft
+
+    // Committed dictation (mic button OR the hardware PTT key while this
+    // composer is on screen) folds into the draft here — single append path.
+    LaunchedEffect(Unit) {
+        Dictation.committed.collect { text ->
+            draft = (draft.trimEnd() + " " + text).trim()
+            onTextChange(draft)
+        }
+    }
     val canSend = displayText.isNotBlank() || attachments.isNotEmpty()
 
     val filePicker = rememberLauncherForActivityResult(
@@ -251,12 +261,7 @@ fun Composer(
             IconButton(
                 onClick = {
                     if (dictation.active) {
-                        Dictation.stop { text ->
-                            if (text.isNotEmpty()) {
-                                draft = (draft.trimEnd() + " " + text).trim()
-                                onTextChange(draft)
-                            }
-                        }
+                        Dictation.stop() // commit lands via Dictation.committed
                     } else {
                         val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
                             PackageManager.PERMISSION_GRANTED
