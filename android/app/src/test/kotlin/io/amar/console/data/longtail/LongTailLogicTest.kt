@@ -104,13 +104,15 @@ class LongTailLogicTest {
         assertTrue(parseDashboardAlerts("garbage").isEmpty())
     }
 
-    // --- uptime format --- //
+    // --- uptime format (single-unit d/h/m/s, mirrors ServersCard fmtUptime) --- //
 
     @Test
-    fun `uptime formats minutes, hours, days`() {
+    fun `uptime formats single largest unit`() {
+        assertEquals("—", formatUptime(0L))
         assertEquals("5m", formatUptime(5 * 60_000L))
-        assertEquals("2h 1m", formatUptime((2 * 60 + 1) * 60_000L))
-        assertEquals("3d 4h", formatUptime(((3 * 24 + 4) * 60L + 9) * 60_000L))
+        assertEquals("2h", formatUptime((2 * 60 + 1) * 60_000L))
+        assertEquals("3d", formatUptime(((3 * 24 + 4) * 60L + 9) * 60_000L))
+        assertEquals("45s", formatUptime(45_000L))
     }
 
     // --- spotify disallows --- //
