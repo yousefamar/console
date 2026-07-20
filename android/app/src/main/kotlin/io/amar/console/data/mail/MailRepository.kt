@@ -160,6 +160,31 @@ class MailRepository(
 
     data class MailContact(val name: String, val email: String, val lastSeen: Long, val remote: Boolean = false)
 
+    /** (messageId, attachmentId, filename) for every non-inline attachment in a thread. */
+    suspend fun threadAttachments(threadId: String): List<Triple<String, String, String>> {
+        val out = mutableListOf<Triple<String, String, String>>()
+        for (m in db.mailMessages().forThread(threadId)) {
+            val aj = m.attachmentsJson ?: continue
+            val arr = runCatching { json.parseToJsonElement(aj) as? JsonArray }.getOrNull() ?: continue
+            for (el in arr) {
+                val o = el as? JsonObject ?: continue
+                if (o["contentId"] != null) continue // inline CID — rendered in body
+                val mid = o["messageId"]?.jsonPrimitive?.content ?: m.id
+                val aid = o["attachmentId"]?.jsonPrimitive?.content ?: continue
+                val name = o["filename"]?.jsonPrimitive?.content ?: "file"
+                out.add(Triple(mid, aid, name))
+            }
+        }
+        return out
+    }
+
+    /** Attachment ids across the newest [limit] inbox threads (background preload). */
+    suspend fun inboxAttachmentTargets(limit: Int = INITIAL_LIMIT): List<Triple<String, String, String>> {
+        val out = mutableListOf<Triple<String, String, String>>()
+        for (id in db.mailThreads().inboxIds().take(limit)) out.addAll(threadAttachments(id))
+        return out
+    }
+
     // ---------------------------------------------------------------- //
     // Triage mutations — optimistic + queued (all idempotent hub-side)
 
@@ -168,10 +193,15 @@ class MailRepository(
         enqueueSimple(TYPE_ARCHIVE, threadId)
     }
 
-    /** Undo of archive within the toast window: restore + cancel the queue row. */
+    /** Undo of archive within the toast window: restore the row, cancel a
+     *  still-pending archive, and enqueue an unarchive to cover the case the
+     *  archive already flushed to Gmail (add-INBOX is idempotent, so this is a
+     *  no-op when the thread was never archived server-side). Mirrors the SPA's
+     *  undoArchive (removeByThread('archive') + enqueue('unarchive')). */
     suspend fun undoArchive(threadId: String) {
         db.mailThreads().setInbox(threadId, true)
         outbox.cancel(threadId, TYPE_ARCHIVE)
+        enqueueSimple(TYPE_UNARCHIVE, threadId)
     }
 
     suspend fun markRead(threadId: String) {
@@ -578,6 +608,15 @@ class MailRepository(
         val threads = (obj["threads"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
         val historyId = obj["historyId"]?.jsonPrimitive?.content
 
+        // Threads with a queued unarchive/unsnooze must never be de-inboxed by a
+        // racing hydrate — the local optimistic re-inbox would otherwise flap
+        // (SPA sync.ts respects pending unarchive/unsnooze). Gathered outside the
+        // txn since it's a read of the outbox.
+        val pendingReinbox = db.outbox().pending()
+            .filter { it.type == TYPE_UNARCHIVE }
+            .mapNotNull { it.entityId }
+            .toSet()
+
         db.withTransaction {
             val parsed = threads.mapNotNull { GmailParse.threadRows(it, account) }
             val threadRows = parsed.map { it.first }
@@ -589,12 +628,13 @@ class MailRepository(
             db.mailThreads().upsertAll(withSnooze)
             db.mailMessages().upsertAll(parsed.flatMap { it.second })
             // Threads no longer in the inbox listing leave the inbox (keep
-            // snoozed rows — they're deliberately archived server-side).
+            // snoozed rows — they're deliberately archived server-side — and keep
+            // rows with a queued unarchive/unsnooze so an undo isn't clobbered).
             val listedIds = threadRows.map { it.id }.toSet()
             val stale = db.mailThreads().inboxIds().filter { it !in listedIds }
             for (id in stale) {
                 val row = db.mailThreads().byId(id)
-                if (row?.snoozedUntil == null) db.mailThreads().setInbox(id, false)
+                if (row?.snoozedUntil == null && id !in pendingReinbox) db.mailThreads().setInbox(id, false)
             }
             if (historyId != null) db.meta().put(MetaRow("$CURSOR_PREFIX$account", historyId))
         }

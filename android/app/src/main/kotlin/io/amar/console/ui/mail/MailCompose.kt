@@ -40,6 +40,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -174,8 +175,10 @@ fun MailComposeSheet(
             Divider()
         }
 
-        // To
-        RecipientField("To", to, { to = it }, repo, showTrailing = mode == ComposeMode.REPLY_ALL || mode == ComposeMode.COMPOSE || mode == ComposeMode.REPLY,
+        // To — auto-focused for compose/forward (SPA focuses To after 100ms).
+        RecipientField("To", to, { to = it }, repo,
+            showTrailing = mode == ComposeMode.REPLY_ALL || mode == ComposeMode.COMPOSE || mode == ComposeMode.REPLY,
+            autoFocus = mode == ComposeMode.COMPOSE || mode == ComposeMode.FORWARD,
             trailing = {
                 if (!showCc) TextButton(onClick = { showCc = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
                     Text("Cc/Bcc", style = MaterialTheme.typography.labelSmall)
@@ -250,11 +253,13 @@ private fun RecipientField(
     onChange: (String) -> Unit,
     repo: MailRepository,
     showTrailing: Boolean = false,
+    autoFocus: Boolean = false,
     trailing: @Composable () -> Unit = {},
 ) {
     var suggestions by remember { mutableStateOf<List<MailRepository.MailContact>>(emptyList()) }
     var open by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    if (autoFocus) LaunchedEffect(Unit) { delay(100); runCatching { focusRequester.requestFocus() } }
 
     // Debounced autocomplete on the last comma-separated token.
     LaunchedEffect(value) {
@@ -289,7 +294,8 @@ private fun RecipientField(
                 value = value, onValueChange = onChange,
                 textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                singleLine = true, modifier = Modifier.weight(1f),
+                singleLine = true,
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
             )
             if (showTrailing) trailing()
         }

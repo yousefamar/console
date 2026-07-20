@@ -63,12 +63,16 @@ class MailRepositoryTest {
     }
 
     @Test
-    fun `undoArchive restores and cancels the queued action`() = runTest {
+    fun `undoArchive restores, cancels the pending archive, and queues unarchive`() = runTest {
         db.mailThreads().upsertAll(listOf(threadRow("t1")))
+        db.meta().put(io.amar.console.data.db.MetaRow(MailRepository.ACCOUNT_KEY, "me@x.com"))
         repo.archive("t1")
         repo.undoArchive("t1")
         assertTrue(db.mailThreads().byId("t1")!!.isInbox)
-        assertEquals(0, db.outbox().pending().size)
+        // pending archive dropped; unarchive queued to cover an already-flushed archive.
+        val pending = db.outbox().pending()
+        assertEquals(1, pending.size)
+        assertEquals(MailRepository.TYPE_UNARCHIVE, pending.single().type)
     }
 
     @Test
@@ -200,6 +204,22 @@ class MailRepositoryTest {
         ))
         assertEquals("Sync", repo.calendarInvite("m1")?.summary)
         assertNull(repo.calendarInvite("missing"))
+    }
+
+    @Test
+    fun `threadAttachments lists non-inline attachments, skipping CID`() = runTest {
+        db.mailThreads().upsertAll(listOf(threadRow("t1")))
+        db.mailMessages().upsertAll(listOf(
+            io.amar.console.data.db.MailMessageRow(
+                id = "m1", threadId = "t1", date = 100, fromHeader = "a@b.c", toHeader = "", ccHeader = null,
+                subject = "s", bodyHtml = null, bodyText = "t", isUnread = false,
+                attachmentsJson = """[{"messageId":"m1","attachmentId":"att1","filename":"doc.pdf","mimeType":"application/pdf","size":10},{"messageId":"m1","attachmentId":"att2","filename":"logo.png","mimeType":"image/png","size":5,"contentId":"logo"}]""",
+            ),
+        ))
+        val atts = repo.threadAttachments("t1")
+        assertEquals(1, atts.size) // CID inline (logo.png) skipped
+        assertEquals("att1", atts.single().second)
+        assertEquals("doc.pdf", atts.single().third)
     }
 
     @Test
