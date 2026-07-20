@@ -32,6 +32,27 @@ fun StatusBanner(text: String, tint: Color, icon: ImageVector? = null) {
     }
 }
 
+/** Session-expired prompt: the bearer is dead (hub returned 401/403). Tapping
+ *  "Re-pair" opens Settings where QR pairing lives. Amber (error-adjacent). */
+@Composable
+fun ReAuthBanner(onFix: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Session expired — re-pair this device",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onFix) { Text("Re-pair") }
+    }
+}
+
 @Composable
 fun UpdateBanner(versionName: String, onInstall: () -> Unit, onDismiss: () -> Unit) {
     Row(

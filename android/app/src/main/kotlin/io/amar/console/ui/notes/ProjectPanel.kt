@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.notes.BlogHelpers
 import io.amar.console.data.notes.BlogRepository
 import io.amar.console.data.notes.FrontmatterParser
@@ -51,11 +53,10 @@ import kotlinx.coroutines.launch
  * project title, and post count (or '· untracked'). (src/components/notes/
  * ProjectPill.tsx + ProjectPanel.tsx)
  *
- * NOTE: the SPA panel also lists live agent sessions whose cwd is under the
- * project and offers "Start agent in project". That needs the agents
- * repository, which isn't reachable through NoteEditorScreen's current
- * signature (owned by ui/shell). Recorded as a sharedFileNeed; the panel here
- * covers title / status / posts / new-post.
+ * The panel also lists live agent sessions whose cwd is under the project and
+ * offers "Jump to agent" / "Start agent in project" — wired via the optional
+ * [agents] repo + [onOpenAgentSession] nav callback threaded from the shell
+ * (FEATURES notes #119/#120). When [agents] is null those rows are omitted.
  */
 @Composable
 fun ProjectPill(
@@ -99,6 +100,8 @@ fun ProjectPanelDialog(
     slug: String,
     onDismiss: () -> Unit,
     onOpenFile: (String) -> Unit,
+    agents: AgentsRepository? = null,
+    onOpenAgentSession: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val projects by repo.blog.projects.collectAsState()
@@ -107,7 +110,13 @@ fun ProjectPanelDialog(
     val posts = postsByProject[slug]
     var statusMenu by remember { mutableStateOf(false) }
     var newPost by remember { mutableStateOf(false) }
+    var startAgentPrompt by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
+
+    // Live agent sessions whose cwd is under this project (…/projects/<slug>).
+    val liveSessions by (agents?.observeSessionsUnderCwd("/projects/$slug")
+        ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+        .collectAsState(initial = emptyList())
 
     LaunchedEffect(slug) { repo.blog.refreshProjectPosts(slug) }
 
@@ -156,7 +165,7 @@ fun ProjectPanelDialog(
                 when {
                     posts == null -> Text("Loading…", style = MaterialTheme.typography.bodySmall)
                     posts.isEmpty() -> Text("No posts yet — write one ↓", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    else -> LazyColumn(Modifier.fillMaxWidth()) {
+                    else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 160.dp)) {
                         items(posts, key = { it.path }) { p ->
                             Text(
                                 p.title.ifBlank { p.path.substringAfterLast('/') },
@@ -167,13 +176,59 @@ fun ProjectPanelDialog(
                         }
                     }
                 }
+
+                // Live agents under this project (Jump to agent).
+                if (agents != null && liveSessions.isNotEmpty()) {
+                    Text("Agents here", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 10.dp))
+                    for (s in liveSessions) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onOpenAgentSession(s.id); onDismiss() }.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            val dotColor = when {
+                                s.needsAttention -> MaterialTheme.colorScheme.error
+                                s.status == "running" -> Color(0xFF4ADE80)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Icon(Icons.Filled.Circle, null, Modifier.size(6.dp), tint = dotColor)
+                            Text(
+                                s.name.ifBlank { s.id }.removeSuffix(" (fork)"),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
-            if (tracked != null) TextButton(onClick = { newPost = true }) { Text("New post") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (agents != null) TextButton(onClick = { startAgentPrompt = true }) { Text("Start agent") }
+                if (tracked != null) TextButton(onClick = { newPost = true }) { Text("New post") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+
+    if (startAgentPrompt && agents != null) {
+        TitlePromptDialog(
+            title = "Start agent in ${tracked?.title ?: BlogHelpers.humaniseSlug(slug)}",
+            inheritProject = null,
+            confirmLabel = "Start",
+            fieldLabel = "First message",
+            onDismiss = { startAgentPrompt = false },
+            onConfirm = { firstMessage ->
+                startAgentPrompt = false; onDismiss()
+                scope.launch {
+                    val vault = repo.getVaultPath()
+                    if (vault != null) {
+                        agents.createSession(firstMessage, "$vault/projects/$slug", tracked?.title ?: slug)
+                    }
+                }
+            },
+        )
+    }
 
     if (newPost) {
         TitlePromptDialog(
