@@ -77,4 +77,24 @@ class HardwareRepository(private val hub: HubClient) {
 
     suspend fun micStatus(): MicStatus? =
         runCatching { parseMicStatus(hub.get("/mic/status")) }.getOrNull()
+
+    /**
+     * Fire a real push through POST /push/send — exercises the full
+     * lens-notification pipeline (hub → notify-forwarder → 0x4B firmware card)
+     * exactly as an incoming mail/chat does. Returns true on HTTP success.
+     * Mirrors GlassesSettings.tsx's "Test notification".
+     */
+    suspend fun sendTestNotification(): Boolean = runCatching {
+        hub.post(
+            "/push/send",
+            buildJsonObject {
+                put("type", "chat")
+                put("title", "Test notification")
+                put("body", "If you can read this on the lenses, notifications work.")
+                put("senderName", "Console")
+                put("roomName", "Test")
+            }.toString(),
+        )
+        true
+    }.getOrDefault(false)
 }

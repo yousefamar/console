@@ -20,6 +20,14 @@ object GlassesController {
             if (ble != null) return
             val m = BleManager(ctx.applicationContext)
             ble = m
+            // Feed the semantic event pipeline (ring buffer + head-down mirror
+            // re-assert + /debug/log) from every parsed 0xF5 touch frame. The
+            // native twin of src/glasses/events.ts's DOM-event subscription.
+            m.addListener(object : BleManager.Listener {
+                override fun onTouch(arm: G1Protocol.Arm, subcmd: Byte) {
+                    GlassesEvents.record(arm, subcmd)
+                }
+            })
             m.start()
         }
     }
@@ -51,4 +59,12 @@ object GlassesController {
     fun pair(leftMac: String, rightMac: String, channel: String) =
         requireBle().pairAndConnect(leftMac, rightMac, channel)
     fun unpair() = requireBle().unpair()
+
+    /** Temporarily sever the BLE link, keeping the saved pair (SPA "Pause"). */
+    fun disconnect() = requireBle().disconnect()
+
+    /** Reconnect the saved pair with no scan (SPA "Connect"). */
+    fun reconnect() = requireBle().reconnect()
+
+    fun clear(onResult: ((BleManager.AckOutcome) -> Unit)? = null) = requireBle().sendExit(onResult)
 }

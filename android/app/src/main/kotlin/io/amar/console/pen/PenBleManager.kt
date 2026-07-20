@@ -464,12 +464,16 @@ class PenBleManager(private val app: Context) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = try { result.device.name } catch (_: SecurityException) { null } ?: "(unnamed)"
             val has19f1 = result.scanRecord?.serviceUuids?.any { it == SERVICE_PARCEL } == true
+            // Accumulate in PenState so the settings pair list can render name /
+            // MAC / RSSI and offer tap-to-connect (SPA PenSettings observations).
+            PenState.addScanObservation(PenState.ScanObservation(name, result.device.address, result.rssi, has19f1))
             for (l in listeners) {
                 try { l.onScanObservation(name, result.device.address, result.rssi, has19f1) } catch (_: Throwable) {}
             }
         }
         override fun onScanFailed(errorCode: Int) {
             scanning = false
+            PenState.setScanning(false)
             PenState.setError("scan failed: code $errorCode")
             for (l in listeners) { try { l.onError("scan failed: code $errorCode") } catch (_: Throwable) {} }
         }
@@ -481,11 +485,13 @@ class PenBleManager(private val app: Context) {
             if (scanning) return@post
             val scanner = adapter?.bluetoothLeScanner ?: run { PenState.setError("no LE scanner (bluetooth off?)"); return@post }
             val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            PenState.clearScanObservations()
             try {
                 // No service filter — the pen sometimes omits 0x19F1 from its advert.
                 // Report everything and flag which entries carry the pen service.
                 scanner.startScan(null, settings, scanCallback)
                 scanning = true
+                PenState.setScanning(true)
                 worker.postDelayed({ stopScan() }, durationMs)
             } catch (t: Throwable) { PenState.setError(t.message ?: "scan error") }
         }
@@ -495,6 +501,7 @@ class PenBleManager(private val app: Context) {
         worker.post {
             if (!scanning) return@post
             scanning = false
+            PenState.setScanning(false)
             try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Throwable) {}
         }
     }
