@@ -29,6 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.amar.console.ConsoleApp
@@ -220,7 +222,11 @@ private fun GridTile(
                     .padding(8.dp)
                     .size(9.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.error),
+                    .background(MaterialTheme.colorScheme.error)
+                    .semantics {
+                        contentDescription = if (pane == Pane.Notes) "Pen is streaming into Notes"
+                        else "A session wants your attention"
+                    },
             )
         }
     }
