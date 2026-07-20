@@ -61,7 +61,10 @@ class SyncBusClientTest {
         // Point the client at the mock server (http → the client's ws rewrite).
         HubConfig.setHubBase(server.url("/hub").toString())
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        client = SyncBusClient(scope)
+        // initialBackoffMs=0 → the reconnect fires on the next scheduler tick
+        // rather than sleeping 500ms, so the reconnect test is deterministic
+        // (no real-time backoff race under gradle load).
+        client = SyncBusClient(scope, initialBackoffMs = 0L)
     }
 
     @After
@@ -149,16 +152,34 @@ class SyncBusClientTest {
         client.onConnect { connects.countDown() }
         client.on("mail", "delta") { }
         // Enqueue the reconnect upgrade BEFORE the drop so the client's retry
-        // (500ms backoff) always finds a pending response.
+        // (initialBackoffMs=0 → next-tick) always finds a pending response.
         server.enqueue(MockResponse().withWebSocketUpgrade(wsListener()))
         client.start()
         awaitConnected()
-        inbound.poll(3, TimeUnit.SECONDS) // first sub frame
+        // Drain the first socket's frames (the initial `mail` sub) so the
+        // post-reconnect resub frame is unambiguous.
+        awaitSubFrame("mail")
+        inbound.clear()
 
+        // Close the server side; the client's onFailure/onClosed path schedules
+        // the (zero-backoff) reconnect against the pre-enqueued upgrade.
         serverSockets.poll()!!.close(1001, "server restart")
 
         assertTrue("should reconnect", connects.await(10, TimeUnit.SECONDS))
-        val resub = inbound.poll(5, TimeUnit.SECONDS)
-        assertEquals("mail", JSONObject(resub!!).getString("service"))
+        // The reconnect re-subscribes every live service — assert the resub
+        // frame arrives (tolerating any interleaved ping frames).
+        assertTrue("should re-subscribe mail", awaitSubFrame("mail", timeoutMs = 5000))
+    }
+
+    /** Poll inbound frames until a `sub` for [service] arrives (skipping pings
+     *  and any other frames), or the timeout elapses. */
+    private fun awaitSubFrame(service: String, timeoutMs: Long = 3000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val frame = inbound.poll(200, TimeUnit.MILLISECONDS) ?: continue
+            val msg = JSONObject(frame)
+            if (msg.optString("t") == "sub" && msg.optString("service") == service) return true
+        }
+        return false
     }
 }
