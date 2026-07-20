@@ -9,6 +9,7 @@ import io.amar.console.sync.outbox.Outbox
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -182,6 +183,54 @@ class CalendarRepositoryTest {
         assertEquals(0, lanes["a"]!!.lane)
         assertEquals(1, lanes["b"]!!.lane)
         assertEquals(0, lanes["c"]!!.lane)
+    }
+
+    @Test
+    fun `updateWorkingLocation replacing an unsynced temp cancels its queued create`() = runTest {
+        // First set: enqueues a calLocation temp create.
+        repo.updateWorkingLocation("me@x.com", 0L, "homeOffice")
+        val firstKey = db.calendar().keysInRange(-1, DAY_MS).first { it.contains(":~") }
+        val firstEventId = firstKey.substringAfterLast(':')
+        assertEquals(1, db.outbox().pending().size)
+
+        // Replace it (still unsynced) → old temp create cancelled, one new create.
+        repo.updateWorkingLocation("me@x.com", 0L, "officeLocation", "HQ", oldEventId = firstEventId)
+        val pending = db.outbox().pending()
+        assertEquals(1, pending.size) // NOT 2 — the stale temp create was cancelled
+        assertEquals(CalendarRepository.TYPE_LOCATION, pending.first().type)
+        // The surviving payload must NOT carry a ~oldEventId (would 404 + double-create).
+        val payload = Json.parseToJsonElement(pending.first().payloadJson).jsonObject
+        assertNull(payload["oldEventId"])
+    }
+
+    @Test
+    fun `setReminder writes optimistic reminders and queues calReminder`() = runTest {
+        val row = repo.eventRowFromGoogle(
+            Json.parseToJsonElement(
+                """{"id":"evtR","summary":"Meeting","status":"confirmed",
+                    "start":{"dateTime":"2026-07-20T09:00:00+01:00"},
+                    "end":{"dateTime":"2026-07-20T10:00:00+01:00"}}"""
+            ).jsonObject, "me@x.com", "me@x.com",
+        )!!
+        db.calendar().upsertEvents(listOf(row))
+        repo.setReminder(row.compoundKey, 15)
+        val updated = db.calendar().byKey(row.compoundKey)!!
+        val rem = parseEventDetails(updated.rawJson).reminders!!
+        assertEquals(false, rem.useDefault)
+        assertEquals(15, rem.overrides.first().minutes)
+        assertEquals(CalendarRepository.TYPE_REMINDER, db.outbox().pending().first().type)
+    }
+
+    @Test
+    fun `createEvent with guests adds attendees and a Meet conference request`() = runTest {
+        repo.createEvent("me@x.com", "me@x.com", "Sync", 1000L, 2000L, attendees = listOf("Alice <alice@x.com>", "bob@x.com"))
+        val key = db.calendar().keysInRange(0, 10_000).first()
+        val raw = db.calendar().byKey(key)!!.rawJson
+        val o = Json.parseToJsonElement(raw).jsonObject
+        val attendees = o["attendees"]!!.jsonArray
+        // organizer (self) + 2 guests
+        assertEquals(3, attendees.size)
+        assertNotNull(o["conferenceData"])
     }
 
     @Test
