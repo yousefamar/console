@@ -106,7 +106,9 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookmarksScreen(repo: BookmarksRepository, onGrid: () -> Unit = {}) {
-    val bookmarks by repo.observeAll().collectAsState(initial = emptyList())
+    val rawBookmarks by repo.observeAll().collectAsState(initial = emptyList())
+    // SPA sorts alphabetically by title (localeCompare); the DAO orders by addedAt.
+    val bookmarks = remember(rawBookmarks) { rawBookmarks.sortedBy { it.title.lowercase() } }
     val scope = rememberCoroutineScope()
 
     var selectedTag by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1063,8 +1065,8 @@ fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val onOther = np.spotifydDeviceId != null && np.device != null &&
-                np.devices.firstOrNull { it.isActive }?.id != np.spotifydDeviceId
+            val onOther = np.deviceId != null && np.spotifydDeviceId != null &&
+                np.deviceId != np.spotifydDeviceId
             if (onOther) {
                 TextButton(onClick = { np.spotifydDeviceId?.let { id -> scope.launch { repo.transfer(id) } } }) {
                     Text("→ spotifyd", style = MaterialTheme.typography.labelSmall)
