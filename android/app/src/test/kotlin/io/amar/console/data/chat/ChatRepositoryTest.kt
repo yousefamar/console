@@ -265,6 +265,148 @@ class ChatRepositoryTest {
         assertTrue(echo.replyToJson!!.contains("target"))
     }
 
+    // ------------------------------------------------------------------ //
+    // Batch 3: soft-delete attribution, edit diff, decryption-regression,
+    // send-status, low-priority, edit send.
+
+    @Test
+    fun `redaction records deletedBy and preserves body`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"secret"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}red","sender":"@mod:x","type":"m.room.redaction",
+                  "origin_server_ts":2,"content":{},"redacts":"${'$'}m"}]}}}}"""
+        ))
+        val row = db.chatMessages().byId("\$m")!!
+        assertTrue(row.isDeleted)
+        assertEquals("@mod:x", row.deletedBy)
+        assertEquals("secret", row.body)
+    }
+
+    @Test
+    fun `edit preserves originalBody for the diff view`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}o","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"teh cat"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}e","sender":"@a:x","type":"m.room.message","origin_server_ts":2,
+                  "content":{"msgtype":"m.text","body":"* the cat",
+                             "m.new_content":{"msgtype":"m.text","body":"the cat"},
+                             "m.relates_to":{"rel_type":"m.replace","event_id":"${'$'}o"}}}]}}}}"""
+        ))
+        val row = db.chatMessages().byId("\$o")!!
+        assertEquals("the cat", row.body)
+        assertEquals("teh cat", row.originalBody)
+        assertTrue(row.isEdited)
+    }
+
+    @Test
+    fun `re-delivered encrypted placeholder does not overwrite a decrypted row`() = runTest {
+        // Decrypted message lands first.
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"decrypted body"}}]}}}}"""
+        ))
+        // Cold resume replays the SAME event as an undecryptable placeholder.
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m","sender":"@a:x","type":"m.room.encrypted","origin_server_ts":1,
+                  "content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"opaque"}}]}}}}"""
+        ))
+        assertEquals("decrypted body", db.chatMessages().byId("\$m")!!.body)
+    }
+
+    @Test
+    fun `bridge send-status flips and clears sendFailed on the echo`() = runTest {
+        // Seed a delivered message row (stand-in for the acked echo).
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}sent","sender":"@me:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"hi"}}]}}}}"""
+        ))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}st","sender":"@bot:x","type":"com.beeper.message_send_status",
+                  "origin_server_ts":2,"content":{"status":"FAIL_PERMANENT","reason":"nope",
+                     "m.relates_to":{"event_id":"${'$'}sent"}}}]}}}}"""
+        ))
+        assertTrue(db.chatMessages().byId("\$sent")!!.sendFailed)
+        assertTrue(db.chatMessages().byId("\$sent")!!.sendFailedReason!!.contains("FAIL_PERMANENT"))
+        // SUCCESS clears the marker.
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s3","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}st2","sender":"@bot:x","type":"com.beeper.message_send_status",
+                  "origin_server_ts":3,"content":{"status":"SUCCESS",
+                     "m.relates_to":{"event_id":"${'$'}sent"}}}]}}}}"""
+        ))
+        assertEquals(false, db.chatMessages().byId("\$sent")!!.sendFailed)
+    }
+
+    @Test
+    fun `setLowPriority flips optimistically and queues`() = runTest {
+        repo.applyRoomsDelta(env("""{"seq":1,"data":{"!r:x":{"name":"R","lastMessageTime":1}}}"""), isSnapshot = true)
+        repo.setLowPriority("!r:x", true)
+        assertTrue(db.chatRooms().byId("!r:x")!!.isLowPriority)
+        assertEquals(ChatRepository.TYPE_LOWPRIO, db.outbox().pending().first().type)
+    }
+
+    @Test
+    fun `editMessage is a no-op on unchanged text`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}o","sender":"@me:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"same"}}]}}}}"""
+        ))
+        repo.editMessage("!r:x", "\$o", "same")
+        assertTrue(db.outbox().pending().none { it.type == ChatRepository.TYPE_EDIT })
+        assertEquals(false, db.chatMessages().byId("\$o")!!.isEdited)
+    }
+
+    @Test
+    fun `editMessage flips body optimistically and queues the m_replace`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}o","sender":"@me:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"old"}}]}}}}"""
+        ))
+        repo.editMessage("!r:x", "\$o", "new body")
+        val row = db.chatMessages().byId("\$o")!!
+        assertEquals("new body", row.body)
+        assertEquals("old", row.originalBody)
+        assertTrue(row.isEdited)
+        assertEquals(ChatRepository.TYPE_EDIT, db.outbox().pending().first { it.type == ChatRepository.TYPE_EDIT }.type)
+    }
+
+    @Test
+    fun `sendText carries formattedBody and mention userIds into the payload`() = runTest {
+        repo.sendText("!r:x", "hi @Bob", formattedBody = "hi <a>@Bob</a>", mentionUserIds = listOf("@bob:x"))
+        val q = db.outbox().pending().first { it.type == ChatRepository.TYPE_SEND }
+        assertTrue(q.payloadJson.contains("formattedBody"))
+        assertTrue(q.payloadJson.contains("@bob:x"))
+        val echo = db.chatMessages().recent("!r:x", 5).first { it.localEcho }
+        assertEquals("hi <a>@Bob</a>", echo.formattedBody)
+    }
+
+    @Test
+    fun `undoMarkRead restores the prior unread snapshot`() = runTest {
+        repo.applyRoomsDelta(env("""{"seq":1,"data":{"!r:x":{"name":"R","isUnread":true,"unreadCount":3,"lastMessageTime":1}}}"""), isSnapshot = true)
+        val before = db.chatRooms().byId("!r:x")!!
+        repo.markRead("!r:x")
+        assertEquals(false, db.chatRooms().byId("!r:x")!!.isUnread)
+        repo.undoMarkRead(before)
+        val after = db.chatRooms().byId("!r:x")!!
+        assertTrue(after.isUnread)
+        assertEquals(3, after.unreadCount)
+    }
+
     @Test
     fun `sendReaction is optimistic and queues chatReact`() = runTest {
         repo.ingestMatrixDelta(env(

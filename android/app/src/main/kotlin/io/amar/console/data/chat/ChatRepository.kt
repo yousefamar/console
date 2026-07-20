@@ -48,6 +48,8 @@ class ChatRepository(
         const val TYPE_REACT = "chatReact"
         const val TYPE_PIN = "chatPin"
         const val TYPE_MUTE = "chatMute"
+        const val TYPE_EDIT = "chatEdit"
+        const val TYPE_LOWPRIO = "chatLowPriority"
         /** Timeline cache bound per room (paginate loads more transiently). */
         const val ROOM_CACHE_LIMIT = 100
     }
@@ -64,8 +66,17 @@ class ChatRepository(
     // Mutations (optimistic + outbox)
 
     /** Send text: local echo row now, durable queue, flush when online.
-     *  [replyToEventId] adds the m.in_reply_to relation. */
-    suspend fun sendText(roomId: String, body: String, replyToEventId: String? = null) {
+     *  [replyToEventId] adds the m.in_reply_to relation; [formattedBody] +
+     *  [mentionUserIds] carry MSC3952 intentional mentions (Element/bridges
+     *  only ping when the MXID is in m.mentions.user_ids — plain @Name text
+     *  isn't enough). */
+    suspend fun sendText(
+        roomId: String,
+        body: String,
+        replyToEventId: String? = null,
+        formattedBody: String? = null,
+        mentionUserIds: List<String> = emptyList(),
+    ) {
         val txnId = outbox.mintToken()
         val echoId = "~${System.currentTimeMillis()}.${(0..999999).random()}"
         val replyMeta = replyToEventId?.let { target ->
@@ -82,7 +93,8 @@ class ChatRepository(
             listOf(
                 ChatMessageRow(
                     id = echoId, roomId = roomId, timestamp = System.currentTimeMillis(),
-                    senderId = "me", senderName = "me", body = body, msgtype = "m.text",
+                    senderId = "me", senderName = "me", body = body,
+                    formattedBody = formattedBody, msgtype = "m.text",
                     mediaMxc = null, mediaMime = null, encryptedFileJson = null,
                     replyToJson = replyMeta, localEcho = true, txnId = txnId,
                 )
@@ -93,8 +105,59 @@ class ChatRepository(
             put("echoId", echoId)
             put("body", body)
             replyToEventId?.let { put("replyTo", it) }
+            formattedBody?.let { put("formattedBody", it) }
+            if (mentionUserIds.isNotEmpty()) {
+                put("mentionUserIds", kotlinx.serialization.json.JsonArray(
+                    mentionUserIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            }
         }
         outbox.enqueue(TYPE_SEND, payload.toString(), entityId = roomId, dedupeToken = txnId)
+        // Sending marks the room read + advances its preview optimistically.
+        bumpRoomPreview(roomId, body, "me")
+    }
+
+    /**
+     * Edit an already-sent message (m.replace). SPA store editMessage parity:
+     * no-op on unchanged text, optimistic in-place flip (originalBody kept for
+     * the diff), preview refresh when it was the last message, m.mentions
+     * rebuilt on both outer content and m.new_content. Failure surfaces the
+     * red send-failed marker on the original bubble.
+     */
+    suspend fun editMessage(
+        roomId: String,
+        eventId: String,
+        newBody: String,
+        formattedBody: String? = null,
+        mentionUserIds: List<String> = emptyList(),
+    ) {
+        val trimmed = newBody.trim()
+        if (trimmed.isEmpty()) return
+        val existing = db.chatMessages().byId(eventId)
+        // No-op if nothing actually changed (avoids a spurious "(edited)").
+        if (existing != null && existing.body == trimmed && existing.formattedBody == formattedBody) return
+        if (existing != null) {
+            db.chatMessages().upsertAll(listOf(existing.copy(
+                body = trimmed,
+                formattedBody = formattedBody,
+                isEdited = true,
+                originalBody = existing.originalBody ?: existing.body,
+            )))
+            val room = db.chatRooms().byId(roomId)
+            if (room != null && (room.lastReadEventId == eventId || room.lastMessageTime == existing.timestamp)) {
+                db.chatRooms().upsertAll(listOf(room.copy(lastMessageBody = trimmed)))
+            }
+        }
+        val payload = buildJsonObject {
+            put("roomId", roomId)
+            put("eventId", eventId)
+            put("body", trimmed)
+            formattedBody?.let { put("formattedBody", it) }
+            if (mentionUserIds.isNotEmpty()) {
+                put("mentionUserIds", kotlinx.serialization.json.JsonArray(
+                    mentionUserIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            }
+        }
+        outbox.enqueue(TYPE_EDIT, payload.toString(), entityId = roomId)
     }
 
     /** Send an emoji reaction (m.annotation). Optimistic aggregate + queued. */
@@ -116,7 +179,8 @@ class ChatRepository(
     }
 
     suspend fun markRead(roomId: String) {
-        val latest = db.chatMessages().recent(roomId, 1).firstOrNull()
+        // Newest REAL (non-echo) message is the receipt target.
+        val latestReal = db.chatMessages().recent(roomId, 20).firstOrNull { !it.localEcho }
         val room = db.chatRooms().byId(roomId) ?: return
         // Optimistic local flip; the hub snapshot confirms via delta.
         // lastReadTs pins the "— New —" divider for the next unread open.
@@ -124,11 +188,24 @@ class ChatRepository(
             listOf(
                 room.copy(
                     isUnread = false, unreadCount = 0, manualUnread = false,
-                    lastReadTs = latest?.timestamp ?: room.lastMessageTime,
+                    lastReadTs = latestReal?.timestamp ?: room.lastMessageTime,
                 )
             )
         )
-        val eventId = latest?.takeUnless { it.localEcho }?.id ?: room.lastReadEventId ?: return
+        var eventId = latestReal?.id ?: room.lastReadEventId
+        // No cached real message + no known read marker: ask the hub for the
+        // newest event of ANY type (SPA fallback) so the receipt isn't
+        // silently skipped, which would let the room resurrect as unread.
+        if (eventId == null && syncBus.connected) {
+            eventId = runCatching {
+                val resp = syncBus.rpc("matrix", "paginate", buildJsonObject {
+                    put("roomId", roomId); put("dir", "b"); put("limit", 1)
+                }).jsonObject
+                (resp["chunk"] as? kotlinx.serialization.json.JsonArray)
+                    ?.firstOrNull()?.jsonObject?.get("event_id")?.jsonPrimitive?.content
+            }.getOrNull()
+        }
+        if (eventId == null) return
         val payload = buildJsonObject { put("roomId", roomId); put("eventId", eventId) }
         outbox.enqueue(TYPE_MARK_READ, payload.toString(), entityId = roomId)
     }
@@ -166,12 +243,34 @@ class ChatRepository(
         outbox.enqueue(TYPE_MUTE, payload.toString(), entityId = roomId)
     }
 
+    /** Demote to low-priority / restore to inbox: m.lowpriority tag via hub
+     *  REST (SPA setRoomTag/removeRoomTag). Optimistic flip. */
+    suspend fun setLowPriority(roomId: String, low: Boolean) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(isLowPriority = low)))
+        val payload = buildJsonObject { put("roomId", roomId); put("low", low) }
+        outbox.enqueue(TYPE_LOWPRIO, payload.toString(), entityId = roomId)
+    }
+
+    /** Advance a room's preview + mark read after our own send (SPA store
+     *  updates lastMessageBody/sender/time on sendMessage). */
+    private suspend fun bumpRoomPreview(roomId: String, body: String, sender: String) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        db.chatRooms().upsertAll(listOf(room.copy(
+            lastMessageBody = body,
+            lastMessageSender = sender,
+            lastMessageTime = maxOf(room.lastMessageTime, System.currentTimeMillis()),
+        )))
+    }
+
     // ---------------------------------------------------------------- //
     // Room members (mention autocomplete) — in-memory per-room cache
 
     data class RoomMember(val userId: String, val displayName: String)
 
-    private val membersCache = mutableMapOf<String, List<RoomMember>>()
+    private data class MemberCacheEntry(val members: List<RoomMember>, val fetchedAt: Long)
+    private val membersCache = mutableMapOf<String, MemberCacheEntry>()
+    private val MEMBER_TTL_MS = 60_000L
     private var cachedMyUserId: String? = null
 
     /** Own MXID — memory → meta table (offline-durable) → network. Persisted
@@ -192,9 +291,15 @@ class ChatRepository(
         }
     }
 
-    /** GET /matrix/rooms/:id/info members, cached in memory per room. */
-    suspend fun roomMembers(roomId: String): List<RoomMember> {
-        membersCache[roomId]?.let { return it }
+    /**
+     * GET /matrix/rooms/:id/info members, cached in memory per room with a
+     * 60s TTL (SPA room-members.ts). Returns the cached list synchronously
+     * when warm and fresh; otherwise refetches. [primeRoomMembers] warms it
+     * on compose mount so the first '@' keystroke isn't blank.
+     */
+    suspend fun roomMembers(roomId: String, now: Long = System.currentTimeMillis()): List<RoomMember> {
+        val cached = membersCache[roomId]
+        if (cached != null && now - cached.fetchedAt < MEMBER_TTL_MS) return cached.members
         val members = runCatching {
             val resp = hub.get("/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/info")
             (json.parseToJsonElement(resp).jsonObject["members"] as? kotlinx.serialization.json.JsonArray)
@@ -205,9 +310,13 @@ class ChatRepository(
                     RoomMember(userId, name)
                 } ?: emptyList()
         }.getOrElse { emptyList() }
-        if (members.isNotEmpty()) membersCache[roomId] = members
-        return members
+        // Keep the stale list if a refetch failed (offline) — never blank it.
+        if (members.isNotEmpty()) membersCache[roomId] = MemberCacheEntry(members, now)
+        return members.ifEmpty { cached?.members ?: emptyList() }
     }
+
+    /** Warm the member cache (compose mount) so autocomplete has data. */
+    suspend fun primeRoomMembers(roomId: String) { runCatching { roomMembers(roomId) } }
 
     /** Local plaintext file for a media message (decrypts E2EE attachments). */
     suspend fun mediaFile(context: android.content.Context, msg: ChatMessageRow): java.io.File =
@@ -230,6 +339,27 @@ class ChatRepository(
             spoolFile.outputStream().use { input.copyTo(it) }
         } ?: return
 
+        // msgtype from MIME (SPA sendFile): image/video/audio → typed bubble.
+        // Non-whitelisted audio (WAV/AIFF/FLAC — bounced by the WhatsApp
+        // bridge as unsupported voice notes) demotes to m.file.
+        val msgtype = when {
+            mime.startsWith("image/") -> "m.image"
+            mime.startsWith("video/") -> "m.video"
+            isWhitelistedAudio(mime) -> "m.audio"
+            else -> "m.file"
+        }
+        // Image dimensions → content.info (aspect-ratio thumbnails).
+        var w: Int? = null
+        var h: Int? = null
+        if (msgtype == "m.image") {
+            runCatching {
+                val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(spoolFile.absolutePath, opts)
+                if (opts.outWidth > 0) w = opts.outWidth
+                if (opts.outHeight > 0) h = opts.outHeight
+            }
+        }
+
         val txnId = outbox.mintToken()
         val echoId = "~${System.currentTimeMillis()}.${(0..999999).random()}"
         db.chatMessages().upsertAll(
@@ -238,8 +368,9 @@ class ChatRepository(
                     id = echoId, roomId = roomId, timestamp = System.currentTimeMillis(),
                     senderId = "me", senderName = "me",
                     body = caption ?: filename,
-                    msgtype = if (mime.startsWith("image/")) "m.image" else "m.file",
+                    msgtype = msgtype,
                     mediaMxc = null, mediaMime = mime,
+                    mediaWidth = w, mediaHeight = h,
                     encryptedFileJson = null, replyToJson = null,
                     localEcho = true, txnId = txnId,
                     localMediaPath = spoolFile.absolutePath,
@@ -255,7 +386,17 @@ class ChatRepository(
             caption?.let { put("caption", it) }
         }
         outbox.enqueue(TYPE_SEND_FILE, payload.toString(), entityId = roomId, dedupeToken = txnId)
+        // Room preview gets the WhatsApp-style media glyph + caption.
+        val glyph = when (msgtype) {
+            "m.image" -> "📷"; "m.video" -> "🎬"; "m.audio" -> "🎵"; else -> "📎"
+        }
+        bumpRoomPreview(roomId, "$glyph ${caption ?: filename}", "me")
     }
+
+    /** Audio MIME the WhatsApp bridge accepts as a voice note (SPA sendFile). */
+    private fun isWhitelistedAudio(mime: String): Boolean = mime in setOf(
+        "audio/ogg", "audio/mp4", "audio/mpeg", "audio/aac", "audio/m4a", "audio/webm",
+    )
 
     private fun queryDisplayName(resolver: android.content.ContentResolver, uri: android.net.Uri): String? =
         runCatching {
@@ -268,13 +409,120 @@ class ChatRepository(
     suspend fun retryFailed(echoId: String) {
         val echo = db.chatMessages().byId(echoId) ?: return
         val txnId = echo.txnId ?: outbox.mintToken()
-        db.chatMessages().setSendFailed(echoId, false)
+        db.chatMessages().setSendFailedReason(echoId, false, null)
         val payload = buildJsonObject {
             put("roomId", echo.roomId)
             put("echoId", echoId)
             put("body", echo.body ?: "")
         }
         outbox.enqueue(TYPE_SEND, payload.toString(), entityId = echo.roomId, dedupeToken = txnId)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Link previews (SPA getUrlPreview)
+
+    data class UrlPreview(
+        val title: String?, val description: String?, val imageUrl: String?, val siteName: String?,
+    )
+
+    /** Session-scoped once the homeserver 404s preview_url (SPA localStorage
+     *  matrix_preview_url_disabled) — avoids hammering an unsupported server. */
+    @Volatile private var previewsDisabled = false
+    private val previewCache = mutableMapOf<String, UrlPreview?>()
+
+    /**
+     * First-URL link preview via hub GET /matrix/url-preview (SPA
+     * getUrlPreview). Returns null when unsupported / no preview. og:image mxc
+     * is rewritten through the media proxy. Result cached per URL.
+     */
+    suspend fun urlPreview(url: String): UrlPreview? {
+        if (previewsDisabled) return null
+        previewCache[url]?.let { return it }
+        if (previewCache.containsKey(url)) return null
+        val result = runCatching {
+            val resp = hub.get("/matrix/url-preview?url=${java.net.URLEncoder.encode(url, "UTF-8")}")
+            val o = json.parseToJsonElement(resp).jsonObject
+            val title = o["og:title"]?.jsonPrimitive?.content
+            val desc = o["og:description"]?.jsonPrimitive?.content
+            val img = o["og:image"]?.jsonPrimitive?.content
+            val site = o["og:site_name"]?.jsonPrimitive?.content
+            if (title == null && desc == null && img == null) null
+            else UrlPreview(title, desc, img?.let { MatrixMedia.thumbnailUrl(it, 400, 400) ?: it }, site)
+        }.getOrElse { e ->
+            if (e is HubClient.HttpException && e.code == 404) previewsDisabled = true
+            null
+        }
+        previewCache[url] = result
+        return result
+    }
+
+    /** First bare http(s) URL in a text body (link-preview source). */
+    fun firstUrl(body: String?): String? =
+        body?.let { Regex("https?://[^\\s]+").find(it)?.value?.trimEnd('.', ',', ')', ']', '!', '?') }
+
+    // ---------------------------------------------------------------- //
+    // Deleted-message archive recovery (SPA DeletedMessageBody)
+
+    data class ArchivedEvent(val body: String?, val mediaUrl: String?, val mimeType: String?)
+
+    /**
+     * Pre-redaction copy of a deleted event from the hub's append-only
+     * archive (chat-rooms.archivedEvent RPC). Local-echo ids are skipped.
+     * Recovered media is served via /matrix/archive/media/<sha1> with the
+     * archived mime as a query hint (the blob on disk has no extension).
+     */
+    suspend fun archivedEvent(roomId: String, eventId: String): ArchivedEvent? {
+        if (eventId.startsWith("~") || !syncBus.connected) return null
+        return runCatching {
+            val rec = syncBus.rpc("chat-rooms", "archivedEvent", buildJsonObject {
+                put("roomId", roomId); put("eventId", eventId)
+            }, timeoutMs = 8_000)
+            val o = rec as? JsonObject ?: return null
+            val body = o["content"]?.jsonObject?.get("body")?.jsonPrimitive?.content
+            val mediaFile = o["mediaFile"]?.jsonPrimitive?.content
+            val mime = o["mediaMimeType"]?.jsonPrimitive?.content
+            val mediaUrl = mediaFile?.let {
+                "${io.amar.console.core.HubConfig.hubBase}/matrix/archive/media/$it" +
+                    "?mime=${java.net.URLEncoder.encode(mime ?: "", "UTF-8")}"
+            }
+            if (body == null && mediaUrl == null) null else ArchivedEvent(body, mediaUrl, mime)
+        }.getOrNull()
+    }
+
+    // ---------------------------------------------------------------- //
+    // Undo mark-read + background preload + reload room
+
+    /** Undo a mark-read: restore the prior unread state (SPA undoMarkRead). */
+    suspend fun undoMarkRead(snapshot: ChatRoomRow) {
+        db.chatRooms().upsertAll(listOf(snapshot))
+        outbox.enqueue(TYPE_MARK_UNREAD, buildJsonObject { put("roomId", snapshot.id) }.toString(), entityId = snapshot.id)
+    }
+
+    /**
+     * Preload an initial page for every unread, non-snoozed room with nothing
+     * cached (SPA preloadAllRooms). Failures are silent — messages load on
+     * open. No-op offline.
+     */
+    suspend fun preloadAllRooms(now: Long = System.currentTimeMillis()) {
+        if (!syncBus.connected) return
+        val rooms = db.chatRooms().allRooms()
+        for (room in rooms) {
+            if (!room.isUnread || room.isMuted) continue
+            if (room.snoozedUntil != null && room.snoozedUntil >= now) continue
+            if (db.chatMessages().countForRoom(room.id) > 0) continue
+            runCatching { loadOlder(room.id, limit = 20) }
+        }
+    }
+
+    /**
+     * Reload a room: wipe cached messages EXCEPT deleted ones still carrying a
+     * body (re-pagination returns empty tombstones, losing the recovered text
+     * forever — SPA reloadRoom), then re-fill via pagination. The hub-owned
+     * prevBatch stays valid, so ensureMessages repaginates cleanly.
+     */
+    suspend fun reloadRoom(roomId: String) {
+        db.chatMessages().deleteRoomExceptRecoverableDeleted(roomId)
+        ensureMessages(roomId)
     }
 
     // ---------------------------------------------------------------- //
@@ -289,15 +537,28 @@ class ChatRepository(
             val body = p["body"]!!.jsonPrimitive.content
             try {
                 val replyTo = p["replyTo"]?.jsonPrimitive?.content
+                val formattedBody = p["formattedBody"]?.jsonPrimitive?.content
+                val mentionIds = (p["mentionUserIds"] as? kotlinx.serialization.json.JsonArray)
+                    ?.mapNotNull { it.jsonPrimitive.content }
                 val result = syncBus.rpc("matrix", "sendEvent", buildJsonObject {
                     put("roomId", roomId)
                     put("type", "m.room.message")
                     putJsonObject("content") {
                         put("msgtype", "m.text")
                         put("body", body)
+                        if (formattedBody != null) {
+                            put("format", "org.matrix.custom.html")
+                            put("formatted_body", formattedBody)
+                        }
                         if (replyTo != null) {
                             putJsonObject("m.relates_to") {
                                 putJsonObject("m.in_reply_to") { put("event_id", replyTo) }
+                            }
+                        }
+                        if (!mentionIds.isNullOrEmpty()) {
+                            putJsonObject("m.mentions") {
+                                put("user_ids", kotlinx.serialization.json.JsonArray(
+                                    mentionIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
                             }
                         }
                     }
@@ -420,6 +681,82 @@ class ChatRepository(
                 Outbox.Result.Retry(e.message ?: "network")
             }
         }
+        // Low-priority tag via room tags REST (SPA setRoomTag m.lowpriority).
+        outbox.register(TYPE_LOWPRIO) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = java.net.URLEncoder.encode(p["roomId"]!!.jsonPrimitive.content, "UTF-8")
+            val low = p["low"]?.jsonPrimitive?.booleanOrNull == true
+            try {
+                if (low) hub.put("/matrix/rooms/$roomId/tags/m.lowpriority", "{}")
+                else hub.delete("/matrix/rooms/$roomId/tags/m.lowpriority")
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "network")
+            }
+        }
+        // Edit send (m.replace) — SPA store editMessage. ' * ' fallback body +
+        // m.new_content, m.mentions rebuilt on both.
+        outbox.register(TYPE_EDIT) { row, _ ->
+            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]!!.jsonPrimitive.content
+            val eventId = p["eventId"]!!.jsonPrimitive.content
+            val body = p["body"]!!.jsonPrimitive.content
+            val formattedBody = p["formattedBody"]?.jsonPrimitive?.content
+            val mentionIds = (p["mentionUserIds"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.content }
+            try {
+                syncBus.rpc("matrix", "sendEvent", buildJsonObject {
+                    put("roomId", roomId)
+                    put("type", "m.room.message")
+                    putJsonObject("content") {
+                        put("msgtype", "m.text")
+                        put("body", " * $body")
+                        putJsonObject("m.new_content") {
+                            put("msgtype", "m.text")
+                            put("body", body)
+                            if (formattedBody != null) {
+                                put("format", "org.matrix.custom.html")
+                                put("formatted_body", formattedBody)
+                            }
+                            if (!mentionIds.isNullOrEmpty()) {
+                                putJsonObject("m.mentions") {
+                                    put("user_ids", kotlinx.serialization.json.JsonArray(
+                                        mentionIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                                }
+                            }
+                        }
+                        if (formattedBody != null) {
+                            put("format", "org.matrix.custom.html")
+                            put("formatted_body", " * $formattedBody")
+                        }
+                        putJsonObject("m.relates_to") {
+                            put("rel_type", "m.replace")
+                            put("event_id", eventId)
+                        }
+                        if (!mentionIds.isNullOrEmpty()) {
+                            putJsonObject("m.mentions") {
+                                put("user_ids", kotlinx.serialization.json.JsonArray(
+                                    mentionIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                            }
+                        }
+                    }
+                })
+                Outbox.Result.Done
+            } catch (e: Exception) {
+                Outbox.Result.Retry(e.message ?: "edit failed")
+            }
+        }
+        // Terminal edit failure → red marker on the edited bubble.
+        outbox.register("$TYPE_EDIT:onFailed") { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            p["eventId"]?.jsonPrimitive?.content?.let {
+                db.chatMessages().setSendFailedReason(it, true, "edit failed")
+            }
+            Outbox.Result.Done
+        }
     }
 
     // ---------------------------------------------------------------- //
@@ -513,14 +850,27 @@ class ChatRepository(
                 db.meta().put(MetaRow(CURSOR_KEY, nextBatch))
             }
         }
+        // Post-transaction: rotate-and-resend any wedged bridge failures.
+        runCatching { processSendFailures() }
     }
 
     private suspend fun ingestRoomTimeline(roomId: String, roomDelta: JsonObject) {
-        val events = ChatEvents.timelineEvents(roomDelta)
+        processEvents(roomId, ChatEvents.timelineEvents(roomDelta))
+    }
+
+    /**
+     * The single event-processing choke point for BOTH live deltas and
+     * backward pagination (loadOlder). Handles redactions, encrypted
+     * tombstones, reactions, edits (in-place update + originalBody preserve),
+     * bridge send-status, and message rows — with the decryption-regression
+     * guard (a re-delivered lock placeholder never overwrites a decrypted
+     * row). SPA parity: this is store/chat.ts ingest + matrix/sync.ts merged.
+     */
+    private suspend fun processEvents(roomId: String, events: List<JsonObject>) {
         if (events.isEmpty()) return
         val toUpsert = mutableListOf<ChatMessageRow>()
         // In-batch working view: later events (reaction #2, edit-after-msg)
-        // must see earlier ones from THIS delta, not the stale DB row.
+        // must see earlier ones from THIS batch, not the stale DB row.
         suspend fun lookup(id: String): ChatMessageRow? =
             toUpsert.lastOrNull { it.id == id } ?: db.chatMessages().byId(id)
         fun upsert(row: ChatMessageRow) {
@@ -528,17 +878,44 @@ class ChatRepository(
             toUpsert.add(row)
         }
         for (event in events) {
-            // Redactions / tombstones → flip isDeleted on the original row.
+            // Bridge send-status (com.beeper.message_send_status) — flip/clear
+            // the local echo's failure marker; wedged-Megolm auto-recovery is
+            // scheduled separately (needs a network RPC, done post-transaction).
+            if (ChatEvents.isSendStatus(event)) {
+                val (target, status, reason) = ChatEvents.sendStatusParts(event) ?: continue
+                if (status == "SUCCESS") {
+                    lookup(target)?.let { upsert(it.copy(sendFailed = false, sendFailedReason = null)) }
+                } else {
+                    val msg = "bridge: $status" + (reason?.let { " ($it)" } ?: "")
+                    lookup(target)?.let { upsert(it.copy(sendFailed = true, sendFailedReason = msg)) }
+                    pendingSendFailures.add(SendFailure(roomId, target, status, reason))
+                }
+                continue
+            }
+            // Redactions → flip isDeleted + deletedBy on the original row.
             if (ChatEvents.isRedaction(event)) {
                 val target = ChatEvents.redactsEventId(event)
                 if (target != null) {
-                    lookup(target)?.let { upsert(it.copy(isDeleted = true)) }
+                    lookup(target)?.let {
+                        if (!it.isDeleted) upsert(it.copy(isDeleted = true, deletedBy = event["sender"]?.jsonPrimitive?.content))
+                    }
                 }
                 continue
             }
             if (ChatEvents.isEncryptedTombstone(event)) {
                 val id = event["event_id"]?.jsonPrimitive?.content
-                if (id != null) lookup(id)?.let { upsert(it.copy(isDeleted = true)) }
+                if (id != null) lookup(id)?.let {
+                    if (!it.isDeleted) {
+                        // A never-decrypted body has no meaningful strikethrough —
+                        // blank it so the bubble reads "Message deleted".
+                        val wasPlaceholder = it.body == "🔒 Encrypted message"
+                        upsert(it.copy(
+                            isDeleted = true,
+                            deletedBy = event["sender"]?.jsonPrimitive?.content,
+                            body = if (wasPlaceholder) "" else it.body,
+                        ))
+                    }
+                }
                 continue
             }
             // Reactions aggregate onto the target row (emoji → [senders]).
@@ -554,18 +931,18 @@ class ChatRepository(
                 continue
             }
             // Edits UPDATE the original row in place (SPA parity) — inserting
-            // under the edit-event id duplicated the message (audit item 6).
+            // under the edit-event id duplicated the message. originalBody is
+            // preserved (first edit only) for the inline word-diff view.
             if (ChatEvents.isEdit(event)) {
-                val targetId = ChatEvents.relatesToEventId(event)
-                val edited = ChatEvents.eventToMessage(event, roomId) ?: continue
-                if (targetId != null) {
-                    val original = lookup(targetId)
-                    if (original != null) {
-                        upsert(original.copy(body = edited.body, isEdited = true))
-                        continue
-                    }
-                }
-                // Original not cached — skip rather than duplicate.
+                val targetId = ChatEvents.relatesToEventId(event) ?: continue
+                val edit = ChatEvents.editContent(event) ?: continue
+                val original = lookup(targetId) ?: continue // not cached → skip, don't duplicate
+                upsert(original.copy(
+                    body = edit.body,
+                    formattedBody = edit.formattedBody,
+                    isEdited = true,
+                    originalBody = original.originalBody ?: original.body,
+                ))
                 continue
             }
             // Our own sends echo back with our txnId — swap the local echo.
@@ -576,10 +953,53 @@ class ChatRepository(
                     .firstOrNull { it.localEcho && it.txnId == txn }
                 if (echo != null) db.chatMessages().delete(echo.id)
             }
+            // Decryption-regression guard: a re-delivered m.room.encrypted
+            // (lock placeholder) must NOT overwrite a row that already
+            // decrypted. Cold resume replays encrypted events, and blindly
+            // upserting rolled a good body back to "🔒 Encrypted message".
+            if (msg.body == "🔒 Encrypted message") {
+                val existing = lookup(msg.id)
+                if (existing != null && existing.body != "🔒 Encrypted message" && !existing.isDeleted) continue
+            }
             // Enrich replyTo with the quoted body/sender from the local cache.
             upsert(enrichReply(msg))
         }
         if (toUpsert.isNotEmpty()) db.chatMessages().upsertAll(toUpsert)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Bridge send-failure auto-recovery (rotate key + resend once).
+
+    private data class SendFailure(val roomId: String, val eventId: String, val status: String, val reason: String?)
+    private val pendingSendFailures = java.util.concurrent.ConcurrentLinkedQueue<SendFailure>()
+
+    /**
+     * Drain send-failures observed this sync tick: for FAIL_RETRIABLE
+     * undecryptable_event, rotate the room key + resend once
+     * (matrix.resendAfterRotate) — automation of the manual runbook. On
+     * success the wedged echo is deleted so only the delivered copy shows.
+     * Runs OUTSIDE the ingest transaction (it makes network RPCs).
+     */
+    suspend fun processSendFailures() {
+        while (true) {
+            val f = pendingSendFailures.poll() ?: break
+            val row = db.chatMessages().byId(f.eventId) ?: continue
+            val isUndecryptable = f.status == "FAIL_RETRIABLE" &&
+                (f.reason?.contains("undecryptable_event", ignoreCase = true) == true)
+            if (isUndecryptable && !row.autoRotateRetried) {
+                db.chatMessages().markAutoRotateRetried(f.eventId)
+                val ok = runCatching {
+                    val res = syncBus.rpc("matrix", "resendAfterRotate", buildJsonObject {
+                        put("roomId", f.roomId); put("eventId", f.eventId)
+                    }, timeoutMs = 30_000).jsonObject
+                    res["ok"]?.jsonPrimitive?.booleanOrNull == true && res["eventId"] != null
+                }.getOrDefault(false)
+                if (ok) {
+                    // Resend delivered under a fresh key — drop the dead echo.
+                    db.chatMessages().delete(f.eventId)
+                }
+            }
+        }
     }
 
     private suspend fun enrichReply(msg: ChatMessageRow): ChatMessageRow {
@@ -642,20 +1062,27 @@ class ChatRepository(
         }.getOrNull() ?: return 0
         val obj = result.jsonObject
         // paginate returns {chunk, state?, start?, end?} (decrypted events);
-        // with dir='b', `end` is the token for the NEXT older page.
-        val messages = (obj["chunk"] as? kotlinx.serialization.json.JsonArray)
-            ?.mapNotNull { (it as? JsonObject)?.let { e -> ChatEvents.eventToMessage(e, roomId) } }
+        // with dir='b', chunk is newest→oldest and `end` is the token for the
+        // NEXT older page. Reverse to chronological order so the shared
+        // processEvents sees each target before its reaction/edit/redaction —
+        // the SPA does the same (deferred second pass). This fixes reactions,
+        // redactions, and edits being dropped/duplicated on backfill.
+        val chunk = (obj["chunk"] as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.reversed()
             ?: emptyList()
         val newPrev = obj["end"]?.jsonPrimitive?.content
+        // Count message-bearing rows for the caller's window growth.
+        val messageCount = chunk.count { ChatEvents.eventToMessage(it, roomId) != null }
         db.withTransaction {
-            if (messages.isNotEmpty()) db.chatMessages().upsertAll(messages)
+            processEvents(roomId, chunk)
             if (newPrev != null) {
                 db.chatRooms().byId(roomId)?.let {
                     db.chatRooms().upsertAll(listOf(it.copy(prevBatch = newPrev)))
                 }
             }
         }
-        return messages.size
+        return messageCount
     }
 
     /** Daily prune: bound every room's cached timeline. */

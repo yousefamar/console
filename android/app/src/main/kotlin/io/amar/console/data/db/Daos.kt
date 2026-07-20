@@ -82,6 +82,9 @@ interface ChatRoomDao {
     @Query("SELECT id FROM chat_rooms")
     suspend fun allIds(): List<String>
 
+    @Query("SELECT * FROM chat_rooms")
+    suspend fun allRooms(): List<ChatRoomRow>
+
     @Query("SELECT COUNT(*) FROM chat_rooms WHERE isUnread = 1 AND isMuted = 0 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
     fun observeUnreadCount(now: Long): Flow<Int>
 }
@@ -138,4 +141,13 @@ interface ChatMessageDao {
 
     @Query("SELECT DISTINCT roomId FROM chat_messages")
     suspend fun roomsWithMessages(): List<String>
+
+    /** Reload-room wipe: drop cached messages EXCEPT deleted rows still
+     *  carrying a body — re-pagination returns empty tombstones, which would
+     *  lose the recovered text forever (SPA reloadRoom). */
+    @Query(
+        """DELETE FROM chat_messages WHERE roomId = :roomId AND NOT
+             (isDeleted = 1 AND body IS NOT NULL AND body != '')"""
+    )
+    suspend fun deleteRoomExceptRecoverableDeleted(roomId: String)
 }

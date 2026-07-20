@@ -129,6 +129,64 @@ class ChatEventsTest {
     }
 
     @Test
+    fun `audio carries waveform and voice-note flag`() {
+        val msg = ChatEvents.eventToMessage(
+            ev("""{"event_id":"${'$'}v","sender":"@a:x","type":"m.room.message","origin_server_ts":1,
+                 "content":{"msgtype":"m.audio","body":"voice.ogg","url":"mxc://x/v",
+                            "org.matrix.msc1767.audio":{"duration":3000,"waveform":[1,2,3]},
+                            "org.matrix.msc3245.voice":{}}}"""),
+            "!r",
+        )!!
+        assertEquals(3000L, msg.mediaDurationMs)
+        assertTrue(msg.isVoiceNote)
+        assertNotNull(msg.waveformJson)
+        assertTrue(msg.waveformJson!!.contains("2"))
+    }
+
+    @Test
+    fun `image carries width and height from info`() {
+        val msg = ChatEvents.eventToMessage(
+            ev("""{"event_id":"${'$'}i","sender":"@a:x","type":"m.room.message","origin_server_ts":1,
+                 "content":{"msgtype":"m.image","body":"p.jpg","url":"mxc://x/i",
+                            "info":{"mimetype":"image/jpeg","w":640,"h":480}}}"""),
+            "!r",
+        )!!
+        assertEquals(640, msg.mediaWidth)
+        assertEquals(480, msg.mediaHeight)
+    }
+
+    @Test
+    fun `bridge sender prefix stripped from body only when it matches`() {
+        assertEquals("hi there", ChatEvents.displayBody("Bob: hi there", "Bob"))
+        assertEquals("Alice: hi", ChatEvents.displayBody("Alice: hi", "Bob"))
+        assertEquals("no colon", ChatEvents.displayBody("no colon", "Bob"))
+    }
+
+    @Test
+    fun `send-status parts extracted`() {
+        val ev = ev("""{"event_id":"${'$'}s","sender":"@bot:x","type":"com.beeper.message_send_status",
+             "origin_server_ts":1,"content":{"status":"FAIL_RETRIABLE","reason":"undecryptable_event",
+                "m.relates_to":{"event_id":"${'$'}orig"}}}""")
+        assertTrue(ChatEvents.isSendStatus(ev))
+        val (target, status, reason) = ChatEvents.sendStatusParts(ev)!!
+        assertEquals("\$orig", target)
+        assertEquals("FAIL_RETRIABLE", status)
+        assertEquals("undecryptable_event", reason)
+    }
+
+    @Test
+    fun `edit content prefers new_content`() {
+        val ev = ev("""{"event_id":"${'$'}e","sender":"@a:x","type":"m.room.message","origin_server_ts":1,
+             "content":{"msgtype":"m.text","body":"* fixed",
+                        "m.new_content":{"msgtype":"m.text","body":"fixed",
+                            "format":"org.matrix.custom.html","formatted_body":"<b>fixed</b>"},
+                        "m.relates_to":{"rel_type":"m.replace","event_id":"${'$'}o"}}}""")
+        val ec = ChatEvents.editContent(ev)!!
+        assertEquals("fixed", ec.body)
+        assertEquals("<b>fixed</b>", ec.formattedBody)
+    }
+
+    @Test
     fun `room snapshot row converts with defaults`() {
         val row = ChatEvents.roomFromState("!room:x", ev(
             """{"name":"Veronica","isDirect":true,"isUnread":true,"unreadCount":3,
