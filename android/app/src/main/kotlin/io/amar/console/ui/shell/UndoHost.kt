@@ -1,6 +1,7 @@
 package io.amar.console.ui.shell
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Snackbar
@@ -12,6 +13,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -44,28 +46,76 @@ object UndoController {
     fun clear() { _action.value = null }
 }
 
-/** The bottom-center undo snackbar; renders whenever [UndoController] has a live
- *  action, auto-dismisses at expiry. Mounted once in AppShell. */
+/**
+ * App-wide toast slot with an optional click-through URL — the native twin of
+ * the SPA's toast `href` support (FEATURES app-wide #47, e.g. a published
+ * blog-post permalink). Errors linger 8s, others 4s (SPA store.ts TTLs).
+ * Single-slot, shell-hosted; distinct from the undo slot.
+ */
+object AppToast {
+    data class Toast(val message: String, val href: String?, val expiresAt: Long)
+
+    private val _toast = MutableStateFlow<Toast?>(null)
+    val toast: StateFlow<Toast?> = _toast
+
+    fun show(message: String, href: String? = null, error: Boolean = false) {
+        val ttl = if (error) 8_000L else 4_000L
+        _toast.value = Toast(message, href, System.currentTimeMillis() + ttl)
+    }
+
+    fun clear() { _toast.value = null }
+}
+
+/** The bottom-center undo snackbar + app toast; each renders whenever its
+ *  controller has a live entry, auto-dismisses at expiry. Mounted once in
+ *  AppShell. */
 @Composable
 fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
     val action by UndoController.action.collectAsState()
-    action?.let { a ->
-        // Auto-dismiss at expiry (keyed on the action instance).
-        LaunchedEffect(a) {
-            val wait = a.expiresAt - System.currentTimeMillis()
-            if (wait > 0) delay(wait)
-            if (UndoController.action.value === a) UndoController.clear()
-        }
-        Box(modifier.fillMaxWidth()) {
-            Snackbar(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
-                action = {
-                    TextButton(onClick = {
-                        scope.launch { runCatching { a.undo() } }
-                        UndoController.clear()
-                    }) { Text("Undo") }
-                },
-            ) { Text(a.label) }
+    val toast by AppToast.toast.collectAsState()
+    val context = LocalContext.current
+    Box(modifier.fillMaxWidth()) {
+        Column(Modifier.align(Alignment.BottomCenter)) {
+            toast?.let { t ->
+                LaunchedEffect(t) {
+                    val wait = t.expiresAt - System.currentTimeMillis()
+                    if (wait > 0) delay(wait)
+                    if (AppToast.toast.value === t) AppToast.clear()
+                }
+                Snackbar(
+                    modifier = Modifier.padding(8.dp),
+                    action = t.href?.let { href ->
+                        {
+                            TextButton(onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href))
+                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                                AppToast.clear()
+                            }) { Text("Open") }
+                        }
+                    },
+                ) { Text(t.message) }
+            }
+            action?.let { a ->
+                // Auto-dismiss at expiry (keyed on the action instance).
+                LaunchedEffect(a) {
+                    val wait = a.expiresAt - System.currentTimeMillis()
+                    if (wait > 0) delay(wait)
+                    if (UndoController.action.value === a) UndoController.clear()
+                }
+                Snackbar(
+                    modifier = Modifier.padding(8.dp),
+                    action = {
+                        TextButton(onClick = {
+                            scope.launch { runCatching { a.undo() } }
+                            UndoController.clear()
+                        }) { Text("Undo") }
+                    },
+                ) { Text(a.label) }
+            }
         }
     }
 }
