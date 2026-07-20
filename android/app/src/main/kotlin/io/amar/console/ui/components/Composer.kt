@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,6 +73,7 @@ class ComposerHandle {
  *
  * [aboveInput] renders directly above the input row (mention suggestions).
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun Composer(
     placeholder: String,
@@ -212,28 +214,25 @@ fun Composer(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (onSendWithAttachments != null) {
-                IconButton(onClick = { filePicker.launch("*/*") }, modifier = Modifier.size(40.dp)) {
-                    Icon(
-                        Icons.Filled.AttachFile, contentDescription = "Attach",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                // Paste ALL clipboard images (FEATURES chat #8). The button is
-                // always shown when attach is enabled (reading the clipboard on
-                // every recomposition would spam Android 12+'s paste toast); the
-                // read happens only on tap.
-                IconButton(
-                    onClick = {
-                        val imgs = clipboardImageUris(context).filter { it !in attachments }
-                        if (imgs.isNotEmpty()) attachments = attachments + imgs
-                    },
-                    modifier = Modifier.size(40.dp),
+                // Tap = file picker; long-press = paste clipboard images
+                // (FEATURES chat #8) — no dedicated paste button eating a slot.
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            onClick = { filePicker.launch("*/*") },
+                            onLongClick = {
+                                val imgs = clipboardImageUris(context).filter { it !in attachments }
+                                if (imgs.isNotEmpty()) attachments = attachments + imgs
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        Icons.Filled.ContentPaste, contentDescription = "Paste image",
+                        Icons.Filled.AttachFile, contentDescription = "Attach (long-press: paste image)",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
