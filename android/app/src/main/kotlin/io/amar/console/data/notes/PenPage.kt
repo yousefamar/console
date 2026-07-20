@@ -63,6 +63,11 @@ object PenPage {
             .withComputedBox()
     }
 
+    /** Build a doc (with fixed page rect) directly from a stroke list — used
+     *  for the live-overlay render where strokes come from SyncBus, not an SVG. */
+    fun docFromStrokes(strokes: List<PenStroke>): PenPageDoc =
+        PenPageDoc(strokes = strokes, viewX = 0f, viewY = 0f, viewW = 0f, viewH = 0f).withComputedBox()
+
     /** Fixed page rect anchored at the crop offset; expands only past the page edge. */
     private fun PenPageDoc.withComputedBox(): PenPageDoc {
         var minX = Float.POSITIVE_INFINITY

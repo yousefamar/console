@@ -96,21 +96,25 @@ object CirclesLayout {
     // --- d3 pack: recursive packSiblings + enclose, radius from value ------ //
 
     private fun packHierarchy(root: Node) {
-        // Bottom-up: pack each node's children, then set the node's radius to
-        // enclose them, then scale/translate into [0,CANVAS].
+        // Bottom-up: pack each node's children in the node's LOCAL frame
+        // (children coords relative to the node's centre, node.r set to enclose).
+        packNode(root)
+        // Scale so the root fills the canvas, then compose local frames top-down
+        // (d3's translateChild): a child's absolute pos = parent.abs + k*local.
+        val k = if (root.r > 0) (CANVAS / 2) / root.r else 1.0
         root.x = CANVAS / 2
         root.y = CANVAS / 2
-        packNode(root)
-        // Scale so root fills the canvas (d3 does this at the top level).
-        val k = if (root.r > 0) (CANVAS / 2) / root.r else 1.0
-        transform(root, CANVAS / 2, CANVAS / 2, root.x, root.y, k)
+        root.r *= k
+        translateChildren(root, k)
     }
 
-    private fun transform(n: Node, cx: Double, cy: Double, ox: Double, oy: Double, k: Double) {
-        n.x = cx + (n.x - ox) * k
-        n.y = cy + (n.y - oy) * k
-        n.r *= k
-        for (c in n.children) transform(c, cx, cy, ox, oy, k)
+    private fun translateChildren(parent: Node, k: Double) {
+        for (c in parent.children) {
+            c.x = parent.x + k * c.x
+            c.y = parent.y + k * c.y
+            c.r *= k
+            translateChildren(c, k)
+        }
     }
 
     private fun packNode(n: Node) {
@@ -159,42 +163,46 @@ object CirclesLayout {
         var na = FrontNode(a)
         var nb = FrontNode(b)
         val nc0 = FrontNode(c)
-        na.next = nc0; nc0.prev = na
-        nb.next = na; na.prev = nb
-        nc0.next = nb; nb.prev = nc0
+        // Ring a→b→c→a (d3: a.next=c.prev=b; b.next=a.prev=c; c.next=b.prev=a).
+        na.next = nb; nc0.prev = nb
+        nb.next = nc0; na.prev = nc0
+        nc0.next = na; nb.prev = na
 
         var i = 3
         pack@ while (i < n) {
             c = children[i]; place(na.c, nb.c, c)
-            val ncNew = FrontNode(c)
+            val nc = FrontNode(c)
 
             var j = nb.next
             var k = na.prev
             var sj = nb.c.r
             var sk = na.c.r
+            // Scan the front chain for a collision. On collision d3 adjusts the
+            // front (a or b) and `continue pack` (skipping the insert) to retry
+            // this same circle. In a while-loop `continue` already skips the
+            // trailing i++, so i stays put — no `--i` needed.
             do {
                 if (sj <= sk) {
                     if (intersects(j.c, c)) {
-                        nb = j; na.next = nb; nb.prev = na; i--
+                        nb = j; na.next = nb; nb.prev = na
                         continue@pack
                     }
                     sj += j.c.r; j = j.next
                 } else {
                     if (intersects(k.c, c)) {
-                        na = k; na.next = nb; nb.prev = na; i--
+                        na = k; na.next = nb; nb.prev = na
                         continue@pack
                     }
                     sk += k.c.r; k = k.prev
                 }
             } while (j !== k.next)
 
-            // Success! Insert c between a and b.
-            ncNew.prev = na; ncNew.next = nb; na.next = ncNew; nb.prev = ncNew
-            nb = ncNew
+            // No collision — insert c between a and b.
+            nc.prev = na; nc.next = nb; na.next = nc; nb.prev = nc; nb = nc
 
-            // New closest pair to the centroid.
+            // New closest pair to the centroid becomes the next (a, b) front.
             var aa = score(na)
-            var cur = na.next
+            var cur = nc.next
             while (cur !== nb) {
                 val ca = score(cur)
                 if (ca < aa) { na = cur; aa = ca }

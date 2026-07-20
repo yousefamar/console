@@ -67,10 +67,12 @@ object EditorActions {
         val at = caret.coerceIn(0, text.length)
         val withRef = text.substring(0, at) + ref + text.substring(at)
 
+        // Separator is computed from the ORIGINAL text (matches the SPA, which
+        // appends the definition at the pre-insert doc end).
         val sep = when {
-            withRef.isEmpty() -> ""
-            withRef.endsWith("\n\n") -> ""
-            withRef.endsWith("\n") -> "\n"
+            text.isEmpty() -> ""
+            text.endsWith("\n\n") -> ""
+            text.endsWith("\n") -> "\n"
             else -> "\n\n"
         }
         val def = "$sep[^$n]: "
