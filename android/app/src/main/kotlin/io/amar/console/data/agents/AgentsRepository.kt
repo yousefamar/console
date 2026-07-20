@@ -501,6 +501,12 @@ class AgentsRepository(
                 }.filter { it.absIndex < oldest }
                 if (rows.isNotEmpty()) db.agents().insertMessages(rows)
             }
+            "session_order" -> {
+                _sessionOrder.value = (msg["order"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+            }
+            "collapsed_groups" -> {
+                _collapsedGroups.value = ((msg["collapsed"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()).toSet()
+            }
             "session_merged" -> { /* sessions_list drops the fork; nothing local to do */ }
         }
     }
@@ -897,6 +903,24 @@ class AgentsRepository(
     // --- Handoff ---
     fun dismissHandoff() { _handoff.value = null }
     fun clearHandoff() { _handoff.value = null }
+
+    // --- Sidebar ordering (cwd groups + drag reorder) ---
+    private val _sessionOrder = MutableStateFlow<List<String>>(emptyList())
+    val sessionOrder: StateFlow<List<String>> = _sessionOrder
+    private val _collapsedGroups = MutableStateFlow<Set<String>>(emptySet())
+    val collapsedGroups: StateFlow<Set<String>> = _collapsedGroups
+
+    fun reorderSessions(order: List<String>) {
+        _sessionOrder.value = order
+        sendWs(buildJsonObject { put("type", "reorder_sessions"); put("order", JsonArray(order.map { JsonPrimitive(it) })) })
+    }
+
+    fun toggleGroupCollapsed(cwd: String) {
+        val next = _collapsedGroups.value.toMutableSet()
+        if (!next.add(cwd)) next.remove(cwd)
+        _collapsedGroups.value = next
+        sendWs(buildJsonObject { put("type", "set_collapsed_groups"); put("collapsed", JsonArray(next.map { JsonPrimitive(it) })) })
+    }
 
     private fun sendWs(obj: JsonObject): Boolean = ws?.send(obj.toString()) ?: false
 
