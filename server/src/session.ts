@@ -946,10 +946,15 @@ export class Session extends EventEmitter {
     // cache reads, so after turn 1 this badly under-reports — the accurate
     // number comes from the async get_context_usage control request below,
     // which supersedes this within ~a second.
-    const used = msg.usage.input_tokens
-      + (msg.usage.cache_read_input_tokens ?? 0)
-      + (msg.usage.cache_creation_input_tokens ?? 0)
-      + msg.usage.output_tokens
+    // A turn's cumulative usage can exceed the window (it sums every API call
+    // in the turn) — clamp so the meter never shows "391k / 200k".
+    const used = Math.min(
+      msg.usage.input_tokens
+        + (msg.usage.cache_read_input_tokens ?? 0)
+        + (msg.usage.cache_creation_input_tokens ?? 0)
+        + msg.usage.output_tokens,
+      this.contextWindow,
+    )
     this.emitHub({
       type: 'context_update',
       sessionId: this.id,
