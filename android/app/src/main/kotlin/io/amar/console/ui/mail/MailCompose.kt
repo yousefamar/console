@@ -78,6 +78,13 @@ fun MailComposeSheet(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // Draft key: one slot per compose context so a fresh compose and a reply
+    // to thread X keep independent drafts (SPA parity: draft survives dismiss).
+    val draftKey = remember(mode, threadId, replyContext?.messageId) {
+        if (mode == ComposeMode.COMPOSE) "compose"
+        else "${mode.name.lowercase()}:${threadId ?: ""}:${replyContext?.messageId ?: ""}"
+    }
+
     var aliases by remember { mutableStateOf<List<MailFormat.Alias>>(emptyList()) }
     var from by remember { mutableStateOf("") }
     var to by remember { mutableStateOf("") }
@@ -94,7 +101,8 @@ fun MailComposeSheet(
     var sending by remember { mutableStateOf(false) }
     var userEmail by remember { mutableStateOf("") }
 
-    // Load aliases + prefill once.
+    // Load aliases + prefill once; a saved draft for this context wins over prefill.
+    var draftLoaded by remember { mutableStateOf(false) }
     LaunchedEffect(mode, threadId, replyContext?.messageId) {
         userEmail = repo.userEmail()
         val a = repo.aliases()
@@ -106,12 +114,28 @@ fun MailComposeSheet(
         subject = pf.subject
         quotedHtml = pf.quotedHtml
         if (pf.cc.isNotBlank()) showCc = true
+        repo.loadDraft(draftKey)?.let { d ->
+            if (d.from.isNotBlank()) from = d.from
+            if (d.to.isNotBlank()) to = d.to
+            cc = d.cc; bcc = d.bcc
+            if (d.subject.isNotBlank()) subject = d.subject
+            body = d.body
+            if (d.cc.isNotBlank() || d.bcc.isNotBlank()) showCc = true
+        }
+        draftLoaded = true
         // Forward carries over the original's non-inline attachments (SPA parity).
         if (mode == ComposeMode.FORWARD && replyContext != null) {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
                 carried = runCatching { repo.forwardAttachments(replyContext.messageId) }.getOrDefault(emptyList())
             }
         }
+    }
+
+    // Debounced draft autosave; saveDraft deletes the slot when all fields are blank.
+    LaunchedEffect(from, to, cc, bcc, subject, body, draftLoaded) {
+        if (!draftLoaded || sending) return@LaunchedEffect
+        delay(500)
+        repo.saveDraft(draftKey, MailRepository.ComposeDraft(from, to, cc, bcc, subject, body))
     }
 
     val filePicker = rememberLauncherForActivityResult(
@@ -142,6 +166,7 @@ fun MailComposeSheet(
                     attachments = outAtts, autoArchive = true,
                 )
             }
+            repo.clearDraft(draftKey)
             onDismiss()
         }
     }
@@ -251,7 +276,7 @@ fun MailComposeSheet(
                     Icon(Icons.Filled.AttachFile, "Attach", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                 }
             }
-            TextButton(onClick = onDismiss) { Text("Discard") }
+            TextButton(onClick = { scope.launch { repo.clearDraft(draftKey) }; onDismiss() }) { Text("Discard") }
         }
     }
 }
