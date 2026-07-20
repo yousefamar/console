@@ -521,7 +521,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             subtitle = listOfNotNull(
                 if (act?.running == true) "working…" else session?.status,
                 act?.currentTool?.let { "⚙ $it" },
-                if (!connected) "offline — sends queue" else null,
+                if (!connected) "offline" else null,
             ).joinToString(" · ").ifEmpty { null },
             onBack = onBack,
             actions = {
@@ -628,7 +628,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             placeholder = when {
                 session?.id == "al" -> "Message Al…"
                 act?.running == true || session?.status == "running" -> "Follow up…"
-                else -> "Prompt — queues offline"
+                else -> "Prompt"
             },
             draftKey = "agent:$sessionId",
             slashCommands = slashCommands,

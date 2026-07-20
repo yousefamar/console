@@ -118,6 +118,9 @@ class Outbox(
     /** Crash recovery, called once at app start. */
     suspend fun resetStuckProcessing() {
         db.outbox().resetStuckProcessing()
+        // Rows that failed with 404/410 predate the handlers treating "already
+        // gone" as success — requeue so the next drain resolves them to Done.
+        db.outbox().requeueGoneFailures()
     }
 
     /**
