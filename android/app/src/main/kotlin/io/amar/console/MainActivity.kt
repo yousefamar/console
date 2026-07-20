@@ -91,6 +91,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleDeepLink(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_SEND) {
+            handleShare(intent)
+            return
+        }
         val data = intent?.data ?: return
         if (data.scheme != "console") return
         val nav = navController
@@ -99,6 +103,37 @@ class MainActivity : ComponentActivity() {
             return
         }
         navigateDeepLink(nav, data)
+    }
+
+    /**
+     * Share-target: text/URL shared from another app becomes a new scratch
+     * note, opened in the editor. (AndroidManifest ACTION_SEND text/plain.)
+     */
+    private fun handleShare(intent: Intent) {
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
+        if (text.isNullOrEmpty()) return
+        val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)?.trim()
+        val app = application as ConsoleApp
+        CoroutineScope(Dispatchers.IO).launch {
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.UK)
+                .format(java.util.Date())
+            val path = "scratch/shared-$stamp.md"
+            val body = buildString {
+                if (!subject.isNullOrEmpty()) append("# ").append(subject).append("\n\n")
+                append(text)
+                append('\n')
+            }
+            runCatching { app.graph.notes.create(path, body) }
+            val nav = navController
+            runOnUiThread {
+                if (nav != null) {
+                    nav.openApp(Pane.Notes)
+                    runCatching { nav.navigate("notes/${Uri.encode(path)}") { launchSingleTop = true } }
+                } else {
+                    pendingDeepLink = Uri.parse("console://pane/notes")
+                }
+            }
+        }
     }
 
     /**
@@ -117,6 +152,8 @@ class MainActivity : ComponentActivity() {
                     !itemId.isNullOrEmpty() && pane == Pane.Chat -> "chat/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Mail -> "mail/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Agents -> "agents/${Uri.encode(itemId)}"
+                    !itemId.isNullOrEmpty() && pane == Pane.Feeds -> "feeds/${Uri.encode(itemId)}"
+                    !itemId.isNullOrEmpty() && pane == Pane.Notes -> "notes/${Uri.encode(itemId)}"
                     else -> null
                 }
                 // Hierarchy contract: build the REAL stack (grid → root →
