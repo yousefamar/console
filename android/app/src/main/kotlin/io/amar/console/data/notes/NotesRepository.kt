@@ -64,6 +64,25 @@ class NotesRepository(
     fun observeFiles(): Flow<List<NoteFileRow>> = db.notes().observeAll()
     fun observeFile(path: String): Flow<NoteFileRow?> = db.notes().observeFile(path)
 
+    /**
+     * App-scoped multi-file tab model (survives navigation within the pane).
+     * Persists its open-path list + active path to the Room meta KV. UI reads
+     * [NotesTabs.state]; a blocking persist runner is fine (fire-and-forget on
+     * the app scope isn't available here, so persistence is best-effort via a
+     * detached coroutine created lazily).
+     */
+    val tabs: NotesTabs by lazy {
+        NotesTabs(persist = { open, active ->
+            tabsPersistScope.launch { persistTabs(open, active) }
+        })
+    }
+    private val tabsPersistScope by lazy {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    }
+
+    /** Blog tooling (drafts/projects/tags/publish) — shares the hub client. */
+    val blog: BlogRepository by lazy { BlogRepository(hub) }
+
     /** Parked conflict rows for the editor's banner. */
     fun observeConflict(path: String): Flow<List<io.amar.console.data.db.OutboxRow>> =
         db.outbox().observeByEntityStatus(TYPE_SAVE, path, "conflict")
@@ -382,6 +401,21 @@ class NotesRepository(
         lastPenWrite = now
         _penActivePagePath.value = relPath
         _penActiveAt.value = now
+    }
+
+    /**
+     * Subscribe to a SyncBus 'pen' op for the live overlay (PenPageScreen).
+     * Returns the unsubscribe fn. Kept here so the composable doesn't reach
+     * into the SyncBus client directly.
+     */
+    fun penBus(op: String, handler: (JsonElement) -> Unit): () -> Unit = syncBus.on("pen", op, handler)
+
+    /** Re-read the freshest durable pen SVG and hand it to [onSvg]. */
+    fun penReload(path: String, onSvg: (String) -> Unit) {
+        tabsPersistScope.launch {
+            val svg = fetchFreshBody(path) ?: return@launch
+            onSvg(svg)
+        }
     }
 
     /** Insert a newly-saved pen page into the listing (path-sorted) if absent. */
