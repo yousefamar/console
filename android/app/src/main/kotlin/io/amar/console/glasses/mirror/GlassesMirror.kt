@@ -94,6 +94,31 @@ class GlassesMirror(
             applyDim?.invoke(true)
             poke()
         }
+        wireDataPokes()
+    }
+
+    /**
+     * Data-change → re-render pokes (SPA: mirror subscribes to every pane
+     * store). The SPA re-renders on any pane store `set()`; here we collect the
+     * DB Flows that back the mirror renderers and [poke] on change. Handlers
+     * short-circuit on the `enabled` boolean, so cost is one branch when off.
+     * Idempotent — the boolean guard makes double-calls harmless.
+     */
+    @Volatile private var dataWired = false
+    private fun wireDataPokes() {
+        if (dataWired) return
+        dataWired = true
+        // Chat rooms + mail inbox + calendar-ish churn all surface via these
+        // aggregate flows; per-room/thread message flows aren't collected here
+        // (route/composer pokes cover the open-item case). New chat messages in
+        // the OPEN room already poke via the composer path on keystroke; the
+        // room-list flow catches previews/unread changes.
+        scope.launch { db.chatRooms().observeAll().collect { if (enabled) poke() } }
+        scope.launch { db.mailThreads().observeInbox(System.currentTimeMillis()).collect { if (enabled) poke() } }
+        scope.launch { db.feeds().observeRecent(1).collect { if (enabled) poke() } }
+        scope.launch { db.bookmarks().observeAll().collect { if (enabled) poke() } }
+        // Agent transcript churn (streaming assistant text lands as message rows).
+        scope.launch { db.agents().observeSessions().collect { if (enabled) poke() } }
     }
 
     fun setComposerText(text: String) {
