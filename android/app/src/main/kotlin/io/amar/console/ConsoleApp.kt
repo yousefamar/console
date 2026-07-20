@@ -40,6 +40,9 @@ class ConsoleApp : Application(), ImageLoaderFactory {
     // (avatars, image thumbs) authenticate; disk-cache aggressively so
     // seen media renders offline.
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
+        // SVG support for foreign pen-page exports (PenPageScreen renders them
+        // verbatim when there are no embedded strokes to draw on Canvas).
+        .components { add(coil.decode.SvgDecoder.Factory()) }
         .okHttpClient {
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
