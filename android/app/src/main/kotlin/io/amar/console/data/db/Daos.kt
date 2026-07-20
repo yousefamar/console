@@ -113,6 +113,18 @@ interface ChatMessageDao {
     @Query("UPDATE chat_messages SET sendFailed = :failed WHERE id = :id")
     suspend fun setSendFailed(id: String, failed: Boolean)
 
+    /** Bridge send-failure with the human-readable reason (bubble title). */
+    @Query("UPDATE chat_messages SET sendFailed = :failed, sendFailedReason = :reason WHERE id = :id")
+    suspend fun setSendFailedReason(id: String, failed: Boolean, reason: String?)
+
+    /** One-shot guard for the rotate-key-and-resend auto-recovery. */
+    @Query("UPDATE chat_messages SET autoRotateRetried = 1 WHERE id = :id")
+    suspend fun markAutoRotateRetried(id: String)
+
+    /** Soft-delete a row while preserving its body (diff/archive fallback). */
+    @Query("UPDATE chat_messages SET isDeleted = 1, deletedBy = :by WHERE id = :id")
+    suspend fun setDeleted(id: String, by: String?)
+
     @Query("SELECT COUNT(*) FROM chat_messages WHERE roomId = :roomId")
     suspend fun countForRoom(roomId: String): Int
 

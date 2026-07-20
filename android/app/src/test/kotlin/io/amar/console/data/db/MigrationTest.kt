@@ -103,6 +103,21 @@ class MigrationTest {
     fun `migrate 8 to latest`() = migrateFrom(8)
 
     @Test
+    fun `migrate 9 to latest`() = migrateFrom(9)
+
+    @Test
+    fun `migrate 9 to latest with chat message data`() = migrateFrom(9) { db ->
+        db.execSQL(
+            """INSERT INTO chat_messages
+               (id, roomId, timestamp, senderId, senderName, body, msgtype,
+                mediaMxc, mediaMime, encryptedFileJson, replyToJson,
+                isEdited, isDeleted, reactionsJson, localEcho, sendFailed, txnId)
+               VALUES ('e9', '!r', 3, '@a:x', 'A', 'pre-v10', 'm.text',
+                       NULL, NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL)"""
+        )
+    }
+
+    @Test
     fun `migrate 8 to latest with agent session`() = migrateFrom(8) { db ->
         db.execSQL(
             """INSERT INTO agent_sessions

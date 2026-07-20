@@ -97,4 +97,27 @@ data class ChatMessageRow(
     val txnId: String? = null,      // outbox dedupe token that produced this echo
     /** Spooled outgoing media (echo renders this before upload completes). */
     val localMediaPath: String? = null,
+    /** Redactor MXID when this row is a soft-delete (SPA: DbChatMessage.deletedBy). */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val deletedBy: String? = null,
+    /** First-edit original body — preserved for the inline word-diff view. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val originalBody: String? = null,
+    /** Bridge/send failure text (com.beeper.message_send_status) — bubble title. */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val sendFailedReason: String? = null,
+    /** MSC1767 waveform amplitudes JSON array (voice-note bar rendering). */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val waveformJson: String? = null,
+    /** MSC3245 voice-message flag (distinguishes voice notes from audio files). */
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val isVoiceNote: Boolean = false,
+    /** One-shot guard: rotate-key-and-resend already attempted for this echo. */
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val autoRotateRetried: Boolean = false,
+    /** content.info image/video dimensions (aspect-ratio-preserving thumbnails). */
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val mediaWidth: Int? = null,
+    @androidx.room.ColumnInfo(defaultValue = "NULL")
+    val mediaHeight: Int? = null,
 )
