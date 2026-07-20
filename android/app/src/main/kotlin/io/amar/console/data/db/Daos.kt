@@ -87,6 +87,11 @@ interface ChatRoomDao {
 
     @Query("SELECT COUNT(*) FROM chat_rooms WHERE isUnread = 1 AND isMuted = 0 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
     fun observeUnreadCount(now: Long): Flow<Int>
+
+    /** TRUNCATE-style wipe for the Matrix-disconnect cache clear (O(1) vs
+     *  allIds()+deleteByIds). */
+    @Query("DELETE FROM chat_rooms")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -141,6 +146,10 @@ interface ChatMessageDao {
 
     @Query("SELECT DISTINCT roomId FROM chat_messages")
     suspend fun roomsWithMessages(): List<String>
+
+    /** TRUNCATE-style wipe for the Matrix-disconnect cache clear. */
+    @Query("DELETE FROM chat_messages")
+    suspend fun deleteAll()
 
     /** Reload-room wipe: drop cached messages EXCEPT deleted rows still
      *  carrying a body — re-pagination returns empty tombstones, which would

@@ -162,12 +162,24 @@ fun PenPageScreen(repo: NotesRepository, initialPath: String, onBack: () -> Unit
                 !loaded && base.isEmpty() && foreignSvg == null ->
                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                 empty && foreignSvg != null ->
-                    // Foreign export: we can't render arbitrary SVG on Canvas; show a note.
-                    Text(
-                        "Imported pen page (rendered on the web app)",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    // Foreign export (no embedded strokes to draw on Canvas):
+                    // render the SVG verbatim via coil-svg inside a WHITE card so
+                    // black ink reads against the dark theme.
+                    androidx.compose.material3.Surface(
+                        color = Color.White,
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(4.dp),
+                    ) {
+                        coil.compose.AsyncImage(
+                            model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                                .data(foreignSvg!!.toByteArray())
+                                .decoderFactory(coil.decode.SvgDecoder.Factory())
+                                .build(),
+                            contentDescription = "Imported pen page",
+                            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                        )
+                    }
                 empty ->
                     Text("Waiting for strokes — start writing on this page.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 else -> RibbonCanvas(doc, base.size, Modifier.fillMaxSize())
