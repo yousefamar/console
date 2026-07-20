@@ -452,7 +452,15 @@ class CalendarRepository(
         }
 
         // Optimistic: drop the old row (if any) and add a temp replacement.
-        oldEventId?.let { db.calendar().deleteByKey("$accountEmail:$calendarId:$it") }
+        // If the old row is itself an unsynced temp create, cancel that queued
+        // create rather than passing its ~id to the server (else two working-
+        // location events would land). serverOldId is only sent for real ids.
+        val serverOldId = oldEventId?.takeUnless { it.startsWith("~") }
+        oldEventId?.let {
+            val oldKey = "$accountEmail:$calendarId:$it"
+            db.calendar().deleteByKey(oldKey)
+            if (it.startsWith("~")) outbox.cancel(oldKey, TYPE_LOCATION)
+        }
         val tempKey = "$accountEmail:$calendarId:~${System.currentTimeMillis()}"
         db.calendar().upsertEvents(
             listOf(
@@ -468,7 +476,7 @@ class CalendarRepository(
             put("tempKey", tempKey)
             put("account", accountEmail)
             put("calendarId", calendarId)
-            oldEventId?.let { put("oldEventId", it) }
+            serverOldId?.let { put("oldEventId", it) }
             put("event", eventBody)
         }
         outbox.enqueue(TYPE_LOCATION, payload.toString(), entityId = tempKey)
