@@ -899,7 +899,6 @@ fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
     var searchResults by remember { mutableStateOf<List<MusicRepository.SearchTrack>>(emptyList()) }
     // 1s ticker so the progress bar interpolates smoothly between polls.
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
-    val searchFocus = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
         repo.loadPlaylists()
@@ -1081,7 +1080,7 @@ fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
             placeholder = { Text("Search & play…") },
             leadingIcon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(18.dp)) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
+            modifier = Modifier.fillMaxWidth(),
         )
         for (track in searchResults) {
             Row(
