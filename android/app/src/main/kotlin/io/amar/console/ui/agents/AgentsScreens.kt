@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Clear
@@ -33,8 +34,10 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.NotificationImportant
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -94,12 +97,17 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     var filterAlerted by remember { mutableStateOf(false) }
     var showTasks by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
+    var showOrg by remember { mutableStateOf(false) }
+    var showSwitcher by remember { mutableStateOf(false) }
+    var infoKey by remember { mutableStateOf<String?>(null) }
 
-    // Init mic + cron stores once (Agents tab mount parity).
+    // Init mic + cron stores once (Agents tab mount parity). Poll cron for all
+    // sessions every 30s (cross-client mutations) + re-list every 10s (bg proc).
     val ctx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(Unit) {
         Mic.init()
         Speech.init(ctx)
+        while (true) { io.amar.console.data.agents.Cron.refreshAll(); kotlinx.coroutines.delay(30_000) }
     }
 
     fun alerted(s: AgentSessionRow): Boolean =
@@ -125,6 +133,12 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
             onGrid = onGrid,
             subtitle = if (connected) "${sorted.size} sessions · live" else "${sorted.size} cached · offline",
             actions = {
+                IconButton(onClick = { showSwitcher = true }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Quick switch", modifier = Modifier.size(20.dp))
+                }
+                IconButton(onClick = { showOrg = true }) {
+                    Icon(Icons.Filled.AccountTree, contentDescription = "Org chart", modifier = Modifier.size(20.dp))
+                }
                 if (openTaskCount > 0 || tasks.isNotEmpty()) {
                     IconButton(onClick = { showTasks = true }) {
                         Box {
@@ -132,6 +146,9 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                             if (openTaskCount > 0) Badge(openTaskCount, VIOLET, Modifier.align(Alignment.TopEnd))
                         }
                     }
+                }
+                IconButton(onClick = { showModelSheet = true }) {
+                    Icon(Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
                 }
                 IconButton(onClick = { filterAlerted = !filterAlerted }) {
                     Icon(
@@ -210,9 +227,13 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
             onFork = { repo.forkSession(target.id, target.cwd) },
             onMerge = { repo.mergeSession(target.id) },
             onMic = { Mic.setMic(if (micOwner == target.id) "al" else target.id) },
-            onShowInfo = if (target.agentKey != null) { -> menuTarget = null } else null,
+            onShowInfo = if (target.agentKey != null) { -> infoKey = target.agentKey; menuTarget = null } else null,
         )
     }
+    if (showOrg) OrgRosterSheet(repo, onOpenSession = { onOpenSession(it) }, onDismiss = { showOrg = false })
+    if (showSwitcher) QuickSwitcher(repo, onOpenSession = { onOpenSession(it) }, onDismiss = { showSwitcher = false })
+    if (showModelSheet) FleetModelSheet(repo, onDismiss = { showModelSheet = false })
+    infoKey?.let { key -> RoleInfoDialog(repo, key, onOpenSession = { onOpenSession(it) }, onDismiss = { infoKey = null }) }
     if (creating) {
         NewSessionDialog(
             repo = repo,
@@ -467,6 +488,14 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
 
         // Pair tool_result / tool_diff to their tool_use; dedup bg_task.
         val paired = remember(messages) { pairMessages(messages) }
+        // Unread divider anchor: the FIRST unread absIndex, captured once on
+        // entry so it doesn't jump as new messages auto-mark read. The divider
+        // renders just before this message (in chronological order).
+        val dividerAnchor = remember(sessionId) {
+            val lri = session?.lastReadIndex ?: 0L
+            if (session?.hasUnread == true) paired.filter { !it.bgTaskDup && it.msg.absIndex >= lri && it.msg.kind != "user_prompt" }
+                .minByOrNull { it.msg.absIndex }?.msg?.absIndex else null
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
                 Modifier.fillMaxSize(),
@@ -481,11 +510,14 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 }
                 items(paired, key = { it.msg.pk }) { row ->
                     if (row.bgTaskDup) return@items
+                    // reverseLayout: render the block, then (below it in list =
+                    // above it visually) the NEW divider when this is the anchor.
                     if (row.bgTask != null) {
                         BgTaskChip(runCatching { jsonLenient.parseToJsonElement(row.bgTask.payloadJson).jsonObject }.getOrNull() ?: return@items)
                     } else {
                         TranscriptBlock(row.msg, row.result, row.diff)
                     }
+                    if (dividerAnchor != null && row.msg.absIndex == dividerAnchor) UnreadDivider()
                 }
             }
             // Jump-to-bottom pill.
@@ -617,6 +649,19 @@ private fun pairMessages(messages: List<AgentMessageRow>): List<PairedRow> {
         }
     }
     return out
+}
+
+@Composable
+private fun UnreadDivider() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.weight(1f).size(1.dp).background(MaterialTheme.colorScheme.error.copy(alpha = 0.6f)))
+        Text("NEW", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium)
+        Box(Modifier.weight(1f).size(1.dp).background(MaterialTheme.colorScheme.error.copy(alpha = 0.6f)))
+    }
 }
 
 @Composable

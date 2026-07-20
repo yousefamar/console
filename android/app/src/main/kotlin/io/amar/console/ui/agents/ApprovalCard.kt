@@ -81,11 +81,22 @@ private fun AskUserQuestionUi(
     input: JsonObject,
 ) {
     val questions = remember(input) {
-        (input["questions"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
+        // Accept input.questions[] OR a legacy top-level single-question shape
+        // (question/options/multiSelect). Renders nothing if neither present.
+        (input["questions"] as? JsonArray)?.mapNotNull { it as? JsonObject }
+            ?: input["question"]?.let {
+                listOf(buildJsonObject {
+                    put("question", it)
+                    input["options"]?.let { o -> put("options", o) }
+                    input["multiSelect"]?.let { m -> put("multiSelect", m) }
+                })
+            }
+            ?: emptyList()
     }
-    // question text -> selected option labels; free-text rides as a one-element list.
-    var answers by remember { mutableStateOf(mapOf<String, List<String>>()) }
-    var otherDrafts by remember { mutableStateOf(mapOf<String, String>()) }
+    // question text -> selected option labels; free-text rides as a one-element
+    // list. Keyed on requestId so a new approval resets the state (no leak).
+    var answers by remember(approval.requestId) { mutableStateOf(mapOf<String, List<String>>()) }
+    var otherDrafts by remember(approval.requestId) { mutableStateOf(mapOf<String, String>()) }
 
     Text("Question from the agent", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
 
@@ -134,7 +145,7 @@ private fun AskUserQuestionUi(
             onClick = {
                 // Answers schema: Record<question, string[]> (free-text wins if typed).
                 val merged = buildJsonObject {
-                    put("questions", input["questions"] ?: JsonArray(emptyList()))
+                    put("questions", JsonArray(questions))
                     putJsonObject("answers") {
                         for (q in questions) {
                             val qText = q["question"]?.jsonPrimitive?.content ?: continue
