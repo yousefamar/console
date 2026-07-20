@@ -82,10 +82,18 @@ fun Composer(
     handle: ComposerHandle? = null,
     aboveInput: (@Composable () -> Unit)? = null,
 ) {
-    var draft by rememberSaveable(draftKey) { mutableStateOf("") }
+    val context = LocalContext.current
+    // Durable draft: loads on entry, persists on every edit (blank = cleared).
+    // Survives navigation, process death, and restarts — unlike rememberSaveable.
+    var draft by remember(draftKey) {
+        mutableStateOf(io.amar.console.core.DraftStore.get(context, draftKey))
+    }
+    LaunchedEffect(draft, draftKey) {
+        kotlinx.coroutines.delay(300)
+        io.amar.console.core.DraftStore.put(context, draftKey, draft)
+    }
     var attachments by remember(draftKey) { mutableStateOf<List<Uri>>(emptyList()) }
     val dictation by Dictation.state.collectAsState()
-    val context = LocalContext.current
     if (handle != null) {
         handle.getter = { draft }
         handle.setter = { draft = it; onTextChange(it) }
@@ -286,6 +294,7 @@ fun Composer(
                     if (text.isNotEmpty() || attachments.isNotEmpty()) {
                         val toSend = attachments
                         draft = ""
+                        io.amar.console.core.DraftStore.put(context, draftKey, "")
                         attachments = emptyList()
                         onTextChange("")
                         if (onSendWithAttachments != null && toSend.isNotEmpty()) {

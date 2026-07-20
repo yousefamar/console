@@ -30,6 +30,9 @@ interface OutboxDao {
     @Query("UPDATE outbox SET status = :status, error = :error WHERE id = :id")
     suspend fun setStatus(id: Long, status: String, error: String? = null)
 
+    @Query("UPDATE outbox SET status = 'pending' WHERE status = 'failed' AND error IN ('HTTP 404', 'HTTP 410')")
+    suspend fun requeueGoneFailures()
+
     @Query("UPDATE outbox SET status = 'pending', retryCount = retryCount + 1, error = :error WHERE id = :id")
     suspend fun markRetry(id: Long, error: String?)
 

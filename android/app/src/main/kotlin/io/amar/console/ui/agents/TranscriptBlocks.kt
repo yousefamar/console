@@ -150,6 +150,7 @@ private fun UserPromptBlock(p: JsonObject) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun TextBlock(p: JsonObject, msgId: String) {
     val raw = p["content"]?.jsonPrimitive?.content ?: p["text"]?.jsonPrimitive?.content ?: return
@@ -158,16 +159,39 @@ private fun TextBlock(p: JsonObject, msgId: String) {
     val speakingId by Speech.speakingId.collectAsState()
     val speaking = speakingId == msgId
     val ctx = LocalContext.current
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    // No per-message icon column — long-press opens a compact action sheet
+    // (copy / read aloud); a stop icon shows only while actually speaking.
+    var actions by remember { mutableStateOf(false) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .combinedClickable(onClick = {}, onLongClick = { actions = true }),
+    ) {
         MarkdownLite(content, Modifier.weight(1f))
-        Icon(
-            if (speaking) Icons.Filled.Stop else Icons.Filled.VolumeUp,
-            contentDescription = if (speaking) "Stop" else "Read aloud",
-            tint = if (speaking) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .size(18.dp)
-                .clickable { Speech.toggle(msgId, TranscriptHelpers.plainForSpeech(content), ctx) },
-        )
+        if (speaking) {
+            Icon(
+                Icons.Filled.Stop,
+                contentDescription = "Stop",
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(18.dp).clickable { Speech.toggle(msgId, "", ctx) },
+            )
+        }
+        if (actions) {
+            androidx.compose.material3.ModalBottomSheet(onDismissRequest = { actions = false }) {
+                Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+                    androidx.compose.material3.TextButton(onClick = {
+                        clipboard.setText(AnnotatedString(TranscriptHelpers.plainForSpeech(content)))
+                        actions = false
+                    }) { Text("⧉ Copy text") }
+                    androidx.compose.material3.TextButton(onClick = {
+                        Speech.toggle(msgId, TranscriptHelpers.plainForSpeech(content), ctx)
+                        actions = false
+                    }) { Text("🔊 Read aloud") }
+                }
+            }
+        }
     }
 }
 

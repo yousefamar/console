@@ -778,6 +778,29 @@ class MailRepository(
         }
         if (touched.isNotEmpty()) hydrateThreads(touched.toList(), account)
         if (newHistoryId != null) db.meta().put(MetaRow("$CURSOR_PREFIX$account", newHistoryId))
+        reconcileInboxMembership(account)
+    }
+
+    /** Cheap membership sweep: history catch-up never reports threads that were
+     *  DELETED outright (spam purge, other-client trash) — their rows would sit
+     *  in the local inbox forever. One plain id-listing per reconcile fixes it. */
+    internal suspend fun reconcileInboxMembership(account: String) {
+        val resp = runCatching {
+            hub.get("/mail/threads?q=${enc("in:inbox")}&limit=$INITIAL_LIMIT&account=${enc(account)}")
+        }.getOrNull() ?: return
+        val listed = ((json.parseToJsonElement(resp).jsonObject["threads"] as? JsonArray) ?: return)
+            .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.content }
+            .toSet()
+        if (listed.isEmpty()) return // implausible empty inbox — likely an API hiccup; don't wipe
+        val pendingReinbox = db.outbox().pending()
+            .filter { it.type == TYPE_UNARCHIVE }
+            .mapNotNull { it.entityId }
+            .toSet()
+        for (id in db.mailThreads().inboxIds()) {
+            if (id in listed || id in pendingReinbox) continue
+            val row = db.mailThreads().byId(id)
+            if (row?.snoozedUntil == null) db.mailThreads().setInbox(id, false)
+        }
     }
 
     /** Batch-hydrate specific thread ids (delta/catch-up path). */
