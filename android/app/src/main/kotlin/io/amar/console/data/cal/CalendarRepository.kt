@@ -117,6 +117,8 @@ class CalendarRepository(
     private val _defaultCalendarId = MutableStateFlow<String?>(null)
     val defaultCalendarId: StateFlow<String?> = _defaultCalendarId
 
+    private val _overlaySeen = MutableStateFlow<Set<String>>(emptySet())
+
     private suspend fun hydratePrefs() {
         runCatching {
             val cfg = json.parseToJsonElement(hub.get("/config")).jsonObject
@@ -124,7 +126,29 @@ class CalendarRepository(
                 _visibleIds.value = arr.mapNotNull { it.jsonPrimitive.content }.toSet()
             }
             _defaultCalendarId.value = cfg["calendar.defaultId"]?.jsonPrimitive?.content
+            (cfg["calendar.overlaySeen"] as? JsonArray)?.let { arr ->
+                _overlaySeen.value = arr.mapNotNull { it.jsonPrimitive.content }.toSet()
+            }
         }
+    }
+
+    /**
+     * A saved visibleIds allow-list that predates an overlay (Meetup/OutdoorLads)
+     * would hide it even though the user never opted out. For any overlay id not
+     * yet in overlaySeen: default it visible and mark it seen — only an explicit
+     * toggle-off then sticks. No-op until visibleIds has loaded (else the
+     * first-load "all visible" default already covers overlays).
+     */
+    fun ensureOverlaysVisible(overlayIds: Set<String>) {
+        val vis = _visibleIds.value ?: return
+        val unseen = overlayIds - _overlaySeen.value
+        if (unseen.isEmpty()) return
+        _overlaySeen.value = _overlaySeen.value + unseen
+        _visibleIds.value = vis + unseen
+        putConfig(buildJsonObject {
+            putJsonArray("calendar.visibleIds") { (_visibleIds.value ?: emptySet()).forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }
+            putJsonArray("calendar.overlaySeen") { _overlaySeen.value.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }
+        })
     }
 
     fun setVisibleIds(ids: Set<String>) {
