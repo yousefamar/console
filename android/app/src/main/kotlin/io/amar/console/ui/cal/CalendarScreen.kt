@@ -330,7 +330,7 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
 
     // ---- Working-location picker ---- //
     locationPick?.let { (loc, day) ->
-        val knownOffices = calendars.let { events }
+        val knownOffices = events
             .mapNotNull { parseEventDetails(it.rawJson).workingLocation }
             .filter { it.type == "officeLocation" }
             .mapNotNull { it.label }
