@@ -204,6 +204,12 @@ interface AgentsDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessages(rows: List<AgentMessageRow>)
 
+    /** One-time dedup purge (v67): pre-fix reconnect bursts appended the
+     *  replay tail at fresh indices. Wipes the cache; the REST catch-up
+     *  refills every session with authoritative indices on next connect. */
+    @Query("DELETE FROM agent_messages")
+    suspend fun clearAllMessages()
+
     /** REPLACE variant for the live-streaming rolling text row (updated in
      *  place at a fixed absIndex while deltas accumulate). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

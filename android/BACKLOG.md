@@ -32,6 +32,13 @@ _(empty)_
   services no longer start at all when unpaired (PairStore gate; settings Scan
   force-starts for first-time pairing).
 - Email Dark/Original preference persists app-wide (SharedPreferences)
+- Repeated messages in agent chats: the hub's 50-message replay burst on every
+  WS reconnect carried no indices, so the APK appended it at maxIndex+1 each
+  time — the transcript tail duplicated per reconnect (355 rows / 104 distinct
+  on-device). Hub replay now stamps each message with its absolute log index
+  (SPA ignores it); the APK upserts at that index (REPLACE on the unique
+  (sessionId, absIndex)). One-time purge (meta agents:dedupPurgeV67) wipes the
+  polluted cache; REST catch-up refills with authoritative indices.
 
 ## Shipped
 

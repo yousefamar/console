@@ -218,6 +218,15 @@ class AgentsRepository(
     fun start() {
         if (wantConnected) return
         wantConnected = true
+        scope.launch {
+            // One-time purge of pre-v67 duplicated transcripts (replay bursts
+            // used to append at fresh indices on every reconnect). The REST
+            // catch-up rebuilds each session from authoritative indices.
+            if (db.meta().get("agents:dedupPurgeV67") == null) {
+                db.agents().clearAllMessages()
+                db.meta().put(io.amar.console.data.db.MetaRow("agents:dedupPurgeV67", "done"))
+            }
+        }
         open()
         // Keep backgroundProcessCount fresh (the hub only recomputes on getInfo).
         pollJob?.cancel()
@@ -598,7 +607,11 @@ class AgentsRepository(
     }
 
     private suspend fun replacePendingTextRow(sessionId: String, msg: JsonObject) {
-        val index = pendingRowIndex.remove(sessionId) ?: (db.agents().maxIndex(sessionId) ?: -1L) + 1
+        // Replayed text carries its absolute index (see appendMessage) — it
+        // must land there, not at the streaming row / maxIndex+1.
+        val abs = msg["absIndex"]?.jsonPrimitive?.longOrNull
+        val index = abs ?: pendingRowIndex.remove(sessionId) ?: (db.agents().maxIndex(sessionId) ?: -1L) + 1
+        if (abs != null) pendingRowIndex.remove(sessionId)
         db.agents().replaceMessage(
             AgentMessageRow(sessionId = sessionId, absIndex = index, kind = "text", payloadJson = msg.toString())
         )
@@ -620,19 +633,22 @@ class AgentsRepository(
     }
 
     private suspend fun appendMessage(sessionId: String, msg: JsonObject) {
-        val next = (db.agents().maxIndex(sessionId) ?: -1L) + 1
-        db.agents().insertMessages(
-            listOf(
-                AgentMessageRow(
-                    sessionId = sessionId,
-                    absIndex = next,
-                    kind = msg["type"]?.jsonPrimitive?.content ?: "unknown",
-                    payloadJson = msg.toString(),
-                )
+        // Hub-replayed messages carry their ABSOLUTE log index — upsert there
+        // (idempotent across reconnects). Without this, every reconnect's
+        // 50-message replay burst appended at maxIndex+1 and the transcript
+        // tail duplicated per reconnect. Live messages (no absIndex) append.
+        val abs = msg["absIndex"]?.jsonPrimitive?.longOrNull
+        val next = abs ?: (db.agents().maxIndex(sessionId) ?: -1L) + 1
+        db.agents().replaceMessage(
+            AgentMessageRow(
+                sessionId = sessionId,
+                absIndex = next,
+                kind = msg["type"]?.jsonPrimitive?.content ?: "unknown",
+                payloadJson = msg.toString(),
             )
         )
         db.agents().byId(sessionId)?.let {
-            db.agents().upsertSessions(listOf(it.copy(lastCachedIndex = next, messageLogLength = maxOf(it.messageLogLength, next + 1))))
+            db.agents().upsertSessions(listOf(it.copy(lastCachedIndex = maxOf(it.lastCachedIndex, next), messageLogLength = maxOf(it.messageLogLength, next + 1))))
         }
     }
 
