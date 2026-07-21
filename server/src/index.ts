@@ -1507,14 +1507,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     sendTo(ws, { type: 'collapsed_groups', collapsed })
   }
 
-  // Replay last REPLAY_LIMIT messages per session (older messages loaded on scroll-up)
+  // Replay last REPLAY_LIMIT messages per session (older messages loaded on
+  // scroll-up). Each replayed message carries its ABSOLUTE log index so
+  // clients can upsert idempotently — without it the APK appended the burst
+  // at maxIndex+1 on every reconnect, duplicating the tail 50 messages.
+  // (The SPA ignores the extra field.)
   const REPLAY_LIMIT = 50
   for (const session of sessions.values()) {
     const log = session.messageLog
     if (log.length > 0) {
       const start = Math.max(0, log.length - REPLAY_LIMIT)
       for (let i = start; i < log.length; i++) {
-        sendTo(ws, log[i]!)
+        sendTo(ws, { ...log[i]!, absIndex: session.messageLogOffset + i } as unknown as HubMessage)
       }
     }
   }
