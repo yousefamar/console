@@ -98,9 +98,6 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-private fun networkEmoji(networkIcon: String?): String? =
-    io.amar.console.data.chat.ChatFormat.networkGlyph(networkIcon)
-
 // ---------------------------------------------------------------------- //
 // Room list — inbox-zero: unread rooms, swipe right = read, left = snooze
 
@@ -486,12 +483,18 @@ private fun RoomRow(room: ChatRoomRow, onClick: () -> Unit, onLongPress: (() -> 
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Avatar(
-            name = room.name,
-            imageUrl = MatrixMedia.thumbnailUrl(room.avatarMxc),
-            size = 48.dp,
-            emoji = networkEmoji(room.networkIcon),
-        )
+        Box {
+            Avatar(
+                name = room.name,
+                imageUrl = MatrixMedia.thumbnailUrl(room.avatarMxc),
+                size = 48.dp,
+            )
+            // Brand badge overhangs the circle (SPA -bottom-1 -right-1 parity).
+            io.amar.console.ui.components.NetworkBadge(
+                network = room.networkIcon,
+                modifier = Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp),
+            )
+        }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (room.isPinned) {

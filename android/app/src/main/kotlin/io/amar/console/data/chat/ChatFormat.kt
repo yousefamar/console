@@ -10,21 +10,6 @@ package io.amar.console.data.chat
 object ChatFormat {
 
     /** Glyph for a bridge network badge (SPA NETWORK_ICONS — 12 networks). */
-    fun networkGlyph(networkIcon: String?): String? = when (networkIcon?.lowercase()) {
-        "whatsapp" -> "🟢"
-        "slack" -> "#"
-        "discord" -> "🎮"
-        "instagram" -> "📸"
-        "signal" -> "🔵"
-        "telegram" -> "✈️"
-        "linkedin" -> "in"
-        "facebook" -> "f"
-        "twitter", "x" -> "𝕏"
-        "googlechat" -> "💬"
-        "gmessages" -> "🗨️"
-        "imessage" -> "🍏"
-        else -> null
-    }
 
     /** A run of the edit word-diff. */
     enum class DiffKind { UNCHANGED, ADDED, REMOVED }

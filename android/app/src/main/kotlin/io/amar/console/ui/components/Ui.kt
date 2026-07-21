@@ -34,7 +34,7 @@ import coil.compose.AsyncImage
 
 /** Circular avatar: initials on a name-derived hue, image on top when given. */
 @Composable
-fun Avatar(name: String, imageUrl: String?, size: Dp = 44.dp, emoji: String? = null) {
+fun Avatar(name: String, imageUrl: String?, size: Dp = 44.dp) {
     val initials = name.split(' ', '·', ',')
         .filter { it.isNotBlank() && it.first().isLetterOrDigit() }
         .take(2)
@@ -59,13 +59,6 @@ fun Avatar(name: String, imageUrl: String?, size: Dp = 44.dp, emoji: String? = n
                 model = imageUrl,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize().clip(CircleShape),
-            )
-        }
-        if (emoji != null) {
-            Text(
-                emoji,
-                fontSize = (size.value * 0.28f).sp,
-                modifier = Modifier.align(Alignment.BottomEnd),
             )
         }
     }
