@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Flight
@@ -166,7 +166,7 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
                 Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onGrid) { Icon(Icons.Filled.CalendarMonth, "App grid", Modifier.size(20.dp)) }
+                IconButton(onClick = onGrid) { Icon(Icons.Filled.Apps, "App grid", Modifier.size(20.dp)) }
                 IconButton(onClick = {
                     anchorMs = when (viewMode) {
                         "day" -> anchorMs - DAY_MS
