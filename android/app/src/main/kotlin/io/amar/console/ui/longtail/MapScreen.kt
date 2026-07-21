@@ -109,7 +109,10 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
         mapView.getMapAsync { map ->
             map.cameraPosition = CameraPosition.Builder().target(LatLng(54.0, -2.0)).zoom(5.0).build()
             map.uiSettings.isCompassEnabled = false
-            map.setStyle(cartoDarkStyleJson()) { style ->
+            // setStyle(String) treats the arg as a style URI — raw JSON must go
+            // through Style.Builder.fromJson or the style silently never loads
+            // (beige void, styleReady never fires).
+            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoDarkStyleJson())) { style ->
                 renderer.attach(map, style)
                 renderer.apply(repo.state.value)
                 styleReady = true

@@ -33,14 +33,20 @@ import kotlinx.coroutines.launch
  * action.
  */
 object UndoController {
-    data class UndoAction(val label: String, val expiresAt: Long, val undo: suspend () -> Unit)
+    data class UndoAction(
+        val label: String,
+        val expiresAt: Long,
+        /** Runs once if the window elapses WITHOUT undo (cleanup hook). */
+        val onExpire: (suspend () -> Unit)? = null,
+        val undo: suspend () -> Unit,
+    )
 
     private val _action = MutableStateFlow<UndoAction?>(null)
     val action: StateFlow<UndoAction?> = _action
 
     /** Offer an undo for [label]; auto-expires after [ttlMs] (default 5s). */
-    fun offer(label: String, ttlMs: Long = 5_000, undo: suspend () -> Unit) {
-        _action.value = UndoAction(label, System.currentTimeMillis() + ttlMs, undo)
+    fun offer(label: String, ttlMs: Long = 5_000, onExpire: (suspend () -> Unit)? = null, undo: suspend () -> Unit) {
+        _action.value = UndoAction(label, System.currentTimeMillis() + ttlMs, onExpire, undo)
     }
 
     fun clear() { _action.value = null }
@@ -104,7 +110,10 @@ fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
                 LaunchedEffect(a) {
                     val wait = a.expiresAt - System.currentTimeMillis()
                     if (wait > 0) delay(wait)
-                    if (UndoController.action.value === a) UndoController.clear()
+                    if (UndoController.action.value === a) {
+                        UndoController.clear()
+                        a.onExpire?.let { runCatching { it() } }
+                    }
                 }
                 Snackbar(
                     modifier = Modifier.padding(8.dp),

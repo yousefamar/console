@@ -63,7 +63,8 @@ import java.util.Locale
 fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
     val chatUnread by app.graph.db.chatRooms()
         .observeUnreadCount(System.currentTimeMillis()).collectAsState(initial = 0)
-    val mailUnread by app.graph.db.mailThreads().observeUnreadCount().collectAsState(initial = 0)
+    // SPA parity: the Mail badge counts INBOX THREADS (triage left), not unread.
+    val mailUnread by app.graph.db.mailThreads().observeInboxCount(System.currentTimeMillis()).collectAsState(initial = 0)
     val sessions by app.graph.agents.observeSessions().collectAsState(initial = emptyList())
     val agentAlerts = sessions.count { it.needsAttention || it.hasUnread }
     val agentAttention = sessions.any { it.needsAttention }

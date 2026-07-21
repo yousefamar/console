@@ -635,20 +635,8 @@ class PushService : Service() {
      *  service is ALREADY foreground, so this updates its active type rather
      *  than starting from background (which Android 14+ would block for mic). */
     private fun setForegroundType(withMic: Boolean) {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notif = NotificationCompat.Builder(this, CHANNEL_ONGOING)
-            .setContentTitle("Console")
-            .setContentText(if (withMic) "Listening…" else "Connected")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setShowWhen(false)
-            .setContentIntent(pi)
-            .setGroup("console.ongoing")
-            .build()
+        io.amar.console.core.OngoingNotif.line("push", if (withMic) "listening…" else null)
+        val notif = io.amar.console.core.OngoingNotif.build(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             if (withMic) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE

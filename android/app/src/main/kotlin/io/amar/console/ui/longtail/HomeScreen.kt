@@ -464,7 +464,9 @@ private fun CanvasSection(repo: HomeRepository) {
             factory = { c ->
                 WebView(c).apply {
                     settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = false
+                    // The canvas shell touches localStorage (active-tab memory);
+                    // with DOM storage off that throws and blanks the page.
+                    settings.domStorageEnabled = true
                     settings.allowFileAccess = false
                     setBackgroundColor(android.graphics.Color.parseColor("#0a0a0a"))
                     loadUrl(canvasUrl)

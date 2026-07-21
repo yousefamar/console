@@ -178,7 +178,8 @@ fun parseBlogDrafts(raw: String): List<BlogDraft> {
         BlogDraft(
             path = o["path"]?.jsonPrimitive?.content ?: return@mapNotNull null,
             title = o["title"]?.jsonPrimitive?.content ?: "(untitled)",
-            mtime = o["mtime"]?.jsonPrimitive?.longOrNull ?: 0L,
+            // Hub emits float mtimes (fs.stat ms) — parse as double.
+            mtime = o["mtime"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: 0L,
         )
     }
 }
@@ -192,7 +193,7 @@ fun parseBlogProjects(raw: String): List<BlogProject> {
             title = o["title"]?.jsonPrimitive?.content ?: "",
             path = o["path"]?.jsonPrimitive?.content ?: "",
             status = o["status"]?.jsonPrimitive?.content ?: "active",
-            lastPostMtime = o["lastPostMtime"]?.jsonPrimitive?.longOrNull,
+            lastPostMtime = o["lastPostMtime"]?.jsonPrimitive?.doubleOrNull?.toLong(),
         )
     }
 }

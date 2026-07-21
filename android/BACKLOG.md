@@ -11,7 +11,27 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v66 is shipped)_
+- Map white void: style JSON was passed to setStyle(String) which treats it as a URI —
+  silently never loaded. Now Style.Builder().fromJson(...).
+- Mail undo toast → shared bottom UndoHost snackbar (small, bottom, consistent);
+  UndoController gained onExpire cleanup hook (attachment eviction preserved)
+- Mail grid badge = inbox thread count (SPA parity: triage-left, not unread count)
+- WebView zero-height class of bug FIXED: a WebView inside verticalScroll measures 0
+  (UNSPECIFIED max-height) and renders nothing. New shared SelfSizingWebView
+  (ui/components/HtmlWebView.kt) sizes itself from renderer contentHeight (JS off);
+  mail bodies + feeds full-text now use it. This was "anything involving webviews
+  seems broken" — also why the Dark/Original toggle looked broken (body was invisible).
+- Home Blog tab: hub emits FLOAT mtimes; longOrNull parsed null → all ages 1970. Now
+  doubleOrNull. Canvas tab: domStorageEnabled=false made the canvas shell throw on
+  localStorage and blank — enabled.
+- Bookmark detail: "Preview page here" — embedded WebView (420dp, zoomable) renders the
+  bookmarked URL in the sheet; collapsed by default.
+- ONE permanent notification: Push/Glasses/Pen FGS all share notification id 1 via
+  core/OngoingNotif ("Console · <push> · <glasses> · <pen>"); idle services contribute
+  no line; stop uses STOP_FOREGROUND_DETACH so survivors keep the row. Glasses/Pen
+  services no longer start at all when unpaired (PairStore gate; settings Scan
+  force-starts for first-time pairing).
+- Email Dark/Original preference persists app-wide (SharedPreferences)
 
 ## Shipped
 
