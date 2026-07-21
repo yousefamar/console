@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v67 is shipped)_
+
+## Shipped
+
+### v67 (2026-07-21)
 - Map white void: style JSON was passed to setStyle(String) which treats it as a URI —
   silently never loaded. Now Style.Builder().fromJson(...).
 - Mail undo toast → shared bottom UndoHost snackbar (small, bottom, consistent);
@@ -40,7 +45,6 @@ _(empty)_
   (sessionId, absIndex)). One-time purge (meta agents:dedupPurgeV67) wipes the
   polluted cache; REST catch-up refills with authoritative indices.
 
-## Shipped
 
 ### v66 (2026-07-20)
 - Context meter clamp (interim estimate could exceed window: "391k / 200k")
