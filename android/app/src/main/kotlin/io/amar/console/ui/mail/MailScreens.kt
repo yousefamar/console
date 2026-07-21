@@ -85,7 +85,6 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
     val threads by repo.observeInbox().collectAsState(initial = emptyList())
     val snoozed by repo.observeSnoozed().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
-    var undo by remember { mutableStateOf<UndoState?>(null) }
     var searching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<MailThreadRow>>(emptyList()) }
@@ -121,16 +120,16 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
     }
 
     fun scheduleUndo(u: UndoState) {
-        undo = u
-        scope.launch {
-            delay(5000)
-            if (undo?.threadId == u.threadId && undo?.kind == u.kind) {
-                undo = null
-                // Undo window elapsed → the thread really left the inbox; evict its
-                // cached attachment blobs to bound offline storage (entry #103).
+        // Shared bottom snackbar (UndoHost) — same look/placement as every
+        // other tab. Attachment blobs evicted when the undo window expires.
+        io.amar.console.ui.shell.UndoController.offer(
+            label = if (u.kind == UndoKind.ARCHIVE) "Archived" else "Deleted",
+            onExpire = {
                 val ids = runCatching { repo.threadAttachments(u.threadId).map { it.second } }.getOrDefault(emptyList())
                 if (ids.isNotEmpty()) io.amar.console.data.mail.AttachmentOpener.evict(appCtx, ids)
-            }
+            },
+        ) {
+            if (u.kind == UndoKind.ARCHIVE) repo.undoArchive(u.threadId) else repo.undoDelete(u.threadId)
         }
     }
 
@@ -234,17 +233,6 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
         ) {
             Icon(Icons.Filled.Edit, contentDescription = "Compose")
-        }
-        undo?.let { u ->
-            Snackbar(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
-                action = {
-                    TextButton(onClick = {
-                        scope.launch { if (u.kind == UndoKind.ARCHIVE) repo.undoArchive(u.threadId) else repo.undoDelete(u.threadId) }
-                        undo = null
-                    }) { Text("Undo") }
-                },
-            ) { Text(if (u.kind == UndoKind.ARCHIVE) "Archived" else "Deleted") }
         }
     }
     if (composing) {
@@ -370,8 +358,11 @@ fun MailThreadScreen(
     // Active composer: (mode, context). Null = button bar only.
     var composeState by remember { mutableStateOf<Pair<ComposeMode, ReplyContext?>?>(null) }
     var snoozing by remember { mutableStateOf(false) }
-    // Per-thread email dark-mode toggle (Dark ⇄ Original), default dark.
-    var emailDark by remember { mutableStateOf(true) }
+    // Email dark-mode toggle (Dark ⇄ Original), default dark; persisted
+    // app-wide so the choice sticks across threads + restarts.
+    val darkPrefs = androidx.compose.ui.platform.LocalContext.current
+        .getSharedPreferences("mail_view", android.content.Context.MODE_PRIVATE)
+    var emailDark by remember { mutableStateOf(darkPrefs.getBoolean("emailDark", true)) }
 
     LaunchedEffect(threadId, thread?.isUnread) {
         if (thread?.isUnread == true) repo.markRead(threadId)
@@ -387,7 +378,7 @@ fun MailThreadScreen(
             subtitle = thread?.fromName,
             onBack = onBack,
             actions = {
-                TextButton(onClick = { emailDark = !emailDark }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
+                TextButton(onClick = { emailDark = !emailDark; darkPrefs.edit().putBoolean("emailDark", emailDark).apply() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
                     Text(if (emailDark) "Dark" else "Original", style = MaterialTheme.typography.labelSmall)
                 }
                 IconButton(onClick = { scope.launch { repo.markUnread(threadId) }; onBack() }) {
@@ -542,40 +533,27 @@ private fun MessageCard(
  * [dark] toggles the SPA's invert+hue-rotate dark mode (re-inverts media so photos
  * stay natural) over a white base; Original renders the email's own light styling.
  */
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun MailBodyWebView(html: String, dark: Boolean) {
-    androidx.compose.ui.viewinterop.AndroidView(
-        modifier = Modifier.fillMaxWidth(),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = false
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                webViewClient = object : android.webkit.WebViewClient() {
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView,
-                        request: android.webkit.WebResourceRequest,
-                    ): Boolean {
-                        runCatching {
-                            ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, request.url))
-                        }
-                        return true
-                    }
-                }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val safe = remember(html) { io.amar.console.data.mail.MailFormat.sanitizeHtml(html) }
+    val doc = remember(safe, dark) {
+        val darkCss = if (dark) io.amar.console.data.mail.MailFormat.darkModeCss() else ""
+        """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
+          ${io.amar.console.data.mail.MailFormat.linearizeCss()}
+          $darkCss
+        </style></head><body>$safe</body></html>
+        """.trimIndent()
+    }
+    io.amar.console.ui.components.SelfSizingWebView(
+        html = doc,
+        onOpenUrl = { url ->
+            runCatching {
+                ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
             }
-        },
-        update = { wv ->
-            val safe = io.amar.console.data.mail.MailFormat.sanitizeHtml(html)
-            val darkCss = if (dark) io.amar.console.data.mail.MailFormat.darkModeCss() else ""
-            val doc = """
-                <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>
-                  body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
-                  ${io.amar.console.data.mail.MailFormat.linearizeCss()}
-                  $darkCss
-                </style></head><body>$safe</body></html>
-            """.trimIndent()
-            wv.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)
         },
     )
 }

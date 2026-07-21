@@ -71,6 +71,7 @@ fun HardwareSettingsScreen(app: ConsoleApp, onBack: () -> Unit = {}) {
     }
 
     val scope = rememberCoroutineScope()
+    val ctxApp = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val mirrorEnabled by app.graph.mirror.enabledFlow.collectAsState()
 
     // Hub-side config (online-only; null = not loaded / hub unreachable).
@@ -191,8 +192,17 @@ fun HardwareSettingsScreen(app: ConsoleApp, onBack: () -> Unit = {}) {
             OutlinedButton(onClick = {
                 val next = !pairOpen
                 pairOpen = next
-                if (next && GlassesController.isReady()) GlassesController.scan()
-                else if (!next && GlassesController.isReady()) GlassesController.stopScan()
+                if (next) {
+                    // First-time pairing: the FGS is gated on a stored pair, so
+                    // force-start it, then scan once the BLE manager is up.
+                    if (!GlassesController.isReady()) io.amar.console.glasses.GlassesService.start(ctxApp, force = true)
+                    scope.launch {
+                        repeat(20) {
+                            if (GlassesController.isReady()) { GlassesController.scan(); return@launch }
+                            kotlinx.coroutines.delay(250)
+                        }
+                    }
+                } else if (GlassesController.isReady()) GlassesController.stopScan()
             }) {
                 Text(
                     when {
@@ -448,8 +458,15 @@ fun HardwareSettingsScreen(app: ConsoleApp, onBack: () -> Unit = {}) {
             OutlinedButton(onClick = {
                 val next = !penPairOpen
                 penPairOpen = next
-                if (next && PenController.isReady()) PenController.startScan()
-                else if (!next && PenController.isReady()) PenController.stopScan()
+                if (next) {
+                    if (!PenController.isReady()) io.amar.console.pen.PenService.start(ctxApp, force = true)
+                    scope.launch {
+                        repeat(20) {
+                            if (PenController.isReady()) { PenController.startScan(); return@launch }
+                            kotlinx.coroutines.delay(250)
+                        }
+                    }
+                } else if (PenController.isReady()) PenController.stopScan()
             }) {
                 Text(if (penPairOpen) (if (PenState.scanning) "Scanning…" else "Re-scan") else "Pair a new pen")
             }

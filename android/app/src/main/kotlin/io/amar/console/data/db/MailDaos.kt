@@ -38,6 +38,11 @@ interface MailThreadDao {
     @Query("SELECT COUNT(*) FROM mail_threads WHERE isInbox = 1 AND isUnread = 1")
     fun observeUnreadCount(): Flow<Int>
 
+    /** Inbox size (not unread) — the SPA's Mail tab badge is threads.length,
+     *  i.e. "how much triage is left", inbox-zero style. */
+    @Query("SELECT COUNT(*) FROM mail_threads WHERE isInbox = 1 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
+    fun observeInboxCount(now: Long): Flow<Int>
+
     /** Search all cached threads (inbox or not) by subject/from/snippet. */
     @Query(
         """SELECT * FROM mail_threads WHERE subject LIKE '%' || :q || '%'

@@ -944,34 +944,14 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
             } else {
                 val html = item?.content
                 if (html != null) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth(),
-                        factory = { c ->
-                            WebView(c).apply {
-                                settings.javaScriptEnabled = false
-                                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                                // All links → external browser (SPA forces target=_blank).
-                                webViewClient = object : android.webkit.WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(
-                                        view: WebView?,
-                                        request: android.webkit.WebResourceRequest?,
-                                    ): Boolean {
-                                        request?.url?.let { openUrl(c, it.toString()) }
-                                        return true
-                                    }
-                                }
-                            }
-                        },
-                        update = { wv ->
-                            val doc = """
-                                <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-                                <style>body{background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;font-size:15px;line-height:1.5;margin:0;word-break:break-word}
-                                a{color:#60a5fa}img{max-width:100%;height:auto}pre{background:#141414;padding:8px;border-radius:4px;overflow-x:auto}
-                                blockquote{border-left:2px solid #333;padding-left:12px;font-style:italic;color:#aaa}</style></head><body>$html</body></html>
-                            """.trimIndent()
-                            wv.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)
-                        },
-                    )
+                    val doc = """
+                        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+                        <style>body{background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;font-size:15px;line-height:1.5;margin:0;word-break:break-word}
+                        a{color:#60a5fa}img{max-width:100%;height:auto}pre{background:#141414;padding:8px;border-radius:4px;overflow-x:auto}
+                        blockquote{border-left:2px solid #333;padding-left:12px;font-style:italic;color:#aaa}</style></head><body>$html</body></html>
+                    """.trimIndent()
+                    // All links → external browser (SPA forces target=_blank).
+                    io.amar.console.ui.components.SelfSizingWebView(doc, onOpenUrl = { openUrl(ctx, it) })
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
                         Text(

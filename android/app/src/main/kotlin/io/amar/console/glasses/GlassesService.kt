@@ -13,6 +13,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.amar.console.MainActivity
+import io.amar.console.core.OngoingNotif
 import io.amar.console.R
 
 /**
@@ -34,7 +35,11 @@ class GlassesService : Service() {
         const val ONGOING_NOTIFICATION_ID = 2
         const val CHANNEL_ONGOING = "glasses_ongoing"
 
-        fun start(ctx: Context) {
+        fun start(ctx: Context, force: Boolean = false) {
+            // No pair on record → nothing to link; don't burn a permanent
+            // notification slot on an idle service. `force` is the settings
+            // screen's first-time pairing path (Scan needs the BLE manager).
+            if (!force && PairStore(ctx).load() == null) return
             val i = Intent(ctx, GlassesService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ctx.startForegroundService(i)
@@ -67,6 +72,11 @@ class GlassesService : Service() {
     }
 
     override fun onDestroy() {
+        // Detach from the SHARED notification instead of removing it — the
+        // other foreground services still own the row.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_DETACH)
+        OngoingNotif.line("glasses", null)
+        OngoingNotif.update(this)
         GlassesState.removeListener(stateListener)
         // The BLE link is intentionally NOT torn down here — the process
         // usually keeps running past onDestroy for other reasons (WebView,
@@ -76,73 +86,41 @@ class GlassesService : Service() {
         super.onDestroy()
     }
 
-    private fun buildOngoingNotification(): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val text = ongoingText()
-        return NotificationCompat.Builder(this, CHANNEL_ONGOING)
-            .setContentTitle("Console glasses")
-            .setContentText(text)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setShowWhen(false)
-            .setContentIntent(pi)
-            // Group with PushService's ongoing so they collapse to one row.
-            .setGroup("console.ongoing")
-            .build()
-    }
-
-    private fun ongoingText(): String {
+    /** Status line contributed to the SHARED Console notification — null
+     *  (no line) while idle so the row stays quiet. */
+    private fun ongoingText(): String? {
         if (!GlassesState.connected) {
-            // Partial / no link — useful during reconnect.
             val l = GlassesState.leftStatus.name.lowercase()
             val r = GlassesState.rightStatus.name.lowercase()
-            if (l == "disconnected" && r == "disconnected") return "Glasses idle"
-            return "Linking… L=$l R=$r"
+            if (l == "disconnected" && r == "disconnected") return null
+            return "glasses linking…"
         }
         val lB = GlassesState.batteryLeft
         val rB = GlassesState.batteryRight
         val battery = when {
-            lB != null && rB != null -> " · L ${lB}% / R ${rB}%"
-            lB != null -> " · L ${lB}%"
-            rB != null -> " · R ${rB}%"
+            lB != null && rB != null -> " ${minOf(lB, rB)}%"
             else -> ""
         }
-        val ch = GlassesState.channel?.let { " · ch $it" } ?: ""
-        return "Linked to G1$battery$ch"
+        return "G1$battery"
     }
 
     private fun startForegroundCompat() {
-        val notif = buildOngoingNotification()
+        OngoingNotif.line("glasses", ongoingText())
+        val notif = OngoingNotif.build(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
-                ONGOING_NOTIFICATION_ID, notif,
+                OngoingNotif.ID, notif,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
         } else {
-            startForeground(ONGOING_NOTIFICATION_ID, notif)
+            startForeground(OngoingNotif.ID, notif)
         }
     }
 
     private fun updateOngoing() {
-        try {
-            NotificationManagerCompat.from(this).notify(
-                ONGOING_NOTIFICATION_ID, buildOngoingNotification(),
-            )
-        } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted */ }
+        OngoingNotif.line("glasses", ongoingText())
+        OngoingNotif.update(this)
     }
 
-    private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val nm = getSystemService(NotificationManager::class.java) ?: return
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ONGOING, "Glasses link", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "Persistent notification while Console is linked to your G1 glasses"
-                setShowBadge(false)
-            },
-        )
-    }
+    private fun ensureChannel() = OngoingNotif.ensureChannel(this)
 }

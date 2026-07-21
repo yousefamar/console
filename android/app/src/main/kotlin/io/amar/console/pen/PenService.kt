@@ -13,6 +13,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.amar.console.MainActivity
+import io.amar.console.core.OngoingNotif
 import io.amar.console.R
 
 /**
@@ -28,7 +29,10 @@ class PenService : Service() {
         const val ONGOING_NOTIFICATION_ID = 3
         const val CHANNEL_ONGOING = "pen_ongoing"
 
-        fun start(ctx: Context) {
+        fun start(ctx: Context, force: Boolean = false) {
+            // Never paired a pen → don't run (and don't hold a notification).
+            // `force` = settings first-time pairing (Scan needs BLE up).
+            if (!force && PairStore(ctx).load() == null) return
             val i = Intent(ctx, PenService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
             else ctx.startService(i)
@@ -52,57 +56,38 @@ class PenService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        // Detach from the SHARED notification instead of removing it — the
+        // other foreground services still own the row.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_DETACH)
+        OngoingNotif.line("pen", null)
+        OngoingNotif.update(this)
         PenState.removeListener(stateListener)
         super.onDestroy()
     }
 
-    private fun buildOngoingNotification(): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ONGOING)
-            .setContentTitle("Console pen")
-            .setContentText(ongoingText())
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .setShowWhen(false)
-            .setContentIntent(pi)
-            .setGroup("console.ongoing")
-            .build()
-    }
 
-    private fun ongoingText(): String {
-        if (PenState.status != PenState.Status.CONNECTED) return "Pen ${PenState.status.name.lowercase()}"
-        val battery = PenState.battery?.let { " · $it%" } ?: ""
-        val lock = if (PenState.locked && !PenState.authorized) " · locked" else ""
-        return "Pen linked$battery$lock"
+    /** Line for the SHARED Console notification; null while disconnected. */
+    private fun ongoingText(): String? {
+        if (PenState.status != PenState.Status.CONNECTED) return null
+        val battery = PenState.battery?.let { " $it%" } ?: ""
+        val lock = if (PenState.locked && !PenState.authorized) " (locked)" else ""
+        return "pen$battery$lock"
     }
 
     private fun startForegroundCompat() {
-        val notif = buildOngoingNotification()
+        OngoingNotif.line("pen", ongoingText())
+        val notif = OngoingNotif.build(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(ONGOING_NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            startForeground(OngoingNotif.ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
-            startForeground(ONGOING_NOTIFICATION_ID, notif)
+            startForeground(OngoingNotif.ID, notif)
         }
     }
 
     private fun updateOngoing() {
-        try {
-            NotificationManagerCompat.from(this).notify(ONGOING_NOTIFICATION_ID, buildOngoingNotification())
-        } catch (_: SecurityException) { /* POST_NOTIFICATIONS not granted */ }
+        OngoingNotif.line("pen", ongoingText())
+        OngoingNotif.update(this)
     }
 
-    private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val nm = getSystemService(NotificationManager::class.java) ?: return
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ONGOING, "Pen link", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "Persistent notification while Console is linked to your smartpen"
-                setShowBadge(false)
-            },
-        )
-    }
+    private fun ensureChannel() = OngoingNotif.ensureChannel(this)
 }

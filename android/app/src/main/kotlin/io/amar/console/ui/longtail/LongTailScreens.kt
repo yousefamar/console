@@ -500,6 +500,31 @@ private fun BookmarkDetailSheet(
                     }
                 }
             }
+
+            // Embedded page preview — read the bookmarked page without leaving
+            // the app. Collapsed by default (a live WebView per sheet-open
+            // would eat data); explicit height because a WebView measures 0
+            // under the sheet's scroll column.
+            bookmark.url?.let { url ->
+                var showEmbed by remember(bookmark.file) { mutableStateOf(false) }
+                if (!showEmbed) {
+                    TextButton(onClick = { showEmbed = true }) { Text("Preview page here") }
+                } else {
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        modifier = Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(8.dp)),
+                        factory = { c ->
+                            android.webkit.WebView(c).apply {
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.builtInZoomControls = true
+                                settings.displayZoomControls = false
+                                webViewClient = android.webkit.WebViewClient() // in-place nav
+                                loadUrl(url)
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 
