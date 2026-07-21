@@ -15,6 +15,7 @@ _(empty)_
   react-icons set, brand colours) on a small chip that OVERHANGS the avatar circle
   bottom-right (SPA parity) — replaces the emoji lookalikes (🟢 WhatsApp etc.) that
   were also clipped by the avatar's circle mask. ui/components/NetworkIcons.kt.
+- Calendar tab's app-grid button showed a calendar icon instead of the grid glyph
 
 ## Shipped
 
