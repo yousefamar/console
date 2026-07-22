@@ -41,8 +41,17 @@ class ConsoleApp : Application(), ImageLoaderFactory {
     // seen media renders offline.
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         // SVG support for foreign pen-page exports (PenPageScreen renders them
-        // verbatim when there are no embedded strokes to draw on Canvas).
-        .components { add(coil.decode.SvgDecoder.Factory()) }
+        // verbatim when there are no embedded strokes to draw on Canvas), and
+        // animated GIF/WebP (WhatsApp stickers are animated WebP — without a
+        // registered animated decoder Coil shows only the first frame).
+        .components {
+            add(coil.decode.SvgDecoder.Factory())
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                add(coil.decode.ImageDecoderDecoder.Factory())
+            } else {
+                add(coil.decode.GifDecoder.Factory())
+            }
+        }
         .okHttpClient {
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
