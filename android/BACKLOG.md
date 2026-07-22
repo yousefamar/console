@@ -34,6 +34,12 @@ _(empty)_
 - Links in agent transcripts are now tappable: MarkdownLite painted [label](url)
   and bare URLs blue+underlined via SpanStyle only — LinkAnnotation.Url makes
   them real links (opens browser). http/https/mailto/tel only.
+- Voice messages route to the EARPIECE when the phone is held to the ear
+  (WhatsApp behaviour): proximity sensor watched while playing (ui/chat/
+  EarpieceRouting.kt, ref-counted); near → MediaPlayer rebuilt at the same
+  position with USAGE_VOICE_COMMUNICATION + MODE_IN_COMMUNICATION +
+  setCommunicationDevice(earpiece), away → back to speaker; a
+  PROXIMITY_SCREEN_OFF wake lock blanks the screen at the ear like calls.
 
 ## Shipped
 
