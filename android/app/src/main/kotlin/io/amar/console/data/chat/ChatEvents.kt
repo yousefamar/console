@@ -152,7 +152,13 @@ object ChatEvents {
 
     /** Replacement body + formatted_body from an m.replace event's
      *  m.new_content (falls back to the outer content). */
-    data class EditContent(val body: String, val formattedBody: String?)
+    data class EditContent(
+        val body: String,
+        val formattedBody: String?,
+        val msgtype: String? = null,
+        val mediaMxc: String? = null,
+        val encryptedFileJson: String? = null,
+    )
 
     fun editContent(event: JsonObject): EditContent? {
         val content = event.obj("content") ?: return null
@@ -161,7 +167,13 @@ object ChatEvents {
         val formatted = nc.str("formatted_body")
             ?.replace(Regex("<mx-reply>.*?</mx-reply>", RegexOption.DOT_MATCHES_ALL), "")
             ?.takeIf { it.isNotBlank() && nc.str("format") == "org.matrix.custom.html" }
-        return EditContent(body, formatted)
+        // Bridges can change a message's TYPE via edit (e.g. WhatsApp replaces
+        // a failed sticker m.image with an m.notice). Carry the new msgtype +
+        // media so the row doesn't keep rendering a dead media box.
+        val msgtype = nc.str("msgtype")
+        val file = nc.obj("file")
+        val mediaMxc = nc.str("url") ?: file?.str("url")
+        return EditContent(body, formatted, msgtype, mediaMxc, file?.toString())
     }
 
     fun isRedaction(event: JsonObject): Boolean = event.str("type") == "m.room.redaction"
