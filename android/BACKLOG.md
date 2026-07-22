@@ -40,6 +40,11 @@ _(empty)_
   position with USAGE_VOICE_COMMUNICATION + MODE_IN_COMMUNICATION +
   setCommunicationDevice(earpiece), away → back to speaker; a
   PROXIMITY_SCREEN_OFF wake lock blanks the screen at the ear like calls.
+- Bare "Mail" (or "Chat") notification: the group SUMMARY outlived its children —
+  per-item cancels (hub cancel pushes, reconcile sweep) removed the real
+  notifications but never the summary, which then rendered as an empty card.
+  reapOrphanSummaries() now cancels a summary when its last child goes, on both
+  cancel paths.
 
 ## Shipped
 

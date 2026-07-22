@@ -819,6 +819,20 @@ class PushService : Service() {
                 try { nm.cancel(idStr.hashCode()) } catch (_: SecurityException) {}
             }
         }
+        reapOrphanSummaries()
+    }
+
+    /** A group summary whose children are all gone renders as a bare "Mail"/
+     *  "Chat" card — cancel it once the last real notification leaves. */
+    private fun reapOrphanSummaries() {
+        val nm = NotificationManagerCompat.from(this)
+        try {
+            val active = (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).activeNotifications
+            val mailChildren = active.any { it.notification?.group == MAIL_GROUP_KEY && it.id != MAIL_SUMMARY_ID }
+            if (!mailChildren) nm.cancel(MAIL_SUMMARY_ID)
+            val chatChildren = active.any { it.notification?.group == CHAT_GROUP_KEY && it.id != CHAT_SUMMARY_ID }
+            if (!chatChildren) nm.cancel(CHAT_SUMMARY_ID)
+        } catch (_: Exception) { /* getActiveNotifications can throw on some OEMs */ }
     }
 
     /**
@@ -881,6 +895,7 @@ class PushService : Service() {
                 }
             }
         } catch (_: Exception) { /* getActiveNotifications can throw on some OEMs */ }
+        reapOrphanSummaries()
     }
 
     /**
