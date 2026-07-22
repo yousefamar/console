@@ -25,6 +25,12 @@ _(empty)_
   (timestamps decide whether a divider shows). (b) The 30-message initial window was
   smaller than the unread run (e.g. 42 unread), so the true first-unread wasn't in
   the window; the window now widens to unreadCount+10 on open.
+- More obfuscated/matrix sender names: the APK only read the delta's timeline
+  block — member display names arrive in the delta's state.events block on
+  initial/limited syncs (the SPA merges state first; that WAS the desktop fix).
+  State events now ingest before the timeline. Also: unresolved names kick a
+  background member fetch whose repair pass heals the rows once names arrive,
+  and the cached-name fallback no longer trusts rows whose "name" is the raw MXID.
 
 ## Shipped
 

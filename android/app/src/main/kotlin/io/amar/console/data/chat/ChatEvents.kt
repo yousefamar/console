@@ -321,4 +321,13 @@ object ChatEvents {
             ?.get("events")?.jsonArray
             ?.mapNotNull { it as? JsonObject }
             ?: emptyList()
+
+    /** State events array (m.room.member etc.) — the delta's `state.events`
+     *  block. Member display names live here on initial/limited syncs; the
+     *  SPA merges these before the timeline (sync.ts allStateForRoom). */
+    fun stateEvents(roomDelta: JsonObject): List<JsonObject> =
+        (roomDelta["state"] as? JsonObject)
+            ?.get("events")?.jsonArray
+            ?.mapNotNull { it as? JsonObject }
+            ?: emptyList()
 }

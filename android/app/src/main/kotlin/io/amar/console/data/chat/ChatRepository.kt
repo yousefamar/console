@@ -807,7 +807,10 @@ class ChatRepository(
     // ---------------------------------------------------------------- //
     // Sync: live deltas + reconcile
 
+    private var repoScope: kotlinx.coroutines.CoroutineScope? = null
+
     fun wireLiveDeltas(scope: kotlinx.coroutines.CoroutineScope) {
+        repoScope = scope
         // Handlers fire on the OkHttp WS reader thread — hop to a coroutine.
         syncBus.on("chat-rooms", "delta") { data ->
             scope.launch { runCatching { applyRoomsDelta(data.jsonObject) } }
@@ -914,7 +917,11 @@ class ChatRepository(
     }
 
     private suspend fun ingestRoomTimeline(roomId: String, roomDelta: JsonObject) {
-        processEvents(roomId, ChatEvents.timelineEvents(roomDelta))
+        // State events FIRST (SPA allStateForRoom order): member display names
+        // from state.events must be visible when the timeline's messages are
+        // named. Without this, initial/limited syncs — where names arrive in
+        // the state block, not the timeline — fell through to MXID localparts.
+        processEvents(roomId, ChatEvents.stateEvents(roomDelta) + ChatEvents.timelineEvents(roomDelta))
     }
 
     /**
@@ -944,7 +951,7 @@ class ChatRepository(
             val localpart = senderId.removePrefix("@").substringBefore(':')
             db.chatMessages().latestBySender(roomId, senderId)?.let { prior ->
                 val n = prior.senderName
-                if (!n.isNullOrBlank() && n != localpart) { senderNames[senderId] = n; return n }
+                if (!n.isNullOrBlank() && n != localpart && n != senderId) { senderNames[senderId] = n; return n }
             }
             // Member cache (hub /rooms/:id/info — TTL'd, may be stale-but-right).
             membersCache[roomId]?.members?.firstOrNull { it.userId == senderId }?.let {
@@ -957,6 +964,10 @@ class ChatRepository(
             if (room?.isDirect == true && room.name.isNotBlank() && senderId != myUserId()) {
                 senderNames[senderId] = room.name; return room.name
             }
+            // Nothing resolved → kick a background member fetch; the repair
+            // pass in roomMembers() heals these rows once names arrive, so a
+            // localpart is transient rather than permanent.
+            repoScope?.launch { runCatching { roomMembers(roomId) } }
             return fallback
         }
         val toUpsert = mutableListOf<ChatMessageRow>()
