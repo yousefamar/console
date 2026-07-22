@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v69 is shipped)_
+
+## Shipped
+
+### v69 (2026-07-22)
 - Archived/Undo snackbar STILL rendered as a full-width bar at the top: UndoHost was
   mounted without a size, so its internal BottomCenter alignment was meaningless
   (wrap-content Box at the shell top). Now fillMaxSize-anchored bottom-center with
@@ -55,7 +60,6 @@ _(empty)_
   animated WebP + GIF) / GifDecoder fallback added to the global ImageLoader —
   E2EE stickers render from the decrypted full file, so animation survives.
 
-## Shipped
 
 ### v68 (2026-07-22)
 - Chat network badges: real brand glyphs (path data extracted verbatim from the SPA's
