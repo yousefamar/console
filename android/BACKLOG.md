@@ -45,6 +45,11 @@ _(empty)_
   notifications but never the summary, which then rendered as an empty card.
   reapOrphanSummaries() now cancels a summary when its last child goes, on both
   cancel paths.
+- Feeds: YouTube videos play (embed URL loaded directly — the iframe-wrapper page
+  tripped YouTube's origin check; HTML5 video also needs a WebChromeClient).
+  HN no longer grouped under a "null" folder (JsonNull.content is the STRING
+  "null"). Reddit posts: the RSS thumbnail+text table now stacks vertically
+  instead of a 70px image cell beside a text wall.
 
 ## Shipped
 

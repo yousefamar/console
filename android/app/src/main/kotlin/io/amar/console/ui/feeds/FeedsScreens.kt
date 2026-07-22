@@ -948,7 +948,11 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
                         <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
                         <style>body{background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;font-size:15px;line-height:1.5;margin:0;word-break:break-word}
                         a{color:#60a5fa}img{max-width:100%;height:auto}pre{background:#141414;padding:8px;border-radius:4px;overflow-x:auto}
-                        blockquote{border-left:2px solid #333;padding-left:12px;font-style:italic;color:#aaa}</style></head><body>$html</body></html>
+                        blockquote{border-left:2px solid #333;padding-left:12px;font-style:italic;color:#aaa}
+                        /* Reddit RSS wraps thumbnail+text in a table — a 70px cell
+                           beside a wall of text reads broken on a phone. Stack cells. */
+                        table,tbody,tr,td{display:block;width:100%!important;border:0}
+                        td{padding:0 0 8px 0}</style></head><body>$html</body></html>
                     """.trimIndent()
                     // All links → external browser (SPA forces target=_blank).
                     io.amar.console.ui.components.SelfSizingWebView(doc, onOpenUrl = { openUrl(ctx, it) })
@@ -1001,13 +1005,12 @@ private fun YouTubeEmbed(youtubeId: String) {
                     settings.mediaPlaybackRequiresUserGesture = false
                     setBackgroundColor(android.graphics.Color.BLACK)
                     webViewClient = android.webkit.WebViewClient()
-                    val embed = "https://www.youtube-nocookie.com/embed/$youtubeId?playsinline=1&rel=0"
-                    val doc = """
-                        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-                        <style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style></head>
-                        <body><iframe src="$embed" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></body></html>
-                    """.trimIndent()
-                    loadDataWithBaseURL("https://www.youtube-nocookie.com", doc, "text/html", "utf-8", null)
+                    // HTML5 <video> needs a WebChromeClient or playback never
+                    // starts (black box); and the iframe-wrapper page tripped
+                    // YouTube's embed origin check ("Video unavailable") — load
+                    // the embed URL directly instead.
+                    webChromeClient = android.webkit.WebChromeClient()
+                    loadUrl("https://www.youtube-nocookie.com/embed/$youtubeId?playsinline=1&rel=0")
                 }
             },
         )

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
@@ -235,7 +236,9 @@ class FeedsRepository(
         return FeedRow(
             id = id,
             title = f["title"]?.jsonPrimitive?.content ?: id,
-            folder = f["folder"]?.jsonPrimitive?.content,
+            // contentOrNull: a JSON null primitive's .content is the STRING
+            // "null" — which grouped folderless feeds (HN) under a "null" folder.
+            folder = f["folder"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() && it != "null" },
             xmlUrl = f["xmlUrl"]?.jsonPrimitive?.content,
             siteUrl = f["siteUrl"]?.jsonPrimitive?.content,
             fullText = f["fullText"]?.jsonPrimitive?.booleanOrNull ?: false,
