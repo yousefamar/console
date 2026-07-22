@@ -19,6 +19,10 @@ _(empty)_
 - Mail thread top bar: 8 action icons left the title slot ~zero width, so the
   subject wrapped UNDER the back arrow. Bar is now icons-only — sender/subject
   are on the message card directly below.
+- Opening a feed article no longer marks it read (house rule: read state changes
+  only by explicit action — SPA parity; selectItem never marks there either).
+  The item screen's toggle now reflects the TRUE stored read state (repo.isRead)
+  instead of assuming unread-on-open.
 
 ## Shipped
 
