@@ -126,6 +126,9 @@ interface FeedsDao {
 
     @Query("DELETE FROM feed_read WHERE itemId = :id")
     suspend fun deleteRead(id: String)
+
+    @Query("SELECT COUNT(*) FROM feed_read WHERE itemId = :id")
+    suspend fun readCount(id: String): Int
 }
 
 // ---------------------------------------------------------------------- //

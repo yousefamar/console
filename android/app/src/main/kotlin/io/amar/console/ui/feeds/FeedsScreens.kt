@@ -811,7 +811,7 @@ private fun InfoRow(label: String, value: String, onCopy: (() -> Unit)?) {
 fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
     var item by remember { mutableStateOf<FeedItemRow?>(null) }
     var feed by remember { mutableStateOf<FeedRow?>(null) }
-    var markedUnread by remember { mutableStateOf(false) }
+    var isRead by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmUnsub by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -821,7 +821,9 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
         val it = repo.itemById(itemId)
         item = it
         feed = it?.feedId?.let { fid -> repo.feedById(fid) }
-        repo.markRead(itemId)
+        // NO mark-read on open (house rule, same as chat/mail): reading state
+        // changes only by explicit action — the toggle here or a list swipe.
+        isRead = repo.isRead(itemId)
     }
 
     val hnItemId = remember(item?.content) { extractHnItemId(item?.content) }
@@ -841,15 +843,15 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
             )
             IconButton(onClick = {
                 scope.launch {
-                    if (markedUnread) repo.markRead(itemId) else repo.markUnread(itemId)
-                    markedUnread = !markedUnread
+                    if (isRead) repo.markUnread(itemId) else repo.markRead(itemId)
+                    isRead = !isRead
                 }
             }) {
                 Icon(
                     Icons.Filled.MarkEmailUnread,
-                    contentDescription = if (markedUnread) "Mark read" else "Mark unread",
+                    contentDescription = if (isRead) "Mark unread" else "Mark read",
                     modifier = Modifier.size(18.dp),
-                    tint = if (markedUnread) MaterialTheme.colorScheme.primary
+                    tint = if (isRead) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

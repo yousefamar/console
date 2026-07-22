@@ -144,6 +144,8 @@ class FeedsRepository(
     suspend fun hnComments(itemId: String): String? =
         runCatching { hub.get("/feeds/hn/$itemId?depth=3") }.getOrNull()
 
+    suspend fun isRead(itemId: String): Boolean = db.feeds().readCount(itemId) > 0
+
     suspend fun markRead(itemId: String) {
         db.feeds().upsertRead(listOf(FeedReadRow(itemId, pendingSync = true)))
         removePendingRemove(listOf(itemId))
