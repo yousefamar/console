@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v68 is shipped)_
+
+## Shipped
+
+### v68 (2026-07-22)
 - Chat network badges: real brand glyphs (path data extracted verbatim from the SPA's
   react-icons set, brand colours) on a small chip that OVERHANGS the avatar circle
   bottom-right (SPA parity) — replaces the emoji lookalikes (🟢 WhatsApp etc.) that
@@ -34,7 +39,6 @@ _(empty)_
 - Images sent to agents now persist in transcript history (local echo stores
   data-URLs, same shape as the hub broadcast; previously they vanished on reopen).
 
-## Shipped
 
 ### v67 (2026-07-21)
 - Map white void: style JSON was passed to setStyle(String) which treats it as a URI —
