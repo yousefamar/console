@@ -149,7 +149,12 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGri
         PaneTopBar(
             title = "Chat",
             onGrid = onGrid,
-            subtitle = if (visible.isEmpty()) "${rooms.size} rooms cached" else "${visible.size} unread",
+            subtitle = run {
+                // Same formula as the grid badge: unhandled conversations,
+                // INCLUDING unread pinned rooms (their pills render below).
+                val unhandled = visible.size + pinned.count { it.isUnread && !it.isLowPriority && (it.snoozedUntil == null || it.snoozedUntil!! < now) }
+                if (unhandled == 0) "${rooms.size} rooms cached" else "$unhandled unread"
+            },
             actions = {
                 androidx.compose.material3.IconButton(onClick = { searching = !searching; searchQuery = "" }) {
                     Icon(

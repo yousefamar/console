@@ -11,7 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v69 is shipped)_
+- Chat unread counts disagreed (grid badge 4, header 2, room pills 3): three
+  different formulas. Now ONE: unhandled CONVERSATIONS = unread, not muted, not
+  low-priority, not snoozed — pinned included (grid DAO query gained the
+  low-priority filter; the header now adds unread pinned rooms instead of
+  ignoring them). Per-room pills still show message counts within a room.
 
 ## Shipped
 

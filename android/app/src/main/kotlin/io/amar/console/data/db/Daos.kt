@@ -94,7 +94,10 @@ interface ChatRoomDao {
     @Query("SELECT * FROM chat_rooms")
     suspend fun allRooms(): List<ChatRoomRow>
 
-    @Query("SELECT COUNT(*) FROM chat_rooms WHERE isUnread = 1 AND isMuted = 0 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
+    /** Unhandled conversations — the ONE unread-count formula (grid badge +
+     *  chat header must agree): unread, not muted/low-priority, not snoozed.
+     *  Pinned rooms COUNT (they render with unread pills and need handling). */
+    @Query("SELECT COUNT(*) FROM chat_rooms WHERE isUnread = 1 AND isMuted = 0 AND isLowPriority = 0 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
     fun observeUnreadCount(now: Long): Flow<Int>
 
     /** TRUNCATE-style wipe for the Matrix-disconnect cache clear (O(1) vs
