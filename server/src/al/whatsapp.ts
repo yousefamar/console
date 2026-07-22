@@ -249,6 +249,13 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
         // Without this, Yousef messaging Rowan from his phone feeds back into Al.
         if (!msg.message || msg.key.fromMe) continue
 
+        // WhatsApp status updates (Stories) broadcast to status@broadcast, a
+        // fixed pseudo-JID everyone's contacts post to constantly. There is no
+        // reply target — Al kept trying `con whatsapp send status@broadcast`,
+        // which is meaningless, and each one burned a full turn for zero
+        // action. Drop them at the boundary, before ensureUserKnown/envelope.
+        if (msg.key.remoteJid === 'status@broadcast') continue
+
         const text =
           msg.message.conversation ||
           msg.message.extendedTextMessage?.text ||
