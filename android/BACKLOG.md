@@ -23,6 +23,16 @@ _(empty)_
   for the local echo). Verified Enter = newline everywhere: composers are
   multi-line BasicTextFields with no ImeAction.Send/KeyboardActions send binding —
   send is exclusively the send button. (Search/URL/date fields keep Done/Go.)
+- Chat sender names: group messages showed raw bridge MXID localparts
+  ("whatsapp_lid-1669…"). Ported the SPA's sender enrichment (m.room.member state
+  events in the delta → cached-message fallback → member cache → DM room-name
+  fallback) into processEvents, + a repair pass that backfills names onto old
+  cached rows whenever a room's member list loads.
+- Bridge type-changing edits (WhatsApp swapping a failed sticker for a notice)
+  no longer render as a red/green word-diff with a dead media box — the edit
+  adopts the new msgtype/media and isn't marked "edited"; notices never diff.
+- Images sent to agents now persist in transcript history (local echo stores
+  data-URLs, same shape as the hub broadcast; previously they vanished on reopen).
 
 ## Shipped
 

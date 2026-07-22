@@ -317,12 +317,31 @@ class ChatRepository(
                 } ?: emptyList()
         }.getOrElse { emptyList() }
         // Keep the stale list if a refetch failed (offline) — never blank it.
-        if (members.isNotEmpty()) membersCache[roomId] = MemberCacheEntry(members, now)
+        if (members.isNotEmpty()) {
+            membersCache[roomId] = MemberCacheEntry(members, now)
+            repairSenderNames(roomId, members)
+        }
         return members.ifEmpty { cached?.members ?: emptyList() }
     }
 
     /** Warm the member cache (compose mount) so autocomplete has data. */
     suspend fun primeRoomMembers(roomId: String) { runCatching { roomMembers(roomId) } }
+
+    /** Backfill display names onto cached rows still showing the MXID
+     *  localpart (e.g. "whatsapp_lid-1669…") — pre-fix ingests and rooms whose
+     *  member state arrived after the messages. Runs on member-list refresh. */
+    private suspend fun repairSenderNames(roomId: String, members: List<RoomMember>) {
+        val byId = members.associateBy({ it.userId }, { it.displayName })
+        val rows = db.chatMessages().recent(roomId, 400)
+        val fixed = rows.mapNotNull { row ->
+            val better = byId[row.senderId] ?: return@mapNotNull null
+            val localpart = row.senderId.removePrefix("@").substringBefore(':')
+            if (better.isNotBlank() && better != localpart &&
+                (row.senderName.isNullOrBlank() || row.senderName == localpart)
+            ) row.copy(senderName = better) else null
+        }
+        if (fixed.isNotEmpty()) db.chatMessages().upsertAll(fixed)
+    }
 
     private val externalProfileCache = mutableMapOf<String, Pair<String, String>?>()
 
@@ -908,6 +927,38 @@ class ChatRepository(
      */
     private suspend fun processEvents(roomId: String, events: List<JsonObject>) {
         if (events.isEmpty()) return
+        // Sender display names, SPA parity (matrix/sync.ts getSenderInfo +
+        // cached-message fallback + DM room-name fallback). Without this,
+        // bridge ghosts render as their MXID localpart ("whatsapp_lid-1669…").
+        val senderNames = mutableMapOf<String, String>()
+        for (event in events) {
+            if (event["type"]?.jsonPrimitive?.content == "m.room.member") {
+                val userId = event["state_key"]?.jsonPrimitive?.content ?: continue
+                val name = (event["content"] as? JsonObject)?.get("displayname")?.jsonPrimitive?.content
+                if (!name.isNullOrBlank()) senderNames[userId] = name
+            }
+        }
+        suspend fun resolveSenderName(senderId: String, fallback: String): String {
+            senderNames[senderId]?.let { return it }
+            // Cached rows for this room whose name is better than the localpart.
+            val localpart = senderId.removePrefix("@").substringBefore(':')
+            db.chatMessages().latestBySender(roomId, senderId)?.let { prior ->
+                val n = prior.senderName
+                if (!n.isNullOrBlank() && n != localpart) { senderNames[senderId] = n; return n }
+            }
+            // Member cache (hub /rooms/:id/info — TTL'd, may be stale-but-right).
+            membersCache[roomId]?.members?.firstOrNull { it.userId == senderId }?.let {
+                if (it.displayName.isNotBlank() && it.displayName != localpart) {
+                    senderNames[senderId] = it.displayName; return it.displayName
+                }
+            }
+            // DM fallback: the room name IS the other party's name.
+            val room = db.chatRooms().byId(roomId)
+            if (room?.isDirect == true && room.name.isNotBlank() && senderId != myUserId()) {
+                senderNames[senderId] = room.name; return room.name
+            }
+            return fallback
+        }
         val toUpsert = mutableListOf<ChatMessageRow>()
         // In-batch working view: later events (reaction #2, edit-after-msg)
         // must see earlier ones from THIS batch, not the stale DB row.
@@ -977,12 +1028,29 @@ class ChatRepository(
                 val targetId = ChatEvents.relatesToEventId(event) ?: continue
                 val edit = ChatEvents.editContent(event) ?: continue
                 val original = lookup(targetId) ?: continue // not cached → skip, don't duplicate
-                upsert(original.copy(
-                    body = edit.body,
-                    formattedBody = edit.formattedBody,
-                    isEdited = true,
-                    originalBody = original.originalBody ?: original.body,
-                ))
+                // Type-changing edits (bridge replaces a failed sticker/media
+                // message with an m.notice): adopt the new msgtype + media and
+                // DON'T mark edited — a bridge status swap isn't a user edit,
+                // and the word-diff of two unrelated notices is unreadable.
+                val typeChanged = edit.msgtype != null && edit.msgtype != original.msgtype
+                if (typeChanged) {
+                    upsert(original.copy(
+                        body = edit.body,
+                        formattedBody = edit.formattedBody,
+                        msgtype = edit.msgtype!!,
+                        mediaMxc = edit.mediaMxc,
+                        encryptedFileJson = edit.encryptedFileJson,
+                        isEdited = false,
+                        originalBody = null,
+                    ))
+                } else {
+                    upsert(original.copy(
+                        body = edit.body,
+                        formattedBody = edit.formattedBody,
+                        isEdited = true,
+                        originalBody = original.originalBody ?: original.body,
+                    ))
+                }
                 continue
             }
             // Our own sends echo back with our txnId — swap the local echo.
@@ -1001,8 +1069,9 @@ class ChatRepository(
                 val existing = lookup(msg.id)
                 if (existing != null && existing.body != "🔒 Encrypted message" && !existing.isDeleted) continue
             }
-            // Enrich replyTo with the quoted body/sender from the local cache.
-            upsert(enrichReply(msg))
+            // Enrich sender name (bridge ghost MXIDs → display names) + replyTo.
+            val named = msg.copy(senderName = resolveSenderName(msg.senderId, msg.senderName ?: msg.senderId))
+            upsert(enrichReply(named))
         }
         if (toUpsert.isNotEmpty()) db.chatMessages().upsertAll(toUpsert)
     }

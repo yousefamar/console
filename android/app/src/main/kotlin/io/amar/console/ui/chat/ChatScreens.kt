@@ -1418,7 +1418,8 @@ private fun MessageBubble(
                             if (openingMedia) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                             Text(bodyText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                         }
-                    } else if (msg.isEdited && msg.originalBody != null) {
+                    } else if (msg.isEdited && msg.originalBody != null && !isNotice) {
+                        // SPA parity: notices render italic, never as a word-diff.
                         EditDiffText(msg.originalBody!!, bodyText)
                     } else if (msg.formattedBody != null) {
                         val html = remember(msg.formattedBody) {

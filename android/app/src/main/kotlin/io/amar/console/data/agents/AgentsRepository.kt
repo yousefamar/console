@@ -750,10 +750,22 @@ class AgentsRepository(
             }
         }
         // Optimistic local user_prompt row so the transcript shows it now.
+        // Images ride along as data-URLs (same shape the hub broadcasts to
+        // other clients) so they survive in the local history — without this
+        // an image you sent vanished from the transcript on the next open.
         appendMessage(sessionId, buildJsonObject {
             put("type", "user_prompt")
             put("sessionId", sessionId)
             put("content", content)
+            if (imagePaths.isNotEmpty()) {
+                put("images", JsonArray(imagePaths.mapNotNull { spec ->
+                    val path = spec.substringBeforeLast('|')
+                    val mime = spec.substringAfterLast('|')
+                    val f = java.io.File(path)
+                    if (!f.exists()) return@mapNotNull null
+                    JsonPrimitive("data:$mime;base64," + android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP))
+                }))
+            }
         })
         outbox.enqueue(TYPE_SEND, payload.toString(), entityId = sessionId)
     }
