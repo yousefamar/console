@@ -99,31 +99,6 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         Column(
             Modifier.fillMaxSize()
         ) {
-            // Banner semantics: "Syncing" only for rows that will actually
-            // drain (pending/processing). failed/conflict rows show as "need
-            // attention" instead of an eternal never-decrementing "Syncing N".
-            // Both are tappable → outbox inspector, so the count is explorable.
-            val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
-            if (!connected) {
-                StatusBanner(
-                    icon = Icons.Outlined.CloudOff,
-                    text = if (pendingCount > 0) "Offline — $pendingCount queued" else "Offline",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = if (pendingCount > 0) toOutbox else null,
-                )
-            } else if (pendingCount > 0) {
-                StatusBanner(
-                    text = "Syncing $pendingCount…",
-                    tint = MaterialTheme.colorScheme.primary,
-                    onClick = toOutbox,
-                )
-            } else if (stuckCount > 0) {
-                StatusBanner(
-                    text = "$stuckCount ${if (stuckCount == 1) "action" else "actions"} failed — tap to review",
-                    tint = MaterialTheme.colorScheme.error,
-                    onClick = toOutbox,
-                )
-            }
             update?.let { u ->
                 UpdateBanner(
                     versionName = u.versionName,
@@ -271,6 +246,27 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         }
         // App-wide undo affordance (survives detail→list pops).
         UndoHost(shellScope)
+        // Sync/offline status as a floating pill — an OVERLAY, so it never
+        // shifts the layout underneath (the old in-flow banner nudged the
+        // whole screen every time a sync started).
+        run {
+            val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
+            val (pillText, pillTint, pillClick) = when {
+                !connected && pendingCount > 0 -> Triple("Offline — $pendingCount queued", MaterialTheme.colorScheme.onSurfaceVariant, toOutbox)
+                !connected -> Triple("Offline", MaterialTheme.colorScheme.onSurfaceVariant, null)
+                pendingCount > 0 -> Triple("Syncing $pendingCount…", MaterialTheme.colorScheme.primary, toOutbox)
+                stuckCount > 0 -> Triple("$stuckCount ${if (stuckCount == 1) "action" else "actions"} failed", MaterialTheme.colorScheme.error, toOutbox)
+                else -> Triple(null, MaterialTheme.colorScheme.primary, null)
+            }
+            if (pillText != null) {
+                StatusPill(
+                    text = pillText,
+                    tint = pillTint,
+                    onClick = pillClick,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopCenter),
+                )
+            }
+        }
         }
     }
 }

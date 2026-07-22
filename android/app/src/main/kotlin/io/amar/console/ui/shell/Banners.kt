@@ -34,6 +34,29 @@ fun StatusBanner(text: String, tint: Color, icon: ImageVector? = null, onClick: 
     }
 }
 
+/** Floating status pill (overlay, never shifts layout): small rounded chip
+ *  top-center, à la the SPA's subtle sync indicator. */
+@Composable
+fun StatusPill(text: String, tint: Color, onClick: (() -> Unit)? = null, modifier: Modifier = Modifier) {
+    androidx.compose.material3.Surface(
+        modifier = modifier.padding(top = 6.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+        tonalElevation = 3.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Row(
+            Modifier
+                .let { if (onClick != null) it.clickable(onClick = onClick) else it }
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(text, style = MaterialTheme.typography.labelSmall, color = tint)
+        }
+    }
+}
+
 /** Session-expired prompt: the bearer is dead (hub returned 401/403). Tapping
  *  "Re-pair" opens Settings where QR pairing lives. Amber (error-adjacent). */
 @Composable

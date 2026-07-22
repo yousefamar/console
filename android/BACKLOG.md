@@ -16,6 +16,13 @@ _(empty)_
   bottom-right (SPA parity) — replaces the emoji lookalikes (🟢 WhatsApp etc.) that
   were also clipped by the avatar's circle mask. ui/components/NetworkIcons.kt.
 - Calendar tab's app-grid button showed a calendar icon instead of the grid glyph
+- Sync/offline banner → floating top-center pill OVERLAY (never shifts the layout;
+  the old in-flow banner nudged the whole screen every time a sync started).
+  Still tappable → outbox inspector. Update/re-auth banners stay in-flow (rare).
+- Send auto-scrolls to bottom in chat + agent transcripts (immediate, not waiting
+  for the local echo). Verified Enter = newline everywhere: composers are
+  multi-line BasicTextFields with no ImeAction.Send/KeyboardActions send binding —
+  send is exclusively the send button. (Search/URL/date fields keep Done/Go.)
 
 ## Shipped
 

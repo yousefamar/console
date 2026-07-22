@@ -810,6 +810,7 @@ fun ChatRoomScreen(
                         repo.markRead(roomId)
                     }
                 }
+                scope.launch { listState.animateScrollToItem(0) } // reverseLayout: 0 = bottom
             },
             onTextChange = { composerText = it; onComposerChange(it) },
             onSendWithAttachments = { text, uris ->
@@ -819,6 +820,7 @@ fun ChatRoomScreen(
                     }
                     repo.markRead(roomId)
                 }
+                scope.launch { listState.animateScrollToItem(0) }
             },
             handle = composerHandle,
             aboveInput = when {
