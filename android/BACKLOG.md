@@ -11,7 +11,20 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v68 is shipped)_
+- Archived/Undo snackbar STILL rendered as a full-width bar at the top: UndoHost was
+  mounted without a size, so its internal BottomCenter alignment was meaningless
+  (wrap-content Box at the shell top). Now fillMaxSize-anchored bottom-center with
+  bottom padding — small, floating, above the composer area.
+- Lightbox black on enlarge: the gallery passed raw download URLs, but for E2EE
+  images that URL is the CIPHERTEXT blob (renders black). The lightbox now resolves
+  each image the same way bubbles do: local spool → AES-CTR-decrypted cache
+  (repo.mediaFile) → plain URL, with a spinner while decrypting.
+- Chat unread "— New —" divider: existed since v50s but was suppressed in practice —
+  (a) the watermark freeze was gated on room.isUnread, so any read-receipt delta
+  racing the room open killed it; now frozen unconditionally on first room emission
+  (timestamps decide whether a divider shows). (b) The 30-message initial window was
+  smaller than the unread run (e.g. 42 unread), so the true first-unread wasn't in
+  the window; the window now widens to unreadCount+10 on open.
 
 ## Shipped
 
