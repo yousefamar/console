@@ -633,11 +633,16 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
             draftKey = "agent:$sessionId",
             slashCommands = slashCommands,
             handle = handle,
-            onSend = { text -> scope.launch { repo.sendPrompt(sessionId, text) }; repo.markRead(sessionId) },
+            onSend = { text ->
+                scope.launch { repo.sendPrompt(sessionId, text) }
+                repo.markRead(sessionId)
+                scope.launch { listState.animateScrollToItem(0) } // reverseLayout: 0 = bottom
+            },
             onTextChange = onComposerChange,
             onSendWithAttachments = { text, uris ->
                 scope.launch { repo.sendPrompt(sessionId, text, uris, ctx) }
                 repo.markRead(sessionId)
+                scope.launch { listState.animateScrollToItem(0) }
             },
         )
     }
