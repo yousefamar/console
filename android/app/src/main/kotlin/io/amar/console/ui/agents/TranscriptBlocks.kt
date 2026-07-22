@@ -55,6 +55,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -761,8 +762,12 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
                     if (urlEnd > 0) {
                         val label = s.substring(i + 1, close)
                         val url = s.substring(close + 2, urlEnd)
-                        if (isSafeScheme(url)) {
-                            withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(label) }
+                        if (isSafeScheme(url) && (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("mailto:") || url.startsWith("tel:"))) {
+                            // LinkAnnotation makes the span actually TAPPABLE —
+                            // withStyle alone painted it blue but dead.
+                            withLink(androidx.compose.ui.text.LinkAnnotation.Url(url)) {
+                                withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(label) }
+                            }
                         } else append(label)
                         i = urlEnd + 1
                         continue
@@ -777,7 +782,9 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
                 // Trailing punctuation split back to plain text.
                 var trailing = ""
                 while (url.isNotEmpty() && url.last() in ".,;:!?") { trailing = url.last() + trailing; url = url.dropLast(1) }
-                withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(url) }
+                withLink(androidx.compose.ui.text.LinkAnnotation.Url(url)) {
+                    withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(url) }
+                }
                 append(trailing)
                 i = end
             }

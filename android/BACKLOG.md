@@ -31,6 +31,9 @@ _(empty)_
   State events now ingest before the timeline. Also: unresolved names kick a
   background member fetch whose repair pass heals the rows once names arrive,
   and the cached-name fallback no longer trusts rows whose "name" is the raw MXID.
+- Links in agent transcripts are now tappable: MarkdownLite painted [label](url)
+  and bare URLs blue+underlined via SpanStyle only — LinkAnnotation.Url makes
+  them real links (opens browser). http/https/mailto/tel only.
 
 ## Shipped
 
