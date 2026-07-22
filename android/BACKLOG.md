@@ -16,6 +16,9 @@ _(empty)_
   low-priority, not snoozed — pinned included (grid DAO query gained the
   low-priority filter; the header now adds unread pinned rooms instead of
   ignoring them). Per-room pills still show message counts within a room.
+- Mail thread top bar: 8 action icons left the title slot ~zero width, so the
+  subject wrapped UNDER the back arrow. Bar is now icons-only — sender/subject
+  are on the message card directly below.
 
 ## Shipped
 

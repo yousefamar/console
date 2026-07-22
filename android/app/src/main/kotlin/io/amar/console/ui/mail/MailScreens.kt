@@ -373,9 +373,11 @@ fun MailThreadScreen(
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        // No title text: 8 actions leave the title ~zero width, so the
+        // subject just wrapped UNDER the back arrow. Sender + subject are on
+        // the message card right below anyway.
         PaneTopBar(
-            title = thread?.subject ?: "…",
-            subtitle = thread?.fromName,
+            title = "",
             onBack = onBack,
             actions = {
                 TextButton(onClick = { emailDark = !emailDark; darkPrefs.edit().putBoolean("emailDark", emailDark).apply() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
