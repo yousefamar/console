@@ -552,6 +552,13 @@ fun ChatRoomScreen(
     val room by repo.observeRoom(roomId).collectAsState(initial = null)
     var windowSize by remember { mutableIntStateOf(30) }
     val messages by repo.observeMessages(roomId, windowSize).collectAsState(initial = emptyList())
+    // Widen the initial window past the unread run so the "— New —" divider
+    // lands on the TRUE first-unread message, not the oldest visible one
+    // (42 unread in a 30-message window put the divider mid-run).
+    LaunchedEffect(room?.id) {
+        val unread = room?.unreadCount ?: 0
+        if (unread + 10 > windowSize) windowSize = unread + 10
+    }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var loadingOlder by remember { mutableStateOf(false) }
@@ -568,8 +575,15 @@ fun ChatRoomScreen(
     var myUserId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { myUserId = repo.myUserId() }
     LaunchedEffect(messages.isNotEmpty()) { if (myUserId == null) myUserId = repo.myUserId() }
+    // Freeze the read watermark on the FIRST room emission, unconditionally.
+    // Gating on isUnread was fragile: a read-receipt delta from another device
+    // (or a racing markRead) flipping isUnread before this ran suppressed the
+    // divider entirely. Timestamps alone decide — for a read room lastReadTs
+    // >= newest message, so unreadDividerMessageId returns null anyway.
     LaunchedEffect(room?.id) {
-        if (frozenLastReadTs == null && room != null && room!!.isUnread) frozenLastReadTs = room!!.lastReadTs
+        if (frozenLastReadTs == null && room != null) {
+            frozenLastReadTs = room!!.lastReadTs ?: if (room!!.isUnread) 0L else null
+        }
     }
     val dividerMsgId = remember(messages, frozenLastReadTs, myUserId) {
         io.amar.console.data.chat.ChatEvents.unreadDividerMessageId(messages, frozenLastReadTs, myUserId)
@@ -620,10 +634,12 @@ fun ChatRoomScreen(
     }
 
     // Image gallery for the lightbox: every image message in the window.
-    val galleryImages = remember(messages) {
-        messages.filter { it.msgtype == "m.image" && !it.isDeleted }
+    // Kept as MESSAGES (not URLs) — E2EE images must be decrypted via
+    // repo.mediaFile; their raw download URL is the ciphertext blob, which
+    // renders as black.
+    val galleryMessages = remember(messages) {
+        messages.filter { it.msgtype == "m.image" && !it.isDeleted && (it.localMediaPath != null || it.mediaMxc != null || it.encryptedFileJson != null) }
             .sortedBy { it.timestamp }
-            .mapNotNull { it.localMediaPath ?: MatrixMedia.downloadUrl(it.mediaMxc) }
     }
     // External profile link (rooms/:id/info externalProfile), fetched once.
     var externalProfile by remember(roomId) { mutableStateOf<Pair<String, String>?>(null) }
@@ -687,8 +703,8 @@ fun ChatRoomScreen(
                         onRetry = { scope.launch { repo.retryFailed(msg.id) } },
                         onLongPress = { reactTarget = msg },
                         onReply = { replyingTo = msg },
-                        onImageTap = { url ->
-                            val i = galleryImages.indexOf(url)
+                        onImageTap = {
+                            val i = galleryMessages.indexOfFirst { g -> g.id == msg.id }
                             lightboxIndex = if (i >= 0) i else 0
                         },
                         onMediaOpen = { openMedia(msg) },
@@ -866,13 +882,23 @@ fun ChatRoomScreen(
         )
     }
     lightboxIndex?.let { start ->
-        LightboxGallery(images = galleryImages, startIndex = start, onClose = { lightboxIndex = null })
+        LightboxGallery(
+            images = galleryMessages,
+            startIndex = start,
+            resolve = { m -> repo.mediaFile(context, m)?.absolutePath ?: MatrixMedia.downloadUrl(m.mediaMxc) },
+            onClose = { lightboxIndex = null },
+        )
     }
 }
 
 /** Full-screen image lightbox with ←/→ paging + "i / total" counter. */
 @Composable
-private fun LightboxGallery(images: List<String>, startIndex: Int, onClose: () -> Unit) {
+private fun LightboxGallery(
+    images: List<ChatMessageRow>,
+    startIndex: Int,
+    resolve: suspend (ChatMessageRow) -> String?,
+    onClose: () -> Unit,
+) {
     if (images.isEmpty()) { onClose(); return }
     var index by remember { mutableIntStateOf(startIndex.coerceIn(0, images.size - 1)) }
     androidx.compose.ui.window.Dialog(
@@ -883,10 +909,21 @@ private fun LightboxGallery(images: List<String>, startIndex: Int, onClose: () -
             Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black).clickable { onClose() },
             contentAlignment = Alignment.Center,
         ) {
-            val model: Any = images[index].let {
+            // Resolve per image: local spool → decrypted E2EE cache (mediaFile)
+            // → plain download URL. Never the raw mxc of an encrypted file.
+            val current = images[index]
+            var resolved by remember(current.id) { mutableStateOf<String?>(current.localMediaPath) }
+            LaunchedEffect(current.id) {
+                if (resolved == null) resolved = runCatching { resolve(current) }.getOrNull()
+            }
+            val model: Any? = resolved?.let {
                 if (it.startsWith("/") || it.startsWith("file:")) java.io.File(it.removePrefix("file://")) else it
             }
-            AsyncImage(model = model, contentDescription = null, modifier = Modifier.fillMaxWidth())
+            if (model != null) {
+                AsyncImage(model = model, contentDescription = null, modifier = Modifier.fillMaxWidth())
+            } else {
+                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp, color = androidx.compose.ui.graphics.Color.White)
+            }
             if (images.size > 1) {
                 if (index > 0) {
                     androidx.compose.material3.IconButton(onClick = { index-- },

@@ -244,8 +244,10 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
             }
         }
-        // App-wide undo affordance (survives detail→list pops).
-        UndoHost(shellScope)
+        // App-wide undo affordance (survives detail→list pops). Must fill the
+        // shell Box or its internal BottomCenter alignment is meaningless and
+        // the snackbar renders as a full-width bar at the TOP.
+        UndoHost(shellScope, Modifier.fillMaxSize().align(androidx.compose.ui.Alignment.BottomCenter))
         // Sync/offline status as a floating pill — an OVERLAY, so it never
         // shifts the layout underneath (the old in-flow banner nudged the
         // whole screen every time a sync started).

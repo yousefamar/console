@@ -81,7 +81,10 @@ fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
     val toast by AppToast.toast.collectAsState()
     val context = LocalContext.current
     Box(modifier.fillMaxWidth()) {
-        Column(Modifier.align(Alignment.BottomCenter)) {
+        Column(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
+            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        ) {
             toast?.let { t ->
                 LaunchedEffect(t) {
                     val wait = t.expiresAt - System.currentTimeMillis()
