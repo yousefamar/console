@@ -50,6 +50,10 @@ _(empty)_
   HN no longer grouped under a "null" folder (JsonNull.content is the STRING
   "null"). Reddit posts: the RSS thumbnail+text table now stacks vertically
   instead of a 70px image cell beside a text wall.
+- Animated WhatsApp stickers animate: Coil had no animated decoder registered, so
+  animated WebP/GIF rendered as the first frame only. ImageDecoderDecoder (API 28+,
+  animated WebP + GIF) / GifDecoder fallback added to the global ImageLoader —
+  E2EE stickers render from the decrypted full file, so animation survives.
 
 ## Shipped
 
