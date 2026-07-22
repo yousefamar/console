@@ -1119,8 +1119,14 @@ private fun AudioBubble(msg: ChatMessageRow, resolveFile: suspend () -> java.io.
         }.getOrElse { emptyList() }
     }
 
+    var audioFile by remember(msg.id) { mutableStateOf<java.io.File?>(null) }
+    val near by EarpieceRouting.near.collectAsState()
+
     androidx.compose.runtime.DisposableEffect(msg.id) {
-        onDispose { runCatching { player[0]?.release() }; player[0] = null }
+        onDispose {
+            if (playing) EarpieceRouting.stop(context)
+            runCatching { player[0]?.release() }; player[0] = null
+        }
     }
     LaunchedEffect(playing) {
         while (playing) {
@@ -1136,25 +1142,52 @@ private fun AudioBubble(msg: ChatMessageRow, resolveFile: suspend () -> java.io.
     fun applySpeed(mp: android.media.MediaPlayer) {
         runCatching { mp.playbackParams = mp.playbackParams.setSpeed(speed).setPitch(1f) }
     }
+    fun buildPlayer(file: java.io.File, toEar: Boolean, startAt: Int, autoStart: Boolean) {
+        runCatching { player[0]?.release() }
+        val mp = android.media.MediaPlayer()
+        mp.setAudioAttributes(EarpieceRouting.attributesFor(toEar))
+        mp.setDataSource(file.absolutePath)
+        mp.setOnCompletionListener {
+            playing = false; positionMs = 0
+            EarpieceRouting.stop(context)
+            runCatching { it.seekTo(0) }
+        }
+        mp.prepare()
+        if (durationMs <= 0) durationMs = mp.duration
+        if (startAt > 0) runCatching { mp.seekTo(startAt) }
+        player[0] = mp
+        applySpeed(mp)
+        if (autoStart) { mp.start(); playing = true }
+    }
+    // Phone raised to the ear while playing → rebuild the player on the
+    // voice-call route at the same position (WhatsApp behaviour); lowered →
+    // back to speaker. Attributes are fixed at prepare-time, hence rebuild.
+    LaunchedEffect(near) {
+        val file = audioFile ?: return@LaunchedEffect
+        if (!playing) return@LaunchedEffect
+        val at = positionMs
+        if (near) EarpieceRouting.routeEarpiece(context) else EarpieceRouting.restoreSpeaker(context)
+        buildPlayer(file, near, at, autoStart = true)
+    }
     fun toggle() {
         val p = player[0]
         when {
-            p != null && playing -> { runCatching { p.pause() }; playing = false }
-            p != null -> { runCatching { applySpeed(p); p.start() }; playing = true }
+            p != null && playing -> {
+                runCatching { p.pause() }; playing = false
+                EarpieceRouting.stop(context)
+            }
+            p != null -> {
+                runCatching { applySpeed(p); p.start() }; playing = true
+                EarpieceRouting.start(context)
+            }
             !preparing -> {
                 preparing = true
                 scope.launch {
                     try {
                         val file = resolveFile()
-                        val mp = android.media.MediaPlayer()
-                        mp.setDataSource(file.absolutePath)
-                        mp.setOnCompletionListener { playing = false; positionMs = 0; runCatching { it.seekTo(0) } }
-                        mp.prepare()
-                        if (durationMs <= 0) durationMs = mp.duration
-                        player[0] = mp
-                        applySpeed(mp)
-                        mp.start()
-                        playing = true
+                        audioFile = file
+                        buildPlayer(file, toEar = false, startAt = 0, autoStart = true)
+                        EarpieceRouting.start(context)
                     } catch (_: Exception) { playing = false } finally { preparing = false }
                 }
             }
