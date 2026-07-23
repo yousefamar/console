@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontFamily
@@ -131,10 +132,29 @@ private fun UserPromptBlock(p: JsonObject) {
         if (images.isNotEmpty()) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(images) { url ->
-                    AsyncImage(
-                        model = url, contentDescription = null,
-                        modifier = Modifier.heightIn(max = 128.dp).clip(RoundedCornerShape(8.dp)),
-                    )
+                    if (url.startsWith("data:")) {
+                        // Coil 2.x has NO data-URI fetcher — AsyncImage on a
+                        // data: URL silently renders nothing (why attached
+                        // images "didn't work"). Decode the base64 natively.
+                        val bmp = remember(url.hashCode()) {
+                            runCatching {
+                                val b64 = url.substringAfter("base64,", "")
+                                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                            }.getOrNull()
+                        }
+                        if (bmp != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = bmp, contentDescription = null,
+                                modifier = Modifier.heightIn(max = 128.dp).clip(RoundedCornerShape(8.dp)),
+                            )
+                        }
+                    } else {
+                        AsyncImage(
+                            model = url, contentDescription = null,
+                            modifier = Modifier.heightIn(max = 128.dp).clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
                 }
             }
             Spacer(Modifier.size(4.dp))
