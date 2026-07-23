@@ -25,6 +25,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.Archive
@@ -713,7 +716,10 @@ fun ChatRoomScreen(
                             lightboxIndex = if (i >= 0) i else 0
                         },
                         onMediaOpen = { openMedia(msg) },
-                        onReact = { emoji -> scope.launch { repo.sendReaction(roomId, msg.id, emoji) } },
+                        onReact = { emoji ->
+                            io.amar.console.data.chat.RecentEmoji.bump(context, emoji)
+                            scope.launch { repo.sendReaction(roomId, msg.id, emoji) }
+                        },
                         resolveArchived = { repo.archivedEvent(roomId, msg.id) },
                         resolveMediaFile = { repo.mediaFile(context, msg) },
                         resolvePreview = { repo.urlPreview(it) },
@@ -970,14 +976,64 @@ private fun QuickReactSheet(
     onEdit: () -> Unit,
     onCopy: () -> Unit,
 ) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    var emojiQuery by remember { mutableStateOf("") }
+    // YOUR most-used reactions, not a generic six (frequency + recency ranked).
+    val quick = remember { io.amar.console.data.chat.RecentEmoji.top(ctx, 6) }
+    fun react(emoji: String) {
+        io.amar.console.data.chat.RecentEmoji.bump(ctx, emoji)
+        onReact(emoji)
+        onDismiss()
+    }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            for (emoji in listOf("👍", "❤️", "😂", "😮", "😢", "🙏")) {
+            for (emoji in quick) {
                 Text(emoji, style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.clickable { onReact(emoji); onDismiss() }.padding(6.dp))
+                    modifier = Modifier.clickable { react(emoji) }.padding(6.dp))
+            }
+            // Expand → full searchable picker.
+            Box(
+                Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { expanded = !expanded },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.Add,
+                    contentDescription = "All emoji",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        if (expanded) {
+            androidx.compose.material3.OutlinedTextField(
+                value = emojiQuery, onValueChange = { emojiQuery = it },
+                placeholder = { Text("Search emoji") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            val all = remember(emojiQuery) {
+                if (emojiQuery.isBlank()) {
+                    io.amar.console.data.chat.EmojiShortcodes.TABLE.values.distinct()
+                } else {
+                    io.amar.console.data.chat.EmojiShortcodes.search(emojiQuery, 60).map { it.emoji }.distinct()
+                }
+            }
+            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(44.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp).padding(horizontal = 12.dp),
+            ) {
+                items(all.size) { i ->
+                    Text(
+                        all[i], style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.clickable { react(all[i]) }.padding(8.dp),
+                    )
+                }
             }
         }
         Row(

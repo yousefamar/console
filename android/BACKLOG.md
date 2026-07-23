@@ -23,6 +23,11 @@ _(empty)_
   only by explicit action — SPA parity; selectItem never marks there either).
   The item screen's toggle now reflects the TRUE stored read state (repo.isRead)
   instead of assuming unread-on-open.
+- Reaction picker: the quick-react row now shows YOUR most-used emoji
+  (frequency+recency ranked, persisted in data/chat/RecentEmoji.kt; defaults
+  only until you have history — every reaction from the sheet or an existing
+  chip bumps its count), plus a "+" that expands a searchable full picker over
+  the whole 2,376-emoji shortcode table (adaptive grid, 300dp max).
 
 ## Shipped
 
