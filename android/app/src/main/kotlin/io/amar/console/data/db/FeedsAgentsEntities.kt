@@ -233,6 +233,12 @@ interface AgentsDao {
     @Query("DELETE FROM agent_messages WHERE sessionId = :sessionId")
     suspend fun clearMessages(sessionId: String)
 
+    @Query("SELECT * FROM agent_messages WHERE sessionId = :sessionId AND kind = 'user_prompt'")
+    suspend fun userPrompts(sessionId: String): List<AgentMessageRow>
+
+    @Query("DELETE FROM agent_messages WHERE pk = :pk")
+    suspend fun deleteByPk(pk: Long)
+
     /** Hub restart mints a new hub id for the same claudeSessionId — carry the
      *  cached transcript over so it doesn't look like a brand-new session. */
     @Query("UPDATE OR REPLACE agent_messages SET sessionId = :newId WHERE sessionId = :oldId")

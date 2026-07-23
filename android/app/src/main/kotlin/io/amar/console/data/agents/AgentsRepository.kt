@@ -638,6 +638,12 @@ class AgentsRepository(
         // 50-message replay burst appended at maxIndex+1 and the transcript
         // tail duplicated per reconnect. Live messages (no absIndex) append.
         val abs = msg["absIndex"]?.jsonPrimitive?.longOrNull
+        // The hub's authoritative copy of OUR user_prompt lands at ITS log
+        // index — a different row than the optimistic local echo, so the
+        // message showed twice. Reap matching echoes when authority arrives.
+        if (abs != null && msg["type"]?.jsonPrimitive?.content == "user_prompt") {
+            dedupeEchoes(sessionId, msg["content"]?.jsonPrimitive?.content)
+        }
         val next = abs ?: (db.agents().maxIndex(sessionId) ?: -1L) + 1
         db.agents().replaceMessage(
             AgentMessageRow(
@@ -653,6 +659,27 @@ class AgentsRepository(
     }
 
     /** REST catch-up (M5 hub endpoint): page forward from our high-water. */
+    /** Delete local-echo user_prompt rows whose content now exists as an
+     *  authoritative (hub-indexed) row in the same session. */
+    private suspend fun dedupeEchoes(sessionId: String, content: String? = null) {
+        val prompts = db.agents().userPrompts(sessionId)
+        val echoes = prompts.filter { it.payloadJson.contains("\"localEcho\":true") }
+        if (echoes.isEmpty()) return
+        for (echo in echoes) {
+            val echoContent = runCatching {
+                (json.parseToJsonElement(echo.payloadJson).jsonObject["content"])?.jsonPrimitive?.content
+            }.getOrNull() ?: continue
+            if (content != null && echoContent != content) continue
+            val hasAuthority = prompts.any { other ->
+                other.pk != echo.pk && !other.payloadJson.contains("\"localEcho\":true") &&
+                    runCatching {
+                        (json.parseToJsonElement(other.payloadJson).jsonObject["content"])?.jsonPrimitive?.content
+                    }.getOrNull() == echoContent
+            }
+            if (hasAuthority) db.agents().deleteByPk(echo.pk)
+        }
+    }
+
     private suspend fun catchUpSession(sessionId: String, since: Long) {
         val resp = runCatching {
             hub.get("/agents/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/messages?since=$since&limit=$SESSION_CACHE_LIMIT")
@@ -668,7 +695,10 @@ class AgentsRepository(
                 payloadJson = m.toString(),
             )
         }
-        if (rows.isNotEmpty()) db.agents().insertMessages(rows)
+        if (rows.isNotEmpty()) {
+            db.agents().insertMessages(rows)
+            if (rows.any { it.kind == "user_prompt" }) dedupeEchoes(sessionId)
+        }
         val last = rows.lastOrNull()?.absIndex
         if (last != null) {
             db.agents().byId(sessionId)?.let {
@@ -757,6 +787,7 @@ class AgentsRepository(
             put("type", "user_prompt")
             put("sessionId", sessionId)
             put("content", content)
+            put("localEcho", true)
             if (imagePaths.isNotEmpty()) {
                 put("images", JsonArray(imagePaths.mapNotNull { spec ->
                     val path = spec.substringBeforeLast('|')

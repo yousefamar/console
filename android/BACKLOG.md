@@ -28,6 +28,14 @@ _(empty)_
   only until you have history — every reaction from the sheet or an existing
   chip bumps its count), plus a "+" that expands a searchable full picker over
   the whole 2,376-emoji shortcode table (adaptive grid, 300dp max).
+- Agent wake/initial message showed twice: the optimistic local echo AND the
+  hub's authoritative logged copy (different rows — the echo has no absIndex).
+  Echoes are now flagged localEcho and reaped when an authoritative user_prompt
+  with the same content lands (live replay + REST catch-up both sweep).
+- Agent images ACTUALLY render now: Coil 2.x has no data-URI fetcher, so
+  AsyncImage on the data: URLs silently rendered nothing (v69's fix persisted
+  the images but they still didn't show). data: URLs are now base64-decoded
+  natively to an ImageBitmap.
 
 ## Shipped
 
