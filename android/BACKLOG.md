@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v70 is shipped)_
+
+## Shipped
+
+### v70 (2026-07-23)
 - Chat unread counts disagreed (grid badge 4, header 2, room pills 3): three
   different formulas. Now ONE: unhandled CONVERSATIONS = unread, not muted, not
   low-priority, not snoozed — pinned included (grid DAO query gained the
@@ -37,7 +42,6 @@ _(empty)_
   the images but they still didn't show). data: URLs are now base64-decoded
   natively to an ImageBitmap.
 
-## Shipped
 
 ### v69 (2026-07-22)
 - Archived/Undo snackbar STILL rendered as a full-width bar at the top: UndoHost was
