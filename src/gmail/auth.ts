@@ -18,6 +18,25 @@ const GMAIL_USER_EMAIL_KEY = 'gmail_user_email'
 
 let signedIn = localStorage.getItem(GMAIL_SIGNED_IN_KEY) === '1'
 let userEmail: string | null = localStorage.getItem(GMAIL_USER_EMAIL_KEY)
+// True once initAuth() has heard back from the hub (or given up). Until then
+// a fresh device doesn't know whether mail is connected — the UI should hold
+// off on the connect screen rather than flash it at someone who already
+// signed in (the hub-login OAuth also connects mail).
+let hydrated = false
+
+type AuthChangedListener = () => void
+let authChangedListeners: AuthChangedListener[] = []
+
+/** Subscribe to any gmail auth-state change (signed-in, email, hydration).
+ *  Returns an unsubscribe fn. Compatible with useSyncExternalStore. */
+export function subscribeAuth(fn: AuthChangedListener): () => void {
+  authChangedListeners.push(fn)
+  return () => { authChangedListeners = authChangedListeners.filter((l) => l !== fn) }
+}
+
+function notifyAuthChanged() {
+  for (const fn of authChangedListeners) fn()
+}
 
 function persistAuthCache(nextSignedIn: boolean, nextEmail: string | null) {
   signedIn = nextSignedIn
@@ -32,6 +51,7 @@ function persistAuthCache(nextSignedIn: boolean, nextEmail: string | null) {
   } else {
     localStorage.removeItem(GMAIL_USER_EMAIL_KEY)
   }
+  notifyAuthChanged()
 }
 
 // --- Auth-state listeners ----------------------------------------------------
@@ -79,13 +99,23 @@ export async function initAuth(): Promise<void> {
   // Hub unreachable — keep the cached auth state so the app stays functional
   // offline. The hub is the source of truth, but we trust the last known
   // answer until it tells us otherwise (explicit disconnect or expiry).
-  if (!status) return
+  if (!status) {
+    hydrated = true
+    notifyAuthChanged()
+    return
+  }
   const primary = status.google.accounts.find((a) => a.isPrimary) ?? status.google.accounts[0]
+  hydrated = true
   persistAuthCache(!!primary?.hasToken, primary?.email ?? null)
 }
 
 export function isSignedIn(): boolean {
   return signedIn
+}
+
+/** Whether initAuth() has settled (hub answered or gave up). */
+export function isAuthHydrated(): boolean {
+  return hydrated
 }
 
 export function getUserEmail(): string | null {

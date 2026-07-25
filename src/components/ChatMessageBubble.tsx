@@ -7,6 +7,8 @@ import { diffWords } from 'diff'
 import DOMPurify from 'dompurify'
 import { Reply, SmilePlus, Clock, AlertCircle, Pencil, Download } from 'lucide-react'
 import clsx from 'clsx'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 
 // --- Markdown / HTML rendering ---
 
@@ -119,6 +121,10 @@ const EMOJI_GRID = [
   '\u{1F64F}', '\u{1F932}', '\u{1F914}', '\u{1F62E}', '\u{1F622}', '\u{1F621}', '\u{1F389}', '\u2705',
   '\u{1F440}', '\u{1F4AF}', '\u{1F64C}', '\u{1F60A}', '\u{1F91D}', '\u{1F4AA}', '\u{1F605}', '\u{1FAE1}',
 ]
+
+// Quick-react set shown in the mobile long-press menu header \u2014 the 6 most
+// common reactions, one tap each. Full grid is desktop-only (EmojiButton).
+const QUICK_REACTIONS = ['\u2764\uFE0F', '\u{1F44D}', '\u{1F602}', '\u{1F62E}', '\u{1F622}', '\u{1F64F}']
 
 function EmojiButton({ onSelect }: { onSelect: (emoji: string) => void }) {
   const [open, setOpen] = useState(false)
@@ -299,6 +305,7 @@ function EncryptedImage({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { m
     <img
       src={src}
       alt={alt}
+      data-chat-image
       className="max-w-xs max-h-60 rounded-sm cursor-pointer"
       loading="lazy"
       onClick={() => onClick?.(src)}
@@ -641,6 +648,84 @@ function AudioPlayer({ mediaUrl, encryptedFile, mimeType, filename, duration, wa
   )
 }
 
+// Renders a deleted message. The soft-delete guarantee: if the local row
+// has no body (server tombstone arrived before/instead of content), ask the
+// hub's append-only archive for the pre-redaction copy — original text plus
+// rescued media. Falls back to "Message deleted" only when the content was
+// genuinely never seen by the hub.
+function DeletedMessageBody({ message, onImageClick }: { message: DbChatMessage; onImageClick?: (src: string) => void }) {
+  const [archived, setArchived] = useState<{ body?: string; mediaUrl?: string; mimeType?: string } | null>(null)
+  const [checked, setChecked] = useState(false)
+
+  // Always consult the archive for deleted messages. Tombstone rows are
+  // re-created as type:'text' with the filename as body (paginate path), so
+  // gating on type/body missed recovered media entirely — a deleted image
+  // would render as struck-through "image.jpg" with no picture.
+  useEffect(() => {
+    if (message.id.startsWith('~')) { setChecked(true); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { hubBus } = await import('@/sync-bus')
+        const rec = await hubBus.rpc<{
+          content?: { body?: string }
+          mediaFile?: string
+          mediaMimeType?: string
+        } | null>('chat-rooms', 'archivedEvent', { roomId: message.roomId, eventId: message.id }, { timeoutMs: 8000 })
+        if (cancelled) return
+        if (rec) {
+          const { getHubUrl } = await import('@/hub')
+          setArchived({
+            body: rec.content?.body,
+            // Pass the archived mime as a query hint — the blob on disk has
+            // no extension so the route needs it to set Content-Type (else
+            // the <img> refuses to render an octet-stream under nosniff).
+            mediaUrl: rec.mediaFile
+              ? `${getHubUrl()}/matrix/archive/media/${rec.mediaFile}?mime=${encodeURIComponent(rec.mediaMimeType ?? '')}`
+              : undefined,
+            mimeType: rec.mediaMimeType,
+          })
+        }
+      } catch { /* archive miss — plain tombstone below */ }
+      if (!cancelled) setChecked(true)
+    })()
+    return () => { cancelled = true }
+  }, [message.id, message.roomId])
+
+  const text = message.body || archived?.body || ''
+  const isImage = archived?.mimeType?.startsWith('image/')
+  return (
+    <div className="text-sm">
+      {archived?.mediaUrl && isImage && (
+        <img
+          src={archived.mediaUrl}
+          alt="Deleted attachment (recovered)"
+          data-chat-image
+          // Deliberately NOT loading="lazy": these render inside pre-mounted
+          // (sometimes display:none) room scrollers where the lazy-load
+          // intersection check never fires, leaving currentSrc empty forever.
+          // Recovered attachments are rare enough that eager is free.
+          className="max-w-xs max-h-60 rounded-sm cursor-pointer opacity-80 border border-red-400/30 mb-1"
+          onClick={() => onImageClick?.(archived.mediaUrl!)}
+        />
+      )}
+      {archived?.mediaUrl && !isImage && (
+        <a href={archived.mediaUrl} download className="block text-xs underline text-text-secondary mb-1">
+          📎 recovered attachment
+        </a>
+      )}
+      <span className="text-red-400/70 line-through">
+        {text || (checked ? 'Message deleted' : '…')}
+      </span>
+      {message.deletedBy && (
+        <span className="text-[10px] text-text-tertiary ml-1">
+          (deleted by {message.deletedBy.split(':')[0]?.slice(1)})
+        </span>
+      )}
+    </div>
+  )
+}
+
 function EditDiff({ originalBody, newBody }: { originalBody: string; newBody: string }) {
   const parts = useMemo(() => diffWords(originalBody, newBody), [originalBody, newBody])
   return (
@@ -734,7 +819,43 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
     onReact?.(message, emoji)
   }, [onReact, message])
 
-  return (
+  const isMobile = useIsMobile()
+
+  // Mobile long-press action menu — the touch equivalent of the desktop
+  // hover toolbar. Reply/React/Edit/Copy, gated the same way the hover
+  // buttons are (edit only for own, non-deleted, acked text messages).
+  const canEdit = isOwn && !message.isDeleted && message.type === 'text' && !message.id.startsWith('~')
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!isMobile) return []
+    const items: ContextMenuItem[] = [
+      { label: 'Reply', onClick: () => onReply?.(message) },
+    ]
+    if (canEdit) items.push({ label: 'Edit', onClick: () => onEdit?.(message) })
+    if (message.body) {
+      items.push({ label: 'Copy text', onClick: () => { void navigator.clipboard?.writeText(message.body).catch(() => {}) } })
+    }
+    return items
+  }, [isMobile, canEdit, message, onReply, onEdit])
+
+  // Quick-react emoji strip shown at the top of the long-press menu.
+  const menuHeader = useMemo(() => {
+    if (!isMobile) return undefined
+    return (close: () => void) => (
+      <div className="flex gap-0.5">
+        {QUICK_REACTIONS.map((emoji) => (
+          <button
+            key={emoji}
+            onClick={() => { onReact?.(message, emoji); close() }}
+            className="h-8 w-8 flex items-center justify-center text-lg rounded-sm hover:bg-surface-2 active:bg-surface-2"
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    )
+  }, [isMobile, message, onReact])
+
+  const inner = (
     <div className={clsx('relative', showSender ? 'mt-3' : 'mt-0.5')}>
       {/* Swipe reply indicator */}
       {swipeX > 0 && (
@@ -811,14 +932,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
 
         {/* Body */}
         {message.isDeleted ? (
-          <div className="text-sm">
-            <span className="text-red-400/70 line-through">{message.body || 'Message deleted'}</span>
-            {message.deletedBy && (
-              <span className="text-[10px] text-text-tertiary ml-1">
-                (deleted by {message.deletedBy.split(':')[0]?.slice(1)})
-              </span>
-            )}
-          </div>
+          <DeletedMessageBody message={message} onImageClick={onImageClick} />
         ) : message.type === 'image' ? (
           <div className="mt-1">
             <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} mimeType={message.mediaMimeType} alt={message.body} onClick={onImageClick} />
@@ -924,4 +1038,16 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
       </div>
     </div>
   )
+
+  // On mobile, wrap in a long-press ContextMenu (Reply/React/Edit/Copy) — the
+  // touch equivalent of the desktop hover toolbar. Deleted messages have no
+  // actions. Desktop returns the bubble bare (hover toolbar handles it).
+  if (isMobile && !message.isDeleted && menuItems.length > 0) {
+    return (
+      <ContextMenu items={menuItems} header={menuHeader}>
+        {inner}
+      </ContextMenu>
+    )
+  }
+  return inner
 })

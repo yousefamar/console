@@ -519,7 +519,7 @@ export class PenHub {
           this.streamRegistered = true
           this.registerLiveStream()
         } else {
-          this.connect().catch((e) => this.log(`[pen] stream-on connect failed: ${(e as Error).message}`))
+          this.smartConnect().catch((e) => this.log(`[pen] stream-on connect failed: ${(e as Error).message}`))
         }
       } else {
         this.disconnect().catch((e) => this.log(`[pen] stream-off disconnect failed: ${(e as Error).message}`))
@@ -565,6 +565,41 @@ export class PenHub {
 
   async connect(mac?: string): Promise<{ ok: boolean; mac: string | null }> {
     return await this.rpc('pen_connect', mac ? { mac } : {})
+  }
+
+  /**
+   * Connect with a scan fallback. The pen ROTATES its BLE address (random
+   * private address — observed F4:1D:92… → D4:07:F5… across a power cycle), so
+   * the APK's saved MAC goes stale and a plain connect spins in "connecting"
+   * forever. Try the saved MAC first; if not connected within ~12 s, scan for
+   * the pen by name and connect to the freshest observation.
+   */
+  async smartConnect(): Promise<{ ok: boolean; mac: string | null; rescanned?: boolean }> {
+    const first = await this.connect()
+    const settled = await this.waitForConnected(12_000)
+    if (settled) return first
+    this.log('[pen] saved-MAC connect stalled — rescanning by name (MAC likely rotated)')
+    await this.scan(10_000).catch(() => {})
+    await new Promise((r) => setTimeout(r, 11_000))
+    const cutoff = Date.now() - 30_000
+    const fresh = this.getScanObservations().filter(
+      (o) => o.ts >= cutoff && (o.has19f1 === true || /pen|neo|nwp|moleskine/i.test(o.name)),
+    )
+    const target = fresh[0]
+    if (!target) return { ok: false, mac: null, rescanned: true }
+    this.log(`[pen] found ${target.name} at ${target.mac} — connecting`)
+    const second = await this.connect(target.mac)
+    return { ...second, rescanned: true }
+  }
+
+  /** Poll the cached snapshot until connected, or time out (false). */
+  private async waitForConnected(timeoutMs: number): Promise<boolean> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      if (this.cachedState?.status === 'connected') return true
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    return this.cachedState?.status === 'connected'
   }
 
   async disconnect(): Promise<{ ok: boolean }> {

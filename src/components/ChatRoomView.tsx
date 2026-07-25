@@ -21,6 +21,37 @@ export function ChatRoomView() {
   const matrixUserId = localStorage.getItem('matrix_user_id') ?? ''
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const [pdfLightbox, setPdfLightbox] = useState<{ src: string; filename: string } | null>(null)
+
+  // Gallery order for ←/→ paging in the lightbox: the visible room's rendered
+  // images, in DOM (chronological) order. Queried live at navigation time
+  // rather than mirrored into state — the DOM is already the source of truth
+  // for "what images are in this chat view" (incl. recovered deleted ones),
+  // and images arriving/leaving while zoomed just work.
+  const galleryImages = useCallback((): string[] => {
+    const scrollers = Array.from(document.querySelectorAll<HTMLElement>('.absolute.inset-0.overflow-y-auto'))
+      .filter((s) => s.style.display !== 'none')
+    return scrollers.flatMap((s) =>
+      Array.from(s.querySelectorAll<HTMLImageElement>('img[data-chat-image]')).map((i) => i.src),
+    )
+  }, [])
+
+  const stepLightbox = useCallback((dir: 1 | -1) => {
+    setLightboxSrc((cur) => {
+      if (!cur) return cur
+      const imgs = galleryImages()
+      if (imgs.length === 0) return cur
+      const idx = imgs.indexOf(cur)
+      if (idx === -1) return imgs[0]!
+      const next = (idx + dir + imgs.length) % imgs.length
+      return imgs[next]!
+    })
+  }, [galleryImages])
+
+  const lightboxPosition = useCallback((src: string): { index: number; total: number } | undefined => {
+    const imgs = galleryImages()
+    const idx = imgs.indexOf(src)
+    return idx >= 0 ? { index: idx + 1, total: imgs.length } : undefined
+  }, [galleryImages])
   // External "open profile" link per room (e.g. LinkedIn), fetched lazily
   // from the hub /info endpoint when a room is selected. Cached by roomId so
   // re-selecting doesn't refetch.
@@ -144,7 +175,13 @@ export function ChatRoomView() {
 
       {/* Image lightbox */}
       {lightboxSrc && (
-        <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+        <ImageLightbox
+          src={lightboxSrc}
+          onClose={() => setLightboxSrc(null)}
+          onPrev={() => stepLightbox(-1)}
+          onNext={() => stepLightbox(1)}
+          position={lightboxPosition(lightboxSrc)}
+        />
       )}
 
       {/* PDF lightbox */}

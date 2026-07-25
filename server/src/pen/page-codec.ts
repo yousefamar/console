@@ -64,12 +64,14 @@ const SVG_SCALE = 12 // Ncode-units → px for width/height (hi-res for OCR; vie
 // Fixed page rect in Ncode units so the canvas does NOT grow as you write. The
 // Moleskine Pocket Cahier's writable Ncode area starts at a crop-margin OFFSET
 // (~6,5), not the origin — anchoring the viewBox there keeps the margins even
-// (a 0,0 origin left a ~15mm dead band on the left/top). Calibrated from
-// four-corner test writing on notebook 727 (X≈7..42, Y≈6..64). Tune if a page clips.
+// (a 0,0 origin left a ~15mm dead band on the left/top). W/H are the DEVICE-
+// REPORTED page size for notebook 727 (page.data header in the app's .msknotes
+// export — see docs/neo-pen-protocol.md §10); X0/Y0 calibrated from four-corner
+// test writing (X≈7..42, Y≈6..64). Tune X0/Y0 if a page clips.
 export const NCODE_PAGE_X0 = 6
 export const NCODE_PAGE_Y0 = 5
-export const NCODE_PAGE_W = 37
-export const NCODE_PAGE_H = 60
+export const NCODE_PAGE_W = 37.96
+export const NCODE_PAGE_H = 59.06
 
 // Pressure → stroke width (Ncode units, full width). Observed force ≈ 1..300;
 // FORCE_REF is a firm press. ~0.15u (0.36mm) light … 0.5u (1.2mm) heavy.
