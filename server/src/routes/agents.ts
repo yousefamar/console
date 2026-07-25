@@ -556,18 +556,35 @@ export function runTaskWatchdog(ctx: AgentContext, staleMs = 15 * 60_000, maxNud
 }
 
 /** Inject a prompt into a session and resolve with the text of its next turn
- *  (captures streamed deltas + directly-emitted text; ends on `result` or the
- *  timeout). Used to elicit a fork's hand-back summary at merge time. */
-function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, timeoutMs: number): Promise<string> {
+ *  (captures streamed deltas + directly-emitted text; ends on `result`).
+ *  Timeout is INACTIVITY-based, not a fixed cap: any message from the session
+ *  (init, tool events, streamed text) resets the clock, so a slow turn — e.g. a
+ *  hibernated fork that must first wake via --resume on a huge transcript, then
+ *  run cleanup tools before replying — isn't cut off mid-work. (A fixed 60s cap
+ *  here made merging any hibernated/large fork "fail": the summary arrived at
+ *  ~70-290s, after captureNextTurn had already resolved empty.) `maxMs` is the
+ *  hard ceiling so a wedged session can't leak the listener forever. */
+function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, inactivityMs: number, maxMs = 10 * 60_000): Promise<string> {
   return new Promise((resolve) => {
     let buf = ''
+    let idleTimer: ReturnType<typeof setTimeout>
+    const armIdle = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(finish, inactivityMs)
+    }
     const onMsg = (m: HubMessage) => {
+      armIdle() // any sign of life extends the window
       if (m.type === 'text_delta' || m.type === 'text') buf += m.content
       else if (m.type === 'result') finish()
     }
-    const finish = () => { clearTimeout(timer); session.off('hub_message', onMsg); resolve(buf.trim()) }
-    const timer = setTimeout(finish, timeoutMs)
+    const finish = () => {
+      clearTimeout(idleTimer); clearTimeout(maxTimer)
+      session.off('hub_message', onMsg)
+      resolve(buf.trim())
+    }
+    const maxTimer = setTimeout(finish, maxMs)
     session.on('hub_message', onMsg)
+    armIdle()
     wakeSession(ctx, session, prompt)
   })
 }
@@ -579,7 +596,7 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, ti
  *  so it can receive the digest). A SUMMARY — not the transcript — keeps the
  *  parent's context clean. For an org child the parent also absorbs the child's
  *  ROLE: its sub-reports reparent to the parent and the child's role is deleted. */
-export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 60_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
