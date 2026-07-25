@@ -11,7 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v70 is shipped)_
+- Quick-react row seeds from your REAL reaction history on first open: reactions
+  from any device aggregate onto cached message rows ({emoji: [senders]}), so
+  RecentEmoji.seedFromHistory counts rows where your MXID reacted (verified on
+  Yousef's device: 👌 ×10, 🙏 ×9, 😂 ×3 …) and merges into the frequency ledger
+  (one-time, "seeded" flag). No re-training needed — 👌 leads from day one.
 
 ## Shipped
 

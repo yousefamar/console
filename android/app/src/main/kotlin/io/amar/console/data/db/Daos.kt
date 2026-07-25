@@ -123,6 +123,9 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages WHERE roomId = :roomId AND senderId = :senderId ORDER BY timestamp DESC LIMIT 1")
     suspend fun latestBySender(roomId: String, senderId: String): ChatMessageRow?
 
+    @Query("SELECT reactionsJson FROM chat_messages WHERE reactionsJson IS NOT NULL")
+    suspend fun allReactionBlobs(): List<String>
+
     @Query("DELETE FROM chat_messages WHERE id = :id")
     suspend fun delete(id: String)
 

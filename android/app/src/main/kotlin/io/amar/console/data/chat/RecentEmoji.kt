@@ -53,4 +53,32 @@ object RecentEmoji {
             .map { it.emoji }
         return (mine + DEFAULT.filter { it !in mine }).take(n)
     }
+
+    /** One-time seed from REAL reaction history: reactions aggregate onto
+     *  cached message rows ({emoji: [senders]}), so the user's past reactions
+     *  — from ANY device — are recoverable locally. Only counts entries where
+     *  [myUserId] is among the senders; no-op once seeded or if already used. */
+    fun seedFromHistory(ctx: Context, reactionsJsonRows: List<String>, myUserId: String) {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean("seeded", false)) return
+        val counts = HashMap<String, Int>()
+        for (raw in reactionsJsonRows) {
+            val obj = runCatching { org.json.JSONObject(raw) }.getOrNull() ?: continue
+            for (key in obj.keys()) {
+                val senders = obj.optJSONArray(key) ?: continue
+                for (i in 0 until senders.length()) {
+                    if (senders.optString(i) == myUserId) { counts[key] = (counts[key] ?: 0) + 1; break }
+                }
+            }
+        }
+        if (counts.isNotEmpty()) {
+            val existing = load(ctx)
+            val now = System.currentTimeMillis()
+            val merged = (existing + counts.map { (e, c) -> Entry(e, c, now) })
+                .groupBy { it.emoji }
+                .map { (e, list) -> Entry(e, list.sumOf { it.count }, list.maxOf { it.lastUsed }) }
+            save(ctx, merged)
+        }
+        prefs.edit().putBoolean("seeded", true).apply()
+    }
 }
