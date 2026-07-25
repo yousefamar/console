@@ -80,14 +80,9 @@ describe('BACKEND_PRESETS chains', () => {
     }
   })
 
-  it('chains are non-empty and lead with a verified-working model', () => {
-    expect(BACKEND_PRESETS.bedrock.chain.length).toBeGreaterThan(0)
-    expect(BACKEND_PRESETS.first_party.chain.length).toBeGreaterThan(0)
-    // opus-5 is a manual dropdown option only — NOT in the auto-fallback chain,
-    // because it 403s on this Bedrock account (no AWS Marketplace subscription).
-    // Leading a chain with it would re-break the fleet on every backend switch.
-    expect(BACKEND_PRESETS.bedrock.chain.some((id) => id.includes('opus-5'))).toBe(false)
-    expect(BACKEND_PRESETS.first_party.chain.some((id) => id.includes('opus-5'))).toBe(false)
+  it('chains are non-empty and most-capable-first (opus-5 leads both)', () => {
+    expect(BACKEND_PRESETS.bedrock.chain[0]).toContain('opus-5')
+    expect(BACKEND_PRESETS.first_party.chain[0]).toContain('opus-5')
   })
 })
 
