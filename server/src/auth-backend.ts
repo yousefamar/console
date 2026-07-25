@@ -58,7 +58,11 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     id: 'first_party',
     label: 'Claude Max subscription',
     env: {},
-    chain: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    // opus-5 leads (most capable). First-party form assumed bare (same pattern
+    // as every other model here) — not spawn-verified (couldn't test without
+    // switching the live backend off Bedrock); if it 400s the chain auto-falls
+    // back to fable-5. Verify with a one-shot spawn once on the Max sub.
+    chain: ['claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',
@@ -71,9 +75,11 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
       ANTHROPIC_DEFAULT_FABLE_MODEL: 'us.anthropic.claude-fable-5',
       ANTHROPIC_SMALL_FAST_MODEL: 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/5we3084lce1f',
     },
-    // opus-4-7 dropped from the first-party chain (not served on the Max sub);
-    // kept here since it IS available on this Bedrock deployment.
+    // opus-5 leads — spawn-verified working on this Bedrock deployment
+    // (2026-07-26; the bare + dated forms 400, only `us.anthropic.claude-opus-5`
+    // resolves). opus-4-7 kept (served on Bedrock, not on the Max sub).
     chain: [
+      'us.anthropic.claude-opus-5',
       'us.anthropic.claude-fable-5',
       'us.anthropic.claude-opus-4-8',
       'us.anthropic.claude-opus-4-7',

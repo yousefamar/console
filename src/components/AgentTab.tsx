@@ -358,12 +358,14 @@ export const AgentTab = memo(function AgentTab() {
               ))}
               <optgroup label="──────────"></optgroup>
               <optgroup label="Direct (first-party)">
+                {!agentModelChain.includes('claude-opus-5') && <option value="claude-opus-5">claude-opus-5</option>}
                 {!agentModelChain.includes('claude-fable-5') && <option value="claude-fable-5">claude-fable-5</option>}
                 {!agentModelChain.includes('claude-opus-4-8') && <option value="claude-opus-4-8">claude-opus-4-8</option>}
                 {!agentModelChain.includes('claude-sonnet-5') && <option value="claude-sonnet-5">claude-sonnet-5</option>}
                 {!agentModelChain.includes('claude-haiku-4-5-20251001') && <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>}
               </optgroup>
               <optgroup label="Bedrock">
+                {!agentModelChain.includes('us.anthropic.claude-opus-5') && <option value="us.anthropic.claude-opus-5">us.anthropic.claude-opus-5</option>}
                 {!agentModelChain.includes('us.anthropic.claude-fable-5') && <option value="us.anthropic.claude-fable-5">us.anthropic.claude-fable-5</option>}
                 {!agentModelChain.includes('us.anthropic.claude-opus-4-8') && <option value="us.anthropic.claude-opus-4-8">us.anthropic.claude-opus-4-8</option>}
                 {!agentModelChain.includes('us.anthropic.claude-opus-4-7') && <option value="us.anthropic.claude-opus-4-7">us.anthropic.claude-opus-4-7</option>}

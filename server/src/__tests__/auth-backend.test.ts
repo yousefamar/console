@@ -80,9 +80,9 @@ describe('BACKEND_PRESETS chains', () => {
     }
   })
 
-  it('chains are non-empty and most-capable-first (fable-5 leads both)', () => {
-    expect(BACKEND_PRESETS.bedrock.chain[0]).toContain('fable-5')
-    expect(BACKEND_PRESETS.first_party.chain[0]).toContain('fable-5')
+  it('chains are non-empty and most-capable-first (opus-5 leads both)', () => {
+    expect(BACKEND_PRESETS.bedrock.chain[0]).toContain('opus-5')
+    expect(BACKEND_PRESETS.first_party.chain[0]).toContain('opus-5')
   })
 })
 
