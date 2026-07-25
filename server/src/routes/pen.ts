@@ -193,7 +193,10 @@ export function handlePenRoutes(
       switch (command) {
         case 'connect': {
           const mac = typeof body.mac === 'string' && body.mac ? body.mac : undefined
-          result = await penHub.connect(mac)
+          // No explicit MAC → smartConnect: the pen rotates its BLE address
+          // across power cycles, so fall back to a scan-by-name when the
+          // saved MAC stalls in "connecting".
+          result = mac ? await penHub.connect(mac) : await penHub.smartConnect()
           break
         }
         case 'disconnect':

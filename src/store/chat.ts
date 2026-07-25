@@ -286,8 +286,11 @@ interface ChatState {
   replyingTo: { eventId: string; body: string; senderName: string } | null
   // The message currently being edited. Compose input pre-fills with `body`
   // and submits an `m.replace` event referencing `eventId` instead of a new
-  // message. Null when not in edit mode.
-  editingMessage: { eventId: string; body: string; roomId: string } | null
+  // message. Null when not in edit mode. `seq` is a monotonic nonce so the
+  // compose input's pre-fill effect re-fires even when the SAME message is
+  // re-selected for editing (otherwise editing X twice in a row produced an
+  // identical object and the textarea never re-armed).
+  editingMessage: { eventId: string; body: string; formattedBody?: string; roomId: string; seq: number } | null
 
   // Actions
   setRooms: (rooms: DbChatRoom[]) => void
@@ -314,7 +317,7 @@ interface ChatState {
 
   // Edit
   setEditingMessage: (msg: DbChatMessage | null) => void
-  editMessage: (roomId: string, eventId: string, newBody: string) => Promise<void>
+  editMessage: (roomId: string, eventId: string, newBody: string, formattedBody?: string, mentionUserIds?: string[]) => Promise<void>
 
   // Undo
   undoMarkRead: (room: DbChatRoom) => Promise<void>
@@ -393,31 +396,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // Fetch messages from server if not cached locally (live query handles display)
   ensureMessages: async (roomId) => {
-    const count = await db.chatMessages.where('roomId').equals(roomId).count()
-    if (count > 0) return
+    const cached = await db.chatMessages.where('roomId').equals(roomId).toArray()
+    const count = cached.length
+
+    // Gap detection: the hub-owned room snapshot (preview/lastMessageTime) is
+    // refetched wholesale on every reconnect and is always current, but the
+    // actual message EVENTS ride the separate matrix.delta channel and can be
+    // missed (delta dropped while backgrounded, cursor advanced past them,
+    // etc.). Symptom: preview + root apps show a recent message that isn't in
+    // the local timeline. If the room's known lastMessageTime is meaningfully
+    // newer than our newest cached message, backfill forward from the server
+    // even though we already have *some* messages cached.
+    const room = await db.chatRooms.get(roomId)
+    const newestCached = count > 0 ? cached.reduce((m, x) => Math.max(m, x.timestamp), 0) : 0
+    const GAP_SLACK_MS = 60_000
+    const hasForwardGap = !!room?.lastMessageTime && room.lastMessageTime > newestCached + GAP_SLACK_MS
+
+    if (count > 0 && !hasForwardGap) return
 
     try {
-      // Paginate until we have actual displayable messages, not just state /
-      // reaction events. Busy group rooms can have pages of m.room.member +
-      // m.reaction (e.g. RSVPs to an event message) with zero m.room.message
-      // — a single page used to come back empty and the room rendered blank.
-      let from: string | undefined
-      let stored = 0
-      for (let page = 0; page < 5 && stored < INITIAL_PAGE_SIZE; page++) {
-        const result = await fetchAndStoreMessages(roomId, { from, limit: OLDER_PAGE_SIZE })
-        stored += result.messages.length
-        if (!result.end) break // history exhausted
-        from = result.end
-        await db.chatRooms.update(roomId, { prevBatch: result.end })
-      }
-      const msgs = await db.chatMessages.where('roomId').equals(roomId).toArray()
-      if (msgs.length > 0) {
-        const latest = msgs.reduce((a, b) => a.timestamp > b.timestamp ? a : b)
-        await db.chatRooms.update(roomId, {
-          lastMessageBody: latest.body,
-          lastMessageSender: latest.senderName,
-          lastMessageTime: latest.timestamp,
-        })
+      if (count > 0 && hasForwardGap) {
+        // Forward-fill: pull the most recent messages (dir=b from the live
+        // head) and merge. bulkPut in fetchAndStoreMessages is idempotent on
+        // event_id, so overlap with what we already have is harmless. One or
+        // two pages is plenty to close a typical missed-delta gap.
+        let from: string | undefined
+        for (let page = 0; page < 3; page++) {
+          const result = await fetchAndStoreMessages(roomId, { from, limit: OLDER_PAGE_SIZE })
+          // Stop once we've paged back to messages we already had.
+          const reachedKnown = result.messages.some((m) => m.timestamp <= newestCached)
+          if (reachedKnown || !result.end || result.messages.length === 0) break
+          from = result.end
+        }
+      } else {
+        // Cold room (nothing cached): paginate until we have actual displayable
+        // messages, not just state / reaction events. Busy group rooms can have
+        // pages of m.room.member + m.reaction with zero m.room.message.
+        let from: string | undefined
+        let stored = 0
+        for (let page = 0; page < 5 && stored < INITIAL_PAGE_SIZE; page++) {
+          const result = await fetchAndStoreMessages(roomId, { from, limit: OLDER_PAGE_SIZE })
+          stored += result.messages.length
+          if (!result.end) break // history exhausted
+          from = result.end
+          await db.chatRooms.update(roomId, { prevBatch: result.end })
+        }
       }
       await backfillLastReadTs(roomId)
     } catch (err) {
@@ -867,21 +890,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setEditingMessage: (msg) => {
-    set({
+    set((s) => ({
       editingMessage: msg
-        ? { eventId: msg.id, body: msg.body, roomId: msg.roomId }
+        ? {
+            eventId: msg.id,
+            body: msg.body,
+            formattedBody: msg.formattedBody,
+            roomId: msg.roomId,
+            // Bump the nonce each time so re-editing the same message is a
+            // distinct trigger for the compose pre-fill effect.
+            seq: (s.editingMessage?.seq ?? 0) + 1,
+          }
         : null,
-    })
+    }))
   },
 
-  editMessage: async (roomId, eventId, newBody) => {
+  editMessage: async (roomId, eventId, newBody, formattedBody, mentionUserIds) => {
     const trimmed = newBody.trim()
     if (!trimmed) return
     // No-op if the body didn't actually change. Avoids an empty edit roundtrip
     // and the resulting "(edited)" marker on a message that's textually the
     // same as before.
     const existing = await db.chatMessages.get(eventId)
-    if (existing && existing.body === trimmed) {
+    if (existing && existing.body === trimmed && (existing.formattedBody ?? undefined) === formattedBody) {
       set({ editingMessage: null })
       return
     }
@@ -891,6 +922,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (existing) {
       await db.chatMessages.update(eventId, {
         body: trimmed,
+        formattedBody: formattedBody ?? undefined,
         isEdited: true,
         originalBody: existing.originalBody ?? existing.body,
       })
@@ -903,12 +935,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ editingMessage: null })
     // Build the m.replace content. The outer `body` is a fallback for clients
     // that don't understand m.new_content (Matrix spec convention prefixes a
-    // " * " so it's still readable raw).
+    // " * " so it's still readable raw). Mention anchors + m.mentions are
+    // rebuilt and carried on BOTH the outer content and m.new_content so an
+    // edit doesn't strip @-mentions to plain text (and bridges/Element still
+    // treat the edited message as pinging the mentioned users).
+    const newContent: Record<string, unknown> = { msgtype: 'm.text', body: trimmed }
     const content: Record<string, unknown> = {
       msgtype: 'm.text',
       body: ` * ${trimmed}`,
-      'm.new_content': { msgtype: 'm.text', body: trimmed },
+      'm.new_content': newContent,
       'm.relates_to': { rel_type: 'm.replace', event_id: eventId },
+    }
+    if (formattedBody) {
+      content.format = 'org.matrix.custom.html'
+      content.formatted_body = ` * ${formattedBody}`
+      newContent.format = 'org.matrix.custom.html'
+      newContent.formatted_body = formattedBody
+    }
+    if (mentionUserIds && mentionUserIds.length > 0) {
+      const mentions = { user_ids: mentionUserIds }
+      content['m.mentions'] = mentions
+      newContent['m.mentions'] = mentions
     }
     try {
       const { hubBus } = await import('@/sync-bus')

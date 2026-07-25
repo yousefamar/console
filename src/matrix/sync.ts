@@ -37,6 +37,18 @@ export function buildMessageFromContent(
   const msgtype = content.msgtype as string
   if (!msgtype) return null
 
+  // Drop the WhatsApp bridge's transient "couldn't decrypt yet" placeholder.
+  // Beeper's WA bridge posts this m.notice when it can't decrypt an inbound
+  // WA message on its end, then posts the REAL message as a separate event
+  // once the sender re-sends. The two aren't linked (no m.replace), so the
+  // notice just lingers as grey-italic noise superseding nothing. It carries
+  // zero user content — filter it at the single conversion choke point so it
+  // never persists on either the live-sync or paginate path.
+  if (msgtype === 'm.notice') {
+    const body = typeof content.body === 'string' ? content.body : ''
+    if (/^Decrypting message from WhatsApp failed/i.test(body)) return null
+  }
+
   let type: DbChatMessage['type'] = 'text'
   if (msgtype === 'm.notice') type = 'notice'
   else if (msgtype === 'm.emote') type = 'emote'
@@ -499,17 +511,48 @@ async function processJoinedRoom(
         } else {
           // FAIL_RETRIABLE, FAIL_PERMANENT, etc.
           const msg = `bridge: ${status}${reason ? ` (${reason})` : ''}`
-          await db.chatMessages.update(targetId, { sendFailed: msg })
-          // Fire a notification so the user knows without needing the chat open
-          import('@/notifications').then(({ notify }) => {
-            const room = existing
-            notify({
-              title: 'Message failed to send',
-              body: room?.name ? `in ${room.name}: ${msg}` : msg,
-              tag: `send-failed:${targetId}`,
-              data: { pane: 'chat' as const, itemId: roomId },
-            })
-          }).catch(() => {})
+          const target = await db.chatMessages.get(targetId)
+
+          // Auto-recover the wedged-Megolm case: FAIL_RETRIABLE with
+          // undecryptable_event means the bridge couldn't decrypt our send
+          // because the outbound session went stale and the hub didn't
+          // re-share the key. Rotate + resend once (guarded so a genuinely
+          // undeliverable message can't loop). This is the automation of the
+          // manual rotateRoomKey+resend runbook.
+          const isUndecryptable = status === 'FAIL_RETRIABLE'
+            && /undecryptable_event/i.test(reason ?? '')
+          let autoRecovered = false
+          if (isUndecryptable && target && !target.autoRotateRetried) {
+            await db.chatMessages.update(targetId, { autoRotateRetried: true, sendFailed: msg })
+            try {
+              const { hubBus } = await import('@/sync-bus')
+              const res = await hubBus.rpc<{ ok: boolean; eventId?: string; reason?: string }>(
+                'matrix', 'resendAfterRotate', { roomId, eventId: targetId }, { timeoutMs: 30000 },
+              )
+              if (res?.ok && res.eventId) {
+                // Resend succeeded under a fresh key. The wedged original is
+                // superseded by the resend; drop the failed marker + remove the
+                // dead echo so the UI shows only the delivered copy.
+                await db.chatMessages.delete(targetId)
+                autoRecovered = true
+              }
+            } catch { /* fall through to the normal failure surface below */ }
+          }
+
+          // Only surface the failure if auto-recovery didn't handle it.
+          if (!autoRecovered) {
+            await db.chatMessages.update(targetId, { sendFailed: msg })
+            // Fire a notification so the user knows without needing the chat open
+            import('@/notifications').then(({ notify }) => {
+              const room = existing
+              notify({
+                title: 'Message failed to send',
+                body: room?.name ? `in ${room.name}: ${msg}` : msg,
+                tag: `send-failed:${targetId}`,
+                data: { pane: 'chat' as const, itemId: roomId },
+              })
+            }).catch(() => {})
+          }
         }
       }
     }

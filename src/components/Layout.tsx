@@ -1,4 +1,4 @@
-import { memo, useRef, useState, useEffect, lazy, Suspense } from 'react'
+import { memo, useRef, useState, useEffect, lazy, Suspense, useSyncExternalStore } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ThreadList } from './ThreadList'
 import { ThreadView } from './ThreadView'
@@ -12,7 +12,17 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import { incrementalSync, fullSync } from '@/gmail/sync'
-import { isSignedIn as isGmailConnected, signIn as gmailSignIn } from '@/gmail/auth'
+import { isSignedIn, isAuthHydrated, subscribeAuth, signIn as gmailSignIn } from '@/gmail/auth'
+
+// Reactive gmail auth state — re-renders when initAuth() hydrates from the
+// hub, so a fresh device doesn't get stuck on the connect screen after the
+// hub-login OAuth (which already connected mail).
+function useGmailConnected(): boolean {
+  return useSyncExternalStore(subscribeAuth, isSignedIn)
+}
+function useGmailAuthHydrated(): boolean {
+  return useSyncExternalStore(subscribeAuth, isAuthHydrated)
+}
 import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
@@ -69,10 +79,13 @@ const MailTab = memo(function MailTab() {
     rightIconRef: swipeRightIconRef,
   })
 
-  const gmailConnected = isGmailConnected()
+  const gmailConnected = useGmailConnected()
+  const authHydrated = useGmailAuthHydrated()
 
   if (!gmailConnected) {
-    return <MailConnectScreen />
+    // Don't flash the connect screen while the hub answer is still in flight
+    // — the hub-login OAuth usually already connected mail.
+    return authHydrated ? <MailConnectScreen /> : null
   }
 
   return (
@@ -165,7 +178,7 @@ export function Layout() {
   const toggleMusic = useMusicStore((s) => s.toggleOpen)
   const isMobile = useIsMobile()
 
-  const gmailConnected = isGmailConnected()
+  const gmailConnected = useGmailConnected()
   const matrixConnected = isMatrixConnected()
 
   const isHome = activePane === 'home'

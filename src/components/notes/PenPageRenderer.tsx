@@ -24,21 +24,34 @@ function parseStrokes(svg: string): Stroke[] {
   }
 }
 
-/** scratch/pen/<note>/page-<page>.svg → {note, page}. */
+/** scratch/pen/<note>/page-<page>.svg → {note, page} (numeric note = live-capable). */
 function addrFromPath(path: string): { note: number; page: number } | null {
   const m = path.match(/scratch\/pen\/(\d+)\/page-(\d+)\.svg$/)
   if (!m) return null
   return { note: parseInt(m[1]!, 10), page: parseInt(m[2]!, 10) }
 }
 
+/** Any pen-page path (incl. named notebooks, e.g. imported app exports) → display label. */
+function labelFromPath(path: string): string {
+  const m = path.match(/scratch\/pen\/([^/]+)\/page-(\d+)\.svg$/)
+  return m ? `${m[1]} · page ${m[2]}` : path
+}
+
+/** A pen-page SVG we didn't write (no embedded penpage strokes) — e.g. the
+ *  official Moleskine app's export. Rendered verbatim instead of re-drawn. */
+function isForeignSvg(svg: string): boolean {
+  return svg.includes('<svg') && !svg.includes('<penpage>')
+}
+
 // Kept in sync with server/src/pen/page-codec.ts — the hub renders the durable
 // SVG with the same geometry; this draws the live overlay identically.
 // Page rect anchored at the Ncode crop-margin offset (writable area starts ~6,5,
-// not 0,0). Calibrated from four-corner test writing on notebook 727.
+// not 0,0). W/H = device-reported page size for notebook 727 (.msknotes page.data
+// header); X0/Y0 calibrated from four-corner test writing.
 const NCODE_PAGE_X0 = 6
 const NCODE_PAGE_Y0 = 5
-const NCODE_PAGE_W = 37
-const NCODE_PAGE_H = 60
+const NCODE_PAGE_W = 37.96
+const NCODE_PAGE_H = 59.06
 const FORCE_REF = 480
 const W_MIN = 0.06
 const W_MAX = 0.18
@@ -101,6 +114,9 @@ function strokeRibbonPath(s: Stroke): string {
 export function PenPageRenderer({ filePath, content }: { filePath: string; content: string }) {
   const addr = useMemo(() => addrFromPath(filePath), [filePath])
   const [base, setBase] = useState<Stroke[]>(() => parseStrokes(content))
+  // Foreign pen-page SVG (no embedded strokes — e.g. Moleskine app export):
+  // rendered verbatim rather than re-drawn from dots.
+  const [raw, setRaw] = useState<string | null>(() => (isForeignSvg(content) ? content : null))
   const [live, setLive] = useState<Stroke[]>([])
   const liveRef = useRef<Stroke[]>([])
   const rafRef = useRef<number | null>(null)
@@ -114,12 +130,17 @@ export function PenPageRenderer({ filePath, content }: { filePath: string; conte
   // would otherwise show a stale page until you write again.
   useEffect(() => {
     setBase(parseStrokes(content))
+    setRaw(isForeignSvg(content) ? content : null)
     liveRef.current = []
     setLive([])
     let cancelled = false
     const adapter = useNotesStore.getState().adapter
     adapter?.readFile(filePath)
-      .then((svg) => { if (!cancelled) setBase(parseStrokes(svg)) })
+      .then((svg) => {
+        if (cancelled) return
+        setBase(parseStrokes(svg))
+        setRaw(isForeignSvg(svg) ? svg : null)
+      })
       .catch(() => {})
     return () => { cancelled = true }
   }, [content, filePath])
@@ -193,7 +214,7 @@ export function PenPageRenderer({ filePath, content }: { filePath: string; conte
         </button>
         <span className="flex items-center gap-1.5 text-[11px] text-text-tertiary">
           <PenLine size={11} />
-          {addr ? `notebook ${addr.note} · page ${addr.page}` : filePath}
+          {labelFromPath(filePath)}
         </span>
         <button
           onClick={() => void nextPage()}
@@ -204,7 +225,13 @@ export function PenPageRenderer({ filePath, content }: { filePath: string; conte
         </button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center p-4">
-        {empty ? (
+        {empty && raw ? (
+          // Foreign export (black ink, transparent bg) — white card so it reads in dark mode.
+          <div
+            className="max-w-full max-h-full overflow-auto bg-[#faf9f5] rounded-sm shadow-sm p-2 [&_svg]:max-w-full [&_svg]:h-auto"
+            dangerouslySetInnerHTML={{ __html: raw }}
+          />
+        ) : empty ? (
           <span className="text-[11px] text-text-tertiary">Waiting for strokes — start writing on this page.</span>
         ) : (
           <svg

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { Search } from 'lucide-react'
 import { useChatStore } from '@/store/chat'
+import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { hubBus } from '@/sync-bus'
@@ -37,8 +39,22 @@ function stabilizeRooms(prev: Map<string, DbChatRoom>, next: DbChatRoom[]): DbCh
 export function ChatRoomList() {
   const selectedRoomId = useChatStore((s) => s.selectedRoomId)
   const selectRoom = useChatStore((s) => s.selectRoom)
+  const setShowSearch = useUiStore((s) => s.setShowSearch)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+
+  // Mobile lacks the `/` shortcut, so a tappable search bar opens the same
+  // SearchOverlay (ChatSearch) that `/` triggers on desktop — one search
+  // impl, two entry points. Rendered at the top of the list on mobile only.
+  const mobileSearchBar = isMobile ? (
+    <button
+      onClick={() => setShowSearch(true)}
+      className="flex w-full items-center gap-2 border-b border-border bg-surface-0 px-3 py-2 text-left text-sm text-text-tertiary"
+    >
+      <Search size={14} />
+      <span>Search all chats…</span>
+    </button>
+  ) : null
 
   usePullToRefresh(listRef, () => hubBus.rpc('matrix', 'syncNow', {}), isMobile)
 
@@ -100,14 +116,18 @@ export function ChatRoomList() {
 
   if (!liveChatRooms || liveChatRooms.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center p-4">
-        <p className="text-xs text-text-tertiary">No unread chats</p>
+      <div className="flex h-full flex-col">
+        {mobileSearchBar}
+        <div className="flex flex-1 items-center justify-center p-4">
+          <p className="text-xs text-text-tertiary">No unread chats</p>
+        </div>
       </div>
     )
   }
 
   return (
     <div ref={listRef} className="h-full overflow-y-auto">
+      {mobileSearchBar}
       {/* Pinned favourites — always visible */}
       {pinnedRooms.map((room) => (
         <div key={room.id} data-room-id={room.id}>

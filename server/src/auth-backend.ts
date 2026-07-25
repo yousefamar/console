@@ -75,9 +75,13 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
       ANTHROPIC_DEFAULT_FABLE_MODEL: 'us.anthropic.claude-fable-5',
       ANTHROPIC_SMALL_FAST_MODEL: 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/5we3084lce1f',
     },
-    // opus-5 leads — spawn-verified working on this Bedrock deployment
-    // (2026-07-26; the bare + dated forms 400, only `us.anthropic.claude-opus-5`
-    // resolves). opus-4-7 kept (served on Bedrock, not on the Max sub).
+    // opus-5 leads — full-turn verified on this Bedrock deployment (2026-07-25;
+    // the bare + dated forms 400, only `us.anthropic.claude-opus-5` resolves).
+    // Required a one-time AWS Marketplace agreement acceptance
+    // (CreateFoundationModelAgreement for anthropic.claude-opus-5, done via the
+    // `default`/user-amar profile which holds aws-marketplace:Subscribe) — before
+    // that every turn 403'd "Model access is denied". opus-4-7 kept (served on
+    // Bedrock, not on the Max sub).
     chain: [
       'us.anthropic.claude-opus-5',
       'us.anthropic.claude-fable-5',

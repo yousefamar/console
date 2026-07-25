@@ -658,6 +658,18 @@ over that last dot record's first 15 bytes
 before throwing `CheckSumException` (`:301`). Pressures > 852 are discarded as
 invalid (`:272`–`:273`).
 
+**⚠ Upstream corrections (post-clone, checked 2026-07-11):**
+- Commit `a6dbfd64` (2026-06-22): **the offline chunk payload starts at offset 18, not
+  21** — for both compressed and uncompressed data. The pre-fix SDK read uncompressed
+  payloads from 21 with `sizeBeforeCompress-1` (skipping 3 bytes AND dropping the last) —
+  i.e. NeoLAB's own parser corrupted every uncompressed offline transfer until June 2026.
+  Use offset 18 when decoding our rescued `.bin` chunks.
+- Commit `f5b04bed` (2025-10-03) "Temporary handling when offline data is broken": bail out
+  of stroke parsing when the payload truncates mid-dot — NeoLAB-level acknowledgment that
+  pens deliver broken/truncated offline stores (our pen's empty-index state is kin).
+- A weekly hub cron (`m6Vfu5U`) watches the NeoSmartpen org for further pushes
+  (marker: `~/.config/console/neolab-upstream.json`).
+
 ---
 
 ## 7. ★ Offline erase semantics ★ (CRITICAL)
@@ -774,3 +786,61 @@ transfer is the one the pen performs because the host set byte 0 = `1`.**
 - The intended Console feature is **non-destructive offline-stroke extraction**; the
   load-bearing rule is §7: keep-after-transfer (byte 0 = 2), never send a remove or
   disk-reset command.
+
+## 9. Official app SVG export format (analysed 2026-07-10)
+
+Five pages exported from the Moleskine Notes app (notebook "amarpad-mini-1", the
+early-streamed app-resident pages) — the app's own render of the same dot stream we
+capture. Analysis of the real files (`scratch/pen/amarpad-mini-1/page-*.svg` in the vault):
+
+- **One closed, filled outline `<path>` per stroke** — `style='fill:rgba(0,0,0,1);
+  stroke:none'`, polygonal segments only (`M` + relative `l`, no curves), always `Z`-closed.
+  I.e. a **pressure-width ribbon**, the same approach as our `strokeRibbonPath`. Validates
+  our renderer design.
+- **Coordinate unit = 0.005 Ncode** (200 steps per Ncode cell ≈ 12 µm), integer coords.
+  Verified: page-3 content spans 7 973×11 655 units = ~40×58 Ncode ≈ 94×138 mm — a Pocket
+  Cahier page. The pen's native resolution is 0.01 Ncode (`fx`/`fy` hundredths), so the
+  export upsamples ×2 beyond the sensor; our `toFixed(2)` floats keep native precision —
+  **no fidelity loss vs the official export**.
+- **viewBox is content-cropped per page** (`0 0 <w> <h>` sized to strokes + a fixed
+  ~1 082-unit ≈ 13 mm margin; content always starts ≈1 082). No stable page rect — unlike
+  our fixed-page viewBox (ours is better for spatial stability across a filling page).
+- **`width`/`height` = viewBox × 3/25.4** (≈10 px/mm treating the unit as 0.005 Ncode).
+  Our `SVG_SCALE` renders ~5 px/mm — bump if OCR rasterization ever needs more.
+- **No metadata whatsoever** — pressure/timing/raw dots are unrecoverable from their
+  export. Ours embeds the lossless `PenPageDoc` in `<metadata><penpage>`; strictly richer.
+- Console renders these foreign exports via the `PenPageRenderer` raw-SVG fallback (any
+  `scratch/pen/**.svg` without a `<penpage>` block is rendered verbatim on a paper card).
+
+## 10. `.msknotes` Google-Drive export (LOSSLESS — analysed 2026-07-10)
+
+The app's Drive backup ("MoleskineNotes2(DO NOT MODIFY)/<notebook>/<notebook>.msknotes")
+is the **full-fidelity** export the SVGs (§9) are not. It's a zip:
+`Data/<NNNN>.page_store/page.data` (binary page store per page) + `Audio/*.m4a` voice
+memos (+ `.ameta`) + `NoteInfo.xml` (notebookId, title, page count, dates).
+
+`page.data` = Moleskine's fork (magic `msk`, version 1) of NeoLAB's "NeoNote data"
+format (`neo` v2 — spec: `NeoNote_data_Eng_20160117.pdf` in the Documentations repo).
+Byte-verified layout (all LE):
+
+    Page header:
+      magic "msk"(3) | version u32 | notebookId u32 | pageNumber u32
+      | pageWidth f32 | pageHeight f32 (Ncode units — 727 reports 37.96×59.06,
+        confirming our NCODE_PAGE_W/H=37/60 render constants)
+      | createdTime u64 ms | modifiedTime u64 ms | dirty u8 | u8 | numStrokes u32
+    Stroke record (×numStrokes):
+      type u8 (0=stroke, 1=voice memo) | color u32 ARGB | u8 | thickness f32
+      | startTime u64 ms | numDots u32
+    Dot (×numDots, 13 bytes):
+      x f32 | y f32 (Ncode) | pressure f32 (normalized 0..1) | timeDiff u8 (ms since prev)
+    Trailer: page guid (len-prefixed string) + voice-memo records.
+
+So **pressure IS preserved** (plus per-dot timing, stroke color/thickness/startTime and
+synced audio memos) — everything the SVG export throws away. Validated on notebook 727
+page 1: 53 strokes / 2 288 dots, pressures 0.11–0.33, byte-exact stroke count vs the SVG.
+
+**Importer: `scripts/import-msknotes.py <file.msknotes> [--notebook <name>]`** — parses
+every page store and renders through OUR `renderPageSvg` (force = pressure × 480 to match
+the live pipeline's FORCE_REF), so imported pages are format-identical to live-streamed
+ones (lossless `<penpage>` metadata included). Note: an export may contain only the pages
+you explicitly exported (the 2026-07-10 archive held just page 1 of 5).

@@ -177,6 +177,7 @@ export interface DbChatMessage {
   isVoiceNote?: boolean      // MSC 3245 voice message flag
   encryptedEvent?: string // JSON of original m.room.encrypted event (for retry after key import)
   sendFailed?: string       // Error message if local echo failed to send
+  autoRotateRetried?: boolean // Guard: we already auto-rotated+resent this on a bridge FAIL_RETRIABLE (prevents loops)
 }
 
 // --- Encrypted File (E2EE attachment) ---

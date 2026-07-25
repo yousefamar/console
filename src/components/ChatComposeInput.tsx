@@ -3,7 +3,7 @@ import { useChatStore } from '@/store/chat'
 import { useGlassesStore } from '@/glasses/store'
 import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
-import { primeRoomMembers, searchRoomMembers, type RoomMember } from '@/matrix/room-members'
+import { primeRoomMembers, searchRoomMembers, getRoomMembers, type RoomMember } from '@/matrix/room-members'
 
 interface ChatComposeInputProps {
   roomId: string
@@ -108,7 +108,11 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       inputRef.current.selectionStart = pos
       inputRef.current.selectionEnd = pos
     }
-  }, [editingMessage, roomId])
+    // Depend on `seq` (not the object) so re-editing the SAME message — which
+    // produces an equal body — still re-arms the textarea. Without this,
+    // editing a message a second time left the input empty.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingMessage?.seq, roomId])
 
   const detectEmojiQuery = useCallback((value: string, cursorPos: number) => {
     const textBefore = value.slice(0, cursorPos)
@@ -262,10 +266,24 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       const body = textRef.current.trim()
       if (!body) return
       const targetId = editingMessage.eventId
+      // Rebuild @-mentions from the edited text so editing doesn't strip them
+      // to plain. Candidates = freshly-picked mentions this session PLUS every
+      // room member (so `@Name` tokens already present in the original body
+      // resolve, not just ones re-picked from the autocomplete).
+      const memberCandidates = getRoomMembers(roomId).map((m) => ({
+        displayName: m.displayName || (m.userId.split(':')[0] ?? m.userId).slice(1),
+        userId: m.userId,
+      }))
+      const candidates = [...pendingMentionsRef.current, ...memberCandidates]
+      // Dedupe by userId, keeping first (picked) occurrence.
+      const seen = new Set<string>()
+      const uniq = candidates.filter((c) => (seen.has(c.userId) ? false : (seen.add(c.userId), true)))
+      const fmt = buildMentionsFormatted(body, uniq)
+      const mentionUserIds = fmt?.activeMentions.map((m) => m.userId)
       sendingRef.current = true
       clearInput()
       try {
-        await editMessage(roomId, targetId, body)
+        await editMessage(roomId, targetId, body, fmt?.formattedBody, mentionUserIds)
       } finally {
         sendingRef.current = false
       }

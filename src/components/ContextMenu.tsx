@@ -16,9 +16,12 @@ interface ContextMenuProps {
   items: ContextMenuItem[]
   children: React.ReactNode
   className?: string
+  /** Optional content rendered above the item list (e.g. a quick-react
+   *  emoji strip). Closes the menu on interaction via the passed `close`. */
+  header?: (close: () => void) => React.ReactNode
 }
 
-export function ContextMenu({ items, children, className }: ContextMenuProps) {
+export function ContextMenu({ items, children, className, header }: ContextMenuProps) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState({ x: 0, y: 0 })
@@ -85,7 +88,7 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
         {children}
       </div>
 
-      {open && <ContextMenuView items={items} x={pos.x} y={pos.y} onClose={() => setOpen(false)} />}
+      {open && <ContextMenuView items={items} x={pos.x} y={pos.y} onClose={() => setOpen(false)} header={header} />}
     </>
   )
 }
@@ -96,11 +99,12 @@ export function ContextMenu({ items, children, className }: ContextMenuProps) {
 // hit-tests the pointer and opens this directly).
 // --------------------------------------------------------------------------
 
-export function ContextMenuView({ items, x, y, onClose }: {
+export function ContextMenuView({ items, x, y, onClose, header }: {
   items: ContextMenuItem[]
   x: number
   y: number
   onClose: () => void
+  header?: (close: () => void) => React.ReactNode
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y })
@@ -129,13 +133,18 @@ export function ContextMenuView({ items, x, y, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x, y])
 
-  if (items.length === 0) return null
+  if (items.length === 0 && !header) return null
   return (
     <div
       ref={menuRef}
       className="fixed z-50 border border-border bg-surface-1 shadow-lg py-0.5 min-w-[150px]"
       style={{ left: pos.x, top: pos.y }}
     >
+      {header && (
+        <div className="border-b border-border px-1 py-1">
+          {header(onClose)}
+        </div>
+      )}
       {items.map((item) => (
         <button
           key={item.label}

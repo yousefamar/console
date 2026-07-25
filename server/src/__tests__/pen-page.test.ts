@@ -55,8 +55,9 @@ describe('page-codec', () => {
     const back = parsePageSvg(svg)!
     expect(back.note).toBe(727)
     expect(back.strokes[0]!.dots[0]!.x).toBeCloseTo(11.86, 5)
-    // Fixed page rect anchored at the crop-margin offset (strokes well inside).
-    expect(svg).toMatch(/viewBox="6\.00 5\.00 37\.00 60\.00"/)
+    // Fixed page rect anchored at the crop-margin offset (strokes well inside);
+    // W/H are the device-reported page size (37.96×59.06, .msknotes header).
+    expect(svg).toMatch(/viewBox="6\.00 5\.00 37\.96 59\.06"/)
   })
 })
 
