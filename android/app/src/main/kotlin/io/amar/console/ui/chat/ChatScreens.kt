@@ -883,6 +883,7 @@ fun ChatRoomScreen(
             (target.senderId == "me" || (myUserId != null && target.senderId == myUserId)) &&
             (target.msgtype == "m.text" || target.msgtype == "m.notice")
         QuickReactSheet(
+            repo = repo,
             target = target,
             canEdit = canEdit,
             onDismiss = { reactTarget = null },
@@ -968,6 +969,7 @@ private fun LightboxGallery(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun QuickReactSheet(
+    repo: ChatRepository,
     target: ChatMessageRow,
     canEdit: Boolean,
     onDismiss: () -> Unit,
@@ -980,7 +982,15 @@ private fun QuickReactSheet(
     var expanded by remember { mutableStateOf(false) }
     var emojiQuery by remember { mutableStateOf("") }
     // YOUR most-used reactions, not a generic six (frequency + recency ranked).
-    val quick = remember { io.amar.console.data.chat.RecentEmoji.top(ctx, 6) }
+    // First open seeds from real reaction history in the cached rooms (your
+    // reactions from ANY device aggregate onto message rows) — so the row is
+    // personal from day one, not after re-training.
+    var quick by remember { mutableStateOf(io.amar.console.data.chat.RecentEmoji.top(ctx, 6)) }
+    LaunchedEffect(Unit) {
+        val me = repo.myUserId() ?: return@LaunchedEffect
+        io.amar.console.data.chat.RecentEmoji.seedFromHistory(ctx, repo.allReactionBlobs(), me)
+        quick = io.amar.console.data.chat.RecentEmoji.top(ctx, 6)
+    }
     fun react(emoji: String) {
         io.amar.console.data.chat.RecentEmoji.bump(ctx, emoji)
         onReact(emoji)

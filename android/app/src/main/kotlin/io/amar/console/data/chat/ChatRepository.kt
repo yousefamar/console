@@ -65,6 +65,7 @@ class ChatRepository(
 
     fun observeRooms(): Flow<List<ChatRoomRow>> = db.chatRooms().observeAll()
     fun observeRoom(id: String): Flow<ChatRoomRow?> = db.chatRooms().observeRoom(id)
+    suspend fun allReactionBlobs(): List<String> = db.chatMessages().allReactionBlobs()
     fun observeMessages(roomId: String, limit: Int): Flow<List<ChatMessageRow>> =
         db.chatMessages().observeRecent(roomId, limit)
 
