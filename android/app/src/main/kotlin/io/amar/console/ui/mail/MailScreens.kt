@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -22,6 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -372,37 +375,49 @@ fun MailThreadScreen(
         replyContextFromMessage(it.id, it.fromHeader, it.toHeader, it.ccHeader, it.subject, it.date, it.bodyHtml, it.bodyText)
     }
 
+    var menuOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().imePadding()) {
-        // No title text: 8 actions leave the title ~zero width, so the
-        // subject just wrapped UNDER the back arrow. Sender + subject are on
-        // the message card right below anyway.
+        // Gmail-style split: the bar carries only the TRIAGE verbs (archive,
+        // delete, unread) + an overflow for the rest; reply/reply-all/forward
+        // are chips at the END of the thread where replying actually happens.
         PaneTopBar(
             title = "",
             onBack = onBack,
             actions = {
-                TextButton(onClick = { emailDark = !emailDark; darkPrefs.edit().putBoolean("emailDark", emailDark).apply() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)) {
-                    Text(if (emailDark) "Dark" else "Original", style = MaterialTheme.typography.labelSmall)
-                }
-                IconButton(onClick = { scope.launch { repo.markUnread(threadId) }; onBack() }) {
-                    Icon(Icons.Filled.MarkEmailUnread, "Mark unread", modifier = Modifier.size(19.dp))
-                }
-                IconButton(onClick = { snoozing = true }) {
-                    Icon(Icons.Filled.Snooze, "Snooze", modifier = Modifier.size(19.dp))
-                }
                 IconButton(onClick = { scope.launch { repo.archive(threadId) }; onRemovedWithUndo(threadId, "archive"); onBack() }) {
-                    Icon(Icons.Filled.Archive, "Archive", modifier = Modifier.size(19.dp))
+                    Icon(Icons.Filled.Archive, "Archive", modifier = Modifier.size(20.dp))
                 }
                 IconButton(onClick = { scope.launch { repo.deleteThread(threadId) }; onRemovedWithUndo(threadId, "delete"); onBack() }) {
-                    Icon(Icons.Filled.Delete, "Delete", modifier = Modifier.size(19.dp))
+                    Icon(Icons.Filled.Delete, "Delete", modifier = Modifier.size(20.dp))
                 }
-                IconButton(onClick = { composeState = ComposeMode.REPLY to contextFor(messages.lastOrNull()) }) {
-                    Icon(Icons.Filled.Reply, "Reply", modifier = Modifier.size(19.dp))
+                IconButton(onClick = { scope.launch { repo.markUnread(threadId) }; onBack() }) {
+                    Icon(Icons.Filled.MarkEmailUnread, "Mark unread", modifier = Modifier.size(20.dp))
                 }
-                IconButton(onClick = { composeState = ComposeMode.REPLY_ALL to contextFor(messages.lastOrNull()) }) {
-                    Icon(Icons.AutoMirrored.Filled.ReplyAll, "Reply all", modifier = Modifier.size(19.dp))
-                }
-                IconButton(onClick = { composeState = ComposeMode.FORWARD to contextFor(messages.lastOrNull()) }) {
-                    Icon(Icons.AutoMirrored.Filled.Forward, "Forward", modifier = Modifier.size(19.dp))
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, "More", modifier = Modifier.size(20.dp))
+                    }
+                    androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Snooze…") },
+                            leadingIcon = { Icon(Icons.Filled.Snooze, null, Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; snoozing = true },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text(if (emailDark) "Original colours" else "Dark colours") },
+                            leadingIcon = { Icon(Icons.Filled.DarkMode, null, Modifier.size(18.dp)) },
+                            onClick = {
+                                menuOpen = false
+                                emailDark = !emailDark
+                                darkPrefs.edit().putBoolean("emailDark", emailDark).apply()
+                            },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Forward") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Forward, null, Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; composeState = ComposeMode.FORWARD to contextFor(messages.lastOrNull()) },
+                        )
+                    }
                 }
             },
         )
@@ -414,6 +429,28 @@ fun MailThreadScreen(
                     onReplyAll = { composeState = ComposeMode.REPLY_ALL to contextFor(msg) },
                     onForward = { composeState = ComposeMode.FORWARD to contextFor(msg) },
                 )
+            }
+            // Reply actions live where replying happens: after the last message.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { composeState = ComposeMode.REPLY to contextFor(messages.lastOrNull()) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Filled.Reply, null, Modifier.size(16.dp))
+                    Spacer(Modifier.size(6.dp))
+                    Text("Reply")
+                }
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { composeState = ComposeMode.REPLY_ALL to contextFor(messages.lastOrNull()) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ReplyAll, null, Modifier.size(16.dp))
+                    Spacer(Modifier.size(6.dp))
+                    Text("Reply all")
+                }
             }
         }
     }
