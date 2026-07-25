@@ -454,13 +454,15 @@ async function agentMerge(args: string[], flags: GlobalFlags): Promise<void> {
   await runMerge(hubId, flags)
 }
 
-/** Shared merge runner — waits for the fork's summary turn (up to ~90s). */
+/** Shared merge runner — waits for the child's summary turn. The hub's capture
+ *  window is inactivity-based (busy sessions extend it, hard ceiling 10min), so
+ *  wait a bit past that ceiling. */
 async function runMerge(hubId: string, flags: GlobalFlags): Promise<void> {
   const { sendAndReceive } = await import('../ws-client.js')
   const res = await sendAndReceive(
     { type: 'merge_session', sessionId: hubId },
     (m: any) => (m.type === 'session_merged' && m.forkId === hubId) || m.type === 'hub_error',
-    95_000,
+    11 * 60_000,
   )
   if (res.type === 'hub_error') { exitWithError('ERROR', res.message, flags); return }
   output({ merged: res.forkId, parentId: res.parentId, summary: res.summary }, flags)
