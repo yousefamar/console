@@ -16,6 +16,10 @@ _(empty)_
   RecentEmoji.seedFromHistory counts rows where your MXID reacted (verified on
   Yousef's device: 👌 ×10, 🙏 ×9, 😂 ×3 …) and merges into the frequency ledger
   (one-time, "seeded" flag). No re-training needed — 👌 leads from day one.
+- Mail thread bar redesigned (was 8 cramped icons): bar = triage only
+  (Archive · Delete · Unread + ⋯ overflow with Snooze / colour toggle /
+  Forward); Reply + Reply-all are full-width chips after the LAST message,
+  where replying actually happens (Gmail pattern).
 
 ## Shipped
 
