@@ -58,11 +58,13 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     id: 'first_party',
     label: 'Claude Max subscription',
     env: {},
-    // opus-5 leads (most capable). First-party form assumed bare (same pattern
-    // as every other model here) — not spawn-verified (couldn't test without
-    // switching the live backend off Bedrock); if it 400s the chain auto-falls
-    // back to fable-5. Verify with a one-shot spawn once on the Max sub.
-    chain: ['claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    // opus-5 is DELIBERATELY NOT in the auto-fallback chain — it's a manual
+    // dropdown option only (see AgentTab.tsx). On Bedrock it 403s ("Model access
+    // is denied … aws-marketplace:Subscribe") because the AWS account isn't
+    // entitled; unverified on the Max sub. Leading a chain with it would re-break
+    // the fleet on every backend-switch/cron. Add it here (head) only once a
+    // one-shot spawn does a FULL turn (not just `init`, which always succeeds).
+    chain: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',
@@ -75,11 +77,12 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
       ANTHROPIC_DEFAULT_FABLE_MODEL: 'us.anthropic.claude-fable-5',
       ANTHROPIC_SMALL_FAST_MODEL: 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/5we3084lce1f',
     },
-    // opus-5 leads — spawn-verified working on this Bedrock deployment
-    // (2026-07-26; the bare + dated forms 400, only `us.anthropic.claude-opus-5`
-    // resolves). opus-4-7 kept (served on Bedrock, not on the Max sub).
+    // opus-5 is NOT here — the AWS account lacks its Marketplace subscription so
+    // every turn 403s ("Model access is denied … aws-marketplace:Subscribe").
+    // It's a manual dropdown option only; auto-fallback must never default to it.
+    // fable-5 leads (verified working on this Bedrock deployment). opus-4-7 kept
+    // (served on Bedrock, not on the Max sub).
     chain: [
-      'us.anthropic.claude-opus-5',
       'us.anthropic.claude-fable-5',
       'us.anthropic.claude-opus-4-8',
       'us.anthropic.claude-opus-4-7',
