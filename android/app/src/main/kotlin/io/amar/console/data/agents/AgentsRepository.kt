@@ -222,9 +222,12 @@ class AgentsRepository(
             // One-time purge of pre-v67 duplicated transcripts (replay bursts
             // used to append at fresh indices on every reconnect). The REST
             // catch-up rebuilds each session from authoritative indices.
-            if (db.meta().get("agents:dedupPurgeV67") == null) {
+            // v75: live broadcasts now carry absIndex (hub stamps at logMessage),
+            // closing the second duplication path (live-append drift vs replay).
+            // One more purge clears rows duplicated by pre-v75 live appends.
+            if (db.meta().get("agents:dedupPurgeV75") == null) {
                 db.agents().clearAllMessages()
-                db.meta().put(io.amar.console.data.db.MetaRow("agents:dedupPurgeV67", "done"))
+                db.meta().put(io.amar.console.data.db.MetaRow("agents:dedupPurgeV75", "done"))
             }
         }
         open()

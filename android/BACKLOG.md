@@ -11,7 +11,15 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v74 is shipped)_
+- Transcript duplication, SECOND path closed: v69 stamped indices on replay
+  bursts, but LIVE broadcasts were unstamped, so the APK appended them at its
+  local maxIndex+1 — which drifts from the hub log (echoes, missed messages) —
+  and the next replay re-delivered the same tail at authoritative indices:
+  everything in the tail duplicated (the triple "v74 is live" screenshot).
+  Hub-side: Session.logMessage now stamps absIndex on the message object
+  BEFORE broadcast (all routes reordered log-then-broadcast), so every live
+  loggable message carries its authoritative index and the APK always upserts.
+  One-time purge v75 clears rows duplicated by pre-fix live appends.
 
 ## Shipped
 

@@ -1192,6 +1192,10 @@ export class Session extends EventEmitter {
       this.messageLog.shift()
       this.logOffset++
     }
+    // Stamp the absolute index on the object so any subsequent broadcast of
+    // it carries authoritative positioning (clients upsert, not append —
+    // the transcript-duplication fix). Callers must log BEFORE broadcasting.
+    ;(msg as unknown as { absIndex?: number }).absIndex = this.messageLogLength - 1
   }
 
   /** Absolute message count ever logged (monotonic, equals what would have
@@ -1259,7 +1263,7 @@ export class Session extends EventEmitter {
       // tool_input_delta, which fires per-chunk while tool args stream in and
       // would flood the rolling log)
       if (msg.type !== 'status' && msg.type !== 'tool_input_delta') {
-        this.logMessage(msg as LoggableHubMessage)
+        this.logMessage(msg as LoggableHubMessage) // stamps absIndex pre-broadcast
       }
     }
     this.emit('hub_message', msg)
