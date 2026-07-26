@@ -74,6 +74,10 @@ export function handleAlRoutes(
       if (!text || typeof text !== 'string' || !text.trim()) {
         return jsonResponse(res, 400, { error: 'missing or empty text' })
       }
+      if (wa.findBlockedTerm(text)) {
+        console.warn('[al/wa] outbound send BLOCKED — message matched censored-content policy')
+        return jsonResponse(res, 400, { error: 'blocked: message contains censored content (home address)' })
+      }
       try {
         const { id, jid } = await wa.sendText(to.trim(), text)
         jsonResponse(res, 200, { ok: true, id, jid })
