@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v71 is shipped)_
+
+## Shipped
+
+### v71 (2026-07-24)
 - Quick-react row seeds from your REAL reaction history on first open: reactions
   from any device aggregate onto cached message rows ({emoji: [senders]}), so
   RecentEmoji.seedFromHistory counts rows where your MXID reacted (verified on
@@ -21,7 +26,6 @@ _(empty)_
   Forward); Reply + Reply-all are full-width chips after the LAST message,
   where replying actually happens (Gmail pattern).
 
-## Shipped
 
 ### v70 (2026-07-23)
 - Chat unread counts disagreed (grid badge 4, header 2, room pills 3): three
