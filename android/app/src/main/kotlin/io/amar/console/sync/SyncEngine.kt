@@ -35,8 +35,14 @@ class SyncEngine(
     private val reconciler = Reconciler(scope) {
         // Hub-synced prefs first (cheap; DND gates notifications).
         runCatching { io.amar.console.core.HubPrefs.refresh(hub) }
-        for ((_, domain) in domains) {
-            runCatching { domain.reconcile() }
+        for ((name, domain) in domains) {
+            // A single wedged domain (hung request past OkHttp timeouts, dead
+            // RPC) must not pin the whole pass — and with launcher mode the
+            // pass runs on every home-press, so a permanent hang read as a
+            // permanent "Syncing…" pill. 45s ceiling per domain.
+            runCatching {
+                kotlinx.coroutines.withTimeout(45_000) { domain.reconcile() }
+            }.onFailure { android.util.Log.w("SyncEngine", "domain $name reconcile failed: $it") }
         }
         // A reconnect is also the moment to flush anything queued offline.
         outbox.drain()

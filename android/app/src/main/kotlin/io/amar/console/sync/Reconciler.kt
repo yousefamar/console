@@ -54,11 +54,14 @@ class Reconciler(
         }
         _syncing.value = true
         try {
+            // Cap dirty re-runs: with launcher mode every home-press triggers,
+            // and an unbounded loop read as a permanently-syncing UI. Any
+            // trigger beyond the cap lands in the NEXT debounced run instead.
+            var passes = 0
             do {
                 mutex.withLock { dirty = false }
                 runCatching { action() }
-                // If a trigger arrived mid-run, loop once more.
-            } while (mutex.withLock { dirty })
+            } while (mutex.withLock { dirty } && ++passes < 3)
             _lastSyncedAt.value = System.currentTimeMillis()
         } finally {
             mutex.withLock { running = false }

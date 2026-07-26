@@ -11,7 +11,18 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v72 is shipped)_
+- Permanent "Syncing…" pill: launcher mode made every home-press trigger a
+  reconcile, and (a) a single wedged domain pinned the pass forever — each
+  domain now has a 45s hard timeout; (b) the dirty re-run loop was unbounded
+  under trigger storms — capped at 3 passes; (c) the pill now has a 3s grace
+  so sub-second routine passes never flash it.
+- Blank screen until lock/unlock: the earpiece-routing PROXIMITY_SCREEN_OFF
+  wake lock was acquired for the WHOLE voice-message playback (any stray
+  "near" — finger over the sensor — blanked the screen; a leak kept it black
+  until the power button reset it). The lock is now created unheld and
+  acquired ONLY while the proximity sensor reports near, released on far/stop.
+  Also android:stateNotNeeded="true" on MainActivity (home apps must render
+  without saved state — the standard launcher relaunch path).
 
 ## Shipped
 
