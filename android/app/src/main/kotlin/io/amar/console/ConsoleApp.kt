@@ -6,6 +6,7 @@ import coil.ImageLoaderFactory
 import io.amar.console.core.AppLifecycle
 import io.amar.console.core.Connectivity
 import io.amar.console.core.HubConfig
+import io.amar.console.core.InstalledApps
 import io.amar.console.di.AppGraph
 import okhttp3.OkHttpClient
 
@@ -18,6 +19,7 @@ class ConsoleApp : Application(), ImageLoaderFactory {
         HubConfig.init(this)
         HubTokenStore.init(this)
         AppLifecycle.install()
+        InstalledApps.init(this)
         Connectivity.install(this)
         graph = AppGraph(this)
         graph.syncEngine.start()
