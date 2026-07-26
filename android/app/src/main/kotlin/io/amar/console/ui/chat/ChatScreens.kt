@@ -583,18 +583,21 @@ fun ChatRoomScreen(
     var myUserId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { myUserId = repo.myUserId() }
     LaunchedEffect(messages.isNotEmpty()) { if (myUserId == null) myUserId = repo.myUserId() }
-    // Freeze the read watermark on the FIRST room emission, unconditionally.
-    // Gating on isUnread was fragile: a read-receipt delta from another device
-    // (or a racing markRead) flipping isUnread before this ran suppressed the
-    // divider entirely. Timestamps alone decide — for a read room lastReadTs
-    // >= newest message, so unreadDividerMessageId returns null anyway.
+    // Freeze BOTH divider inputs on the FIRST room emission: the unread
+    // count (primary — count-based placement is immune to bridge timestamp
+    // skew) and the read watermark (fallback for manual-unread rooms). A
+    // racing markRead/read-receipt after open must not move the divider.
+    var frozenUnreadCount by remember(roomId) { mutableStateOf<Int?>(null) }
     LaunchedEffect(room?.id) {
-        if (frozenLastReadTs == null && room != null) {
+        if (room != null && frozenUnreadCount == null) {
+            frozenUnreadCount = if (room!!.isUnread) room!!.unreadCount else 0
             frozenLastReadTs = room!!.lastReadTs ?: if (room!!.isUnread) 0L else null
         }
     }
-    val dividerMsgId = remember(messages, frozenLastReadTs, myUserId) {
-        io.amar.console.data.chat.ChatEvents.unreadDividerMessageId(messages, frozenLastReadTs, myUserId)
+    val dividerMsgId = remember(messages, frozenLastReadTs, frozenUnreadCount, myUserId) {
+        io.amar.console.data.chat.ChatEvents.unreadDividerMessageId(
+            messages, frozenLastReadTs, myUserId, frozenUnreadCount ?: 0,
+        )
     }
     val receiptsByMsg = remember(room?.rawJson, messages) {
         io.amar.console.data.chat.ChatEvents.receiptsByMessage(
@@ -670,7 +673,9 @@ fun ChatRoomScreen(
                     }
                 }
                 if (room?.isUnread == true) {
-                    androidx.compose.material3.IconButton(onClick = { scope.launch { repo.markRead(roomId) } }) {
+                    // Mark read = "I'm done with this conversation" → straight
+                    // back to the triage list (inbox-zero flow).
+                    androidx.compose.material3.IconButton(onClick = { scope.launch { repo.markRead(roomId) }; onBack() }) {
                         Icon(Icons.Filled.DoneAll, contentDescription = "Mark read",
                             tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     }

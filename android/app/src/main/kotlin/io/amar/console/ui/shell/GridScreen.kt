@@ -133,9 +133,19 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
         // Launcher search: filters BOTH Console panes and installed apps.
         var query by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
         val installedApps by io.amar.console.core.InstalledApps.apps.collectAsState()
-        val visibleApps = androidx.compose.runtime.remember(installedApps, query) {
-            if (query.isBlank()) installedApps
+        val usageVersion by io.amar.console.core.InstalledApps.usageVersion.collectAsState()
+        val ctxForUsage = androidx.compose.ui.platform.LocalContext.current
+        // Frequency-first ordering (usage ledger learned from launches),
+        // recency tiebreak, then alphabetical for never-launched apps.
+        val visibleApps = androidx.compose.runtime.remember(installedApps, query, usageVersion) {
+            val usage = io.amar.console.core.InstalledApps.usage(ctxForUsage)
+            val base = if (query.isBlank()) installedApps
             else installedApps.filter { it.label.contains(query, ignoreCase = true) }
+            base.sortedWith(
+                compareByDescending<io.amar.console.core.InstalledApps.Entry> { usage[it.packageName]?.first ?: 0 }
+                    .thenByDescending { usage[it.packageName]?.second ?: 0L }
+                    .thenBy { it.label.lowercase() }
+            )
         }
         val visiblePanes = androidx.compose.runtime.remember(query) {
             if (query.isBlank()) Pane.entries.toList()
