@@ -11,6 +11,14 @@ _(empty)_
 
 ## Built, awaiting release
 
+- LAUNCHER MODE: Console can be set as the Android home app (Settings →
+  Default apps → Home; optional — works identically as a normal app otherwise).
+  Manifest gains a MAIN+HOME intent-filter + QUERY_ALL_PACKAGES (sideloaded).
+  The grid is the home screen: Console panes on top, an APPS drawer below —
+  every launchable app (LauncherApps, profile-aware incl. work apps ⧉, live
+  install/uninstall updates), tap to launch, long-press → system app info,
+  one search box filtering panes AND apps. Home button/gesture pops to the
+  grid (MAIN+HOME onNewIntent). core/InstalledApps.kt + GridScreen drawer.
 - Sync freshness is now always answerable: the Reconciler exposes syncing +
   lastSyncedAt (completed-pass timestamp); the shell pill shows "Syncing…"
   during any reconcile pass and "Synced Xm ago" whenever the last completed

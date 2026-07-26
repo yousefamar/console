@@ -91,6 +91,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleDeepLink(intent: Intent?) {
+        // Home button/gesture while Console IS the home app: Android re-delivers
+        // MAIN+HOME to the current home activity — pop to the grid (launcher
+        // semantics: Home always returns to the wall).
+        if (intent?.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_HOME)) {
+            runCatching {
+                navController?.popBackStack(io.amar.console.ui.nav.GRID_ROUTE, inclusive = false)
+            }
+            return
+        }
         if (intent?.action == Intent.ACTION_SEND) {
             handleShare(intent)
             return

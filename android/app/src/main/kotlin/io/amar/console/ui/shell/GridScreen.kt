@@ -2,6 +2,7 @@ package io.amar.console.ui.shell
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,9 +26,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
@@ -126,6 +130,25 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
             )
         }
 
+        // Launcher search: filters BOTH Console panes and installed apps.
+        var query by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+        val installedApps by io.amar.console.core.InstalledApps.apps.collectAsState()
+        val visibleApps = androidx.compose.runtime.remember(installedApps, query) {
+            if (query.isBlank()) installedApps
+            else installedApps.filter { it.label.contains(query, ignoreCase = true) }
+        }
+        val visiblePanes = androidx.compose.runtime.remember(query) {
+            if (query.isBlank()) Pane.entries.toList()
+            else Pane.entries.filter { it.label.contains(query, ignoreCase = true) }
+        }
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        androidx.compose.material3.OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            placeholder = { Text("Search apps") }, singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(18.dp)) },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        )
+
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
             modifier = Modifier.fillMaxSize(),
@@ -133,7 +156,7 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(Pane.entries.toList(), key = { it.route }) { pane ->
+            items(visiblePanes, key = { it.route }) { pane ->
                 val badge = when (pane) {
                     Pane.Chat -> chatUnread
                     Pane.Mail -> mailUnread
@@ -165,7 +188,66 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
                     onOpen(pane)
                 }
             }
+
+            // ---- App drawer: the rest of the phone, same scroll surface ---- //
+            if (visibleApps.isNotEmpty()) {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        "APPS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, top = 10.dp, bottom = 2.dp),
+                    )
+                }
+                items(
+                    visibleApps,
+                    key = { "app:" + it.packageName + "/" + it.activityName + "@" + it.user.hashCode() },
+                ) { entry ->
+                    InstalledAppTile(
+                        entry,
+                        onLaunch = { io.amar.console.core.InstalledApps.launch(ctx, entry) },
+                        onInfo = { io.amar.console.core.InstalledApps.appInfo(ctx, entry) },
+                    )
+                }
+            }
         }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun InstalledAppTile(
+    entry: io.amar.console.core.InstalledApps.Entry,
+    onLaunch: () -> Unit,
+    onInfo: () -> Unit,
+) {
+    val iconBitmap = androidx.compose.runtime.remember(entry.packageName, entry.user) {
+        runCatching {
+            val d = entry.icon ?: return@remember null
+            val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            d.setBounds(0, 0, 96, 96)
+            d.draw(canvas)
+            bmp.asImageBitmap()
+        }.getOrNull()
+    }
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(onClick = onLaunch, onLongClick = onInfo)
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (iconBitmap != null) {
+            androidx.compose.foundation.Image(iconBitmap, contentDescription = entry.label, modifier = Modifier.size(44.dp))
+        }
+        Text(
+            entry.label + if (io.amar.console.core.InstalledApps.isWorkProfile(entry)) " ⧉" else "",
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp, start = 2.dp, end = 2.dp),
+        )
     }
 }
 

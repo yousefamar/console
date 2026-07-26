@@ -9,6 +9,9 @@
     <!-- Voice input (STT): PTT capture + dictation. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Launcher app drawer: enumerate all launchable apps (sideloaded build;
+         Play's QUERY_ALL_PACKAGES policy doesn't apply). -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <!-- Push foreground service: persistent WebSocket to hub /push -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -48,6 +51,15 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Launcher mode: Console can be selected as the HOME app
+                 (Settings → Default apps → Home). Optional — the app works
+                 identically as a normal app if another launcher is default. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
             <!-- OAuth callback + deep links -->
