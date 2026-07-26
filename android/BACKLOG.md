@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v72 is shipped)_
+
+## Shipped
+
+### v72 (2026-07-26)
 - LAUNCHER MODE: Console can be set as the Android home app (Settings →
   Default apps → Home; optional — works identically as a normal app otherwise).
   Manifest gains a MAIN+HOME intent-filter + QUERY_ALL_PACKAGES (sideloaded).
@@ -25,7 +30,6 @@ _(empty)_
   pass is >2 min old — silence means connected AND fresh. (Offline/queued/
   failed states unchanged.) Agents list already shows live/offline per header.
 
-## Shipped
 
 ### v71 (2026-07-24)
 - Quick-react row seeds from your REAL reaction history on first open: reactions
