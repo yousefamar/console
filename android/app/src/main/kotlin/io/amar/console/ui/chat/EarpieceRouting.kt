@@ -35,9 +35,23 @@ object EarpieceRouting {
     private val listener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             val sensor = event.sensor ?: return
-            _near.value = event.values.firstOrNull()?.let { it < sensor.maximumRange } == true
+            val near = event.values.firstOrNull()?.let { it < sensor.maximumRange } == true
+            _near.value = near
+            // Screen-off lock held ONLY while actually at the ear. Holding it
+            // for the whole playback blanked the screen on any stray "near"
+            // (finger over the sensor, pocket) — and a leak meant a black
+            // screen until lock/unlock.
+            if (near) acquireLock() else releaseLock()
         }
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    private fun acquireLock() {
+        runCatching { wakeLock?.takeIf { !it.isHeld }?.acquire(10 * 60 * 1000L) }
+    }
+
+    private fun releaseLock() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
     }
 
     /** Call when a voice message starts playing. */
@@ -50,10 +64,10 @@ object EarpieceRouting {
             sm.registerListener(listener, prox, SensorManager.SENSOR_DELAY_NORMAL)
             val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
             if (pm?.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK) == true) {
-                wakeLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "console:voiceNote").apply {
-                    setReferenceCounted(false)
-                    runCatching { acquire(10 * 60 * 1000L) }
-                }
+                // Created but NOT acquired — the sensor listener acquires it
+                // only while the phone is at the ear.
+                wakeLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "console:voiceNote")
+                    .apply { setReferenceCounted(false) }
             }
         }
     }
@@ -64,7 +78,7 @@ object EarpieceRouting {
             if (refCount == 0 || --refCount > 0) return
             sensorManager?.unregisterListener(listener)
             sensorManager = null
-            runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+            releaseLock()
             wakeLock = null
             _near.value = false
             restoreSpeaker(ctx)

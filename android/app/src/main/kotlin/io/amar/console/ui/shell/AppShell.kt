@@ -254,7 +254,16 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         // whole screen every time a sync started).
         run {
             val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
-            val reconciling by app.graph.syncEngine.syncing.collectAsState()
+            val reconcilingRaw by app.graph.syncEngine.syncing.collectAsState()
+            // Grace period: routine passes finish in <1s — flashing "Syncing…"
+            // on every home-press is noise. Show only when a pass is SLOW.
+            var reconciling by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+            androidx.compose.runtime.LaunchedEffect(reconcilingRaw) {
+                if (reconcilingRaw) {
+                    kotlinx.coroutines.delay(3_000)
+                    reconciling = true
+                } else reconciling = false
+            }
             val lastSyncedAt by app.graph.syncEngine.lastSyncedAt.collectAsState()
             // Ticker so "Xm ago" ages while you look at it (30s granularity).
             var nowTick by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(System.currentTimeMillis()) }
