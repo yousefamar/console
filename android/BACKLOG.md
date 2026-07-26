@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v74 is shipped)_
+
+## Shipped
+
+### v74 (2026-07-26)
 - Mark-read in a chat now returns you to the chat list (inbox-zero flow:
   ✓✓ = done with this conversation).
 - App drawer sorts by launch frequency (usage ledger learned from taps,
@@ -24,7 +29,6 @@ _(empty)_
   unreadCount + watermark both frozen at open so racing read-receipts can't
   move the line. +3 unit tests incl. the skewed-bridge-timestamp case.
 
-## Shipped
 
 ### v73 (2026-07-26)
 - Permanent "Syncing…" pill: launcher mode made every home-press trigger a
