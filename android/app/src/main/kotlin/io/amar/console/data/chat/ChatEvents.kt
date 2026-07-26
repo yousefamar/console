@@ -303,14 +303,26 @@ object ChatEvents {
         messages: List<ChatMessageRow>, // any order
         lastReadTs: Long?,
         myUserId: String? = null,
+        unreadCount: Int = 0,
     ): String? {
+        val others = messages.filter {
+            !it.localEcho && it.senderId != "me" &&
+                (myUserId == null || it.senderId != myUserId)
+        }
+        // COUNT-based placement first: the server's unreadCount is what the
+        // badge shows, so the divider sits above exactly that many messages.
+        // Timestamp watermarks proved unreliable — bridges deliver events with
+        // origin timestamps BEHIND the read watermark (clock skew), and some
+        // rooms never get a lastReadTs at all.
+        if (unreadCount > 0) {
+            return others.sortedByDescending { it.timestamp }
+                .take(unreadCount)
+                .lastOrNull()
+                ?.id
+        }
+        // Fallback (manual unread: unreadCount is 0): timestamp watermark.
         if (lastReadTs == null || lastReadTs <= 0) return null
-        return messages
-            .filter {
-                !it.localEcho && it.senderId != "me" &&
-                    (myUserId == null || it.senderId != myUserId) &&
-                    it.timestamp > lastReadTs
-            }
+        return others.filter { it.timestamp > lastReadTs }
             .minByOrNull { it.timestamp }
             ?.id
     }

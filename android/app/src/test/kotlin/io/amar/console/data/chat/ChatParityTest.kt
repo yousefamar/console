@@ -79,6 +79,34 @@ class ChatParityTest {
     // Unread divider
 
     @Test
+    fun `divider count mode - lands above exactly unreadCount messages`() {
+        val messages = listOf(msg("e1", 100), msg("e2", 200), msg("e3", 300), msg("e4", 400))
+        // 2 unread → divider above the 2 newest (e3).
+        assertEquals("e3", ChatEvents.unreadDividerMessageId(messages, null, unreadCount = 2))
+    }
+
+    @Test
+    fun `divider count mode - skips my messages and echoes when counting`() {
+        val messages = listOf(
+            msg("e1", 100),
+            msg("mine", 200, sender = "@me:x"),
+            msg("echo", 250, echo = true),
+            msg("e3", 300),
+            msg("e4", 400),
+        )
+        // 2 unread from others → e3 (mine/echo don't consume the count).
+        assertEquals("e3", ChatEvents.unreadDividerMessageId(messages, null, myUserId = "@me:x", unreadCount = 2))
+    }
+
+    @Test
+    fun `divider count mode - skewed bridge timestamps still counted`() {
+        // Bridge delivered the newest event with a ts BEHIND the watermark:
+        // timestamp mode misses it; count mode doesn't care.
+        val messages = listOf(msg("e1", 100), msg("e2", 140))
+        assertEquals("e2", ChatEvents.unreadDividerMessageId(messages, 150, unreadCount = 1))
+    }
+
+    @Test
     fun `divider lands on first message after lastReadTs`() {
         val messages = listOf(msg("e1", 100), msg("e2", 200), msg("e3", 300))
         assertEquals("e2", ChatEvents.unreadDividerMessageId(messages, 150))

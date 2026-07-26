@@ -11,7 +11,18 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v73 is shipped)_
+- Mark-read in a chat now returns you to the chat list (inbox-zero flow:
+  ✓✓ = done with this conversation).
+- App drawer sorts by launch frequency (usage ledger learned from taps,
+  recency tiebreak, alphabetical for never-launched; same pattern as the
+  reaction ranking). Persisted; re-sorts live after each launch.
+- "— New —" divider made reliable: placement is now COUNT-based (divider sits
+  above exactly unreadCount messages-from-others — the same number the badge
+  shows), because timestamp watermarks proved unreliable (bridges deliver
+  events with origin timestamps BEHIND the read watermark; some rooms lack a
+  lastReadTs entirely). Watermark kept only as the manual-unread fallback.
+  unreadCount + watermark both frozen at open so racing read-receipts can't
+  move the line. +3 unit tests incl. the skewed-bridge-timestamp case.
 
 ## Shipped
 
