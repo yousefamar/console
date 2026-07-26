@@ -93,6 +93,12 @@ export function startDeprecationShim(): void {
           res.end(JSON.stringify({ error: 'WhatsApp not connected (possibly awaiting QR pair)' }))
           return
         }
+        if (wa.findBlockedTerm(text)) {
+          console.warn('[al/wa] outbound send BLOCKED (shim) — message matched censored-content policy')
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'blocked: message contains censored content (home address)' }))
+          return
+        }
         try {
           // Old shim prefixed text with "[Al] ". Preserve that contract so
           // existing recipients see the same attribution.

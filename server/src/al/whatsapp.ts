@@ -309,6 +309,30 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
   })
 }
 
+// Fail-closed backstop: Yousef's home address must never leave over WhatsApp,
+// regardless of what any agent (or a compromised/hallucinating one) generates.
+// This is a pure-software check independent of persona/prompt instructions —
+// those can be ignored or worked around; this can't. Matching strips all
+// non-alphanumeric characters from both the haystack and each term before
+// comparing, so punctuation/whitespace/casing variants (line breaks, extra
+// spaces, "[REDACTED]" vs "[REDACTED]") can't evade it. Keep terms specific — do NOT
+// add bare words like 'reading' or 'road' that would false-positive on normal
+// chat.
+const BLOCKED_TERMS = ['[REDACTED]', '[REDACTED]', '[REDACTED]', '[REDACTED]']
+
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/** Returns the matched blocklist term if `text` contains censored content, else null. */
+export function findBlockedTerm(text: string): string | null {
+  const haystack = normalizeForMatch(text)
+  for (const term of BLOCKED_TERMS) {
+    if (haystack.includes(normalizeForMatch(term))) return term
+  }
+  return null
+}
+
 /** Outbound text. Caller passes a phone or JID; we suffix `@s.whatsapp.net` if bare. */
 export async function sendText(to: string, text: string): Promise<{ id: string; jid: string }> {
   if (!sock || !connected) throw new Error('WhatsApp not connected')
