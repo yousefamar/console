@@ -28,6 +28,14 @@ class Reconciler(
     private var dirty = false
     private var debounceJob: Job? = null
 
+    /** Observable sync status for the UI freshness indicator. */
+    private val _syncing = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val syncing: kotlinx.coroutines.flow.StateFlow<Boolean> = _syncing
+
+    /** Epoch ms of the last COMPLETED reconcile pass (0 = never this process). */
+    private val _lastSyncedAt = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    val lastSyncedAt: kotlinx.coroutines.flow.StateFlow<Long> = _lastSyncedAt
+
     fun trigger() {
         debounceJob?.cancel()
         debounceJob = scope.launch {
@@ -44,14 +52,17 @@ class Reconciler(
             }
             running = true
         }
+        _syncing.value = true
         try {
             do {
                 mutex.withLock { dirty = false }
                 runCatching { action() }
                 // If a trigger arrived mid-run, loop once more.
             } while (mutex.withLock { dirty })
+            _lastSyncedAt.value = System.currentTimeMillis()
         } finally {
             mutex.withLock { running = false }
+            _syncing.value = false
         }
     }
 }
