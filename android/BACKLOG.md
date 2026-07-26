@@ -11,7 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty — everything through v71 is shipped)_
+- Sync freshness is now always answerable: the Reconciler exposes syncing +
+  lastSyncedAt (completed-pass timestamp); the shell pill shows "Syncing…"
+  during any reconcile pass and "Synced Xm ago" whenever the last completed
+  pass is >2 min old — silence means connected AND fresh. (Offline/queued/
+  failed states unchanged.) Agents list already shows live/offline per header.
 
 ## Shipped
 

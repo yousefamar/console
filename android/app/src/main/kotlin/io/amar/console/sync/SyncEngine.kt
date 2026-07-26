@@ -74,4 +74,9 @@ class SyncEngine(
     }
 
     fun triggerReconcile() = reconciler.trigger()
+
+    /** UI freshness surface: is a reconcile pass running, and when did the
+     *  last one complete. */
+    val syncing get() = reconciler.syncing
+    val lastSyncedAt get() = reconciler.lastSyncedAt
 }

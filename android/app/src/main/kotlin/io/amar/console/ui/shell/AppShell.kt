@@ -11,6 +11,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -253,11 +254,24 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         // whole screen every time a sync started).
         run {
             val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
+            val reconciling by app.graph.syncEngine.syncing.collectAsState()
+            val lastSyncedAt by app.graph.syncEngine.lastSyncedAt.collectAsState()
+            // Ticker so "Xm ago" ages while you look at it (30s granularity).
+            var nowTick by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(System.currentTimeMillis()) }
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                while (true) { kotlinx.coroutines.delay(30_000); nowTick = System.currentTimeMillis() }
+            }
             val (pillText, pillTint, pillClick) = when {
                 !connected && pendingCount > 0 -> Triple("Offline — $pendingCount queued", MaterialTheme.colorScheme.onSurfaceVariant, toOutbox)
                 !connected -> Triple("Offline", MaterialTheme.colorScheme.onSurfaceVariant, null)
                 pendingCount > 0 -> Triple("Syncing $pendingCount…", MaterialTheme.colorScheme.primary, toOutbox)
                 stuckCount > 0 -> Triple("$stuckCount ${if (stuckCount == 1) "action" else "actions"} failed", MaterialTheme.colorScheme.error, toOutbox)
+                reconciling -> Triple("Syncing…", MaterialTheme.colorScheme.primary, null)
+                // Connected + fresh (<60s since a completed pass): quiet — no pill.
+                // Connected but the last pass is old: say so instead of leaving
+                // you guessing whether the screen is current.
+                lastSyncedAt > 0 && nowTick - lastSyncedAt > 120_000 ->
+                    Triple("Synced ${freshnessLabel(nowTick - lastSyncedAt)} ago", MaterialTheme.colorScheme.onSurfaceVariant, null)
                 else -> Triple(null, MaterialTheme.colorScheme.primary, null)
             }
             if (pillText != null) {
@@ -271,6 +285,13 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         }
         }
     }
+}
+
+/** "2m" / "1h" / "3d" for the freshness pill. */
+private fun freshnessLabel(ms: Long): String = when {
+    ms < 3_600_000 -> "${ms / 60_000}m"
+    ms < 86_400_000 -> "${ms / 3_600_000}h"
+    else -> "${ms / 86_400_000}d"
 }
 
 /** Open an app root from the grid: single top, per-app state restored. */
