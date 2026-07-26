@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty — everything through v73 is shipped)_
+
+## Shipped
+
+### v73 (2026-07-26)
 - Permanent "Syncing…" pill: launcher mode made every home-press trigger a
   reconcile, and (a) a single wedged domain pinned the pass forever — each
   domain now has a 45s hard timeout; (b) the dirty re-run loop was unbounded
@@ -24,7 +29,6 @@ _(empty)_
   Also android:stateNotNeeded="true" on MainActivity (home apps must render
   without saved state — the standard launcher relaunch path).
 
-## Shipped
 
 ### v72 (2026-07-26)
 - LAUNCHER MODE: Console can be set as the Android home app (Settings →
