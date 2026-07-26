@@ -424,8 +424,8 @@ export function broadcastTasks(ctx: AgentContext): void {
  *  cron and Al's inbound use (broadcast user_prompt + log + write stdin). */
 function wakeSession(ctx: AgentContext, session: Session, content: string): void {
   const msg = { type: 'user_prompt' as const, sessionId: session.id, content }
+  session.logMessage(msg) // stamps absIndex
   broadcast(ctx.clients, msg)
-  session.logMessage(msg)
   session.sendMessage(content)
 }
 
@@ -493,9 +493,9 @@ export function delegateTask(ctx: AgentContext, input: DelegateInput): { task?: 
     })
     ctx.tasks.update(task.id, { workerSessionId: worker.id })
     const created = { type: 'session_created' as const, sessionId: worker.id, cwd: worker.cwd, prompt: envelope, ...(worker.name ? { name: worker.name } : {}) }
-    broadcast(ctx.clients, created); worker.logMessage(created)
+    worker.logMessage(created); broadcast(ctx.clients, created)
     const pm = { type: 'user_prompt' as const, sessionId: worker.id, content: envelope }
-    broadcast(ctx.clients, pm); worker.logMessage(pm)
+    worker.logMessage(pm); broadcast(ctx.clients, pm)
   } else {
     const worker = reviveAgentRole(ctx, toKey)
     if (!worker) return { error: `could not start ${toKey}` }
@@ -674,11 +674,11 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         agentKey,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt, ...(session.name ? { name: session.name } : {}) }
-      broadcast(clients, createdMsg)
       session.logMessage(createdMsg)
+      broadcast(clients, createdMsg)
       const promptMsg = { type: 'user_prompt' as const, sessionId: session.id, content: msg.prompt, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
-      broadcast(clients, promptMsg)
       session.logMessage(promptMsg)
+      broadcast(clients, promptMsg)
       log(`Session created: ${session.id} cwd=${session.cwd} (prompt: "${truncate(msg.prompt, 50)}"${msg.images?.length ? ` +${msg.images.length} image(s)` : ''})`)
       break
     }
@@ -701,8 +701,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       // A real user prompt supersedes any scheduled 429/503 auto-resume.
       session.cancelTransientResume()
       const userMsg = { type: 'user_prompt' as const, sessionId: msg.sessionId, content: msg.content, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
-      broadcastExcept(clients, ws, userMsg)
       session.logMessage(userMsg)
+      broadcastExcept(clients, ws, userMsg)
       session.sendMessage(msg.content, msg.images)
       // Sending a message implicitly marks the session read (chat parity).
       markSessionRead(session, clients)
@@ -745,8 +745,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       const approvedMsg = { type: 'tool_approved' as const, sessionId: msg.sessionId, requestId: msg.requestId, toolName: '' }
-      broadcast(clients, approvedMsg)
       session.logMessage(approvedMsg)
+      broadcast(clients, approvedMsg)
       session.approveTool(msg.requestId, msg.modifiedInput)
       saveManifest(sessions)
       break
@@ -759,8 +759,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       const deniedMsg = { type: 'tool_denied' as const, sessionId: msg.sessionId, requestId: msg.requestId, toolName: '', reason: msg.reason }
-      broadcast(clients, deniedMsg)
       session.logMessage(deniedMsg)
+      broadcast(clients, deniedMsg)
       session.denyTool(msg.requestId, msg.reason)
       saveManifest(sessions)
       break
@@ -1019,8 +1019,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         resume: msg.sessionId,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt }
-      broadcast(clients, createdMsg)
       session.logMessage(createdMsg)
+      broadcast(clients, createdMsg)
       log(`Session resumed: ${session.id} cwd=${session.cwd} (claude session: ${msg.sessionId})`)
 
       if (msg.cwd) {
@@ -1067,8 +1067,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       session.name = msg.name
       const renamedMsg = { type: 'session_renamed' as const, sessionId: session.id, name: msg.name }
-      broadcast(clients, renamedMsg)
       session.logMessage(renamedMsg)
+      broadcast(clients, renamedMsg)
       saveManifest(sessions)
       log(`Session renamed: ${session.id} → "${msg.name}"`)
       break
@@ -1120,8 +1120,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         agentKey: forkAgentKey,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: forkName }
-      broadcast(clients, createdMsg)
       session.logMessage(createdMsg)
+      broadcast(clients, createdMsg)
       // Load history from source session's JSONL for the frontend
       const history = loadSessionHistory(sourceSession.claudeSessionId, forkCwd)
       if (history.length > 0) {
