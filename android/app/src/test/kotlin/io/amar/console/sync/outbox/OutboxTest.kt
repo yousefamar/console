@@ -71,6 +71,32 @@ class OutboxTest {
     }
 
     @Test
+    fun `NotReady never consumes the retry budget`() = runTest {
+        var attempts = 0
+        outbox.register("gated") { _, _ ->
+            attempts++
+            Outbox.Result.NotReady("hub disconnected")
+        }
+        val id = outbox.enqueue("gated", "{}")
+        // Far more drains than MAX_RETRIES (a reconnect storm) — the row must
+        // stay pending with retryCount 0, never parked as terminal failed.
+        repeat(10) { outbox.drain() }
+        assertEquals(10, attempts)
+        val row = db.outbox().byId(id)
+        assertEquals("pending", row?.status)
+        assertEquals(0, row?.retryCount)
+    }
+
+    @Test
+    fun `retryOrNotReady classifies transport-down vs real errors`() {
+        assertTrue(Outbox.retryOrNotReady(RuntimeException("hub disconnected"), "x") is Outbox.Result.NotReady)
+        assertTrue(Outbox.retryOrNotReady(RuntimeException("Failed to connect to /127.0.0.1:9877"), "x") is Outbox.Result.NotReady)
+        assertTrue(Outbox.retryOrNotReady(RuntimeException("Unable to resolve host con.amar.io"), "x") is Outbox.Result.NotReady)
+        assertTrue(Outbox.retryOrNotReady(RuntimeException("HTTP 500"), "x") is Outbox.Result.Retry)
+        assertTrue(Outbox.retryOrNotReady(RuntimeException(), "fallback") is Outbox.Result.Retry)
+    }
+
+    @Test
     fun `dedupe token is stable across retries`() = runTest {
         val seenTokens = mutableSetOf<String>()
         var calls = 0

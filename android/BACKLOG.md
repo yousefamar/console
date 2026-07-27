@@ -11,6 +11,16 @@ _(empty)_
 
 ## Built, awaiting release
 
+- markRead (or any queued action) randomly stuck in the outbox until
+  hand-deleted: transport-down returned Retry, so a drain storm during a
+  reconnect (foreground + connectivity + WorkManager all fire while the WS is
+  still handshaking) burned all 3 retries on "hub disconnected" and parked the
+  row as terminal `failed` — it then sat there forever since terminal rows
+  never re-drain. New NotReady result: transport-down means the action was
+  never attempted, so it goes back to pending with the retry budget untouched
+  (guards + a message classifier for the guard-then-socket-dies race, applied
+  across all repos' handlers). Startup requeues rows the old behaviour already
+  parked. +2 outbox unit tests.
 - Edited messages rendered with a huge blank block above the text: the diff
   Text and its "(edited)" sibling shared a Row — Row gives the first child its
   full preferred (single-line) width, so beside the tag the long diff wrapped

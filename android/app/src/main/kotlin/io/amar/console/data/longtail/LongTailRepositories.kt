@@ -145,7 +145,7 @@ class BookmarksRepository(
                 }
                 Outbox.Result.Done
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
     }

@@ -48,6 +48,13 @@ class Outbox(
         data class Retry(val error: String) : Result()
         data class Fail(val error: String) : Result()
         data class Conflict(val error: String) : Result()
+
+        /** Transport not ready (WS down / mid-reconnect): the action was never
+         *  attempted, so it must NOT consume a retry. A drain storm during a
+         *  reconnect (foreground + connectivity + WorkManager all trigger)
+         *  used to burn all 3 retries on "hub disconnected" and park an
+         *  otherwise-fine markRead as terminal `failed` until hand-deleted. */
+        data class NotReady(val error: String) : Result()
     }
 
     fun interface Handler {
@@ -61,6 +68,19 @@ class Outbox(
     companion object {
         const val MAX_RETRIES = 3
         private const val WORK_NAME = "outbox-drain"
+
+        /** Classify a handler exception: transport-down (WS dropped mid-RPC,
+         *  connection refused — the action never reached the hub) → NotReady,
+         *  anything else → Retry. Guard checks alone can't catch the race
+         *  where the socket dies between the guard and the call. */
+        fun retryOrNotReady(e: Exception, fallback: String): Result {
+            val m = e.message ?: ""
+            val transport = listOf(
+                "disconnected", "client stopped", "send failed",
+                "Failed to connect", "Connection refused", "Unable to resolve host",
+            ).any { m.contains(it, ignoreCase = true) }
+            return if (transport) Result.NotReady(m) else Result.Retry(m.ifEmpty { fallback })
+        }
 
         fun scheduleWorkManagerDrain(context: Context) {
             val work = OneTimeWorkRequestBuilder<OutboxWorker>()
@@ -121,6 +141,8 @@ class Outbox(
         // Rows that failed with 404/410 predate the handlers treating "already
         // gone" as success — requeue so the next drain resolves them to Done.
         db.outbox().requeueGoneFailures()
+        // Rows parked terminal by pre-NotReady drain storms self-heal too.
+        db.outbox().requeueTransportFailures()
     }
 
     /**
@@ -152,6 +174,12 @@ class Outbox(
                 }
                 is Result.Conflict -> {
                     db.outbox().setStatus(row.id, "conflict", result.error)
+                    allClear = false
+                }
+                is Result.NotReady -> {
+                    // Back to pending, retryCount untouched — nothing was
+                    // attempted. The onConnect drain will pick it up.
+                    db.outbox().setStatus(row.id, "pending", result.error)
                     allClear = false
                 }
                 is Result.Retry -> {

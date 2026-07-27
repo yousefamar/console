@@ -597,7 +597,7 @@ class ChatRepository(
 
     fun registerOutboxHandlers() {
         outbox.register(TYPE_SEND) { row, _ ->
-            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            if (!syncBus.connected) return@register Outbox.Result.NotReady("hub disconnected")
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             val roomId = p["roomId"]!!.jsonPrimitive.content
             val echoId = p["echoId"]!!.jsonPrimitive.content
@@ -640,7 +640,7 @@ class ChatRepository(
                 }
                 Outbox.Result.Done
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "send failed")
+                Outbox.retryOrNotReady(e, "send failed")
             }
         }
         // Terminal failure → sendFailed badge on the echo (WhatsApp model:
@@ -654,12 +654,12 @@ class ChatRepository(
 
         val rpcHandler = { op: String ->
             Outbox.Handler { row, _ ->
-                if (!syncBus.connected) return@Handler Outbox.Result.Retry("hub disconnected")
+                if (!syncBus.connected) return@Handler Outbox.Result.NotReady("hub disconnected")
                 try {
                     syncBus.rpc("chat-rooms", op, json.parseToJsonElement(row.payloadJson))
                     Outbox.Result.Done
                 } catch (e: Exception) {
-                    Outbox.Result.Retry(e.message ?: "$op failed")
+                    Outbox.retryOrNotReady(e, "$op failed")
                 }
             }
         }
@@ -689,7 +689,7 @@ class ChatRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
         outbox.register("$TYPE_SEND_FILE:onFailed") { row, _ ->
@@ -698,7 +698,7 @@ class ChatRepository(
             Outbox.Result.Done
         }
         outbox.register(TYPE_REACT) { row, _ ->
-            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            if (!syncBus.connected) return@register Outbox.Result.NotReady("hub disconnected")
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             try {
                 syncBus.rpc("matrix", "sendEvent", buildJsonObject {
@@ -714,7 +714,7 @@ class ChatRepository(
                 })
                 Outbox.Result.Done
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "react failed")
+                Outbox.retryOrNotReady(e, "react failed")
             }
         }
         outbox.register(TYPE_MARK_READ, rpcHandler("markRead"))
@@ -731,7 +731,7 @@ class ChatRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
         outbox.register(TYPE_MUTE) { row, _ ->
@@ -745,7 +745,7 @@ class ChatRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
         // Low-priority tag via room tags REST (SPA setRoomTag m.lowpriority).
@@ -760,13 +760,13 @@ class ChatRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
         // Edit send (m.replace) — SPA store editMessage. ' * ' fallback body +
         // m.new_content, m.mentions rebuilt on both.
         outbox.register(TYPE_EDIT) { row, _ ->
-            if (!syncBus.connected) return@register Outbox.Result.Retry("hub disconnected")
+            if (!syncBus.connected) return@register Outbox.Result.NotReady("hub disconnected")
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             val roomId = p["roomId"]!!.jsonPrimitive.content
             val eventId = p["eventId"]!!.jsonPrimitive.content
@@ -813,7 +813,7 @@ class ChatRepository(
                 })
                 Outbox.Result.Done
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "edit failed")
+                Outbox.retryOrNotReady(e, "edit failed")
             }
         }
         // Terminal edit failure → red marker on the edited bubble.

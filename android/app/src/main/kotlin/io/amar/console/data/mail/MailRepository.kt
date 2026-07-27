@@ -450,7 +450,7 @@ class MailRepository(
                         else -> Outbox.Result.Retry("HTTP ${e.code}")
                     }
                 } catch (e: Exception) {
-                    Outbox.Result.Retry(e.message ?: "network")
+                    Outbox.retryOrNotReady(e, "network")
                 }
             }
         }
@@ -487,7 +487,7 @@ class MailRepository(
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
                 else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
 
@@ -541,7 +541,7 @@ class MailRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
 
@@ -560,7 +560,7 @@ class MailRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
         outbox.register(TYPE_SEND) { row, _ ->
@@ -584,7 +584,7 @@ class MailRepository(
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
                 else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
     }

@@ -449,7 +449,7 @@ class NotesRepository(
                     Outbox.Result.Retry("HTTP ${e.code}")
                 }
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
 
@@ -464,7 +464,7 @@ class NotesRepository(
             } catch (e: HubClient.HttpException) {
                 if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
 
@@ -478,7 +478,7 @@ class NotesRepository(
                 else if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
                 else Outbox.Result.Retry("HTTP ${e.code}")
             } catch (e: Exception) {
-                Outbox.Result.Retry(e.message ?: "network")
+                Outbox.retryOrNotReady(e, "network")
             }
         }
     }
