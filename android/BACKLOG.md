@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v75 (2026-07-27)
 - Garbled agent streamed text ("Found itFound it — …pdf, most — …pdf…"): a
   background→foreground flip leaked the OLD agents WebSocket — its late
   onClosed fired after start() flipped wantConnected back on, scheduling a
@@ -44,7 +49,6 @@ _(empty)_
   loggable message carries its authoritative index and the APK always upserts.
   One-time purge v75 clears rows duplicated by pre-fix live appends.
 
-## Shipped
 
 ### v74 (2026-07-26)
 - Mark-read in a chat now returns you to the chat list (inbox-zero flow:
