@@ -92,11 +92,19 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDeepLink(intent: Intent?) {
         // Home button/gesture while Console IS the home app: Android re-delivers
-        // MAIN+HOME to the current home activity — pop to the grid (launcher
-        // semantics: Home always returns to the wall).
+        // MAIN+HOME to the current home activity. Two distinct cases, told
+        // apart by lifecycle state at onNewIntent time:
+        //  - Home from ANOTHER app (activity stopped → CREATED): "bring my
+        //    launcher forward" — restore Console exactly where it was, no pop.
+        //    Switching apps must never lose your place.
+        //  - Home while ALREADY in Console (paused-but-STARTED): the
+        //    get-me-to-the-wall gesture — pop to the grid, saving pane stacks
+        //    so re-entering an app resumes where you left it.
         if (intent?.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_HOME)) {
-            runCatching {
-                navController?.popBackStack(io.amar.console.ui.nav.GRID_ROUTE, inclusive = false)
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+                runCatching {
+                    navController?.popBackStack(io.amar.console.ui.nav.GRID_ROUTE, inclusive = false, saveState = true)
+                }
             }
             return
         }

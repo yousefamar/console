@@ -11,6 +11,13 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Switching apps no longer loses your place (launcher mode): pressing Home
+  from ANOTHER app re-delivers MAIN+HOME to Console, which unconditionally
+  popped to the grid — so coming back you were dumped on the wall instead of
+  the chat/mail you were in. The handler now checks lifecycle state at
+  onNewIntent: activity stopped (arriving FROM elsewhere) → restore as-is, no
+  pop; already visible (Home pressed IN Console) → pop to grid as before,
+  with saveState so re-opening a pane resumes where you left it.
 - markRead (or any queued action) randomly stuck in the outbox until
   hand-deleted: transport-down returned Retry, so a drain storm during a
   reconnect (foreground + connectivity + WorkManager all fire while the WS is
