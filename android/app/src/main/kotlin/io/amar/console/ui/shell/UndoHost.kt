@@ -1,18 +1,23 @@
 package io.amar.console.ui.shell
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Snackbar
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
@@ -72,7 +77,37 @@ object AppToast {
     fun clear() { _toast.value = null }
 }
 
-/** The bottom-center undo snackbar + app toast; each renders whenever its
+/** Compact bottom-center toast pill — the chat "Marked read / UNDO" look:
+ *  wrap-content rounded chip on inverseSurface, NOT a full-width Material
+ *  snackbar bar. One style for every tab. */
+@Composable
+private fun ToastPill(message: String, actionLabel: String?, onAction: () -> Unit) {
+    Row(
+        Modifier
+            .padding(16.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.inverseSurface)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            message, style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.inverseOnSurface,
+        )
+        if (actionLabel != null) {
+            Text(
+                actionLabel,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.inversePrimary,
+                modifier = Modifier.clickable(onClick = onAction),
+            )
+        }
+    }
+}
+
+/** The bottom-center undo pill + app toast; each renders whenever its
  *  controller has a live entry, auto-dismisses at expiry. Mounted once in
  *  AppShell. */
 @Composable
@@ -82,7 +117,7 @@ fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Box(modifier.fillMaxWidth()) {
         Column(
-            Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
+            Modifier.align(Alignment.BottomCenter),
             horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
         ) {
             toast?.let { t ->
@@ -91,22 +126,17 @@ fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
                     if (wait > 0) delay(wait)
                     if (AppToast.toast.value === t) AppToast.clear()
                 }
-                Snackbar(
-                    modifier = Modifier.padding(8.dp),
-                    action = t.href?.let { href ->
-                        {
-                            TextButton(onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href))
-                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                }
-                                AppToast.clear()
-                            }) { Text("Open") }
+                ToastPill(t.message, actionLabel = t.href?.let { "OPEN" }) {
+                    t.href?.let { href ->
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href))
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
                         }
-                    },
-                ) { Text(t.message) }
+                    }
+                    AppToast.clear()
+                }
             }
             action?.let { a ->
                 // Auto-dismiss at expiry (keyed on the action instance).
@@ -118,15 +148,10 @@ fun UndoHost(scope: CoroutineScope, modifier: Modifier = Modifier) {
                         a.onExpire?.let { runCatching { it() } }
                     }
                 }
-                Snackbar(
-                    modifier = Modifier.padding(8.dp),
-                    action = {
-                        TextButton(onClick = {
-                            scope.launch { runCatching { a.undo() } }
-                            UndoController.clear()
-                        }) { Text("Undo") }
-                    },
-                ) { Text(a.label) }
+                ToastPill(a.label, actionLabel = "UNDO") {
+                    scope.launch { runCatching { a.undo() } }
+                    UndoController.clear()
+                }
             }
         }
     }
