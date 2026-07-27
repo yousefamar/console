@@ -11,7 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty)_
+- ONE toast style app-wide: mail's Archived/Deleted (and calendar's Deleted)
+  rendered as full-width Material Snackbars while chat used a compact rounded
+  bottom pill. UndoHost now renders the chat-style pill (wrap-content, rounded,
+  inverseSurface, coloured UNDO text) for every undo + app toast, and chat/
+  calendar's bespoke inline bars were deleted in favour of the shared host.
 
 ## Shipped
 

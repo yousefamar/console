@@ -28,7 +28,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,7 +55,6 @@ import io.amar.console.data.cal.parseEventDetails
 import io.amar.console.data.cal.startOfDay
 import io.amar.console.data.cal.startOfWeek
 import io.amar.console.data.db.CalEventRow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
@@ -99,7 +97,6 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     var editTarget by remember { mutableStateOf<CalEventRow?>(null) }
     var formPrefill by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var showCreate by remember { mutableStateOf(false) }
-    var undoRow by remember { mutableStateOf<CalEventRow?>(null) }
     var recurringEdit by remember { mutableStateOf<GridEdit?>(null) }
     var locationPick by remember { mutableStateOf<Pair<CalEventRow?, Long>?>(null) }
 
@@ -133,12 +130,9 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     val events = remember(allEvents, visibleIds) { allEvents.filter { isVisible(it) } }
 
     fun deleteWithUndo(row: CalEventRow) {
-        scope.launch {
-            repo.deleteEvent(row.compoundKey)
-            undoRow = row
-            delay(5000)
-            if (undoRow?.compoundKey == row.compoundKey) undoRow = null
-        }
+        scope.launch { repo.deleteEvent(row.compoundKey) }
+        // Shared bottom pill (UndoHost) — one toast implementation app-wide.
+        io.amar.console.ui.shell.UndoController.offer("Deleted \"${row.summary}\"") { repo.undoDelete(row) }
     }
 
     fun applyEdit(edit: GridEdit) {
@@ -258,14 +252,6 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
             modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
         ) { Icon(Icons.Filled.Add, "Create event") }
 
-        undoRow?.let { row ->
-            Snackbar(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
-                action = {
-                    TextButton(onClick = { scope.launch { repo.undoDelete(row) }; undoRow = null }) { Text("Undo") }
-                },
-            ) { Text("Deleted \"${row.summary}\"") }
-        }
     }
 
     // ---- Create / edit form ---- //

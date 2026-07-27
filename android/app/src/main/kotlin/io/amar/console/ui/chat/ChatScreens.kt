@@ -115,15 +115,10 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGri
     var searching by remember { mutableStateOf(false) }
     var snoozeTarget by remember { mutableStateOf<ChatRoomRow?>(null) }
     var menuTarget by remember { mutableStateOf<ChatRoomRow?>(null) }
-    // Prior-state snapshot for the 5s mark-read undo bar (SPA undo toast).
-    var undoRoom by remember { mutableStateOf<ChatRoomRow?>(null) }
-
     fun markReadWithUndo(room: ChatRoomRow) {
-        undoRoom = room
         scope.launch { repo.markRead(room.id) }
-    }
-    LaunchedEffect(undoRoom?.id) {
-        if (undoRoom != null) { kotlinx.coroutines.delay(5000); undoRoom = null }
+        // Shared bottom pill (UndoHost) — one toast implementation app-wide.
+        io.amar.console.ui.shell.UndoController.offer("Marked read") { repo.undoMarkRead(room) }
     }
 
     // Search reaches EVERY cached room (read/snoozed/muted included) — the
@@ -261,30 +256,6 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGri
                         RoomRow(room, onClick = { onOpenRoom(room.id) }, onLongPress = { menuTarget = room })
                     }
                 }
-            }
-        }
-    }
-    // 5s mark-read undo bar (SPA "Marked read" toast).
-    undoRoom?.let { room ->
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-            Row(
-                Modifier
-                    .padding(16.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.inverseSurface)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text("Marked read", style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.inverseOnSurface)
-                Text(
-                    "UNDO", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.inversePrimary,
-                    modifier = Modifier.clickable {
-                        scope.launch { repo.undoMarkRead(room) }; undoRoom = null
-                    },
-                )
             }
         }
     }
