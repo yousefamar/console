@@ -11,6 +11,20 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Garbled agent streamed text ("Found itFound it — …pdf, most — …pdf…"): a
+  background→foreground flip leaked the OLD agents WebSocket — its late
+  onClosed fired after start() flipped wantConnected back on, scheduling a
+  SECOND reconnect; from then on two live sockets fed the same delta buffer
+  and every streamed chunk appended twice. Fixed with the same generation
+  counter SyncBusClient already uses: stale sockets' callbacks are ignored,
+  open() cancels any prior socket, stop() orphans the live one.
+- Own reaction showed twice: the optimistic echo recorded sender "me" while
+  the round-tripped Matrix event added the real MXID — two "senders", doubled
+  chip. Echo now records the real MXID; ingest reaps a legacy "me" when the
+  MXID copy arrives; render-time heal for already-cached rows. +2 unit tests.
+- Reaction chips: long-press now shows WHO reacted with real display names
+  (member list → cached rows → localpart; you = "You"), not MXID localparts.
+
 - Sync status redesigned for harmony: the top-center text pill ("Syncing 3…",
   "Synced 12m ago") is replaced by a compact top-RIGHT corner chip — icon (or
   11dp spinner) + a number, no sentences. States: offline = cloud-off icon

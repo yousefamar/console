@@ -180,6 +180,14 @@ class AgentsRepository(
     private var wantConnected = false
     private var reconnectJob: Job? = null
     private var pollJob: Job? = null
+    /** Bumped on every (re)connect; callbacks from stale sockets are ignored.
+     *  Same guard as SyncBusClient. Without it, a stop→start flip (app
+     *  background→foreground) leaked sockets: the OLD socket's late onClosed
+     *  saw wantConnected=true again and scheduled a reconnect on top of the
+     *  new socket — from then on TWO live sockets fed the same delta buffer,
+     *  so every streamed chunk appended twice (the "Found itFound it —
+     *  …pdf, most — …pdf, most recent message recent message…" garbling). */
+    private val generation = java.util.concurrent.atomic.AtomicLong(0)
     private val okHttp = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -243,6 +251,7 @@ class AgentsRepository(
 
     fun stop() {
         wantConnected = false
+        generation.incrementAndGet() // orphan the live socket's callbacks
         reconnectJob?.cancel()
         pollJob?.cancel()
         ws?.close(1000, "bg")
@@ -252,10 +261,13 @@ class AgentsRepository(
 
     private fun open() {
         if (!wantConnected) return
+        val gen = generation.incrementAndGet()
+        ws?.cancel() // never two live sockets — the old one's callbacks are now stale anyway
         val builder = Request.Builder().url(HubConfig.agentsWsUrl)
         HubTokenStore.get()?.let { builder.header("Authorization", "Bearer $it") }
         ws = okHttp.newWebSocket(builder.build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (gen != generation.get()) { webSocket.close(1000, "stale"); return }
                 caughtUp.clear() // fresh replay burst incoming — re-gate appends
                 _connected.value = true
                 // Flush any prompts queued while offline now that sends can land.
@@ -263,6 +275,7 @@ class AgentsRepository(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (gen != generation.get()) return
                 inbound.trySend(text)
             }
 
@@ -271,10 +284,12 @@ class AgentsRepository(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (gen != generation.get()) return
                 onDisconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (gen != generation.get()) return
                 onDisconnect()
             }
         })

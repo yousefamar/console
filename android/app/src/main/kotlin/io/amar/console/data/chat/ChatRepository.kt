@@ -173,7 +173,11 @@ class ChatRepository(
         if (row != null) {
             val reactions = parseReactions(row.reactionsJson).toMutableMap()
             val senders = (reactions[emoji] ?: emptyList()).toMutableList()
-            if ("me" !in senders) senders.add("me")
+            // Echo under the REAL MXID when known: an anonymous "me" echo plus
+            // the round-tripped event's MXID counted as TWO senders — your own
+            // reaction rendered doubled. "me" only as a last-resort fallback.
+            val me = myUserId() ?: "me"
+            if (me !in senders && "me" !in senders) senders.add(me)
             reactions[emoji] = senders
             db.chatMessages().upsertAll(listOf(row.copy(reactionsJson = encodeReactions(reactions))))
         }
@@ -327,6 +331,23 @@ class ChatRepository(
 
     /** Warm the member cache (compose mount) so autocomplete has data. */
     suspend fun primeRoomMembers(roomId: String) { runCatching { roomMembers(roomId) } }
+
+    /** Human names for a set of MXIDs (reaction chips' "who reacted"):
+     *  member list → cached message rows → localpart. "me"/own MXID → "You". */
+    suspend fun displayNames(roomId: String, userIds: List<String>): Map<String, String> {
+        val me = myUserId()
+        val members = roomMembers(roomId).associateBy({ it.userId }, { it.displayName })
+        return userIds.associateWith { uid ->
+            val localpart = uid.removePrefix("@").substringBefore(':')
+            when {
+                uid == "me" || uid == me -> "You"
+                else -> members[uid]?.takeIf { it.isNotBlank() && it != localpart }
+                    ?: db.chatMessages().latestBySender(roomId, uid)?.senderName
+                        ?.takeIf { it.isNotBlank() && it != localpart && it != uid }
+                    ?: localpart
+            }
+        }
+    }
 
     /** Backfill display names onto cached rows still showing the MXID
      *  localpart (e.g. "whatsapp_lid-1669…") — pre-fix ingests and rooms whose
@@ -1028,6 +1049,9 @@ class ChatRepository(
                 val row = lookup(target) ?: continue
                 val reactions = parseReactions(row.reactionsJson).toMutableMap()
                 val senders = (reactions[key] ?: emptyList()).toMutableList()
+                // Our own round-tripped reaction supersedes the anonymous
+                // optimistic echo — reap "me" or the doubled-chip bug returns.
+                if (sender == myUserId()) senders.remove("me")
                 if (sender !in senders) senders.add(sender)
                 reactions[key] = senders
                 upsert(row.copy(reactionsJson = encodeReactions(reactions)))

@@ -234,6 +234,49 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun `own round-tripped reaction reaps the optimistic 'me' echo — no doubled chip`() = runTest {
+        db.meta().put(io.amar.console.data.db.MetaRow("matrix:myUserId", "@me:x"))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m1","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"hi"}}]}}}}"""
+        ))
+        // Optimistic local reaction (offline path falls back to "me" only when
+        // the MXID is unknown — here it's known, so the echo uses the MXID).
+        repo.sendReaction("!r:x", "\$m1", "👌")
+        var reactions = repo.parseReactions(db.chatMessages().byId("\$m1")!!.reactionsJson)
+        assertEquals(listOf("@me:x"), reactions["👌"])
+        // The event round-trips from the homeserver under the real MXID.
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}r1","sender":"@me:x","type":"m.reaction","origin_server_ts":2,
+                  "content":{"m.relates_to":{"rel_type":"m.annotation","event_id":"${'$'}m1","key":"👌"}}}]}}}}"""
+        ))
+        reactions = repo.parseReactions(db.chatMessages().byId("\$m1")!!.reactionsJson)
+        assertEquals(listOf("@me:x"), reactions["👌"]) // ONE sender, not two
+    }
+
+    @Test
+    fun `ingest reaps a legacy anonymous 'me' echo when the MXID copy arrives`() = runTest {
+        db.meta().put(io.amar.console.data.db.MetaRow("matrix:myUserId", "@me:x"))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m1","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"hi"}}]}}}}"""
+        ))
+        // Pre-fix cached shape: anonymous "me" already on the row.
+        val row = db.chatMessages().byId("\$m1")!!
+        db.chatMessages().upsertAll(listOf(row.copy(reactionsJson = """{"👌":["me"]}""")))
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s2","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}r1","sender":"@me:x","type":"m.reaction","origin_server_ts":2,
+                  "content":{"m.relates_to":{"rel_type":"m.annotation","event_id":"${'$'}m1","key":"👌"}}}]}}}}"""
+        ))
+        val reactions = repo.parseReactions(db.chatMessages().byId("\$m1")!!.reactionsJson)
+        assertEquals(listOf("@me:x"), reactions["👌"])
+    }
+
+    @Test
     fun `reply gets enriched with quoted sender and body from cache`() = runTest {
         repo.ingestMatrixDelta(env(
             """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
