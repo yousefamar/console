@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v76 (2026-07-27)
 - Switching apps no longer loses your place (launcher mode): pressing Home
   from ANOTHER app re-delivers MAIN+HOME to Console, which unconditionally
   popped to the grid — so coming back you were dumped on the wall instead of
@@ -40,7 +45,6 @@ _(empty)_
   inverseSurface, coloured UNDO text) for every undo + app toast, and chat/
   calendar's bespoke inline bars were deleted in favour of the shared host.
 
-## Shipped
 
 ### v75 (2026-07-27)
 - Garbled agent streamed text ("Found itFound it — …pdf, most — …pdf…"): a
