@@ -46,7 +46,10 @@ fun SyncStatusChip(
     modifier: Modifier = Modifier,
 ) {
     androidx.compose.material3.Surface(
-        modifier = modifier.padding(top = 6.dp, end = 8.dp),
+        // Below the 52dp pane top bar: an overlay never reflows anything, but
+        // top-aligned it would sit OVER the bar's action icons — this clears
+        // them entirely while still hugging the corner.
+        modifier = modifier.padding(top = 58.dp, end = 8.dp),
         shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
         tonalElevation = 2.dp,

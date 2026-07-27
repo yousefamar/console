@@ -18,6 +18,8 @@ _(empty)_
   outbox), flushing = spinner + count, slow reconcile = bare spinner.
   "Synced Nm ago" is GONE while connected — live deltas keep data current, so
   staleness only renders offline where it means something. Silence = live.
+  It's a pure overlay (never reflows/shifts anything) and sits BELOW the 52dp
+  top bar so it can't cover pane action icons either.
 - Transcript duplication, SECOND path closed: v69 stamped indices on replay
   bursts, but LIVE broadcasts were unstamped, so the APK appended them at its
   local maxIndex+1 — which drifts from the hub log (echoes, missed messages) —
