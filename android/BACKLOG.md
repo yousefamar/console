@@ -11,6 +11,12 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Edited messages rendered with a huge blank block above the text: the diff
+  Text and its "(edited)" sibling shared a Row — Row gives the first child its
+  full preferred (single-line) width, so beside the tag the long diff wrapped
+  one character per line into a tall invisible column. The tag is now appended
+  inside the same AnnotatedString (one Text, wraps normally). Same latent bug
+  fixed in DeletedMessageBody's "(deleted by …)" tag.
 - ONE toast style app-wide: mail's Archived/Deleted (and calendar's Deleted)
   rendered as full-width Material Snackbars while chat used a compact rounded
   bottom pill. UndoHost now renders the chat-style pill (wrap-content, rounded,
