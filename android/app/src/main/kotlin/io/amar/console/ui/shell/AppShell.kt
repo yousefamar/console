@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
@@ -255,8 +256,6 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         run {
             val toOutbox: () -> Unit = { navController.navigate("settings/outbox") { launchSingleTop = true } }
             val reconcilingRaw by app.graph.syncEngine.syncing.collectAsState()
-            // Grace period: routine passes finish in <1s — flashing "Syncing…"
-            // on every home-press is noise. Show only when a pass is SLOW.
             var reconciling by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
             androidx.compose.runtime.LaunchedEffect(reconcilingRaw) {
                 if (reconcilingRaw) {
@@ -264,31 +263,46 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     reconciling = true
                 } else reconciling = false
             }
+            // Staleness ONLY matters offline: while the WS is up, live deltas
+            // keep data current — a permanent aging "Synced Xm ago" was both
+            // noise and misleading. Offline shows a compact icon + age.
             val lastSyncedAt by app.graph.syncEngine.lastSyncedAt.collectAsState()
-            // Ticker so "Xm ago" ages while you look at it (30s granularity).
             var nowTick by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(System.currentTimeMillis()) }
-            androidx.compose.runtime.LaunchedEffect(Unit) {
-                while (true) { kotlinx.coroutines.delay(30_000); nowTick = System.currentTimeMillis() }
+            androidx.compose.runtime.LaunchedEffect(connected) {
+                while (!connected) { kotlinx.coroutines.delay(30_000); nowTick = System.currentTimeMillis() }
             }
-            val (pillText, pillTint, pillClick) = when {
-                !connected && pendingCount > 0 -> Triple("Offline — $pendingCount queued", MaterialTheme.colorScheme.onSurfaceVariant, toOutbox)
-                !connected -> Triple("Offline", MaterialTheme.colorScheme.onSurfaceVariant, null)
-                pendingCount > 0 -> Triple("Syncing $pendingCount…", MaterialTheme.colorScheme.primary, toOutbox)
-                stuckCount > 0 -> Triple("$stuckCount ${if (stuckCount == 1) "action" else "actions"} failed", MaterialTheme.colorScheme.error, toOutbox)
-                reconciling -> Triple("Syncing…", MaterialTheme.colorScheme.primary, null)
-                // Connected + fresh (<60s since a completed pass): quiet — no pill.
-                // Connected but the last pass is old: say so instead of leaving
-                // you guessing whether the screen is current.
-                lastSyncedAt > 0 && nowTick - lastSyncedAt > 120_000 ->
-                    Triple("Synced ${freshnessLabel(nowTick - lastSyncedAt)} ago", MaterialTheme.colorScheme.onSurfaceVariant, null)
-                else -> Triple(null, MaterialTheme.colorScheme.primary, null)
-            }
-            if (pillText != null) {
-                StatusPill(
-                    text = pillText,
-                    tint = pillTint,
-                    onClick = pillClick,
-                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopCenter),
+            // Compact corner chip: icon + number, no sentences. Silence = live.
+            when {
+                !connected -> SyncStatusChip(
+                    icon = Icons.Outlined.CloudOff,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = listOfNotNull(
+                        pendingCount.takeIf { it > 0 }?.toString(),
+                        lastSyncedAt.takeIf { it > 0 }?.let { freshnessLabel(nowTick - it) },
+                    ).joinToString(" · ").ifEmpty { null },
+                    onClick = if (pendingCount > 0) toOutbox else null,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd),
+                )
+                stuckCount > 0 -> SyncStatusChip(
+                    icon = Icons.Outlined.ErrorOutline,
+                    tint = MaterialTheme.colorScheme.error,
+                    label = "$stuckCount",
+                    onClick = toOutbox,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd),
+                )
+                pendingCount > 0 -> SyncStatusChip(
+                    icon = null, // spinner
+                    tint = MaterialTheme.colorScheme.primary,
+                    label = "$pendingCount",
+                    onClick = toOutbox,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd),
+                )
+                reconciling -> SyncStatusChip(
+                    icon = null, // spinner
+                    tint = MaterialTheme.colorScheme.primary,
+                    label = null,
+                    onClick = null,
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd),
                 )
             }
         }
