@@ -11,6 +11,13 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Sync status redesigned for harmony: the top-center text pill ("Syncing 3…",
+  "Synced 12m ago") is replaced by a compact top-RIGHT corner chip — icon (or
+  11dp spinner) + a number, no sentences. States: offline = cloud-off icon
+  (+ queued count and/or data age "2h"), failed = error icon + count (tap →
+  outbox), flushing = spinner + count, slow reconcile = bare spinner.
+  "Synced Nm ago" is GONE while connected — live deltas keep data current, so
+  staleness only renders offline where it means something. Silence = live.
 - Transcript duplication, SECOND path closed: v69 stamped indices on replay
   bursts, but LIVE broadcasts were unstamped, so the APK appended them at its
   local maxIndex+1 — which drifts from the hub log (echoes, missed messages) —

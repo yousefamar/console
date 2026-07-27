@@ -34,6 +34,44 @@ fun StatusBanner(text: String, tint: Color, icon: ImageVector? = null, onClick: 
     }
 }
 
+/** Compact sync-status chip: an ICON (or 12dp spinner when icon is null) +
+ *  optional short label ("3", "2h"), floating top-END so it hugs the corner
+ *  instead of splitting the header. No sentences. Silence = live + fresh. */
+@Composable
+fun SyncStatusChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector?,
+    tint: Color,
+    label: String?,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.material3.Surface(
+        modifier = modifier.padding(top = 6.dp, end = 8.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            Modifier
+                .let { if (onClick != null) it.clickable(onClick = onClick) else it }
+                .padding(horizontal = 7.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+            } else {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(11.dp), strokeWidth = (1.5).dp, color = tint,
+                )
+            }
+            if (label != null) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+            }
+        }
+    }
+}
+
 /** Floating status pill (overlay, never shifts layout): small rounded chip
  *  top-center, à la the SPA's subtle sync indicator. */
 @Composable
