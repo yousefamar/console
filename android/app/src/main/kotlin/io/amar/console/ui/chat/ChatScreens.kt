@@ -1703,11 +1703,17 @@ fun insertEmoji(text: String, active: Pair<Int, String>, emoji: String): String 
     return "$before$emoji $after"
 }
 
-/** Inline word-diff for edited messages (SPA EditDiff). */
+/** Inline word-diff for edited messages (SPA EditDiff). The "(edited)" tag is
+ *  appended INSIDE the string: a sibling Text in a Row got squeezed to ~0
+ *  width by a long diff (Row gives the first child its full preferred width),
+ *  wrapping one character per line into a tall invisible column — the "huge
+ *  empty padding above edited messages" bug. */
 @Composable
 private fun EditDiffText(original: String, edited: String) {
     val parts = remember(original, edited) { io.amar.console.data.chat.ChatFormat.wordDiff(original, edited) }
-    val annotated = remember(parts) {
+    val tagColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val tagSize = MaterialTheme.typography.labelSmall.fontSize
+    val annotated = remember(parts, tagColor, tagSize) {
         androidx.compose.ui.text.buildAnnotatedString {
             for (p in parts) {
                 when (p.kind) {
@@ -1723,12 +1729,10 @@ private fun EditDiffText(original: String, edited: String) {
                     else -> append(p.text)
                 }
             }
+            withStyle(androidx.compose.ui.text.SpanStyle(color = tagColor, fontSize = tagSize)) { append(" (edited)") }
         }
     }
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(annotated, style = MaterialTheme.typography.bodyMedium)
-        Text(" (edited)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
+    Text(annotated, style = MaterialTheme.typography.bodyMedium)
 }
 
 /** Deleted message: recover original from the hub archive before falling
@@ -1759,17 +1763,25 @@ private fun DeletedMessageBody(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable { onImageTap(mediaUrl) })
         }
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text ?: (if (checked) "Message deleted" else "…"),
-                style = MaterialTheme.typography.bodyMedium.copy(textDecoration = TextDecoration.LineThrough),
-                color = androidx.compose.ui.graphics.Color(0xFFF87171).copy(alpha = 0.7f),
-            )
-            msg.deletedBy?.let {
-                Text(" (deleted by ${it.removePrefix("@").substringBefore(':')})",
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+        // Tag appended inside ONE string — a sibling Text in a Row collapses
+        // to ~0 width beside a long body and wraps char-per-line into a tall
+        // blank column (same bug as the edited-message padding).
+        val tagColor = MaterialTheme.colorScheme.onSurfaceVariant
+        val tagSize = MaterialTheme.typography.labelSmall.fontSize
+        val bodyColor = androidx.compose.ui.graphics.Color(0xFFF87171).copy(alpha = 0.7f)
+        Text(
+            androidx.compose.ui.text.buildAnnotatedString {
+                withStyle(androidx.compose.ui.text.SpanStyle(color = bodyColor, textDecoration = TextDecoration.LineThrough)) {
+                    append(text ?: (if (checked) "Message deleted" else "…"))
+                }
+                msg.deletedBy?.let {
+                    withStyle(androidx.compose.ui.text.SpanStyle(color = tagColor, fontSize = tagSize)) {
+                        append(" (deleted by ${it.removePrefix("@").substringBefore(':')})")
+                    }
+                }
+            },
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
 
