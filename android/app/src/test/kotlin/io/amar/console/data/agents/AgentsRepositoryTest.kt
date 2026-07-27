@@ -64,13 +64,16 @@ class AgentsRepositoryTest {
     }
 
     @Test
-    fun `queued send retries while agents ws is down`() = runTest {
+    fun `queued send stays pending with NO retry burn while agents ws is down`() = runTest {
         db.agents().upsertSessions(listOf(session("s1")))
         repo.sendPrompt("s1", "offline prompt")
-        // WS never started — handler must Retry, keeping the row pending.
-        assertFalse(outbox.drain())
+        // WS never started — transport-down is NotReady, not Retry: the send
+        // was never attempted so it must not consume the retry budget. A
+        // drain storm during reconnect used to burn all 3 retries on "hub
+        // disconnected" and park the row as terminal `failed`.
+        repeat(5) { assertFalse(outbox.drain()) }
         assertEquals(1, db.outbox().pending().size)
-        assertEquals(1, db.outbox().pending()[0].retryCount)
+        assertEquals(0, db.outbox().pending()[0].retryCount)
     }
 
     @Test

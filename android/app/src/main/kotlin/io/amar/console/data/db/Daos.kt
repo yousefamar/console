@@ -33,6 +33,15 @@ interface OutboxDao {
     @Query("UPDATE outbox SET status = 'pending' WHERE status = 'failed' AND error IN ('HTTP 404', 'HTTP 410')")
     suspend fun requeueGoneFailures()
 
+    /** Rows parked terminal by the pre-NotReady behaviour (a reconnect drain
+     *  storm burned all retries on "hub disconnected") — requeue with a fresh
+     *  budget; transport-down no longer consumes retries. */
+    @Query(
+        "UPDATE outbox SET status = 'pending', retryCount = 0 WHERE status = 'failed' " +
+            "AND (error LIKE '%disconnected%' OR error LIKE '%Failed to connect%' OR error LIKE '%Unable to resolve host%')"
+    )
+    suspend fun requeueTransportFailures()
+
     @Query("UPDATE outbox SET status = 'pending', retryCount = retryCount + 1, error = :error WHERE id = :id")
     suspend fun markRetry(id: Long, error: String?)
 

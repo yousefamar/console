@@ -1063,7 +1063,7 @@ class AgentsRepository(
                     runCatching { java.io.File(el.jsonPrimitive.content.substringBeforeLast('|')).delete() }
                 }
                 Outbox.Result.Done
-            } else Outbox.Result.Retry("agents ws disconnected")
+            } else Outbox.Result.NotReady("agents ws disconnected")
         }
     }
 
