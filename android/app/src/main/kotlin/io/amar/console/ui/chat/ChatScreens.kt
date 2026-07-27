@@ -728,6 +728,7 @@ fun ChatRoomScreen(
                         resolveArchived = { repo.archivedEvent(roomId, msg.id) },
                         resolveMediaFile = { repo.mediaFile(context, msg) },
                         resolvePreview = { repo.urlPreview(it) },
+                        resolveNames = { repo.displayNames(roomId, it) },
                     )
                 }
             }
@@ -1411,6 +1412,7 @@ private fun MessageBubble(
     resolveArchived: (suspend () -> ChatRepository.ArchivedEvent?)? = null,
     resolveMediaFile: (suspend () -> java.io.File)? = null,
     resolvePreview: (suspend (String) -> ChatRepository.UrlPreview?)? = null,
+    resolveNames: (suspend (List<String>) -> Map<String, String>)? = null,
 ) {
     // Swipe-right-to-reply: drag up to 80px, fire past 50px.
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -1600,14 +1602,18 @@ private fun MessageBubble(
                 }
             }
             msg.reactionsJson?.let { rj ->
-                val reactions = remember(rj) {
+                val reactions = remember(rj, myUserId) {
                     runCatching {
                         Json.parseToJsonElement(rj).jsonObject.entries.map { (k, v) ->
-                            k to ((v as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList())
+                            val senders = (v as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList()
+                            // Heal pre-fix cached rows where the optimistic
+                            // "me" echo AND the round-tripped MXID both stuck.
+                            k to (if (myUserId != null && myUserId in senders) senders - "me" else senders)
                         }.filter { it.second.isNotEmpty() }
                     }.getOrElse { emptyList() }
                 }
                 var namesFor by remember(msg.id) { mutableStateOf<String?>(null) }
+                val nameScope = rememberCoroutineScope()
                 if (reactions.isNotEmpty()) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 2.dp)) {
                         for ((emoji, senders) in reactions.take(12)) {
@@ -1624,8 +1630,14 @@ private fun MessageBubble(
                                     .combinedClickable(
                                         onClick = { onReact(emoji) },
                                         onLongClick = {
-                                            namesFor = "$emoji  " + senders.joinToString(", ") {
-                                                if (it == "me") "You" else it.removePrefix("@").substringBefore(':')
+                                            // Real display names (member list /
+                                            // cached rows), not MXID localparts.
+                                            nameScope.launch {
+                                                val resolved = resolveNames?.invoke(senders)
+                                                namesFor = "$emoji  " + senders.joinToString(", ") {
+                                                    resolved?.get(it)
+                                                        ?: if (it == "me") "You" else it.removePrefix("@").substringBefore(':')
+                                                }
                                             }
                                         },
                                     )
