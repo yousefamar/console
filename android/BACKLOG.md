@@ -11,7 +11,14 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty)_
+- Map: light-mode basemap toggle (sun/moon chip in the toolbar) — CARTO
+  light_all vs dark_all, persisted; dark tiles are unreadable in sunlight.
+  Style swap re-attaches the renderer (setStyle wipes sources/layers/images)
+  so pins/track/agent layers survive the flip.
+- Map: navigate-out everywhere — geocache + Meetup detail panels gained a
+  "navigate" button, and LONG-PRESS on any arbitrary spot shows a coords chip
+  with NAVIGATE. All go through a geo: URI chooser ("Open with…" → Google
+  Maps etc.), web-Maps URL fallback if no handler.
 
 ## Shipped
 
