@@ -27,7 +27,17 @@ export function isTransientApiError(text: string): boolean {
     t.includes('overloaded') ||
     t.includes('service unavailable') ||
     t.includes('bedrock is unable to process') ||
-    t.includes('throttl') // throttled / throttling (Bedrock wording)
+    t.includes('throttl') || // throttled / throttling (Bedrock wording)
+    // Network-flavour transients: same policy — the turn died, the session is
+    // fine, retry after a wait. Seen live: "API Error: The operation timed
+    // out." sat unresumed because none of the HTTP-status patterns matched.
+    t.includes('timed out') ||
+    t.includes('timeout') ||
+    t.includes('econnreset') ||
+    t.includes('econnrefused') ||
+    t.includes('socket hang up') ||
+    t.includes('fetch failed') ||
+    t.includes('network error')
   )
 }
 
