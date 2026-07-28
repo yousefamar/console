@@ -831,14 +831,24 @@ class ChatRepository(
 
     private var repoScope: kotlinx.coroutines.CoroutineScope? = null
 
+    /** Whether matrix.resume has completed on THIS WS connection. Until it
+     *  has, live deltas must NOT advance the resume cursor: broadcasts are
+     *  fire-and-forget (no per-client buffer), so deltas missed while the WS
+     *  was down are only recoverable via resume — a live delta advancing the
+     *  cursor first skips the gap FOREVER (the "newest messages only in the
+     *  room preview" hole, hit when the wedged reconciler kept resume from
+     *  ever running). Events still ingest (idempotent); only the cursor waits. */
+    @Volatile private var resumedThisConnection = false
+
     fun wireLiveDeltas(scope: kotlinx.coroutines.CoroutineScope) {
         repoScope = scope
+        syncBus.onConnect { resumedThisConnection = false }
         // Handlers fire on the OkHttp WS reader thread — hop to a coroutine.
         syncBus.on("chat-rooms", "delta") { data ->
             scope.launch { runCatching { applyRoomsDelta(data.jsonObject) } }
         }
         syncBus.on("matrix", "delta") { data ->
-            scope.launch { runCatching { ingestMatrixDelta(data.jsonObject) } }
+            scope.launch { runCatching { ingestMatrixDelta(data.jsonObject, advanceCursor = resumedThisConnection) } }
         }
     }
 
@@ -873,6 +883,9 @@ class ChatRepository(
             val isInitial = delta["isInitial"]?.jsonPrimitive?.booleanOrNull == true
             _initialSyncing.value = isInitial && cacheEmpty
             ingestMatrixDelta(delta)
+            // Gap closed up to this delta's nextBatch — live deltas may now
+            // advance the cursor for this connection.
+            resumedThisConnection = true
         }
         _initialSyncing.value = false
     }
@@ -918,8 +931,10 @@ class ChatRepository(
         }
     }
 
-    /** Ingest a hub MatrixDelta {nextBatch, rooms{id→{timeline,...}}}. */
-    internal suspend fun ingestMatrixDelta(delta: JsonObject) {
+    /** Ingest a hub MatrixDelta {nextBatch, rooms{id→{timeline,...}}}.
+     *  [advanceCursor]=false ingests events WITHOUT moving the resume cursor
+     *  (live deltas before this connection's resume has closed the gap). */
+    internal suspend fun ingestMatrixDelta(delta: JsonObject, advanceCursor: Boolean = true) {
         val nextBatch = delta["nextBatch"]?.jsonPrimitive?.content
         val rooms = delta["rooms"] as? JsonObject
         db.withTransaction {
@@ -930,7 +945,7 @@ class ChatRepository(
                 }
             }
             // Cursor advances IN the same transaction as the events.
-            if (!nextBatch.isNullOrEmpty()) {
+            if (advanceCursor && !nextBatch.isNullOrEmpty()) {
                 db.meta().put(MetaRow(CURSOR_KEY, nextBatch))
             }
         }

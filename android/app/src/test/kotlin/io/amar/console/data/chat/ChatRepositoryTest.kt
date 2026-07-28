@@ -277,6 +277,21 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun `advanceCursor=false ingests events but leaves the resume cursor alone`() = runTest {
+        repo.ingestMatrixDelta(env("""{"nextBatch":"s1","rooms":{}}"""))
+        assertEquals("s1", db.meta().get(ChatRepository.CURSOR_KEY))
+        // A live delta arriving BEFORE this connection's resume closed the
+        // gap: events land (idempotent), cursor must NOT jump past the gap.
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s9","rooms":{"!r:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}live","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":5,"content":{"msgtype":"m.text","body":"live"}}]}}}}"""
+        ), advanceCursor = false)
+        assertNotNull(db.chatMessages().byId("\$live"))
+        assertEquals("s1", db.meta().get(ChatRepository.CURSOR_KEY)) // unchanged
+    }
+
+    @Test
     fun `reply gets enriched with quoted sender and body from cache`() = runTest {
         repo.ingestMatrixDelta(env(
             """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[
