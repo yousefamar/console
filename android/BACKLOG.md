@@ -11,6 +11,13 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Chat links unclickable in bridge messages: WhatsApp formatted_body carries
+  URLs as PLAIN TEXT (no <a>), and AnnotatedString.fromHtml only links real
+  anchors — so the HTML render path (chosen whenever formattedBody is set)
+  produced dead links while plain-text messages linkified fine. New
+  linkifyBareUrls post-pass adds LinkAnnotation.Url over any URL not already
+  inside an anchor (HTML + markdown paths); link-preview card now also shows
+  on formatted messages.
 - Map: light-mode basemap toggle (sun/moon chip in the toolbar) — CARTO
   light_all vs dark_all, persisted; dark tiles are unreadable in sunlight.
   Style swap re-attaches the renderer (setStyle wipes sources/layers/images)

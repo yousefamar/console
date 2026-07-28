@@ -1542,23 +1542,31 @@ private fun MessageBubble(
                         EditDiffText(msg.originalBody!!, bodyText)
                     } else if (msg.formattedBody != null) {
                         val html = remember(msg.formattedBody) {
-                            androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
-                                msg.formattedBody!!,
-                                linkStyles = androidx.compose.ui.text.TextLinkStyles(
-                                    style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
-                                ),
+                            linkifyBareUrls(
+                                androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
+                                    msg.formattedBody!!,
+                                    linkStyles = androidx.compose.ui.text.TextLinkStyles(
+                                        style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                                    ),
+                                )
                             )
                         }
                         Text(html, style = MaterialTheme.typography.bodyMedium, fontStyle = noticeStyle, color = noticeColor)
+                        if (resolvePreview != null && msg.msgtype == "m.text") {
+                            val url = remember(bodyText) { firstUrlIn(bodyText) }
+                            if (url != null) UrlPreviewCard(url, resolvePreview)
+                        }
                     } else {
                         val md = remember(bodyText) { io.amar.console.data.chat.MessageFormat.markdownToHtml(bodyText) }
                         if (md != null) {
                             val html = remember(md) {
-                                androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
-                                    md,
-                                    linkStyles = androidx.compose.ui.text.TextLinkStyles(
-                                        style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
-                                    ),
+                                linkifyBareUrls(
+                                    androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
+                                        md,
+                                        linkStyles = androidx.compose.ui.text.TextLinkStyles(
+                                            style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                                        ),
+                                    )
                                 )
                             }
                             Text(html, style = MaterialTheme.typography.bodyMedium, fontStyle = noticeStyle, color = noticeColor)
@@ -1687,6 +1695,33 @@ private fun LinkifiedText(text: String, strikethrough: Boolean, dim: Boolean, it
 /** First bare http(s) URL in a text body (link-preview source). */
 private fun firstUrlIn(body: String): String? =
     Regex("https?://[^\\s]+").find(body)?.value?.trimEnd('.', ',', ')', ']', '!', '?')
+
+/** Make bare URLs tappable in HTML-derived AnnotatedStrings. Bridges send
+ *  formatted_body with URLs as PLAIN TEXT (no <a>), and fromHtml only links
+ *  real anchors — so bridge messages with links weren't clickable. Adds a
+ *  LinkAnnotation.Url over every URL span not already inside a link. */
+fun linkifyBareUrls(src: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.AnnotatedString {
+    val urlRegex = Regex("https?://[^\\s]+")
+    val matches = urlRegex.findAll(src.text).toList()
+    if (matches.isEmpty()) return src
+    val existing = src.getLinkAnnotations(0, src.length)
+    val builder = androidx.compose.ui.text.AnnotatedString.Builder(src)
+    for (m in matches) {
+        val covered = existing.any { it.start < m.range.last + 1 && it.end > m.range.first }
+        if (covered) continue
+        val url = m.value.trimEnd('.', ',', ')', ']', '!', '?')
+        val end = m.range.first + url.length
+        builder.addLink(
+            androidx.compose.ui.text.LinkAnnotation.Url(url),
+            m.range.first, end,
+        )
+        builder.addStyle(
+            androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+            m.range.first, end,
+        )
+    }
+    return builder.toAnnotatedString()
+}
 
 // ---- Emoji shortcode autocomplete (':query') — pure helpers ----
 
