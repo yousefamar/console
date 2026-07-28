@@ -11,6 +11,18 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v77 (2026-07-28)
+- Outbox rows wedged in "processing" (queue clogged until hand-deleted, part
+  two): the drain debounce cancelled a RUNNING drain when re-scheduled (every
+  reconnect/foreground flip), aborting it after setStatus("processing") but
+  before any result write — and pending() never revisits processing rows.
+  Drains now run NonCancellable (debounce only coalesces waiting ones), and
+  drain() itself recovers leaked processing rows at the top (it holds the
+  single-flight lock, so any such row is by definition an abort leak). +1 test.
 - Chat links unclickable in bridge messages: WhatsApp formatted_body carries
   URLs as PLAIN TEXT (no <a>), and AnnotatedString.fromHtml only links real
   anchors — so the HTML render path (chosen whenever formattedBody is set)
@@ -32,7 +44,6 @@ _(empty)_
   with NAVIGATE. All go through a geo: URI chooser ("Open with…" → Google
   Maps etc.), web-Maps URL fallback if no handler.
 
-## Shipped
 
 ### v76 (2026-07-27)
 - Switching apps no longer loses your place (launcher mode): pressing Home

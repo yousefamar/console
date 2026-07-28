@@ -88,6 +88,18 @@ class OutboxTest {
     }
 
     @Test
+    fun `drain recovers rows leaked in 'processing' by an aborted earlier drain`() = runTest {
+        outbox.register("noop") { _, _ -> Outbox.Result.Done }
+        val id = outbox.enqueue("noop", "{}")
+        // Simulate a drain cancelled mid-row: status was flipped to
+        // processing but no result was ever written.
+        db.outbox().setStatus(id, "processing")
+        assertTrue(outbox.drain()) // must reset → pending → handle → Done
+        assertEquals(0, db.outbox().pending().size)
+        assertEquals(null, db.outbox().byId(id))
+    }
+
+    @Test
     fun `retryOrNotReady classifies transport-down vs real errors`() {
         assertTrue(Outbox.retryOrNotReady(RuntimeException("hub disconnected"), "x") is Outbox.Result.NotReady)
         assertTrue(Outbox.retryOrNotReady(RuntimeException("Failed to connect to /127.0.0.1:9877"), "x") is Outbox.Result.NotReady)

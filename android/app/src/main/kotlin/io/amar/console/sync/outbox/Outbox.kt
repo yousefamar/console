@@ -130,7 +130,13 @@ class Outbox(
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(500)
-            drain()
+            // NonCancellable: the debounce cancel above must only coalesce
+            // WAITING drains — cancelling a RUNNING one (every reconnect /
+            // foreground flip re-schedules) aborted it after setStatus(
+            // "processing") but before the result write, and pending() never
+            // sees processing rows again: the "markRead clogged the queue
+            // until hand-deleted" bug, part two.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { drain() }
         }
         runCatching { durableScheduler(context) }
     }
@@ -151,6 +157,10 @@ class Outbox(
      * @return true if the backlog is clear (nothing pending remains).
      */
     suspend fun drain(): Boolean = drainMutex.withLock {
+        // Single-flight: any row still "processing" here is a leak from an
+        // aborted earlier drain (process death, cancelled coroutine) — no
+        // other drain can be running. Recover it now, not just at app start.
+        db.outbox().resetStuckProcessing()
         val rows = db.outbox().pending()
         var allClear = true
         for (row in rows) {
