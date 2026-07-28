@@ -21,8 +21,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Layers
@@ -91,6 +94,26 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
 
     var showLayers by remember { mutableStateOf(false) }
     var showCreds by remember { mutableStateOf(false) }
+    // Basemap light/dark, persisted — dark tiles are unreadable in sunlight.
+    val mapPrefs = remember { context.getSharedPreferences("console.map", android.content.Context.MODE_PRIVATE) }
+    var darkMap by remember { mutableStateOf(mapPrefs.getBoolean("darkMap", true)) }
+    // Long-pressed spot pending a "navigate here" confirmation.
+    var navSpot by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+
+    fun setMapStyle(dark: Boolean) {
+        darkMap = dark
+        mapPrefs.edit().putBoolean("darkMap", dark).apply()
+        styleReady = false
+        mapView.getMapAsync { map ->
+            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoStyleJson(dark))) { style ->
+                // setStyle wipes all sources/layers/images — full re-attach.
+                renderer.detach()
+                renderer.attach(map, style)
+                renderer.apply(repo.state.value)
+                styleReady = true
+            }
+        }
+    }
 
     DisposableEffect(Unit) {
         mapView.onStart()
@@ -112,7 +135,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             // setStyle(String) treats the arg as a style URI — raw JSON must go
             // through Style.Builder.fromJson or the style silently never loads
             // (beige void, styleReady never fires).
-            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoDarkStyleJson())) { style ->
+            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoStyleJson(darkMap))) { style ->
                 renderer.attach(map, style)
                 renderer.apply(repo.state.value)
                 styleReady = true
@@ -132,6 +155,12 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
                         if (id != null) scope.launch { repo.selectEvent(id) }
                     }
                 }
+                true
+            }
+            // Long-press ANY spot → hand the coords to Google Maps / whatever
+            // handles geo: URIs ("open with" chooser). Navigation escape hatch.
+            map.addOnMapLongClickListener { latLng ->
+                navSpot = latLng.latitude to latLng.longitude
                 true
             }
         }
@@ -211,7 +240,40 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
                 }
             },
             onMeetupDays = { repo.setMeetupDays(it) },
+            darkMap = darkMap,
+            onToggleDark = { setMapStyle(!darkMap) },
         )
+
+        // Long-press target → confirm chip (bottom-center, above attribution).
+        navSpot?.let { (lat, lon) ->
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                tonalElevation = 4.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "%.5f, %.5f".format(lat, lon),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                    )
+                    Text(
+                        "NAVIGATE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.inversePrimary,
+                        modifier = Modifier.clickable { openInMaps(context, lat, lon); navSpot = null },
+                    )
+                    Icon(
+                        Icons.Filled.Close, "Dismiss", tint = MaterialTheme.colorScheme.inverseOnSurface,
+                        modifier = Modifier.size(16.dp).clickable { navSpot = null },
+                    )
+                }
+            }
+        }
 
         if (showLayers) {
             LayersPanel(
@@ -267,6 +329,8 @@ private fun MapToolbar(
     onFetchHere: () -> Unit,
     onFetchMeetupHere: () -> Unit,
     onMeetupDays: (Int) -> Unit,
+    darkMap: Boolean,
+    onToggleDark: () -> Unit,
 ) {
     Column(
         Modifier
@@ -288,6 +352,15 @@ private fun MapToolbar(
             ToolbarChip(onClick = onToggleLayers) {
                 Icon(Icons.Filled.Layers, "Map layers", modifier = Modifier.size(15.dp))
                 Text("${state.layers.size + 3}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            // Light/dark basemap (sunlight readability).
+            ToolbarChip(onClick = onToggleDark) {
+                Icon(
+                    if (darkMap) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                    if (darkMap) "Switch to light map" else "Switch to dark map",
+                    modifier = Modifier.size(15.dp),
+                )
             }
 
             // Location cluster (only while the Location built-in is on).
@@ -659,8 +732,17 @@ private fun CacheDetailPanel(cache: MapCache, onClose: () -> Unit, modifier: Mod
                 }
             }
             val ctx = androidx.compose.ui.platform.LocalContext.current
-            TextButton(onClick = { openUrl(ctx, "https://www.geocaching.com/geocache/${cache.code}") }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                Text("open on geocaching.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { openUrl(ctx, "https://www.geocaching.com/geocache/${cache.code}") }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                    Text("open on geocaching.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                }
+                if (cache.lat != null && cache.lon != null) {
+                    TextButton(onClick = { openInMaps(ctx, cache.lat!!, cache.lon!!, cache.name) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Spacer(Modifier.size(4.dp))
+                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    }
+                }
             }
         }
     }
@@ -703,9 +785,18 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
                 }
             }
             val ctx = androidx.compose.ui.platform.LocalContext.current
-            if (event.eventUrl.isNotBlank()) {
-                TextButton(onClick = { openUrl(ctx, event.eventUrl) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                    Text("open on meetup.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (event.eventUrl.isNotBlank()) {
+                    TextButton(onClick = { openUrl(ctx, event.eventUrl) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        Text("open on meetup.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    }
+                }
+                if (event.lat != null && event.lon != null) {
+                    TextButton(onClick = { openInMaps(ctx, event.lat!!, event.lon!!, event.venueName.ifBlank { event.title }) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Spacer(Modifier.size(4.dp))
+                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    }
                 }
             }
         }
@@ -717,6 +808,23 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
 
 private fun openUrl(ctx: android.content.Context, url: String) {
     runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+}
+
+/** Hand coordinates to an external maps app via a geo: URI, always through a
+ *  chooser ("Open with…") so Google Maps / Organic Maps / etc. are pickable.
+ *  Fallback: no geo: handler at all → Google Maps web URL in the browser. */
+fun openInMaps(ctx: android.content.Context, lat: Double, lon: Double, label: String? = null) {
+    val q = if (label != null) {
+        "$lat,$lon(${android.net.Uri.encode(label)})"
+    } else "$lat,$lon"
+    val geo = android.content.Intent(
+        android.content.Intent.ACTION_VIEW,
+        android.net.Uri.parse("geo:$lat,$lon?q=$q"),
+    )
+    val opened = runCatching {
+        ctx.startActivity(android.content.Intent.createChooser(geo, "Open location with"))
+    }.isSuccess
+    if (!opened) openUrl(ctx, "https://www.google.com/maps/search/?api=1&query=$lat,$lon")
 }
 
 /** Native date picker seeded from [initialMs]; calls back with the chosen day's
@@ -769,9 +877,14 @@ fun formatEventTime(iso: String): String {
     }.getOrDefault(iso)
 }
 
-/** Minimal MapLibre style JSON over CARTO's free dark raster tiles + demotiles
- *  glyphs (so agent-layer text labels render). Mirrors darkRasterStyle(). */
-fun cartoDarkStyleJson(): String = """
+/** Minimal MapLibre style JSON over CARTO's free raster tiles + demotiles
+ *  glyphs (so agent-layer text labels render). Mirrors darkRasterStyle().
+ *  [dark] picks dark_all vs light_all — outdoors in sunlight the dark tiles
+ *  are unreadable, so the toolbar exposes a persisted light/dark toggle. */
+fun cartoStyleJson(dark: Boolean): String {
+    val flavor = if (dark) "dark_all" else "light_all"
+    val bg = if (dark) "#0a0a0a" else "#f5f5f3"
+    return """
 {
   "version": 8,
   "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
@@ -779,17 +892,20 @@ fun cartoDarkStyleJson(): String = """
     "carto": {
       "type": "raster",
       "tiles": [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"
+        "https://a.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png",
+        "https://b.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png",
+        "https://c.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png"
       ],
       "tileSize": 256,
       "attribution": "© OpenStreetMap contributors © CARTO"
     }
   },
   "layers": [
-    { "id": "bg", "type": "background", "paint": { "background-color": "#0a0a0a" } },
+    { "id": "bg", "type": "background", "paint": { "background-color": "$bg" } },
     { "id": "carto", "type": "raster", "source": "carto" }
   ]
 }
 """.trimIndent()
+}
+
+fun cartoDarkStyleJson(): String = cartoStyleJson(dark = true)
