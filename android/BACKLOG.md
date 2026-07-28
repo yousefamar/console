@@ -15,6 +15,11 @@ _(empty)_
   light_all vs dark_all, persisted; dark tiles are unreadable in sunlight.
   Style swap re-attaches the renderer (setStyle wipes sources/layers/images)
   so pins/track/agent layers survive the flip.
+- Map: agent-layer features are now tappable (SPA popup parity) — tapping a
+  where-to-move town / airport / flight-arc label opens an info panel built
+  from the feature's properties, ordered by the layer's popup[] field list
+  (all non-underscore props when absent), with a navigate button. Previously
+  only geocache/Meetup pins were hit-tested.
 - Map: navigate-out everywhere — geocache + Meetup detail panels gained a
   "navigate" button, and LONG-PRESS on any arbitrary spot shows a coords chip
   with NAVIGATE. All go through a geo: URI chooser ("Open with…" → Google

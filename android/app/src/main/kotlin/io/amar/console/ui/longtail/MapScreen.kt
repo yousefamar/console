@@ -99,6 +99,8 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     var darkMap by remember { mutableStateOf(mapPrefs.getBoolean("darkMap", true)) }
     // Long-pressed spot pending a "navigate here" confirmation.
     var navSpot by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    // Tapped agent-layer feature (e.g. a where-to-move town) → info panel.
+    var featureInfo by remember { mutableStateOf<AgentFeatureInfo?>(null) }
 
     fun setMapStyle(dark: Boolean) {
         darkMap = dark
@@ -153,6 +155,24 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
                     mu.isNotEmpty() -> {
                         val id = mu[0].getStringProperty("id")
                         if (id != null) scope.launch { repo.selectEvent(id) }
+                    }
+                    else -> {
+                        // Agent layers (towns, airports, flight arcs…): query
+                        // the point sublayers of every visible layer; a hit
+                        // opens an info panel from the feature's properties
+                        // (the SPA popup, driven by the layer's popup[] list).
+                        val st = repo.state.value
+                        outer@ for (l in st.layers) {
+                            if (st.layerVisible[l.slug] == false) continue
+                            val ids = listOf("layer:${l.slug}:circle", "layer:${l.slug}:symbol", "layer:${l.slug}:label", "layer:${l.slug}:fill")
+                            for (layerId in ids) {
+                                val fs = runCatching { map.queryRenderedFeatures(pt, layerId) }.getOrDefault(emptyList())
+                                if (fs.isNotEmpty()) {
+                                    featureInfo = agentFeatureInfo(l, fs[0], latLng.latitude, latLng.longitude)
+                                    break@outer
+                                }
+                            }
+                        }
                     }
                 }
                 true
@@ -300,6 +320,8 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             CacheDetailPanel(selectedCache, onClose = { scope.launch { repo.selectCache(null) } }, modifier = Modifier.align(Alignment.TopEnd))
         } else if (selectedEvent != null) {
             MeetupEventPanel(selectedEvent, onClose = { scope.launch { repo.selectEvent(null) } }, modifier = Modifier.align(Alignment.TopEnd))
+        } else featureInfo?.let { info ->
+            AgentFeaturePanel(info, onClose = { featureInfo = null }, modifier = Modifier.align(Alignment.TopEnd))
         }
     }
 }
@@ -798,6 +820,78 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
                         Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
                     }
                 }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- //
+// Agent-layer feature info (SPA popup parity)
+
+data class AgentFeatureInfo(
+    val layerName: String,
+    val title: String,
+    /** label → value rows, ordered by the layer's popup[] list (or all
+     *  non-underscore properties when the layer defines none). */
+    val fields: List<Pair<String, String>>,
+    val lat: Double,
+    val lon: Double,
+)
+
+/** Build the info panel model from a tapped feature's properties. Mirrors the
+ *  SPA popup: layer meta popup[] picks + orders + labels the fields; without
+ *  it, fall back to every property not starting with '_'. */
+fun agentFeatureInfo(
+    layer: io.amar.console.data.longtail.MapLayerMeta,
+    feature: org.maplibre.geojson.Feature,
+    tapLat: Double,
+    tapLon: Double,
+): AgentFeatureInfo {
+    val props = feature.properties()
+    fun prop(k: String): String? = props?.get(k)?.let { v ->
+        if (v.isJsonPrimitive) v.asJsonPrimitive.asString else v.toString()
+    }?.takeIf { it.isNotBlank() && it != "null" }
+
+    val fields = if (layer.style.popup.isNotEmpty()) {
+        layer.style.popup.mapNotNull { (key, label) -> prop(key)?.let { label.ifBlank { key } to it } }
+    } else {
+        props?.keySet().orEmpty().filter { !it.startsWith("_") }
+            .mapNotNull { k -> prop(k)?.let { k to it } }
+    }
+    val title = prop("name") ?: prop("title") ?: prop("_label") ?: layer.name
+    // Prefer the feature's own point coords (navigate target); fall back to tap.
+    val geom = feature.geometry()
+    val (lat, lon) = if (geom is org.maplibre.geojson.Point) geom.latitude() to geom.longitude() else tapLat to tapLon
+    return AgentFeatureInfo(layer.name, title, fields.filter { it.first != "name" && it.first != "title" || it.second != title }, lat, lon)
+}
+
+@Composable
+private fun AgentFeaturePanel(info: AgentFeatureInfo, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Surface(
+        modifier = modifier.padding(top = 8.dp, end = 8.dp).widthIn(max = 320.dp).heightIn(max = 480.dp),
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = 4.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(info.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                    Text(info.layerName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Close", modifier = Modifier.size(16.dp)) }
+            }
+            for ((label, value) in info.fields) {
+                Row(Modifier.padding(top = 3.dp)) {
+                    Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.widthIn(min = 84.dp))
+                    Text(value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                }
+            }
+            TextButton(onClick = { openInMaps(ctx, info.lat, info.lon, info.title) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                Spacer(Modifier.size(4.dp))
+                Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
             }
         }
     }
