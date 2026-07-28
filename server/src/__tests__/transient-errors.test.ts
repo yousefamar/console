@@ -15,6 +15,14 @@ describe('isTransientApiError', () => {
     expect(isTransientApiError('Bedrock is unable to process your request')).toBe(true)
   })
 
+  it('matches network-flavour transients (timeouts, resets)', () => {
+    expect(isTransientApiError('API Error: The operation timed out.')).toBe(true) // seen live 2026-07-28
+    expect(isTransientApiError('Request timeout')).toBe(true)
+    expect(isTransientApiError('read ECONNRESET')).toBe(true)
+    expect(isTransientApiError('socket hang up')).toBe(true)
+    expect(isTransientApiError('TypeError: fetch failed')).toBe(true)
+  })
+
   it('does NOT match model-unavailable errors (those advance the fallback chain)', () => {
     expect(isTransientApiError('The provided model identifier is invalid')).toBe(false)
     expect(isTransientApiError('model not found: claude-fable-5')).toBe(false)
