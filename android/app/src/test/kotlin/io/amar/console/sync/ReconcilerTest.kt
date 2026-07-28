@@ -55,6 +55,29 @@ class ReconcilerTest {
     }
 
     @Test
+    fun `a trigger mid-pass never aborts the running pass (perma-syncing bug)`() = runTest {
+        // Old behaviour: trigger() cancelled the debounce job that run() was
+        // executing INSIDE — the pass died at its next suspension point, the
+        // action never completed, and a contended finally could leak
+        // running=true (dead reconcile + perma-"Syncing" chip).
+        var started = 0
+        var completed = 0
+        val r = Reconciler(this, debounceMs = 10) {
+            started++
+            kotlinx.coroutines.delay(100) // real suspension point mid-action
+            completed++
+        }
+        r.trigger()
+        advanceTimeBy(50) // debounce fired; pass is suspended mid-action
+        assertEquals(1, started)
+        r.trigger() // mid-pass trigger (home-press/reconnect storm)
+        advanceUntilIdle()
+        assertEquals(started, completed) // every started pass ran to completion
+        assertEquals(2, completed)       // dirty follow-up also completed
+        assertEquals(false, r.syncing.value)
+    }
+
+    @Test
     fun `an action that throws does not break subsequent runs`() = runTest {
         var runs = 0
         val r = Reconciler(this, debounceMs = 10) {

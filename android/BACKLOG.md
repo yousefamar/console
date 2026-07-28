@@ -15,6 +15,23 @@ _(empty)_
 
 ## Shipped
 
+### v78 (2026-07-28)
+- Perma-"Syncing" (round three, the real one): trigger() cancelled the
+  debounce job that run() executed INSIDE — a trigger landing mid-pass
+  (home-press/reconnect storm) killed the running pass at its next suspension
+  point, and the finally's suspending mutex.withLock throws in a cancelled
+  coroutine, leaking running=true + syncing=true FOREVER: spinner stuck on,
+  reconcile dead until app restart. run() now launches detached (cancel only
+  coalesces waiting debounces) and the finally restores state under
+  NonCancellable. Same bug class as v77's outbox drain. +1 test.
+- Newest messages visible only in the room preview: with the reconciler dead
+  (above), matrix.resume never ran — and live matrix deltas were advancing
+  the resume cursor anyway, so the gap the WS-down window left was skipped
+  FOREVER (broadcasts are fire-and-forget; resume is the only gap recovery).
+  Live deltas now ingest without touching the cursor until this connection's
+  resume has completed (per-connection gate, reset on connect). +1 test.
+
+
 ### v77 (2026-07-28)
 - Outbox rows wedged in "processing" (queue clogged until hand-deleted, part
   two): the drain debounce cancelled a RUNNING drain when re-scheduled (every

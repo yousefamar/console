@@ -40,7 +40,14 @@ class Reconciler(
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(debounceMs)
-            run()
+            // Detach the pass from the debounce job: trigger()'s cancel must
+            // only coalesce WAITING debounces. When run() executed inside
+            // this job, a trigger landing mid-pass cancelled the pass — and
+            // the finally's suspending mutex.withLock throws in a cancelled
+            // coroutine, so `running`/`_syncing` stayed true FOREVER: the
+            // perma-"Syncing" chip, with reconcile (matrix.resume catch-up)
+            // dead until app restart. Same bug class as the outbox drain.
+            scope.launch { run() }
         }
     }
 
@@ -64,8 +71,12 @@ class Reconciler(
             } while (mutex.withLock { dirty } && ++passes < 3)
             _lastSyncedAt.value = System.currentTimeMillis()
         } finally {
-            mutex.withLock { running = false }
-            _syncing.value = false
+            // NonCancellable: state restoration must survive scope teardown —
+            // a cancelled suspending withLock would leak running=true.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                mutex.withLock { running = false }
+                _syncing.value = false
+            }
         }
     }
 }
