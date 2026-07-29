@@ -58,11 +58,23 @@ export function CalendarEventPopover() {
   const calColor = calendar?.backgroundColor || '#3b82f6'
   const isOwner = calendar?.accessRole === 'owner' || calendar?.accessRole === 'writer'
 
-  // Conference link — append authuser for Google Meet so it opens with the right account
+  // Conference link — append authuser for Google Meet so it opens with the right
+  // account. The identity to join AS is the one invited, which is NOT necessarily
+  // `event.accountEmail` (that's just whichever account's token fetched the event;
+  // for a delegated/shared calendar it's the wrong Google identity and Meet then
+  // asks to request access). Prefer, in order: the self attendee, a self organizer,
+  // the calendar id when it looks like an address (shared cals are keyed by email),
+  // then the fetching account.
   const rawMeetLink = event.hangoutLink
     || event.conferenceData?.entryPoints?.find((ep) => ep.entryPointType === 'video')?.uri
-  const meetLink = rawMeetLink && rawMeetLink.includes('meet.google.com') && event.accountEmail
-    ? `${rawMeetLink}${rawMeetLink.includes('?') ? '&' : '?'}authuser=${encodeURIComponent(event.accountEmail)}`
+  const joinAs = selfAttendee?.email
+    || (event.organizer?.self ? event.organizer.email : undefined)
+    || (event.calendarId.includes('@') && !event.calendarId.endsWith('.calendar.google.com')
+      ? event.calendarId
+      : undefined)
+    || event.accountEmail
+  const meetLink = rawMeetLink && rawMeetLink.includes('meet.google.com') && joinAs
+    ? `${rawMeetLink}${rawMeetLink.includes('?') ? '&' : '?'}authuser=${encodeURIComponent(joinAs)}`
     : rawMeetLink
 
   return (
