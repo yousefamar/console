@@ -56,6 +56,34 @@ export interface CanvasMeta {
   isPlaceholder: boolean
 }
 
+// ---- Bedrock cost analytics (AWS Cost Explorer, see server/src/aws-costs.ts) ----
+
+export interface CostDay {
+  date: string
+  byOwner: Record<string, number>
+  byModel: Record<string, number>
+  usd: number
+}
+
+export interface CostReport {
+  generatedAt: number
+  start: string
+  end: string
+  days: CostDay[]
+  /** Owners ranked by spend, `untagged` last. Chart stacking order. */
+  owners: string[]
+  models: string[]
+  totalUsd: number
+  totalByOwner: Record<string, number>
+  totalByModel: Record<string, number>
+  empty: boolean
+  /** First date per-user attribution is possible; earlier days are all-untagged
+   *  by construction (cost-allocation tags don't backfill). */
+  ownerTagEpoch: string
+}
+
+export type CostStackBy = 'owner' | 'model'
+
 interface DashboardState {
   snapshot: DashboardSnapshot | null
   snapshotLoading: boolean
@@ -64,6 +92,13 @@ interface DashboardState {
   alertsLoading: boolean
   canvasReloadKey: number
   canvasMeta: CanvasMeta | null
+  costs: CostReport | null
+  costsLoading: boolean
+  costsError: string | null
+  costDays: number
+  /** Which dimension the chart stacks. `model` is the informative cut while most
+   *  fleet spend is untagged. */
+  costStackBy: CostStackBy
 
   refreshSnapshot: () => Promise<void>
   refreshAlerts: () => Promise<void>
@@ -71,7 +106,33 @@ interface DashboardState {
   clearCanvas: () => Promise<void>
   addServer: (name: string, url: string) => Promise<void>
   removeServer: (id: string) => Promise<void>
+  /** `refresh` forces a fresh Cost Explorer call (~$0.01); otherwise the hub
+   *  serves its TTL cache. */
+  refreshCosts: (opts?: { refresh?: boolean }) => Promise<void>
+  setCostDays: (days: number) => void
+  setCostStackBy: (by: CostStackBy) => void
 }
+
+// NB: these must be declared ABOVE the store — `create()` runs its initializer
+// eagerly at module scope, so a `const` below it is still in its TDZ when
+// loadCostDays() reads it (which throws and blanks the entire app, not just this
+// card).
+const COST_DAYS_KEY = 'console:home:costDays'
+const COST_STACK_KEY = 'console:home:costStackBy'
+const COST_DAY_OPTIONS = [7, 30, 90] as const
+
+function loadCostDays(): number {
+  if (typeof localStorage === 'undefined') return 30
+  const n = Number(localStorage.getItem(COST_DAYS_KEY))
+  return (COST_DAY_OPTIONS as readonly number[]).includes(n) ? n : 30
+}
+
+function loadCostStackBy(): CostStackBy {
+  if (typeof localStorage === 'undefined') return 'owner'
+  return localStorage.getItem(COST_STACK_KEY) === 'model' ? 'model' : 'owner'
+}
+
+export { COST_DAY_OPTIONS }
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   snapshot: null,
@@ -81,6 +142,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   alertsLoading: false,
   canvasReloadKey: 0,
   canvasMeta: null,
+  costs: null,
+  costsLoading: false,
+  costsError: null,
+  costDays: loadCostDays(),
+  costStackBy: loadCostStackBy(),
 
   refreshSnapshot: async () => {
     set({ snapshotLoading: true, snapshotError: null })
@@ -127,6 +193,34 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   removeServer: async (id) => {
     await hubFetch(`/dashboard/servers/${encodeURIComponent(id)}`, { method: 'DELETE', timeoutMs: 3000 })
     await get().refreshSnapshot()
+  },
+
+  refreshCosts: async (opts = {}) => {
+    const days = get().costDays
+    set({ costsLoading: true, costsError: null })
+    try {
+      // Generous timeout: a cold (uncached) Cost Explorer call shells out to the
+      // AWS CLI, which routinely takes several seconds.
+      const q = `/dashboard/costs?days=${days}${opts.refresh ? '&refresh=1' : ''}`
+      const report = await hubFetch<CostReport>(q, { timeoutMs: 40_000 })
+      set({ costs: report, costsLoading: false })
+    } catch (err) {
+      set({ costsLoading: false, costsError: (err as Error).message })
+    }
+  },
+
+  setCostDays: (days) => {
+    if (days === get().costDays) return
+    localStorage.setItem(COST_DAYS_KEY, String(days))
+    // Drop the stale window immediately so the chart can't show 30 days of data
+    // under a "7d" label while the new fetch is in flight.
+    set({ costDays: days, costs: null })
+    void get().refreshCosts()
+  },
+
+  setCostStackBy: (by) => {
+    localStorage.setItem(COST_STACK_KEY, by)
+    set({ costStackBy: by }) // same data, different grouping — no refetch
   },
 }))
 

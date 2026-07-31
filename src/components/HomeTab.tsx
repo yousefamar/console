@@ -6,17 +6,20 @@ import { AlertsCard } from './home/AlertsCard'
 import { AgentCanvasCard } from './home/AgentCanvasCard'
 import { BlogDraftsCard } from './home/BlogDraftsCard'
 import { ProjectsCard } from './home/ProjectsCard'
+import { CostsCard } from './home/CostsCard'
 
 const SNAPSHOT_INTERVAL_MS = 30_000
 const ALERTS_INTERVAL_MS = 15_000
 const SUBTAB_KEY = 'console:home:subtab'
 
-type SubTab = 'alerts' | 'servers' | 'canvas' | 'blog'
+type SubTab = 'alerts' | 'servers' | 'canvas' | 'blog' | 'costs'
+
+const SUBTABS: SubTab[] = ['alerts', 'servers', 'blog', 'costs', 'canvas']
 
 function loadSubTab(): SubTab {
   if (typeof localStorage === 'undefined') return 'alerts'
-  const v = localStorage.getItem(SUBTAB_KEY)
-  return v === 'servers' || v === 'canvas' || v === 'blog' ? v : 'alerts'
+  const v = localStorage.getItem(SUBTAB_KEY) as SubTab | null
+  return v && SUBTABS.includes(v) ? v : 'alerts'
 }
 
 export const HomeTab = memo(function HomeTab() {
@@ -52,6 +55,9 @@ export const HomeTab = memo(function HomeTab() {
           <div className={`flex-1 min-h-0 ${subTab === 'servers' ? '' : 'hidden'}`}>
             <ServersCard />
           </div>
+          <div className={`flex-1 min-h-0 ${subTab === 'costs' ? '' : 'hidden'}`}>
+            <CostsCard />
+          </div>
           <div className={`flex-1 min-h-0 ${subTab === 'canvas' ? '' : 'hidden'}`}>
             <AgentCanvasCard />
           </div>
@@ -66,11 +72,16 @@ export const HomeTab = memo(function HomeTab() {
 
   return (
     <div className="flex flex-1 min-h-0 p-3 gap-3 overflow-hidden">
-      <div className="grid grid-cols-2 grid-rows-2 gap-3 flex-[2] min-w-0 min-h-0">
+      {/* Costs spans both columns — a stacked time series needs the width more
+          than the other cards need a third row each. */}
+      <div className="grid grid-cols-2 grid-rows-3 gap-3 flex-[2] min-w-0 min-h-0">
         <AlertsCard />
         <ServersCard />
         <BlogDraftsCard />
         <ProjectsCard />
+        <div className="col-span-2 min-w-0 min-h-0">
+          <CostsCard />
+        </div>
       </div>
       <div className="flex-[3] min-w-0 min-h-0">
         <AgentCanvasCard />
@@ -85,6 +96,7 @@ function SubTabBar({ value, onChange }: { value: SubTab; onChange: (v: SubTab) =
     { id: 'alerts', label: 'Alerts', badge: alertsCount },
     { id: 'servers', label: 'Servers' },
     { id: 'blog', label: 'Blog' },
+    { id: 'costs', label: 'Costs' },
     { id: 'canvas', label: 'Canvas' },
   ]
   return (

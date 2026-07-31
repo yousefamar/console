@@ -12,6 +12,7 @@ import type { Session } from '../session.js'
 import type { CalendarSync } from '../cal/sync.js'
 import type { DebugLog } from '../debug-log.js'
 import type { CanvasPublicTokens } from '../canvas-public-tokens.js'
+import type { AwsCostStore } from '../aws-costs.js'
 
 export interface DashboardCtx {
   servers: ServersConfig
@@ -20,6 +21,7 @@ export interface DashboardCtx {
   cal: CalendarSync
   debugLog: DebugLog
   publicTokens: CanvasPublicTokens
+  costs: AwsCostStore
 }
 
 function publicShareUrl(publicOrigin: string, token: string): string {
@@ -64,6 +66,24 @@ export function handleDashboardRoutes(
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
     }
+    return true
+  }
+
+  // ---- bedrock costs ----
+  // `?days=N` window, `?refresh=1` forces a fresh Cost Explorer call (which
+  // bills ~$0.01, hence cached-by-default). Errors carry the AWS message
+  // through verbatim — an expired credential or missing ce:* permission is the
+  // usual cause and the text says exactly which.
+  if (path === '/dashboard/costs' && req.method === 'GET') {
+    const days = Number(url.searchParams.get('days') ?? '30')
+    const refresh = url.searchParams.get('refresh') === '1'
+    ctx.costs.get(Number.isFinite(days) ? days : 30, { refresh }).then((report) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(report))
+    }).catch((err) => {
+      res.writeHead(502, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
     return true
   }
 

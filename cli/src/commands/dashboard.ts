@@ -11,8 +11,9 @@ export async function dashboard(verb: string | undefined, args: string[], flags:
     case 'alerts': return alertsCmd(flags)
     case 'servers': return serversCmd(args, flags)
     case 'canvas': return canvasCmd(args, flags)
+    case 'costs': return costsCmd(args, flags)
     default:
-      exitWithError('USAGE', `Unknown dashboard command: ${verb ?? ''}. Try: status, alerts, servers, canvas.`, flags)
+      exitWithError('USAGE', `Unknown dashboard command: ${verb ?? ''}. Try: status, alerts, servers, canvas, costs.`, flags)
   }
 }
 
@@ -24,6 +25,18 @@ async function statusCmd(flags: GlobalFlags): Promise<void> {
 async function alertsCmd(flags: GlobalFlags): Promise<void> {
   const r = await hubFetch<{ alerts: unknown[] }>('/dashboard/alerts')
   output(r.alerts, flags)
+}
+
+// Bedrock spend from AWS Cost Explorer. `--refresh` forces a fresh CE query
+// (~$0.01 a pop); without it the hub serves its TTL cache.
+async function costsCmd(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const days = opts.days ?? args.find((a) => !a.startsWith('--'))
+  const q = new URLSearchParams()
+  if (days) q.set('days', days)
+  if (opts.refresh !== undefined) q.set('refresh', '1')
+  const report = await hubFetch<unknown>(`/dashboard/costs?${q.toString()}`, { timeout: 45_000 })
+  output(report, flags)
 }
 
 async function serversCmd(args: string[], flags: GlobalFlags): Promise<void> {

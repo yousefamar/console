@@ -85,6 +85,7 @@ import { startDeprecationShim } from './al/shim-18789.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { CanvasPublicTokens } from './canvas-public-tokens.js'
+import { AwsCostStore } from './aws-costs.js'
 import { handlePublicCanvas } from './routes/public.js'
 import { MicState } from './mic.js'
 import { handleMicRoutes } from './routes/mic.js'
@@ -174,6 +175,9 @@ const taskStore = new TaskStore(join(feedsConfigDir, 'agent-tasks.json'), () => 
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
+// Bedrock spend analytics for the Home pane. Cost Explorer bills per request,
+// so this caches on disk with a TTL and only refetches on demand.
+const awsCosts = new AwsCostStore(join(feedsConfigDir, 'aws-costs.json'), (m) => log(m))
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
@@ -1276,16 +1280,16 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/dashboard/canvas/tabs') && handleCanvasTabRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
   })) return
   if ((path === '/cron' || path === '/cron.ics' || path.startsWith('/cron/')) && handleCronRoutes(req, res, path, url, {
     scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,
