@@ -31,6 +31,7 @@ import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
+import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
 import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -168,6 +169,13 @@ const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 // resolves the configured model rather than a hardcoded const.
 const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
 setAgentModelResolver(() => modelConfig.getModel())
+// Bedrock cost attribution: the chain stays bare, human-readable model ids, and
+// session.ts swaps in this owner's `owner`-tagged inference-profile ARN at the
+// `--model` boundary. The built-in table is spawn-verified, so translation works
+// immediately; this async refresh only ADDS profiles created since (and logs a
+// warning for any chain model that has none — i.e. untagged spend).
+setBedrockProfileLogger((m) => log(m))
+void refreshBedrockProfiles()
 // Durable agent roles / org chart. Loaded before any session spawn so charter
 // injection (createSession) can resolve a restored session's role.
 const agentRegistry = new AgentRegistry(join(feedsConfigDir, 'agents'), (m) => log(m))
@@ -177,7 +185,14 @@ const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
 // Bedrock spend analytics for the Home pane. Cost Explorer bills per request,
 // so this caches on disk with a TTL and only refetches on demand.
-const awsCosts = new AwsCostStore(join(feedsConfigDir, 'aws-costs.json'), (m) => log(m))
+const awsCosts = new AwsCostStore(
+  join(feedsConfigDir, 'aws-costs.json'),
+  (m) => log(m),
+  undefined,
+  // `owner` tag → person's display name, so the chart reads as people. Optional
+  // override file; the built-in map already covers the provisioned owners.
+  join(feedsConfigDir, 'cost-owners.json'),
+)
 const pushServer = new PushServer((msg: string) => { log(msg) })
 const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),

@@ -147,6 +147,51 @@ describe('buildCostReport', () => {
   })
 })
 
+describe('ownerNames (the chart must read as PEOPLE, not tag values)', () => {
+  const res: CeResponse = {
+    ResultsByTime: [
+      bucket('2026-07-30', '2026-07-31', [
+        group('owner$amar', 'Claude Opus 5 (Amazon Bedrock Edition)', '3'),
+        group('owner$guest1', 'Claude Opus 5 (Amazon Bedrock Edition)', '2'),
+        group('owner$', 'Claude Opus 5 (Amazon Bedrock Edition)', '1'),
+      ]),
+    ],
+  }
+
+  it('resolves a display name for every owner present', () => {
+    const r = buildCostReport(res)
+    expect(r.ownerNames.amar).toBe('Yousef')
+    expect(r.ownerNames.guest1).toBe('Lucas')
+  })
+
+  it('never names untagged — it is a residual bucket, not a person', () => {
+    const r = buildCostReport(res)
+    expect(r.ownerNames.untagged).toBeUndefined()
+  })
+
+  it('falls back to the tag itself for an unknown owner, so nobody vanishes', () => {
+    const r = buildCostReport({
+      ResultsByTime: [bucket('2026-07-30', '2026-07-31', [
+        group('owner$rowan', 'Claude Opus 5 (Amazon Bedrock Edition)', '4'),
+      ])],
+    })
+    expect(r.ownerNames.rowan).toBe('rowan')
+  })
+
+  it('lets cost-owners.json overrides win over the built-ins', () => {
+    // This is how a new person gets a label without a code change.
+    const r = buildCostReport(res, { ownerNames: { amar: 'Yousef Amar', rowan: 'Rowan' } })
+    expect(r.ownerNames.amar).toBe('Yousef Amar')
+    expect(r.ownerNames.guest1).toBe('Lucas') // built-in still applies
+    expect(r.ownerNames.rowan).toBeUndefined() // not in this window — only present owners
+  })
+
+  it('only includes owners actually in the window', () => {
+    const r = buildCostReport(res)
+    expect(Object.keys(r.ownerNames).sort()).toEqual(['amar', 'guest1'])
+  })
+})
+
 describe('costWindow', () => {
   it('ends tomorrow so today\'s partial spend is inside the exclusive bound', () => {
     const now = new Date('2026-07-31T14:00:00Z')

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { computeSettingsWithBackend, BACKEND_PRESETS } from '../auth-backend.js'
+import { computeSettingsWithBackend, BACKEND_PRESETS, presetEnv } from '../auth-backend.js'
 
 describe('computeSettingsWithBackend', () => {
   it('bedrock preset adds the Bedrock env keys', () => {
@@ -64,6 +64,38 @@ describe('computeSettingsWithBackend', () => {
   it('preserves non-env top-level settings.json fields untouched', () => {
     const next = computeSettingsWithBackend({ someOtherSetting: { nested: true } }, 'bedrock')
     expect(next.someOtherSetting).toEqual({ nested: true })
+  })
+
+  it('points EVERY bedrock model alias at an owner-tagged profile ARN', () => {
+    // Cost attribution: `--model` only overrides ANTHROPIC_MODEL, so subagents,
+    // compaction, and `--model haiku` callers resolve through these aliases. A
+    // bare id in any of them leaks permanently-untagged spend into Cost Explorer.
+    const env = computeSettingsWithBackend({}, 'bedrock').env as Record<string, string>
+    for (const key of [
+      'ANTHROPIC_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      'ANTHROPIC_DEFAULT_FABLE_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_SMALL_FAST_MODEL',
+    ]) {
+      expect(env[key], key).toMatch(/^arn:aws:bedrock:[^:]+:\d{12}:application-inference-profile\//)
+    }
+  })
+})
+
+describe('presetEnv', () => {
+  it('resolves bedrock alias ARNs at CALL time, not module-load time', () => {
+    // Regression guard: spreading aliasProfileEnv() into the BACKEND_PRESETS
+    // literal would freeze the table at import, which happens BEFORE the async
+    // boot-time AWS profile discovery — so anything discovered would be missed.
+    // The preset literal itself must therefore stay ARN-free.
+    expect(BACKEND_PRESETS.bedrock.env.ANTHROPIC_MODEL).toBeUndefined()
+    expect(presetEnv('bedrock').ANTHROPIC_MODEL).toMatch(/^arn:aws:bedrock:/)
+  })
+
+  it('adds no ARNs first-party (a profile ARN is invalid there)', () => {
+    expect(presetEnv('first_party')).toEqual({})
   })
 })
 

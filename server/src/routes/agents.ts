@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
 import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
+import { smallFastModel } from '../bedrock-profiles.js'
 import type { AgentRegistry } from '../agents/registry.js'
 import type { TaskStore, AgentTask } from '../agents/tasks.js'
 import { checkDelegation, buildChain, chainLabel } from '../agents/delegation.js'
@@ -169,15 +170,16 @@ export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): Bac
   writeBackendSettings(backend)
   ctx.modelConfig.setChain(preset.chain)
   ctx.modelConfig.setModel(preset.chain[0]!)
-  // A per-session model pin carries a bare id.model id from whichever backend
-  // it was set under — it won't auto-translate. Surface any that now look
-  // mismatched (heuristic: Bedrock ids carry the `us.anthropic.` prefix) so
-  // they get noticed instead of silently 400ing after the respawn.
+  // A per-session model pin carries a model id from whichever backend it was
+  // set under — it won't auto-translate. Surface any that now look mismatched
+  // (heuristic: a Bedrock id carries the `us.anthropic.` prefix, or IS a Bedrock
+  // profile ARN if someone pinned one directly) so they get noticed instead of
+  // silently 400ing after the respawn.
   const mismatched: string[] = []
   for (const s of ctx.sessions.values()) {
     const ov = s.modelOverride
     if (!ov) continue
-    const looksBedrock = ov.startsWith('us.anthropic.')
+    const looksBedrock = ov.startsWith('us.anthropic.') || ov.startsWith('arn:aws:bedrock:')
     if (looksBedrock !== (backend === 'bedrock')) mismatched.push(`${s.name ?? s.id} (pinned to '${ov}')`)
   }
   if (mismatched.length) {
@@ -1204,7 +1206,10 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         ? `\n\nExisting session titles for style reference: ${existingNames.join(', ')}`
         : ''
       const prompt = `Generate a short 1-4 word title for this coding session. Reply with ONLY the title, nothing else. No quotes, no punctuation, no explanation.${styleHint}\n\nProject directory: ${dirName}\nUser's initial request: ${session.initialPrompt.slice(0, 500)}\n\nFull session context:\n${context}`
-      execFile('claude', ['-p', '--model', 'haiku', prompt], { timeout: 15000 }, (err, stdout) => {
+      // `smallFastModel()` = the owner-tagged Haiku profile ARN on Bedrock, so
+      // these little utility calls are attributable too (a bare alias here
+      // would bill untagged). No-op off Bedrock.
+      execFile('claude', ['-p', '--model', smallFastModel(), prompt], { timeout: 15000 }, (err, stdout) => {
         const title = err ? null : stdout.trim().replace(/^["']|["']$/g, '').slice(0, 40)
         if (title) {
           session.name = title

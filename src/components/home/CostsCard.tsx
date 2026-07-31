@@ -1,15 +1,21 @@
-// Bedrock spend — daily USD stacked by user, from AWS Cost Explorer.
+// Bedrock spend — daily USD stacked by PERSON, from AWS Cost Explorer.
 //
 // Pure software: the hub shells out to the `aws` CLI and this renders the
 // result. See server/src/aws-costs.ts for the three CE gotchas (Marketplace
 // service names, RECORD_TYPE=Usage, the `owner` cost-allocation tag).
 //
+// Series keys stay the raw `owner` tag values (`amar`, `sam`, `guest1`) — they're
+// the join key against CE and are stable across history — but every label the
+// user sees is resolved to a person's name via `report.ownerNames` (built hub-side
+// from a built-in map plus `~/.config/console/cost-owners.json`). Never render a
+// bare tag value in a label.
+//
 // `untagged` is shown as its own explicit series rather than hidden: requests
 // made against a bare model id bypass the tagged inference profiles that carry
-// `owner`, and cost-allocation tags don't backfill, so it's a real and
-// sometimes dominant bucket. Hiding it would understate total spend. While the
-// hub still spawns agents with bare model ids, stacking by MODEL is the
-// informative cut — hence the by-user / by-model toggle.
+// `owner`, and cost-allocation tags don't backfill, so it stays a real bucket for
+// historical days (and for any spend originating outside this hub, e.g. a shared
+// IAM key on someone else's machine). Since server/src/bedrock-profiles.ts landed,
+// everything the hub itself spawns is tagged, so new days should attribute fully.
 
 import { useEffect, useMemo } from 'react'
 import {
@@ -35,8 +41,14 @@ function colorFor(key: string, ranked: string[]): string {
   return PALETTE[named.indexOf(key) % PALETTE.length]!
 }
 
-// Owner labels are the raw `owner` tag values (`amar`, `guest1`, `sam`) —
-// deliberately not mapped to real names; the tags are already the pseudonyms.
+/** Tag value → person's name for display. Falls back to the tag itself, so a
+ *  brand-new owner still renders (as its tag) instead of vanishing; add them to
+ *  `~/.config/console/cost-owners.json` to give them a name. `untagged` is not a
+ *  person and is never renamed. Guarded for reports cached by an older hub, which
+ *  have no `ownerNames`. */
+function personName(key: string, report: CostReport): string {
+  return report.ownerNames?.[key] ?? key
+}
 
 function fmtUsd(n: number): string {
   if (n === 0) return '$0'
@@ -98,10 +110,10 @@ export function CostsCard() {
                   b === stackBy ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
                 }`}
                 title={b === 'owner'
-                  ? 'Stack by user (owner tag)'
-                  : 'Stack by model — the informative cut while most spend is untagged'}
+                  ? 'Stack by person (owner cost-allocation tag)'
+                  : 'Stack by model'}
               >
-                {b === 'owner' ? 'user' : 'model'}
+                {b === 'owner' ? 'person' : 'model'}
               </button>
             ))}
           </div>
@@ -215,7 +227,10 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
             ) : null}
             {series.map((k) => (
               <Area
+                // `dataKey` stays the tag value (it indexes the row); `name` is
+                // what the legend + tooltip show, so those read as people.
                 key={k} type="monotone" dataKey={k} stackId="1"
+                name={stackBy === 'owner' ? personName(k, report) : k}
                 stroke={colorFor(k, series)} fill={colorFor(k, series)}
                 fillOpacity={0.35} strokeWidth={1.5} isAnimationActive={false}
               />
@@ -225,10 +240,11 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
       </div>
 
       <BreakdownTable
-        title="By user"
+        title="By person"
         totals={report.totalByOwner}
         order={report.owners}
         colorOf={stackBy === 'owner' ? (k) => colorFor(k, report.owners) : undefined}
+        labelOf={(k) => personName(k, report)}
         total={report.totalUsd}
       />
       <BreakdownTable
@@ -241,10 +257,12 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
 
       {report.totalByOwner.untagged ? (
         <p className="px-3 text-[10px] leading-snug text-text-tertiary">
-          <span className="text-text-secondary">untagged</span> = requests that bypassed the
-          per-user inference profiles carrying the <code>owner</code> tag (the hub spawns agents
-          with bare model ids), plus everything before {fmtDay(report.ownerTagEpoch)} when the tag
-          was activated in Billing — cost-allocation tags don't backfill.
+          <span className="text-text-secondary">untagged</span> = everything before{' '}
+          {fmtDay(report.ownerTagEpoch)}, when the <code>owner</code> tag was activated in Billing
+          (cost-allocation tags don't backfill), plus any request that bypassed the per-person
+          inference profiles that carry the tag. The hub now always routes through them, so
+          untagged spend on later days originates outside it (e.g. a shared IAM key on another
+          machine).
         </p>
       ) : null}
     </div>
@@ -252,12 +270,15 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
 }
 
 function BreakdownTable({
-  title, totals, order, colorOf, total,
+  title, totals, order, colorOf, labelOf, total,
 }: {
   title: string
   totals: Record<string, number>
   order: string[]
   colorOf?: (k: string) => string
+  /** Row key → display label. Omitted = show the key (model names are already
+   *  human-readable; owner tags are not). */
+  labelOf?: (k: string) => string
   total: number
 }) {
   return (
@@ -273,7 +294,7 @@ function BreakdownTable({
                 <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: colorOf(k) }} />
               ) : null}
               <span className={`flex-1 min-w-0 truncate ${k === 'untagged' ? 'text-text-tertiary' : 'text-text-secondary'}`}>
-                {k}
+                {labelOf ? labelOf(k) : k}
               </span>
               <span className="text-[10px] text-text-tertiary tabular-nums">{pct.toFixed(0)}%</span>
               <span className="text-text-primary tabular-nums w-16 text-right">{fmtUsd(v)}</span>

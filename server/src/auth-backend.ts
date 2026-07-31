@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { aliasProfileEnv } from './bedrock-profiles.js'
 
 export type AuthBackend = 'first_party' | 'bedrock'
 
@@ -71,9 +72,17 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
       CLAUDE_CODE_USE_BEDROCK: '1',
       AWS_PROFILE: 'bedrock-amar',
       AWS_REGION: 'us-east-1',
-      ANTHROPIC_MODEL: 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/3xne2d3e2z7v',
-      ANTHROPIC_DEFAULT_FABLE_MODEL: 'us.anthropic.claude-fable-5',
-      ANTHROPIC_SMALL_FAST_MODEL: 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/5we3084lce1f',
+      // EVERY model alias points at an owner-tagged application inference
+      // profile, not a bare model id — that tag is the only route to per-person
+      // cost attribution, and `--model` only overrides `ANTHROPIC_MODEL`, so
+      // these are what subagents, compaction, and `--model haiku` callers (e.g.
+      // the session-title generator) resolve through. Generated from the
+      // spawn-verified table in bedrock-profiles.ts rather than hardcoded here,
+      // so a recreated profile can't leave a stale ARN behind. All ARNs
+      // spawn-verified 2026-07-31. NB: resolved lazily by `presetEnv()`, not
+      // spread here — this object literal is evaluated at module load, which is
+      // BEFORE the boot-time AWS profile discovery, so a spread would freeze the
+      // built-in table and miss anything discovered.
     },
     // opus-5 leads — full-turn verified on this Bedrock deployment (2026-07-25;
     // the bare + dated forms 400, only `us.anthropic.claude-opus-5` resolves).
@@ -97,13 +106,21 @@ function settingsPath(): string {
   return join(homedir(), '.claude', 'settings.json')
 }
 
+/** A preset's env, resolved AT CALL TIME. Bedrock's model-alias ARNs come from
+ *  bedrock-profiles.ts, whose table is enriched by an async AWS lookup during
+ *  boot — so they must be read when the switch is applied, not when this module
+ *  was loaded. Exported for the unit tests. */
+export function presetEnv(backend: AuthBackend): Record<string, string> {
+  const preset = BACKEND_PRESETS[backend]
+  return backend === 'bedrock' ? { ...preset.env, ...aliasProfileEnv() } : { ...preset.env }
+}
+
 /** Pure: compute the next settings.json object for a backend switch. Exported
  *  for unit testing without touching the filesystem. */
 export function computeSettingsWithBackend(current: Record<string, unknown>, backend: AuthBackend): Record<string, unknown> {
-  const preset = BACKEND_PRESETS[backend]
   const env = { ...(current.env as Record<string, string> | undefined ?? {}) }
   for (const key of MANAGED_ENV_KEYS) delete env[key]
-  Object.assign(env, preset.env)
+  Object.assign(env, presetEnv(backend))
   return { ...current, env }
 }
 

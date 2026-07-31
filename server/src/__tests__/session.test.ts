@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Session, setAgentModelResolver } from '../session.js'
 import { ModelConfig } from '../model-config.js'
+import { taggedModelId } from '../bedrock-profiles.js'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -42,6 +43,14 @@ vi.mock('node:child_process', () => ({
   // execSync is used by Session.checkGit
   execSync: () => '',
 }))
+
+// Pin the auth backend. session.ts translates its model id into an owner-tagged
+// Bedrock inference-profile ARN (bedrock-profiles.ts) so the spend is
+// attributable to a person, and that translation is gated on the ACTIVE backend —
+// which is normally read from the real ~/.claude/settings.json. Without this mock
+// the model assertions below would pass or fail depending on which backend the
+// dev machine happens to be on.
+vi.mock('../auth-backend.js', () => ({ detectActiveBackend: () => 'bedrock' }))
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -85,7 +94,7 @@ describe('Session spawn', () => {
     // Every agent spawns with an explicit --model (resolved from ModelConfig in
     // the running hub; falls back to the built-in default with no resolver).
     expect(lastSpawnArgs!.args).toContain('--model')
-    expect(lastSpawnArgs!.args).toContain('claude-opus-4-8')
+    expect(lastSpawnArgs!.args).toContain(taggedModelId('claude-opus-4-8'))
     // Prompt sent via stdin, not -p
     expect(lastSpawnArgs!.args).not.toContain('-p')
     const written = JSON.parse(mockProcess.stdin.write.mock.calls[0]![0].replace('\n', ''))
@@ -111,6 +120,24 @@ describe('Session spawn', () => {
       expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-4-6')
     } finally {
       setAgentModelResolver(() => 'claude-opus-4-8') // reset to a known default
+    }
+  })
+
+  it('translates the model to an owner-tagged profile ARN in --model', async () => {
+    // The whole point of bedrock-profiles.ts: `--model` OVERRIDES ANTHROPIC_MODEL,
+    // so passing a bare Bedrock id here bypasses every tagged inference profile
+    // and the spend lands in Cost Explorer permanently unattributable.
+    setAgentModelResolver(() => 'us.anthropic.claude-opus-5')
+    try {
+      new Session({ prompt: 'x' })
+      const i = lastSpawnArgs!.args.indexOf('--model')
+      expect(lastSpawnArgs!.args[i + 1]).toBe(taggedModelId('us.anthropic.claude-opus-5'))
+      expect(lastSpawnArgs!.args[i + 1]).toMatch(/^arn:aws:bedrock:.*application-inference-profile\//)
+      // The session still REPORTS the bare id — the fallback chain, the SPA's
+      // model label, and the context-window table are all keyed on it.
+      expect(lastSpawnArgs!.args).not.toContain('us.anthropic.claude-opus-5')
+    } finally {
+      setAgentModelResolver(() => 'claude-opus-4-8')
     }
   })
 
@@ -616,7 +643,11 @@ describe('Session rich protocol', () => {
     const stdinCalls = mockProcess.stdin.write.mock.calls
     const req = stdinCalls.map((c: string[]) => JSON.parse(c[0])).find((p: any) => p.type === 'control_request' && p.request?.subtype === 'set_model')
     expect(req).toBeTruthy()
-    expect(req.request.model).toBe('us.anthropic.claude-fable-5')
+    // Translated to this owner's tagged inference-profile ARN: an in-place model
+    // switch must not silently drop the session onto an untagged bare id, or its
+    // spend becomes permanently unattributable in Cost Explorer.
+    expect(req.request.model).toBe(taggedModelId('us.anthropic.claude-fable-5'))
+    expect(req.request.model).toMatch(/^arn:aws:bedrock:.*application-inference-profile\//)
 
     sendStdoutJson({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id } })
     const ok = await promise
@@ -669,7 +700,7 @@ describe('Session per-session model pin', () => {
     await new Promise((r) => setTimeout(r, 10))
     const req = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
       .find((p: any) => p.type === 'control_request' && p.request?.subtype === 'set_model')
-    expect(req.request.model).toBe('claude-opus-4-8')
+    expect(req.request.model).toBe(taggedModelId('claude-opus-4-8'))
     sendStdoutJson({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id } })
     const res = await promise
     expect(res.ok).toBe(true)
@@ -804,6 +835,6 @@ describe('Session hibernateOnStart (restore path)', () => {
     expect(lastSpawnArgs).toBeNull() // pin stored, still asleep
     session.sendMessage('wake')
     const i = lastSpawnArgs!.args.indexOf('--model')
-    expect(lastSpawnArgs!.args[i + 1]).toBe('claude-sonnet-5') // pin applied at wake
+    expect(lastSpawnArgs!.args[i + 1]).toBe(taggedModelId('claude-sonnet-5')) // pin applied at wake
   })
 })
