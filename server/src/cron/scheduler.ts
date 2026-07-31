@@ -140,6 +140,28 @@ export class HubCronScheduler {
     return true
   }
 
+  /** Re-key every ACTIVE (non-disabled) task from one claudeSessionId to another.
+   *  Used when a child session is merged into its parent — the parent absorbs the
+   *  child's live crons instead of letting them orphan (and auto-disable after
+   *  MAX_SKIPS_BEFORE_DISABLE "session not found" misses) when the child dies.
+   *  The Cron jobs themselves keep running untouched: each closes over its task
+   *  OBJECT, which we mutate in place, so only the session the fire resolves to
+   *  changes. Skip counters reset — a fresh owner shouldn't inherit the child's
+   *  miss streak. Returns the tasks that moved. */
+  reassignSession(fromClaudeSessionId: string, toClaudeSessionId: string): HubCronTask[] {
+    if (!fromClaudeSessionId || !toClaudeSessionId || fromClaudeSessionId === toClaudeSessionId) return []
+    const moved: HubCronTask[] = []
+    for (const t of this.state.tasks) {
+      if (t.claudeSessionId !== fromClaudeSessionId || t.disabledAt) continue
+      t.claudeSessionId = toClaudeSessionId
+      t.consecutiveSkips = 0
+      delete t.lastSkipReason
+      moved.push(t)
+    }
+    if (moved.length) this.persistSync()
+    return moved
+  }
+
   /** Manually trigger a task. Same fire path as the scheduled one (runs the
    *  guard too — a manual run of a guarded task only wakes the agent if the
    *  guard passes, exactly like a scheduled fire). */

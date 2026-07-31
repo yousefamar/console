@@ -121,6 +121,10 @@ export interface AgentContext {
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
+  /** Re-key a merged-away child's active hub crons onto its parent's session so
+   *  they survive the child being killed. Wired in index.ts to
+   *  `HubCronScheduler.reassignSession`; returns the number of tasks moved. */
+  reassignCron?: (fromClaudeSessionId: string, toClaudeSessionId: string) => number
 }
 
 /** Restart every live session onto the currently-resolved model. Used after a
@@ -640,6 +644,31 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
     }
     ctx.agentRegistry.delete(childRoleKey)
     broadcastAgentsList(ctx)
+  }
+
+  // Absorb the child's live hub crons into the parent so they don't orphan
+  // (and auto-disable after 10 "session not found" misses) when the child dies.
+  // The child's claudeSessionId is stable — it's been running. The parent's may
+  // not be set yet if it was just revived from parked, so defer to its next
+  // session_init in that case (crons fire minutes apart; the csid arrives first).
+  const childCsid = child.claudeSessionId
+  if (childCsid && ctx.reassignCron) {
+    const absorb = (parentCsid: string) => {
+      const n = ctx.reassignCron!(childCsid, parentCsid)
+      if (n) ctx.log(`[merge] absorbed ${n} cron task(s): ${childCsid} → ${parentCsid}`)
+    }
+    if (parent.claudeSessionId) {
+      absorb(parent.claudeSessionId)
+    } else {
+      const p = parent
+      const onInit = (m: HubMessage) => {
+        if (m.type !== 'session_init') return
+        p.off('hub_message', onInit)
+        if (p.claudeSessionId) absorb(p.claudeSessionId)
+      }
+      p.on('hub_message', onInit)
+      setTimeout(() => p.off('hub_message', onInit), 120_000).unref?.()
+    }
   }
 
   try { child.kill() } catch { /* ignore */ }

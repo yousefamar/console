@@ -618,6 +618,9 @@ const agentCtx: AgentContext = {
   },
   // `con agent reload Al` → fresh persona spawn, no hub restart needed.
   reloadAl: () => reloadAlSession(agentCtx),
+  // On merge, re-key the child's live crons onto the parent's session. Refers to
+  // cronScheduler (declared below) — only ever invoked at runtime, well after boot.
+  reassignCron: (from, to) => cronScheduler.reassignSession(from, to).length,
 }
 
 // --------------------------------------------------------------------------
