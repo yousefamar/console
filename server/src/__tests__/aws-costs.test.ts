@@ -4,7 +4,7 @@
 // suffix, map `owner$` → `untagged`, and rank owners with `untagged` last.
 
 import { describe, it, expect } from 'vitest'
-import { buildCostReport, parseOwnerKey, parseBedrockModel, costWindow, OWNER_TAG_EPOCH, type CeResponse } from '../aws-costs.js'
+import { buildCostReport, parseOwnerKey, parseBedrockModel, parseUntaggedByRegion, costWindow, OWNER_TAG_EPOCH, type CeResponse } from '../aws-costs.js'
 
 function group(owner: string, service: string, amount: string) {
   return { Keys: [owner, service], Metrics: { UnblendedCost: { Amount: amount, Unit: 'USD' } } }
@@ -189,6 +189,80 @@ describe('ownerNames (the chart must read as PEOPLE, not tag values)', () => {
   it('only includes owners actually in the window', () => {
     const r = buildCostReport(res)
     expect(Object.keys(r.ownerNames).sort()).toEqual(['amar', 'guest1'])
+  })
+})
+
+describe('parseUntaggedByRegion', () => {
+  it('sums Bedrock spend per day per region and drops other services', () => {
+    const res: CeResponse = {
+      ResultsByTime: [bucket('2026-07-30', '2026-07-31', [
+        group('eu-west-2', 'Claude Opus 4.8 (Amazon Bedrock Edition)', '14.64'),
+        group('eu-west-2', 'Amazon Elastic Compute Cloud - Compute', '2.04'),
+        group('us-east-1', 'Claude Fable 5 (Amazon Bedrock Edition)', '113.18'),
+      ])],
+    }
+    expect(parseUntaggedByRegion(res)).toEqual({
+      '2026-07-30': { 'eu-west-2': 14.64, 'us-east-1': 113.18 },
+    })
+  })
+
+  it('is empty for a failed/absent second query', () => {
+    expect(parseUntaggedByRegion({})).toEqual({})
+  })
+})
+
+describe('region attribution', () => {
+  // eu-west-2 is deen.ai's Lambda and nothing else, so untagged spend there is
+  // attributable with certainty — including for days before it had a profile.
+  const res: CeResponse = {
+    ResultsByTime: [bucket('2026-07-28', '2026-07-29', [
+      group('owner$', 'Claude Opus 4.8 (Amazon Bedrock Edition)', '30'),
+      group('owner$amar', 'Claude Fable 5 (Amazon Bedrock Edition)', '10'),
+    ])],
+  }
+
+  it('moves single-tenant-region spend from untagged onto its owner', () => {
+    const r = buildCostReport(res, {
+      untaggedByRegion: { '2026-07-28': { 'eu-west-2': 20 } },
+    })
+    expect(r.totalByOwner.deenai).toBe(20)
+    expect(r.totalByOwner.untagged).toBe(10) // the us-east-1 remainder
+    expect(r.totalByOwner.amar).toBe(10)
+    expect(r.days[0]!.byOwner.deenai).toBe(20)
+    expect(r.regionAttributedUsd).toEqual({ deenai: 20 })
+    expect(r.totalUsd).toBe(40) // total is unchanged — money only moved
+  })
+
+  it('names the region-attributed owner', () => {
+    const r = buildCostReport(res, { untaggedByRegion: { '2026-07-28': { 'eu-west-2': 20 } } })
+    expect(r.ownerNames.deenai).toBe('deen.ai')
+  })
+
+  it('drops untagged entirely when the region accounts for all of it', () => {
+    const r = buildCostReport({
+      ResultsByTime: [bucket('2026-07-28', '2026-07-29', [
+        group('owner$', 'Claude Opus 4.8 (Amazon Bedrock Edition)', '20'),
+      ])],
+    }, { untaggedByRegion: { '2026-07-28': { 'eu-west-2': 20 } } })
+    expect(r.totalByOwner.untagged).toBeUndefined()
+    expect(r.owners).toEqual(['deenai'])
+  })
+
+  it('clamps to the day\'s untagged total so a person can never be inflated', () => {
+    // The two CE queries are independent; a mismatch must not overcount.
+    const r = buildCostReport(res, {
+      untaggedByRegion: { '2026-07-28': { 'eu-west-2': 999 } },
+    })
+    expect(r.totalByOwner.deenai).toBe(30)
+    expect(r.totalByOwner.untagged).toBeUndefined()
+    expect(r.totalUsd).toBe(40)
+  })
+
+  it('is a no-op without the second query', () => {
+    const r = buildCostReport(res)
+    expect(r.totalByOwner.untagged).toBe(30)
+    expect(r.totalByOwner.deenai).toBeUndefined()
+    expect(r.regionAttributedUsd).toEqual({})
   })
 })
 

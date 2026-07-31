@@ -87,6 +87,10 @@ export interface CostReport {
   /** `owner` tag value → person's display name (`amar` → `Yousef`). Series keys
    *  stay the tag values; this is presentation only. */
   ownerNames: Record<string, string>
+  /** Owner → USD attributed by single-tenant REGION rather than by the `owner`
+   *  tag (the only way to attribute days predating a workload's tagged profile).
+   *  Absent on reports cached by an older hub. */
+  regionAttributedUsd: Record<string, number>
 }
 
 export type CostStackBy = 'owner' | 'model'
