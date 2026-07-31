@@ -16,6 +16,11 @@
 // historical days (and for any spend originating outside this hub, e.g. a shared
 // IAM key on someone else's machine). Since server/src/bedrock-profiles.ts landed,
 // everything the hub itself spawns is tagged, so new days should attribute fully.
+//
+// Some owners are attributed by single-tenant REGION instead of by tag (see
+// REGION_ATTRIBUTION server-side) — that's how pre-profile history still lands on
+// a person. Those carry a `~` marker so a region-derived figure is never mistaken
+// for a tag-derived one.
 
 import { useEffect, useMemo } from 'react'
 import {
@@ -244,7 +249,11 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
         totals={report.totalByOwner}
         order={report.owners}
         colorOf={stackBy === 'owner' ? (k) => colorFor(k, report.owners) : undefined}
-        labelOf={(k) => personName(k, report)}
+        labelOf={(k) => {
+          const viaRegion = report.regionAttributedUsd?.[k] ?? 0
+          // `~` = attributed by single-tenant region, not by the owner tag.
+          return viaRegion > 0 ? `${personName(k, report)} ~` : personName(k, report)
+        }}
         total={report.totalUsd}
       />
       <BreakdownTable
@@ -255,14 +264,22 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
         total={report.totalUsd}
       />
 
+      {Object.keys(report.regionAttributedUsd ?? {}).length ? (
+        <p className="px-3 text-[10px] leading-snug text-text-tertiary">
+          <span className="text-text-secondary">~</span> = attributed by region rather than by the{' '}
+          <code>owner</code> tag. Those workloads are the only Bedrock consumer in their region, so
+          the split is exact even for days before they had a tagged inference profile — which tags
+          alone can never recover.
+        </p>
+      ) : null}
+
       {report.totalByOwner.untagged ? (
         <p className="px-3 text-[10px] leading-snug text-text-tertiary">
           <span className="text-text-secondary">untagged</span> = everything before{' '}
           {fmtDay(report.ownerTagEpoch)}, when the <code>owner</code> tag was activated in Billing
           (cost-allocation tags don't backfill), plus any request that bypassed the per-person
-          inference profiles that carry the tag. The hub now always routes through them, so
-          untagged spend on later days originates outside it (e.g. a shared IAM key on another
-          machine).
+          inference profiles that carry the tag. Everything this hub spawns is now tagged, so
+          untagged spend on later days originates outside it — a shared IAM key on another machine.
         </p>
       ) : null}
     </div>

@@ -30,12 +30,13 @@
 //     Billing — `owner` sat Inactive until 2026-07-29 (see OWNER_TAG_EPOCH), and
 //     activation does not backfill; (b) a request made against a bare model id
 //     (`us.anthropic.claude-opus-5`) routes around every profile and lands
-//     untagged permanently. The hub still spawns agents with a bare `--model`
-//     (session.ts), which overrides `ANTHROPIC_MODEL`, so most of the fleet's
-//     spend is untagged even today — rewiring the model chain onto profile ARNs
-//     is a separate, cross-cutting change. Untagged spend is therefore surfaced
-//     as its own explicit `untagged` series (never hidden, never folded into a
-//     user), and stacking by MODEL is offered as the informative cut meanwhile.
+//     untagged permanently. (b) is fixed — bedrock-profiles.ts swaps in the
+//     owner-tagged ARN at spawn — so untagged spend on a post-epoch day now means
+//     spend that originated OUTSIDE this hub. It is surfaced as its own explicit
+//     `untagged` series, never hidden and never folded into a person.
+//
+// One exception carves real attribution out of that residual: see
+// REGION_ATTRIBUTION below.
 //
 // Cost Explorer bills ~$0.01 per request, so results are cached on disk with a
 // TTL and only refreshed on demand or when stale.
@@ -71,7 +72,27 @@ const BUILTIN_OWNER_NAMES: Record<string, string> = {
   amar: 'Yousef',
   sam: 'Sam',
   guest1: 'Lucas',
+  deenai: 'deen.ai',
 }
+
+/**
+ * REGION → owner, for regions where a SINGLE workload is the only Bedrock
+ * consumer. Untagged Bedrock spend in such a region is attributable with
+ * certainty rather than by inference, which is the one way to get real
+ * attribution for days before that workload's profile existed (cost-allocation
+ * tags never backfill, so CE itself can't).
+ *
+ * `eu-west-2` is deen.ai's Lambda (`deen-wa-cloud`) and nothing else — the agent
+ * fleet is entirely us-east-1. Its `DEEN_MODEL` was a bare model id until
+ * 2026-07-31, so every eu-west-2 dollar before then is untagged at CE and would
+ * otherwise sit in the residual bucket forever.
+ *
+ * Only ever add a region you've confirmed is single-tenant: this MOVES money
+ * from `untagged` onto a named owner, so a wrong entry is a confidently wrong
+ * chart rather than an obviously incomplete one.
+ */
+const REGION_ATTRIBUTION: Record<string, string> = { 'eu-west-2': 'deenai' }
+
 /** Cost Explorer is only ever queried from us-east-1 (global endpoint). */
 const CE_REGION = 'us-east-1'
 /** CE refreshes upstream a few times a day; anything tighter just burns $0.01s. */
@@ -122,6 +143,10 @@ export interface CostReport {
    *  Sent with the report so the client renders people, not tag values, without
    *  duplicating the mapping. An owner with no known name maps to itself. */
   ownerNames: Record<string, string>
+  /** Owner → USD that CE reported as untagged but which was attributed by
+   *  single-tenant region instead (see REGION_ATTRIBUTION). Surfaced so the card
+   *  can say the figure is region-derived rather than tag-derived. */
+  regionAttributedUsd: Record<string, number>
 }
 
 // ---------------------------------------------------------------------------
@@ -175,20 +200,56 @@ function rankKeys(totals: Record<string, number>): string[] {
 }
 
 /**
+ * Sum untagged Bedrock spend per `date` → `region` from a CE response grouped by
+ * `[DIMENSION REGION, DIMENSION SERVICE]` and filtered to `owner` ABSENT.
+ * Non-Bedrock services are dropped, same as the main fold.
+ */
+export function parseUntaggedByRegion(
+  res: CeResponse,
+  metric = 'UnblendedCost',
+): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {}
+  for (const bucket of res.ResultsByTime ?? []) {
+    const date = bucket.TimePeriod?.Start
+    if (!date) continue
+    for (const g of bucket.Groups ?? []) {
+      const [region, service] = g.Keys ?? []
+      if (!region || !service) continue
+      if (!parseBedrockModel(service)) continue
+      const amount = Number(g.Metrics?.[metric]?.Amount ?? '0')
+      if (!Number.isFinite(amount) || amount === 0) continue
+      out[date] ??= {}
+      out[date]![region] = round((out[date]![region] ?? 0) + amount)
+    }
+  }
+  return out
+}
+
+/**
  * Fold a CE `get-cost-and-usage` response (grouped by `[TAG owner, DIMENSION
  * SERVICE]`) into a per-day report, keeping ONLY Bedrock model spend. Any other
  * service in the response is dropped — we deliberately query unfiltered (see
  * fact 1 in the header) so this classification step is what makes it Bedrock.
+ *
+ * `opts.untaggedByRegion` (from `parseUntaggedByRegion`) reassigns untagged spend
+ * in single-tenant regions to that region's known owner — the only way to get
+ * real attribution for days predating a workload's tagged profile.
  */
 export function buildCostReport(
   res: CeResponse,
-  opts: { metric?: string; today?: string; ownerNames?: Record<string, string> } = {},
+  opts: {
+    metric?: string
+    today?: string
+    ownerNames?: Record<string, string>
+    untaggedByRegion?: Record<string, Record<string, number>>
+  } = {},
 ): Omit<CostReport, 'generatedAt'> {
   const metric = opts.metric ?? 'UnblendedCost'
   const today = opts.today ?? new Date().toISOString().slice(0, 10)
   const days: CostDay[] = []
   const totalByOwner: Record<string, number> = {}
   const totalByModel: Record<string, number> = {}
+  const regionAttributedUsd: Record<string, number> = {}
   let totalUsd = 0
 
   for (const bucket of res.ResultsByTime ?? []) {
@@ -212,6 +273,26 @@ export function buildCostReport(
       totalByOwner[owner] = round((totalByOwner[owner] ?? 0) + amount)
       totalByModel[model] = round((totalByModel[model] ?? 0) + amount)
       totalUsd = round(totalUsd + amount)
+    }
+
+    // Move single-tenant-region spend out of the residual bucket and onto its
+    // real owner. Clamped to what's actually in `untagged` for the day: the two
+    // CE queries are independent, so a mismatch (a region newly gaining a tagged
+    // profile mid-day) must never push `untagged` negative or inflate a person.
+    for (const [region, ownerKey] of Object.entries(REGION_ATTRIBUTION)) {
+      const avail = day.byOwner[UNTAGGED] ?? 0
+      const move = Math.min(opts.untaggedByRegion?.[date]?.[region] ?? 0, avail)
+      if (move <= 0) continue
+      const left = round(avail - move)
+      if (left > 0) day.byOwner[UNTAGGED] = left
+      else delete day.byOwner[UNTAGGED]
+      day.byOwner[ownerKey] = round((day.byOwner[ownerKey] ?? 0) + move)
+
+      const totalLeft = round((totalByOwner[UNTAGGED] ?? 0) - move)
+      if (totalLeft > 0) totalByOwner[UNTAGGED] = totalLeft
+      else delete totalByOwner[UNTAGGED]
+      totalByOwner[ownerKey] = round((totalByOwner[ownerKey] ?? 0) + move)
+      regionAttributedUsd[ownerKey] = round((regionAttributedUsd[ownerKey] ?? 0) + move)
     }
     days.push(day)
   }
@@ -253,6 +334,7 @@ export function buildCostReport(
     empty: totalUsd === 0,
     ownerTagEpoch: OWNER_TAG_EPOCH,
     ownerNames,
+    regionAttributedUsd,
   }
 }
 
@@ -277,7 +359,7 @@ export function costWindow(days: number, now = new Date()): { start: string; end
  *  is missing the new key, and the UI renders `undefined` as `NaN` rather than
  *  failing loudly — so stale-shaped entries are dropped on load instead of being
  *  served for up to a TTL. */
-const CACHE_VERSION = 3
+const CACHE_VERSION = 4
 
 interface CacheFile {
   version?: number
@@ -352,35 +434,56 @@ export class AwsCostStore {
     return this.cache.reports[String(days)] ?? null
   }
 
-  private async fetch(days: number): Promise<CostReport> {
-    const { start, end } = costWindow(days)
-    const args = [
+  /** One `aws ce get-cost-and-usage` call. `--profile` is pinned explicitly: the
+   *  hub inherits no AWS_PROFILE today, but an inherited one would silently point
+   *  this at the wrong (Bedrock-invoke-only) identity, which lacks
+   *  `ce:GetCostAndUsage`. */
+  private async ce(
+    start: string, end: string, filter: unknown, groupBy: unknown,
+  ): Promise<CeResponse> {
+    const { stdout } = await execFileP('aws', [
       'ce', 'get-cost-and-usage',
       '--region', CE_REGION,
       '--time-period', `Start=${start},End=${end}`,
       '--granularity', 'DAILY',
       '--metrics', 'UnblendedCost',
-      // Usage only — credits mirror usage to the cent here, so the net is $0.
-      '--filter', JSON.stringify({ Dimensions: { Key: 'RECORD_TYPE', Values: ['Usage'] } }),
-      '--group-by', JSON.stringify([
+      '--filter', JSON.stringify(filter),
+      '--group-by', JSON.stringify(groupBy),
+      '--output', 'json',
+      '--profile', process.env.CONSOLE_AWS_PROFILE || 'default',
+    ], { timeout: AWS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: process.env })
+    return JSON.parse(stdout) as CeResponse
+  }
+
+  private async fetch(days: number): Promise<CostReport> {
+    const { start, end } = costWindow(days)
+    // Usage only — credits mirror usage to the cent here, so the net is $0.
+    const usageOnly = { Dimensions: { Key: 'RECORD_TYPE', Values: ['Usage'] } }
+
+    // Two queries (CE caps group-by at 2 dimensions), issued together. The
+    // second recovers per-region detail for spend that carries no `owner` tag,
+    // which is what lets single-tenant regions be attributed anyway.
+    const [main, untagged] = await Promise.all([
+      this.ce(start, end, usageOnly, [
         { Type: 'TAG', Key: 'owner' },
         { Type: 'DIMENSION', Key: 'SERVICE' },
       ]),
-      '--output', 'json',
-    ]
-    // Pin the profile explicitly: the hub inherits no AWS_PROFILE today, but an
-    // inherited one would silently point this at the wrong (Bedrock-invoke-only)
-    // identity, which lacks ce:GetCostAndUsage.
-    const profile = process.env.CONSOLE_AWS_PROFILE || 'default'
-    args.push('--profile', profile)
+      // Non-fatal: without it the report is still correct, just with those
+      // dollars left in `untagged` — never worth failing the whole card for.
+      this.ce(start, end, {
+        And: [usageOnly, { Tags: { Key: 'owner', MatchOptions: ['ABSENT'] } }],
+      }, [
+        { Type: 'DIMENSION', Key: 'REGION' },
+        { Type: 'DIMENSION', Key: 'SERVICE' },
+      ]).catch((e: Error) => {
+        this.log(`[costs] untagged-by-region query failed: ${e.message}`)
+        return {} as CeResponse
+      }),
+    ])
 
-    const { stdout } = await execFileP('aws', args, {
-      timeout: AWS_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-      env: process.env,
-    })
-    const report = buildCostReport(JSON.parse(stdout) as CeResponse, {
+    const report = buildCostReport(main, {
       ownerNames: this.ownerNameOverrides(),
+      untaggedByRegion: parseUntaggedByRegion(untagged),
     })
     this.log(`[costs] ${start}..${end} → $${report.totalUsd.toFixed(2)} across ${report.owners.length} owner(s)`)
     return { generatedAt: Date.now(), ...report }
