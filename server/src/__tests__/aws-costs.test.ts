@@ -112,6 +112,35 @@ describe('buildCostReport', () => {
     expect(OWNER_TAG_EPOCH).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
+  it('averages complete days only, reporting today separately', () => {
+    // Today's CE bucket is real but partially billed, so averaging it in would
+    // make the headline figure sag every morning and recover by night.
+    const res: CeResponse = {
+      ResultsByTime: [
+        bucket('2026-07-29', '2026-07-30', [group('owner$amar', 'Claude Opus 5 (Amazon Bedrock Edition)', '10')]),
+        bucket('2026-07-30', '2026-07-31', [group('owner$amar', 'Claude Opus 5 (Amazon Bedrock Edition)', '20')]),
+        bucket('2026-07-31', '2026-08-01', [group('owner$amar', 'Claude Opus 5 (Amazon Bedrock Edition)', '1')]),
+      ],
+    }
+    const r = buildCostReport(res, { today: '2026-07-31' })
+    expect(r.totalUsd).toBe(31) // today still counts toward the total
+    expect(r.avgPerDayUsd).toBe(15) // (10 + 20) / 2, not 31/3
+    expect(r.avgDayCount).toBe(2)
+    expect(r.todayUsd).toBe(1)
+  })
+
+  it('reports a zero average when the window holds only today', () => {
+    const res: CeResponse = {
+      ResultsByTime: [
+        bucket('2026-07-31', '2026-08-01', [group('owner$amar', 'Claude Opus 5 (Amazon Bedrock Edition)', '5')]),
+      ],
+    }
+    const r = buildCostReport(res, { today: '2026-07-31' })
+    expect(r.avgDayCount).toBe(0)
+    expect(r.avgPerDayUsd).toBe(0) // no complete day to average — don't divide by zero
+    expect(r.todayUsd).toBe(5)
+  })
+
   it('tolerates a malformed / empty response', () => {
     expect(buildCostReport({}).days).toEqual([])
     expect(buildCostReport({ ResultsByTime: [{ Groups: [{ Keys: ['owner$amar'] }] }] }).days).toEqual([])
