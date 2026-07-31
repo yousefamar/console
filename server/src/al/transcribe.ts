@@ -1,8 +1,10 @@
-// Batch audio transcription for inbound WhatsApp voice notes. Whisper
-// preferred (same OpenAI API the /stt batch endpoint in index.ts already
-// uses for dictation); Gemini is a fallback when only GEMINI_API_KEY is set.
+// Batch audio transcription for inbound WhatsApp voice notes. OpenAI
+// preferred (same API + model the /stt batch endpoint in index.ts uses for
+// dictation); Gemini is a fallback when only GEMINI_API_KEY is set.
 // Never throws — a transcription failure must not break inbound delivery of
 // the audio file itself; callers get null and just skip the transcript line.
+
+import { STT_BATCH_MODEL } from '../stt.js'
 
 function extFromMime(mimeType: string): string {
   const base = mimeType.split(';')[0]!.trim().toLowerCase()
@@ -20,13 +22,13 @@ function extFromMime(mimeType: string): string {
   return map[base] || 'ogg'
 }
 
-async function transcribeWithWhisper(buf: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
+async function transcribeWithOpenAi(buf: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
   const filename = `audio.${extFromMime(mimeType)}`
   const formBoundary = '----FormBoundary' + Date.now()
   const formBody = Buffer.concat([
     Buffer.from(`--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType.split(';')[0]}\r\n\r\n`),
     buf,
-    Buffer.from(`\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${formBoundary}--\r\n`),
+    Buffer.from(`\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${STT_BATCH_MODEL}\r\n--${formBoundary}--\r\n`),
   ])
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -34,7 +36,7 @@ async function transcribeWithWhisper(buf: Buffer, mimeType: string, apiKey: stri
     body: formBody,
   })
   if (!res.ok) {
-    console.warn(`[al/transcribe] Whisper HTTP ${res.status}`)
+    console.warn(`[al/transcribe] OpenAI HTTP ${res.status}`)
     return null
   }
   const json = (await res.json()) as { text?: string }
@@ -67,17 +69,17 @@ async function transcribeWithGemini(buf: Buffer, mimeType: string, apiKey: strin
   return text.trim() || null
 }
 
-/** Transcribe an audio buffer. Whisper (OPENAI_API_KEY) preferred, Gemini
+/** Transcribe an audio buffer. OpenAI (OPENAI_API_KEY) preferred, Gemini
  *  (GEMINI_API_KEY) fallback. Returns null if neither key is set, or on any
  *  failure — never throws. */
 export async function transcribeAudio(buf: Buffer, mimeType: string): Promise<string | null> {
   const openaiKey = process.env.OPENAI_API_KEY
   if (openaiKey) {
     try {
-      const text = await transcribeWithWhisper(buf, mimeType, openaiKey)
+      const text = await transcribeWithOpenAi(buf, mimeType, openaiKey)
       if (text) return text
     } catch (err) {
-      console.warn('[al/transcribe] Whisper failed:', (err as Error)?.message)
+      console.warn('[al/transcribe] OpenAI failed:', (err as Error)?.message)
     }
   }
   const geminiKey = process.env.GEMINI_API_KEY

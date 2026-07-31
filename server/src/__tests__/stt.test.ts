@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STT_REALTIME_URL,
   STT_MODEL,
+  STT_BATCH_MODEL,
   buildSttHeaders,
   buildTranscriptionSessionUpdate,
   translateOpenAiEvent,
@@ -33,6 +34,12 @@ describe('STT GA endpoint config', () => {
     const headers = buildSttHeaders('sk-test')
     expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('openai-beta')
     expect(headers.Authorization).toBe('Bearer sk-test')
+  })
+
+  it('keeps the batch model distinct from the realtime one', () => {
+    // The realtime endpoint rejects the batch model and vice versa, so these
+    // can never be collapsed into a single constant.
+    expect(STT_BATCH_MODEL).not.toBe(STT_MODEL)
   })
 })
 
