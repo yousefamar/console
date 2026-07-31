@@ -13,6 +13,10 @@
 //   - deleteForEveryone(to, id): revoke message (2-day window upstream)
 //   - getQrDataUrl(): the most recent QR (data URL string) — null when paired
 //   - inboundEnvelope(): pure helper that formats an inbound message
+//   - findBlockedTerm(text): fail-closed address-leak censor for outbound sends
+// Inbound media: images, audio, video, and documents are all downloaded to
+// INBOUND_MEDIA_DIR and surfaced as paths in the envelope. Voice notes (ptt)
+// are additionally auto-transcribed via transcribe.ts (Whisper/Gemini).
 //
 // What it does NOT do:
 //   - Decide who to send to (caller's job; /whatsapp/send is bearer-gated, no
@@ -35,31 +39,58 @@ import { rm, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
+import { transcribeAudio } from './transcribe.js'
 
 const logger = pino({ level: 'silent' })
 
-// Inbound images are persisted here so Al (a Claude Code session) can `Read`
-// them — the injected envelope is plain text and can't carry image bytes.
+// Inbound media is persisted here so Al (a Claude Code session) can `Read`
+// them — the injected envelope is plain text and can't carry file bytes.
 // /tmp is ephemeral; files are small and one-per-inbound, so no active cleanup.
-const INBOUND_IMG_DIR = join(tmpdir(), 'console-al-inbound')
+const INBOUND_MEDIA_DIR = join(tmpdir(), 'console-al-inbound')
 const MIME_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/jpg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
   'image/gif': 'gif',
+  'audio/ogg': 'ogg',
+  'audio/opus': 'opus',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/aac': 'aac',
+  'audio/mp4': 'm4a',
+  'audio/amr': 'amr',
+  'audio/wav': 'wav',
+  'video/mp4': 'mp4',
+  'video/3gpp': '3gp',
 }
 
-async function persistInboundImage(buf: Buffer, mimeType: string, msgId: string, idx: number): Promise<string | null> {
+/** Persist a downloaded media buffer to INBOUND_MEDIA_DIR. `preferredName`
+ *  (documents carry their real original filename from WhatsApp) wins over the
+ *  mimetype-guessed extension when present. */
+async function persistInboundMedia(
+  buf: Buffer,
+  mimeType: string,
+  msgId: string,
+  idx: number,
+  preferredName?: string,
+): Promise<string | null> {
   try {
-    await mkdir(INBOUND_IMG_DIR, { recursive: true })
-    const ext = MIME_EXT[mimeType.toLowerCase()] || 'bin'
-    const safeId = (msgId || 'img').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)
-    const p = join(INBOUND_IMG_DIR, `${safeId}-${idx}.${ext}`)
+    await mkdir(INBOUND_MEDIA_DIR, { recursive: true })
+    const safeId = (msgId || 'media').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)
+    let filename: string
+    if (preferredName) {
+      const safeName = preferredName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80)
+      filename = `${safeId}-${idx}-${safeName}`
+    } else {
+      const ext = MIME_EXT[mimeType.toLowerCase().split(';')[0]!] || 'bin'
+      filename = `${safeId}-${idx}.${ext}`
+    }
+    const p = join(INBOUND_MEDIA_DIR, filename)
     await writeFile(p, buf)
     return p
   } catch (err) {
-    console.error('[al/wa] persist inbound image failed:', (err as Error)?.message)
+    console.error('[al/wa] persist inbound media failed:', (err as Error)?.message)
     return null
   }
 }
@@ -67,6 +98,13 @@ async function persistInboundImage(buf: Buffer, mimeType: string, msgId: string,
 export interface WhatsAppImage {
   data: string  // base64
   mimeType: string
+}
+
+export interface WhatsAppFile {
+  path: string
+  mimeType: string
+  kind: 'audio' | 'video' | 'document'
+  transcript?: string  // set only for transcribed voice notes (audio + ptt)
 }
 
 export interface WhatsAppInbound {
@@ -77,6 +115,7 @@ export interface WhatsAppInbound {
   text: string
   images: WhatsAppImage[]
   imagePaths: string[]         // local temp-file paths for downloaded images (Al can Read them)
+  files: WhatsAppFile[]        // non-image attachments: audio/video/documents
   timestamp: number
 }
 
@@ -273,14 +312,44 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
             const buffer = Buffer.concat(chunks)
             const mimeType = imgMsg.mimetype || 'image/jpeg'
             images.push({ data: buffer.toString('base64'), mimeType })
-            const p = await persistInboundImage(buffer, mimeType, msg.key.id || 'img', images.length - 1)
+            const p = await persistInboundMedia(buffer, mimeType, msg.key.id || 'img', images.length - 1)
             if (p) imagePaths.push(p)
           } catch (err) {
             console.error('[al/wa] image download failed:', (err as Error)?.message)
           }
         }
 
-        if (!text && images.length === 0) continue
+        const files: WhatsAppFile[] = []
+        const audioMsg = msg.message.audioMessage
+        const videoMsg = msg.message.videoMessage
+        const docMsg = msg.message.documentMessage
+        for (const [kind, mediaMsg, baileysType, preferredName] of [
+          ['audio', audioMsg, 'audio', undefined],
+          ['video', videoMsg, 'video', undefined],
+          ['document', docMsg, 'document', docMsg?.fileName || undefined],
+        ] as const) {
+          if (!mediaMsg) continue
+          try {
+            const stream = await downloadContentFromMessage(mediaMsg as DownloadableMessage, baileysType)
+            const chunks: Buffer[] = []
+            for await (const chunk of stream) chunks.push(chunk)
+            const buffer = Buffer.concat(chunks)
+            const mimeType = mediaMsg.mimetype || 'application/octet-stream'
+            const p = await persistInboundMedia(buffer, mimeType, msg.key.id || kind, files.length, preferredName)
+            if (!p) continue
+            const file: WhatsAppFile = { path: p, mimeType, kind }
+            // Voice note (recorded via the mic button, not a shared audio file) — transcribe.
+            if (kind === 'audio' && audioMsg?.ptt) {
+              const transcript = await transcribeAudio(buffer, mimeType)
+              if (transcript) file.transcript = transcript
+            }
+            files.push(file)
+          } catch (err) {
+            console.error(`[al/wa] ${kind} download failed:`, (err as Error)?.message)
+          }
+        }
+
+        if (!text && images.length === 0 && files.length === 0) continue
 
         // Best-effort read receipt — don't fail the message if this throws.
         if (sock) {
@@ -300,6 +369,7 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
           text,
           images,
           imagePaths,
+          files,
           timestamp: typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp * 1000 : Date.now(),
         })
       } catch (err) {
@@ -374,7 +444,7 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
     `Message ID: ${msg.id}`,
     ``,
     `Message:`,
-    msg.text || '(no text — image only)',
+    msg.text || (msg.imagePaths.length || msg.files.length ? '(no text — attachment only)' : ''),
   ]
   if (msg.imagePaths.length > 0) {
     lines.push(
@@ -382,6 +452,10 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
       `Attached image${msg.imagePaths.length > 1 ? 's' : ''} (use the Read tool on the path${msg.imagePaths.length > 1 ? 's' : ''} to view before replying):`,
       ...msg.imagePaths.map((p) => `  ${p}`),
     )
+  }
+  for (const file of msg.files) {
+    lines.push(``, `[INBOUND WhatsApp] Attached file (${file.kind}, ${file.mimeType}): ${file.path}`)
+    if (file.transcript) lines.push(`Voice note transcript: "${file.transcript}"`)
   }
   lines.push(
     ``,

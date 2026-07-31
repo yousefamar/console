@@ -458,11 +458,13 @@ Message:
 <body>
 
 [Attached image(s) (Read these paths): /tmp/console-al-inbound/<id>-0.jpg]   ← only when an image is attached
+[INBOUND WhatsApp] Attached file (audio, audio/ogg): /tmp/console-al-inbound/<id>-0.ogg   ← audio/video/document, any type
+Voice note transcript: "..."   ← only for a ptt voice note (Whisper preferred, Gemini fallback via GEMINI_API_KEY)
 
 ---
 ACTION ... con whatsapp send <jid> --body "..."  (a session-only text reply is invisible to the sender)
 ```
-Inbound images are downloaded by `whatsapp.ts`, written to `os.tmpdir()/console-al-inbound/`, and their paths injected into the envelope so Al can `Read` them (the text-only inject path can't carry image bytes). Al's Claude context IS the routing state — no per-thread session table. Voice delegate envelopes use a `[Voice delegate from ...]` header with explicit "reply will be spoken aloud" guidance.
+Inbound images/audio/video/documents are all downloaded by `whatsapp.ts` (any Baileys media type, not just images — generalized 2026-07-31), written to `os.tmpdir()/console-al-inbound/` (documents keep their real filename), and their paths injected into the envelope so Al can `Read` them (the text-only inject path can't carry bytes). Voice notes (audio + `ptt`) are additionally auto-transcribed via `al/transcribe.ts` and the transcript is inlined in the envelope — no OPENAI_API_KEY/GEMINI_API_KEY configured just skips transcription (never blocks delivery of the audio file itself). Al's Claude context IS the routing state — no per-thread session table. Voice delegate envelopes use a `[Voice delegate from ...]` header with explicit "reply will be spoken aloud" guidance.
 
 ### Cutover (one-off, 2026-06-09)
 1. `pm2 stop al`.
