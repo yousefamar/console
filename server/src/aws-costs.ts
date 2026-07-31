@@ -59,6 +59,19 @@ const BEDROCK_SUFFIX = ' (Amazon Bedrock Edition)'
 export const OWNER_TAG_EPOCH = '2026-07-29'
 /** CE group key for spend that carried no `owner` tag. */
 const UNTAGGED = 'untagged'
+
+/** `owner` tag value → the person's display name, so the chart reads as PEOPLE
+ *  rather than as infrastructure identifiers. The tag values are fixed by the
+ *  inference profiles already provisioned in AWS (`<owner>-cc-<model>`) and can't
+ *  be renamed retroactively without orphaning historical CE data, so the mapping
+ *  lives here instead. Overridable/extendable at
+ *  `~/.config/console/cost-owners.json` (`{"<tag>": "<Name>"}`) — that's how a new
+ *  person gets a label without a code change, once they have their own profiles. */
+const BUILTIN_OWNER_NAMES: Record<string, string> = {
+  amar: 'Yousef',
+  sam: 'Sam',
+  guest1: 'Lucas',
+}
 /** Cost Explorer is only ever queried from us-east-1 (global endpoint). */
 const CE_REGION = 'us-east-1'
 /** CE refreshes upstream a few times a day; anything tighter just burns $0.01s. */
@@ -105,6 +118,10 @@ export interface CostReport {
   /** First date on which per-user attribution is even possible. Days before it
    *  are all-`untagged` by construction, not by anyone's usage. */
   ownerTagEpoch: string
+  /** `owner` tag value → person's display name, for every owner in the window.
+   *  Sent with the report so the client renders people, not tag values, without
+   *  duplicating the mapping. An owner with no known name maps to itself. */
+  ownerNames: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +182,7 @@ function rankKeys(totals: Record<string, number>): string[] {
  */
 export function buildCostReport(
   res: CeResponse,
-  opts: { metric?: string; today?: string } = {},
+  opts: { metric?: string; today?: string; ownerNames?: Record<string, string> } = {},
 ): Omit<CostReport, 'generatedAt'> {
   const metric = opts.metric ?? 'UnblendedCost'
   const today = opts.today ?? new Date().toISOString().slice(0, 10)
@@ -213,6 +230,14 @@ export function buildCostReport(
     ? round(complete.reduce((s, d) => s + d.usd, 0) / complete.length)
     : 0
 
+  // Resolve a display name for every owner actually present, so the client never
+  // has to guess (and `untagged` stays `untagged` — it isn't a person).
+  const nameSource = { ...BUILTIN_OWNER_NAMES, ...(opts.ownerNames ?? {}) }
+  const ownerNames: Record<string, string> = {}
+  for (const o of Object.keys(totalByOwner)) {
+    if (o !== UNTAGGED) ownerNames[o] = nameSource[o] ?? o
+  }
+
   return {
     start,
     end,
@@ -227,6 +252,7 @@ export function buildCostReport(
     totalByModel,
     empty: totalUsd === 0,
     ownerTagEpoch: OWNER_TAG_EPOCH,
+    ownerNames,
   }
 }
 
@@ -251,7 +277,7 @@ export function costWindow(days: number, now = new Date()): { start: string; end
  *  is missing the new key, and the UI renders `undefined` as `NaN` rather than
  *  failing loudly — so stale-shaped entries are dropped on load instead of being
  *  served for up to a TTL. */
-const CACHE_VERSION = 2
+const CACHE_VERSION = 3
 
 interface CacheFile {
   version?: number
@@ -267,8 +293,26 @@ export class AwsCostStore {
     private file: string,
     private log: (m: string) => void = () => {},
     private ttlMs = DEFAULT_TTL_MS,
+    /** Optional `owner` tag → person name overrides, merged over the built-ins.
+     *  Read fresh on each fetch so adding a person needs no hub restart. */
+    private ownerNamesFile?: string,
   ) {
     this.load()
+  }
+
+  /** User-supplied owner→person names, if the file exists. Non-fatal: a missing
+   *  or malformed file just falls back to the built-in map. */
+  private ownerNameOverrides(): Record<string, string> {
+    if (!this.ownerNamesFile || !existsSync(this.ownerNamesFile)) return {}
+    try {
+      const raw = JSON.parse(readFileSync(this.ownerNamesFile, 'utf-8')) as Record<string, unknown>
+      const out: Record<string, string> = {}
+      for (const [k, v] of Object.entries(raw)) if (typeof v === 'string' && v) out[k] = v
+      return out
+    } catch (e) {
+      this.log(`[costs] owner-names file unreadable: ${(e as Error).message}`)
+      return {}
+    }
   }
 
   /** Cached report for the window, refetching when stale or forced. Concurrent
@@ -335,7 +379,9 @@ export class AwsCostStore {
       maxBuffer: 16 * 1024 * 1024,
       env: process.env,
     })
-    const report = buildCostReport(JSON.parse(stdout) as CeResponse)
+    const report = buildCostReport(JSON.parse(stdout) as CeResponse, {
+      ownerNames: this.ownerNameOverrides(),
+    })
     this.log(`[costs] ${start}..${end} → $${report.totalUsd.toFixed(2)} across ${report.owners.length} owner(s)`)
     return { generatedAt: Date.now(), ...report }
   }

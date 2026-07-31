@@ -84,6 +84,9 @@ export interface CostReport {
   /** First date per-user attribution is possible; earlier days are all-untagged
    *  by construction (cost-allocation tags don't backfill). */
   ownerTagEpoch: string
+  /** `owner` tag value → person's display name (`amar` → `Yousef`). Series keys
+   *  stay the tag values; this is presentation only. */
+  ownerNames: Record<string, string>
 }
 
 export type CostStackBy = 'owner' | 'model'

@@ -27,6 +27,7 @@ import { getChildCountSync } from './process-tree.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
+import { taggedModelId } from './bedrock-profiles.js'
 import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 
 let sessionCounter = 0
@@ -221,7 +222,14 @@ export class Session extends EventEmitter {
       '--permission-prompt-tool', 'stdio',
       '--chrome',
       '--effort', effort,
-      '--model', model,
+      // Translate to this owner's tagged inference-profile ARN on Bedrock, so
+      // the spend is attributable to a person. `--model` OVERRIDES
+      // `ANTHROPIC_MODEL`, so passing the bare id here bypassed every tagged
+      // profile and made ~all fleet spend permanently untagged in Cost
+      // Explorer. `spawnedModel` deliberately keeps the BARE id (above) — the
+      // fallback chain, model labels, and context-window table are all keyed on
+      // it. No-op off Bedrock. See bedrock-profiles.ts.
+      '--model', taggedModelId(model),
     ]
 
     if (options.resume) {
@@ -1146,7 +1154,9 @@ export class Session extends EventEmitter {
    *  caller falls back to restartForModelChange(). */
   async setModelLive(model: string): Promise<boolean> {
     if (!this.process || !this.processAlive || !this.gotSystemInit || this.status === 'ended') return false
-    const res = await this.sendControlRequest('set_model', { model })
+    // Same attribution translation as the spawn path — an in-place model switch
+    // must not silently drop the session onto an untagged bare id.
+    const res = await this.sendControlRequest('set_model', { model: taggedModelId(model) })
     if (!res.ok) return false
     this.spawnedModel = model
     const { displayName, contextWindow } = parseModelString(model)

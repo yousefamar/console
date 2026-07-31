@@ -376,10 +376,14 @@ ${text}
 </dictation>`
 
   const { execFile } = await import('node:child_process')
+  const { smallFastModel } = await import('./bedrock-profiles.js')
   return new Promise((resolve) => {
     const child = execFile(
       'claude',
-      ['-p', prompt, '--output-format', 'text'],
+      // Pin the small/fast model explicitly: on Bedrock that's the owner-tagged
+      // profile ARN, so dictation formatting is attributable rather than
+      // billing against an untagged default.
+      ['-p', prompt, '--output-format', 'text', '--model', smallFastModel()],
       { timeout: 90_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env } },
       (err, stdout, stderr) => {
         if (err) {

@@ -2,69 +2,59 @@
 # Switch the whole `claude`-spawning surface (hub agents, Al, ad-hoc CLI) BACK
 # to Amazon Bedrock from the first-party Max subscription.
 #
-# Why a script (not a prose cron prompt): the switch is TWO coordinated edits
-# that must both land or agents 400 —
-#   1. ~/.claude/settings.json `env` → the Bedrock backend vars (each `claude`
-#      subprocess reads these at spawn; CLAUDE_CODE_USE_BEDROCK is the switch).
-#   2. the hub's model chain (~/.config/console/agent-model.json) → the
-#      `us.anthropic.*`-prefixed Bedrock ids, since bare first-party ids 400 on
-#      Bedrock and vice-versa.
-# Then a hub restart so live sessions pick up the new backend.
+# This is now a THIN WRAPPER over `con agent backend set bedrock`. It used to
+# hand-roll the two coordinated edits itself (restore settings.json's env from a
+# backup + rewrite ~/.config/console/agent-model.json's chain), which meant the
+# Bedrock model chain lived in two places — here and BACKEND_PRESETS in
+# server/src/auth-backend.ts. They drifted: this script still led with fable-5
+# long after opus-5 was verified and promoted, so running it silently DOWNGRADED
+# the fleet.
 #
-# Restores settings.json from the backup taken when we switched TO the Max sub
-# (settings.json.bedrock-bak) so the exact ARNs/profile come back verbatim.
+# The hub's own switch is strictly better than what this file can do by hand:
+#   1. settings.json `env` <- BACKEND_PRESETS.bedrock, with every model alias
+#      pointing at an owner-tagged application inference profile ARN (the only
+#      route to per-person cost attribution — see server/src/bedrock-profiles.ts).
+#      A backup-restore can't know about those.
+#   2. the model chain <- that same preset's spawn-verified ids.
+#   3. managed env keys absent from the target preset are stripped, so the switch
+#      is a clean swap rather than an accumulation of stale keys.
+#   4. every live session is FORCE-respawned (a running subprocess already has
+#      the old backend's env baked in from its own startup; the in-place
+#      set_model fast path cannot fix that).
+#
+# So: keep the backend definition in ONE place (auth-backend.ts) and let this
+# script be just the cron-friendly entry point.
+#
 # Idempotent: safe to run more than once. Created 2026-07-09 for the Jul-26
-# Max-subscription expiry.
+# Max-subscription expiry; rewritten 2026-07-31 to stop duplicating the chain.
 set -euo pipefail
 
-SETTINGS="$HOME/.claude/settings.json"
-BAK="$HOME/.claude/settings.json.bedrock-bak"
-MODELCFG="$HOME/.config/console/agent-model.json"
 LOG="$HOME/.config/console/switch-to-bedrock.log"
+HUB="https://localhost:9877"
 
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG"; }
 
 log "switch-to-bedrock: starting"
 
-# 1. Restore the Bedrock env block into settings.json (merge: keep any env keys
-#    added since the backup, override with the backup's Bedrock vars).
-if [ ! -f "$BAK" ]; then
-  log "ERROR: backup $BAK not found — cannot restore Bedrock env. Aborting."
+# The switch runs inside the hub, so the hub has to be up. It's a pm2 service, so
+# this is just "start it if it isn't running" — cheap and idempotent.
+if ! curl -skf --max-time 5 "$HUB/health" >/dev/null 2>&1; then
+  log "hub not responding — starting it"
+  con hub restart >>"$LOG" 2>&1 || pm2 restart console-server --update-env >>"$LOG" 2>&1 || true
+  for _ in $(seq 1 30); do
+    curl -skf --max-time 2 "$HUB/health" >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
+
+if ! curl -skf --max-time 5 "$HUB/health" >/dev/null 2>&1; then
+  log "ERROR: hub still down — cannot switch backend. Investigate: pm2 logs console-server"
   exit 1
 fi
-python3 - "$SETTINGS" "$BAK" <<'PY'
-import json, sys
-cur_path, bak_path = sys.argv[1], sys.argv[2]
-cur = json.load(open(cur_path))
-bak = json.load(open(bak_path))
-env = cur.get('env', {})
-env.update(bak.get('env', {}))          # bring back CLAUDE_CODE_USE_BEDROCK, AWS_*, ANTHROPIC_MODEL, ...
-cur['env'] = env
-json.dump(cur, open(cur_path, 'w'), indent=2)
-print('settings.json env restored to Bedrock:', sorted(k for k in env if 'BEDROCK' in k.upper() or 'AWS' in k.upper()))
-PY
 
-# 2. Swap the hub model chain to the Bedrock-prefixed ids (VERIFIED working on
-#    this deployment 2026-07-06). Written directly so it survives even if the
-#    hub is momentarily down; the restart below loads it.
-python3 - "$MODELCFG" <<'PY'
-import json, sys
-p = sys.argv[1]
-d = json.load(open(p))
-d['chain'] = [
-    'us.anthropic.claude-fable-5',
-    'us.anthropic.claude-opus-4-8',
-    'us.anthropic.claude-opus-4-7',
-    'us.anthropic.claude-sonnet-5',
-    'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-]
-d['model'] = 'us.anthropic.claude-fable-5'
-json.dump(d, open(p, 'w'), indent=2)
-print('hub chain set to Bedrock ids; active model', d['model'])
-PY
+# One call: rewrites settings.json's env, swaps the model chain, force-respawns
+# every live session. Prints the resulting backend + chain.
+log "applying backend switch"
+con agent backend set bedrock 2>&1 | tee -a "$LOG"
 
-# 3. Restart the hub so live agent subprocesses re-spawn under the Bedrock env.
-log "restarting hub (con hub restart)"
-con hub restart >>"$LOG" 2>&1 || pm2 restart console-server --update-env >>"$LOG" 2>&1
-
-log "switch-to-bedrock: done — verify with: con agent model get"
+log "switch-to-bedrock: done — verify with: con agent model get && con agent backend get"
