@@ -74,6 +74,10 @@ export interface CostReport {
   owners: string[]
   models: string[]
   totalUsd: number
+  /** Mean over COMPLETE days only — today's bucket is partial. */
+  avgPerDayUsd: number
+  avgDayCount: number
+  todayUsd: number
   totalByOwner: Record<string, number>
   totalByModel: Record<string, number>
   empty: boolean

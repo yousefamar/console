@@ -14,7 +14,7 @@
 import { useEffect, useMemo } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
-  ReferenceArea,
+  ReferenceArea, ReferenceLine,
 } from 'recharts'
 import { useDashboardStore, COST_DAY_OPTIONS, type CostReport, type CostStackBy } from '@/store/dashboard'
 import { HomeScrollPane } from './HomeScrollPane'
@@ -76,6 +76,15 @@ export function CostsCard() {
           {report && !report.empty && (
             <span className="ml-2 normal-case tracking-normal text-text-tertiary font-normal">
               {fmtUsd(report.totalUsd)}
+              {/* Guarded: an older hub's cached report has no average fields. */}
+              {Number.isFinite(report.avgPerDayUsd) && (
+                <span
+                  className="ml-1.5"
+                  title={`Mean over ${report.avgDayCount} complete day(s); today (${fmtUsd(report.todayUsd)} so far) excluded because CE has only partially billed it`}
+                >
+                  · {fmtUsd(report.avgPerDayUsd)}/day
+                </span>
+              )}
             </span>
           )}
         </h2>
@@ -193,6 +202,15 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
                 x1={unattributableUntil.from} x2={unattributableUntil.to}
                 fill="var(--color-text-tertiary)" fillOpacity={0.08} strokeOpacity={0}
                 label={{ value: 'no attribution', fontSize: 9, fill: 'var(--color-text-tertiary)' }}
+              />
+            ) : null}
+            {report.avgPerDayUsd > 0 && Number.isFinite(report.avgPerDayUsd) ? (
+              <ReferenceLine
+                y={report.avgPerDayUsd} stroke="var(--color-text-tertiary)" strokeDasharray="3 3"
+                label={{
+                  value: `avg ${fmtUsd(report.avgPerDayUsd)}/day`, position: 'insideTopRight',
+                  fontSize: 9, fill: 'var(--color-text-tertiary)',
+                }}
               />
             ) : null}
             {series.map((k) => (

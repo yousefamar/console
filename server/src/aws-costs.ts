@@ -87,6 +87,14 @@ export interface CostReport {
   /** Models present anywhere in the window, biggest total spend first. */
   models: string[]
   totalUsd: number
+  /** Mean USD/day over COMPLETE days only. The last bucket is always today (see
+   *  `costWindow` — `end` is tomorrow), which CE has billed only partially, so
+   *  including it drags the mean down every single morning. */
+  avgPerDayUsd: number
+  /** Number of days `avgPerDayUsd` averages over (today excluded). */
+  avgDayCount: number
+  /** Today's partial spend, kept separate from the mean for the same reason. */
+  todayUsd: number
   /** Per-owner total across the window. */
   totalByOwner: Record<string, number>
   /** Per-model total across the window. */
@@ -155,7 +163,12 @@ function rankKeys(totals: Record<string, number>): string[] {
  * service in the response is dropped — we deliberately query unfiltered (see
  * fact 1 in the header) so this classification step is what makes it Bedrock.
  */
-export function buildCostReport(res: CeResponse, metric = 'UnblendedCost'): Omit<CostReport, 'generatedAt'> {
+export function buildCostReport(
+  res: CeResponse,
+  opts: { metric?: string; today?: string } = {},
+): Omit<CostReport, 'generatedAt'> {
+  const metric = opts.metric ?? 'UnblendedCost'
+  const today = opts.today ?? new Date().toISOString().slice(0, 10)
   const days: CostDay[] = []
   const totalByOwner: Record<string, number> = {}
   const totalByModel: Record<string, number> = {}
@@ -191,6 +204,15 @@ export function buildCostReport(res: CeResponse, metric = 'UnblendedCost'): Omit
   // it reads as an exclusive upper bound, matching the query we sent.
   const end = res.ResultsByTime?.[res.ResultsByTime.length - 1]?.TimePeriod?.End ?? ''
 
+  // Average over complete days only. Today's bucket is real but partial, so
+  // averaging it in would make the figure drop every morning and recover by
+  // night; it's reported separately instead.
+  const complete = days.filter((d) => d.date < today)
+  const todayUsd = days.find((d) => d.date === today)?.usd ?? 0
+  const avgPerDayUsd = complete.length
+    ? round(complete.reduce((s, d) => s + d.usd, 0) / complete.length)
+    : 0
+
   return {
     start,
     end,
@@ -198,6 +220,9 @@ export function buildCostReport(res: CeResponse, metric = 'UnblendedCost'): Omit
     owners: rankKeys(totalByOwner),
     models: rankKeys(totalByModel),
     totalUsd,
+    avgPerDayUsd,
+    avgDayCount: complete.length,
+    todayUsd,
     totalByOwner,
     totalByModel,
     empty: totalUsd === 0,
@@ -222,7 +247,14 @@ export function costWindow(days: number, now = new Date()): { start: string; end
 // AWS access + disk cache
 // ---------------------------------------------------------------------------
 
+/** Bump whenever `CostReport` gains a field. A report persisted by an older hub
+ *  is missing the new key, and the UI renders `undefined` as `NaN` rather than
+ *  failing loudly — so stale-shaped entries are dropped on load instead of being
+ *  served for up to a TTL. */
+const CACHE_VERSION = 2
+
 interface CacheFile {
+  version?: number
   /** Keyed by day-count so a 7-day and a 90-day view don't evict each other. */
   reports: Record<string, CostReport>
 }
@@ -312,6 +344,10 @@ export class AwsCostStore {
     if (!existsSync(this.file)) return
     try {
       const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as Partial<CacheFile>
+      if (raw.version !== CACHE_VERSION) {
+        this.log(`[costs] cache v${raw.version ?? 1} != v${CACHE_VERSION}, discarding`)
+        return
+      }
       if (raw.reports && typeof raw.reports === 'object') this.cache.reports = raw.reports
     } catch (e) {
       this.log(`[costs] cache load failed: ${(e as Error).message}`)
@@ -322,7 +358,7 @@ export class AwsCostStore {
     try {
       mkdirSync(dirname(this.file), { recursive: true })
       const tmp = this.file + '.tmp'
-      writeFileSync(tmp, JSON.stringify(this.cache, null, 2))
+      writeFileSync(tmp, JSON.stringify({ version: CACHE_VERSION, ...this.cache }, null, 2))
       renameSync(tmp, this.file)
     } catch (e) {
       this.log(`[costs] cache save failed: ${(e as Error).message}`)
