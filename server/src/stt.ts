@@ -27,6 +27,12 @@ export const STT_REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcr
  *  (vs gpt-4o-mini-transcribe's bursty sentence-boundary commits). */
 export const STT_MODEL = 'gpt-realtime-whisper'
 
+/** Batch (`/v1/audio/transcriptions`) model, for the whole-file paths: the
+ *  `/stt` upload endpoint and Al's WhatsApp voice notes. Deliberately a
+ *  DIFFERENT model from the realtime one above — the realtime endpoint rejects
+ *  this id and vice versa, so they can't be collapsed into one constant. */
+export const STT_BATCH_MODEL = 'gpt-transcribe'
+
 /** Headers for the GA handshake. Notably NO `OpenAI-Beta: realtime=v1` —
  *  sending it flips the connection into the disabled beta shape. */
 export function buildSttHeaders(apiKey: string): Record<string, string> {

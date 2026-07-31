@@ -36,7 +36,7 @@ import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
-import { STT_REALTIME_URL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
+import { STT_REALTIME_URL, STT_BATCH_MODEL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { enforce as enforceHubAuth, authEnforcementActive, decideWsUpgrade } from './auth-middleware.js'
@@ -1098,9 +1098,9 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         if (!boundary) { res.writeHead(400); res.end('Missing boundary'); return }
         const parts = body.toString('binary').split('--' + boundary)
         let audioData: Buffer | null = null
-        // Honor the uploaded part's real filename — OpenAI Whisper picks the
-        // audio format from the extension. Browser MediaRecorder sends
-        // audio.webm; the `con mic` CLI sends a .wav. Default to webm.
+        // Honor the uploaded part's real filename — OpenAI picks the audio
+        // format from the extension. Browser MediaRecorder sends audio.webm;
+        // the `con mic` CLI sends a .wav. Default to webm.
         let filename = 'audio.webm'
         for (const part of parts) {
           if (part.includes('name="file"')) {
@@ -1125,7 +1125,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         const formParts = [
           `--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${audioMime}\r\n\r\n`,
           audioData,
-          `\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${formBoundary}--\r\n`,
+          `\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${STT_BATCH_MODEL}\r\n--${formBoundary}--\r\n`,
         ]
         const formBody = Buffer.concat([Buffer.from(formParts[0] as string), formParts[1] as Buffer, Buffer.from(formParts[2] as string)])
 
