@@ -11,7 +11,15 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty)_
+- Approval/question dialogs answered on ANOTHER client (PC) lingered in the
+  mobile list: v75's WS generation guard orphans the old socket's onClosed on
+  a background stop, so the "clear approvals on disconnect" path stopped
+  running — an approval answered while the phone was away had its
+  tool_approved broadcast missed, and the stale card sat until app restart.
+  stop() now clears transient approvals itself (the connect replay reliably
+  re-delivers any STILL-pending one — the CLI blocks on it, so it's always
+  near the log tail), and approval_required dedupes by requestId so the
+  replay can't double-add one the live path already delivered.
 
 ## Shipped
 

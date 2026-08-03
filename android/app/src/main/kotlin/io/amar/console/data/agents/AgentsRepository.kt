@@ -257,6 +257,12 @@ class AgentsRepository(
         ws?.close(1000, "bg")
         ws = null
         _connected.value = false
+        // The generation guard orphans the socket's onClosed, so onDisconnect
+        // no longer runs on a background-stop — clear transient state here or
+        // an approval answered from ANOTHER client while we're away lingers
+        // forever (a pending one is always near the log tail — the CLI blocks
+        // on it — so the connect replay reliably re-adds it).
+        _approvals.value = emptyList()
     }
 
     private fun open() {
@@ -496,6 +502,9 @@ class AgentsRepository(
                 val toolName = msg["toolName"]?.jsonPrimitive?.content ?: "tool"
                 val inputJson = msg["input"]?.toString() ?: "{}"
                 val approval = Approval(sessionId, requestId, toolName, inputJson)
+                // Connect replay re-delivers a still-pending approval_required
+                // the live path already added — dedupe by requestId.
+                _approvals.value = _approvals.value.filter { it.requestId != requestId }
                 if (toolName in autoApproveTools) {
                     _approvals.value = _approvals.value + approval // approve() reads input from the list
                     approve(sessionId, requestId)
