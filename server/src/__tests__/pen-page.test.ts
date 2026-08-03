@@ -134,7 +134,10 @@ describe('PenHub frame → vault wiring', () => {
 
       const rel = pageRelPath({ section: 3, owner: 27, note: 727, page: 1 })
       const abs = join(vault, rel)
-      for (let i = 0; i < 100 && !existsSync(abs); i++) await sleep(10)
+      // Poll on the broadcast, not the file: the write lands on disk one
+      // microtask BEFORE flush() resolves and broadcasts, so an existsSync poll
+      // can win the race and see an empty `events`.
+      for (let i = 0; i < 100 && !events.includes('page_saved'); i++) await sleep(10)
       expect(existsSync(abs)).toBe(true)
       expect(readFileSync(abs, 'utf-8')).toContain('<penpage>')
       expect(events).toContain('page_saved')

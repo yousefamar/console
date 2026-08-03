@@ -838,3 +838,90 @@ describe('Session hibernateOnStart (restore path)', () => {
     expect(lastSpawnArgs!.args[i + 1]).toBe(taggedModelId('claude-sonnet-5')) // pin applied at wake
   })
 })
+
+// --------------------------------------------------------------------------
+// Queued messages — "deliver when the WHOLE turn ends", not steering.
+// --------------------------------------------------------------------------
+
+describe('Session queued messages', () => {
+  function runningSession(): Session {
+    const session = new Session({ prompt: 'go' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_q', model: 'claude-opus-4-8', slash_commands: [] })
+    return session
+  }
+
+  function stdinPrompts(): string[] {
+    return mockProcess.stdin.write.mock.calls
+      .map((c: string[]) => { try { return JSON.parse(c[0]!) } catch { return null } })
+      .filter((w: any) => w?.type === 'user')
+      .map((w: any) => w.message.content as string)
+  }
+
+  it('holds the prompt off stdin while running, then flushes on result', async () => {
+    const session = runningSession()
+    session.queueMessage('do this after')
+    expect(session.queuedMessage).toBe('do this after')
+    // The whole point: nothing reached stdin, so the turn was not steered.
+    expect(stdinPrompts()).not.toContain('do this after')
+
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_q', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.queuedMessage).toBeNull()
+    expect(stdinPrompts()).toContain('do this after')
+  })
+
+  it('appends into one buffer, blank-line separated', () => {
+    const session = runningSession()
+    session.queueMessage('first')
+    session.queueMessage('second')
+    expect(session.queuedMessage).toBe('first\n\nsecond')
+  })
+
+  it('setQueuedMessage edits and clears', () => {
+    const session = runningSession()
+    session.queueMessage('draft')
+    session.setQueuedMessage('rewritten')
+    expect(session.queuedMessage).toBe('rewritten')
+    session.setQueuedMessage(null)
+    expect(session.queuedMessage).toBeNull()
+  })
+
+  it('queueing on an idle session sends immediately (no turn to wait for)', async () => {
+    const session = new Session({ prompt: 'go' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_q2', model: 'claude-opus-4-8', slash_commands: [] })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_q2', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.status).toBe('idle')
+
+    session.queueMessage('just send it')
+    expect(session.queuedMessage).toBeNull()
+    expect(stdinPrompts()).toContain('just send it')
+  })
+
+  it('emits session_queued (ephemeral) and surfaces the text on getInfo', () => {
+    const session = runningSession()
+    const messages = collectHubMessages(session)
+    session.queueMessage('pending')
+    const q = messages.filter((m) => m.type === 'session_queued')
+    expect(q).toHaveLength(1)
+    expect((q[0] as { queuedMessage: string }).queuedMessage).toBe('pending')
+    expect(session.getInfo().queuedMessage).toBe('pending')
+  })
+
+  it('flush logs the prompt to the transcript so it is not invisible', async () => {
+    const session = runningSession()
+    session.queueMessage('shows up later')
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_q', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    const logged = session.messageLog.filter((m) => m.type === 'user_prompt') as Array<{ content: string }>
+    expect(logged.some((m) => m.content === 'shows up later')).toBe(true)
+  })
+
+  it('restores a queue from the manifest and kill() drops it', () => {
+    const session = new Session({ prompt: 'x', resume: 'claude_q3', silent: true, hibernateOnStart: true, queuedMessage: 'survived a restart' })
+    expect(session.queuedMessage).toBe('survived a restart')
+    expect(session.getInfo().queuedMessage).toBe('survived a restart')
+    session.kill()
+    expect(session.queuedMessage).toBeNull()
+  })
+})

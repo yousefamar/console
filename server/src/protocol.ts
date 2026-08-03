@@ -35,6 +35,12 @@ export type ClientMessage =
   | { type: 'mark_session_read'; sessionId: string }
   | { type: 'mark_session_unread'; sessionId: string }
   | { type: 'clear_attention'; sessionId: string }
+  /** Queue a prompt to be delivered when the CURRENT TURN FULLY ENDS, not at
+   *  the next tool boundary. Appends (blank-line separated) to any existing
+   *  queued text. Writing to stdin mid-turn IS steering — hence hub-side. */
+  | { type: 'queue_message'; sessionId: string; content: string }
+  /** Replace (edit) or clear (`null`) the queued prompt. */
+  | { type: 'set_queued_message'; sessionId: string; content: string | null }
   | { type: 'get_model' }
   | { type: 'set_model'; model: string }
   /** Pin ONE session to a model (mid-session; fast set_model path with respawn
@@ -103,6 +109,10 @@ export type HubMessage =
    *  the hub whether to also fire a push notification this time (dedup/anti-noise
    *  gated in Session). */
   | { type: 'session_attention'; sessionId: string; sessionName?: string; needsAttention: AttentionState | null; push?: boolean }
+  /** The session's queued-until-turn-end prompt changed (queued / appended /
+   *  edited / cleared / flushed). Ephemeral — deliberately NOT loggable; the
+   *  authoritative value rides SessionInfo.queuedMessage. */
+  | { type: 'session_queued'; sessionId: string; queuedMessage: string | null }
   /** Active agent model + fallback chain. Broadcast on change (manual set or
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
@@ -212,6 +222,9 @@ export interface SessionInfo {
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null
+  /** A prompt waiting for the current turn to fully end. Editable/cancellable
+   *  until it flushes. Persisted in the manifest. */
+  queuedMessage?: string | null
   /** Hub-persisted: index of the last message the user has marked read.
    *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
   lastReadIndex?: number

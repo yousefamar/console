@@ -99,6 +99,9 @@ export interface SessionOptions {
    *  this model instead of the hub-wide ModelConfig one, and fleet-wide model
    *  changes skip it. Persisted in the manifest. */
   modelOverride?: string
+  /** Restore a prompt that was queued for turn-end but never flushed (hub
+   *  restarted mid-turn). Persisted in the manifest. */
+  queuedMessage?: string | null
 }
 
 export class Session extends EventEmitter {
@@ -128,6 +131,11 @@ export class Session extends EventEmitter {
    *  push timestamps. The marker always refreshes; only the PUSH is gated. */
   private lastAttentionPushAt = 0
   private attentionPushTimes: number[] = []
+
+  /** A prompt held back until the current turn FULLY ends (see queueMessage).
+   *  Distinct from steering: any stdin write lands at the next tool boundary,
+   *  so a real queue must not touch stdin until `result`. */
+  queuedMessage: string | null = null
 
   /**
    * Coalesced message log for replay to late-joining clients.
@@ -185,6 +193,14 @@ export class Session extends EventEmitter {
     }
     // Restore a pending @amar marker across hub restarts.
     if (options.needsAttention) this.needsAttention = options.needsAttention
+    // A queued prompt survives a hub restart mid-turn (that's the whole point
+    // of it living hub-side) — restore BEFORE the hibernate early-return.
+    // A restored queue is NOT auto-flushed here: for a session that was
+    // mid-turn the restart nudge re-runs the turn and the flush happens at its
+    // end (the normal path); for an idle one the restore loop flushes
+    // explicitly once its listeners are attached. Flushing from the ctor would
+    // race the nudge and turn the queued prompt into steering.
+    if (options.queuedMessage) this.queuedMessage = options.queuedMessage
     // Restore-into-hibernation: skip the spawn entirely — the first message
     // wakes the session with --resume (sendMessage → wakeFromHibernation).
     // Keeps hub restarts light: 40+ idle sessions = zero claude processes.
@@ -199,6 +215,11 @@ export class Session extends EventEmitter {
     if (!options.silent) {
       this.sendMessage(options.prompt, options.images)
     }
+  }
+
+  /** Deliver a queued prompt when there's no turn left to wait for. */
+  flushIfIdle(): void {
+    if (this.status === 'idle') this.flushQueuedMessage()
   }
 
   private spawn(options: SessionOptions) {
@@ -328,6 +349,10 @@ export class Session extends EventEmitter {
         this.emitHub({ type: 'result', sessionId: this.id, cost: this.totalCost, tokens: { input: 0, output: 0 }, duration: 0, sessionIdClaude: this.claudeSessionId })
         // Re-spawn with --resume to keep the session alive
         this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId, silent: true, name: this.name })
+        // This synthetic `result` bypasses handleResultMessage, so the queue
+        // flush has to be repeated here — otherwise an interrupt would strand
+        // the queued prompt until the end of some later turn.
+        this.flushQueuedMessage()
         return
       }
       // Exited before ever initializing, soon after spawn → the model is the
@@ -447,6 +472,60 @@ export class Session extends EventEmitter {
         message: { role: 'user', content },
       })
     }
+  }
+
+  // ------------------------------------------------------------------ //
+  // Queued messages — "send this when the WHOLE turn is done".
+  //
+  // NOT steering: a stdin write lands at the CLI's next tool boundary, so
+  // anything queued client-side would interrupt the turn. Held here instead
+  // and flushed on `result`, which also means it survives a page reload, the
+  // phone backgrounding, and a hub restart mid-turn (manifest-persisted).
+  // ONE buffer that grows — a second queue appends rather than making a FIFO.
+
+  /** Append `content` to the queued prompt (blank-line separated). */
+  queueMessage(content: string): void {
+    const text = content.trim()
+    if (!text) return
+    this.queuedMessage = this.queuedMessage ? `${this.queuedMessage}\n\n${text}` : text
+    this.emitQueued()
+    // No turn to wait for — queueing on an idle session is just sending.
+    this.flushIfIdle()
+  }
+
+  /** Replace the queued prompt outright; `null`/empty cancels it. */
+  setQueuedMessage(content: string | null): void {
+    const text = content?.trim() || null
+    if (text === this.queuedMessage) return
+    this.queuedMessage = text
+    this.emitQueued()
+  }
+
+  /** Deliver the queued prompt as a real user message. Called at turn end.
+   *  Clears the slot FIRST — sendMessage flips status back to 'running', and a
+   *  re-entrant flush would double-send. */
+  flushQueuedMessage(): void {
+    const content = this.queuedMessage
+    if (!content || this.status === 'ended') return
+    this.queuedMessage = null
+    this.emitQueued()
+    // Same triple as the transient-resume nudge: broadcast + log so the
+    // transcript shows it, then write it to stdin.
+    const userMsg = { type: 'user_prompt' as const, sessionId: this.id, content }
+    this.logMessage(userMsg)
+    this.emit('hub_message', userMsg satisfies HubMessage)
+    this.sendMessage(content)
+  }
+
+  /** Broadcast the queue state. Bypasses emitHub deliberately — emitHub logs
+   *  everything but status/tool_input_delta, and this is ephemeral state, not
+   *  transcript. */
+  private emitQueued(): void {
+    this.emit('hub_message', {
+      type: 'session_queued',
+      sessionId: this.id,
+      queuedMessage: this.queuedMessage,
+    } satisfies HubMessage)
   }
 
   /** Approve a tool use request */
@@ -586,6 +665,7 @@ export class Session extends EventEmitter {
     this.hibernating = false
     this.hibernated = false
     this.pendingWakeMessage = null
+    if (this.queuedMessage) this.setQueuedMessage(null)
     if (this.process) {
       this.process.kill('SIGTERM')
     }
@@ -729,6 +809,7 @@ export class Session extends EventEmitter {
       hibernated: this.hibernated || undefined,
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
+      queuedMessage: this.queuedMessage,
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,
@@ -974,6 +1055,9 @@ export class Session extends EventEmitter {
     // prompt / tools / messages / free space). Response handled in
     // handleControlResponse → a second, accurate context_update.
     this.requestContextUsage()
+
+    // The turn is FULLY done — now (and only now) deliver anything queued.
+    this.flushQueuedMessage()
   }
 
   private handleStreamEvent(msg: ClaudeStdoutMessage & { type: 'stream_event' }) {

@@ -4,7 +4,7 @@ import { useGlassesStore } from '@/glasses/store'
 import { useMicStore } from '@/store/mic'
 import { getHubUrl } from '@/hub'
 import { useDictation } from '@/hooks/useDictation'
-import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip } from 'lucide-react'
+import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip, Clock } from 'lucide-react'
 
 // ============================================================================
 // AgentPromptInput — text input for sending prompts to the agent.
@@ -40,9 +40,12 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
 
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
+  const queuedMessage = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.queuedMessage ?? null)
   const connected = useAgentStore((s) => s.connected)
   const createSession = useAgentStore((s) => s.createSession)
   const sendMessage = useAgentStore((s) => s.sendMessage)
+  const queueMessage = useAgentStore((s) => s.queueMessage)
+  const setQueuedMessage = useAgentStore((s) => s.setQueuedMessage)
   const interrupt = useAgentStore((s) => s.interrupt)
   const projectDirs = useAgentStore((s) => s.projectDirs)
   const slashCommands = useAgentStore((s) => s.sessionSlashCommands)
@@ -288,6 +291,38 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     inputRef.current?.focus()
   }, [imagePayload, createSession, resolvedCwd, clearInput])
 
+  // Queue for turn-end rather than steering mid-turn. On an idle session the hub
+  // flushes immediately, so this is also a safe no-op-ish path when not running.
+  const handleQueue = useCallback(() => {
+    if (!activeSessionId) return
+    const body = textRef.current.trim()
+    if (!body) return
+    if (dictation.recording) dictation.stop()
+    clearInput()
+    queueMessage(body, activeSessionId)
+    inputRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId, queueMessage, clearInput, dictation.recording, dictation.stop])
+
+  // Pull the queued text back into the composer to edit it — the queue is
+  // cleared, so re-queueing (Ctrl+Enter) replaces rather than doubles it.
+  const editQueued = useCallback(() => {
+    if (!activeSessionId || !queuedMessage) return
+    const existing = inputRef.current?.value ?? textRef.current ?? ''
+    const next = existing.trim() ? `${queuedMessage}\n\n${existing}` : queuedMessage
+    textRef.current = next
+    const el = inputRef.current
+    if (el) {
+      el.value = next
+      el.setSelectionRange(next.length, next.length)
+      el.focus()
+    }
+    setHasContent(true)
+    resizeTextarea()
+    useGlassesStore.getState().setComposerText('agents', next)
+    setQueuedMessage(null, activeSessionId)
+  }, [activeSessionId, queuedMessage, setQueuedMessage, resizeTextarea])
+
   const attachImage = useCallback((file: File) => {
     const reader = new FileReader()
     reader.onload = () => {
@@ -365,12 +400,20 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
       handleNewSession()
       return
     }
-    // Enter sends, Ctrl+Enter for new line
+    // Ctrl/Cmd+Enter queues for turn-end (falls back to a plain send when there's
+    // no session yet — nothing to queue against). Shift+Enter is the newline.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault()
+      if (activeSessionId) handleQueue()
+      else handleSend()
+      return
+    }
+    // Enter sends
     if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
-  }, [handleSend, handleNewSession, slashOpen, filteredSlash, slashIndex, resizeTextarea])
+  }, [handleSend, handleNewSession, handleQueue, activeSessionId, slashOpen, filteredSlash, slashIndex, resizeTextarea])
 
   const handleDirKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!dirOpen || filteredDirs.length === 0) {
@@ -433,6 +476,23 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const handleDirFocus = useCallback(() => {
     setDirOpen(true)
     setDirIndex(0)
+  }, [])
+
+  // Long-press the send button = queue instead of send (the mobile trigger for
+  // Ctrl+Enter). The fired press swallows the click that follows it.
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressFired = useRef(false)
+  const startLongPress = useCallback(() => {
+    if (!activeSessionId) return
+    longPressFired.current = false
+    longPressRef.current = setTimeout(() => {
+      longPressFired.current = true
+      handleQueue()
+    }, 500)
+  }, [activeSessionId, handleQueue])
+  const cancelLongPress = useCallback(() => {
+    if (longPressRef.current) clearTimeout(longPressRef.current)
+    longPressRef.current = null
   }, [])
 
   const toggleListening = useCallback(() => {
@@ -578,6 +638,28 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
         )}
       </div>
 
+      {/* Queued-for-turn-end prompt — editable/cancellable until it flushes */}
+      {queuedMessage && (
+        <div className="mb-1.5 flex items-start gap-1.5 border border-border bg-surface-2/60 px-2 py-1">
+          <Clock size={11} className="mt-0.5 flex-shrink-0 text-text-tertiary" />
+          <button
+            onClick={editQueued}
+            className="flex-1 min-w-0 text-left"
+            title="Edit — moves it back into the composer"
+          >
+            <div className="text-[10px] uppercase tracking-wide text-text-tertiary">Queued for turn end</div>
+            <div className="whitespace-pre-wrap break-words text-xs text-text-secondary line-clamp-3">{queuedMessage}</div>
+          </button>
+          <button
+            onClick={() => activeSessionId && setQueuedMessage(null, activeSessionId)}
+            className="flex-shrink-0 p-0.5 text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+            title="Cancel queued message"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
       {/* Image preview strip */}
       {images.length > 0 && (
         <div className="flex gap-1.5 mb-1.5 flex-wrap">
@@ -638,13 +720,32 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
         />
 
         {isRunning ? (
-          <button
-            onClick={interrupt}
-            className="flex-shrink-0 text-warning hover:text-warning/80 transition-colors duration-fast p-1"
-            title="Interrupt (Esc)"
-          >
-            <Square size={14} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={interrupt}
+              className="flex-shrink-0 text-warning hover:text-warning/80 transition-colors duration-fast p-1"
+              title="Interrupt (Esc)"
+            >
+              <Square size={14} />
+            </button>
+            {/* Tap = steer now (lands at the next tool boundary), long-press =
+                queue until the whole turn ends. */}
+            <button
+              onClick={() => {
+                if (longPressFired.current) { longPressFired.current = false; return }
+                handleSend()
+              }}
+              onPointerDown={startLongPress}
+              onPointerUp={cancelLongPress}
+              onPointerLeave={cancelLongPress}
+              onContextMenu={(e) => e.preventDefault()}
+              disabled={!hasContent && images.length === 0}
+              className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
+              title="Send now — steers mid-turn. Hold (or Ctrl+Enter) to queue until the turn ends."
+            >
+              <Send size={14} />
+            </button>
+          </div>
         ) : (
           <div className="flex items-center gap-1">
             <button

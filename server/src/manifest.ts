@@ -32,6 +32,9 @@ export interface ManifestEntry {
   /** Per-session model pin — survives restart so a pinned session resumes on
    *  its own model, not the hub-wide one. */
   modelOverride?: string
+  /** A prompt queued for turn-end that hadn't flushed yet. Surviving a restart
+   *  mid-turn is the reason the queue lives hub-side at all. */
+  queuedMessage?: string
 }
 
 /** Write the manifest synchronously and atomically.
@@ -66,6 +69,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
       ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),
       ...(session.modelOverride ? { modelOverride: session.modelOverride } : {}),
+      ...(session.queuedMessage ? { queuedMessage: session.queuedMessage } : {}),
     })
   }
   try {

@@ -1816,6 +1816,7 @@ httpServer.listen(port, host, () => {
           needsAttention: entry.needsAttention,
           restoreMessageLogLength: entry.messageLogLength,
           modelOverride: entry.modelOverride,
+          queuedMessage: entry.queuedMessage,
           // Idle sessions restore straight into hibernation — no subprocess
           // until their first message (a restart used to thunder-herd 40+
           // claude spawns ≈ 12GB RSS). Mid-turn sessions (wasRunning → the
@@ -1839,6 +1840,10 @@ httpServer.listen(port, host, () => {
           }, 1_000)
           log(`  Resumed + continued: ${session.id} (claude: ${entry.claudeSessionId})`)
         } else {
+          // A queue restored onto an idle session has no turn left to wait for
+          // — deliver it now (also wakes a hibernated session, as any inbound
+          // message would). Mid-turn sessions flush at the end of the nudged turn.
+          if (entry.queuedMessage) setTimeout(() => session.flushIfIdle(), 1_000)
           log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
         }
       } catch (err) {
