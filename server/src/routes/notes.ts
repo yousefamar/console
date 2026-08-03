@@ -14,13 +14,81 @@ function wantsBinary(req: IncomingMessage): boolean {
   return (req.url ?? '').includes('binary=1')
 }
 
+/** Split `notes/foo.md#Some Heading` into path + anchor. Only the LAST `#`
+ *  splits, and a `#` in position 0 of the basename isn't an anchor. */
+export function splitAnchor(raw: string): { path: string; anchor?: string } {
+  const i = raw.lastIndexOf('#')
+  if (i <= 0) return { path: raw }
+  const anchor = raw.slice(i + 1).trim()
+  if (!anchor) return { path: raw.slice(0, i) }
+  return { path: raw.slice(0, i), anchor }
+}
+
+export interface NoteOpenBridge {
+  /** Push an open-file request to every subscribed SPA client. */
+  broadcast: (data: { path: string; anchor?: string }) => void
+  /** How many SPA clients are listening — 0 means nobody can act on it. */
+  clientCount: () => number
+}
+
 export function handleNoteRoutes(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
   noteStore: NoteStore,
   readBody: (req: IncomingMessage) => Promise<string>,
+  openBridge?: NoteOpenBridge,
 ): boolean {
+  // Tell the running SPA to switch to the Notes pane and open a file. The hub
+  // is a relay only — it holds no UI state, so with no connected client this
+  // is a 409, never a silent success (the caller must know it didn't land).
+  if (path === '/notes/open' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const parsed = JSON.parse(body || '{}') as { path?: string; anchor?: string; create?: boolean }
+      const raw = (parsed.path ?? '').trim()
+      if (!raw) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'path is required' }))
+        return
+      }
+      const split = splitAnchor(raw)
+      const filePath = split.path
+      const anchor = parsed.anchor ?? split.anchor
+
+      let created = false
+      try {
+        await noteStore.read(filePath)
+      } catch {
+        if (!parsed.create) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: `No such note: ${filePath}. Pass create:true to create it.` }))
+          return
+        }
+        // Seed a heading so a created note isn't a blank file; if an anchor was
+        // asked for, that heading IS the anchor so the scroll target exists.
+        const title = filePath.split('/').pop()!.replace(/\.md$/, '')
+        await noteStore.write(filePath, anchor ? `# ${title}\n\n## ${anchor}\n\n` : `# ${title}\n\n`)
+        created = true
+      }
+
+      if (!openBridge || openBridge.clientCount() === 0) {
+        res.writeHead(409, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          error: 'No Console client connected — open Console in a browser or the app first.',
+          path: filePath, created,
+        }))
+        return
+      }
+      openBridge.broadcast({ path: filePath, ...(anchor ? { anchor } : {}) })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, path: filePath, ...(anchor ? { anchor } : {}), created, clients: openBridge.clientCount() }))
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
   if (path === '/notes' && req.method === 'GET') {
     // `?since=<ms>` — changed-files listing + deletion tombstones, the cheap
     // offline-client polling primitive. Plain form stays the full listing.
