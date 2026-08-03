@@ -374,7 +374,8 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
     }
     broadcast(ctx.clients, msg)
     // Save manifest on any session state change (debounced)
-    if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result') {
+    if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result'
+      || msg.type === 'session_queued') {
       saveManifest(ctx.sessions)
     }
   })
@@ -765,6 +766,25 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       session.clearAttention() // emits session_attention(null) → broadcast via hub_message
       ctx.clearAttentionPush?.(session.id)
       saveManifest(sessions)
+      break
+    }
+
+    // Queue for turn-end (append) / edit-or-cancel the queued text. Both emit
+    // session_queued → broadcast + saveManifest via the hub_message listener.
+    case 'queue_message': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      session.queueMessage(msg.content)
+      break
+    }
+
+    case 'set_queued_message': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) return
+      session.setQueuedMessage(msg.content)
       break
     }
 

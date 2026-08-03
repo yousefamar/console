@@ -585,6 +585,58 @@ describe('markSessionRead', () => {
   })
 })
 
+describe('queued messages', () => {
+  function seedRunning(ws: MockWebSocket) {
+    useAgentStore.setState({
+      sessions: [{
+        id: 'sess_q', status: 'running', createdAt: 1, prompt: '', totalCost: 0,
+        totalTokens: { input: 0, output: 0 }, contextWindow: 200_000, contextUsed: 0,
+        messageLogLength: 0, lastReadIndex: 0,
+      }],
+      activeSessionId: 'sess_q',
+    })
+    return ws
+  }
+
+  it('sends queue_message and optimistically appends to the existing buffer', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = seedRunning(MockWebSocket.latest()!)
+
+    useAgentStore.getState().queueMessage('first')
+    useAgentStore.getState().queueMessage('second')
+
+    const sent = ws.sentMessages.map((m) => JSON.parse(m)).filter((m) => m.type === 'queue_message')
+    expect(sent.map((m) => m.content)).toEqual(['first', 'second'])
+    expect(useAgentStore.getState().sessions[0]!.queuedMessage).toBe('first\n\nsecond')
+  })
+
+  it('setQueuedMessage(null) clears it', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = seedRunning(MockWebSocket.latest()!)
+
+    useAgentStore.getState().queueMessage('draft')
+    useAgentStore.getState().setQueuedMessage(null)
+
+    expect(useAgentStore.getState().sessions[0]!.queuedMessage).toBeNull()
+    const sent = ws.sentMessages.map((m) => JSON.parse(m)).find((m) => m.type === 'set_queued_message')
+    expect(sent).toEqual({ type: 'set_queued_message', sessionId: 'sess_q', content: null })
+  })
+
+  it('session_queued from the hub is authoritative (flush clears the chip)', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = seedRunning(MockWebSocket.latest()!)
+
+    useAgentStore.getState().queueMessage('pending')
+    ws.receiveMessage({ type: 'session_queued', sessionId: 'sess_q', queuedMessage: null })
+    await flush()
+
+    expect(useAgentStore.getState().sessions[0]!.queuedMessage).toBeNull()
+  })
+})
+
 describe('resumeSession', () => {
   it('sends resume_session message with claudeSessionId, prompt, and cwd', async () => {
     useAgentStore.getState().connect()

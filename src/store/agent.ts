@@ -112,6 +112,9 @@ export interface SessionInfo {
   /** Set when the session emitted `@amar` (wants Yousef's eyes). Sticky red
    *  marker in the sidebar; cleared on open / mark-read. */
   needsAttention?: { ts: number; snippet: string } | null
+  /** A prompt held hub-side until the current turn FULLY ends (Ctrl+Enter /
+   *  long-press send). Editable until it flushes. */
+  queuedMessage?: string | null
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
@@ -292,6 +295,11 @@ interface AgentState {
   disconnect: () => void
   createSession: (prompt: string, cwd?: string, images?: Array<{ media_type: string; data: string }>, name?: string) => void
   sendMessage: (content: string, images?: Array<{ media_type: string; data: string }>) => void
+  /** Queue a prompt for delivery when the CURRENT TURN FULLY ENDS (not the next
+   *  tool boundary — that's steering). Appends to any existing queued text. */
+  queueMessage: (content: string, sessionId?: string) => void
+  /** Replace (edit) or clear (null) a session's queued prompt. */
+  setQueuedMessage: (content: string | null, sessionId?: string) => void
   approveTool: (requestId: string, modifiedInput?: Record<string, unknown>) => void
   denyTool: (requestId: string, reason?: string) => void
   autoApproveTool: (toolName: string) => void
@@ -525,6 +533,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       ...(imagePreviews?.length ? { images: imagePreviews } : {}),
     })
     updateSession(sessionId, { status: 'running' })
+  },
+
+  queueMessage: (content, sessionId) => {
+    const id = sessionId ?? get().activeSessionId
+    if (!id || !content.trim()) return
+    sendWs({ type: 'queue_message', sessionId: id, content })
+    // Optimistic — the hub echoes session_queued with the authoritative text.
+    const existing = get().sessions.find((s) => s.id === id)?.queuedMessage
+    updateSession(id, { queuedMessage: existing ? `${existing}\n\n${content.trim()}` : content.trim() })
+  },
+
+  setQueuedMessage: (content, sessionId) => {
+    const id = sessionId ?? get().activeSessionId
+    if (!id) return
+    const text = content?.trim() || null
+    sendWs({ type: 'set_queued_message', sessionId: id, content: text })
+    updateSession(id, { queuedMessage: text })
   },
 
   approveTool: (requestId, modifiedInput) => {
@@ -1586,6 +1611,11 @@ function handleHubMessage(msg: Record<string, unknown>) {
           })
         }
       }
+      break
+    }
+
+    case 'session_queued': {
+      updateSession(msg.sessionId as string, { queuedMessage: msg.queuedMessage as string | null })
       break
     }
 
