@@ -14,6 +14,7 @@ export async function notes(verb: string | undefined, args: string[], flags: Glo
     case 'mkdir': return notesMkdir(args, flags)
     case 'search': return notesSearch(args, flags)
     case 'daily': return notesDaily(args, flags)
+    case 'open': return notesOpen(args, flags)
     default:
       exitWithError('USAGE', `Unknown notes command: ${verb}. Run 'con help notes'.`, flags)
   }
@@ -153,6 +154,42 @@ async function notesSearch(args: string[], flags: GlobalFlags): Promise<void> {
 
   results.sort((a, b) => b.score - a.score)
   output(results.map(({ path, name }) => ({ path, name })), flags)
+}
+
+/**
+ * Make the RUNNING Console SPA switch to the Notes pane and open a file.
+ * Purely a remote-control verb — it needs a live client, so a missing one is
+ * a hard error (NO_CLIENT), never a silent success.
+ */
+async function notesOpen(args: string[], flags: GlobalFlags): Promise<void> {
+  const target = args[0]
+  if (!target) exitWithError('USAGE', 'Usage: con notes open <path>[#Heading] [--create]', flags)
+
+  const opts = parseFlags(args.slice(1))
+  const body: { path: string; create?: boolean; anchor?: string } = { path: target }
+  if (opts.create) body.create = true
+  if (opts.anchor) body.anchor = String(opts.anchor)
+
+  if (flags.dryRun) {
+    info(`Would open ${target} in the Console Notes pane`)
+    return
+  }
+
+  try {
+    const data = await hubFetch<{ ok: true; path: string; anchor?: string; created: boolean; clients: number }>(
+      '/notes/open', { method: 'POST', body },
+    )
+    output(data, flags)
+  } catch (err) {
+    const status = (err as { status?: number }).status
+    if (status === 409) {
+      exitWithError('NO_CLIENT', 'No Console client connected — open Console in a browser or the app first.', flags)
+    }
+    if (status === 404) {
+      exitWithError('NOT_FOUND', `No such note: ${target}. Pass --create to create it.`, flags)
+    }
+    throw err
+  }
 }
 
 async function notesDaily(args: string[], flags: GlobalFlags): Promise<void> {

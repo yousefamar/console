@@ -135,6 +135,7 @@ Commands:
   mkdir         Create a directory
   search        Search notes
   daily         Read or append to daily note
+  open          Open a note in the running Console SPA (remote control)
 
 Examples:
   con notes list
@@ -142,6 +143,9 @@ Examples:
   con notes write scratch/new.md --content "# New Note"
   con notes search "meeting" --mode content
   con notes daily --content "- Task done"
+  con notes open projects/astera/index.md
+  con notes open "log/2026-08-03.md#Decisions"     # scroll to a heading
+  con notes open scratch/idea.md --create          # create if missing
 `.trim(),
 
   feeds: `

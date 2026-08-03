@@ -121,6 +121,13 @@ export const COMMANDS: CommandDef[] = [
     flags: { mode: { type: 'string', description: 'Search mode: filename or content', default: 'filename' } } },
   { name: 'notes daily', description: 'Read or append to daily note', safety: 'write',
     flags: { content: { type: 'string', description: 'Content to append (omit to read)' } } },
+  { name: 'notes open', description: 'Open a note in the running Console SPA (switches to the Notes pane)', safety: 'write',
+    args: [{ name: 'path', required: true, description: 'File path, optionally suffixed #Heading' }],
+    flags: {
+      create: { type: 'boolean', description: 'Create the note if it does not exist (default: error)' },
+      anchor: { type: 'string', description: 'Heading to scroll to (alternative to path#Heading)' },
+    },
+    examples: ['con notes open projects/astera/index.md', 'con notes open "log/foo.md#Notes"', 'con notes open scratch/new.md --create'] },
 
   // feeds
   { name: 'feeds list', description: 'List feed subscriptions', safety: 'read',

@@ -1279,7 +1279,10 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   }, readBody)) return
   if (path.startsWith('/bookmarks') && handleBookmarkRoutes(req, res, path, bookmarkStore, readBody)) return
   if (path.startsWith('/feeds') && handleFeedRoutes(req, res, path, url, feedStore, readBody)) return
-  if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody)) return
+  if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody, {
+    broadcast: (data) => syncBus.broadcast('notes', 'open_file', data),
+    clientCount: () => syncBus.subscriberCount('notes'),
+  })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
