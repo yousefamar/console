@@ -11,6 +11,13 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Calendar visibility finally sticks: the shared calendar.visibleIds hub pref
+  stores BARE calendarIds (the SPA's format), but the APK read/wrote
+  accountEmail:calendarId compound keys — desktop-written entries never
+  matched on the phone (calendars kept falling hidden) and phone toggles
+  polluted the pref with compound keys the desktop ignored. All three sites
+  (event filter, sidebar sheet rows, toggle) now use bare calendarIds, so one
+  allow-list round-trips cleanly across devices.
 - Approval/question dialogs answered on ANOTHER client (PC) lingered in the
   mobile list: v75's WS generation guard orphans the old socket's onClosed on
   a background stop, so the "clear approvals on disconnect" path stopped

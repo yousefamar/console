@@ -114,7 +114,10 @@ private fun CalendarRowItem(
     onToggle: (String) -> Unit,
     onSetDefault: (String?) -> Unit,
 ) {
-    val key = cal.id // accountEmail:calendarId
+    // Visibility keys are BARE calendarIds — the SPA's calendar.visibleIds
+    // format (unique across accounts in practice; compound keys never matched
+    // desktop-written prefs).
+    val key = cal.calendarId
     val visible = key !in hidden
     val writable = cal.accessRole == "owner" || cal.accessRole == "writer"
     val isImport = cal.calendarId.contains("@import.calendar.google.com")

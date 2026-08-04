@@ -101,18 +101,23 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     var locationPick by remember { mutableStateOf<Pair<CalEventRow?, Long>?>(null) }
 
     val calByKey = remember(calendars) { calendars.associateBy { it.id } }
+    // Visibility keys are BARE calendarIds — the SPA's format for the shared
+    // calendar.visibleIds hub pref. The APK used accountEmail:calendarId
+    // compound keys, so SPA-written entries never matched (all calendars fell
+    // hidden on the phone) and phone-written entries got wiped by the next
+    // desktop toggle: the "constantly re-showing my calendars" fight.
     // First-seen overlays default visible even against a saved allow-list.
     androidx.compose.runtime.LaunchedEffect(calendars, visibleIds) {
         val overlayIds = calendars.filter {
             it.accessRole == "reader" && (it.calendarId == "meetup" || it.calendarId == "outdoorlads")
-        }.map { it.id }.toSet()
+        }.map { it.calendarId }.toSet()
         if (overlayIds.isNotEmpty()) repo.ensureOverlaysVisible(overlayIds)
     }
     // null visibleIds → all visible (first load). Otherwise it's the allow-list.
-    fun isVisible(e: CalEventRow) = visibleIds?.contains("${e.accountEmail}:${e.calendarId}") ?: true
+    fun isVisible(e: CalEventRow) = visibleIds?.contains(e.calendarId) ?: true
     val hiddenCals = remember(visibleIds, calendars) {
         val vis = visibleIds ?: return@remember emptySet()
-        calendars.map { it.id }.filter { it !in vis }.toSet()
+        calendars.map { it.calendarId }.filter { it !in vis }.toSet()
     }
 
     // Fetch range covers the whole visible view (month grid spans 6 weeks).
@@ -339,7 +344,8 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
             calendars = calendars, accounts = accounts, hidden = hiddenCals, defaultCalendarId = defaultCalId,
             onToggle = { calKey ->
                 // Toggle within the visible allow-list (all-visible when null).
-                val current = visibleIds ?: calendars.map { it.id }.toSet()
+                // Keys are bare calendarIds (SPA pref format).
+                val current = visibleIds ?: calendars.map { it.calendarId }.toSet()
                 repo.setVisibleIds(if (calKey in current) current - calKey else current + calKey)
             },
             onSetDefault = { calId -> repo.setDefaultCalendar(calId) },
