@@ -16,9 +16,14 @@ export function LiveStatusChip({ path }: Props) {
   const savedContent = useNotesStore((s) => s.openFiles[path]?.savedContent)
   const prevSavedRef = useRef<string | undefined>(undefined)
 
-  // Initial probe on mount / path change.
+  // Initial probe on mount / path change. But if a build is already in flight
+  // (we just published this post and handlePublish set 'building' before
+  // opening it), leave it alone — the background poller owns the resolution.
+  // Probing now would compare the not-yet-rebuilt live page against the fresh
+  // local mtime and wrongly flip it to 'stale'.
   useEffect(() => {
     prevSavedRef.current = undefined
+    if (useBlogStore.getState().liveStatusByPath[path] === 'building') return
     void useBlogStore.getState().checkLiveStatus(path)
   }, [path])
 

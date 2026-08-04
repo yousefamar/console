@@ -25,6 +25,9 @@ interface PublishResult {
   newPath?: string
   rebuildOk?: boolean
   rebuildBody?: string
+  synced?: boolean
+  syncTimedOut?: boolean
+  syncWaitedMs?: number
   error?: string
 }
 
