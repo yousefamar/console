@@ -46,10 +46,12 @@ async function handleOpen(data: unknown): Promise<void> {
   await useNotesStore.getState().openFile(path)
   if (useNotesStore.getState().activeFilePath !== path) return
 
-  // The editor mounts on the next frame(s) after the pane switch, so the view
-  // isn't in the store yet. Poll briefly rather than guessing a delay.
-  const view = await waitForEditorView()
+  // The editor mounts a frame or two after the pane switch / tab change, so the
+  // view isn't in the store yet. Poll for the view belonging to THIS path.
+  const view = await waitForEditorView(path)
   if (!view) return
+
+  await refreshFromDisk(path, view)
   view.focus()
 
   if (anchor) {
@@ -61,14 +63,53 @@ async function handleOpen(data: unknown): Promise<void> {
   }
 }
 
-function waitForEditorView(timeoutMs = 2000): Promise<any | null> {
+/**
+ * An already-open tab holds the content read when it was opened. Whoever asked
+ * for the remote-open usually JUST wrote the file, so without this the user is
+ * shown a stale buffer (and an anchor added by that write jumps nowhere).
+ *
+ * Skipped when the tab is dirty — never clobber unsaved edits.
+ */
+async function refreshFromDisk(path: string, view: any): Promise<void> {
+  const notes = useNotesStore.getState()
+  if (notes.isFileDirty(path)) return
+  let fresh: string
+  try {
+    fresh = await notes.adapter!.readFile(path)
+  } catch {
+    return
+  }
+  if (fresh === view.state.doc.toString()) return
+  // The editor is keyed on the path, so it does NOT remount for a content
+  // change — the new text has to be dispatched into the live view too.
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fresh } })
+  // Set BOTH content and savedContent — the disk version is by definition the
+  // saved one, so the tab must not come back marked dirty.
+  useNotesStore.setState((s) => {
+    const file = s.openFiles[path]
+    if (!file) return s
+    return { openFiles: { ...s.openFiles, [path]: { ...file, content: fresh, savedContent: fresh } } }
+  })
+}
+
+/**
+ * Wait for the CM6 view of `path` specifically. The store's `editorView` slot is
+ * global and, while switching between two already-open tabs, still holds the
+ * PREVIOUS file's view for a frame — dispatching an anchor position into that
+ * would scroll (or land out of range in) the wrong document.
+ *
+ * setTimeout, not requestAnimationFrame: a backgrounded browser tab pauses rAF
+ * entirely, and remote-open exists precisely to drive a Console tab the user
+ * isn't looking at.
+ */
+function waitForEditorView(path: string, timeoutMs = 3000): Promise<any | null> {
   return new Promise((resolve) => {
     const started = Date.now()
     const tick = () => {
-      const view = useNotesStore.getState().editorView
-      if (view) return resolve(view)
+      const { editorView, editorViewPath } = useNotesStore.getState()
+      if (editorView && editorViewPath === path) return resolve(editorView)
       if (Date.now() - started > timeoutMs) return resolve(null)
-      requestAnimationFrame(tick)
+      setTimeout(tick, 30)
     }
     tick()
   })
