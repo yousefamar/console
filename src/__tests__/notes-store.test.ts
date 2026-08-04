@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useNotesStore, buildFileTree, slugify } from '@/store/notes'
+import { initPrefs, getPref } from '@/prefs'
 import type { VaultFile } from '@/notes/vault-adapter'
 
 // ---------------------------------------------------------------------------
@@ -289,6 +290,50 @@ describe('notes store', () => {
     expect(mockAdapter.deleteFile).toHaveBeenCalledWith('a.md')
     expect(useNotesStore.getState().openFiles['a.md']).toBeUndefined()
     expect(useNotesStore.getState().activeFilePath).toBeNull()
+  })
+
+  // Tab persistence: the open-tab set is user work-in-progress context, so it
+  // lives in the hub pref `notesOpenTabs` (localStorage is only a mirror).
+  it('persists the tab set to the hub pref, and restores it', async () => {
+    // initPrefs() with no reachable hub → empty cache, but loaded, so writes go up.
+    await initPrefs()
+
+    const mockAdapter = {
+      readFile: vi.fn().mockResolvedValue('body'),
+      listFiles: vi.fn().mockResolvedValue([]),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      createDirectory: vi.fn(),
+      renameFile: vi.fn(),
+      exists: vi.fn(),
+    }
+    useNotesStore.setState({ adapter: mockAdapter as any, vaultConnected: true })
+
+    await useNotesStore.getState().openFile('a.md')
+    await useNotesStore.getState().openFile('b.md')
+
+    expect(getPref('notesOpenTabs', null)).toEqual({ paths: ['a.md', 'b.md'], active: 'b.md' })
+
+    // Simulate a fresh boot: tabs gone from memory, pref intact.
+    useNotesStore.setState({ openFiles: {}, activeFilePath: null })
+    await useNotesStore.getState().restoreTabs()
+
+    expect(Object.keys(useNotesStore.getState().openFiles)).toEqual(['a.md', 'b.md'])
+    expect(useNotesStore.getState().activeFilePath).toBe('b.md')
+  })
+
+  it('closing a tab narrows the persisted set', async () => {
+    await initPrefs()
+    useNotesStore.setState({
+      openFiles: {
+        'a.md': { path: 'a.md', content: '', savedContent: '' },
+        'b.md': { path: 'b.md', content: '', savedContent: '' },
+      },
+      activeFilePath: 'a.md',
+    })
+
+    useNotesStore.getState().closeFile('a.md')
+    expect(getPref('notesOpenTabs', null)).toEqual({ paths: ['b.md'], active: 'b.md' })
   })
 
   it('renameFile updates open tab path', async () => {

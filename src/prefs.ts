@@ -10,7 +10,7 @@
 // This replaces scattered `localStorage.getItem('console_dnd')` etc. for
 // user-controlled state that should follow the user across devices.
 // localStorage is still appropriate for device-specific things like the
-// hub URL override, notes tab state, or one-shot "have we prompted?" flags.
+// hub URL override or one-shot "have we prompted?" flags.
 
 import { hubFetch } from '@/hub'
 
@@ -19,6 +19,8 @@ export type PrefValue = string | number | boolean | null | PrefValue[] | { [k: s
 let cache: Record<string, PrefValue> = {}
 let loaded = false
 const listeners = new Map<string, Set<(value: PrefValue | undefined) => void>>()
+let markReady: () => void
+const readyPromise = new Promise<void>((resolve) => { markReady = resolve })
 
 export async function initPrefs(): Promise<void> {
   try {
@@ -29,10 +31,24 @@ export async function initPrefs(): Promise<void> {
     cache = {}
   }
   loaded = true
+  markReady()
 }
 
 export function isPrefsLoaded(): boolean {
   return loaded
+}
+
+/**
+ * Resolves once `initPrefs()` has settled (success OR hub-unreachable).
+ *
+ * For consumers that must READ a hub pref before doing something irreversible
+ * with it — restoring the Notes tab set is the case that forced this: acting on
+ * the not-yet-loaded cache means falling back to a default, and the next write
+ * then persists that default over the real value. Callers should race a timeout
+ * in case `initPrefs()` was never invoked (tests, isolated store use).
+ */
+export function prefsReady(): Promise<void> {
+  return readyPromise
 }
 
 export function getPref<T extends PrefValue>(key: string, fallback: T): T {
