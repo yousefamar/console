@@ -8,7 +8,7 @@ import {
   retrieveHandle,
 } from '@/notes/vault-adapter'
 import { NotesSearchIndex, type FilenameResult, type SearchResult } from '@/notes/search-index'
-import { getPref, setPref } from '@/prefs'
+import { getPref, setPref, prefsReady, isPrefsLoaded, type PrefValue } from '@/prefs'
 import { hubBus } from '@/sync-bus'
 import { hubFetch } from '@/hub'
 
@@ -192,6 +192,7 @@ interface NotesState {
   connectVault: () => Promise<void>
   reconnectVault: () => Promise<void>
   loadVaultFiles: () => Promise<void>
+  restoreTabs: () => Promise<void>
   openFile: (path: string) => Promise<void>
   closeFile: (path: string, force?: boolean) => boolean
   saveFile: (path?: string) => Promise<void>
@@ -226,33 +227,68 @@ interface NotesState {
 }
 
 // ---------------------------------------------------------------------------
-// Tab persistence (localStorage)
+// Tab persistence
+//
+// The open-tab set is real user state — losing it is losing work-in-progress
+// context — so the hub pref `notesOpenTabs` is authoritative and localStorage
+// is only an offline mirror (read when the hub is unreachable at boot).
+//
+// Restoring MUST wait for `prefsReady()`: reading the pref cache before
+// `initPrefs()` resolves yields the empty default, and the first subsequent
+// persistTabs() would then write that empty set back over the real one.
 // ---------------------------------------------------------------------------
 
 const TABS_STORAGE_KEY = 'notesOpenTabs'
+const TABS_PREF = 'notesOpenTabs'
+
+type PersistedTabs = { paths: string[]; active: string | null }
+
+// Set while restoreTabs() is re-opening the saved paths one at a time. Each
+// openFile() would otherwise persist the partial set, so a reload landing
+// mid-restore would truncate the saved tabs to however many had re-opened.
+let restoring = false
 
 function persistTabs(openFiles: Record<string, OpenFile>, activeFilePath: string | null) {
+  if (restoring) return
+  const data: PersistedTabs = {
+    paths: Object.keys(openFiles),
+    active: activeFilePath,
+  }
+  // Never push up while the pref cache is unloaded: the hub may hold a full tab
+  // set we simply haven't read yet, and this write would destroy it. The local
+  // mirror is still safe to update, and the next write after prefs land syncs.
+  if (isPrefsLoaded()) setPref(TABS_PREF, data)
   try {
-    const data = {
-      paths: Object.keys(openFiles),
-      active: activeFilePath,
-    }
     localStorage.setItem(TABS_STORAGE_KEY, JSON.stringify(data))
   } catch {}
 }
 
-function loadPersistedTabs(): { paths: string[]; active: string | null } {
+function coerceTabs(raw: unknown): PersistedTabs {
+  const data = (raw ?? {}) as { paths?: unknown; active?: unknown }
+  return {
+    paths: Array.isArray(data.paths) ? data.paths.filter((p): p is string => typeof p === 'string') : [],
+    active: typeof data.active === 'string' ? data.active : null,
+  }
+}
+
+function localTabs(): PersistedTabs {
   try {
     const raw = localStorage.getItem(TABS_STORAGE_KEY)
-    if (!raw) return { paths: [], active: null }
-    const data = JSON.parse(raw)
-    return {
-      paths: Array.isArray(data.paths) ? data.paths : [],
-      active: data.active ?? null,
-    }
+    return raw ? coerceTabs(JSON.parse(raw)) : { paths: [], active: null }
   } catch {
     return { paths: [], active: null }
   }
+}
+
+async function loadPersistedTabs(): Promise<PersistedTabs> {
+  // A hub that never answers must not block the restore forever, and a store
+  // used outside the app (tests) never sees initPrefs() at all.
+  await Promise.race([prefsReady(), new Promise((r) => setTimeout(r, 4000))])
+  const fromHub = coerceTabs(getPref<PrefValue>(TABS_PREF, null))
+  if (fromHub.paths.length > 0) return fromHub
+  // Hub silent or empty: fall back to this device's last-known set. If it has
+  // anything, it gets pushed up on the next persistTabs().
+  return localTabs()
 }
 
 export const useNotesStore = create<NotesState>((set, get) => ({
@@ -322,6 +358,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
         files,
         fileTree: buildFileTree(files),
       })
+      // This path doesn't go through loadVaultFiles(), so it needs its own
+      // restore — without it, a hub-adapter boot came up with zero tabs.
+      await get().restoreTabs()
       // Index in background
       const idx = get().searchIndex
       idx.buildIndex(files, (p) => hubAdapter.readFile(p))
@@ -345,16 +384,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
         : new Set(tree.filter((n) => n.isDir).map((n) => n.path))
       set({ files, fileTree: tree, loading: false, expandedDirs: expanded })
 
-      // Restore persisted tabs
-      const saved = loadPersistedTabs()
-      if (saved.paths.length > 0) {
-        for (const path of saved.paths) {
-          await get().openFile(path)
-        }
-        if (saved.active && get().openFiles[saved.active]) {
-          set({ activeFilePath: saved.active })
-        }
-      }
+      await get().restoreTabs()
 
       // Build search index in background
       const idx = get().searchIndex
@@ -363,6 +393,24 @@ export const useNotesStore = create<NotesState>((set, get) => ({
       console.error('Failed to load vault files:', err)
       set({ loading: false })
     }
+  },
+
+  restoreTabs: async () => {
+    const saved = await loadPersistedTabs()
+    if (saved.paths.length === 0) return
+    restoring = true
+    try {
+      // Re-opening is idempotent (openFile short-circuits on an already-open
+      // path), so a second restore — e.g. a reconnect — is harmless.
+      for (const path of saved.paths) await get().openFile(path)
+    } finally {
+      restoring = false
+    }
+    const active = saved.active && get().openFiles[saved.active] ? saved.active : get().activeFilePath
+    set({ activeFilePath: active })
+    // One write at the end, reflecting whatever actually re-opened (a deleted
+    // file drops out here rather than lingering in the pref forever).
+    persistTabs(get().openFiles, active)
   },
 
   openFile: async (path) => {
