@@ -111,13 +111,20 @@ export const NotesEditor = memo(function NotesEditor() {
       ui.pushToast({ kind: 'error', message: `Publish failed: ${r.error}` })
       return
     }
-    // `rebuildOk` only means the build was QUEUED (3s debounce + Syncthing +
-    // Eleventy run) — verify the page actually changed before claiming live.
+    // The hub already waited for Syncthing to carry the file to the VPS before
+    // firing the rebuild, so `rebuildOk` means a build that INCLUDES the post
+    // is queued (3s debounce + Eleventy run) — verify it's actually live below.
+    const syncNote = r.syncTimedOut ? ' (sync slow — verifying)' : ''
     ui.pushToast({
       kind: r.rebuildOk ? 'info' : 'error',
-      message: r.rebuildOk ? `Published — build queued (${r.newPath})` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
+      message: r.rebuildOk ? `Published — build queued (${r.newPath})${syncNote}` : `Moved but rebuild failed: ${r.rebuildBody ?? '?'}`,
     })
     notes.closeFile(path, true)
+    // Mark 'building' BEFORE opening the post — openFile mounts LiveStatusChip,
+    // whose mount probe would otherwise compare the not-yet-rebuilt live page
+    // against the fresh local mtime and wrongly flip it to 'stale'. The chip
+    // sees 'building' on mount and leaves it to the background poller below.
+    if (r.rebuildOk && r.newPath) blog.setLiveStatus(r.newPath, 'building')
     // Rescan the vault (draft file was moved to log/) then open the published
     // post, and refresh every blog list so the post shows as published:
     // it leaves Drafts, appears in Recent, and updates its project's devlog.
@@ -132,7 +139,6 @@ export const NotesEditor = memo(function NotesEditor() {
       const newPath = r.newPath
       const url = permalinkForLogPath(newPath)
       if (url) {
-        blog.setLiveStatus(newPath, 'building')
         void (async () => {
           const baseline = await blog.fetchPageEtag(url)
           const live = await blog.waitForSiteUpdate(url, baseline)

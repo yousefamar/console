@@ -24,6 +24,10 @@ export interface PublishResult {
   newPath?: string
   rebuildOk?: boolean
   rebuildBody?: string
+  /** Syncthing propagation outcome before the rebuild fired (server-side). */
+  synced?: boolean
+  syncTimedOut?: boolean
+  syncWaitedMs?: number
   error?: string
 }
 
@@ -214,10 +218,12 @@ export const useBlogStore = create<BlogState>((set) => ({
 
   publish: async (path: string): Promise<PublishResult> => {
     try {
+      // Server waits for Syncthing to propagate to the VPS (≤60s) before the
+      // rebuild (≤15s), so allow generous headroom over that worst case.
       const result = await hubFetch<PublishResult>('/blog/publish', {
         method: 'POST',
         body: JSON.stringify({ path }),
-        timeoutMs: 30000,
+        timeoutMs: 90000,
       })
       return result
     } catch (e) {
@@ -230,7 +236,7 @@ export const useBlogStore = create<BlogState>((set) => ({
       return await hubFetch<PublishResult>('/blog/republish', {
         method: 'POST',
         body: JSON.stringify({ path }),
-        timeoutMs: 30000,
+        timeoutMs: 90000,
       })
     } catch (e) {
       return { ok: false, error: (e as Error).message }

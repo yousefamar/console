@@ -6,7 +6,9 @@
 // - Publish a draft: move to log/<YYYY-MM-DD-HH-mm-ss>.md, stamp frontmatter,
 //   then GET https://yousefamar.com/rebuild
 
+import { join } from 'node:path'
 import { NoteStore } from './notes.js'
+import { waitForVaultSync } from './syncthing.js'
 
 const DRAFTS_DIR = 'scratch/blog-drafts'
 const LOG_DIR = 'log'
@@ -532,6 +534,10 @@ export interface PublishResult {
   newPath?: string
   rebuildOk?: boolean
   rebuildBody?: string
+  /** Syncthing propagation outcome before the rebuild fired. */
+  synced?: boolean
+  syncTimedOut?: boolean
+  syncWaitedMs?: number
   error?: string
 }
 
@@ -564,8 +570,20 @@ export async function publishDraft(store: NoteStore, fromPath: string): Promise<
     return { ok: false, error: `File move failed: ${(e as Error).message}` }
   }
 
+  // Wait for Syncthing to carry the new (and deleted) file to the VPS BEFORE
+  // rebuilding — otherwise Eleventy builds without the post and nothing
+  // re-triggers when it later lands. Degrades gracefully if Syncthing is down.
+  const sync = await waitForVaultSync(join(store.vaultPath, newPath))
   const { rebuildOk, rebuildBody } = await triggerRebuild()
-  return { ok: true, newPath, rebuildOk, rebuildBody }
+  return {
+    ok: true,
+    newPath,
+    rebuildOk,
+    rebuildBody,
+    synced: sync.synced,
+    syncTimedOut: sync.timedOut,
+    syncWaitedMs: sync.waitedMs,
+  }
 }
 
 /** GET the Eleventy rebuild endpoint. Never throws — surfaces status so a
@@ -602,6 +620,17 @@ export async function republishPost(store: NoteStore, path: string): Promise<Pub
   } catch (e) {
     return { ok: false, error: `Could not read ${path}: ${(e as Error).message}` }
   }
+  // The edit was just saved client-side; wait for Syncthing to carry it to the
+  // VPS before rebuilding, same race as first publish.
+  const sync = await waitForVaultSync(join(store.vaultPath, path))
   const { rebuildOk, rebuildBody } = await triggerRebuild()
-  return { ok: true, newPath: path, rebuildOk, rebuildBody }
+  return {
+    ok: true,
+    newPath: path,
+    rebuildOk,
+    rebuildBody,
+    synced: sync.synced,
+    syncTimedOut: sync.timedOut,
+    syncWaitedMs: sync.waitedMs,
+  }
 }
