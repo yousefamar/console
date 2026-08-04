@@ -182,6 +182,11 @@ interface NotesState {
   linkPickerOpen: boolean
   linkPickerContext: { from: number; to: number; selectedText: string; mode: 'wiki' | 'both' } | null
   editorView: any | null  // EditorView — typed as any to avoid importing CM6 in store
+  // Which file `editorView` belongs to. NotesEditorCore is keyed on the path and
+  // remounts per file, so during a switch the slot briefly still holds the OLD
+  // file's view — anyone dispatching positions into it (anchor scroll) must
+  // check this first or they'll act on the wrong document.
+  editorViewPath: string | null
 
   // Actions
   connectVault: () => Promise<void>
@@ -212,7 +217,7 @@ interface NotesState {
   closeNewFileForm: () => void
   openLinkPicker: (ctx: { from: number; to: number; selectedText: string; mode: 'wiki' | 'both' }) => void
   closeLinkPicker: () => void
-  setEditorView: (view: any | null) => void
+  setEditorView: (view: any | null, path?: string | null) => void
   searchFilenames: (query: string) => FilenameResult[]
   searchContent: (query: string) => SearchResult[]
   isFileDirty: (path: string) => boolean
@@ -274,6 +279,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   linkPickerOpen: false,
   linkPickerContext: null,
   editorView: null,
+  editorViewPath: null,
 
   connectVault: async () => {
     try {
@@ -597,7 +603,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
   openLinkPicker: (ctx) => set({ linkPickerOpen: true, linkPickerContext: ctx }),
   closeLinkPicker: () => set({ linkPickerOpen: false, linkPickerContext: null }),
-  setEditorView: (view) => set({ editorView: view }),
+  setEditorView: (view, path = null) => set({ editorView: view, editorViewPath: view ? path : null }),
 
   searchFilenames: (query) => {
     return get().searchIndex.searchFilenames(query)

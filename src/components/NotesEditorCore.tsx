@@ -319,18 +319,20 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       ]),
       EditorView.updateListener.of((() => {
         let pendingContent: string | null = null
-        let rafId = 0
+        let flushTimer: ReturnType<typeof setTimeout> | null = null
         return (update: any) => {
           if (update.docChanged) {
             pendingContent = update.state.doc.toString()
-            if (!rafId) {
-              rafId = requestAnimationFrame(() => {
-                rafId = 0
+            if (!flushTimer) {
+              // setTimeout, not rAF: an occluded/background tab never paints, so
+              // an rAF-only flush would strand typed content out of the store.
+              flushTimer = setTimeout(() => {
+                flushTimer = null
                 if (pendingContent !== null) {
                   useNotesStore.getState().updateFileContent(filePathRef.current, pendingContent)
                   pendingContent = null
                 }
-              })
+              }, 16)
             }
           }
           // Notes → glasses mirror — push on doc or selection change.
@@ -520,22 +522,30 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
     })
 
     // Defer view creation to next frame to ensure DOM is laid out
-    // (prevents coordsAt errors from vim's BlockCursorPlugin measuring before render)
-    const frame = requestAnimationFrame(() => {
-      if (!containerRef.current) return
+    // (prevents coordsAt errors from vim's BlockCursorPlugin measuring before render).
+    // A backgrounded or occluded tab never paints, so rAF alone would leave the
+    // editor unmounted forever — `con notes open` drives exactly such a tab.
+    // Race a timer against the frame; whoever wins mounts.
+    let mounted = false
+    const mount = () => {
+      if (mounted || !containerRef.current) return
+      mounted = true
       const view = new EditorView({
         state: EditorState.create({ doc: content, extensions }),
         parent: containerRef.current,
       })
       viewRef.current = view
-      useNotesStore.getState().setEditorView(view)
+      useNotesStore.getState().setEditorView(view, filePath)
       // If the glasses mirror is already on, push the initial window so the
       // user sees the opening context without waiting for a keystroke.
       if (isMirrorEnabled()) pushMirrorNow()
-    })
+    }
+    const frame = requestAnimationFrame(mount)
+    const timer = setTimeout(mount, 50)
 
     return () => {
       cancelAnimationFrame(frame)
+      clearTimeout(timer)
       useNotesStore.getState().setEditorView(null)
       viewRef.current?.destroy()
       viewRef.current = null
