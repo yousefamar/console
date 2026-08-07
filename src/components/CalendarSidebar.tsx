@@ -148,7 +148,7 @@ export function CalendarSidebar() {
         <button
           onClick={() => {
             const popup = window.open(
-              `${getHubUrl()}/auth/google/start`,
+              `${getHubUrl()}/auth/google/start?add=1`,
               'google-auth',
               'width=500,height=600,menubar=no,toolbar=no',
             )

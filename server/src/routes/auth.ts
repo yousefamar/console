@@ -209,7 +209,13 @@ export function handleAuthRoutes(
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('scope', GOOGLE_SCOPES)
     url.searchParams.set('access_type', 'offline')
-    url.searchParams.set('prompt', 'consent')
+    // `?add=1` — caller is adding an ADDITIONAL account (calendar sidebar), so
+    // force the account chooser. Without `select_account` Google silently
+    // re-consents whichever account the browser is already signed into, which
+    // just re-links the existing account instead of adding the new one.
+    url.searchParams.set('prompt', startUrl.searchParams.get('add') === '1'
+      ? 'select_account consent'
+      : 'consent')
     url.searchParams.set('state', state)
 
     // Redirect the browser to Google's consent page
