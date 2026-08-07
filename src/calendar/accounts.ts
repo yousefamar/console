@@ -33,7 +33,7 @@ export async function addCalendarAccount(popup?: Window | null): Promise<Calenda
 
   if (popup === undefined) {
     popup = window.open(
-      `${hubUrl}/auth/google/start`,
+      `${hubUrl}/auth/google/start?add=1`,
       'google-auth',
       'width=500,height=600,menubar=no,toolbar=no',
     )

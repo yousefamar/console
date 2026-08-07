@@ -295,14 +295,24 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         }
       }
 
-      // Deduplicate: primary account displays first, but set apiAccountEmail to the best owner
+      // Deduplicate: primary account displays first, but set apiAccountEmail to the best owner.
+      // `accessRole` MUST be taken from that best account's row, not the first-seen one —
+      // it describes what the token we're actually going to use can do. A calendar reached
+      // through two accounts (e.g. yousef@dreamlab.bm shared into the gmail account, and
+      // owned by the dreamlab account) otherwise kept gmail's `reader` and every edit gate
+      // stayed shut despite holding an owner token.
       const seenCalIds = new Set<string>()
       for (const account of accounts) {
         const cals = calsByAccount.get(account.email) || []
         for (const cal of cals) {
           if (seenCalIds.has(cal.id)) continue
           seenCalIds.add(cal.id)
-          cal.apiAccountEmail = bestApiAccount.get(cal.id) || cal.accountEmail
+          const apiAccount = bestApiAccount.get(cal.id) || cal.accountEmail
+          cal.apiAccountEmail = apiAccount
+          if (apiAccount !== cal.accountEmail) {
+            const owningRow = calsByAccount.get(apiAccount)?.find((c) => c.id === cal.id)
+            if (owningRow) cal.accessRole = owningRow.accessRole
+          }
           allCalendars.push(cal)
         }
       }
