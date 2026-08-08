@@ -11,6 +11,13 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Agent task lists (SPA TodoPanel parity): the CLI's TaskCreate/TaskUpdate
+  todos — hub-read off ~/.claude/tasks/<csid>/ and pushed as SessionInfo.todos
+  + live session_todos broadcasts — now render natively: a collapsible
+  "Tasks N/M · <current>" strip pinned above the session composer
+  (auto-collapses when complete), and a violet done/total chip per sidebar
+  row while a session is mid-plan (hidden when done). Transient state, SPA
+  semantics mirrored exactly (ui/agents/TodoPanel.kt).
 - Calendar visibility finally sticks: the shared calendar.visibleIds hub pref
   stores BARE calendarIds (the SPA's format), but the APK read/wrote
   accountEmail:calendarId compound keys — desktop-written entries never

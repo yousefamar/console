@@ -153,6 +153,33 @@ class AgentsRepository(
     data class Handoff(val fromSessionId: String, val targetAgentKey: String)
     data class FallbackNotice(val failedModel: String, val model: String)
 
+    /** The CLI's own task list (TaskCreate/TaskUpdate), hub-read off
+     *  ~/.claude/tasks/<csid>/ and pushed as SessionInfo.todos + live
+     *  session_todos broadcasts. Transient (SPA parity — the hub's files are
+     *  the persistence; offline shows nothing rather than stale). */
+    data class TodoItem(
+        val id: String,
+        val subject: String,
+        val description: String?,
+        /** Present-tense label shown while in_progress. */
+        val activeForm: String?,
+        val status: String, // pending | in_progress | completed
+    )
+    private val _todos = MutableStateFlow<Map<String, List<TodoItem>>>(emptyMap())
+    val todos: StateFlow<Map<String, List<TodoItem>>> = _todos
+
+    private fun todosFrom(arr: JsonArray?): List<TodoItem> =
+        arr?.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            TodoItem(
+                id = o["id"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                subject = o["subject"]?.jsonPrimitive?.content ?: "",
+                description = o["description"]?.jsonPrimitive?.content,
+                activeForm = o["activeForm"]?.jsonPrimitive?.content,
+                status = o["status"]?.jsonPrimitive?.content ?: "pending",
+            )
+        } ?: emptyList()
+
     /** Sessions whose REST catch-up has run this connection. Stream messages
      *  for sessions NOT in this set are skipped: the hub replays the last 50
      *  messages per session right after `sessions_list` on every connect, and
@@ -337,6 +364,12 @@ class AgentsRepository(
                 val rows = sessions.mapNotNull { sessionRow(it) }
                 db.agents().upsertSessions(rows)
                 db.agents().deleteAbsent(rows.map { it.id })
+                // SessionInfo.todos is authoritative on every list push.
+                _todos.value = sessions.mapNotNull { s ->
+                    val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val items = todosFrom(s["todos"] as? JsonArray)
+                    if (items.isEmpty()) null else id to items
+                }.toMap()
                 // Catch up transcripts for sessions we lag on (REST — indices
                 // are authoritative); then open the live-append gate.
                 for (row in rows) {
@@ -376,6 +409,12 @@ class AgentsRepository(
             }
             "tasks" -> {
                 _tasks.value = (msg["tasks"] as? JsonArray)?.mapNotNull { runCatching { taskFrom(it.jsonObject) }.getOrNull() } ?: emptyList()
+            }
+            "session_todos" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                val items = todosFrom(msg["todos"] as? JsonArray)
+                _todos.value = if (items.isEmpty()) _todos.value - sessionId
+                else _todos.value + (sessionId to items)
             }
             "session_handoff" -> {
                 _handoff.value = Handoff(
