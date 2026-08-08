@@ -73,6 +73,18 @@ export interface PendingApproval {
   input: Record<string, unknown>
 }
 
+/** One entry in the CLI's task list. Mirrors server/src/agents/todo-store.ts.
+ *  The CLI replaced whole-list TodoWrite with incremental TaskCreate/TaskUpdate,
+ *  so the assembled list comes from the hub reading the CLI's own store — never
+ *  from a tool call's input. */
+export interface TodoItem {
+  id: string
+  subject: string
+  description?: string
+  activeForm?: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 export interface SessionInfo {
   id: string
   claudeSessionId?: string
@@ -115,6 +127,9 @@ export interface SessionInfo {
   /** A prompt held hub-side until the current turn FULLY ends (Ctrl+Enter /
    *  long-press send). Editable until it flushes. */
   queuedMessage?: string | null
+  /** The Claude CLI's own task list (TaskCreate/TaskUpdate), read hub-side off
+   *  ~/.claude/tasks/<claudeSessionId>/. Undefined = none yet. */
+  todos?: TodoItem[]
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
@@ -1616,6 +1631,11 @@ function handleHubMessage(msg: Record<string, unknown>) {
 
     case 'session_queued': {
       updateSession(msg.sessionId as string, { queuedMessage: msg.queuedMessage as string | null })
+      break
+    }
+
+    case 'session_todos': {
+      updateSession(msg.sessionId as string, { todos: msg.todos as TodoItem[] })
       break
     }
 

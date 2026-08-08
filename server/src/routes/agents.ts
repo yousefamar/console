@@ -414,6 +414,11 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
   })
 
   ctx.sessions.set(session.id, session)
+  // A resume already knows its claudeSessionId (a fresh spawn / fork learns it
+  // from system/init instead). Bind the todo watcher now that listeners exist —
+  // the ctor is too early for the initial emit to reach anyone, and a
+  // restore-into-hibernation session never emits system/init at all.
+  session.startTodoWatch()
   return session
 }
 

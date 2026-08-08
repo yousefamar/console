@@ -5,6 +5,7 @@ import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
 import { CronPill } from './agent/CronPill'
 import { CronPanel } from './agent/CronPanel'
+import { TodoPanel } from './agent/TodoPanel'
 import { useCronStore } from '@/store/cron'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
@@ -206,6 +207,9 @@ export function AgentSessionView() {
           </button>
         )}
       </div>
+
+      {/* The CLI's live task list (TaskCreate/TaskUpdate) */}
+      <TodoPanel />
 
       {/* Status bar */}
       {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (

@@ -33,6 +33,7 @@ vi.mock('../session.js', () => {
     sendMessage(c: string) { this.sent.push(c) }
     logMessage() {}
     kill() { this.killed = true }
+    startTodoWatch() {}
     getInfo() { return { id: this.id, status: this.status } }
   }
   return { Session: StubSession }

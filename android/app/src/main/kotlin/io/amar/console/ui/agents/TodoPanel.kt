@@ -45,8 +45,11 @@ fun TodoPanel(todos: List<AgentsRepository.TodoItem>) {
     val done = todos.count { it.status == "completed" }
     val current = todos.firstOrNull { it.status == "in_progress" }
     val allDone = done == todos.size
-    var collapsed by remember { mutableStateOf(false) }
-    val isCollapsed = collapsed || allDone
+    // Nullable OVERRIDE, not a plain boolean: with `collapsed || allDone` a
+    // completed list could never be opened (the tap wrote true over a value
+    // already forced true).
+    var collapsed by remember { mutableStateOf<Boolean?>(null) }
+    val isCollapsed = collapsed ?: allDone
 
     Column(Modifier.fillMaxWidth()) {
         HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
