@@ -11,6 +11,11 @@ _(empty)_
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v79 (2026-08-08)
 - Mail unsnooze: the snoozed view's rows now carry an Unsnooze button — wakes
   the thread back into the inbox immediately (clears snooze + re-inbox +
   queued unarchive), instead of waiting for the timer.
@@ -41,7 +46,6 @@ _(empty)_
   near the log tail), and approval_required dedupes by requestId so the
   replay can't double-add one the live path already delivered.
 
-## Shipped
 
 ### v78 (2026-07-28)
 - Perma-"Syncing" (round three, the real one): trigger() cancelled the
