@@ -86,6 +86,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     val approvals by repo.approvals.collectAsState()
     val connected by repo.connectedFlow.collectAsState()
     val activityMap by repo.activity.collectAsState()
+    val todosMap by repo.todos.collectAsState()
     val tasks by repo.tasks.collectAsState()
     val fallback by repo.fallbackNotice.collectAsState()
     val handoff by repo.handoff.collectAsState()
@@ -201,6 +202,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                                 isWorking = activityMap[al.id]?.running == true,
                                 subtitle = sessionSubtitle(al, activityMap[al.id], snippets[al.id]),
                                 bgProcCount = 0,
+                                todoProgress = todosMap[al.id]?.let { ts -> ts.count { it.status == "completed" } to ts.size },
                                 micState = when {
                                     micOwner == al.id && micHot -> "hot"; micOwner == al.id -> "owner"; else -> null
                                 },
@@ -220,6 +222,7 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                                     isWorking = activityMap[session.id]?.running == true,
                                     subtitle = sessionSubtitle(session, activityMap[session.id], snippets[session.id]),
                                     bgProcCount = session.backgroundProcessCount,
+                                    todoProgress = todosMap[session.id]?.let { ts -> ts.count { it.status == "completed" } to ts.size },
                                     indent = row.depth,
                                     micState = when {
                                         micOwner == session.id && micHot -> "hot"
@@ -363,6 +366,7 @@ private fun SessionRow(
     isWorking: Boolean = false,
     subtitle: String? = null,
     bgProcCount: Int = 0,
+    todoProgress: Pair<Int, Int>? = null,
     micState: String? = null,
     generatingTitle: Boolean = false,
     indent: Int = 0,
@@ -419,6 +423,13 @@ private fun SessionRow(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 Icon(Icons.Filled.Terminal, contentDescription = "Background processes", tint = AMBER, modifier = Modifier.size(13.dp))
                 Text("$bgProcCount", style = MaterialTheme.typography.labelSmall, color = AMBER)
+            }
+        }
+        // SPA-parity task chip: violet done/total, hidden once complete —
+        // the point is spotting who's mid-plan.
+        todoProgress?.let { (done, total) ->
+            if (total > 0 && done < total) {
+                Text("$done/$total", style = MaterialTheme.typography.labelSmall, color = VIOLET)
             }
         }
         // Mic adornment.
@@ -591,6 +602,10 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 }
             }
         }
+        // Live task list (CLI TaskCreate/TaskUpdate), pinned above the
+        // composer — SPA TodoPanel parity.
+        val todosMap by repo.todos.collectAsState()
+        todosMap[sessionId]?.let { TodoPanel(it) }
         // Running status row.
         if (act?.running == true || act?.statusText != null) {
             Row(
