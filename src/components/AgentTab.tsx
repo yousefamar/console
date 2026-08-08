@@ -6,7 +6,7 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, ListTodo, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
 import { useMicStore } from '@/store/mic'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
@@ -14,6 +14,7 @@ import { TasksPanel } from './agent/TasksPanel'
 import { AgentQuickSwitcher } from './agent/AgentQuickSwitcher'
 import { buildGroupTree, peelUniversalRoot, arrangeLineage, type GroupNode } from './agent/session-tree'
 import { useCronStore } from '@/store/cron'
+import { todoLabel, todoProgress } from './agent/TodoList'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -471,6 +472,17 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     if (!csid) return 0
     return (s.tasksBySession[csid] ?? []).filter((t) => !t.disabledAt).length
   })
+  // The CLI's own task list, read hub-side off ~/.claude/tasks/<csid>/. Only
+  // shown while there's outstanding work — a finished list on every row is
+  // clutter; the point of the chip is spotting who's mid-plan without opening
+  // them.
+  const todoProgress_ = useMemo(() => {
+    const todos = session.todos
+    if (!todos?.length) return null
+    const { done, total, current } = todoProgress(todos)
+    if (done === total) return null
+    return { done, total, title: current ? `${done}/${total} tasks · ${todoLabel(current)}` : `${done}/${total} tasks` }
+  }, [session.todos])
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
@@ -677,6 +689,15 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
                 >
                   <Clock size={10} />
                   <span>{cronCount}</span>
+                </span>
+              )}
+              {todoProgress_ && (
+                <span
+                  className="flex items-center gap-0.5 text-[10px] text-violet-400 font-medium flex-shrink-0"
+                  title={todoProgress_.title}
+                >
+                  <ListTodo size={10} />
+                  <span>{todoProgress_.done}/{todoProgress_.total}</span>
                 </span>
               )}
               {session.hasUnread && (

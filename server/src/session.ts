@@ -29,6 +29,7 @@ import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
 import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
+import { readTodos, watchTodos, type TodoItem } from './agents/todo-store.js'
 
 let sessionCounter = 0
 
@@ -136,6 +137,15 @@ export class Session extends EventEmitter {
    *  Distinct from steering: any stdin write lands at the next tool boundary,
    *  so a real queue must not touch stdin until `result`. */
   queuedMessage: string | null = null
+
+  /** The CLI's own task list for this session, read from
+   *  ~/.claude/tasks/<claudeSessionId>/ (see agents/todo-store.ts). The stream
+   *  never carries the assembled list, so the disk store is the only source. */
+  todos: TodoItem[] = []
+  private todoWatcher: (() => void) | null = null
+  /** claudeSessionId the todo watcher is bound to — a fork gets a new csid, so
+   *  the watcher must re-bind rather than keep watching the parent's dir. */
+  private todoWatchedCsid: string | null = null
 
   /**
    * Coalesced message log for replay to late-joining clients.
@@ -528,6 +538,46 @@ export class Session extends EventEmitter {
     } satisfies HubMessage)
   }
 
+  // --------------------------------------------------------------------------
+  // Task list (CLI todos)
+  // --------------------------------------------------------------------------
+
+  /** Bind the watcher for a session whose csid was known at construction (a
+   *  resume, incl. restore-into-hibernation, which never emits system/init).
+   *  Called by the hub AFTER listeners are attached — the ctor is too early for
+   *  the initial emit to reach anyone. Idempotent. */
+  startTodoWatch(): void {
+    this.bindTodoWatcher()
+  }
+
+  /** Bind (or re-bind) the todo watcher to the current claudeSessionId. Called
+   *  once the csid is known — on `system`/init and on a pre-set resume. */
+  private bindTodoWatcher(): void {
+    const csid = this.claudeSessionId
+    if (!csid || csid === this.todoWatchedCsid) return
+    this.todoWatcher?.()
+    this.todoWatchedCsid = csid
+    const initial = readTodos(csid)
+    if (initial.length) {
+      this.todos = initial
+      this.emitTodos()
+    }
+    this.todoWatcher = watchTodos(csid, (todos) => {
+      this.todos = todos
+      this.emitTodos()
+    })
+  }
+
+  /** Ephemeral like session_queued — the authoritative copy rides
+   *  SessionInfo.todos, and the files on disk outlive everything. */
+  private emitTodos(): void {
+    this.emit('hub_message', {
+      type: 'session_todos',
+      sessionId: this.id,
+      todos: this.todos,
+    } satisfies HubMessage)
+  }
+
   /** Approve a tool use request */
   approveTool(requestId: string, modifiedInput?: Record<string, unknown>) {
     const inner: Record<string, unknown> = { behavior: 'allow' }
@@ -666,6 +716,9 @@ export class Session extends EventEmitter {
     this.hibernated = false
     this.pendingWakeMessage = null
     if (this.queuedMessage) this.setQueuedMessage(null)
+    this.todoWatcher?.()
+    this.todoWatcher = null
+    this.todoWatchedCsid = null
     if (this.process) {
       this.process.kill('SIGTERM')
     }
@@ -810,6 +863,7 @@ export class Session extends EventEmitter {
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
       queuedMessage: this.queuedMessage,
+      todos: this.todos.length ? this.todos : undefined,
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,
@@ -830,6 +884,9 @@ export class Session extends EventEmitter {
           break
         }
         this.claudeSessionId = msg.session_id
+        // A fork's csid only arrives here, so this is where the todo watcher
+        // gets its dir (idempotent for a resume that pre-set the same csid).
+        this.bindTodoWatcher()
         // Subprocess started cleanly — clear model-failure bookkeeping so a
         // later (different) model death can still trip a fresh fallback.
         this.gotSystemInit = true

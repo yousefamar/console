@@ -1,10 +1,11 @@
 import { memo, useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import type { AgentMessage, DiffHunk } from '@/store/agent'
+import type { AgentMessage, DiffHunk, TodoItem } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
+import { TodoList, todoLabel, todoProgress } from './agent/TodoList'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
   Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft, Volume2, Square,
-  Check, Circle, Loader2, ListTodo, Copy,
+  Check, Loader2, ListTodo, Copy,
 } from 'lucide-react'
 
 // ============================================================================
@@ -456,57 +457,38 @@ function PlanResultBlock({ plan }: { plan?: string }) {
 // (ToolResultBlock removed — results are rendered inline within ToolUseBlock)
 
 // --------------------------------------------------------------------------
-// TodoWrite — render the agent's todo list as a real checklist instead of
-// raw JSON. Each item shows a status glyph (pending / in-progress / completed)
-// plus the active-form text while in progress, content otherwise.
+// TodoWrite — legacy whole-list tool, kept so old transcripts still render as a
+// checklist rather than raw JSON. Current CLIs use incremental TaskCreate /
+// TaskUpdate instead; the live list lives in SessionInfo.todos and renders in
+// the pinned panel (AgentTab). Legacy items name the task `content`, the new
+// ones `subject` — normalized here onto the shared TodoItem shape.
 // --------------------------------------------------------------------------
 
-interface TodoItem {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
-  activeForm?: string
-}
-
 function TodoListBlock({ input }: { input: Record<string, unknown> }) {
-  const todos = (Array.isArray(input.todos) ? input.todos : []) as TodoItem[]
+  const raw = (Array.isArray(input.todos) ? input.todos : []) as Array<{
+    content?: string
+    status?: TodoItem['status']
+    activeForm?: string
+  }>
+  const todos: TodoItem[] = raw
+    .filter((t) => t.content && t.status)
+    .map((t, i) => ({ id: String(i), subject: t.content!, status: t.status!, ...(t.activeForm ? { activeForm: t.activeForm } : {}) }))
   if (todos.length === 0) return null
-  const done = todos.filter((t) => t.status === 'completed').length
-  const inProgress = todos.find((t) => t.status === 'in_progress')
+  const { done, total, current } = todoProgress(todos)
 
   return (
     <div className="px-3 py-1.5">
       <div className="flex items-center gap-1.5 text-xs text-text-secondary mb-1">
         <ListTodo size={11} className="flex-shrink-0" />
         <span className="font-medium">Todos</span>
-        <span className="text-text-tertiary">{done}/{todos.length}</span>
-        {inProgress && (
-          <span className="text-text-tertiary truncate ml-1" title={inProgress.activeForm ?? inProgress.content}>
-            · {inProgress.activeForm ?? inProgress.content}
+        <span className="text-text-tertiary">{done}/{total}</span>
+        {current && (
+          <span className="text-text-tertiary truncate ml-1" title={todoLabel(current)}>
+            · {todoLabel(current)}
           </span>
         )}
       </div>
-      <ul className="space-y-0.5 ml-1">
-        {todos.map((t, i) => {
-          const label = t.status === 'in_progress' ? (t.activeForm ?? t.content) : t.content
-          const cls = t.status === 'completed'
-            ? 'text-text-tertiary line-through'
-            : t.status === 'in_progress'
-              ? 'text-text-primary font-medium'
-              : 'text-text-secondary'
-          return (
-            <li key={i} className="flex items-start gap-1.5 text-xs leading-relaxed">
-              <span className="mt-0.5 flex-shrink-0">
-                {t.status === 'completed'
-                  ? <Check size={11} className="text-success" />
-                  : t.status === 'in_progress'
-                    ? <Loader2 size={11} className="text-warning animate-spin" />
-                    : <Circle size={11} className="text-text-tertiary" />}
-              </span>
-              <span className={`flex-1 min-w-0 break-words ${cls}`}>{label}</span>
-            </li>
-          )
-        })}
-      </ul>
+      <TodoList todos={todos} />
     </div>
   )
 }

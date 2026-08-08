@@ -7,6 +7,9 @@
 
 import type { AgentRole, OrgNode } from './agents/registry.js'
 import type { AgentTask } from './agents/tasks.js'
+import type { TodoItem } from './agents/todo-store.js'
+
+export type { TodoItem }
 
 // --------------------------------------------------------------------------
 // Browser → Hub
@@ -113,6 +116,10 @@ export type HubMessage =
    *  edited / cleared / flushed). Ephemeral — deliberately NOT loggable; the
    *  authoritative value rides SessionInfo.queuedMessage. */
   | { type: 'session_queued'; sessionId: string; queuedMessage: string | null }
+  /** The CLI's task list for this session changed (TaskCreate / TaskUpdate).
+   *  Read off ~/.claude/tasks/<claudeSessionId>/ — see agents/todo-store.ts.
+   *  Ephemeral like session_queued; SessionInfo.todos is authoritative. */
+  | { type: 'session_todos'; sessionId: string; todos: TodoItem[] }
   /** Active agent model + fallback chain. Broadcast on change (manual set or
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
@@ -225,6 +232,9 @@ export interface SessionInfo {
   /** A prompt waiting for the current turn to fully end. Editable/cancellable
    *  until it flushes. Persisted in the manifest. */
   queuedMessage?: string | null
+  /** The CLI's own task list (TaskCreate/TaskUpdate), read off disk. Omitted
+   *  when empty. Not manifest-persisted — the files ARE the persistence. */
+  todos?: TodoItem[]
   /** Hub-persisted: index of the last message the user has marked read.
    *  Client derives `hasUnread = (messageLogLength ?? 0) > (lastReadIndex ?? 0)`. */
   lastReadIndex?: number

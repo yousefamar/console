@@ -17,7 +17,10 @@ _(empty)_
   "Tasks N/M · <current>" strip pinned above the session composer
   (auto-collapses when complete), and a violet done/total chip per sidebar
   row while a session is mid-plan (hidden when done). Transient state, SPA
-  semantics mirrored exactly (ui/agents/TodoPanel.kt).
+  semantics mirrored exactly (ui/agents/TodoPanel.kt). Collapse state is a
+  nullable override (`collapsed ?: allDone`) — as a plain Boolean with
+  `collapsed || allDone` a *completed* list could never be tapped open, which
+  is the state most sessions are in.
 - Calendar visibility finally sticks: the shared calendar.visibleIds hub pref
   stores BARE calendarIds (the SPA's format), but the APK read/wrote
   accountEmail:calendarId compound keys — desktop-written entries never
