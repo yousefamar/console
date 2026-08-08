@@ -292,6 +292,13 @@ class MailRepository(
         enqueueSimple(TYPE_ARCHIVE, threadId)
     }
 
+    /** Manual unsnooze: wake the thread back into the inbox now. */
+    suspend fun unsnooze(threadId: String) {
+        db.mailThreads().setSnoozed(threadId, null)
+        db.mailThreads().setInbox(threadId, true)
+        enqueueSimple(TYPE_UNARCHIVE, threadId)
+    }
+
     /** Re-inbox expired snoozes (called from reconcile + a periodic check). */
     suspend fun checkSnoozes() {
         val expired = db.mailThreads().expiredSnoozes(System.currentTimeMillis())

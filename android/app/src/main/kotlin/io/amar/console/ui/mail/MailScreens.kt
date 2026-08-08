@@ -176,12 +176,17 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
                     items(snoozed, key = { it.id }) { thread ->
                         Column {
                             ThreadRow(thread, emptyList(), onClick = { onOpenThread(thread.id) })
-                            Text(
-                                "⏰ wakes " + SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(Date(thread.snoozedUntil ?: 0)),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(start = 68.dp, bottom = 6.dp),
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "⏰ wakes " + SimpleDateFormat("EEE d MMM HH:mm", Locale.UK).format(Date(thread.snoozedUntil ?: 0)),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.padding(start = 68.dp, bottom = 6.dp),
+                                )
+                                TextButton(onClick = { scope.launch { repo.unsnooze(thread.id) } }) {
+                                    Text("Unsnooze", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
                         }
                     }
                 }
