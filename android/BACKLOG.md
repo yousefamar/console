@@ -11,6 +11,9 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Mail unsnooze: the snoozed view's rows now carry an Unsnooze button — wakes
+  the thread back into the inbox immediately (clears snooze + re-inbox +
+  queued unarchive), instead of waiting for the timer.
 - Agent task lists (SPA TodoPanel parity): the CLI's TaskCreate/TaskUpdate
   todos — hub-read off ~/.claude/tasks/<csid>/ and pushed as SessionInfo.todos
   + live session_todos broadcasts — now render natively: a collapsible
