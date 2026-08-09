@@ -15,6 +15,7 @@ import { AgentQuickSwitcher } from './agent/AgentQuickSwitcher'
 import { buildGroupTree, peelUniversalRoot, arrangeLineage, type GroupNode } from './agent/session-tree'
 import { useCronStore } from '@/store/cron'
 import { todoLabel, todoProgress } from './agent/TodoList'
+import { displayModel } from '@/utils/model-label'
 import type { SessionInfo } from '@/store/agent'
 import type { ContextMenuItem } from './ContextMenu'
 
@@ -22,6 +23,27 @@ import type { ContextMenuItem } from './ContextMenu'
 // AgentTab — top-level component for the Agents pane. Shows a session
 // sidebar (desktop) and the active session view.
 // ============================================================================
+
+/** Models offerable beyond whatever's in the live chain. The two backends need
+ *  different id formats for the same model — a bare id 400s on Bedrock and a
+ *  `us.anthropic.`-prefixed one 400s first-party — so they're separate lists,
+ *  not one list plus a prefix. */
+const FIRST_PARTY_MODELS = [
+  'claude-opus-5',
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+] as const
+
+const BEDROCK_MODELS = [
+  'us.anthropic.claude-opus-5',
+  'us.anthropic.claude-fable-5',
+  'us.anthropic.claude-opus-4-8',
+  'us.anthropic.claude-opus-4-7',
+  'us.anthropic.claude-sonnet-5',
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+] as const
 
 export const AgentTab = memo(function AgentTab() {
   const connected = useAgentStore((s) => s.connected)
@@ -347,31 +369,28 @@ export const AgentTab = memo(function AgentTab() {
               value={agentModel}
               onChange={(e) => setAgentModel(e.target.value)}
               disabled={agentModelLockedByEnv || !connected || agentModelChain.length === 0}
-              title={agentModelLockedByEnv ? 'Locked by the CLAUDE_MODEL env var — unset it to change the model here' : 'Model all hub agents spawn with. Changing it restarts live sessions onto it.'}
-              className="flex-1 min-w-0 bg-transparent text-[11px] text-text-secondary font-mono outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 truncate"
+              title={agentModelLockedByEnv
+                ? 'Locked by the CLAUDE_MODEL env var — unset it to change the model here'
+                : `Model all hub agents spawn with. Changing it restarts live sessions onto it.\n${agentModel}`}
+              className="flex-1 min-w-0 bg-transparent text-[11px] text-text-secondary outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 truncate"
             >
               {/* Ensure the active model is selectable even if not in the chain. */}
               {agentModel && !agentModelChain.includes(agentModel) && (
-                <option value={agentModel}>{agentModel}</option>
+                <option value={agentModel}>{displayModel(agentModel)}</option>
               )}
               {agentModelChain.map((m, i) => (
-                <option key={m} value={m}>{m}{i === 0 ? '' : ` (fallback ${i})`}</option>
+                <option key={m} value={m}>{displayModel(m)}{i === 0 ? '' : ` (fallback ${i})`}</option>
               ))}
               <optgroup label="──────────"></optgroup>
               <optgroup label="Direct (first-party)">
-                {!agentModelChain.includes('claude-opus-5') && <option value="claude-opus-5">claude-opus-5</option>}
-                {!agentModelChain.includes('claude-fable-5') && <option value="claude-fable-5">claude-fable-5</option>}
-                {!agentModelChain.includes('claude-opus-4-8') && <option value="claude-opus-4-8">claude-opus-4-8</option>}
-                {!agentModelChain.includes('claude-sonnet-5') && <option value="claude-sonnet-5">claude-sonnet-5</option>}
-                {!agentModelChain.includes('claude-haiku-4-5-20251001') && <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>}
+                {FIRST_PARTY_MODELS.filter((m) => !agentModelChain.includes(m)).map((m) => (
+                  <option key={m} value={m}>{displayModel(m)}</option>
+                ))}
               </optgroup>
               <optgroup label="Bedrock">
-                {!agentModelChain.includes('us.anthropic.claude-opus-5') && <option value="us.anthropic.claude-opus-5">us.anthropic.claude-opus-5</option>}
-                {!agentModelChain.includes('us.anthropic.claude-fable-5') && <option value="us.anthropic.claude-fable-5">us.anthropic.claude-fable-5</option>}
-                {!agentModelChain.includes('us.anthropic.claude-opus-4-8') && <option value="us.anthropic.claude-opus-4-8">us.anthropic.claude-opus-4-8</option>}
-                {!agentModelChain.includes('us.anthropic.claude-opus-4-7') && <option value="us.anthropic.claude-opus-4-7">us.anthropic.claude-opus-4-7</option>}
-                {!agentModelChain.includes('us.anthropic.claude-sonnet-5') && <option value="us.anthropic.claude-sonnet-5">us.anthropic.claude-sonnet-5</option>}
-                {!agentModelChain.includes('us.anthropic.claude-haiku-4-5-20251001-v1:0') && <option value="us.anthropic.claude-haiku-4-5-20251001-v1:0">us.anthropic.claude-haiku-4-5-20251001-v1:0</option>}
+                {BEDROCK_MODELS.filter((m) => !agentModelChain.includes(m)).map((m) => (
+                  <option key={m} value={m}>{displayModel(m)}</option>
+                ))}
               </optgroup>
             </select>
             {agentModelLockedByEnv && (

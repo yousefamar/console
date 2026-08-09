@@ -7,6 +7,7 @@ import { CronPill } from './agent/CronPill'
 import { CronPanel } from './agent/CronPanel'
 import { TodoPanel } from './agent/TodoPanel'
 import { useCronStore } from '@/store/cron'
+import { displayModel } from '@/utils/model-label'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import { Loader2, GitBranch, ChevronDown, Check, Pin } from 'lucide-react'
@@ -224,8 +225,8 @@ export function AgentSessionView() {
               modelOverride={activeSession?.modelOverride}
             />
           ) : sessionModel && (
-            <span className="text-[10px] text-text-tertiary flex-shrink-0">
-              {sessionModel}
+            <span className="text-[10px] text-text-tertiary flex-shrink-0" title={sessionModel}>
+              {displayModel(sessionModel)}
             </span>
           )}
           {permissionMode && permissionMode !== 'default' && (
@@ -354,11 +355,13 @@ function SessionModelPicker({ sessionId, sessionModel, modelOverride }: {
           const v = e.target.value
           setSessionModel(sessionId, v === HUB_MODEL_SENTINEL ? null : v)
         }}
-        className="bg-transparent text-[10px] text-text-tertiary hover:text-text-secondary font-mono outline-none cursor-pointer max-w-[160px] truncate"
+        className="bg-transparent text-[10px] text-text-tertiary hover:text-text-secondary outline-none cursor-pointer max-w-[160px] truncate"
       >
-        <option value={HUB_MODEL_SENTINEL}>{sessionModel} (hub)</option>
+        {/* The hub spawns with an owner-tagged profile ARN, so `sessionModel` is
+            often that ARN — resolve it through the options it could have been. */}
+        <option value={HUB_MODEL_SENTINEL}>{displayModel(sessionModel, hubModel ? [hubModel] : [])} (hub)</option>
         {options.map((m) => (
-          <option key={m} value={m}>{m}</option>
+          <option key={m} value={m}>{displayModel(m)}</option>
         ))}
       </select>
     </span>
