@@ -877,7 +877,7 @@ class ChatRepository(
         // Initial-sync banner only on TRUE first boot (empty cache + hub says
         // isInitial). A populated cache stays silent (SPA parity).
         val cacheEmpty = db.chatRooms().allIds().isEmpty()
-        runCatching {
+        val resumed = runCatching {
             val resumeArgs = buildJsonObject { since?.let { put("since", it) } }
             val delta = syncBus.rpc("matrix", "resume", resumeArgs, timeoutMs = 120_000).jsonObject
             val isInitial = delta["isInitial"]?.jsonPrimitive?.booleanOrNull == true
@@ -886,6 +886,20 @@ class ChatRepository(
             // Gap closed up to this delta's nextBatch — live deltas may now
             // advance the cursor for this connection.
             resumedThisConnection = true
+        }.isSuccess
+        // A cursor'd resume that FAILED (usually the 120s RPC timeout: a huge
+        // gap makes the hub walk per-room backfills for minutes) would loop
+        // forever — the cursor never advances, so every retry resumes the same
+        // ever-growing gap while chats sit frozen. Fall back to a FRESH
+        // initial sync: the hub skips the backfill walk on isInitial (a full
+        // snapshot has no gaps), so it's fast and bounded; bulkPut ingestion
+        // is idempotent against whatever we already have.
+        if (!resumed && since != null) {
+            runCatching {
+                val delta = syncBus.rpc("matrix", "resume", buildJsonObject { }, timeoutMs = 120_000).jsonObject
+                ingestMatrixDelta(delta)
+                resumedThisConnection = true
+            }
         }
         _initialSyncing.value = false
     }
