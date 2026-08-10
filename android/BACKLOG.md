@@ -15,6 +15,18 @@ _(empty)_
 
 ## Shipped
 
+### v80 (2026-08-10)
+- All chats frozen (stale but scrollable): after a long offline window the
+  cursor'd matrix.resume grows huge — the hub walks per-room 100-event
+  backfills for MINUTES (observed: 388 rooms / 20,850 events), blowing the
+  APK's 120s RPC timeout. The failure left the cursor unadvanced, so every
+  reconcile retried the SAME ever-growing gap forever: chats permanently
+  frozen at the last synced point while previews (chat-rooms snapshot, a
+  separate cheap path) stayed current. A failed cursor'd resume now falls
+  back to a FRESH initial sync — the hub skips the backfill walk on isInitial
+  so it's fast and bounded, and bulkPut ingestion is idempotent.
+
+
 ### v79 (2026-08-08)
 - Mail unsnooze: the snoozed view's rows now carry an Unsnooze button — wakes
   the thread back into the inbox immediately (clears snooze + re-inbox +
