@@ -2,22 +2,30 @@
 // fallback to the hub's /stt WebSocket (OpenAI realtime transcription).
 // Extracted from AgentPromptInput so the Notes writing mode can dictate too.
 //
-// Text delivery contract: `onText(chunk)` fires for each committed text chunk.
-// - Hub-STT streaming deltas are append-only word chunks → each fires onText.
+// Text delivery contract: `onText(chunk, verbatim)` fires for each committed
+// text chunk.
+// - Hub-STT streaming deltas are append-only TOKEN deltas → each fires onText
+//   with `verbatim: true`. A token carries its own leading space when it starts
+//   a word and none when it continues one ("structur" + "ally"), so the
+//   consumer must insert it as-is; padding it splits words.
 // - A `final` from a non-streaming VAD model fires onText ONLY when no deltas
 //   covered the utterance (prevents duplication) — same dedup the agents
 //   input used.
-// - Browser-SR final result chunks each fire onText. Interim (uncommitted)
-//   text is exposed via the `interim` state for optional preview display.
+// - Browser-SR final result chunks each fire onText as whole utterances
+//   (`verbatim: false` — they carry no leading space, so the consumer adds
+//   one). Interim (uncommitted) text is exposed via the `interim` state for
+//   optional preview display.
 
 import { useCallback, useRef, useState } from 'react'
 import { isNative } from '@/platform'
 
 interface DictationOptions {
-  /** Called with each committed text chunk, in order. */
-  onText?: (text: string) => void
+  /** Called with each committed text chunk, in order. `verbatim` means the
+   *  chunk is a streaming token delta carrying its own spacing — insert it
+   *  as-is (see src/utils/dictation-text.ts). */
+  onText?: (text: string, verbatim: boolean) => void
   /** Alias used by some consumers; fired identically to onText. */
-  onFinalSegment?: (text: string) => void
+  onFinalSegment?: (text: string, verbatim: boolean) => void
   lang?: string
 }
 
@@ -45,10 +53,10 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sawDeltaRef = useRef(false)
 
-  const emit = useCallback((text: string) => {
+  const emit = useCallback((text: string, verbatim = false) => {
     if (!text) return
-    optsRef.current.onText?.(text)
-    optsRef.current.onFinalSegment?.(text)
+    optsRef.current.onText?.(text, verbatim)
+    optsRef.current.onFinalSegment?.(text, verbatim)
   }, [])
 
   const stop = useCallback(() => {
@@ -96,9 +104,11 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
         try {
           const msg = JSON.parse(event.data)
           if (msg.type === 'interim') {
-            // Streaming deltas are append-only word chunks — commit each.
+            // Append-only TOKEN deltas: each carries its own spacing, so it
+            // must land verbatim — a mid-word delta padded with a space would
+            // split the word ("structur ally").
             sawDeltaRef.current = true
-            emit(msg.text || '')
+            emit(msg.text || '', true)
           } else if (msg.type === 'final') {
             // Only commit a `final` when no deltas covered it.
             if (!sawDeltaRef.current) emit((msg.text || '').trim())
