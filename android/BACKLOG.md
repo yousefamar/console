@@ -11,6 +11,14 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Plan reviews take feedback (terminal parity): `PlanApprovalUi` gained a
+  comment field — "Keep planning" sends the text as the deny reason (Claude
+  keeps planning against it), "Approve plan" with text approves then sends the
+  text as the next prompt. The session composer placeholder hints "Plan
+  feedback — Claude keeps planning" while an ExitPlanMode approval is pending
+  (the hub routes such sends into plan feedback, so no APK logic needed) and
+  "Answer the question above first…" for AskUserQuestion.
+
 - Dictation/PTT dropped the end of every utterance (and produced nothing at all
   for short ones). The STT model rejects `turn_detection`, so a transcription
   turn only ends when the client asks it to — but both native mic paths just

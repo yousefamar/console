@@ -22,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
@@ -172,6 +174,8 @@ private fun PlanApprovalUi(
     input: JsonObject,
 ) {
     val plan = input["plan"]?.jsonPrimitive?.content ?: "(no plan text)"
+    var comment by remember(approval.requestId) { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
     Text("Plan review", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
     Column(
         Modifier
@@ -184,9 +188,26 @@ private fun PlanApprovalUi(
     ) {
         Text(plan, style = MaterialTheme.typography.bodySmall)
     }
+    OutlinedTextField(
+        value = comment,
+        onValueChange = { comment = it },
+        placeholder = { Text("Optional — comment on the plan…", style = MaterialTheme.typography.bodySmall) },
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+        modifier = Modifier.fillMaxWidth(),
+        textStyle = MaterialTheme.typography.bodySmall,
+        singleLine = true,
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { repo.approve(approval.sessionId, approval.requestId) }) { Text("Approve plan") }
-        OutlinedButton(onClick = { repo.deny(approval.sessionId, approval.requestId, "keep planning") }) { Text("Keep planning") }
+        Button(onClick = {
+            repo.approve(approval.sessionId, approval.requestId)
+            // Approve-with-comment: the text follows as a normal prompt. Sent
+            // AFTER approve so the hub's plan-feedback routing (which turns a
+            // send during a pending plan review into a deny) doesn't grab it.
+            val text = comment.trim()
+            if (text.isNotEmpty()) scope.launch { repo.sendPrompt(approval.sessionId, text) }
+        }) { Text("Approve plan") }
+        // With feedback text Claude keeps planning against the comment.
+        OutlinedButton(onClick = { repo.deny(approval.sessionId, approval.requestId, comment.trim().ifEmpty { "keep planning" }) }) { Text("Keep planning") }
     }
 }
 

@@ -262,9 +262,24 @@ function AskUserQuestionUI({ approval }: Props) {
 function PlanApprovalUI({ approval }: Props) {
   const approveTool = useAgentStore((s) => s.approveTool)
   const denyTool = useAgentStore((s) => s.denyTool)
+  const sendMessage = useAgentStore((s) => s.sendMessage)
   const { requestId, input } = approval
   const plan = String(input.plan ?? '')
   const rendered = useMemo(() => renderMarkdownLite(plan), [plan])
+  // Deliberately NOT auto-focused — the y/n keybindings stay live until the
+  // user clicks in (useKeybindings bails while an input has focus).
+  const [comment, setComment] = useState('')
+
+  const approve = () => {
+    approveTool(requestId)
+    // Approve-with-comment (terminal parity): the comment arrives as the next
+    // user message — steering right after the plan is accepted. Must be sent
+    // AFTER approveTool clears the pending approval, or the hub's plan-feedback
+    // routing would turn it into a deny.
+    const text = comment.trim()
+    if (text) sendMessage(text)
+  }
+  const reject = () => denyTool(requestId, comment.trim() || 'Plan rejected')
 
   return (
     <div className="border-t border-border bg-surface-1 animate-slide-up">
@@ -280,20 +295,32 @@ function PlanApprovalUI({ approval }: Props) {
           {rendered}
         </div>
 
+        {/* Feedback / comment */}
+        <textarea
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reject() }
+          }}
+          placeholder="Optional — comment on the plan… (with Reject: Claude keeps planning; with Approve: sent as follow-up)"
+          rows={1}
+          className="w-full bg-surface-2 border border-border rounded-sm px-2 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-blue-400/50 mb-2"
+        />
+
         {/* Actions */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => approveTool(requestId)}
+            onClick={approve}
             className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-sm bg-success/20 text-success hover:bg-success/30 transition-colors duration-fast"
           >
             <span>Approve</span>
             <kbd className="text-[9px] opacity-60 ml-0.5">y</kbd>
           </button>
           <button
-            onClick={() => denyTool(requestId, 'Plan rejected')}
+            onClick={reject}
             className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-sm bg-destructive/20 text-destructive hover:bg-destructive/30 transition-colors duration-fast"
           >
-            <span>Reject</span>
+            <span>{comment.trim() ? 'Keep planning' : 'Reject'}</span>
             <kbd className="text-[9px] opacity-60 ml-0.5">n</kbd>
           </button>
         </div>

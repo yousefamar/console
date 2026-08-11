@@ -583,7 +583,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   denyTool: (requestId, reason) => {
-    const approval = get().pendingApproval
+    // Same map-first lookup as approveTool — pendingApproval only tracks the
+    // ACTIVE session, so denying from another session's card resolved the
+    // wrong sessionId before.
+    const map = get().pendingApprovalsBySession
+    const approval = Object.values(map).find((a) => a.requestId === requestId) ?? get().pendingApproval
     const sessionId = approval?.sessionId ?? get().activeSessionId
     if (!sessionId) return
     sendWs({ type: 'deny_tool', sessionId, requestId, reason })
