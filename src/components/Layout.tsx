@@ -237,7 +237,12 @@ export function Layout() {
       }
     } else if (isCalendar) {
       if (e.ctrlKey || e.metaKey) {
+        // Optimistic rows (`~`-prefixed ids) exist nowhere but here until they
+        // reach Google, so a hard refresh must preserve them — same reason the
+        // email path above preserves snoozed threads.
+        const unsynced = await db.calendarEvents.filter((ev) => ev.id.startsWith('~')).toArray()
         await db.calendarEvents.clear()
+        if (unsynced.length > 0) await db.calendarEvents.bulkPut(unsynced)
         const { useCalendarStore } = await import('@/store/calendar')
         await useCalendarStore.getState().refreshAll()
       } else {
