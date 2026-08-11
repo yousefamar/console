@@ -43,6 +43,10 @@ object Dictation {
     @Volatile private var running = false
     private val finals = StringBuilder()
     @Volatile private var interim = ""
+    /** Set when the relay delivers the tail transcript after [stop] sends
+     *  `done`, so we can commit as soon as it lands instead of sleeping out the
+     *  whole grace period. */
+    @Volatile private var sawFinal = false
 
     private val okHttp = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -59,6 +63,7 @@ object Dictation {
     fun start() {
         if (running) return
         running = true
+        sawFinal = false
         finals.setLength(0); interim = ""
         _state.value = State(active = true)
 
@@ -75,7 +80,14 @@ object Dictation {
                         "interim" -> { interim += m.optString("text"); publish() }
                         "final" -> {
                             val t = m.optString("text")
-                            if (t.isNotEmpty()) finals.append(t).append(' ')
+                            if (t.isNotEmpty()) {
+                                // The relay sends ONE final carrying the whole
+                                // turn, so it supersedes the accumulated deltas
+                                // rather than appending to them.
+                                finals.setLength(0)
+                                finals.append(t).append(' ')
+                                sawFinal = true
+                            }
                             interim = ""
                             publish()
                         }
@@ -128,9 +140,15 @@ object Dictation {
         running = false
         runCatching { record?.stop(); record?.release() }
         record = null
-        // Give the STT a beat to flush the trailing final (same 700ms as PTT).
+        // The STT model rejects turn_detection, so the relay only closes the turn
+        // when we say the mic is released — `done` makes it commit immediately and
+        // reply with the tail transcript. Poll for that final rather than sleeping
+        // a fixed grace: the old flat 700ms was shorter than the measured
+        // commit→final latency, so short utterances lost their ending entirely.
+        runCatching { ws?.send(JSONObject().put("type", "done").toString()) }
         Thread {
-            Thread.sleep(700)
+            val deadline = System.currentTimeMillis() + 5000
+            while (!sawFinal && System.currentTimeMillis() < deadline) Thread.sleep(50)
             runCatching { ws?.close(1000, "dictation-end") }
             ws = null
             val text = _state.value.transcript

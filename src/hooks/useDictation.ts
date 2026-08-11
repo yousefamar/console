@@ -68,7 +68,20 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
     // down — closing the AudioContext alone doesn't reliably release it.
     try { recognitionRef.current?.stop() } catch { /* */ }
     recognitionRef.current = null
-    try { sttWsRef.current?.close() } catch { /* */ }
+    // The hub relay only learns the turn ended because we say so: the STT model
+    // rejects turn_detection, so the buffer needs an explicit commit and the
+    // tail transcript arrives AFTER the last audio frame. Closing here would
+    // discard it (short utterances lost their ending, brief ones yielded
+    // nothing) — so send `done` and let the relay close us once the final lands.
+    const openWs = sttWsRef.current
+    if (openWs && openWs.readyState === WebSocket.OPEN) {
+      openWs.onclose = null
+      try { openWs.send(JSON.stringify({ type: 'done' })) } catch { /* */ }
+      // Safety net: don't leak the socket if the relay never closes it.
+      window.setTimeout(() => { try { openWs.close() } catch { /* */ } }, 6000)
+    } else {
+      try { openWs?.close() } catch { /* */ }
+    }
     sttWsRef.current = null
     if (processorRef.current) {
       try { processorRef.current.onaudioprocess = null; processorRef.current.disconnect() } catch { /* */ }
@@ -86,7 +99,9 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
       try { void audioContextRef.current.close() } catch { /* */ }
       audioContextRef.current = null
     }
-    sawDeltaRef.current = false
+    // sawDeltaRef is deliberately NOT reset here — the tail `final` arrives
+    // after stop() (see above), and clearing the flag would make it re-emit the
+    // whole utterance on top of the deltas already inserted. start() resets it.
     setRecording(false)
     setInterim('')
   }, [])

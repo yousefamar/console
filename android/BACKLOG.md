@@ -11,7 +11,16 @@ _(empty)_
 
 ## Built, awaiting release
 
-_(empty)_
+- Dictation/PTT dropped the end of every utterance (and produced nothing at all
+  for short ones). The STT model rejects `turn_detection`, so a transcription
+  turn only ends when the client asks it to — but both native mic paths just
+  closed the socket after a flat 700ms grace, which is shorter than the measured
+  ~600-700ms commit→final latency, so the tail arrived after hangup and was
+  discarded. `Dictation.stop()` and `PushService.pttUp()` now send
+  `{type:'done'}` (relay commits immediately) and poll for the final with a 5s
+  cap instead of sleeping a fixed grace. Also: the single `final` carries the
+  WHOLE turn, so it now replaces the accumulated interim deltas rather than
+  appending to them (was duplicating the utterance). Hub side already shipped.
 
 ## Shipped
 
