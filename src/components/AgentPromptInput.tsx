@@ -4,6 +4,7 @@ import { useGlassesStore } from '@/glasses/store'
 import { useMicStore } from '@/store/mic'
 import { getHubUrl } from '@/hub'
 import { useDictation } from '@/hooks/useDictation'
+import { dictationSeparator } from '@/utils/dictation-text'
 import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip, Clock } from 'lucide-react'
 
 // ============================================================================
@@ -139,7 +140,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
    *  keeping textRef in sync and advancing the caret past the insertion. Lets
    *  streamed speech land wherever the user has placed the cursor and coexist
    *  with manual edits made mid-recording. */
-  const insertAtCaret = useCallback((insert: string) => {
+  const insertAtCaret = useCallback((insert: string, verbatim = false) => {
     if (!insert) return
     const el = inputRef.current
     if (!el) { textRef.current += insert; return }
@@ -147,10 +148,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
     const end = el.selectionEnd ?? el.value.length
     const before = el.value.slice(0, start)
     const after = el.value.slice(end)
-    // Add a separating space only when gluing two word characters together
-    // (whisper deltas usually include their own leading space, so this rarely fires).
-    const needsSpace = before.length > 0 && /\w$/.test(before) && /^\w/.test(insert)
-    const piece = needsSpace ? ' ' + insert : insert
+    const piece = dictationSeparator(before, insert, verbatim) + insert
     const next = before + piece + after
     el.value = next
     textRef.current = next

@@ -9,6 +9,7 @@ import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useDictation } from '@/hooks/useDictation'
+import { dictationSeparator } from '@/utils/dictation-text'
 import { frontmatterRange, permalinkForLogPath, isPublishedPath } from '@/utils/frontmatter'
 import { insertFootnote } from '@/notes/editor-actions'
 
@@ -41,17 +42,15 @@ async function downscaleImage(blob: Blob, maxDim = 2000): Promise<Blob> {
   }
 }
 
-/** Insert text at the cursor (replacing any selection). Adds a separating
- *  space ONLY when gluing two word characters together — STT deltas usually
- *  carry their own leading space, so blindly padding doubles them up. */
-function insertAtCursor(text: string) {
+/** Insert text at the cursor (replacing any selection). `verbatim` chunks are
+ *  streaming STT token deltas that carry their own spacing. */
+function insertAtCursor(text: string, verbatim = false) {
   if (!text) return
   const view = useNotesStore.getState().editorView
   if (!view) return
   const sel = view.state.selection.main
   const before = sel.from > 0 ? view.state.sliceDoc(sel.from - 1, sel.from) : ''
-  const needsSpace = /\w$/.test(before) && /^\w/.test(text)
-  const piece = needsSpace ? ' ' + text : text
+  const piece = dictationSeparator(before, text, verbatim) + text
   view.dispatch({
     changes: { from: sel.from, to: sel.to, insert: piece },
     selection: { anchor: sel.from + piece.length },
@@ -72,7 +71,7 @@ export function WriteActionBar({ path, onPublish, onRepublish }: Props) {
 
   const dictation = useDictation({
     // Insert each transcript chunk raw — insertAtCursor handles spacing.
-    onText: (text) => insertAtCursor(text),
+    onText: (text, verbatim) => insertAtCursor(text, verbatim),
   })
 
   const handleImagePick = async (file: File | null | undefined) => {
