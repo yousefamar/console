@@ -517,10 +517,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     sendWs({ type: 'send_message', sessionId, content, ...(images?.length ? { images } : {}) })
 
-    // Replying = read (chat-style). Optimistic local clear; hub also auto-marks
-    // on receipt of send_message and broadcasts session_read_state for sync.
+    // Replying = read (chat-style), and answering an agent that asked for Yousef
+    // also acknowledges its @amar marker. Optimistic local clear; hub does both
+    // on receipt of send_message and broadcasts for cross-device sync.
     const sess = get().sessions.find((s) => s.id === sessionId)
-    if (sess) updateSession(sessionId, { lastReadIndex: (sess.messageLogLength ?? 0) + 1, hasUnread: false })
+    if (sess) updateSession(sessionId, { lastReadIndex: (sess.messageLogLength ?? 0) + 1, hasUnread: false, ...(sess.needsAttention ? { needsAttention: null } : {}) })
     const msgs = get().messagesBySession[sessionId]
     const lastTs = msgs?.length ? msgs[msgs.length - 1]!.timestamp : Date.now()
     set((s) => ({ lastReadTsBySession: { ...s.lastReadTsBySession, [sessionId]: lastTs } }))
@@ -830,13 +831,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
     // Optimistic local clear; hub broadcasts session_read_state which lands
     // on every client (including this one) for cross-device sync.
-    if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false })
+    // Marking read also acknowledges any @amar marker — the hub does that as
+    // part of mark_session_read, so this is only the optimistic local half.
+    if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false, ...(sess.needsAttention ? { needsAttention: null } : {}) })
     sendWs({ type: 'mark_session_read', sessionId })
-    // Marking read also acknowledges any @amar attention marker.
-    if (sess?.needsAttention) {
-      updateSession(sessionId, { needsAttention: null })
-      sendWs({ type: 'clear_attention', sessionId })
-    }
   },
 
   markSessionUnread: (id) => {

@@ -304,17 +304,26 @@ function sendTo(ws: WebSocket, msg: HubMessage) {
 /** Bump session's lastReadIndex to the current log length and broadcast.
  *  Falls back to using the hub session id when claudeSessionId isn't set yet
  *  (early in session lifetime); that key gets normalized to claudeSessionId
- *  later via copyReadStateForClaudeId once it arrives. */
-export function markSessionRead(session: Session, clients: Set<WebSocket>) {
+ *  later via copyReadStateForClaudeId once it arrives.
+ *
+ *  Reading a session also acknowledges its `@amar` marker — answering an agent
+ *  that asked for Yousef IS the acknowledgement, so the red rail and the phone
+ *  notification must both go. Done hub-side (not per-client) so every client,
+ *  the APK included, inherits it from one place. */
+export function markSessionRead(ctx: AgentContext, session: Session) {
   const key = session.claudeSessionId ?? session.id
   const idx = session.messageLogLength
   setLastReadIndex(key, idx)
-  broadcast(clients, {
+  broadcast(ctx.clients, {
     type: 'session_read_state',
     sessionId: session.id,
     lastReadIndex: idx,
     messageLogLength: idx,
   })
+  if (session.needsAttention) {
+    session.clearAttention() // emits session_attention(null) → broadcast + manifest
+    ctx.clearAttentionPush?.(session.id)
+  }
 }
 
 export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
@@ -742,7 +751,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       broadcastExcept(clients, ws, userMsg)
       session.sendMessage(msg.content, msg.images)
       // Sending a message implicitly marks the session read (chat parity).
-      markSessionRead(session, clients)
+      markSessionRead(ctx, session)
       // Capture the idle→running transition in the manifest — sendMessage
       // flips status without emitting an event, so without this the nudge
       // on hub restart would miss any mid-turn session whose last persisted
@@ -754,7 +763,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
     case 'mark_session_read': {
       const session = sessions.get(msg.sessionId)
       if (!session) return
-      markSessionRead(session, clients)
+      markSessionRead(ctx, session)
       break
     }
 
