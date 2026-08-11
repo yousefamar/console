@@ -35,6 +35,7 @@ export async function processCalendarQueue(): Promise<void> {
               p.accountEmail as string,
               p.calendarId as string,
               p.event as Partial<CalendarEvent>,
+              p.tempCompoundKey as string | undefined,
             )
             // Replace temp compound key with real one
             const tempCk = p.tempCompoundKey as string
@@ -173,6 +174,7 @@ export async function processCalendarQueue(): Promise<void> {
               p.accountEmail as string,
               p.calendarId as string,
               p.newEventData as Partial<CalendarEvent>,
+              p.tempCompoundKey as string | undefined,
             )
             // Replace temp with real
             const tempCk = p.tempCompoundKey as string
@@ -221,6 +223,13 @@ export async function processCalendarQueue(): Promise<void> {
             await db.calendarEvents.put(p.rollback as any)
             reloadEvents()
           }
+          // A create/move has no rollback — the local row IS the only copy of
+          // what the user typed. It stays in IDB (fetchEvents refuses to reap
+          // temp ids), but say so loudly: silence here read as "saved".
+          if (action.type === 'calCreate' || action.type === 'calLocation') {
+            const title = (p.event as any)?.summary || (p.newEventData as any)?.summary || '(No title)'
+            notifyFailure(`Couldn't save "${title}" to Google Calendar`, msg)
+          }
         }
       }
     }
@@ -232,5 +241,17 @@ export async function processCalendarQueue(): Promise<void> {
 function reloadEvents() {
   import('@/store/calendar').then(({ useCalendarStore }) => {
     useCalendarStore.getState().loadEventsFromDb()
+  }).catch(() => {})
+}
+
+function notifyFailure(message: string, detail: string) {
+  console.error('[calendar]', message, detail)
+  import('@/store/ui').then(({ useUiStore }) => {
+    useUiStore.getState().pushToast({
+      kind: 'error',
+      message,
+      detail: `${detail} — it's still on this device only. Reopen it to retry.`,
+      ttlMs: 30_000,
+    })
   }).catch(() => {})
 }

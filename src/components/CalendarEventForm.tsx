@@ -34,6 +34,7 @@ export function CalendarEventForm() {
   const [description, setDescription] = useState('')
   const [guests, setGuests] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   // Initialize form values
   useEffect(() => {
@@ -75,6 +76,7 @@ export function CalendarEventForm() {
   const handleSubmit = async () => {
     if (!title.trim() || !calendarId) return
     setSaving(true)
+    setSaveError(null)
 
     // Resolve the API account for the selected calendar
     const cal = calendars.find((c) => c.id === calendarId)
@@ -115,18 +117,26 @@ export function CalendarEventForm() {
       eventData.end = { dateTime: new Date(`${endDate}T${endTime}`).toISOString() }
     }
 
-    if (isEdit) {
-      if (calendarId !== editingEvent!.calendarId) {
-        // Calendar changed — delete from old, create in new (Google doesn't support calendar change via PATCH)
-        const origCal = calendars.find((c) => c.id === editingEvent!.calendarId)
-        const origAccount = origCal?.apiAccountEmail || origCal?.accountEmail || editingEvent!.accountEmail
-        await deleteEvent(editingEvent!.calendarId, origAccount, editingEvent!.id)
-        await createEvent(calendarId, accountEmail, eventData)
+    try {
+      if (isEdit) {
+        if (calendarId !== editingEvent!.calendarId) {
+          // Calendar changed — delete from old, create in new (Google doesn't support calendar change via PATCH)
+          const origCal = calendars.find((c) => c.id === editingEvent!.calendarId)
+          const origAccount = origCal?.apiAccountEmail || origCal?.accountEmail || editingEvent!.accountEmail
+          await deleteEvent(editingEvent!.calendarId, origAccount, editingEvent!.id)
+          await createEvent(calendarId, accountEmail, eventData)
+        } else {
+          await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)
+        }
       } else {
-        await updateEvent(calendarId, accountEmail, editingEvent!.id, eventData)
+        await createEvent(calendarId, accountEmail, eventData)
       }
-    } else {
-      await createEvent(calendarId, accountEmail, eventData)
+    } catch (err) {
+      // Keep the form open with the user's text intact — closing it here would
+      // discard the only copy of what they typed.
+      setSaving(false)
+      setSaveError(err instanceof Error ? err.message : 'Could not save this event')
+      return
     }
 
     setSaving(false)
@@ -267,12 +277,17 @@ export function CalendarEventForm() {
           </div>
 
           {/* Submit */}
+          {saveError && (
+            <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-sm px-2 py-1">
+              {saveError}
+            </div>
+          )}
           <button
             onClick={handleSubmit}
             disabled={!title.trim() || saving}
             className="w-full px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
           >
-            {saving ? 'Saving...' : isEdit ? 'Save Changes' : 'Create Event'}
+            {saving ? 'Saving...' : saveError ? 'Retry' : isEdit ? 'Save Changes' : 'Create Event'}
           </button>
         </div>
       </div>

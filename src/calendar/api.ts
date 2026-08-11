@@ -60,10 +60,18 @@ export async function createEvent(
   accountEmail: string,
   calendarId: string,
   event: Partial<CalendarEvent>,
+  clientToken?: string,
 ): Promise<CalendarEvent> {
   return hubFetch<CalendarEvent>('/cal/events', {
     method: 'POST',
-    body: JSON.stringify({ ...event, calendarId, account: accountEmail }),
+    body: JSON.stringify({
+      ...event,
+      calendarId,
+      account: accountEmail,
+      // Stable across retries — the hub's DedupStore returns the already-created
+      // event instead of a duplicate when a queued create is replayed.
+      ...(clientToken ? { clientToken } : {}),
+    }),
   })
 }
 

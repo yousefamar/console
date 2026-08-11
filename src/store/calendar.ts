@@ -36,6 +36,11 @@ function compoundKey(accountEmail: string, calendarId: string, eventId: string):
   return `${accountEmail}:${calendarId}:${eventId}`
 }
 
+// Optimistic local ids are `~<ts>.<rand>` — Google ids never start with `~`.
+function isTempEventId(id: string): boolean {
+  return id.startsWith('~')
+}
+
 function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): DbCalendarEvent {
   return {
     id: e.id,
@@ -405,8 +410,13 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       )
 
       const dbEvents: DbCalendarEvent[] = []
+      // Only calendars whose fetch actually succeeded may have their events
+      // reaped below — a rejected fetch returns no items, which must never be
+      // read as "Google deleted everything in this calendar".
+      const reapable = new Set<string>()
       for (const result of results) {
         if (result.status === 'fulfilled') {
+          reapable.add(`${result.value.accountEmail}:${result.value.calId}`)
           for (const event of result.value.items) {
             if (event.status === 'cancelled') continue
             dbEvents.push(toDbEvent(event, result.value.calId, result.value.accountEmail))
@@ -420,9 +430,11 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
       // Remove stale events: anything in IDB within the fetched range that
       // wasn't returned by the API (deleted/cancelled on GCal).
-      // Protect events with pending queue actions (optimistic creates/updates).
+      // Protect events with queue actions still in flight OR permanently
+      // failed — a failed calCreate still holds the only copy of what the user
+      // typed, so reaping it is silent data loss.
       const pendingActions = await db.queue
-        .where('status').anyOf('pending', 'processing')
+        .where('status').anyOf('pending', 'processing', 'failed', 'conflict')
         .filter((a) => a.type.startsWith('cal'))
         .toArray()
       const pendingKeys = new Set(pendingActions.map((a) => a.eventCompoundKey).filter(Boolean))
@@ -435,6 +447,11 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         .toArray()
       const staleKeys = staleInRange
         .filter((e) => !freshKeys.has(e.compoundKey) && !pendingKeys.has(e.compoundKey))
+        // A `~`-prefixed id is a local optimistic row that Google has never
+        // seen, so its absence from the response says nothing. Durable version
+        // of the reload-volatile pendingTempIds guard above.
+        .filter((e) => !isTempEventId(e.id))
+        .filter((e) => reapable.has(`${e.accountEmail}:${e.calendarId}`))
         .map((e) => e.compoundKey)
       if (staleKeys.length > 0) {
         await db.calendarEvents.bulkDelete(staleKeys)
