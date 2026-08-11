@@ -244,6 +244,11 @@ export class Session extends EventEmitter {
     this.spawnedModel = model
     this.spawnedAt = Date.now()
     this.gotSystemInit = false
+    // A respawn orphans any outstanding control_request — the new process
+    // knows nothing of it, so a stale marker would misroute normal messages
+    // into denyTool (whose response would go unanswered anyway).
+    this.approvalPending = false
+    this.pendingApprovalRequest = null
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -593,6 +598,7 @@ export class Session extends EventEmitter {
       },
     }
     this.approvalPending = false
+    this.pendingApprovalRequest = null
     this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
   }
@@ -608,6 +614,7 @@ export class Session extends EventEmitter {
       },
     }
     this.approvalPending = false
+    this.pendingApprovalRequest = null
     this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
   }
@@ -668,6 +675,11 @@ export class Session extends EventEmitter {
   /** An approval (AskUserQuestion / plan) is outstanding — hibernating now
    *  would orphan the pending control_request, making it unanswerable. */
   approvalPending = false
+  /** Which approval is outstanding — lets the send_message path route a chat
+   *  message typed during an ExitPlanMode review into plan feedback (deny with
+   *  the message as reason) instead of stdin, where the CLI can't process it
+   *  until the control_request resolves (the "frozen composer"). */
+  pendingApprovalRequest: { requestId: string; toolName: string } | null = null
 
   /** True when this session is safe to hibernate: idle for real (no pending
    *  approval, not mid-anything), with a resumable claudeSessionId. */
@@ -971,6 +983,7 @@ export class Session extends EventEmitter {
             // Blocks hibernation: killing the process now would orphan the
             // pending control_request and the answer could never be delivered.
             this.approvalPending = true
+            this.pendingApprovalRequest = { requestId, toolName }
             this.emitHub({
               type: 'approval_required',
               sessionId: this.id,

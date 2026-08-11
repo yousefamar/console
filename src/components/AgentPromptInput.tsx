@@ -43,6 +43,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const isRunning = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.status === 'running')
   const queuedMessage = useAgentStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId)?.queuedMessage ?? null)
   const connected = useAgentStore((s) => s.connected)
+  // Pending-approval hint: while ExitPlanMode is up the hub routes a sent
+  // message into plan feedback (deny-with-reason); tell the user that instead
+  // of looking frozen. AskUserQuestion just gets a "answer above" nudge.
+  const pendingToolName = useAgentStore((s) => (s.activeSessionId ? s.pendingApprovalsBySession[s.activeSessionId]?.toolName ?? null : null))
   const createSession = useAgentStore((s) => s.createSession)
   const sendMessage = useAgentStore((s) => s.sendMessage)
   const queueMessage = useAgentStore((s) => s.queueMessage)
@@ -711,7 +715,10 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           data-agent-input
-          placeholder={activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
+          placeholder={
+            pendingToolName === 'ExitPlanMode' ? 'Plan feedback — Claude keeps planning (approve above to proceed)'
+            : pendingToolName === 'AskUserQuestion' ? 'Answer the question above first...'
+            : activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
           rows={1}
           className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[50vh] overflow-y-auto"
           disabled={!connected}

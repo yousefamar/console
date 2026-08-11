@@ -641,6 +641,11 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
         }
         AgentComposer(
             placeholder = when {
+                // The hub routes a send during a plan review into plan feedback
+                // (deny-with-reason, Claude keeps planning) — say so instead of
+                // looking frozen.
+                sessionApprovals.any { it.toolName == "ExitPlanMode" } -> "Plan feedback — Claude keeps planning"
+                sessionApprovals.any { it.toolName == "AskUserQuestion" } -> "Answer the question above first…"
                 session?.id == "al" -> "Message Al…"
                 act?.running == true || session?.status == "running" -> "Follow up…"
                 else -> "Prompt"

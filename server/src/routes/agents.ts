@@ -749,7 +749,22 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       const userMsg = { type: 'user_prompt' as const, sessionId: msg.sessionId, content: msg.content, ...(msg.images?.length ? { images: msg.images.map((img) => `data:${img.media_type};base64,${img.data}`) } : {}) }
       session.logMessage(userMsg)
       broadcastExcept(clients, ws, userMsg)
-      session.sendMessage(msg.content, msg.images)
+      // A message typed while an ExitPlanMode approval is pending is PLAN
+      // FEEDBACK, not a prompt: the CLI blocks its whole turn on the
+      // control_request, so stdin text would just sit unprocessed (the
+      // "frozen composer"). Deny with the message as reason — the model
+      // treats it as review comments and keeps planning (terminal parity).
+      // Hub-side so every client (SPA, APK, con agent send, /mic/say)
+      // inherits it. AskUserQuestion keeps normal send — it has its own UI.
+      const planReq = session.pendingApprovalRequest
+      if (planReq?.toolName === 'ExitPlanMode' && msg.content.trim() !== '/clear') {
+        const deniedMsg = { type: 'tool_denied' as const, sessionId: msg.sessionId, requestId: planReq.requestId, toolName: 'ExitPlanMode', reason: msg.content }
+        session.logMessage(deniedMsg)
+        broadcast(clients, deniedMsg) // incl. sender — clears its approval card
+        session.denyTool(planReq.requestId, msg.content)
+      } else {
+        session.sendMessage(msg.content, msg.images)
+      }
       // Sending a message implicitly marks the session read (chat parity).
       markSessionRead(ctx, session)
       // Capture the idle→running transition in the manifest — sendMessage
