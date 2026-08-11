@@ -73,6 +73,8 @@ export interface AuthConfig {
   monzo?: MonzoAuth
   spotify?: SpotifyAuth
   serpApi?: { apiKey: string }
+  /** Google Maps Platform API key (Places API New + Routes API), used by /gmaps/* */
+  googleMaps?: { apiKey: string }
   /** OwnTracks Recorder (self-hosted location server, e.g. maps.amar.io) */
   owntracks?: { url: string; username: string; password: string }
   /**
@@ -723,6 +725,24 @@ export class AuthStore {
   }
 
   // --------------------------------------------------------------------------
+  // Google Maps Platform (Places API New + Routes API, proxied by /gmaps/*)
+  // --------------------------------------------------------------------------
+
+  getGoogleMapsKey(): string | undefined {
+    return this.config.googleMaps?.apiKey
+  }
+
+  setGoogleMapsKey(apiKey: string): void {
+    this.config.googleMaps = { apiKey }
+    this.save()
+  }
+
+  clearGoogleMaps(): void {
+    this.config.googleMaps = undefined
+    this.save()
+  }
+
+  // --------------------------------------------------------------------------
   // OwnTracks (self-hosted location recorder, proxied by /owntracks/*)
   // --------------------------------------------------------------------------
 
@@ -796,6 +816,7 @@ export class AuthStore {
           }
         : { connected: false, hasCredentials: false },
       serpApi: { configured: !!this.config.serpApi?.apiKey },
+      googleMaps: { configured: !!this.config.googleMaps?.apiKey },
     }
   }
 

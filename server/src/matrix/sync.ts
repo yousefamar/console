@@ -89,6 +89,10 @@ export class MatrixSync {
   private loopTimer: NodeJS.Timeout | null = null
   private stopped = false
   private inflight = false
+  /** Coalesce concurrent resume() calls by `since` token: a herd of clients
+   * reconnecting from the same stale cursor shares ONE backfill instead of
+   * each stacking a full 388-room / 20k-event replay that never drains. */
+  private readonly resumeInflight = new Map<string, Promise<MatrixDelta & { isInitial?: boolean }>>()
   private readonly LONG_POLL_MS = 30_000
   /** roomId → cached state, built progressively from sync. */
   private readonly roomState = new Map<string, RoomStateCache>()
@@ -186,6 +190,20 @@ export class MatrixSync {
   // cursor untouched. Safe to call concurrently with ticks; `decryptRoomEvent`
   // uses keys the OlmMachine already has from the main loop.
   async resume(args?: { since?: string }): Promise<MatrixDelta & { isInitial?: boolean }> {
+    // Coalesce: if a resume for this exact `since` is already running, join it
+    // rather than launching another full replay. Keyed by the since token
+    // (empty string = cold start) so distinct cursors still run independently.
+    const key = args?.since ?? ''
+    const existing = this.resumeInflight.get(key)
+    if (existing) return existing
+    const p = this.resumeInner(args).finally(() => {
+      if (this.resumeInflight.get(key) === p) this.resumeInflight.delete(key)
+    })
+    this.resumeInflight.set(key, p)
+    return p
+  }
+
+  private async resumeInner(args?: { since?: string }): Promise<MatrixDelta & { isInitial?: boolean }> {
     const cfg = this.auth.getMatrixConfig()
     if (!cfg || !this.crypto.isReady()) {
       return { nextBatch: '', rooms: {}, isInitial: !args?.since }
@@ -455,28 +473,36 @@ export class MatrixSync {
     source: 'resume' | 'tick',
   ): Promise<void> {
     const GAP_LIMIT_PER_ROOM = 100
-    await Promise.all(
-      Object.entries(rooms).map(async ([roomId, r]) => {
-        if (!r.timeline?.limited || !r.timeline.prev_batch) return
+    // BOUNDED concurrency. An unbounded Promise.all over a big resume (a
+    // client returning from a long offline window → ~388 limited rooms) fired
+    // hundreds of concurrent homeserver fetches + Olm decrypts, starving the
+    // event loop so hard the hub stopped answering /health — which is also
+    // what stalled APK downloads mid-stream (2026-08-11). Worker-pool of 6.
+    const entries = Object.entries(rooms).filter(([, r]) => r.timeline?.limited && r.timeline.prev_batch)
+    let next = 0
+    const worker = async () => {
+      while (next < entries.length) {
+        const [roomId, r] = entries[next++]!
         try {
           const gap = await this.paginate({
             roomId,
-            from: r.timeline.prev_batch,
+            from: r.timeline!.prev_batch!,
             dir: 'b',
             limit: GAP_LIMIT_PER_ROOM,
           })
           // /messages with dir=b returns newest-first; reverse to chronological
           // order before prepending to the existing timeline events.
           const gapEvents = (gap.chunk ?? []).slice().reverse()
-          r.timeline.events = [...gapEvents, ...(r.timeline.events ?? [])]
+          r.timeline!.events = [...gapEvents, ...(r.timeline!.events ?? [])]
           this.log(
             `[matrix-sync] ${source}: backfilled ${gapEvents.length} events for ${roomId} (limited gap)`,
           )
         } catch (e) {
           this.log(`[matrix-sync] ${source}: backfill failed for ${roomId}: ${(e as Error).message}`)
         }
-      }),
-    )
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(6, entries.length) }, worker))
   }
 
   /**
