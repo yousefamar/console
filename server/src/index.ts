@@ -102,6 +102,8 @@ import { SerpApiClient } from './flights/serpapi.js'
 import { WatchlistStore } from './flights/store.js'
 import { FlightSync } from './flights/sync.js'
 import { handleFlightRoutes } from './routes/flights.js'
+import { GoogleMapsClient } from './gmaps/client.js'
+import { handleGmapsRoutes } from './routes/gmaps.js'
 import { KeyBackupStore } from './matrix/key-backup-store.js'
 import { HubMatrixCrypto } from './matrix/crypto.js'
 import { MatrixSync } from './matrix/sync.js'
@@ -298,6 +300,7 @@ syncBus.register('cal', {
 })
 calSync.start()
 const serpApiClient = new SerpApiClient(authStore)
+const googleMapsClient = new GoogleMapsClient(authStore)
 const flightWatchlists = new WatchlistStore(join(feedsConfigDir, 'flight-watchlists.json'))
 const flightSync = new FlightSync(serpApiClient, flightWatchlists, pushServer, syncBus, mapLayerStore, (msg: string) => { log(msg) })
 flightSync.start()
@@ -1220,6 +1223,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/mail') && handleMailRoutes(req, res, path, url, gmailClient, readBody, mailSendDedup)) return
   if (path.startsWith('/cal') && handleCalendarRoutes(req, res, path, url, calendarClient, authStore, readBody, calCreateDedup)) return
   if (path.startsWith('/flights') && handleFlightRoutes(req, res, path, url, { authStore, serpApi: serpApiClient, watchlists: flightWatchlists, sync: flightSync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
+  if (path.startsWith('/gmaps') && handleGmapsRoutes(req, res, path, url, { authStore, gmaps: googleMapsClient, readBody })) return
   // Rescued media from the append-only chat archive (deleted attachments).
   // GET /matrix/archive/media/<sha1>.bin[?mime=image/jpeg] — filename
   // validated inside mediaPath. The stored blob has no extension, so the
