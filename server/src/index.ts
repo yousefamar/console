@@ -36,7 +36,7 @@ import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
-import { STT_REALTIME_URL, STT_BATCH_MODEL, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
+import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { enforce as enforceHubAuth, authEnforcementActive, decideWsUpgrade } from './auth-middleware.js'
@@ -1448,8 +1448,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // See that module's header for the two broken variants that preceded this.
     const openaiWs = new WebSocket(STT_REALTIME_URL, { headers: buildSttHeaders(apiKey) })
 
-    // Periodically commit the audio buffer to force transcription during continuous speech
-    let commitInterval: ReturnType<typeof setInterval> | null = null
+    // Flush the tail once the client STOPS STREAMING audio (see STT_FLUSH_IDLE_MS
+    // in stt.ts for why this is idle-triggered and not periodic).
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    const flushTail = () => {
+      flushTimer = null
+      if (openaiWs.readyState !== WebSocket.OPEN) return
+      openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+    }
+
+    // `{type:'done'}` = the user released the mic. Commit NOW (don't wait out the
+    // idle timer) and hold the client socket open until the final lands, then
+    // close it ourselves — that's the signal for the client to stop waiting.
+    // Clients that just hang up instead still get the idle flush, but anything
+    // still in flight is lost, so they should send this.
+    let awaitingFinal = false
+    let doneTimer: ReturnType<typeof setTimeout> | null = null
+    const finish = () => {
+      awaitingFinal = false
+      if (doneTimer) { clearTimeout(doneTimer); doneTimer = null }
+      try { ws.close() } catch { /* */ }
+    }
 
     openaiWs.on('open', () => {
       openaiWs.send(JSON.stringify(buildTranscriptionSessionUpdate()))
@@ -1468,17 +1487,20 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         }
         const out = translateOpenAiEvent(msg)
         if (out) ws.send(JSON.stringify(out))
+        // A non-empty `final` is the whole transcript — the client has what it
+        // came for, so release it rather than making it wait out its own grace.
+        if (awaitingFinal && out?.type === 'final' && out.text) finish()
       } catch { /* ignore */ }
     })
 
     openaiWs.on('close', (code, reason) => {
       log(`[stt] OpenAI WS closed code=${code} reason=${reason?.toString().slice(0, 200) || '(none)'}`)
-      if (commitInterval) clearInterval(commitInterval)
+      if (flushTimer) clearTimeout(flushTimer)
       ws.close()
     })
     openaiWs.on('error', (err) => {
       log(`[stt] OpenAI WS error: ${(err as Error).message}`)
-      if (commitInterval) clearInterval(commitInterval)
+      if (flushTimer) clearTimeout(flushTimer)
       ws.close()
     })
     openaiWs.on('unexpected-response', (_req, res) => {
@@ -1490,13 +1512,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const msg = JSON.parse(data.toString())
         if (msg.type === 'audio' && openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: msg.data }))
+          if (flushTimer) clearTimeout(flushTimer)
+          flushTimer = setTimeout(flushTail, STT_FLUSH_IDLE_MS)
+        } else if (msg.type === 'done') {
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+          awaitingFinal = true
+          flushTail()
+          // Cap the wait — a model that never completes must not strand the mic.
+          doneTimer = setTimeout(finish, STT_DONE_TIMEOUT_MS)
         }
       } catch { /* ignore */ }
     })
 
     ws.on('close', () => {
       log('[stt] Client disconnected')
-      if (commitInterval) clearInterval(commitInterval)
+      if (flushTimer) clearTimeout(flushTimer)
+      if (doneTimer) clearTimeout(doneTimer)
       if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close()
     })
     return

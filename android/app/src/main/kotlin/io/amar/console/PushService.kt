@@ -451,6 +451,9 @@ class PushService : Service() {
     @Volatile private var pttActive = false
     private val pttFinals = StringBuilder()
     @Volatile private var pttPending = ""
+    /** Set when the relay delivers the tail transcript after [pttUp] sends
+     *  `done`, so we route as soon as it lands instead of waiting out the cap. */
+    @Volatile private var pttSawFinal = false
     private fun pttFullText(): String =
         (pttFinals.toString() + pttPending).trim().replace(Regex("\\s+"), " ")
 
@@ -492,6 +495,7 @@ class PushService : Service() {
             return
         }
         pttActive = true
+        pttSawFinal = false
         pttFinals.setLength(0); pttPending = ""
         setForegroundType(withMic = true)        // assert mic FGS type for AudioRecord
         hubPost("/mic/hot", "{\"hot\":true}")
@@ -506,7 +510,17 @@ class PushService : Service() {
                     val m = JSONObject(text)
                     when (m.optString("type")) {
                         "interim" -> { pttPending += m.optString("text"); }
-                        "final" -> { val t = m.optString("text"); if (t.isNotEmpty()) pttFinals.append(t).append(' '); pttPending = "" }
+                        // ONE final carries the whole turn, so it supersedes the
+                        // accumulated deltas rather than appending to them.
+                        "final" -> {
+                            val t = m.optString("text")
+                            if (t.isNotEmpty()) {
+                                pttFinals.setLength(0)
+                                pttFinals.append(t).append(' ')
+                                pttSawFinal = true
+                            }
+                            pttPending = ""
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -550,8 +564,15 @@ class PushService : Service() {
         pttRecord = null
         hubPost("/mic/hot", "{\"hot\":false}")
         setForegroundType(withMic = false)
-        // Give OpenAI a beat to flush a trailing final, then route + close.
-        reconnectHandler.postDelayed({
+        // The STT model rejects turn_detection, so the relay only closes the turn
+        // when we say the mic is released — `done` makes it commit immediately and
+        // reply with the tail transcript. Poll for that final rather than sleeping
+        // a fixed grace: the old flat 700ms was shorter than the measured
+        // commit→final latency, so short holds lost their ending entirely.
+        try { pttWs?.send(JSONObject().put("type", "done").toString()) } catch (_: Exception) {}
+        Thread {
+            val deadline = System.currentTimeMillis() + 5000
+            while (!pttSawFinal && System.currentTimeMillis() < deadline) Thread.sleep(50)
             try { pttWs?.close(1000, "ptt-end") } catch (_: Exception) {}
             pttWs = null
             val text = pttFullText()
@@ -560,7 +581,7 @@ class PushService : Service() {
                 // holds the mic (hub /mic/say routes to the owner).
                 hubPost("/mic/say", JSONObject().put("text", text).toString())
             }
-        }, 700)
+        }.start()
     }
     private fun registerPttProbe() {
         try {

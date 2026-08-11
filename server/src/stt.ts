@@ -27,6 +27,32 @@ export const STT_REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcr
  *  (vs gpt-4o-mini-transcribe's bursty sentence-boundary commits). */
 export const STT_MODEL = 'gpt-realtime-whisper'
 
+/**
+ * How long the client must go without sending audio before the relay commits
+ * the input buffer.
+ *
+ * `gpt-realtime-whisper` rejects `turn_detection`, so nothing ever closes a turn
+ * on its own — it streams deltas lazily and the tail of an utterance can sit
+ * unemitted for 5–8 s (measured). Clients close the socket the instant the user
+ * releases the mic, so those deltas arrived after disconnect and were dropped:
+ * short utterances lost their ending, and a brief one could yield NOTHING.
+ *
+ * Committing on IDLE, not on a periodic timer, is the distinction that matters —
+ * periodic commits chop mid-sentence and wrecked accuracy (see
+ * memory/feedback_stt_no_periodic_commits.md). Every append resets this timer,
+ * so a commit only lands in a genuine gap. Kept above a natural inter-word pause
+ * and below the pause a user reads as "it's broken".
+ */
+export const STT_FLUSH_IDLE_MS = 600
+
+/**
+ * Cap on how long the relay holds a client socket open after `{type:'done'}`
+ * (mic released) waiting for the final transcript. The relay closes the socket
+ * as soon as the final arrives, so this only bounds the pathological case where
+ * the model never completes — without it a stuck turn would strand the mic UI.
+ */
+export const STT_DONE_TIMEOUT_MS = 4_000
+
 /** Batch (`/v1/audio/transcriptions`) model, for the whole-file paths: the
  *  `/stt` upload endpoint and Al's WhatsApp voice notes. Deliberately a
  *  DIFFERENT model from the realtime one above — the realtime endpoint rejects
