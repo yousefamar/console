@@ -11,6 +11,14 @@ _(empty)_
 
 ## Built, awaiting release
 
+- Chat message forwarding (WhatsApp flow): long-press a message → Forward →
+  searchable recent-room picker → sends into the target room with a
+  confirmation toast. Text forwards as a plain send (no Matrix relation —
+  what bridges can carry); media resolves through the same path bubbles
+  render from (local spool → decrypted E2EE cache → download) and re-sends
+  as a fresh upload, so an E2EE original re-encrypts for the target room
+  instead of leaking an mxc its members can't decrypt. sendAttachment's
+  echo+queue tail factored into sendSpooledFile, shared by both. +1 test.
 - Plan reviews take feedback (terminal parity): `PlanApprovalUi` gained a
   comment field — "Keep planning" sends the text as the deny reason (Claude
   keeps planning against it), "Approve plan" with text approves then sends the
