@@ -405,7 +405,17 @@ class ChatRepository(
         resolver.openInputStream(uri)?.use { input ->
             spoolFile.outputStream().use { input.copyTo(it) }
         } ?: return
+        sendSpooledFile(roomId, spoolFile, filename, mime, caption)
+    }
 
+    /** Echo + durable-queue an already-spooled file (sendAttachment + forward). */
+    private suspend fun sendSpooledFile(
+        roomId: String,
+        spoolFile: java.io.File,
+        filename: String,
+        mime: String,
+        caption: String?,
+    ) {
         // msgtype from MIME (SPA sendFile): image/video/audio → typed bubble.
         // Non-whitelisted audio (WAV/AIFF/FLAC — bounced by the WhatsApp
         // bridge as unsupported voice notes) demotes to m.file.
@@ -458,6 +468,35 @@ class ChatRepository(
             "m.image" -> "📷"; "m.video" -> "🎬"; "m.audio" -> "🎵"; else -> "📎"
         }
         bumpRoomPreview(roomId, "$glyph ${caption ?: filename}", "me")
+    }
+
+    /**
+     * Forward a message to another room. Text forwards as a plain send (no
+     * Matrix relation — WhatsApp semantics, matching what bridges can carry);
+     * media resolves through the SAME path bubbles render from (local spool →
+     * decrypted E2EE cache → download), then re-sends as a fresh upload so an
+     * E2EE original re-encrypts for the target room rather than leaking an
+     * mxc the recipients can't decrypt.
+     */
+    suspend fun forwardMessage(context: android.content.Context, msg: ChatMessageRow, targetRoomId: String) {
+        val hasMedia = msg.mediaMxc != null || msg.encryptedFileJson != null || msg.localMediaPath != null
+        if (!hasMedia) {
+            val body = msg.body?.takeIf { it.isNotBlank() } ?: return
+            sendText(targetRoomId, body)
+            return
+        }
+        val src = mediaFile(context, msg) // throws offline — caller surfaces it
+        val spool = java.io.File(context.filesDir, "outbox-media").apply { mkdirs() }
+        val filename = msg.body?.takeIf { it.isNotBlank() && !it.contains('\n') } ?: "forwarded"
+        val spoolFile = java.io.File(spool, "${System.currentTimeMillis()}-$filename")
+        src.copyTo(spoolFile, overwrite = true)
+        sendSpooledFile(
+            roomId = targetRoomId,
+            spoolFile = spoolFile,
+            filename = filename,
+            mime = msg.mediaMime ?: "application/octet-stream",
+            caption = null,
+        )
     }
 
     /** Audio MIME the WhatsApp bridge accepts as a voice note (SPA sendFile). */
