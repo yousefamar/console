@@ -412,11 +412,16 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       const dbEvents: DbCalendarEvent[] = []
       // Only calendars whose fetch actually succeeded may have their events
       // reaped below — a rejected fetch returns no items, which must never be
-      // read as "Google deleted everything in this calendar".
+      // read as "Google deleted everything in this calendar". Keyed by
+      // calendarId ALONE: a row's stored accountEmail is whichever token read
+      // it at the time, and that changes when a better-access account is
+      // connected (apiAccountEmail promotion), so an account-qualified key
+      // leaves the pre-promotion rows permanently unreapable — they linger as
+      // visible duplicates of every event in that calendar.
       const reapable = new Set<string>()
       for (const result of results) {
         if (result.status === 'fulfilled') {
-          reapable.add(`${result.value.accountEmail}:${result.value.calId}`)
+          reapable.add(result.value.calId)
           for (const event of result.value.items) {
             if (event.status === 'cancelled') continue
             dbEvents.push(toDbEvent(event, result.value.calId, result.value.accountEmail))
@@ -451,7 +456,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         // seen, so its absence from the response says nothing. Durable version
         // of the reload-volatile pendingTempIds guard above.
         .filter((e) => !isTempEventId(e.id))
-        .filter((e) => reapable.has(`${e.accountEmail}:${e.calendarId}`))
+        .filter((e) => reapable.has(e.calendarId))
         .map((e) => e.compoundKey)
       if (staleKeys.length > 0) {
         await db.calendarEvents.bulkDelete(staleKeys)
