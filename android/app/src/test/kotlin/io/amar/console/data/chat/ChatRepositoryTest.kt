@@ -292,6 +292,22 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun `forwarding a text message sends it plain into the target room`() = runTest {
+        repo.ingestMatrixDelta(env(
+            """{"nextBatch":"s1","rooms":{"!src:x":{"timeline":{"events":[
+                 {"event_id":"${'$'}m1","sender":"@a:x","type":"m.room.message",
+                  "origin_server_ts":1,"content":{"msgtype":"m.text","body":"pass it on"}}]}}}}"""
+        ))
+        val msg = db.chatMessages().byId("\$m1")!!
+        repo.forwardMessage(ApplicationProvider.getApplicationContext(), msg, "!dest:x")
+        // Echo lands in the TARGET room with the same body, queued as a send.
+        val echo = db.chatMessages().recent("!dest:x", 5).first()
+        assertTrue(echo.localEcho)
+        assertEquals("pass it on", echo.body)
+        assertEquals(1, db.outbox().pending().count { it.type == ChatRepository.TYPE_SEND })
+    }
+
+    @Test
     fun `reply gets enriched with quoted sender and body from cache`() = runTest {
         repo.ingestMatrixDelta(env(
             """{"nextBatch":"s1","rooms":{"!r:x":{"timeline":{"events":[

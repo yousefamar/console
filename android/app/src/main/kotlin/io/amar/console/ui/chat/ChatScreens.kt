@@ -543,6 +543,7 @@ fun ChatRoomScreen(
     var loadingOlder by remember { mutableStateOf(false) }
     var replyingTo by remember { mutableStateOf<ChatMessageRow?>(null) }
     var reactTarget by remember { mutableStateOf<ChatMessageRow?>(null) }
+    var forwardTarget by remember { mutableStateOf<ChatMessageRow?>(null) }
     var editingMsg by remember { mutableStateOf<ChatMessageRow?>(null) }
     var editNonce by remember { mutableIntStateOf(0) }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
@@ -868,6 +869,23 @@ fun ChatRoomScreen(
             onReply = { replyingTo = target },
             onEdit = { editingMsg = target; editNonce++ },
             onCopy = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(target.body ?: "")) },
+            onForward = { forwardTarget = target },
+        )
+    }
+
+    forwardTarget?.let { target ->
+        ForwardRoomPicker(
+            repo = repo,
+            excludeRoomId = roomId,
+            onPick = { destRoomId, destName ->
+                forwardTarget = null
+                scope.launch {
+                    runCatching { repo.forwardMessage(context, target, destRoomId) }
+                        .onSuccess { io.amar.console.ui.shell.AppToast.show("Forwarded to $destName") }
+                        .onFailure { io.amar.console.ui.shell.AppToast.show("Forward failed: ${it.message}", error = true) }
+                }
+            },
+            onDismiss = { forwardTarget = null },
         )
     }
     lightboxIndex?.let { start ->
@@ -954,6 +972,7 @@ private fun QuickReactSheet(
     onReply: () -> Unit,
     onEdit: () -> Unit,
     onCopy: () -> Unit,
+    onForward: () -> Unit,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var expanded by remember { mutableStateOf(false) }
@@ -1030,6 +1049,55 @@ private fun QuickReactSheet(
             androidx.compose.material3.TextButton(onClick = { onReply(); onDismiss() }) { Text("↩ Reply") }
             if (canEdit) androidx.compose.material3.TextButton(onClick = { onEdit(); onDismiss() }) { Text("✎ Edit") }
             androidx.compose.material3.TextButton(onClick = { onCopy(); onDismiss() }) { Text("⧉ Copy text") }
+            if (!target.isDeleted) {
+                androidx.compose.material3.TextButton(onClick = { onForward(); onDismiss() }) { Text("➦ Forward") }
+            }
+        }
+        androidx.compose.foundation.layout.Spacer(Modifier.size(24.dp))
+    }
+}
+
+/** Forward destination picker: searchable recent-room list (WhatsApp flow). */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ForwardRoomPicker(
+    repo: ChatRepository,
+    excludeRoomId: String,
+    onPick: (roomId: String, name: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val rooms by repo.observeRooms().collectAsState(initial = emptyList())
+    var query by remember { mutableStateOf("") }
+    val candidates = remember(rooms, query) {
+        rooms.asSequence()
+            .filter { it.id != excludeRoomId }
+            .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
+            .sortedByDescending { it.lastMessageTime }
+            .take(30)
+            .toList()
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Forward to…", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+        )
+        androidx.compose.material3.OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            placeholder = { Text("Search chats") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+            items(candidates, key = { it.id }) { room ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onPick(room.id, room.name) }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Avatar(name = room.name, imageUrl = MatrixMedia.thumbnailUrl(room.avatarMxc), size = 32.dp)
+                    Text(room.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
         androidx.compose.foundation.layout.Spacer(Modifier.size(24.dp))
     }
