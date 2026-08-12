@@ -478,10 +478,21 @@ export class MatrixSync {
     // hundreds of concurrent homeserver fetches + Olm decrypts, starving the
     // event loop so hard the hub stopped answering /health — which is also
     // what stalled APK downloads mid-stream (2026-08-11). Worker-pool of 6.
+    //
+    // BOUNDED TIME too: bounded concurrency alone just made a monster resume
+    // slower — still minutes for ~388 rooms, still past every client RPC
+    // timeout, so clients retried forever ("struggling to sync"). The budget
+    // caps the whole walk; skipped rooms keep `limited`+`prev_batch`, and the
+    // client backfills them lazily on room open (loadOlder/ensureMessages) —
+    // recent-room previews land NOW, deep history on demand.
+    const TIME_BUDGET_MS = 20_000
+    const deadline = Date.now() + TIME_BUDGET_MS
     const entries = Object.entries(rooms).filter(([, r]) => r.timeline?.limited && r.timeline.prev_batch)
     let next = 0
+    let skipped = 0
     const worker = async () => {
       while (next < entries.length) {
+        if (Date.now() > deadline) { skipped += entries.length - next; next = entries.length; break }
         const [roomId, r] = entries[next++]!
         try {
           const gap = await this.paginate({
@@ -503,6 +514,9 @@ export class MatrixSync {
       }
     }
     await Promise.all(Array.from({ length: Math.min(6, entries.length) }, worker))
+    if (skipped > 0) {
+      this.log(`[matrix-sync] ${source}: backfill time budget hit — ${skipped} rooms deferred to on-open pagination`)
+    }
   }
 
   /**
@@ -574,14 +588,17 @@ export class MatrixSync {
   }
 
   /** Set fully_read + m.read marker and send an m.read receipt. */
-  async markRead(args: { roomId: string; eventId: string }): Promise<{ ok: true }> {
+  async markRead(args: { roomId: string; eventId: string; lastReadTs?: number }): Promise<{ ok: true }> {
     const cfg = this.auth.getMatrixConfig()
     if (!cfg) throw new Error('no matrix credentials')
-    const { roomId, eventId } = args
+    const { roomId, eventId, lastReadTs } = args
     // Optimistic: flip the snapshot now so every connected client sees the
     // room as read immediately — no need to wait for the next homeserver
-    // /sync delta to round-trip our own receipt back to us.
-    this.chatRoomsStore?.setRoomRead(roomId, eventId)
+    // /sync delta to round-trip our own receipt back to us. Pass lastReadTs so
+    // the broadcast snapshot carries the fresh read watermark — otherwise the
+    // client's bulkPut overwrites its own just-set lastReadTs with the stale
+    // hub value and the "New" divider stays put on next open.
+    this.chatRoomsStore?.setRoomRead(roomId, eventId, lastReadTs)
     const markerUrl = `${cfg.homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`
     const receiptUrl = `${cfg.homeserver}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/receipt/m.read/${encodeURIComponent(eventId)}`
     const headers = { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }
