@@ -18,7 +18,10 @@ const COLLAPSE_KEY = 'console:notes:metaBarCollapsed'
 export function WriteMetaBar({ path }: Props) {
   const content = useNotesStore((s) => s.openFiles[path]?.content ?? '')
   const allTags = useBlogStore((s) => s.tags)
+  const validTags = useBlogStore((s) => s.validTags)
   const projects = useBlogStore((s) => s.projects)
+  // Registry empty (hub unreachable / no areas.json) → validation off, nothing flags.
+  const isKnownTag = (t: string) => validTags.length === 0 || validTags.includes(t)
 
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === 'true')
   useEffect(() => { localStorage.setItem(COLLAPSE_KEY, String(collapsed)) }, [collapsed])
@@ -89,11 +92,15 @@ export function WriteMetaBar({ path }: Props) {
   const tagSuggestions = useMemo(() => {
     if (!tagFocus) return []
     const q = tagQuery.toLowerCase()
-    return allTags
+    // Suggest only registered tags when a registry exists — surfacing a
+    // historical typo as autocomplete would re-propagate it.
+    const source = validTags.length > 0 ? allTags.filter((t) => validTags.includes(t)) : allTags
+    const unseen = validTags.filter((t) => !allTags.includes(t))
+    return [...source, ...unseen]
       .filter((t) => !tags.includes(t))
       .filter((t) => !q || t.toLowerCase().includes(q))
       .slice(0, 8)
-  }, [tagFocus, tagQuery, allTags, tags])
+  }, [tagFocus, tagQuery, allTags, validTags, tags])
 
   if (collapsed) {
     return (
@@ -139,7 +146,12 @@ export function WriteMetaBar({ path }: Props) {
         {tags.map((t) => (
           <span
             key={t}
-            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-surface-2 text-text-secondary rounded-sm"
+            className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-sm ${
+              isKnownTag(t)
+                ? 'bg-surface-2 text-text-secondary'
+                : 'bg-destructive/15 text-destructive border border-destructive/40'
+            }`}
+            title={isKnownTag(t) ? undefined : `"${t}" is not a registered area tag (_data/areas.json)`}
           >
             {t}
             <button
