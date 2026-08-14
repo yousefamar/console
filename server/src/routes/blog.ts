@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
 import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, republishPost, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
 import { loadAreaRegistry, lintVaultTags } from '../areas.js'
+import { listSpaces } from '../spaces.js'
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -57,6 +58,15 @@ export function handleBlogRoutes(
   if (path === '/blog/tags' && req.method === 'GET') {
     listAllTags(noteStore)
       .then((tags) => json(res, 200, tags))
+      .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
+  // GET /blog/spaces → projects (derived from projects/) + areas (registry),
+  // the nav source for the project-first Spaces pane.
+  if (path === '/blog/spaces' && req.method === 'GET') {
+    listSpaces(noteStore)
+      .then((spaces) => json(res, 200, { spaces }))
       .catch((err) => json(res, 500, { error: (err as Error).message }))
     return true
   }
