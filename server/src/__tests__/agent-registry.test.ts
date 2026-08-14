@@ -15,7 +15,7 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'agent-reg-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 function role(key: string, manager: string | null, title = key): AgentRole {
-  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false }
+  return { key, title, manager, goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false, fork: false, project: null, areas: [] }
 }
 
 describe('parseRole', () => {
@@ -45,6 +45,15 @@ describe('parseRole', () => {
     expect(r.charter).toContain('You are the Feeds agent.')
     expect(r.charter).toContain('## Memory')      // memory NOT split out — injected whole
     expect(r.charter).toContain('extract.ts')
+  })
+
+  it('parses project + areas frontmatter (scalar and block-list)', () => {
+    const r = parseRole('x', '---\ntitle: X\nproject: astera\nareas:\n  - life\n  - ai\n---\nbody')
+    expect(r.project).toBe('astera')
+    expect(r.areas).toEqual(['life', 'ai'])
+    const scalar = parseRole('y', '---\ntitle: Y\nareas: life\n---\nbody')
+    expect(scalar.project).toBeNull()
+    expect(scalar.areas).toEqual(['life'])
   })
 
   it('falls back to key for title and null manager when absent', () => {

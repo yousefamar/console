@@ -50,6 +50,12 @@ export interface AgentRole {
    *  parked (a parked fork is just chart clutter — there's nothing to revive it
    *  for). See kill_session/delete_session in routes/agents.ts. */
   fork: boolean
+  /** Vault project slug this role belongs to (projects/<slug>/). Many roles
+   *  may share one project. */
+  project: string | null
+  /** PARA area tags this role belongs to (validated against the vault's
+   *  _data/areas.json) — the home for roles with no project folder. */
+  areas: string[]
 }
 
 export interface OrgNode {
@@ -82,6 +88,10 @@ export function parseRole(key: string, content: string): AgentRole {
   const goals = Array.isArray(goalsRaw)
     ? goalsRaw.map((g) => String(g).trim()).filter(Boolean)
     : (typeof goalsRaw === 'string' && goalsRaw.trim() ? [goalsRaw.trim()] : [])
+  const areasRaw = fm.areas
+  const areas = Array.isArray(areasRaw)
+    ? areasRaw.map((a) => String(a).trim()).filter(Boolean)
+    : (typeof areasRaw === 'string' && areasRaw.trim() ? [areasRaw.trim()] : [])
   return {
     key,
     title: asStr(fm.title) ?? key,
@@ -93,6 +103,8 @@ export function parseRole(key: string, content: string): AgentRole {
     hasFile: true,
     folder: fm.folder === true || fm.folder === 'true',
     fork: fm.fork === true || fm.fork === 'true',
+    project: asStr(fm.project),
+    areas,
   }
 }
 
@@ -208,7 +220,7 @@ export class AgentRegistry {
   }
 
   /** Create a role (or folder) file. No-op if one already exists (idempotent). */
-  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string; folder?: boolean; fork?: boolean }): AgentRole {
+  create(key: string, init: { title: string; manager?: string | null; charter?: string; cwd?: string | null; goals?: string[]; created?: string; folder?: boolean; fork?: boolean; project?: string | null; areas?: string[] }): AgentRole {
     const existing = this.roles.get(key)
     if (existing || existsSync(this.filePath(key))) {
       this.reloadOne(key)
@@ -218,6 +230,11 @@ export class AgentRegistry {
     if (init.manager) fm.push(`manager: ${init.manager}`)
     if (init.folder) fm.push('folder: true')
     if (init.fork) fm.push('fork: true')
+    if (init.project) fm.push(`project: ${init.project}`)
+    if (init.areas && init.areas.length) {
+      fm.push('areas:')
+      for (const a of init.areas) fm.push(`  - ${a}`)
+    }
     if (init.goals && init.goals.length) {
       fm.push('goals:')
       for (const g of init.goals) fm.push(`  - ${g}`)
