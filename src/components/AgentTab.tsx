@@ -6,11 +6,10 @@ import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, ClipboardList, Clock, Folder, FolderOpen, GitBranch, ListFilter, ListTodo, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, ListTodo, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
 import { useMicStore } from '@/store/mic'
 import { AgentOrgChart } from './agent/AgentOrgChart'
 import { AgentProfilePanel } from './agent/AgentProfilePanel'
-import { TasksPanel } from './agent/TasksPanel'
 import { AgentQuickSwitcher } from './agent/AgentQuickSwitcher'
 import { buildGroupTree, peelUniversalRoot, arrangeLineage, type GroupNode } from './agent/session-tree'
 import { useCronStore } from '@/store/cron'
@@ -71,14 +70,12 @@ export const AgentTab = memo(function AgentTab() {
   const showAgentSwitcher = useAgentStore((s) => s.showAgentSwitcher)
   const undoOrg = useAgentStore((s) => s.undoOrg)
   const redoOrg = useAgentStore((s) => s.redoOrg)
-  const openTaskCount = useAgentStore((s) => s.tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked').length)
   const pendingHandoff = useAgentStore((s) => s.pendingHandoff)
   const handoffReturnTo = useAgentStore((s) => s.handoffReturnTo)
   const acceptHandoff = useAgentStore((s) => s.acceptHandoff)
   const dismissHandoff = useAgentStore((s) => s.dismissHandoff)
   const returnFromHandoff = useAgentStore((s) => s.returnFromHandoff)
   const agentRoles = useAgentStore((s) => s.agentRoles)
-  const [showTasks, setShowTasks] = useState(false)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top.
@@ -185,31 +182,12 @@ export const AgentTab = memo(function AgentTab() {
     </button>
   )
 
-  // Delegation tasks panel toggle (with an open-count dot).
-  const tasksToggle = (
-    <button
-      onClick={() => setShowTasks((v) => !v)}
-      className={clsx('relative transition-colors duration-fast', showTasks ? 'text-violet-400 hover:text-violet-300' : 'text-text-tertiary hover:text-text-primary')}
-      title="Delegation tasks"
-    >
-      <ClipboardList size={12} />
-      {openTaskCount > 0 && <span className="absolute -right-1.5 -top-1 rounded-full bg-violet-500 px-1 text-[8px] font-semibold leading-[1.3] text-white">{openTaskCount}</span>}
-    </button>
-  )
-
   // Overlays shared by both views: the role info dialog, the tasks panel, the
   // hand-off offer banner, and the Back-to-Al return control.
   const overlays = (
     <>
       {showAgentSwitcher && <AgentQuickSwitcher />}
       <AgentInfoDialog roleKey={roleInfoKey} onClose={closeRoleInfo} />
-      {showTasks && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={() => setShowTasks(false)}>
-          <div className="h-[70vh] w-full overflow-hidden rounded-t-xl border border-border shadow-xl sm:h-[80vh] sm:max-w-md sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
-            <TasksPanel onClose={() => setShowTasks(false)} />
-          </div>
-        </div>
-      )}
       {pendingHandoff && (
         <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
           <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{agentRoles.find((r) => r.key === pendingHandoff.targetAgentKey)?.title ?? pendingHandoff.targetAgentKey}</span></span>
@@ -241,7 +219,6 @@ export const AgentTab = memo(function AgentTab() {
         <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
           <span className="text-xs font-medium text-text-primary">Org chart</span>
           <div className="flex items-center gap-2">
-            {tasksToggle}
             {filterToggle}
             {viewToggle}
           </div>
@@ -282,8 +259,7 @@ export const AgentTab = memo(function AgentTab() {
             <div className="flex items-center gap-2">
               {viewToggle}
               {filterToggle}
-              {tasksToggle}
-              <button
+                <button
                 onClick={handleNewSession}
                 className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
                 title="New session"

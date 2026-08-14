@@ -832,10 +832,10 @@ describe('status updates', () => {
 })
 
 // --------------------------------------------------------------------------
-// Delegation / hand-off / org-chart store (tasks, handoff, reparent undo/redo)
+// Hand-off / org-chart store (handoff, reparent undo/redo)
 // --------------------------------------------------------------------------
 
-describe('delegation + handoff + org store', () => {
+describe('handoff + org store', () => {
   async function connected() {
     useAgentStore.getState().connect()
     await flush()
@@ -844,15 +844,8 @@ describe('delegation + handoff + org store', () => {
   const sent = (ws: MockWebSocket) => ws.sentMessages.map((m) => JSON.parse(m))
 
   beforeEach(() => useAgentStore.setState({
-    agentRoles: [], agentTree: [], tasks: [], pendingHandoff: null, handoffReturnTo: null, orgPast: [], orgFuture: [],
+    agentRoles: [], agentTree: [], pendingHandoff: null, handoffReturnTo: null, orgPast: [], orgFuture: [],
   }))
-
-  it('`tasks` message populates state.tasks', async () => {
-    const ws = await connected()
-    ws.receiveMessage({ type: 'tasks', tasks: [{ id: 'tsk_1', title: 'T', status: 'in_progress', toKey: 'eng', fromKey: 'al', chain: ['al', 'eng'], origin: 'human', parentTaskId: null, result: null, brief: 'b', createdAt: 0, updatedAt: 0 }] })
-    expect(useAgentStore.getState().tasks).toHaveLength(1)
-    expect(useAgentStore.getState().tasks[0]!.id).toBe('tsk_1')
-  })
 
   it('`session_handoff` message sets pendingHandoff', async () => {
     const ws = await connected()
@@ -860,24 +853,10 @@ describe('delegation + handoff + org store', () => {
     expect(useAgentStore.getState().pendingHandoff).toEqual({ fromSessionId: 's1', targetAgentKey: 'feeds-tab' })
   })
 
-  it('delegate() sends a delegate message (fromKey defaults to al)', async () => {
-    const ws = await connected()
-    useAgentStore.getState().delegate('eng', 'do X')
-    expect(sent(ws)).toContainEqual({ type: 'delegate', toKey: 'eng', brief: 'do X', fromKey: 'al' })
-  })
-
   it('mergeSession() sends merge_session', async () => {
     const ws = await connected()
     useAgentStore.getState().mergeSession('s-fork')
     expect(sent(ws)).toContainEqual({ type: 'merge_session', sessionId: 's-fork' })
-  })
-
-  it('cancelTask() optimistically marks cancelled + sends cancel_task', async () => {
-    const ws = await connected()
-    useAgentStore.setState({ tasks: [{ id: 'tsk_1', title: 'T', status: 'in_progress', toKey: 'eng', fromKey: 'al', chain: ['al', 'eng'], origin: 'human', parentTaskId: null, result: null, brief: 'b', createdAt: 0, updatedAt: 0 }] })
-    useAgentStore.getState().cancelTask('tsk_1')
-    expect(useAgentStore.getState().tasks[0]!.status).toBe('cancelled')
-    expect(sent(ws)).toContainEqual({ type: 'cancel_task', taskId: 'tsk_1' })
   })
 
   it('setAgentManager is optimistic, records history, and undo/redo round-trips', async () => {

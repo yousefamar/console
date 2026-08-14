@@ -16,7 +16,7 @@
 // scrape ids out of a result *string*. The files are whole-list, survive hub
 // restarts, and outlive a hibernated subprocess.
 //
-// NOTE: distinct from agents/tasks.ts, which is Console's own delegation tasks.
+// NOTE: distinct from the vault kanban boards (kanban/), which carry Console's own work assignment.
 // ============================================================================
 
 import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'

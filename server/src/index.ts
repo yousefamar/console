@@ -29,10 +29,11 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, broadcastTasks, delegateTask, reportTask, runTaskWatchdog, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, wakeSession, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
+import { BoardWatcher } from './kanban/watcher.js'
+import { buildBoardEnvelope, buildStaleNudge } from './kanban/dispatch.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
-import { TaskStore } from './agents/tasks.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
@@ -181,7 +182,6 @@ void refreshBedrockProfiles()
 // Durable agent roles / org chart. Loaded before any session spawn so charter
 // injection (createSession) can resolve a restored session's role.
 const agentRegistry = new AgentRegistry(join(feedsConfigDir, 'agents'), (m) => log(m))
-const taskStore = new TaskStore(join(feedsConfigDir, 'agent-tasks.json'), () => Date.now(), (m) => log(m))
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
@@ -623,7 +623,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry, tasks: taskStore,
+  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {
@@ -720,9 +720,52 @@ const cronScheduler = new HubCronScheduler(
 )
 cronScheduler.start()
 
-// Delegation watchdog: nudge stalled in-progress tasks, eventually bubble a
-// stall report. 5-min cadence (the staleness threshold inside is 15 min).
-setInterval(() => { try { runTaskWatchdog(agentCtx) } catch (e) { log(`[tasks] watchdog: ${(e as Error).message}`) } }, 5 * 60_000)
+// Board-driven delegation: the vault's kanban boards ARE the task store. A
+// card assigned `@agentkey` under an In-Progress column gets a ^blockid
+// stamped into the file and the agent woken with a [BOARD TASK] envelope;
+// completion is the agent editing its line into Done. Stale in-progress
+// cards get nudged (max 2). All state lives in the board files — a restart
+// re-derives everything (the ^id stamp marks already-dispatched).
+const boardWatcher = new BoardWatcher(noteStore, {
+  log: (m) => log(m),
+  onDispatch: ({ boardPath, card, column, project }) => {
+    const role = agentRegistry.get(card.agentKey!)
+    if (!role || role.folder) { log(`[boards] no such agent role: @${card.agentKey} (${boardPath})`); return false }
+    const worker = reviveAgentRole(agentCtx, card.agentKey!)
+    if (!worker) return false
+    wakeSession(agentCtx, worker, buildBoardEnvelope({
+      boardAbsPath: join(noteStore.vaultPath, boardPath),
+      card: { text: card.text, blockId: card.blockId!, lines: card.lines },
+      column,
+      project,
+    }))
+    return true
+  },
+  onTransition: (t) => {
+    log(`[boards] ^${t.blockId} "${t.text}" → ${t.done ? 'done' : 'blocked'} (${t.boardPath})`)
+    syncBus.broadcast('boards', 'transition', { blockId: t.blockId, boardPath: t.boardPath, done: t.done, blocked: t.blocked, text: t.text, agentKey: t.agentKey })
+    // Route the outcome up to the assignee's MANAGER (org edge) so results
+    // report up the chain — the root (Al) relays to Yousef.
+    const managerKey = (t.agentKey && agentRegistry.get(t.agentKey)?.manager) || 'al'
+    const manager = liveSessionForRole(agentCtx, managerKey)
+    if (manager && manager.agentKey !== t.agentKey) {
+      wakeSession(agentCtx, manager, [
+        `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} moved to ${t.done ? 'Done' : 'Blocked'}.`,
+        t.done ? 'Relay or act on the outcome as appropriate.' : 'The assignee is stuck — read their note on the board and unblock or escalate.',
+      ].join('\n'))
+    }
+  },
+  onStale: (t, nudges) => {
+    if (!t.agentKey) return
+    const worker = liveSessionForRole(agentCtx, t.agentKey)
+    if (!worker) return
+    wakeSession(agentCtx, worker, buildStaleNudge({
+      boardAbsPath: join(noteStore.vaultPath, t.boardPath),
+      text: t.text, blockId: t.blockId, minutes: Math.round((30 * nudges)),
+    }))
+  },
+})
+void boardWatcher.start()
 
 // Idle hibernation sweep: every live `claude` subprocess holds ~250MB RSS
 // even while idle — dozens of parked sessions were costing >10GB. Reap the
@@ -1019,69 +1062,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
           res.end(JSON.stringify({ error: (e as Error).message }))
         }
       })
-      return
-    }
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'method not allowed' }))
-    return
-  }
-
-  // Delegation tasks — the out-of-band lever + CLI backend (mirrors /agents/roles).
-  if (path === '/agents/tasks') {
-    if (req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ tasks: taskStore.list() }))
-      return
-    }
-    if (req.method === 'POST') {
-      let raw = ''
-      req.on('data', (c) => { raw += c })
-      req.on('end', () => {
-        try {
-          const b = JSON.parse(raw || '{}') as { fromKey?: string; toKey?: string; newRole?: { title: string; cwd?: string; manager?: string | null }; title?: string; brief?: string; parentTaskId?: string | null; ephemeral?: boolean }
-          if (!b.brief?.trim()) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'brief is required' })); return }
-          const r = delegateTask(agentCtx, { fromKey: b.fromKey ?? 'al', toKey: b.toKey, newRole: b.newRole, title: b.title, brief: b.brief, parentTaskId: b.parentTaskId, ephemeral: b.ephemeral })
-          if (r.error) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: r.error })); return }
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ task: r.task }))
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: (e as Error).message }))
-        }
-      })
-      return
-    }
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'method not allowed' }))
-    return
-  }
-
-  // Report a task (POST /agents/tasks/<id>/report) or cancel it (DELETE /agents/tasks/<id>).
-  const taskMatch = path.match(/^\/agents\/tasks\/([^/]+?)(\/report)?$/)
-  if (taskMatch) {
-    const taskId = decodeURIComponent(taskMatch[1]!)
-    if (taskMatch[2] === '/report' && req.method === 'POST') {
-      let raw = ''
-      req.on('data', (c) => { raw += c })
-      req.on('end', () => {
-        try {
-          const b = JSON.parse(raw || '{}') as { result?: string; status?: 'done' | 'blocked' | 'failed' }
-          const r = reportTask(agentCtx, taskId, b.result ?? '', b.status ?? 'done')
-          if (r.error) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: r.error })); return }
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: true }))
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: (e as Error).message }))
-        }
-      })
-      return
-    }
-    if (!taskMatch[2] && req.method === 'DELETE') {
-      taskStore.cancel(taskId)
-      broadcastTasks(agentCtx)
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true }))
       return
     }
     res.writeHead(405, { 'Content-Type': 'application/json' })
@@ -1546,9 +1526,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   // Send the org-chart roles + tree (mirror model_state; also pushed on change).
   sendTo(ws, { type: 'agents_list', roles: agentRegistry.list(), tree: agentRegistry.tree() })
-
-  // Delegation tasks
-  sendTo(ws, { type: 'tasks', tasks: taskStore.list() })
 
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
