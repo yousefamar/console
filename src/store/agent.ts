@@ -151,6 +151,10 @@ export interface AgentRole {
   folder?: boolean
   /** Disposable UI-fork role — deleted (not parked) when its session ends. */
   fork?: boolean
+  /** Vault project slug this role belongs to (projects/<slug>/). */
+  project?: string | null
+  /** PARA area tags this role belongs to. */
+  areas?: string[]
 }
 
 export interface OrgNode {
