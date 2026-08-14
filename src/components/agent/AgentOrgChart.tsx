@@ -36,9 +36,7 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
   const deleteRole = useAgentStore((s) => s.deleteRole)
   const renameRole = useAgentStore((s) => s.renameRole)
   const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
-  const delegate = useAgentStore((s) => s.delegate)
   const mergeSession = useAgentStore((s) => s.mergeSession)
-  const tasks = useAgentStore((s) => s.tasks)
   const cronTasks = useCronStore((s) => s.tasksBySession)
 
   // Right-click / long-press context menu (screen coords + role key).
@@ -112,33 +110,6 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
   const statusRef = useRef(statusByKey)
   statusRef.current = statusByKey
 
-  // Open delegated-task count per assignee role → a node badge.
-  const taskCountByKey = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const t of tasks) {
-      if (t.status === 'pending' || t.status === 'in_progress' || t.status === 'blocked') {
-        m.set(t.toKey, (m.get(t.toKey) ?? 0) + 1)
-      }
-    }
-    return m
-  }, [tasks])
-  const taskRef = useRef(taskCountByKey)
-  taskRef.current = taskCountByKey
-
-  // Org edges currently carrying an active delegation → drawn yellow + animated
-  // dashes. Built from each open task's chain (consecutive manager→report hops).
-  const activeEdges = useMemo(() => {
-    const s = new Set<string>()
-    for (const t of tasks) {
-      if (t.status !== 'pending' && t.status !== 'in_progress') continue
-      for (let i = 0; i < t.chain.length - 1; i++) s.add(`${t.chain[i]}>${t.chain[i + 1]}`)
-    }
-    return s
-  }, [tasks])
-  const activeEdgesRef = useRef(activeEdges)
-  activeEdgesRef.current = activeEdges
-  const dashOffsetRef = useRef(0)
-
   // --- rendering -----------------------------------------------------------
 
   const draw = useCallback(() => {
@@ -179,16 +150,10 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       const p = P(n.parentKey), c = P(n.key)
       if (!p || !c) continue
       const x1 = p.x + NODE_W / 2, y1 = p.y, x2 = c.x - NODE_W / 2, y2 = c.y, midX = (x1 + x2) / 2
-      const isActive = activeEdgesRef.current.has(`${n.parentKey}>${n.key}`)
       ctx.beginPath()
       ctx.moveTo(x1, y1)
       ctx.bezierCurveTo(midX, y1, midX, y2, x2, y2)
-      if (isActive) {
-        ctx.strokeStyle = '#eab308'; ctx.lineWidth = 2
-        ctx.setLineDash([6, 4]); ctx.lineDashOffset = -dashOffsetRef.current
-      } else {
-        ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5; ctx.setLineDash([])
-      }
+      ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5; ctx.setLineDash([])
       ctx.stroke()
     }
     ctx.setLineDash([])
@@ -237,8 +202,7 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
         const dotColor = st?.live
           ? (st.attention ? '#ef4444' : st.status === 'running' ? '#f59e0b' : st.unread ? '#3b82f6' : null)
           : null
-        const taskN = taskRef.current.get(n.key) ?? 0
-        const hasBadges = (!!st && (st.bg > 0 || st.cron > 0)) || taskN > 0
+        const hasBadges = !!st && (st.bg > 0 || st.cron > 0)
         if (dotColor) {
           ctx.beginPath(); ctx.arc(x + 13, cy - (hasBadges ? 6 : 0), 4, 0, Math.PI * 2)
           ctx.fillStyle = dotColor; ctx.fill()
@@ -250,11 +214,10 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
         ctx.fillStyle = isFork ? '#c4b5fd' : st?.live ? '#e5e5e5' : '#a1a1aa'
         ctx.fillText(fit(ctx, display, NODE_W - (dotColor ? 34 : 22)), titleX, hasBadges ? cy - 6 : cy)
 
-        // task + cron + shell badges (bottom-left, mirrors the sidebar list)
+        // cron + shell badges (bottom-left, mirrors the sidebar list)
         if (hasBadges) {
           let bx = titleX
           ctx.textBaseline = 'middle'
-          if (taskN > 0) { bx = drawBadge(ctx, bx, cy + 11, '#a78bfa', 'task', taskN) }
           if (st && st.bg > 0) { bx = drawBadge(ctx, bx, cy + 11, '#f59e0b', 'shell', st.bg) }
           if (st && st.cron > 0) { bx = drawBadge(ctx, bx, cy + 11, '#60a5fa', 'cron', st.cron) }
           ctx.textBaseline = 'middle'
@@ -310,8 +273,6 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) { cur.x += dx * 0.28; cur.y += dy * 0.28; moving = true } else { cur.x = n.x; cur.y = n.y }
     }
     for (const k of [...pos.keys()]) if (!keys.has(k)) pos.delete(k)
-    // March the active-delegation dashes; keep the loop alive while any exist.
-    if (activeEdgesRef.current.size > 0) { dashOffsetRef.current = (dashOffsetRef.current + 0.5) % 1000; moving = true }
     drawRef.current()
     if (moving || dragRef.current) rafRef.current = requestAnimationFrame(tick)
   }, [])
@@ -366,9 +327,8 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
   }, [layout, kick, applyTransform, filterAlerted])
 
   // Repaint on status / cron / shell / task changes (positions unchanged).
-  useEffect(() => { draw() }, [statusByKey, taskCountByKey, draw])
+  useEffect(() => { draw() }, [statusByKey, draw])
   // Start the animation loop when a delegation goes active (marching dashes).
-  useEffect(() => { if (activeEdges.size > 0) kick() }, [activeEdges, kick])
 
   // --- pointer interaction -------------------------------------------------
 
@@ -500,10 +460,6 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       } else {
         items.push({ label: 'Revive', onClick: () => reviveAgent(role.key) })
       }
-      items.push({ label: 'Delegate task…', onClick: async () => {
-        const b = await showPrompt('What should they do?', { title: `Delegate to ${role.title}`, placeholder: 'e.g. add a dark-mode toggle' })
-        if (b?.trim()) delegate(role.key, b.trim())
-      } })
     }
     if (isAl) items.push({ label: 'Open', onClick: () => onPick(role.key) })
     if (!isAl) {
@@ -532,7 +488,7 @@ export function AgentOrgChart({ onPick }: { onPick: (roleKey: string) => void })
       } })
     }
     return items
-  }, [menu, agentRoles, sessions, onPick, openRoleInfo, delegate, mergeSession, forkSession, reloadSessionHistory, reloadSession, reviveAgent, renameRole, createFolder, setAgentManager, killSession, deleteRole])
+  }, [menu, agentRoles, sessions, onPick, openRoleInfo, mergeSession, forkSession, reloadSessionHistory, reloadSession, reviveAgent, renameRole, createFolder, setAgentManager, killSession, deleteRole])
 
   if (layout.nodes.length === 0) {
     return <div className="flex h-full items-center justify-center text-xs text-text-tertiary">No agent roles yet</div>

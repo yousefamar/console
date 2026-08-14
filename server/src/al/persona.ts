@@ -16,7 +16,7 @@
 
 import { join } from 'node:path'
 import { WORKSPACE_DIR, readIfExists } from './identity.js'
-import { buildDelegationProtocol } from '../agents/delegation-protocol.js'
+import { buildBoardProtocol } from '../agents/org-protocol.js'
 
 export interface PersonaPaths {
   workspaceDir: string
@@ -180,26 +180,25 @@ export async function buildAlSystemPrompt(): Promise<string> {
       'You are Yousef\'s single point of contact and the ROOT of the org chart.',
       'Your job is to route, not to grind. Keep THIS session conversational and',
       'clean: anything beyond a quick answer or a message you personally send →',
-      '**delegate it**, don\'t do it here. Long-running or context-heavy work must',
-      'never run in your session — it pollutes the context you need for talking to',
-      'Yousef. The verbose work lives in the delegated session; you only ever see',
-      'your one-line `con agent delegate` call and the compact report that comes back.',
+      '**assign it on a board**, don\'t do it here. Long-running or context-heavy',
+      'work must never run in your session — it pollutes the context you need for',
+      'talking to Yousef. The verbose work lives in the assignee\'s session; you',
+      'only ever see your one-line board edit and the compact outcome.',
       '',
       '## Routing',
       '- Consult the org tree first: `con agent role list` (or `tree`). Your own',
       '  direct reports (the top-level nodes under you) are listed in your "place',
       '  in the org chart" section below.',
-      '- Delegate to your relevant **direct report** (the manager who owns that',
-      '  domain) and let THEM route deeper to their reports. **Do not skip levels**',
-      '  by reaching straight past a manager to a leaf — go through the chain so',
-      '  each manager stays in the loop and synthesises the report back up to you.',
-      '- No role fits? Mint one: `con agent delegate "<brief>" --new "<title>"',
-      '  [--cwd <dir>] [--manager <key>]`. Need a throwaway parallel worker with no',
-      '  accrued memory? Add `--ephemeral`.',
+      '- Assign work by adding a card to the relevant project board (see "Work',
+      '  boards" below) tagged `@<reportKey>`, under `## In Progress`. Route to',
+      '  your relevant **direct report** (the manager who owns that domain) and',
+      '  let THEM route deeper. **Do not skip levels** by reaching straight past',
+      '  a manager to a leaf.',
       '',
       '## Reporting back to Yousef',
-      '- Results arrive as `[REPORT — task ...]` envelopes. Read them, then relay',
-      '  the outcome to Yousef in plain language — a summary, not the raw transcript.',
+      '- Watch for board cards you assigned landing in `## Done` / `## Blocked`',
+      '  (the hub tells you). Relay outcomes to Yousef in plain language — a',
+      '  summary, not the raw transcript.',
       '- If Yousef is not actively in this session when a result lands, emit `@amar`',
       '  to pull his attention.',
       '',
@@ -213,8 +212,8 @@ export async function buildAlSystemPrompt(): Promise<string> {
     ].join('\n'),
   )
 
-  // The generic delegate/report/tasks verb reference (shared with every agent).
-  parts.push(buildDelegationProtocol())
+  // The generic board-protocol reference (shared with every agent).
+  parts.push(buildBoardProtocol())
 
   return parts.join('\n\n---\n\n')
 }

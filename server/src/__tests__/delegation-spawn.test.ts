@@ -1,13 +1,10 @@
-// Covers the spawn paths that the orchestration tests can't (they pre-seed live
-// sessions to avoid spawning): reviveAgentRole + ephemeral-worker delegation,
-// which both go through createSession → `new Session(...)`. We mock Session with
-// a recording stub, so this also asserts the system-prompt INJECTION wiring
-// (charter + delegation protocol + org-position: roster, self-identity, manager).
+// Covers the spawn path the merge tests can't (they pre-seed live sessions to
+// avoid spawning): reviveAgentRole, which goes through createSession →
+// `new Session(...)`. We mock Session with a recording stub, so this also
+// asserts the system-prompt INJECTION wiring (charter + board protocol +
+// org-position: roster, self-identity, manager).
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { describe, it, expect, vi } from 'vitest'
 
 vi.mock('../manifest.js', async (o) => ({ ...(await o<typeof import('../manifest.js')>()), saveManifest: () => {} }))
 
@@ -39,8 +36,7 @@ vi.mock('../session.js', () => {
   return { Session: StubSession }
 })
 
-import { reviveAgentRole, delegateTask, type AgentContext } from '../routes/agents.js'
-import { TaskStore } from '../agents/tasks.js'
+import { reviveAgentRole, type AgentContext } from '../routes/agents.js'
 
 function reg() {
   const roles: Record<string, { key: string; title: string; manager: string | null; charter: string; folder: boolean; cwd: string | null }> = {
@@ -59,13 +55,9 @@ function reg() {
   }
 }
 
-let dir: string
-let tasks: TaskStore
 function ctxOf(sessions: Map<string, unknown>): AgentContext {
-  return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, tasks, agentRegistry: reg(), modelConfig: {} } as unknown as AgentContext
+  return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, agentRegistry: reg(), modelConfig: {} } as unknown as AgentContext
 }
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'spawn-')); tasks = new TaskStore(join(dir, 't.json'), () => 1_000_000) })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('createSession charter injection (fresh role spawn)', () => {
   it('reviveAgentRole spawns with charter + protocol + org-position (roster, self-identity, manager)', () => {
@@ -73,28 +65,11 @@ describe('createSession charter injection (fresh role spawn)', () => {
     const s = reviveAgentRole(ctx, 'eng') as unknown as { systemPrompt: string }
     expect(s).toBeTruthy()
     expect(s.systemPrompt).toContain('Owns engineering')           // charter body
-    expect(s.systemPrompt).toContain('Delegation protocol')        // protocol preamble
+    expect(s.systemPrompt).toContain('Work boards (kanban)')       // board-protocol preamble
     expect(s.systemPrompt).toContain('You are:')                   // self-identity line
     expect(s.systemPrompt).toContain('Engineering (`eng`)')
     expect(s.systemPrompt).toContain('Al (`al`)')                  // full roster
     expect(s.systemPrompt).toContain('You report to:')             // manager
     expect(ctx.sessions.size).toBe(1)
-  })
-})
-
-describe('delegateTask — ephemeral worker', () => {
-  it('spawns a role-less worker with the charter+protocol prompt and the envelope as its opening message', () => {
-    const ctx = ctxOf(new Map())
-    const res = delegateTask(ctx, { fromKey: 'al', toKey: 'eng', brief: 'do ephemeral thing', ephemeral: true })
-    expect(res.task?.ephemeral).toBe(true)
-    const worker = [...ctx.sessions.values()].find((s) => (s as { id: string }).id === res.task!.workerSessionId) as unknown as {
-      agentKey?: string; systemPrompt: string; initialPrompt: string
-    }
-    expect(worker).toBeTruthy()
-    expect(worker.agentKey).toBeUndefined()                        // role-less (dodges the ≤1-per-role sweep)
-    expect(worker.systemPrompt).toContain('Owns engineering')      // charter passed explicitly
-    expect(worker.systemPrompt).toContain('Delegation protocol')
-    expect(worker.initialPrompt).toContain('[DELEGATED TASK')      // envelope is the opening prompt (auto-sent on real spawn)
-    expect(worker.initialPrompt).toContain('do ephemeral thing')
   })
 })

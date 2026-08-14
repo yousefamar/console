@@ -21,9 +21,6 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'backend': return agentBackend(args, flags)
     case 'role': return agentRole(args, flags)
     case 'revive': return agentRevive(args, flags)
-    case 'delegate': return agentDelegate(args, flags)
-    case 'report': return agentReport(args, flags)
-    case 'tasks': return agentTasks(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -475,73 +472,6 @@ async function agentRevive(args: string[], flags: GlobalFlags): Promise<void> {
   const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
   await sendAndReceive({ type: 'revive_agent', agentKey: key }, NO_RESPONSE)
   output({ revived: key }, flags)
-}
-
-// --------------------------------------------------------------------------
-// Delegation — `con agent delegate / report / tasks`. The org-aware comms layer:
-// hand work down the tree, report results back up. Backed by /agents/tasks.
-// --------------------------------------------------------------------------
-
-interface TaskData { id: string; title: string; brief: string; fromKey: string; toKey: string; status: string; parentTaskId: string | null; chain: string[]; result: string | null; ephemeral?: boolean; createdAt: number; updatedAt: number }
-
-/** Positionals only — skips `--flag value` pairs (parseFlags handles the flags). */
-function positionalArgs(args: string[]): string[] {
-  const pos: string[] = []
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!
-    if (a.startsWith('--')) {
-      if (a.indexOf('=') === -1 && i + 1 < args.length && !args[i + 1]!.startsWith('--')) i++ // skip its value
-    } else pos.push(a)
-  }
-  return pos
-}
-
-/** con agent delegate <toKey> "<brief>" [--title T] [--from <key>] [--parent <taskId>] [--ephemeral]
- *  con agent delegate "<brief>" --new "<title>" [--cwd <dir>] [--manager <key>]  (mint a new role) */
-async function agentDelegate(args: string[], flags: GlobalFlags): Promise<void> {
-  const opts = parseFlags(args)
-  const pos = positionalArgs(args)
-  const toKey = opts.new ? undefined : pos[0]
-  const brief = opts.new ? pos[0] : pos[1]
-  if (!brief) exitWithError('USAGE', 'Usage: con agent delegate <toKey> "<brief>"  (or: con agent delegate "<brief>" --new "<title>" [--cwd <dir>] [--manager <key>])', flags)
-  const body: Record<string, unknown> = { fromKey: opts.from || 'al', brief, title: opts.title }
-  if (opts.parent) body.parentTaskId = opts.parent
-  if (opts.ephemeral === 'true') body.ephemeral = true
-  if (opts.new) body.newRole = { title: opts.new, cwd: opts.cwd, manager: opts.manager ?? undefined }
-  else body.toKey = toKey
-  const { task } = await hubFetch<{ task: TaskData }>('/agents/tasks', { method: 'POST', body })
-  output(task, flags)
-}
-
-/** con agent report <taskId> "<result>" [--status done|blocked|failed] */
-async function agentReport(args: string[], flags: GlobalFlags): Promise<void> {
-  const opts = parseFlags(args)
-  const pos = positionalArgs(args)
-  const taskId = pos[0]
-  const result = pos[1] ?? ''
-  if (!taskId) exitWithError('USAGE', 'Usage: con agent report <taskId> "<result>" [--status done|blocked|failed]', flags)
-  const status = opts.status || 'done'
-  await hubFetch(`/agents/tasks/${encodeURIComponent(taskId!)}/report`, { method: 'POST', body: { result, status } })
-  output({ reported: taskId, status }, flags)
-}
-
-/** con agent tasks [--open] [--assigned <key>] [--from <key>] [--children <taskId>]
- *  con agent tasks cancel <taskId> */
-async function agentTasks(args: string[], flags: GlobalFlags): Promise<void> {
-  if (args[0] === 'cancel') {
-    const id = args[1]
-    if (!id) exitWithError('USAGE', 'Usage: con agent tasks cancel <taskId>', flags)
-    await hubFetch(`/agents/tasks/${encodeURIComponent(id!)}`, { method: 'DELETE' })
-    output({ cancelled: id }, flags)
-    return
-  }
-  const opts = parseFlags(args)
-  let { tasks } = await hubFetch<{ tasks: TaskData[] }>('/agents/tasks')
-  if (opts.open === 'true') tasks = tasks.filter((t) => ['pending', 'in_progress', 'blocked'].includes(t.status))
-  if (opts.assigned) tasks = tasks.filter((t) => t.toKey === opts.assigned)
-  if (opts.from) tasks = tasks.filter((t) => t.fromKey === opts.from)
-  if (opts.children) tasks = tasks.filter((t) => t.parentTaskId === opts.children)
-  output({ tasks }, flags)
 }
 
 async function agentInterrupt(args: string[], flags: GlobalFlags): Promise<void> {

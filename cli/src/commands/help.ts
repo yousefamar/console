@@ -298,9 +298,6 @@ Commands:
   model         Inspect/switch the model all agents spawn with
   role          Inspect/maintain durable org-chart roles
   revive        Spawn a fresh session for a parked role
-  delegate      Hand a task DOWN the org to a role (async; reports back up)
-  report        Report a task result UP to its delegator
-  tasks         List delegation tasks (what you owe / are owed)
 
 Examples:
   con agent create "Fix the auth bug" --cwd /path/to/project --wait
@@ -312,9 +309,6 @@ Examples:
   con agent role                     # list roles + org tree
   con agent role manager feeds-tab al
   con agent revive feeds-tab
-  con agent delegate feeds-tab "add a dark-mode toggle"
-  con agent report tsk_abc123 "done — shipped + verified"
-  con agent tasks --open
 `.trim(),
 
   auth: `

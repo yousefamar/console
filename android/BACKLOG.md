@@ -7,7 +7,10 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
-_(empty)_
+- Remove delegation-tasks UI (agents area): the hub's task system (`/agents/tasks`,
+  `delegate`/`report`/`tasks` protocol) was torn out 2026-08-14 in favour of
+  vault kanban boards (`server/src/kanban/`). The APK's delegation panels now
+  point at nothing — strip them (and later render boards natively instead).
 
 ## Built, awaiting release
 

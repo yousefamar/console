@@ -160,24 +160,6 @@ export interface OrgNode {
   cycleBroken?: boolean
 }
 
-/** A delegation task (mirrors server/src/agents/tasks.ts). */
-export interface AgentTask {
-  id: string
-  title: string
-  brief: string
-  fromKey: string
-  toKey: string
-  origin: 'human' | 'agent'
-  parentTaskId: string | null
-  chain: string[]
-  status: 'pending' | 'in_progress' | 'blocked' | 'done' | 'failed' | 'cancelled'
-  result: string | null
-  workerSessionId?: string
-  ephemeral?: boolean
-  createdAt: number
-  updatedAt: number
-}
-
 /** A reversible org-chart edit. Covers the two key-stable, easily-inverted
  *  mutations (reparent + rename); folder create/delete are not undoable (the key
  *  is hub-minted async). */
@@ -213,8 +195,6 @@ interface AgentState {
   // Org-chart roles (agents/registry.ts). Pushed by the hub on connect + change.
   agentRoles: AgentRole[]
   agentTree: OrgNode[]
-  /** Delegation tasks (pushed by the hub on connect + on every change). */
-  tasks: AgentTask[]
   /** A pending hand-off offer (Al emitted `@handoff(<key>)`); drives a "Talk to
    *  X" affordance. Cleared once acted on or dismissed. */
   pendingHandoff: { fromSessionId: string; targetAgentKey: string } | null
@@ -363,10 +343,6 @@ interface AgentState {
   /** Rename a role/folder. `record` (default true) pushes an undo entry. */
   renameRole: (agentKey: string, title: string, record?: boolean) => void
   setAgentViewMode: (mode: 'list' | 'orgchart') => void
-  /** Delegate a task to a role (fromKey defaults to 'al'). */
-  delegate: (toKey: string, brief: string, fromKey?: string) => void
-  /** Cancel a delegation task. */
-  cancelTask: (taskId: string) => void
   /** Follow a hand-off: open the target agent's session, remember where to return. */
   acceptHandoff: (targetAgentKey: string) => void
   /** Dismiss the pending hand-off offer without following it. */
@@ -423,7 +399,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   agentRoles: [],
   agentTree: [],
-  tasks: [],
   pendingHandoff: null,
   handoffReturnTo: null,
   agentViewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:viewMode') === 'orgchart') ? 'orgchart' : 'list',
@@ -770,15 +745,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setAgentViewMode: (mode) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('console:agents:viewMode', mode)
     set({ agentViewMode: mode })
-  },
-
-  delegate: (toKey, brief, fromKey = 'al') => {
-    sendWs({ type: 'delegate', toKey, brief, fromKey })
-  },
-
-  cancelTask: (taskId) => {
-    set((s) => ({ tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, status: 'cancelled' } : t)) }))
-    sendWs({ type: 'cancel_task', taskId })
   },
 
   acceptHandoff: (targetAgentKey) => {
@@ -1129,11 +1095,6 @@ function handleHubMessage(msg: Record<string, unknown>) {
         agentRoles: (msg.roles as AgentRole[]) ?? [],
         agentTree: (msg.tree as OrgNode[]) ?? [],
       })
-      break
-    }
-
-    case 'tasks': {
-      useAgentStore.setState({ tasks: (msg.tasks as AgentTask[]) ?? [] })
       break
     }
 
