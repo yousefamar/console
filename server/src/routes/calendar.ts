@@ -254,7 +254,9 @@ export function handleCalendarRoutes(
   // DELETE /cal/accounts/:email
   const removeAccMatch = path.match(/^\/cal\/accounts\/([^/]+)$/)
   if (removeAccMatch && req.method === 'DELETE') {
-    authStore.removeGoogleAccount(decodeURIComponent(removeAccMatch[1]!))
+    const email = decodeURIComponent(removeAccMatch[1]!)
+    console.log(`[cal] DELETE /cal/accounts/${email} ua=${req.headers['user-agent'] || '?'}`)
+    authStore.removeGoogleAccount(email)
     json({ ok: true })
     return true
   }
