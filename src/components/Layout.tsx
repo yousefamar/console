@@ -27,7 +27,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
@@ -37,6 +37,7 @@ import { YouTubePiP } from './FeedItemView'
 import { PullIndicator } from './PullIndicator'
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
+import { SpacesTab } from './SpacesTab'
 import { MusicDrawer } from './music/MusicDrawer'
 import { useMusicStore } from '@/store/music'
 // MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
@@ -191,6 +192,7 @@ export function Layout() {
   const isCalendar = activePane === 'calendar'
   const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
+  const isSpaces = activePane === 'spaces'
 
   // MapLibre is heavy; only mount MapTab once the Map pane is first opened, then
   // keep it alive so later switches are instant (pre-render spirit, deferred cost).
@@ -198,6 +200,10 @@ export function Layout() {
   useEffect(() => {
     if (isMap) setMapMounted(true)
   }, [isMap])
+  const [spacesMounted, setSpacesMounted] = useState(false)
+  useEffect(() => {
+    if (isSpaces) setSpacesMounted(true)
+  }, [isSpaces])
 
   // Pane-aware refresh handler
   const handleRefresh = async (e: React.MouseEvent) => {
@@ -304,6 +310,7 @@ export function Layout() {
                   <span>+Chat</span>
                 </button>
               )}
+              <PaneTab pane="spaces" icon={<FolderKanban size={11} />} label="Spaces" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
@@ -397,6 +404,11 @@ export function Layout() {
         {/* Money pane */}
         <div className={`flex flex-1 min-h-0 overflow-hidden ${isMoney ? '' : 'hidden'}`}>
           <MoneyTab />
+        </div>
+
+        {/* Spaces pane (mounted on first activation) */}
+        <div className={`flex flex-1 min-h-0 overflow-hidden ${isSpaces ? '' : 'hidden'}`}>
+          {spacesMounted && <SpacesTab />}
         </div>
 
         {/* Agents pane */}
@@ -500,6 +512,7 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
     { pane: 'email', icon: <Mail size={18} />, label: 'Mail' },
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
+    { pane: 'spaces', icon: <FolderKanban size={18} />, label: 'Spaces' },
     { pane: 'agents', icon: <Bot size={18} />, label: 'Agents' },
     { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
     { pane: 'notes', icon: <FileText size={18} />, label: 'Notes' },

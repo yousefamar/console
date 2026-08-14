@@ -78,6 +78,7 @@ const renderers: Record<ActivePane, PaneRenderer> = {
   bookmarks: renderBookmarks,
   money: renderMoney,
   map: renderMap,
+  spaces: () => null,
 }
 
 // --- Enable / persistence --------------------------------------------------
