@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
 import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, republishPost, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
+import { loadAreaRegistry, lintVaultTags } from '../areas.js'
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -56,6 +57,23 @@ export function handleBlogRoutes(
   if (path === '/blog/tags' && req.method === 'GET') {
     listAllTags(noteStore)
       .then((tags) => json(res, 200, tags))
+      .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
+  // GET /blog/areas → the registered area list, for tag-input autocomplete.
+  if (path === '/blog/areas' && req.method === 'GET') {
+    loadAreaRegistry(noteStore)
+      .then((registry) => json(res, 200, registry))
+      .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
+  // GET /blog/tags/lint → every (path, tag) pair using a tag outside the area registry.
+  if (path === '/blog/tags/lint' && req.method === 'GET') {
+    loadAreaRegistry(noteStore)
+      .then((registry) => lintVaultTags(noteStore, registry))
+      .then((issues) => json(res, 200, { issues }))
       .catch((err) => json(res, 500, { error: (err as Error).message }))
     return true
   }

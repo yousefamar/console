@@ -38,7 +38,7 @@ export async function blog(verb: string | undefined, args: string[], flags: Glob
     case 'publish': return publishCmd(args, flags)
     case 'republish': return republishCmd(args, flags)
     case 'projects': return projectsCmd(args, flags)
-    case 'tags': return tagsCmd(flags)
+    case 'tags': return tagsCmd(args, flags)
     case 'posts': return postsCmd(args, flags)
     case 'status': return statusCmd(args, flags)
     default:
@@ -178,7 +178,16 @@ async function postsCmd(args: string[], flags: GlobalFlags): Promise<void> {
   output(posts, flags)
 }
 
-async function tagsCmd(flags: GlobalFlags): Promise<void> {
+async function tagsCmd(args: string[], flags: GlobalFlags): Promise<void> {
+  if (args[0] === 'lint') {
+    const { issues } = await hubFetch<{ issues: Array<{ path: string; tag: string }> }>('/blog/tags/lint')
+    if (issues.length === 0 && !flags.json) {
+      console.log('No unregistered tags found.')
+      return
+    }
+    output(issues, flags)
+    return
+  }
   const tags = await hubFetch<string[]>('/blog/tags')
   output(tags, flags)
 }

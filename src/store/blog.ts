@@ -82,6 +82,8 @@ interface BlogState {
   drafts: DraftSummary[]
   projects: ProjectSummary[]
   tags: string[]
+  /** Registered area/reserved tag slugs from the vault's `_data/areas.json`. Empty = registry unavailable (validation disabled). */
+  validTags: string[]
   postsByProject: Record<string, ProjectPost[]>
   draftsLoading: boolean
   projectsLoading: boolean
@@ -129,6 +131,7 @@ export const useBlogStore = create<BlogState>((set) => ({
   drafts: [],
   projects: [],
   tags: [],
+  validTags: [],
   postsByProject: {},
   draftsLoading: false,
   projectsLoading: false,
@@ -159,6 +162,12 @@ export const useBlogStore = create<BlogState>((set) => ({
     try {
       const tags = await hubFetch<string[]>('/blog/tags', { timeoutMs: 8000 })
       set({ tags })
+    } catch {
+      // keep last known
+    }
+    try {
+      const registry = await hubFetch<{ areas: Array<{ slug: string }>; reserved: string[] }>('/blog/areas', { timeoutMs: 8000 })
+      set({ validTags: [...registry.areas.map((a) => a.slug), ...registry.reserved] })
     } catch {
       // keep last known
     }
