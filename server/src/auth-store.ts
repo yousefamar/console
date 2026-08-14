@@ -208,7 +208,17 @@ export class AuthStore {
   }
 
   removeGoogleAccount(email: string): void {
+    const had = this.config.google.accounts.some((a) => a.email === email)
     this.config.google.accounts = this.config.google.accounts.filter((a) => a.email !== email)
+    if (had) {
+      // Losing an account silently un-promotes every calendar it had better
+      // access to (back to `reader`), which quietly removes them from the
+      // new-event picker. Neither HTTP call site logs, so record the caller
+      // here — this is the only trail a later "where did my calendar go?"
+      // investigation gets.
+      const caller = (new Error().stack || '').split('\n').slice(2, 5).map((l) => l.trim()).join(' | ')
+      console.log(`[auth] Google account REMOVED: ${email} (${this.config.google.accounts.length} left) — from: ${caller}`)
+    }
     const timer = this.refreshTimers.get(email)
     if (timer) {
       clearTimeout(timer)

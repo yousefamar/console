@@ -38,6 +38,13 @@ _(empty)_
   WHOLE turn, so it now replaces the accumulated interim deltas rather than
   appending to them (was duplicating the utterance). Hub side already shipped.
 
+- Calendar sidebar's per-account Delete now confirms first. It was the only
+  single-account remove UI in either client and fired instantly, inches from
+  the visibility toggles — and removing an account silently un-promotes every
+  calendar it had better access to back to `reader`, which drops those
+  calendars out of the new-event picker with no other symptom. The dialog
+  spells that consequence out.
+
 ## Shipped
 
 ### v80 (2026-08-10)

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +36,10 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,6 +80,8 @@ fun CalendarSidebarSheet(
         .filter { it in groups }
         .sortedBy { if (it == OVERLAYS_GROUP) "zzz" else it }
 
+    var confirmRemove by remember { mutableStateOf<String?>(null) }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(bottom = 24.dp).verticalScroll(rememberScrollState())) {
             Text("Calendars", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
@@ -88,7 +95,7 @@ fun CalendarSidebarSheet(
                 ) {
                     Text(header, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (groupKey != OVERLAYS_GROUP && accounts.any { it.email == groupKey }) {
-                        IconButton(onClick = { onRemoveAccount(groupKey) }, modifier = Modifier.size(28.dp)) {
+                        IconButton(onClick = { confirmRemove = groupKey }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Filled.Delete, "Remove account", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
@@ -103,6 +110,16 @@ fun CalendarSidebarSheet(
                 Icon(Icons.Filled.Add, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Add calendar account")
             }
         }
+    }
+
+    confirmRemove?.let { email ->
+        AlertDialog(
+            onDismissRequest = { confirmRemove = null },
+            title = { Text("Remove $email?") },
+            text = { Text("The hub forgets its tokens. Calendars shared into another account drop back to read-only, so you can no longer create events on them until you re-add it.") },
+            confirmButton = { TextButton(onClick = { onRemoveAccount(email); confirmRemove = null }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Cancel") } },
+        )
     }
 }
 

@@ -546,6 +546,7 @@ export function handleAuthRoutes(
   if (path === '/auth/logout/google' && req.method === 'POST') {
     readBody(req).then((body) => {
       const { account } = JSON.parse(body || '{}') as { account?: string }
+      console.log(`[auth] POST /auth/logout/google account=${account || 'ALL'} ua=${req.headers['user-agent'] || '?'}`)
       if (account) {
         authStore.removeGoogleAccount(account)
       } else {
