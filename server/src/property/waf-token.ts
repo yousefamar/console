@@ -13,7 +13,7 @@
 //
 // Notes: ~/sync/brain/root/projects/home/immoscout24-api.md
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -66,6 +66,20 @@ export class WafTokenStore {
       this.inflight = null
     })
     return this.inflight
+  }
+
+  /**
+   * Discard the cached token after the WAF rejected it. Observed 2026-08-15: a
+   * token can start 401ing days before its own `expires`, so TTL alone is not a
+   * validity test — the only reliable signal is a 401 from a real request.
+   */
+  invalidate(): void {
+    this.cache = null
+    try {
+      rmSync(this.file, { force: true })
+    } catch {
+      // A stale file only costs us one wasted attempt next boot.
+    }
   }
 
   private async mint(): Promise<string | null> {

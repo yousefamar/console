@@ -46,7 +46,7 @@ export class ImmoScout24Client implements PortalClient {
   }
 
   async newest(rings: Ring[], criteria: Criteria, limit: number): Promise<SearchResult> {
-    const token = await this.waf.get()
+    let token = await this.waf.get()
     if (!token) throw new Error('immoscout24: no WAF token available (Playwright missing?)')
     const unsupported: string[] = []
     // IS24 has no auction flag, and plot size only exists on houses.
@@ -63,7 +63,20 @@ export class ImmoScout24Client implements PortalClient {
         const sep = url.includes('?') ? '&' : '?'
         // `pagenumber=1` explicitly is a 401 from the WAF — page 1 must omit it.
         const paging = page > 1 ? `&pagenumber=${page}` : ''
-        const html = await this.getHtml(`${ORIGIN}${url}${sep}sorting=${SORT_NEWEST}${paging}`, token)
+        const target = `${ORIGIN}${url}${sep}sorting=${SORT_NEWEST}${paging}`
+        let html: string
+        try {
+          html = await this.getHtml(target, token)
+        } catch (e) {
+          // A token can 401 well before its stated expiry, so a rejection is the
+          // cue to re-mint rather than to give up for the rest of its TTL.
+          if (!(e instanceof WafRejected)) throw e
+          this.waf.invalidate()
+          const next = await this.waf.get()
+          if (!next) throw e
+          token = next
+          html = await this.getHtml(target, token)
+        }
         const model = pageModel(html, 'resultListModel:') as RawResultListModel | null
         const rl = model?.searchResponseModel?.['resultlist.resultlist']
         if (!rl) throw new Error('immoscout24: no resultlist in HTML')
@@ -125,8 +138,16 @@ export class ImmoScout24Client implements PortalClient {
     const res = await this.fetchImpl(url, {
       headers: { 'user-agent': UA, cookie: `aws-waf-token=${token}`, accept: 'text/html' },
     })
-    if (!res.ok) throw new Error(`immoscout24: HTTP ${res.status} (WAF token stale?)`)
+    if (res.status === 401 || res.status === 403) throw new WafRejected(res.status)
+    if (!res.ok) throw new Error(`immoscout24: HTTP ${res.status}`)
     return res.text()
+  }
+}
+
+/** The WAF turned us away — distinct from a genuine HTTP failure. */
+class WafRejected extends Error {
+  constructor(status: number) {
+    super(`immoscout24: WAF rejected the token (HTTP ${status})`)
   }
 }
 
