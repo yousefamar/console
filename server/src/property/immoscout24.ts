@@ -69,8 +69,9 @@ export class ImmoScout24Client implements PortalClient {
         if (!rl) throw new Error('immoscout24: no resultlist in HTML')
         if (page === 1) total += rl.paging?.numberOfHits ?? 0
         const entries = rl.resultlistEntries?.[0]?.resultlistEntry ?? []
+        const markers = markerCoords(rl)
         for (const e of entries) {
-          const l = normalise(e)
+          const l = normalise(e, markers)
           if (l) seen.set(l.id, l)
         }
         const pages = rl.paging?.numberOfPages ?? 1
@@ -166,11 +167,39 @@ function queryModel(ring: Ring, c: Criteria): Record<string, unknown> {
 
 interface RawResultListModel {
   searchResponseModel?: {
-    'resultlist.resultlist'?: {
-      paging?: { numberOfHits?: number; numberOfPages?: number }
-      resultlistEntries?: Array<{ resultlistEntry?: RawEntry[] }>
-    }
+    'resultlist.resultlist'?: RawResultList
   }
+}
+
+interface RawResultList {
+  paging?: { numberOfHits?: number; numberOfPages?: number }
+  resultlistEntries?: Array<{ resultlistEntry?: RawEntry[] }>
+  mapMarkers?: { results?: RawMarker[] }
+}
+
+interface RawMarker {
+  realEstateId?: number
+  coordinate?: { latitude?: number; longitude?: number }
+  /** Several listings at one point collapse into a single marker. */
+  groupedListings?: Array<{ realEstateId?: number }>
+}
+
+/**
+ * Listing id → coordinate, from the map-marker set that ships alongside the
+ * result list. This covers every row on the page, including the ~65% whose
+ * seller hid the street address (those get the marker's approximate point),
+ * so it's a strictly better coord source than `address.wgs84Coordinate`.
+ */
+function markerCoords(rl: RawResultList): Map<string, [number, number]> {
+  const out = new Map<string, [number, number]>()
+  for (const m of rl.mapMarkers?.results ?? []) {
+    const lat = m.coordinate?.latitude
+    const lon = m.coordinate?.longitude
+    if (lat == null || lon == null) continue
+    const ids = [m.realEstateId, ...(m.groupedListings ?? []).map((g) => g.realEstateId)]
+    for (const id of ids) if (id != null) out.set(String(id), [lat, lon])
+  }
+  return out
 }
 
 interface RawEntry {
@@ -200,11 +229,12 @@ interface RawEntry {
   }
 }
 
-function normalise(e: RawEntry): Listing | null {
+function normalise(e: RawEntry, markers: Map<string, [number, number]>): Listing | null {
   const id = e['@id']
   const re = e['resultlist.realEstate']
   if (id == null || !re) return null
   const a = re.address
+  const marker = markers.get(String(id))
   const street = [a?.street, a?.houseNumber].filter(Boolean).join(' ') || undefined
   const address = [street, a?.quarter, [a?.postcode, a?.city].filter(Boolean).join(' ')]
     .filter(Boolean)
@@ -224,8 +254,8 @@ function normalise(e: RawEntry): Listing | null {
     floorArea: re.livingSpace,
     plotArea: re.plotArea,
     propertyType: re['@xsi.type']?.replace(/^search:/, ''),
-    lat: a?.wgs84Coordinate?.latitude,
-    lon: a?.wgs84Coordinate?.longitude,
+    lat: a?.wgs84Coordinate?.latitude ?? marker?.[0],
+    lon: a?.wgs84Coordinate?.longitude ?? marker?.[1],
     listedAt: e['@creation'],
     agent: re.contactDetails?.company,
     image: re.galleryAttachments?.attachment?.[0]?.urls?.[0]?.url?.[0]?.['@href'],
