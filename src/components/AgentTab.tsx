@@ -531,7 +531,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     if (session.agentKey) {
       items.unshift({ label: 'Show info', onClick: () => openRoleInfo(session.agentKey!) })
     }
-    // Mark unread (mobile-reachable equivalent of the Shift+E shortcut / swipe-left).
+    // Mark read/unread (mobile-reachable equivalents of e / Shift+E / swipes).
+    items.push({ label: 'Mark read', onClick: () => markSessionRead(session.id) })
     items.push({ label: 'Mark unread', onClick: () => markSessionUnread(session.id) })
     // Push-to-talk mic: hand it to this session (or release the owner's to Al).
     items.push(isMicOwner
@@ -550,7 +551,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, canMergeUp, isMicOwner, killSession, mergeSession, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, canMergeUp, isMicOwner, killSession, mergeSession, markSessionRead, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
 
   return (
     <ContextMenu items={menuItems}>
