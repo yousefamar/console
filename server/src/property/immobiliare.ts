@@ -55,7 +55,13 @@ export class ImmobiliareClient implements PortalClient {
 
     const unsupported: string[] = []
     if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
+    if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
     if (criteria.minInternetMbit != null) unsupported.push('minInternetMbit')
+    if (criteria.minYearBuilt != null) unsupported.push('minYearBuilt')
+    if (criteria.maxYearBuilt != null) unsupported.push('maxYearBuilt')
+    if (criteria.excludeNewBuild) unsupported.push('excludeNewBuild')
+    if (criteria.noBuyerFee) unsupported.push('noBuyerFee')
+    if (criteria.maxDaysSinceAdded != null) unsupported.push('maxDaysSinceAdded')
 
     return { portal: this.portal, total, listings: [...seen.values()], truncated, unsupported }
   }
@@ -107,8 +113,16 @@ function compile(c: Criteria): Record<string, string> {
   if (c.maxPrice != null) p.prezzoMassimo = String(c.maxPrice)
   if (c.minBedrooms != null) p.camereDaLettoMinimo = String(c.minBedrooms)
   if (c.maxBedrooms != null) p.camereDaLettoMassimo = String(c.maxBedrooms)
+  if (c.minBathrooms != null) p.bagni = String(c.minBathrooms)
   if (c.minFloorArea != null) p.superficieMinima = String(c.minFloorArea)
-  if (c.excludeAuctions) p.noAste = '1'
+  if (c.maxFloorArea != null) p.superficieMassima = String(c.maxFloorArea)
+  // Full ownership — excludes nuda proprietà (bare ownership, seller keeps
+  // lifetime use) and multiproprietà, both of which look like bargains and aren't.
+  if (c.freeholdOnly) p.tipoProprieta = '1'
+  // 10 = private garden (20 shared, 30 either) — shared doesn't meet the brief.
+  if (c.mustHaveGarden) p['giardino[0]'] = '10'
+  if (c.mustHaveParking) p['boxAuto[0]'] = '1'
+  if (c.excludeSchemes) p.noAste = '1'
   // 7 detached house, 12 semi/terraced, 13 villa.
   if (c.propertyType === 'house') {
     p['idTipologia[0]'] = '7'

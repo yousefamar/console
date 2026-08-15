@@ -104,10 +104,21 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   if (o['max-price']) c.maxPrice = Number(o['max-price'])
   if (o['min-beds']) c.minBedrooms = Number(o['min-beds'])
   if (o['max-beds']) c.maxBedrooms = Number(o['max-beds'])
+  if (o['min-baths']) c.minBathrooms = Number(o['min-baths'])
   if (o['min-area']) c.minFloorArea = Number(o['min-area'])
+  if (o['max-area']) c.maxFloorArea = Number(o['max-area'])
   if (o['min-plot']) c.minPlotArea = Number(o['min-plot'])
+  if (o['max-plot']) c.maxPlotArea = Number(o['max-plot'])
+  if (o['min-year']) c.minYearBuilt = Number(o['min-year'])
+  if (o['max-year']) c.maxYearBuilt = Number(o['max-year'])
   if (o['min-mbit']) c.minInternetMbit = Number(o['min-mbit'])
+  if (o['max-age-days']) c.maxDaysSinceAdded = Number(o['max-age-days'])
   if (o.keywords) c.keywords = String(o.keywords).split(',').map((s) => s.trim()).filter(Boolean)
-  if (o['exclude-auctions']) c.excludeAuctions = o['exclude-auctions'] !== 'false'
+  if (o.freehold) c.freeholdOnly = o.freehold !== 'false'
+  if (o.garden) c.mustHaveGarden = o.garden !== 'false'
+  if (o.parking) c.mustHaveParking = o.parking !== 'false'
+  if (o['exclude-schemes']) c.excludeSchemes = o['exclude-schemes'] !== 'false'
+  if (o['exclude-new-build']) c.excludeNewBuild = o['exclude-new-build'] !== 'false'
+  if (o['no-buyer-fee']) c.noBuyerFee = o['no-buyer-fee'] !== 'false'
   return c
 }
