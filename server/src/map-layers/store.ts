@@ -30,6 +30,8 @@ export interface LayerStyle {
   animated?: boolean
   /** ordered popup fields; bare key or {key,label}. Omit → show all props. */
   popup?: Array<string | { key: string; label?: string }>
+  /** open a rich side panel (image, summary, link) on click instead of a popup. */
+  panel?: boolean
 }
 
 export interface LayerMeta {

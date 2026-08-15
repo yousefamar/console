@@ -169,12 +169,19 @@ export class PropertySync {
           plot: l.plotArea,
           listed: l.listedAt?.slice(0, 10),
           url: l.url,
+          // Extra detail for the SPA's property panel (not shown in the popup).
+          title: l.title,
+          baths: l.bathrooms,
+          summary: l.summary,
+          agent: l.agent,
+          image: l.image,
+          portal: l.portal,
         },
       })),
     }
     try {
       this.mapLayers.upsert(`${LAYER_GROUP}/${slugFor(s)}`, geojson, {
-        style: { color: LAYER_COLOR, size: 5, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'url'] },
+        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'url'] },
         fit: false,
         updatedBy: 'property',
       })
