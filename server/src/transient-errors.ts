@@ -26,6 +26,16 @@ export function isTransientApiError(text: string): boolean {
     t.includes('529') ||
     t.includes('overloaded') ||
     t.includes('service unavailable') ||
+    // "API Error: Server error mid-response. The response above may be
+    // incomplete." — seen live 2026-08-15, halted a session.
+    t.includes('server error') ||
+    t.includes('server-side issue') ||
+    t.includes('internal server error') ||
+    t.includes('500') ||
+    t.includes('502') ||
+    t.includes('bad gateway') ||
+    t.includes('connectionrefused') ||
+    t.includes('unable to connect') ||
     t.includes('bedrock is unable to process') ||
     t.includes('throttl') || // throttled / throttling (Bedrock wording)
     // Network-flavour transients: same policy — the turn died, the session is
