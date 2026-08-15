@@ -184,12 +184,31 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 
   // Forks included — they inherit the source role's space binding and are
   // first-class here (assignable on the board, revivable, chattable).
-  const spaceRoles = useMemo(
-    () => roles.filter((r) => !r.folder && (
+  // Arranged as a lineage tree via `manager` edges (a fork's manager is its
+  // source role), depth-indented like the Agents sidebar.
+  const spaceRoles = useMemo(() => {
+    const inSpace = roles.filter((r) => !r.folder && (
       space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
-    )).sort((a, b) => Number(a.fork ?? false) - Number(b.fork ?? false)),
-    [roles, space],
-  )
+    ))
+    const keys = new Set(inSpace.map((r) => r.key))
+    const childrenOf = new Map<string, typeof inSpace>()
+    for (const r of inSpace) {
+      if (r.manager && keys.has(r.manager)) {
+        const arr = childrenOf.get(r.manager) ?? []
+        arr.push(r)
+        childrenOf.set(r.manager, arr)
+      }
+    }
+    const out: Array<{ role: (typeof inSpace)[number]; depth: number }> = []
+    const emit = (r: (typeof inSpace)[number], depth: number) => {
+      out.push({ role: r, depth })
+      for (const child of childrenOf.get(r.key) ?? []) emit(child, depth + 1)
+    }
+    for (const r of inSpace) {
+      if (!r.manager || !keys.has(r.manager)) emit(r, 0)
+    }
+    return out
+  }, [roles, space])
   const sessionFor = (key: string) => sessions.find((s) => s.agentKey === key && s.status !== 'ended')
 
   const openDoc = async (path: string) => {
@@ -219,10 +238,14 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               None — stamp {space.kind === 'project' ? `project: ${space.slug}` : `areas: [${space.slug}]`} in a role file
             </div>
           )}
-          {spaceRoles.map((r) => {
+          {spaceRoles.map(({ role: r, depth }) => {
             const live = sessionFor(r.key)
             const isActive = live?.id === activeSessionId
             const alert = live?.needsAttention ? 'attention' : live?.hasUnread ? 'unread' : null
+            // The live session's name is the CURRENT name (renames land there);
+            // the role file title is only the mint-time name. Strip the noisy
+            // "(fork)" suffix — the glyph + indent already say fork.
+            const displayName = (live?.name || r.title).replace(/\s\(fork\)$/, '')
             const agent = useAgentStore.getState()
             const menuItems: ContextMenuItem[] = [
               { label: 'Show info', onClick: () => agent.openRoleInfo(r.key) },
@@ -241,15 +264,16 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                 <button
                   onClick={() => { if (live) selectSession(live.id); else reviveAgent(r.key) }}
                   className={clsx(
-                    'flex w-full items-center gap-2 px-3 py-1 text-left text-xs transition-colors',
+                    'flex w-full items-center gap-2 py-1 pr-3 text-left text-xs transition-colors',
                     isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
                   )}
-                  title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}`}
+                  style={{ paddingLeft: `${12 + depth * 14}px` }}
+                  title={`${r.fork ? 'fork · ' : ''}${live ? displayName : `${displayName} (parked — click to revive)`} · @${r.key}`}
                 >
                   {r.fork
                     ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
                     : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
-                  <span className={clsx('truncate', !live && 'opacity-60')}>{r.title}</span>
+                  <span className={clsx('truncate', !live && 'opacity-60')}>{displayName}</span>
                   {!live && <span className="ml-auto text-[9px] text-text-tertiary flex-shrink-0">⏾</span>}
                 </button>
               </ContextMenu>
