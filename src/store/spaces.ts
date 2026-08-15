@@ -20,9 +20,9 @@ interface SpacesState {
   spaces: SpaceSummary[]
   loading: boolean
   activeSlug: string | null
-  /** Centre-pane tab within the active space. `note` = the vault editor,
-   *  opened in place (absorbing the Notes tab, incrementally). */
-  activeView: 'board' | 'docs' | 'note'
+  /** Centre-pane tab within the active space. Docs IS the vault editor
+   *  (absorbing the Notes tab); the file list lives in the drilled rail. */
+  activeView: 'board' | 'docs'
   /** Parsed board for the active space (null = no board / not loaded). */
   board: KanbanBoard | null
   boardPath: string | null
@@ -31,7 +31,7 @@ interface SpacesState {
 
   refreshSpaces: () => Promise<void>
   selectSpace: (slug: string | null) => void
-  setActiveView: (v: 'board' | 'docs' | 'note') => void
+  setActiveView: (v: 'board' | 'docs') => void
   loadBoard: () => Promise<void>
   /** Persist the current in-memory board back to the vault (conditional write). */
   saveBoard: () => Promise<boolean>

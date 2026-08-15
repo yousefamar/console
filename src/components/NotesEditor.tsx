@@ -17,13 +17,24 @@ import { isDraftPath, isPublishedPath, permalinkForLogPath } from '@/utils/front
 const PANEL_TOGGLE_KEY = 'console:notes:projectPanelOpen'
 const MOBILE_VIM_KEY = 'console:notes:mobileVim'
 
-export const NotesEditor = memo(function NotesEditor() {
+interface NotesEditorProps {
+  /** Restrict the tab strip (and the visible buffer) to paths matching one of
+   *  these prefixes — the Spaces pane scopes the editor to one project. The
+   *  underlying open-file set stays global; out-of-scope tabs are just hidden
+   *  here, and a foreign active file renders a placeholder instead. */
+  scopePrefixes?: string[]
+}
+
+export const NotesEditor = memo(function NotesEditor({ scopePrefixes }: NotesEditorProps) {
   const openFiles = useNotesStore((s) => s.openFiles)
-  const activeFilePath = useNotesStore((s) => s.activeFilePath)
+  const storeActivePath = useNotesStore((s) => s.activeFilePath)
   const setActiveFile = useNotesStore((s) => s.setActiveFile)
   const closeFile = useNotesStore((s) => s.closeFile)
   const isFileDirty = useNotesStore((s) => s.isFileDirty)
   const isMobile = useIsMobile()
+  const inScope = (path: string | null): boolean =>
+    !scopePrefixes || (!!path && scopePrefixes.some((p) => path.startsWith(p) || path === p.replace(/\/$/, '.md')))
+  const activeFilePath = inScope(storeActivePath) ? storeActivePath : null
 
   // Project panel: relevant for ANY file under projects/<slug>/, even when
   // that project isn't tracked by the blog tooling (no index.md / log:true).
@@ -62,7 +73,7 @@ export const NotesEditor = memo(function NotesEditor() {
     return () => window.removeEventListener('keydown', onKey)
   }, [isMobile, mobileVim])
 
-  const paths = Object.keys(openFiles)
+  const paths = Object.keys(openFiles).filter((p) => inScope(p))
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
 
   // "Writing files" get the focused-writing chrome: meta bar, action bar,
