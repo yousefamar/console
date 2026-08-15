@@ -410,7 +410,7 @@ tool you never send this.
 | 3  | 8 | pen RTC timestamp (ms, `long`) |
 | 11 | 2 | auto-power-off time (minutes) |
 | 13 | 2 | `maxPress` (max pressure; 0 ⇒ SDK uses 852) |
-| 15 | 1 | used memory (storage) % |
+| 15 | 1 | used memory (storage) % — see note below |
 | 16 | 1 | pencap off (model-dependent) |
 | 17 | 1 | auto-power-on enabled |
 | 18 | 1 | beep enabled |
@@ -419,6 +419,14 @@ tool you never send this.
 | 21 | 1 | **offline-data-save enabled** (`stat_offlinedata_save`) |
 | 22 | 1 | sensitivity (`255` ⇒ fixed/unsupported) |
 | 43 | 1 | supports "system setting" |
+
+> **Offset 15 is USED %, but the official apps display REMAINING %.** Moleskine's new
+> Notebooks app (v3.0.15) labels it `Memory / Remaining 0%`, and Neo Studio2 showed a bare
+> "Memory 0%" — both mean **flash is 100% full**, which agrees with our own ~87–100%-used
+> reading of this byte. There is no pen-side counter desync; the only contradiction on the
+> F130 under test is **flash full vs. offline-note index empty** (see §6.1). Also note the
+> same app reports **Battery 228%** on this pen, so its status-frame decode is not trustworthy
+> in general.
 
 Settings are changed via `REQ_PenStatusChange 0x05` with a 1-byte sub-type then the
 sub-payload (`CMD20.java:117`–`:168`; builders `ProtocolParser20.java:416`–`:611`):
@@ -546,6 +554,14 @@ The pen stores strokes to flash when it's away from a phone (gated by the
 - **Per-note info (v2.16+):** `REQ_OfflineNoteInfo 0x26` → reply `0xA6` carries
   note version + a **page bitmap** (`:2507`–`:2578`) — a compact way to learn which
   pages exist without the full page list.
+
+> **Observed on the F130 under rescue (as of 2026-08-14): flash is 100% full (§5.3 byte 15)
+> yet `0xA1` returns `count = 0`** — no notes, hence no pages, hence nothing to request. Every
+> client agrees: our own, Neo Studio2, the old Moleskine Notes app, and the new Moleskine
+> Notebooks app v3.0.15 (which reports `No offline data to download`). So the index that maps
+> flash contents to notes/pages is empty or unreadable while the data blocks themselves are
+> still occupied. The stroke bytes are almost certainly intact — the addressing to reach them
+> via `0x21`/`0x22`/`0x23` is what's lost, which is why the rescue is parked rather than solved.
 
 ### 6.2 Requesting + receiving data (`REQ_OfflineDataRequest 0x23`)
 
@@ -740,7 +756,15 @@ Web SDK mirror: `ReqOfflineDelete` builds `OFFLINE_DATA_DELETE_REQUEST = 0x25`
 
 ### Is there an unconditional auto-erase after a transfer completes?
 
-**No evidence of one.** Searching `CommProcessor20.java`, `buildReqOfflineDataRemove`
+**No evidence of one in the SDK — but NeoLAB support asserts otherwise about their own
+app.** Serena Han (NeoLAB, 2026-08-11) wrote that once data is transferred to the app "the
+pen's storage clears automatically". That is consistent with the *official app* simply
+passing byte 0 = `1` (delete-after-transfer) on every `0x23`, not with a pen-side
+auto-erase — but it means **never run our rescue client concurrently with an official-app
+transfer attempt**, and it makes the keep-flag below the single most load-bearing line in
+this document.
+
+Searching `CommProcessor20.java`, `buildReqOfflineDataRemove`
 / `reqOfflineDataRemove` appear **only** in the public delete methods (`:3339`,
 `:3353`) — they are **never** called from the chunk-receive handler
 (`RES_OfflineChunk` at `:2390`), from the `position == 2` terminal branch (`:2419`),
