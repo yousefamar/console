@@ -19,6 +19,7 @@ import { useUiStore } from '@/store/ui'
 import { showPrompt } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
 export const SpacesTab = memo(function SpacesTab() {
@@ -222,22 +223,36 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             const live = sessionFor(r.key)
             const isActive = live?.id === activeSessionId
             const alert = live?.needsAttention ? 'attention' : live?.hasUnread ? 'unread' : null
+            const agent = useAgentStore.getState()
+            const menuItems: ContextMenuItem[] = [
+              { label: 'Show info', onClick: () => agent.openRoleInfo(r.key) },
+              ...(live ? [
+                { label: 'Mark read', onClick: () => agent.markSessionRead(live.id) },
+                { label: 'Mark unread', onClick: () => agent.markSessionUnread(live.id) },
+                { label: 'Fork', onClick: () => agent.forkSession(live.id) },
+                ...(r.fork || r.manager ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(live.id) }] : []),
+                { label: 'End session', onClick: () => agent.killSession(live.id), destructive: true },
+              ] : [
+                { label: 'Revive', onClick: () => reviveAgent(r.key) },
+              ]),
+            ]
             return (
-              <button
-                key={r.key}
-                onClick={() => { if (live) selectSession(live.id); else reviveAgent(r.key) }}
-                className={clsx(
-                  'flex w-full items-center gap-2 px-3 py-1 text-left text-xs transition-colors',
-                  isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
-                )}
-                title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}`}
-              >
-                {r.fork
-                  ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
-                  : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
-                <span className={clsx('truncate', !live && 'opacity-60')}>{r.title}</span>
-                {!live && <span className="ml-auto text-[9px] text-text-tertiary flex-shrink-0">⏾</span>}
-              </button>
+              <ContextMenu key={r.key} items={menuItems}>
+                <button
+                  onClick={() => { if (live) selectSession(live.id); else reviveAgent(r.key) }}
+                  className={clsx(
+                    'flex w-full items-center gap-2 px-3 py-1 text-left text-xs transition-colors',
+                    isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
+                  )}
+                  title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}`}
+                >
+                  {r.fork
+                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
+                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
+                  <span className={clsx('truncate', !live && 'opacity-60')}>{r.title}</span>
+                  {!live && <span className="ml-auto text-[9px] text-text-tertiary flex-shrink-0">⏾</span>}
+                </button>
+              </ContextMenu>
             )
           })}
         </RailSection>

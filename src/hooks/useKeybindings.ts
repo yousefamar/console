@@ -33,7 +33,8 @@ export function useKeybindings() {
       const isEmail = activePane === 'email'
       const isBookmarks = activePane === 'bookmarks'
       const isNotes = activePane === 'notes'
-      const isAgents = activePane === 'agents'
+      // Spaces hosts agent sessions too — it shares the agent bindings.
+      const isAgents = activePane === 'agents' || activePane === 'spaces'
       const isFeeds = activePane === 'feeds'
       const isCalendar = activePane === 'calendar'
       const isMoney = activePane === 'money'
