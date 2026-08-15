@@ -14,6 +14,17 @@ const BASE = 'https://www.immobiliare.it/api-next'
 // Counts converge by ~100 vertices; 400 vertices is an HTTP 414.
 const MAX_VERTICES = 120
 const PAGE = 25
+// immobiliare 422s `vrt` with fewer than 4 points ("This collection should
+// contain 4 elements or more"). A ring with a duplicated closing vertex can
+// simplify down to a 3-point sliver (~15m triangle seen in the wild, almost
+// certainly a union artifact) — not worth a real search anyway, so skip it
+// rather than let one degenerate ring kill every ring after it in the loop.
+const MIN_VERTICES = 4
+
+/** True for a ring immobiliare will 422 rather than search. */
+export function isTooSmall(ring: Ring): boolean {
+  return simplifyToLatLng(ring, MAX_VERTICES, false).length < MIN_VERTICES
+}
 
 export class ImmobiliareClient implements PortalClient {
   readonly portal = 'immobiliare' as const
@@ -24,6 +35,7 @@ export class ImmobiliareClient implements PortalClient {
   async count(rings: Ring[], criteria: Criteria): Promise<number> {
     let total = 0
     for (const ring of rings) {
+      if (isTooSmall(ring)) continue
       const d = (await this.get('/listing/count/', ring, criteria)) as { count?: number }
       total += d.count ?? 0
     }
@@ -36,6 +48,7 @@ export class ImmobiliareClient implements PortalClient {
     let truncated = false
 
     for (const ring of rings) {
+      if (isTooSmall(ring)) continue
       for (let page = 1; (page - 1) * PAGE < limit; page++) {
         const d = (await this.get('/search-list/listings/', ring, criteria, {
           criterio: 'data',

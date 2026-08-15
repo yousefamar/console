@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry } from '../property/geo.js'
 import { PropertySearchStore, PORTAL_BY_COUNTRY } from '../property/store.js'
 import { postFilter } from '../property/sync.js'
+import { asEntryArray } from '../property/immoscout24.js'
+import { isTooSmall } from '../property/immobiliare.js'
 import type { Listing } from '../property/types.js'
 
 const dirs: string[] = []
@@ -197,5 +199,46 @@ describe('postFilter', () => {
       (l) => l.id,
     )
     expect(both).toEqual(['normal'])
+  })
+})
+
+describe('asEntryArray', () => {
+  it('passes an array through unchanged', () => {
+    const a = [{ '@id': '1' }, { '@id': '2' }]
+    expect(asEntryArray(a)).toBe(a)
+  })
+
+  it('wraps a single-hit page (XML→JSON singleton flattening) instead of throwing on for...of', () => {
+    const single = { '@id': '167740077' }
+    expect(asEntryArray(single)).toEqual([single])
+  })
+
+  it('returns an empty array for a zero-hit page', () => {
+    expect(asEntryArray(undefined)).toEqual([])
+  })
+})
+
+describe('isTooSmall (immobiliare)', () => {
+  it('flags a 3-vertex sliver (closed ring with a duplicated last point) as too small to submit', () => {
+    // 422s live with "This collection should contain 4 elements or more" —
+    // observed on a real ~15m union artifact near Trieste, 2026-08-15.
+    const sliver: Array<[number, number]> = [
+      [13.361202876628553, 45.75142669547999],
+      [13.361278, 45.7513],
+      [13.361457042962522, 45.75138957868349],
+      [13.361202876628553, 45.75142669547999],
+    ]
+    expect(isTooSmall(sliver)).toBe(true)
+  })
+
+  it('does not flag a normal-sized ring', () => {
+    const square: Array<[number, number]> = [
+      [13.0, 45.0],
+      [13.1, 45.0],
+      [13.1, 45.1],
+      [13.0, 45.1],
+      [13.0, 45.0],
+    ]
+    expect(isTooSmall(square)).toBe(false)
   })
 })

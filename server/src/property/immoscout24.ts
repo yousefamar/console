@@ -96,7 +96,7 @@ export class ImmoScout24Client implements PortalClient {
         const rl = model?.searchResponseModel?.['resultlist.resultlist']
         if (!rl) throw new Error('immoscout24: no resultlist in HTML')
         if (page === 1) total += rl.paging?.numberOfHits ?? 0
-        const entries = rl.resultlistEntries?.[0]?.resultlistEntry ?? []
+        const entries = asEntryArray(rl.resultlistEntries?.[0]?.resultlistEntry)
         const markers = markerCoords(rl)
         for (const e of entries) {
           const l = normalise(e, markers)
@@ -164,6 +164,17 @@ class WafRejected extends Error {
   constructor(status: number) {
     super(`immoscout24: WAF rejected the token (HTTP ${status})`)
   }
+}
+
+/**
+ * XML→JSON singleton flattening: a page with exactly one hit collapses
+ * `resultlistEntry` from an array to a bare object (same pattern as
+ * `galleryAttachments.attachment` elsewhere in this response). Without
+ * normalising to an array, `for...of` throws "entries is not iterable" and
+ * kills the whole poll for every ring after it.
+ */
+export function asEntryArray(raw: RawEntry[] | RawEntry | undefined): RawEntry[] {
+  return Array.isArray(raw) ? raw : raw ? [raw] : []
 }
 
 /** Google encoded polyline, precision 5. Closing the ring is optional here. */
@@ -243,7 +254,8 @@ interface RawResultListModel {
 
 interface RawResultList {
   paging?: { numberOfHits?: number; numberOfPages?: number }
-  resultlistEntries?: Array<{ resultlistEntry?: RawEntry[] }>
+  // A single hit collapses resultlistEntry from an array to a bare object (XML→JSON singleton flattening).
+  resultlistEntries?: Array<{ resultlistEntry?: RawEntry[] | RawEntry }>
   mapMarkers?: { results?: RawMarker[] }
 }
 
