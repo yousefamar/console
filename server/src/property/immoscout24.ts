@@ -23,6 +23,8 @@ const ORIGIN = 'https://www.immobilienscout24.de'
 const MAX_VERTICES = 120
 const PAGE = 20
 const SORT_NEWEST = '2' // "Aktualität (neueste zuerst)"
+/** German listings count Zimmer (incl. living rooms), so bedrooms + 1. */
+const ROOM_OFFSET = 1
 
 export class ImmoScout24Client implements PortalClient {
   readonly portal = 'immoscout24' as const
@@ -49,9 +51,17 @@ export class ImmoScout24Client implements PortalClient {
     let token = await this.waf.get()
     if (!token) throw new Error('immoscout24: no WAF token available (Playwright missing?)')
     const unsupported: string[] = []
-    // IS24 has no auction flag, and plot size only exists on houses.
-    if (criteria.excludeAuctions) unsupported.push('excludeAuctions')
-    if (criteria.minPlotArea != null && criteria.propertyType === 'flat') unsupported.push('minPlotArea')
+    // IS24 has no auction/scheme flag, no Erbbaurecht (leasehold) filter, and
+    // plot size only exists on houses.
+    if (criteria.excludeSchemes) unsupported.push('excludeSchemes')
+    if (criteria.excludeNewBuild) unsupported.push('excludeNewBuild')
+    if (criteria.freeholdOnly) unsupported.push('freeholdOnly')
+    if (criteria.maxDaysSinceAdded != null) unsupported.push('maxDaysSinceAdded')
+    if (criteria.minBathrooms != null) unsupported.push('minBathrooms')
+    if (criteria.propertyType === 'flat') {
+      if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
+      if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
+    }
 
     const seen = new Map<string, Listing>()
     let total = 0
@@ -177,11 +187,31 @@ function queryModel(ring: Ring, c: Criteria): Record<string, unknown> {
   if (c.minPrice != null || c.maxPrice != null) {
     q.priceRange = { min: c.minPrice ?? null, max: c.maxPrice ?? null }
   }
-  if (c.minFloorArea != null) q.livingSpaceRange = { min: c.minFloorArea, max: null }
+  if (c.minFloorArea != null || c.maxFloorArea != null) {
+    q.livingSpaceRange = { min: c.minFloorArea ?? null, max: c.maxFloorArea ?? null }
+  }
   // The real plot-size filter — `onlyWithGarden` is a no-op for houses.
-  if (c.minPlotArea != null && !flat) q.lotSizeRange = { min: c.minPlotArea, max: null }
-  if (c.minBedrooms != null) q.numberOfRoomsRange = { min: c.minBedrooms, max: c.maxBedrooms ?? null }
+  if (!flat && (c.minPlotArea != null || c.maxPlotArea != null)) {
+    q.lotSizeRange = { min: c.minPlotArea ?? null, max: c.maxPlotArea ?? null }
+  }
+  // Zimmer counts living rooms too, so a 3-bedroom house is a 4-Zimmer-Haus.
+  // Without this shift a DE search is a whole room stricter than the UK/IT one.
+  if (c.minBedrooms != null || c.maxBedrooms != null) {
+    q.numberOfRoomsRange = {
+      min: c.minBedrooms != null ? c.minBedrooms + ROOM_OFFSET : null,
+      max: c.maxBedrooms != null ? c.maxBedrooms + ROOM_OFFSET : null,
+    }
+  }
+  // No verified query-model field for bathrooms, and unknown fields fail open
+  // silently here — so it's post-filtered on the listing's numberOfBathRooms.
+  if (c.minYearBuilt != null || c.maxYearBuilt != null) {
+    q.yearOfConstructionRange = { min: c.minYearBuilt ?? null, max: c.maxYearBuilt ?? null }
+  }
   if (c.minInternetMbit != null) q.minimumInternetSpeed = c.minInternetMbit
+  if (c.mustHaveParking) q.onlyWithParking = true
+  if (c.noBuyerFee && !rent) q.onlyWithoutCourtage = true
+  // Only meaningful for flats — for houses the plot implies it (see api notes).
+  if (c.mustHaveGarden && flat) q.onlyWithGarden = true
   if (c.keywords?.length) q.fullTextQuery = c.keywords.join(' ')
   return q
 }

@@ -18,21 +18,50 @@ export interface Criteria {
   channel?: Channel
   /** House vs flat vs any. Portals have far richer taxonomies; this is the axis we care about. */
   propertyType?: 'house' | 'flat' | 'any'
+  /** Local currency of the portal — GBP for Rightmove, EUR for the other two. */
   minPrice?: number
   maxPrice?: number
-  /** Local currency of the portal — GBP for Rightmove, EUR for the other two. */
+  /**
+   * Bedrooms, UK/IT convention. IS24 counts *Zimmer* (all habitable rooms), so
+   * the German client adds one — a 3-bed house is a 4-Zimmer-Haus.
+   */
   minBedrooms?: number
   maxBedrooms?: number
+  minBathrooms?: number
   /** Interior floor area, m². */
   minFloorArea?: number
+  maxFloorArea?: number
   /** Plot / land area, m². Only ImmoScout24 filters this server-side. */
   minPlotArea?: number
+  maxPlotArea?: number
+  /** Year of construction. Only ImmoScout24 filters this. */
+  minYearBuilt?: number
+  maxYearBuilt?: number
+  /**
+   * Outright ownership only — `FREEHOLD`/`SHARE_OF_FREEHOLD` on Rightmove,
+   * `tipoProprieta=1` on immobiliare. Germany's Erbbaurecht equivalent has no
+   * IS24 filter, so DE searches can't express this.
+   */
+  freeholdOnly?: boolean
+  /** Must list a (private) garden. Redundant on IS24, where `minPlotArea` is exact. */
+  mustHaveGarden?: boolean
+  mustHaveParking?: boolean
   /** Free-text terms. Real filters on immobiliare + IS24; sort-only on Rightmove. */
   keywords?: string[]
   /** Minimum broadband speed, Mbit. Only ImmoScout24 filters this. */
   minInternetMbit?: number
-  /** Exclude auctions / repossessions where the portal supports it. */
-  excludeAuctions?: boolean
+  /**
+   * Drop auctions, repossessions, retirement housing, shared-ownership and
+   * other buying schemes — "just a normal house for sale". Each portal applies
+   * as much of it as it can express.
+   */
+  excludeSchemes?: boolean
+  /** Drop new-builds. Rightmove only (`dontShow=newHome`). */
+  excludeNewBuild?: boolean
+  /** No buyer-side agent commission (IS24 `onlyWithoutCourtage`). Germany only. */
+  noBuyerFee?: boolean
+  /** Only listings added within N days. Rightmove only, and only 1 | 3 | 7 | 14. */
+  maxDaysSinceAdded?: number
 }
 
 /** A normalised listing. Fields absent from a portal stay undefined. */

@@ -79,8 +79,15 @@ export class RightmoveClient implements PortalClient {
     const unsupported: string[] = []
     if (criteria.keywords?.length) unsupported.push('keywords')
     if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
+    if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
     if (criteria.minInternetMbit != null) unsupported.push('minInternetMbit')
     if (criteria.minFloorArea != null) unsupported.push('minFloorArea')
+    if (criteria.maxFloorArea != null) unsupported.push('maxFloorArea')
+    if (criteria.minYearBuilt != null) unsupported.push('minYearBuilt')
+    if (criteria.maxYearBuilt != null) unsupported.push('maxYearBuilt')
+    if (criteria.noBuyerFee) unsupported.push('noBuyerFee')
+    // dontShow's auction flag is feature-switched off, so filter it locally.
+    if (criteria.excludeSchemes) unsupported.push('excludeSchemes')
 
     return {
       portal: this.portal,
@@ -119,16 +126,42 @@ function locationIdentifier(ring: Ring): string {
   return 'USERDEFINEDAREA^' + JSON.stringify({ polylines: encodePolyline(pts) })
 }
 
+/** Only these four are accepted; anything else 400s. */
+const DAYS_SINCE_ADDED = [1, 3, 7, 14]
+
 /** Criteria → Rightmove query params. */
 function compile(c: Criteria): Record<string, string> {
-  const p: Record<string, string> = { channel: c.channel === 'rent' ? 'RENT' : 'BUY' }
+  const rent = c.channel === 'rent'
+  const p: Record<string, string> = { channel: rent ? 'RENT' : 'BUY' }
   if (c.minPrice != null) p.minPrice = String(c.minPrice)
   if (c.maxPrice != null) p.maxPrice = String(c.maxPrice)
   if (c.minBedrooms != null) p.minBedrooms = String(c.minBedrooms)
   if (c.maxBedrooms != null) p.maxBedrooms = String(c.maxBedrooms)
+  if (c.minBathrooms != null) p.minBathrooms = String(c.minBathrooms)
   if (c.propertyType === 'house') p.propertyTypes = 'detached,semi-detached,terraced,bungalow'
   if (c.propertyType === 'flat') p.propertyTypes = 'flat'
-  if (c.excludeAuctions) p.dontShow = 'retirement,sharedOwnership'
+  // Deliberately NOT sending minSize/maxSize: only ~49% of Rightmove listings
+  // report a floor area, and the server-side filter drops the silent rest.
+  // Post-filtering keeps them (see postFilter in sync.ts).
+  //
+  // Share-of-freehold is functionally freehold for our purposes; leasehold isn't.
+  if (c.freeholdOnly && !rent) p.tenureTypes = 'FREEHOLD,SHARE_OF_FREEHOLD'
+  const mustHave: string[] = []
+  if (c.mustHaveGarden) mustHave.push('garden')
+  if (c.mustHaveParking) mustHave.push('parking')
+  if (mustHave.length) p.mustHave = mustHave.join(',')
+  if (c.excludeSchemes) {
+    // `auction` is behind a Rightmove feature switch on dontShow, so the auction
+    // half of this gets post-filtered on the listing's own type instead.
+    p.dontShow = rent ? 'houseShare,retirement,student' : 'retirement,sharedOwnership'
+    if (!rent) p.includeSSTC = 'false'
+  }
+  if (c.excludeNewBuild && !rent) {
+    p.dontShow = p.dontShow ? `${p.dontShow},newHome` : 'newHome'
+  }
+  if (c.maxDaysSinceAdded != null && DAYS_SINCE_ADDED.includes(c.maxDaysSinceAdded)) {
+    p.maxDaysSinceAdded = String(c.maxDaysSinceAdded)
+  }
   return p
 }
 

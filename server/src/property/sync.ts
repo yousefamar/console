@@ -231,15 +231,45 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     if (missing.has('minFloorArea') && c.minFloorArea != null && l.floorArea != null && l.floorArea < c.minFloorArea) {
       return false
     }
+    if (missing.has('maxFloorArea') && c.maxFloorArea != null && l.floorArea != null && l.floorArea > c.maxFloorArea) {
+      return false
+    }
     if (missing.has('minPlotArea') && c.minPlotArea != null && l.plotArea != null && l.plotArea < c.minPlotArea) {
       return false
     }
+    if (missing.has('maxPlotArea') && c.maxPlotArea != null && l.plotArea != null && l.plotArea > c.maxPlotArea) {
+      return false
+    }
+    if (missing.has('minBathrooms') && c.minBathrooms != null && l.bathrooms != null && l.bathrooms < c.minBathrooms) {
+      return false
+    }
+    if (missing.has('excludeSchemes') && c.excludeSchemes && isScheme(l)) return false
     if (missing.has('keywords') && c.keywords?.length) {
       const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''}`.toLowerCase()
       if (!c.keywords.some((k) => hay.includes(k.toLowerCase()))) return false
     }
     return true
   })
+}
+
+/** Words that mark a listing as an auction/scheme rather than a normal sale. */
+const SCHEME_TERMS = [
+  'auction',
+  'for sale by tender',
+  'shared ownership',
+  'shared equity',
+  'part buy',
+  'retirement',
+  'over 55',
+  'over 60',
+  'zwangsversteigerung',
+  'asta',
+  'nuda proprietà',
+]
+
+function isScheme(l: Listing): boolean {
+  const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.propertyType ?? ''}`.toLowerCase()
+  return SCHEME_TERMS.some((t) => hay.includes(t))
 }
 
 function sortNewestFirst(listings: Listing[]): Listing[] {
