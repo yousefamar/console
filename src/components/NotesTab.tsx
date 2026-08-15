@@ -17,6 +17,11 @@ export const NotesTab = memo(function NotesTab() {
   const vaultConnected = useNotesStore((s) => s.vaultConnected)
   const loading = useNotesStore((s) => s.loading)
   const activeFilePath = useNotesStore((s) => s.activeFilePath)
+  // The Spaces pane can also host a NotesEditor. Two live CM6 instances on
+  // the same file = a stale hidden buffer waiting to clobber real edits, so
+  // each pane mounts the editor ONLY while it is the active pane (the
+  // EmailFrame hidden-placeholder precedent).
+  const isActivePane = useUiStore((s) => s.activePane === 'notes')
   const reconnectVault = useNotesStore((s) => s.reconnectVault)
   const connectVault = useNotesStore((s) => s.connectVault)
   const quickSwitcherOpen = useNotesStore((s) => s.quickSwitcherOpen)
@@ -98,7 +103,7 @@ export const NotesTab = memo(function NotesTab() {
   if (isMobile) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        {activeFilePath ? <NotesEditor /> : sidebar}
+        {activeFilePath && isActivePane ? <NotesEditor /> : sidebar}
         {quickSwitcherOpen && <NotesQuickSwitcher />}
         {linkPickerOpen && <NotesLinkPicker />}
         {commandPaletteOpen && <NotesCommandPalette />}
@@ -115,7 +120,7 @@ export const NotesTab = memo(function NotesTab() {
         {sidebar}
       </div>
       <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-        <NotesEditor />
+        {isActivePane && <NotesEditor />}
       </div>
       {quickSwitcherOpen && <NotesQuickSwitcher />}
       {linkPickerOpen && <NotesLinkPicker />}
