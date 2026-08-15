@@ -2,6 +2,7 @@ import { geocaching } from './geocaching.js'
 import { meetup } from './meetup.js'
 import { mapLayer } from './map-layer.js'
 import { mapFlights } from './map-flights.js'
+import { mapProperty } from './map-property.js'
 import { exitWithError, type GlobalFlags } from '../output.js'
 
 // `con map <subfeature> <verb>` — the Map tab groups location, geocaching,
@@ -13,7 +14,8 @@ export async function map(verb: string | undefined, args: string[], flags: Globa
     case 'meetup': return meetup(args[0], args.slice(1), flags)
     case 'layer': return mapLayer(args[0], args.slice(1), flags)
     case 'flights': return mapFlights(args[0], args.slice(1), flags)
+    case 'property': return mapProperty(args[0], args.slice(1), flags)
     default:
-      exitWithError('USAGE', `Unknown map command: ${verb}. Try 'con map geocaching status', 'con map meetup fetch', 'con map layer list', or 'con map flights push'.`, flags)
+      exitWithError('USAGE', `Unknown map command: ${verb}. Try 'con map geocaching status', 'con map meetup fetch', 'con map layer list', 'con map flights push', or 'con map property list'.`, flags)
   }
 }
