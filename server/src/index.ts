@@ -103,6 +103,13 @@ import { SerpApiClient } from './flights/serpapi.js'
 import { WatchlistStore } from './flights/store.js'
 import { FlightSync } from './flights/sync.js'
 import { handleFlightRoutes } from './routes/flights.js'
+import { PropertySearchStore } from './property/store.js'
+import { PropertySync } from './property/sync.js'
+import { RightmoveClient } from './property/rightmove.js'
+import { ImmobiliareClient } from './property/immobiliare.js'
+import { ImmoScout24Client } from './property/immoscout24.js'
+import { WafTokenStore } from './property/waf-token.js'
+import { handlePropertyRoutes } from './routes/property.js'
 import { GoogleMapsClient } from './gmaps/client.js'
 import { handleGmapsRoutes } from './routes/gmaps.js'
 import { KeyBackupStore } from './matrix/key-backup-store.js'
@@ -304,6 +311,22 @@ const googleMapsClient = new GoogleMapsClient(authStore)
 const flightWatchlists = new WatchlistStore(join(feedsConfigDir, 'flight-watchlists.json'))
 const flightSync = new FlightSync(serpApiClient, flightWatchlists, pushServer, syncBus, mapLayerStore, (msg: string) => { log(msg) })
 flightSync.start()
+// House hunt — one portal per country, polygons come from Map-tab layers.
+const wafTokenStore = new WafTokenStore(join(feedsConfigDir, 'is24-waf-token.json'), (msg: string) => { log(msg) })
+const propertySearches = new PropertySearchStore(join(feedsConfigDir, 'property-searches.json'))
+const propertySync = new PropertySync(
+  {
+    rightmove: new RightmoveClient(),
+    immobiliare: new ImmobiliareClient(),
+    immoscout24: new ImmoScout24Client(wafTokenStore),
+  },
+  propertySearches,
+  pushServer,
+  syncBus,
+  mapLayerStore,
+  (msg: string) => { log(msg) },
+)
+propertySync.start()
 const keyBackupStore = new KeyBackupStore(
   join(feedsConfigDir, 'matrix-key-backup.json'),
   (msg: string) => { log(msg) },
@@ -1275,6 +1298,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
   if (path.startsWith('/outdoorlads') && handleOutdoorLadsRoutes(req, res, path, outdoorLadsStore)) return
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
+  if (path.startsWith('/property') && handlePropertyRoutes(req, res, path, url, { searches: propertySearches, sync: propertySync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
   if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody, glassesConfig)) return
