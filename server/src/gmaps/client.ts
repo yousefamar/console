@@ -33,6 +33,16 @@ export interface PlaceResult {
   googleMapsUri?: string
 }
 
+export interface PlaceSuggestion {
+  placeId: string
+  /** full suggestion text, e.g. "Workhouse Coffee, King's Road, Reading, UK" */
+  text: string
+  /** the bold part, e.g. "Workhouse Coffee" */
+  mainText: string
+  /** the greyed part, e.g. "King's Road, Reading, UK" */
+  secondaryText?: string
+}
+
 export type TravelMode = 'DRIVE' | 'WALK' | 'BICYCLE' | 'TRANSIT'
 
 export interface RouteResult {
@@ -126,6 +136,83 @@ export class GoogleMapsClient {
         userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : undefined,
         googleMapsUri: p.googleMapsUri,
       }))
+  }
+
+  /**
+   * Places Autocomplete (New) — type-ahead suggestions. `sessionToken` groups
+   * a burst of keystrokes + the eventual details fetch into one billable
+   * session, so pass the same token for every keystroke and to placeDetails.
+   */
+  async autocomplete(
+    input: string,
+    opts?: { lat?: number; lon?: number; radiusMeters?: number; sessionToken?: string },
+  ): Promise<PlaceSuggestion[]> {
+    const apiKey = this.requireKey()
+    const body: Record<string, unknown> = {
+      input,
+      regionCode: DEFAULT_REGION,
+    }
+    if (opts?.sessionToken) body.sessionToken = opts.sessionToken
+    if (opts?.lat != null && opts?.lon != null) {
+      body.locationBias = {
+        circle: {
+          center: { latitude: opts.lat, longitude: opts.lon },
+          radius: Math.min(Math.max(opts.radiusMeters ?? 20000, 1), 50000),
+        },
+      }
+    }
+    const res = await fetch(`${PLACES_BASE}/places:autocomplete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    if (!res.ok) throw apiError(res.status, `Places autocomplete failed: ${res.status} ${text.slice(0, 300)}`)
+    let data: any
+    try { data = JSON.parse(text) } catch { data = {} }
+    const suggestions: any[] = Array.isArray(data.suggestions) ? data.suggestions : []
+    return suggestions
+      .map((s): PlaceSuggestion | null => {
+        const p = s?.placePrediction
+        if (!p?.placeId) return null
+        return {
+          placeId: String(p.placeId),
+          text: p.text?.text ?? '',
+          mainText: p.structuredFormat?.mainText?.text ?? p.text?.text ?? '',
+          secondaryText: p.structuredFormat?.secondaryText?.text,
+        }
+      })
+      .filter((s): s is PlaceSuggestion => s != null)
+  }
+
+  /** Places Details (New) — resolve a placeId (from autocomplete) to a full place. */
+  async placeDetails(placeId: string, sessionToken?: string): Promise<PlaceResult> {
+    const apiKey = this.requireKey()
+    const fieldMask = [
+      'id', 'displayName', 'formattedAddress', 'location',
+      'types', 'rating', 'userRatingCount', 'googleMapsUri',
+    ].join(',')
+    const url = new URL(`${PLACES_BASE}/places/${encodeURIComponent(placeId)}`)
+    if (sessionToken) url.searchParams.set('sessionToken', sessionToken)
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': fieldMask },
+    })
+    const text = await res.text()
+    if (!res.ok) throw apiError(res.status, `Places details failed: ${res.status} ${text.slice(0, 300)}`)
+    let p: any
+    try { p = JSON.parse(text) } catch { p = {} }
+    return {
+      id: String(p.id ?? placeId),
+      name: p.displayName?.text ?? p.formattedAddress ?? 'Unknown',
+      address: p.formattedAddress,
+      lat: p.location?.latitude ?? 0,
+      lon: p.location?.longitude ?? 0,
+      types: Array.isArray(p.types) ? p.types : undefined,
+      rating: typeof p.rating === 'number' ? p.rating : undefined,
+      userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : undefined,
+      googleMapsUri: p.googleMapsUri,
+    }
   }
 
   /** Routes API — origin→destination with alternate routes + geometry. */

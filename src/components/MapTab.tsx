@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users } from 'lucide-react'
-import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type MeetupEvent, type BuiltinLayerId } from '@/store/map'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Search, Navigation, ExternalLink, Car, Footprints, Bike, Train, Locate } from 'lucide-react'
+import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type LayerFeatureSel, type MeetupEvent, type BuiltinLayerId, type GPlace, type GRoute, type GTravelMode } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 
 /** Colour a log entry by its type — same family as the pins, so the detail panel
  *  reads at a glance: green found, red DNF, amber maintenance, slate the rest. */
@@ -94,6 +95,34 @@ function eventsToFC(events: MeetupEvent[]): FeatureCollection {
   }
 }
 
+// Google Maps search results are a single pin glyph. The selected place gets a
+// ring (like geocache/meetup selection).
+const GMAPS_EMOJI = '📍'
+
+function placesToFC(places: GPlace[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: places.map((p) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+      properties: { id: p.id },
+    })),
+  }
+}
+
+// Alternate routes render as separate LineStrings; the selected one is drawn
+// bright + wide, the others dimmed. `sel` marks which index is emphasized.
+function routesToFC(routes: GRoute[], sel: number): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: routes.map((r, i) => ({
+      type: 'Feature',
+      geometry: r.geometry,
+      properties: { idx: i, selected: i === sel ? 1 : 0 },
+    })),
+  }
+}
+
 function trackToFC(track: OtFix[]): FeatureCollection {
   const coords = track.map((f) => [f.lon, f.lat])
   return {
@@ -134,11 +163,17 @@ export function MapTab() {
     events, selectedEventId, meetupStatus, fetchingMeetup,
     meetupDays,
     selectEvent, setMeetupDays,
+    selectedLayerFeature, selectLayerFeature,
     builtinVisible,
+    gmapsConfigured, gmapsResults, gmapsSelectedPlaceId, gmapsRoutes, gmapsSelectedRoute,
+    probeGmaps, selectPlace,
   } = useMapStore()
 
+  const isMobile = useIsMobile()
   const [showCreds, setShowCreds] = useState(false)
   const [showLayers, setShowLayers] = useState(false)
+  const [showGmaps, setShowGmaps] = useState(false)
+  const [glError, setGlError] = useState<string | null>(null)
   const [rangeSel, setRangeSel] = useState('1') // days; '1' = last 24h, 'custom' = date pickers
   const fittedRef = useRef<Set<string>>(new Set())
 
@@ -150,13 +185,23 @@ export function MapTab() {
   // --- init map (once) ------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: darkRasterStyle(),
-      center: [-2, 54],
-      zoom: 5,
-      attributionControl: false,
-    })
+    // MapLibre throws synchronously ("Failed to initialize WebGL") when no GL
+    // context is available (GPU blocklist, headless, exhausted contexts). An
+    // uncaught throw here unwinds the whole React tree and blanks the entire
+    // app — so contain it to a Map-pane-only error.
+    let map: maplibregl.Map
+    try {
+      map = new maplibregl.Map({
+        container: containerRef.current,
+        style: darkRasterStyle(),
+        center: [-2, 54],
+        zoom: 5,
+        attributionControl: false,
+      })
+    } catch (err) {
+      setGlError((err as Error)?.message || 'Failed to initialize WebGL')
+      return
+    }
     mapRef.current = map
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
     map.on('error', () => {/* tolerate the odd tile 404 — non-fatal */})
@@ -173,6 +218,8 @@ export function MapTab() {
       pushSource(m, 'meetup-pins', eventsToFC(st.events))
       pushSource(m, 'ot-track', trackToFC(st.track))
       pushSource(m, 'ot-current', currentToFC(st.current))
+      pushSource(m, 'gmaps-pins', placesToFC(st.gmapsResults))
+      pushSource(m, 'gmaps-routes', routesToFC(st.gmapsRoutes, st.gmapsSelectedRoute))
       applyBuiltinVisibility(m, st.builtinVisible)
       reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
     })
@@ -192,6 +239,26 @@ export function MapTab() {
     map.on('mouseenter', 'meetup-pins', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'meetup-pins', () => { map.getCanvas().style.cursor = '' })
 
+    map.on('click', 'gmaps-pins', (e) => {
+      const id = e.features?.[0]?.properties?.id as string | undefined
+      if (id) useMapStore.getState().selectPlace(id)
+    })
+    map.on('mouseenter', 'gmaps-pins', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'gmaps-pins', () => { map.getCanvas().style.cursor = '' })
+
+    map.on('click', 'gmaps-routes', (e) => {
+      const idx = e.features?.[0]?.properties?.idx as number | undefined
+      if (idx != null) useMapStore.getState().selectRoute(idx)
+    })
+    map.on('mouseenter', 'gmaps-routes', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'gmaps-routes', () => { map.getCanvas().style.cursor = '' })
+
+    mapController.center = () => {
+      const m = mapRef.current
+      if (!m) return null
+      const c = m.getCenter()
+      return { lat: c.lat, lon: c.lng }
+    }
     mapController.flyToMe = () => {
       const c = useMapStore.getState().current[0]
       if (c) map.flyTo({ center: [c.lon, c.lat], zoom: 14 })
@@ -209,6 +276,7 @@ export function MapTab() {
       mapController.flyToMe = undefined
       mapController.fetchHere = undefined
       mapController.fetchMeetupHere = undefined
+      mapController.center = undefined
       map.remove()
       mapRef.current = null
       readyRef.current = false
@@ -219,6 +287,7 @@ export function MapTab() {
   useEffect(() => {
     void refresh().then(() => void loadHistory())
     void loadLayers()
+    void probeGmaps()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -242,6 +311,44 @@ export function MapTab() {
     if (readyRef.current && map) map.setFilter('meetup-selected', ['==', ['get', 'id'], selectedEventId ?? ''])
   }, [selectedEventId])
 
+  // Google Maps search pins + selection ring + fit-to-results
+  const gmapsFittedRef = useRef<string>('')
+  useEffect(() => {
+    const map = mapRef.current
+    if (!readyRef.current || !map) return
+    pushSource(map, 'gmaps-pins', placesToFC(gmapsResults))
+    // Fit to the result set once per distinct result batch.
+    const key = gmapsResults.map((p) => p.id).join(',')
+    if (gmapsResults.length && key !== gmapsFittedRef.current) {
+      gmapsFittedRef.current = key
+      if (gmapsResults.length === 1) {
+        const p = gmapsResults[0]!
+        map.flyTo({ center: [p.lon, p.lat], zoom: 15, duration: 600 })
+      } else {
+        const b = new maplibregl.LngLatBounds()
+        for (const p of gmapsResults) b.extend([p.lon, p.lat])
+        map.fitBounds(b, { padding: 80, maxZoom: 15, duration: 600 })
+      }
+    }
+    if (!gmapsResults.length) gmapsFittedRef.current = ''
+  }, [gmapsResults])
+  useEffect(() => {
+    const map = mapRef.current
+    if (readyRef.current && map) map.setFilter('gmaps-selected', ['==', ['get', 'id'], gmapsSelectedPlaceId ?? ''])
+  }, [gmapsSelectedPlaceId])
+
+  // Google Maps directions polylines (selected route emphasized)
+  useEffect(() => {
+    const map = mapRef.current
+    if (!readyRef.current || !map) return
+    pushSource(map, 'gmaps-routes', routesToFC(gmapsRoutes, gmapsSelectedRoute))
+    if (gmapsRoutes.length) {
+      const b = new maplibregl.LngLatBounds()
+      for (const r of gmapsRoutes) for (const c of r.geometry.coordinates) b.extend(c as [number, number])
+      map.fitBounds(b, { padding: 80, maxZoom: 15, duration: 600 })
+    }
+  }, [gmapsRoutes, gmapsSelectedRoute])
+
   // built-in layer visibility → toggle the MapLibre layer `visibility` prop
   useEffect(() => {
     const map = mapRef.current
@@ -264,12 +371,23 @@ export function MapTab() {
 
   const selected = pins.find((p) => p.code === selectedCode) ?? null
   const selectedEvent = events.find((e) => e.id === selectedEventId) ?? null
+  const selectedPlace = gmapsResults.find((p) => p.id === gmapsSelectedPlaceId) ?? null
   const budget = gcStatus?.budget
   const meetupBudget = meetupStatus?.budget
 
   return (
     <div className="relative flex flex-1 min-h-0">
       <div ref={containerRef} className="flex-1 min-h-0" />
+
+      {glError && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center p-6 bg-surface-0">
+          <div className="max-w-sm text-center text-sm text-text-secondary">
+            <p className="font-medium text-text-primary mb-1">Map unavailable</p>
+            <p className="mb-2">{glError}</p>
+            <p className="text-xs text-text-tertiary">WebGL is required to render the map. Check that hardware acceleration is enabled in your browser, then reload.</p>
+          </div>
+        </div>
+      )}
 
       {/* top toolbar — the Layers button is always present; each layer's own
           control cluster appears only while that layer is visible. */}
@@ -278,6 +396,12 @@ export function MapTab() {
         <button onClick={() => setShowLayers((v) => !v)} title="Map layers"
           className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2">
           <LayersIcon size={13} /><span className="text-text-tertiary">{layers.length + 3}</span>
+        </button>
+
+        {/* google maps: search + directions */}
+        <button onClick={() => setShowGmaps((v) => !v)} title="Search Google Maps"
+          className={`flex items-center gap-1 rounded border border-border px-2 py-1 backdrop-blur hover:bg-surface-2 ${showGmaps ? 'bg-surface-2' : 'bg-surface-0/90'}`}>
+          <Search size={13} />{gmapsResults.length > 0 && <span className="text-text-tertiary">{gmapsResults.length}</span>}
         </button>
 
         {/* location: time range + device + centre-on-me */}
@@ -357,8 +481,15 @@ export function MapTab() {
 
       {showCreds && <CredentialsPanel onClose={() => setShowCreds(false)} />}
       {showLayers && <LayersPanel onClose={() => setShowLayers(false)} />}
+      {showGmaps && <GmapsPanel isMobile={isMobile} configured={gmapsConfigured} onClose={() => setShowGmaps(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
+      {selectedLayerFeature && (
+        <LayerFeaturePanel sel={selectedLayerFeature} onClose={() => selectLayerFeature(null)} />
+      )}
       {selectedEvent && <MeetupEventPanel event={selectedEvent} onClose={() => void selectEvent(null)} />}
+      {selectedPlace && !showGmaps && (
+        <PlaceDetailPanel place={selectedPlace} isMobile={isMobile} onClose={() => selectPlace(null)} />
+      )}
     </div>
   )
 }
@@ -459,6 +590,47 @@ function addOverlayLayers(map: maplibregl.Map) {
     map.addLayer({
       id: 'ot-current', type: 'circle', source: 'ot-current',
       paint: { 'circle-radius': 7, 'circle-color': '#3b82f6', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+    })
+  }
+  // Google Maps directions routes — drawn beneath the search pins. A casing
+  // line under the main line gives the classic Google route look; the selected
+  // route is bright blue + wide, alternates are dimmed grey.
+  if (!map.getSource('gmaps-routes')) {
+    map.addSource('gmaps-routes', { type: 'geojson', data: routesToFC([], 0) })
+    map.addLayer({
+      id: 'gmaps-routes-casing', type: 'line', source: 'gmaps-routes',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '#0a0a0a',
+        'line-width': ['case', ['==', ['get', 'selected'], 1], 9, 6] as unknown as maplibregl.ExpressionSpecification,
+        'line-opacity': 0.5,
+      },
+    })
+    map.addLayer({
+      id: 'gmaps-routes', type: 'line', source: 'gmaps-routes',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['case', ['==', ['get', 'selected'], 1], '#4285F4', '#9ca3af'] as unknown as maplibregl.ExpressionSpecification,
+        'line-width': ['case', ['==', ['get', 'selected'], 1], 6, 3.5] as unknown as maplibregl.ExpressionSpecification,
+        'line-opacity': ['case', ['==', ['get', 'selected'], 1], 0.95, 0.6] as unknown as maplibregl.ExpressionSpecification,
+      },
+    })
+  }
+  if (!map.getSource('gmaps-pins')) {
+    map.addSource('gmaps-pins', { type: 'geojson', data: placesToFC([]) })
+    map.addLayer({
+      id: 'gmaps-selected', type: 'circle', source: 'gmaps-pins',
+      filter: ['==', ['get', 'id'], ''],
+      paint: { 'circle-radius': 14, 'circle-color': 'rgba(66,133,244,0.25)', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+    })
+    map.addLayer({
+      id: 'gmaps-pins', type: 'symbol', source: 'gmaps-pins',
+      layout: {
+        'icon-image': `em:${GMAPS_EMOJI}`,
+        'icon-size': 0.6,
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+      },
     })
   }
 }
@@ -614,7 +786,12 @@ function addOrUpdateAgentLayer(map: maplibregl.Map, meta: MapLayerMeta, data: GJ
   const onClick = (e: maplibregl.MapLayerMouseEvent) => {
     const f = e.features?.[0]
     if (!f) return
-    const html = buildPopupHtml((f.properties ?? {}) as Record<string, unknown>, st)
+    const props = (f.properties ?? {}) as Record<string, unknown>
+    if (st.panel) {
+      useMapStore.getState().selectLayerFeature({ slug: meta.slug, props })
+      return
+    }
+    const html = buildPopupHtml(props, st)
     if (!html) return // nothing to show — don't pop an empty box
     new maplibregl.Popup({ closeButton: true, maxWidth: '260px', className: 'console-map-popup' })
       .setLngLat(e.lngLat)
@@ -756,6 +933,52 @@ function CredentialsPanel({ onClose }: { onClose: () => void }) {
   )
 }
 
+// Keys the panel renders specially (hero image, title, link, badges); anything
+// else falls through to plain key→value rows so non-property layers work too.
+const PANEL_SPECIAL = new Set(['image', 'title', 'address', 'url', 'price', 'portal', 'summary', '_color', '_size', '_icon', '_label'])
+
+function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: () => void }) {
+  const p = sel.props
+  const s = (k: string): string | undefined => (p[k] != null && p[k] !== '' ? String(p[k]) : undefined)
+  const rows = Object.keys(p).filter((k) => !PANEL_SPECIAL.has(k) && p[k] != null && p[k] !== '')
+  const url = s('url')
+  return (
+    <div className="absolute top-2 right-14 z-10 w-80 max-h-[80%] overflow-y-auto rounded border border-border bg-surface-0 text-sm shadow-xl">
+      {s('image') && (
+        <a href={url} target="_blank" rel="noreferrer">
+          <img src={s('image')} alt="" className="w-full h-44 object-cover rounded-t" loading="lazy" />
+        </a>
+      )}
+      <div className="p-3">
+        <div className="flex items-start justify-between gap-2 mb-1">
+          <div>
+            {s('price') && <div className="font-semibold text-base leading-tight">{s('price')}</div>}
+            {s('title') && <div className={s('price') ? 'text-text-secondary text-xs mt-0.5' : 'font-medium leading-tight'}>{s('title')}</div>}
+            {s('address') && <div className="text-text-tertiary text-xs mt-0.5">{s('address')}</div>}
+          </div>
+          <button onClick={onClose} className="shrink-0"><X size={14} /></button>
+        </div>
+        {rows.length > 0 && (
+          <div className="my-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            {rows.map((k) => (
+              <Fragment key={k}>
+                <span className="text-text-tertiary">{k}</span>
+                <span className="text-text-secondary break-words">{String(p[k])}</span>
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {s('summary') && <p className="text-xs text-text-secondary whitespace-pre-line mb-2">{s('summary')}</p>}
+        {url && (
+          <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline">
+            <ExternalLink size={11} /> open on {s('portal') ?? new URL(url).hostname.replace(/^www\./, '')}
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => void }) {
   const d = cache.detail
   return (
@@ -810,6 +1033,252 @@ function CacheDetailPanel({ cache, onClose }: { cache: MapCache; onClose: () => 
       >
         <MapPin size={11} /> open on geocaching.com
       </a>
+    </div>
+  )
+}
+
+// --- Google Maps search + directions UI -------------------------------------
+
+function fmtDuration(sec: number): string {
+  if (sec <= 0) return '—'
+  const h = Math.floor(sec / 3600)
+  const m = Math.round((sec % 3600) / 60)
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m} min`
+  return `${sec}s`
+}
+
+function fmtDistance(m: number): string {
+  if (m <= 0) return ''
+  if (m < 1000) return `${Math.round(m)} m`
+  return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`
+}
+
+/** Build a maps.google.com deep link — a place page, or a directions link. */
+function gmapsDirUrl(from: GPlace | null, to: GPlace, mode: GTravelMode): string {
+  const modeParam: Record<GTravelMode, string> = { DRIVE: 'driving', WALK: 'walking', BICYCLE: 'bicycling', TRANSIT: 'transit' }
+  const dest = `${to.lat},${to.lon}`
+  const params = new URLSearchParams({ api: '1', destination: dest, travelmode: modeParam[mode] })
+  if (to.id) params.set('destination_place_id', to.id.replace(/^places\//, ''))
+  if (from) params.set('origin', `${from.lat},${from.lon}`)
+  return `https://www.google.com/maps/dir/?${params.toString()}`
+}
+
+const MODE_ICONS: { mode: GTravelMode; Icon: typeof Car; label: string }[] = [
+  { mode: 'DRIVE', Icon: Car, label: 'Drive' },
+  { mode: 'WALK', Icon: Footprints, label: 'Walk' },
+  { mode: 'BICYCLE', Icon: Bike, label: 'Cycle' },
+  { mode: 'TRANSIT', Icon: Train, label: 'Transit' },
+]
+
+function GmapsPanel({ isMobile, configured, onClose }: { isMobile: boolean; configured: boolean | null; onClose: () => void }) {
+  const {
+    gmapsQuery, gmapsResults, gmapsSelectedPlaceId, gmapsSearching, gmapsError,
+    gmapsSuggestions, gmapsSuggesting,
+    gmapsRouteFrom, gmapsRouteTo, gmapsMode, gmapsRoutes, gmapsSelectedRoute, gmapsRouting,
+    setGmapsQuery, searchGmaps, autocompleteGmaps, pickSuggestion, clearSuggestions,
+    selectPlace, setRouteFrom, setRouteTo, setGmapsMode,
+    computeDirections, selectRoute, clearDirections, setGmapsKey,
+  } = useMapStore()
+  const [keyInput, setKeyInput] = useState('')
+  const [savingKey, setSavingKey] = useState(false)
+
+  const doSearch = () => {
+    clearSuggestions()
+    const c = mapController.center?.()
+    void searchGmaps(gmapsQuery, c ? { lat: c.lat, lon: c.lon } : undefined)
+  }
+
+  // debounced type-ahead as the query changes
+  useEffect(() => {
+    const q = gmapsQuery.trim()
+    if (q.length < 2) { clearSuggestions(); return }
+    const t = setTimeout(() => {
+      const c = mapController.center?.()
+      void autocompleteGmaps(q, c ? { lat: c.lat, lon: c.lon } : undefined)
+    }, 250)
+    return () => clearTimeout(t)
+  }, [gmapsQuery, autocompleteGmaps, clearSuggestions])
+
+  if (configured === false) {
+    return (
+      <div className="absolute top-12 left-2 z-10 w-80 rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+        <div className="flex items-center justify-between mb-2">
+          <span className="font-medium flex items-center gap-1"><Search size={14} /> Google Maps</span>
+          <button onClick={onClose}><X size={14} /></button>
+        </div>
+        <p className="text-text-tertiary text-xs mb-2">
+          Needs a Google Maps Platform API key with <b>Places API (New)</b> + <b>Routes API</b> enabled and billing on.
+        </p>
+        <input className="w-full mb-2 rounded bg-surface-1 border border-border px-2 py-1 font-mono text-xs"
+          placeholder="AIza…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} />
+        {gmapsError && <p className="text-red-400 text-xs mb-2">{gmapsError}</p>}
+        <button disabled={savingKey || !keyInput.trim()}
+          onClick={async () => { setSavingKey(true); try { await setGmapsKey(keyInput.trim()) } finally { setSavingKey(false) } }}
+          className="w-full rounded bg-blue-600 hover:bg-blue-500 py-1 disabled:opacity-50">
+          {savingKey ? 'Saving…' : 'Save key'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="absolute top-12 left-2 z-10 w-80 max-h-[80%] overflow-y-auto rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+      <div className="flex items-center justify-between mb-2">
+        <span className="font-medium flex items-center gap-1"><Search size={14} /> Google Maps</span>
+        <button onClick={onClose}><X size={14} /></button>
+      </div>
+
+      {/* search box */}
+      <div className="relative mb-2">
+        <div className="flex items-center gap-1 rounded bg-surface-1 border border-border px-2 py-1">
+          <Search size={13} className="text-text-tertiary shrink-0" />
+          <input autoFocus className="flex-1 bg-transparent outline-none" placeholder="Search places…"
+            value={gmapsQuery} onChange={(e) => setGmapsQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') doSearch()
+              else if (e.key === 'Escape') clearSuggestions()
+            }} />
+          {(gmapsSearching || gmapsSuggesting) && <Loader2 size={13} className="animate-spin text-text-tertiary" />}
+        </div>
+        {/* type-ahead suggestions */}
+        {gmapsSuggestions.length > 0 && (
+          <ul className="absolute z-20 mt-1 w-full rounded border border-border bg-surface-0 shadow-xl overflow-hidden">
+            {gmapsSuggestions.map((s) => (
+              <li key={s.placeId}>
+                <button onClick={() => void pickSuggestion(s.placeId)}
+                  className="w-full text-left px-2 py-1.5 text-xs hover:bg-surface-2 flex items-start gap-1.5">
+                  <MapPin size={12} className="text-text-tertiary shrink-0 mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="font-medium">{s.mainText}</span>
+                    {s.secondaryText && <span className="text-text-tertiary">{`  ${s.secondaryText}`}</span>}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {gmapsError && <p className="text-red-400 text-xs mb-2">{gmapsError}</p>}
+
+      {/* results */}
+      {gmapsResults.length > 0 && (
+        <ul className="space-y-1 mb-2">
+          {gmapsResults.map((p) => (
+            <li key={p.id}>
+              <button onClick={() => selectPlace(p.id)}
+                className={`w-full text-left rounded px-2 py-1 text-xs hover:bg-surface-2 ${p.id === gmapsSelectedPlaceId ? 'bg-surface-2' : ''}`}>
+                <div className="font-medium">{p.name}</div>
+                {p.address && <div className="text-text-tertiary truncate">{p.address}</div>}
+                <div className="flex items-center gap-2 text-text-tertiary mt-0.5">
+                  {p.rating != null && <span>★ {p.rating}{p.userRatingCount ? ` (${p.userRatingCount})` : ''}</span>}
+                </div>
+              </button>
+              {p.id === gmapsSelectedPlaceId && (
+                <div className="flex flex-wrap gap-2 px-2 py-1 text-xs">
+                  <a href={p.googleMapsUri || gmapsDirUrl(null, p, gmapsMode)} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-blue-400 hover:underline">
+                    <ExternalLink size={11} /> Open in Google Maps
+                  </a>
+                  {!isMobile && (
+                    <>
+                      <button onClick={() => setRouteFrom(p)} className="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary">
+                        <Locate size={11} /> From here
+                      </button>
+                      <button onClick={() => setRouteTo(p)} className="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary">
+                        <Navigation size={11} /> Directions to
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* directions (desktop only — mobile opens the Google Maps app) */}
+      {!isMobile && (gmapsRouteFrom || gmapsRouteTo) && (
+        <div className="border-t border-border pt-2 mt-1">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium flex items-center gap-1"><Navigation size={12} /> Directions</span>
+            <button onClick={clearDirections} className="text-text-tertiary hover:text-text-primary"><X size={12} /></button>
+          </div>
+          <div className="text-xs space-y-0.5 mb-2">
+            <div className="flex items-center gap-1"><span className="text-text-tertiary w-8">From</span><span className="truncate">{gmapsRouteFrom?.name ?? '—'}</span></div>
+            <div className="flex items-center gap-1"><span className="text-text-tertiary w-8">To</span><span className="truncate">{gmapsRouteTo?.name ?? '—'}</span></div>
+          </div>
+          {/* travel mode */}
+          <div className="flex gap-1 mb-2">
+            {MODE_ICONS.map(({ mode, Icon, label }) => (
+              <button key={mode} onClick={() => setGmapsMode(mode)} title={label}
+                className={`flex-1 flex items-center justify-center rounded py-1 border border-border ${gmapsMode === mode ? 'bg-blue-600 border-blue-600' : 'bg-surface-1 hover:bg-surface-2'}`}>
+                <Icon size={14} />
+              </button>
+            ))}
+          </div>
+          <button disabled={!gmapsRouteFrom || !gmapsRouteTo || gmapsRouting}
+            onClick={() => void computeDirections()}
+            className="w-full rounded bg-blue-600 hover:bg-blue-500 py-1 text-xs disabled:opacity-50 mb-2">
+            {gmapsRouting ? 'Routing…' : 'Get directions'}
+          </button>
+          {/* routes */}
+          {gmapsRoutes.length > 0 && (
+            <ul className="space-y-1">
+              {gmapsRoutes.map((r, i) => (
+                <li key={i}>
+                  <button onClick={() => selectRoute(i)}
+                    className={`w-full text-left rounded px-2 py-1 text-xs hover:bg-surface-2 ${i === gmapsSelectedRoute ? 'bg-surface-2 border-l-2 border-blue-500' : 'border-l-2 border-transparent'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{fmtDuration(r.durationSec)}</span>
+                      <span className="text-text-tertiary">{fmtDistance(r.distanceMeters)}</span>
+                    </div>
+                    {r.description && <div className="text-text-tertiary truncate">{r.description}</div>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {gmapsRouteFrom && gmapsRouteTo && (
+            <a href={gmapsDirUrl(gmapsRouteFrom, gmapsRouteTo, gmapsMode)} target="_blank" rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1 text-xs text-blue-400 hover:underline">
+              <ExternalLink size={11} /> Open route in Google Maps
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PlaceDetailPanel({ place, isMobile, onClose }: { place: GPlace; isMobile: boolean; onClose: () => void }) {
+  const { gmapsMode, setRouteFrom, setRouteTo } = useMapStore()
+  return (
+    <div className="absolute top-2 right-14 z-10 w-72 rounded border border-border bg-surface-0 p-3 text-sm shadow-xl">
+      <div className="flex items-start justify-between mb-1 gap-2">
+        <div className="font-medium leading-tight">{place.name}</div>
+        <button onClick={onClose}><X size={14} /></button>
+      </div>
+      {place.address && <div className="text-text-tertiary text-xs mb-2">{place.address}</div>}
+      {place.rating != null && (
+        <div className="text-xs text-text-secondary mb-2">★ {place.rating}{place.userRatingCount ? ` · ${place.userRatingCount} reviews` : ''}</div>
+      )}
+      <div className="flex flex-wrap gap-2 text-xs">
+        <a href={place.googleMapsUri || gmapsDirUrl(null, place, gmapsMode)} target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-1 text-blue-400 hover:underline">
+          <ExternalLink size={11} /> Open in Google Maps
+        </a>
+        {!isMobile && (
+          <>
+            <button onClick={() => setRouteFrom(place)} className="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary">
+              <Locate size={11} /> From here
+            </button>
+            <button onClick={() => setRouteTo(place)} className="inline-flex items-center gap-1 text-text-secondary hover:text-text-primary">
+              <Navigation size={11} /> Directions to
+            </button>
+          </>
+        )}
+      </div>
     </div>
   )
 }

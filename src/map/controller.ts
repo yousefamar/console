@@ -4,4 +4,5 @@ export const mapController: {
   fetchHere?: () => void
   fetchMeetupHere?: () => void
   flyToMe?: () => void
+  center?: () => { lat: number; lon: number } | null
 } = {}
