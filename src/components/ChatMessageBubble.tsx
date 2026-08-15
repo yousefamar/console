@@ -219,9 +219,13 @@ let previewSupported: boolean | null = null
 
 function LinkPreview({ url }: { url: string }) {
   const [preview, setPreview] = useState<UrlPreview | null>(null)
+  // Reserve space while the preview is in flight so the card doesn't pop in
+  // from zero height and shove the timeline down. Collapses if there's no
+  // preview; swaps to the card (same height) if there is → no jump either way.
+  const [loading, setLoading] = useState(previewSupported !== false)
 
   useEffect(() => {
-    if (previewSupported === false) return
+    if (previewSupported === false) { setLoading(false); return }
     let cancelled = false
     getUrlPreview(url)
       .then((p) => {
@@ -234,10 +238,25 @@ function LinkPreview({ url }: { url: string }) {
       .catch(() => {
         if (!cancelled) previewSupported = false
       })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
     return () => { cancelled = true }
   }, [url])
 
-  if (!preview) return null
+  if (!preview) {
+    if (!loading) return null
+    return (
+      <div className="mt-1 flex gap-2 rounded border border-border p-2 max-w-sm animate-pulse">
+        <div className="h-14 w-14 rounded-sm bg-surface-2 flex-shrink-0" />
+        <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
+          <div className="h-3 w-3/4 rounded bg-surface-2" />
+          <div className="h-2.5 w-full rounded bg-surface-2" />
+          <div className="h-2.5 w-1/3 rounded bg-surface-2" />
+        </div>
+      </div>
+    )
+  }
 
   const imageUrl = preview['og:image']
     ? preview['og:image'].startsWith('mxc://')
@@ -279,8 +298,21 @@ function LinkPreview({ url }: { url: string }) {
   )
 }
 
+// Max on-screen box for inline chat images (matches Tailwind max-w-xs / max-h-60).
+const IMG_MAX_W = 320
+const IMG_MAX_H = 240
+
+// Fit intrinsic dimensions into the max box, preserving aspect ratio and never
+// upscaling. Returns the reserved display box so the timeline doesn't reflow
+// as the image bytes arrive.
+function fitImageBox(w?: number, h?: number): { width: number; height: number } | null {
+  if (!w || !h || w <= 0 || h <= 0) return null
+  const scale = Math.min(IMG_MAX_W / w, IMG_MAX_H / h, 1)
+  return { width: Math.round(w * scale), height: Math.round(h * scale) }
+}
+
 // Renders an image from either plain mxc:// or encrypted file
-function EncryptedImage({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; mimeType?: string; alt: string; onClick?: (src: string) => void }) {
+function EncryptedImage({ mediaUrl, encryptedFile, mimeType, alt, width, height, onClick }: { mediaUrl?: string; encryptedFile?: EncryptedFile; mimeType?: string; alt: string; width?: number; height?: number; onClick?: (src: string) => void }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -297,16 +329,31 @@ function EncryptedImage({ mediaUrl, encryptedFile, mimeType, alt, onClick }: { m
     }
   }, [encryptedFile?.url])
 
+  const box = fitImageBox(width, height)
+
   // Prefer decrypted blob over plain mxc:// (encrypted rooms serve encrypted blobs at mxc URLs)
   const src = blobUrl ?? (mediaUrl && !encryptedFile ? mxcToHttp(mediaUrl) : null)
-  if (!src) return <span className="text-sm text-text-secondary italic">[Image: {alt}]</span>
+  if (!src) {
+    // Still loading (encrypted blob decrypting, or a mxc that hasn't resolved):
+    // show a pulsing skeleton, never muted text. Size it exactly when we know
+    // the intrinsic dimensions (no reflow on swap-in); otherwise use a modest
+    // default box (old cached messages backfill dims as they re-sync).
+    if (encryptedFile || mediaUrl) {
+      const style = box ? { width: box.width, height: box.height } : { width: 200, height: 150 }
+      return <div className="rounded-sm bg-surface-2 animate-pulse" style={style} />
+    }
+    return <span className="text-sm text-text-secondary italic">[Image: {alt}]</span>
+  }
 
   return (
     <img
       src={src}
       alt={alt}
       data-chat-image
-      className="max-w-xs max-h-60 rounded-sm cursor-pointer"
+      width={box?.width}
+      height={box?.height}
+      style={box ? { width: box.width, height: box.height } : undefined}
+      className={box ? 'rounded-sm cursor-pointer' : 'max-w-xs max-h-60 rounded-sm cursor-pointer'}
       loading="lazy"
       onClick={() => onClick?.(src)}
     />
@@ -696,19 +743,27 @@ function DeletedMessageBody({ message, onImageClick }: { message: DbChatMessage;
   const isImage = archived?.mimeType?.startsWith('image/')
   return (
     <div className="text-sm">
-      {archived?.mediaUrl && isImage && (
-        <img
-          src={archived.mediaUrl}
-          alt="Deleted attachment (recovered)"
-          data-chat-image
-          // Deliberately NOT loading="lazy": these render inside pre-mounted
-          // (sometimes display:none) room scrollers where the lazy-load
-          // intersection check never fires, leaving currentSrc empty forever.
-          // Recovered attachments are rare enough that eager is free.
-          className="max-w-xs max-h-60 rounded-sm cursor-pointer opacity-80 border border-red-400/30 mb-1"
-          onClick={() => onImageClick?.(archived.mediaUrl!)}
-        />
-      )}
+      {archived?.mediaUrl && isImage && (() => {
+        const box = fitImageBox(message.imageWidth, message.imageHeight)
+        return (
+          <img
+            src={archived.mediaUrl}
+            alt="Deleted attachment (recovered)"
+            data-chat-image
+            // Deliberately NOT loading="lazy": these render inside pre-mounted
+            // (sometimes display:none) room scrollers where the lazy-load
+            // intersection check never fires, leaving currentSrc empty forever.
+            // Recovered attachments are rare enough that eager is free.
+            width={box?.width}
+            height={box?.height}
+            style={box ? { width: box.width, height: box.height } : undefined}
+            className={box
+              ? 'rounded-sm cursor-pointer opacity-80 border border-red-400/30 mb-1'
+              : 'max-w-xs max-h-60 rounded-sm cursor-pointer opacity-80 border border-red-400/30 mb-1'}
+            onClick={() => onImageClick?.(archived.mediaUrl!)}
+          />
+        )
+      })()}
       {archived?.mediaUrl && !isImage && (
         <a href={archived.mediaUrl} download className="block text-xs underline text-text-secondary mb-1">
           📎 recovered attachment
@@ -935,7 +990,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({ message, isOw
           <DeletedMessageBody message={message} onImageClick={onImageClick} />
         ) : message.type === 'image' ? (
           <div className="mt-1">
-            <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} mimeType={message.mediaMimeType} alt={message.body} onClick={onImageClick} />
+            <EncryptedImage mediaUrl={message.mediaUrl} encryptedFile={message.encryptedFile} mimeType={message.mediaMimeType} alt={message.body} width={message.imageWidth} height={message.imageHeight} onClick={onImageClick} />
             {displayBody && !/\.(jpe?g|png|gif|webp|heic|heif|svg|bmp|tiff?)$/i.test(displayBody) && (
               <p className="text-sm text-text-secondary mt-1"><Linkified text={displayBody} /></p>
             )}

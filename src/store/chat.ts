@@ -516,7 +516,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const lastMsg = msgs.find((m) => !m.id.startsWith('~'))
           if (lastMsg) {
             await db.chatRooms.update(id, { lastReadEventId: lastMsg.id, lastReadTs: lastMsg.timestamp })
-            await enqueue('chatMarkRead', { roomId: id, eventId: lastMsg.id }, { roomId: id })
+            await enqueue('chatMarkRead', { roomId: id, eventId: lastMsg.id, lastReadTs: lastMsg.timestamp }, { roomId: id })
             return
           }
           // No local messages cached (room whose recent history is all state
@@ -532,8 +532,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             )
             const newest = resp?.chunk?.[0]
             if (newest?.event_id) {
-              await db.chatRooms.update(id, { lastReadEventId: newest.event_id, lastReadTs: newest.origin_server_ts ?? Date.now() })
-              await enqueue('chatMarkRead', { roomId: id, eventId: newest.event_id }, { roomId: id })
+              const newestTs = newest.origin_server_ts ?? Date.now()
+              await db.chatRooms.update(id, { lastReadEventId: newest.event_id, lastReadTs: newestTs })
+              await enqueue('chatMarkRead', { roomId: id, eventId: newest.event_id, lastReadTs: newestTs }, { roomId: id })
             }
           } catch { /* will retry next markRead */ }
         })
@@ -636,7 +637,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       .reverse().sortBy('timestamp')
     const lastReal = msgs.find((m) => !m.id.startsWith('~'))
     if (lastReal) {
-      await enqueue('chatMarkRead', { roomId, eventId: lastReal.id }, { roomId })
+      await enqueue('chatMarkRead', { roomId, eventId: lastReal.id, lastReadTs: lastReal.timestamp }, { roomId })
     }
   },
 
@@ -730,7 +731,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         .reverse().sortBy('timestamp')
       const lastReal = msgs.find((m) => !m.id.startsWith('~'))
       if (lastReal) {
-        await enqueue('chatMarkRead', { roomId, eventId: lastReal.id }, { roomId })
+        await enqueue('chatMarkRead', { roomId, eventId: lastReal.id, lastReadTs: lastReal.timestamp }, { roomId })
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -840,7 +841,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         .reverse().sortBy('timestamp')
       const lastReal = msgs.find((m) => !m.id.startsWith('~'))
       if (lastReal) {
-        await enqueue('chatMarkRead', { roomId, eventId: lastReal.id }, { roomId })
+        await enqueue('chatMarkRead', { roomId, eventId: lastReal.id, lastReadTs: lastReal.timestamp }, { roomId })
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'

@@ -172,6 +172,8 @@ export interface DbChatMessage {
   deletedBy?: string               // Who deleted it
   reactions?: Record<string, string[]> // emoji → senderIds
   mediaMimeType?: string     // MIME type from info.mimetype (for audio/file decryption)
+  imageWidth?: number        // info.w — intrinsic px width (image/video), for layout reservation
+  imageHeight?: number       // info.h — intrinsic px height (image/video), for layout reservation
   audioDuration?: number     // Duration in milliseconds (m.audio)
   audioWaveform?: number[]   // MSC 1767 waveform values (m.audio)
   isVoiceNote?: boolean      // MSC 3245 voice message flag
