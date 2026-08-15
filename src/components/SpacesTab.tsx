@@ -8,7 +8,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useState } from 'react'
-import { Bot, FileText, FolderKanban, Kanban, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
+import { Bot, FileText, FolderKanban, GitBranch, Kanban, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -37,6 +37,18 @@ export const SpacesTab = memo(function SpacesTab() {
   const projects = useMemo(() => spaces.filter((s) => s.kind === 'project'), [spaces])
   const active = spaces.find((s) => s.slug === activeSlug) ?? null
 
+  // Agent count per space (forks included) → rail badge.
+  const roles = useAgentStore((s) => s.agentRoles)
+  const agentCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of roles) {
+      if (r.folder) continue
+      if (r.project) m.set(r.project, (m.get(r.project) ?? 0) + 1)
+      for (const a of r.areas ?? []) m.set(a, (m.get(a) ?? 0) + 1)
+    }
+    return m
+  }, [roles])
+
   return (
     <div className="flex flex-1 h-full min-w-0">
       {/* Left rail — spaces */}
@@ -50,12 +62,12 @@ export const SpacesTab = memo(function SpacesTab() {
         <div className="flex-1 overflow-y-auto py-1">
           <RailSection label="Areas">
             {areas.map((s) => (
-              <RailItem key={s.slug} space={s} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
+              <RailItem key={s.slug} space={s} agentCount={agentCounts.get(s.slug) ?? 0} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
             ))}
           </RailSection>
           <RailSection label="Projects">
             {projects.map((s) => (
-              <RailItem key={s.slug} space={s} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
+              <RailItem key={s.slug} space={s} agentCount={agentCounts.get(s.slug) ?? 0} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
             ))}
           </RailSection>
         </div>
@@ -83,7 +95,7 @@ function RailSection({ label, children }: { label: string; children: React.React
   )
 }
 
-function RailItem({ space, active, onClick }: { space: SpaceSummary; active: boolean; onClick: () => void }) {
+function RailItem({ space, agentCount, active, onClick }: { space: SpaceSummary; agentCount: number; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -95,7 +107,14 @@ function RailItem({ space, active, onClick }: { space: SpaceSummary; active: boo
       {space.kind === 'area' ? <Tag size={10} className="flex-shrink-0 opacity-60" /> : <FolderKanban size={10} className="flex-shrink-0 opacity-60" />}
       <span className="truncate">{space.title}</span>
       {space.status === 'dormant' && <span className="ml-auto text-[9px] text-text-tertiary">zzz</span>}
-      {space.boardPath && <Kanban size={9} className="ml-auto flex-shrink-0 opacity-40" />}
+      <span className={clsx('flex items-center gap-1', space.status !== 'dormant' && 'ml-auto')}>
+        {agentCount > 0 && (
+          <span className="flex items-center gap-0.5 text-[9px] text-text-tertiary" title={`${agentCount} agent${agentCount > 1 ? 's' : ''}`}>
+            <Bot size={9} className="opacity-60" />{agentCount}
+          </span>
+        )}
+        {space.boardPath && <Kanban size={9} className="flex-shrink-0 opacity-40" />}
+      </span>
     </button>
   )
 }
@@ -150,14 +169,20 @@ function BoardView() {
   const addCardTo = useSpacesStore((s) => s.addCardTo)
   const assignCard = useSpacesStore((s) => s.assignCard)
   const roles = useAgentStore((s) => s.agentRoles)
+  // Filter the board to one assignee's cards — how a fork (or you) views ITS
+  // OWN queue rather than the whole master board. null = everyone.
+  const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
 
   if (boardError) return <div className="flex-1 grid place-items-center text-xs text-destructive">{boardError}</div>
   if (!board) return <div className="flex-1 grid place-items-center text-xs text-text-tertiary">Loading board…</div>
 
   const columnTitles = board.columns.map((c) => c.title)
+  // Assignable = any non-folder role, forks included.
+  const assignable = roles.filter((r) => !r.folder)
+  const assignees = [...new Set(board.columns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean))] as string[]
 
   const promptAssign = async (ref: CardRef, card: BoardCard) => {
-    const keys = roles.filter((r) => !r.folder && !r.fork).map((r) => r.key).join(', ')
+    const keys = assignable.map((r) => r.key).join(', ')
     const key = await showPrompt(`Assign to which agent? (${keys})`, {
       title: 'Assign card', defaultValue: card.agentKey ?? '', placeholder: 'agentkey — empty to unassign',
     })
@@ -166,7 +191,28 @@ function BoardView() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 gap-2 overflow-x-auto p-2">
+    <div className="flex flex-1 min-h-0 flex-col">
+      {assignees.length > 0 && (
+        <div className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1 overflow-x-auto">
+          <span className="text-[9px] uppercase tracking-wide text-text-tertiary flex-shrink-0">Assignee</span>
+          <button
+            onClick={() => setAssigneeFilter(null)}
+            className={clsx('flex-shrink-0 rounded-sm px-1.5 py-px text-[10px]', assigneeFilter === null ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary')}
+          >
+            all
+          </button>
+          {assignees.map((key) => (
+            <button
+              key={key}
+              onClick={() => setAssigneeFilter(assigneeFilter === key ? null : key)}
+              className={clsx('flex-shrink-0 rounded-sm px-1.5 py-px text-[10px]', assigneeFilter === key ? 'bg-violet-500/20 text-violet-300' : 'text-text-tertiary hover:text-text-secondary')}
+            >
+              @{key}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-1 min-h-0 gap-2 overflow-x-auto p-2">
       {board.columns.map((col) => (
         <div key={col.title} className="flex w-56 flex-shrink-0 flex-col rounded border border-border bg-surface-1/40">
           <div className="flex items-center justify-between px-2 py-1 border-b border-border">
@@ -183,19 +229,24 @@ function BoardView() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-1.5 space-y-1.5">
+            {/* Filter hides non-matching cards but `index` stays the column-
+                relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
-              <CardTile
-                key={card.blockId ?? `${col.title}:${index}`}
-                card={card}
-                columnTitles={columnTitles}
-                currentColumn={col.title}
-                onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
-                onAssign={() => void promptAssign({ column: col.title, index }, card)}
-              />
+              (assigneeFilter === null || card.agentKey === assigneeFilter) ? (
+                <CardTile
+                  key={card.blockId ?? `${col.title}:${index}`}
+                  card={card}
+                  columnTitles={columnTitles}
+                  currentColumn={col.title}
+                  onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
+                  onAssign={() => void promptAssign({ column: col.title, index }, card)}
+                />
+              ) : null
             ))}
           </div>
         </div>
       ))}
+      </div>
     </div>
   )
 }
@@ -296,10 +347,12 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
   const reviveAgent = useAgentStore((s) => s.reviveAgent)
   const [collapsed, setCollapsed] = useState(false)
 
+  // Forks included — they inherit the source role's space binding and are
+  // first-class here (assignable on the board, revivable, chattable).
   const spaceRoles = useMemo(
-    () => roles.filter((r) => !r.folder && !r.fork && (
+    () => roles.filter((r) => !r.folder && (
       space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
-    )),
+    )).sort((a, b) => Number(a.fork ?? false) - Number(b.fork ?? false)),
     [roles, space],
   )
 
@@ -339,8 +392,9 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
                 isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
                 !live && 'opacity-60',
               )}
-              title={live ? r.title : `${r.title} (parked — click to revive)`}
+              title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}`}
             >
+              {r.fork && <GitBranch size={8} className="mr-0.5 inline opacity-60" />}
               {r.title}{!live && ' ⏾'}
             </button>
           )

@@ -1024,7 +1024,13 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       let forkAgentKey: string | undefined
       if (msg.seedRole) {
         forkAgentKey = ctx.agentRegistry.mintKey(forkName ?? 'fork')
-        ctx.agentRegistry.create(forkAgentKey, { title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd, fork: true })
+        // Inherit the source role's space binding so the fork shows up in the
+        // same project/area panel (and its @key is assignable on that board).
+        const sourceRole = sourceSession.agentKey ? ctx.agentRegistry.get(sourceSession.agentKey) : undefined
+        ctx.agentRegistry.create(forkAgentKey, {
+          title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd, fork: true,
+          project: sourceRole?.project ?? null, areas: sourceRole?.areas ?? [],
+        })
         broadcastAgentsList(ctx)
       }
       const session = createSession(ctx, {
