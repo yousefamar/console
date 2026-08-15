@@ -100,6 +100,7 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   const c: Record<string, unknown> = {}
   if (o.channel) c.channel = o.channel
   if (o.type) c.propertyType = o.type
+  if (o['house-subtypes']) c.houseSubtypes = String(o['house-subtypes']).split(',').map((s) => s.trim()).filter(Boolean)
   if (o['min-price']) c.minPrice = Number(o['min-price'])
   if (o['max-price']) c.maxPrice = Number(o['max-price'])
   if (o['min-beds']) c.minBedrooms = Number(o['min-beds'])
@@ -115,9 +116,11 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   if (o['max-age-days']) c.maxDaysSinceAdded = Number(o['max-age-days'])
   if (o.keywords) c.keywords = String(o.keywords).split(',').map((s) => s.trim()).filter(Boolean)
   if (o.freehold) c.freeholdOnly = o.freehold !== 'false'
+  if (o['exclude-commonhold']) c.excludeCommonhold = o['exclude-commonhold'] !== 'false'
   if (o.garden) c.mustHaveGarden = o.garden !== 'false'
   if (o.parking) c.mustHaveParking = o.parking !== 'false'
   if (o['exclude-schemes']) c.excludeSchemes = o['exclude-schemes'] !== 'false'
+  if (o['exclude-auctions']) c.excludeAuctions = o['exclude-auctions'] !== 'false'
   if (o['exclude-new-build']) c.excludeNewBuild = o['exclude-new-build'] !== 'false'
   if (o['no-buyer-fee']) c.noBuyerFee = o['no-buyer-fee'] !== 'false'
   return c

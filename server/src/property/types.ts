@@ -18,6 +18,13 @@ export interface Criteria {
   channel?: Channel
   /** House vs flat vs any. Portals have far richer taxonomies; this is the axis we care about. */
   propertyType?: 'house' | 'flat' | 'any'
+  /**
+   * Narrows `propertyType: 'house'` to specific house types. Portal-agnostic
+   * subset: `detached | semi-detached | terraced | bungalow | villa | farmhouse | land`.
+   * Omitted → the client's existing fixed default (detached/semi/terraced/bungalow on
+   * Rightmove, `SINGLE_FAMILY_HOUSE` on IS24, detached/semi-terraced/villa on immobiliare).
+   */
+  houseSubtypes?: string[]
   /** Local currency of the portal — GBP for Rightmove, EUR for the other two. */
   minPrice?: number
   maxPrice?: number
@@ -43,6 +50,13 @@ export interface Criteria {
    * IS24 filter, so DE searches can't express this.
    */
   freeholdOnly?: boolean
+  /**
+   * Narrows `freeholdOnly` to sole freehold — drop `SHARE_OF_FREEHOLD` (you'd
+   * own a slice of the freehold company, not the whole thing) as well as the
+   * near-empty `COMMONHOLD` tenure. Rightmove only; no effect without
+   * `freeholdOnly` also set.
+   */
+  excludeCommonhold?: boolean
   /** Must list a (private) garden. Redundant on IS24, where `minPlotArea` is exact. */
   mustHaveGarden?: boolean
   mustHaveParking?: boolean
@@ -51,11 +65,21 @@ export interface Criteria {
   /** Minimum broadband speed, Mbit. Only ImmoScout24 filters this. */
   minInternetMbit?: number
   /**
-   * Drop auctions, repossessions, retirement housing, shared-ownership and
-   * other buying schemes — "just a normal house for sale". Each portal applies
-   * as much of it as it can express.
+   * Drop retirement housing and shared-ownership/shared-equity schemes —
+   * "just a normal house for sale", separate from auctions (see
+   * `excludeAuctions`). Each portal applies as much of it as it can express.
    */
   excludeSchemes?: boolean
+  /**
+   * Drop auctions and forced sales specifically. Split from `excludeSchemes`
+   * because auctions aren't a red flag on their own — just a different, faster
+   * completion process (typically ~28 days, cash-ready or bridging finance,
+   * no survey contingency) — so they're worth including or excluding as their
+   * own decision rather than bundled with retirement/shared-ownership stock.
+   * Rightmove's own `dontShow=auction` flag is feature-switched off, so this is
+   * always enforced by matching listing text, on all three portals.
+   */
+  excludeAuctions?: boolean
   /** Drop new-builds. Rightmove only (`dontShow=newHome`). */
   excludeNewBuild?: boolean
   /** No buyer-side agent commission (IS24 `onlyWithoutCourtage`). Germany only. */

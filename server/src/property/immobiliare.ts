@@ -62,6 +62,12 @@ export class ImmobiliareClient implements PortalClient {
     if (criteria.excludeNewBuild) unsupported.push('excludeNewBuild')
     if (criteria.noBuyerFee) unsupported.push('noBuyerFee')
     if (criteria.maxDaysSinceAdded != null) unsupported.push('maxDaysSinceAdded')
+    // noAste covers auctions only — no separate retirement/shared-ownership flag.
+    if (criteria.excludeSchemes) unsupported.push('excludeSchemes')
+    // excludeCommonhold only narrows freeholdOnly's UK tenure list; no IT equivalent.
+    if (criteria.excludeCommonhold) unsupported.push('excludeCommonhold')
+    // No bungalow-equivalent typology id and no land/plot category (see api notes).
+    if (criteria.houseSubtypes?.some((s) => !IT_TIPOLOGIA[s])) unsupported.push('houseSubtypes')
 
     return { portal: this.portal, total, listings: [...seen.values()], truncated, unsupported }
   }
@@ -122,12 +128,21 @@ function compile(c: Criteria): Record<string, string> {
   // 10 = private garden (20 shared, 30 either) — shared doesn't meet the brief.
   if (c.mustHaveGarden) p['giardino[0]'] = '10'
   if (c.mustHaveParking) p['boxAuto[0]'] = '1'
-  if (c.excludeSchemes) p.noAste = '1'
-  // 7 detached house, 12 semi/terraced, 13 villa.
+  // noAste is the AUCTION flag specifically — immobiliare has no separate
+  // retirement/shared-ownership scheme flag, so excludeSchemes stays unsupported
+  // (and post-filtered) here while excludeAuctions maps straight onto this.
+  if (c.excludeAuctions) p.noAste = '1'
   if (c.propertyType === 'house') {
-    p['idTipologia[0]'] = '7'
-    p['idTipologia[1]'] = '12'
-    p['idTipologia[2]'] = '13'
+    const defaults = ['detached', 'semi-detached', 'terraced', 'villa', 'farmhouse']
+    const mapped = (c.houseSubtypes?.length ? c.houseSubtypes : defaults).map((s) => IT_TIPOLOGIA[s]).filter((v): v is string => !!v)
+    // If every requested subtype is unmapped (e.g. bungalow-only), sending no
+    // idTipologia at all would silently widen the query to ALL residential
+    // types (flats included) rather than just falling back to house — worse
+    // than doing nothing. Fall back to the default house set instead.
+    const wanted = mapped.length ? mapped : defaults.map((s) => IT_TIPOLOGIA[s]!)
+    wanted.forEach((id, i) => {
+      p[`idTipologia[${i}]`] = id
+    })
   }
   // Singular `keyword[N]` — `keywords=` is silently ignored. A real filter here,
   // unlike Rightmove: nonsense terms return 0 rather than the baseline.
@@ -135,6 +150,20 @@ function compile(c: Criteria): Record<string, string> {
     p[`keyword[${i}]`] = k
   })
   return p
+}
+
+/**
+ * Our portable house subtype → immobiliare's `idTipologia` id, verified live
+ * 2026-08-15 by reading each id's actual `typology.name` on a results page (an
+ * earlier version of this mapping had 12 and 13 swapped). No id found for
+ * bungalow or land/plot — Italian stock doesn't carve those out separately.
+ */
+const IT_TIPOLOGIA: Record<string, string> = {
+  detached: '7',
+  'semi-detached': '13',
+  terraced: '13',
+  villa: '12',
+  farmhouse: '11',
 }
 
 interface RawSearchResponse {

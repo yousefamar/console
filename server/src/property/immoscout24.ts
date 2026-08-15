@@ -54,10 +54,15 @@ export class ImmoScout24Client implements PortalClient {
     // IS24 has no auction/scheme flag, no Erbbaurecht (leasehold) filter, and
     // plot size only exists on houses.
     if (criteria.excludeSchemes) unsupported.push('excludeSchemes')
+    if (criteria.excludeAuctions) unsupported.push('excludeAuctions')
     if (criteria.excludeNewBuild) unsupported.push('excludeNewBuild')
     if (criteria.freeholdOnly) unsupported.push('freeholdOnly')
+    // excludeCommonhold only narrows freeholdOnly, which is itself unsupported here.
     if (criteria.maxDaysSinceAdded != null) unsupported.push('maxDaysSinceAdded')
     if (criteria.minBathrooms != null) unsupported.push('minBathrooms')
+    // No verified houseTypes value covers villa/farmhouse/land as a single
+    // list entry beyond what's already mapped — see queryModel().
+    if (criteria.houseSubtypes?.some((s) => !IS24_HOUSE_TYPE[s])) unsupported.push('houseSubtypes')
     if (criteria.propertyType === 'flat') {
       if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
       if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
@@ -213,7 +218,21 @@ function queryModel(ring: Ring, c: Criteria): Record<string, unknown> {
   // Only meaningful for flats — for houses the plot implies it (see api notes).
   if (c.mustHaveGarden && flat) q.onlyWithGarden = true
   if (c.keywords?.length) q.fullTextQuery = c.keywords.join(' ')
+  if (!flat) {
+    const wanted = (c.houseSubtypes ?? []).map((s) => IS24_HOUSE_TYPE[s]).filter((v): v is string => !!v)
+    if (wanted.length) q.houseTypes = wanted
+  }
   return q
+}
+
+/** Our portable house subtype → IS24's `houseTypes` enum, verified live 2026-08-15. No entry for `land` — IS24 has no realEstateType for bare land. */
+const IS24_HOUSE_TYPE: Record<string, string> = {
+  detached: 'SINGLE_FAMILY_HOUSE',
+  'semi-detached': 'SEMIDETACHED_HOUSE',
+  terraced: 'TERRACE_HOUSE',
+  bungalow: 'BUNGALOW',
+  farmhouse: 'FARMHOUSE',
+  villa: 'VILLA',
 }
 
 interface RawResultListModel {

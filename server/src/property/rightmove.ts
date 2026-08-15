@@ -78,6 +78,9 @@ export class RightmoveClient implements PortalClient {
     // the caller post-filters on summary text instead.
     const unsupported: string[] = []
     if (criteria.keywords?.length) unsupported.push('keywords')
+    // `villa`/`farmhouse` have no Rightmove propertyTypes value and Listing.propertyType
+    // is free text, so there's no way to post-filter them either — flag and move on.
+    if (criteria.houseSubtypes?.some((s) => !HOUSE_SUBTYPE[s])) unsupported.push('houseSubtypes')
     if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
     if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
     if (criteria.minInternetMbit != null) unsupported.push('minInternetMbit')
@@ -86,8 +89,9 @@ export class RightmoveClient implements PortalClient {
     if (criteria.minYearBuilt != null) unsupported.push('minYearBuilt')
     if (criteria.maxYearBuilt != null) unsupported.push('maxYearBuilt')
     if (criteria.noBuyerFee) unsupported.push('noBuyerFee')
-    // dontShow's auction flag is feature-switched off, so filter it locally.
-    if (criteria.excludeSchemes) unsupported.push('excludeSchemes')
+    // Rightmove's dontShow=auction flag is feature-switched off, so auctions
+    // are always matched on listing text, on every portal.
+    if (criteria.excludeAuctions) unsupported.push('excludeAuctions')
 
     return {
       portal: this.portal,
@@ -129,6 +133,16 @@ function locationIdentifier(ring: Ring): string {
 /** Only these four are accepted; anything else 400s. */
 const DAYS_SINCE_ADDED = [1, 3, 7, 14]
 
+/** Our portable house subtype → Rightmove's `propertyTypes` value. `land` has no houseSubtype-only meaning elsewhere but Rightmove does carry it. */
+const HOUSE_SUBTYPE: Record<string, string> = {
+  detached: 'detached',
+  'semi-detached': 'semi-detached',
+  terraced: 'terraced',
+  bungalow: 'bungalow',
+  land: 'land',
+}
+const DEFAULT_HOUSE_SUBTYPES = ['detached', 'semi-detached', 'terraced', 'bungalow']
+
 /** Criteria → Rightmove query params. */
 function compile(c: Criteria): Record<string, string> {
   const rent = c.channel === 'rent'
@@ -138,21 +152,30 @@ function compile(c: Criteria): Record<string, string> {
   if (c.minBedrooms != null) p.minBedrooms = String(c.minBedrooms)
   if (c.maxBedrooms != null) p.maxBedrooms = String(c.maxBedrooms)
   if (c.minBathrooms != null) p.minBathrooms = String(c.minBathrooms)
-  if (c.propertyType === 'house') p.propertyTypes = 'detached,semi-detached,terraced,bungalow'
+  if (c.propertyType === 'house') {
+    // `villa` and `farmhouse` have no Rightmove propertyTypes value — UK stock
+    // doesn't carve them out, so those two subtypes are simply unrepresentable
+    // here and fall out of the mapped set below.
+    const wanted = (c.houseSubtypes?.length ? c.houseSubtypes : DEFAULT_HOUSE_SUBTYPES)
+      .map((s) => HOUSE_SUBTYPE[s])
+      .filter((v): v is string => !!v)
+    p.propertyTypes = wanted.length ? wanted.join(',') : DEFAULT_HOUSE_SUBTYPES.join(',')
+  }
   if (c.propertyType === 'flat') p.propertyTypes = 'flat'
   // Deliberately NOT sending minSize/maxSize: only ~49% of Rightmove listings
   // report a floor area, and the server-side filter drops the silent rest.
   // Post-filtering keeps them (see postFilter in sync.ts).
   //
-  // Share-of-freehold is functionally freehold for our purposes; leasehold isn't.
-  if (c.freeholdOnly && !rent) p.tenureTypes = 'FREEHOLD,SHARE_OF_FREEHOLD'
+  // Share-of-freehold is functionally freehold for our purposes; leasehold isn't
+  // — unless excludeCommonhold asks for sole freehold specifically.
+  if (c.freeholdOnly && !rent) {
+    p.tenureTypes = c.excludeCommonhold ? 'FREEHOLD' : 'FREEHOLD,SHARE_OF_FREEHOLD'
+  }
   const mustHave: string[] = []
   if (c.mustHaveGarden) mustHave.push('garden')
   if (c.mustHaveParking) mustHave.push('parking')
   if (mustHave.length) p.mustHave = mustHave.join(',')
   if (c.excludeSchemes) {
-    // `auction` is behind a Rightmove feature switch on dontShow, so the auction
-    // half of this gets post-filtered on the listing's own type instead.
     p.dontShow = rent ? 'houseShare,retirement,student' : 'retirement,sharedOwnership'
     if (!rent) p.includeSSTC = 'false'
   }
