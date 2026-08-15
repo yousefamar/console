@@ -24,6 +24,19 @@ export interface FeedSubscription {
   fullText?: boolean
   maxItems?: number
   addedAt: string
+  // Route this feed's fetch through the Worker proxy (see FEED_PROXY_URL below)
+  // instead of fetching directly. Needed for sources that region-gate their RSS
+  // — the feed 404s on a UK-egress request regardless of cookies or login, so
+  // re-issuing it from a non-UK Cloudflare PoP is the only fix.
+  viaProxy?: boolean
+}
+
+export interface RedditComment {
+  id: string
+  author: string
+  content: string
+  link: string
+  updated: string
 }
 
 export interface FeedItem {
@@ -101,6 +114,26 @@ function itemId(guid: string | undefined, link: string | undefined, feedIdStr: s
   return createHash('sha256').update(key).digest('hex').slice(0, 16)
 }
 
+// Region-shifting fetch proxy (see FeedSubscription.viaProxy) — a Cloudflare
+// Worker with a `[placement] region` hint so its outbound fetch egresses from
+// that region rather than the PoP nearest the hub. `mode = "smart"` does NOT do
+// this (it optimizes backend latency and stays local). Hostname-allow-listed
+// and secret-authenticated Worker-side. Config lives in server/.env, uncommitted;
+// absent config just means viaProxy feeds fail rather than the hub breaking.
+const FEED_PROXY_URL = process.env.REDDIT_PROXY_URL
+const FEED_PROXY_SECRET = process.env.REDDIT_PROXY_SECRET
+
+async function fetchViaProxy(xmlUrl: string): Promise<string> {
+  if (!FEED_PROXY_URL) throw new Error('REDDIT_PROXY_URL not configured')
+  const proxyUrl = `${FEED_PROXY_URL}?url=${encodeURIComponent(xmlUrl)}`
+  const res = await fetch(proxyUrl, {
+    headers: FEED_PROXY_SECRET ? { 'x-proxy-secret': FEED_PROXY_SECRET } : {},
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) throw new Error(`proxy fetch failed: ${res.status}`)
+  return res.text()
+}
+
 // --------------------------------------------------------------------------
 // FeedStore
 // --------------------------------------------------------------------------
@@ -172,7 +205,7 @@ export class FeedStore {
     return this.loadConfig().feeds
   }
 
-  async add(xmlUrl: string, title?: string, folder?: string, fullText?: boolean): Promise<FeedSubscription> {
+  async add(xmlUrl: string, title?: string, folder?: string, fullText?: boolean, viaProxy?: boolean): Promise<FeedSubscription> {
     const config = this.loadConfig()
 
     // Deduplicate
@@ -184,7 +217,9 @@ export class FeedStore {
     let siteUrl: string | undefined
     let imageUrl: string | undefined
     try {
-      const feed = await this.parser.parseURL(xmlUrl)
+      const feed = viaProxy
+        ? await this.parser.parseString(await fetchViaProxy(xmlUrl))
+        : await this.parser.parseURL(xmlUrl)
       discoveredTitle = title || feed.title || xmlUrl
       siteUrl = feed.link || undefined
       imageUrl = feed.image?.url || undefined
@@ -201,6 +236,7 @@ export class FeedStore {
       imageUrl,
       fullText: fullText || false,
       addedAt: new Date().toISOString(),
+      ...(viaProxy ? { viaProxy: true } : {}),
     }
 
     config.feeds.push(sub)
@@ -222,7 +258,7 @@ export class FeedStore {
     return true
   }
 
-  update(id: string, updates: { title?: string; folder?: string; xmlUrl?: string; fullText?: boolean; maxItems?: number | null }): FeedSubscription | null {
+  update(id: string, updates: { title?: string; folder?: string; xmlUrl?: string; fullText?: boolean; maxItems?: number | null; viaProxy?: boolean }): FeedSubscription | null {
     const config = this.loadConfig()
     const feed = config.feeds.find((f) => f.id === id)
     if (!feed) return null
@@ -235,6 +271,11 @@ export class FeedStore {
     if (updates.fullText !== undefined) {
       feed.fullText = updates.fullText
       this.cache.delete(id) // re-fetch with new mode
+    }
+    if (updates.viaProxy !== undefined) {
+      if (updates.viaProxy) feed.viaProxy = true
+      else delete feed.viaProxy
+      this.cache.delete(id)
     }
     if (updates.maxItems !== undefined) {
       if (updates.maxItems === null) delete feed.maxItems
@@ -258,7 +299,9 @@ export class FeedStore {
     }
 
     try {
-      const feed = await this.parser.parseURL(sub.xmlUrl)
+      const feed = sub.viaProxy
+        ? await this.parser.parseString(await fetchViaProxy(sub.xmlUrl))
+        : await this.parser.parseURL(sub.xmlUrl)
       const items: FeedItem[] = (feed.items || []).map((item) => {
         const raw = item as unknown as Record<string, unknown>
 
@@ -487,5 +530,43 @@ export class FeedStore {
     }
 
     return builder.build(opml)
+  }
+
+  // --- Reddit comments ---
+  // Reddit serves a comment thread as an Atom feed at `<permalink>.rss` — the
+  // OP post is the first entry, each comment a subsequent entry, flat (no
+  // depth/parent field, unlike HN's Firebase tree). Try direct first (the
+  // common case, and it spends no proxy request); fall back to the proxy only
+  // when the direct fetch is region-gated.
+  async fetchRedditComments(permalink: string): Promise<RedditComment[]> {
+    // No numeric score is obtainable anonymously — RSS/Atom omits ups/score
+    // entirely and the JSON API that carries them 403s without login. But
+    // Reddit honours sort=top server-side, so comments still arrive ranked by
+    // upvotes; ordering is all we can surface, not counts.
+    const rssUrl = permalink.replace(/\/?$/, '/') + '.rss?sort=top'
+    let xml: string
+    try {
+      const res = await fetch(rssUrl, {
+        headers: { 'User-Agent': 'Console-FeedReader/1.0' },
+        signal: AbortSignal.timeout(10000),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      xml = await res.text()
+    } catch {
+      xml = await fetchViaProxy(rssUrl)
+    }
+
+    const feed = await this.parser.parseString(xml)
+    const entries = (feed.items || []).slice(1) // first entry is the OP post itself
+    return entries.map((item) => {
+      const raw = item as unknown as Record<string, unknown>
+      return {
+        id: (raw.id as string) || item.guid || item.link || '',
+        author: item.creator || (raw.author as string | undefined) || '(deleted)',
+        content: item.content || '',
+        link: item.link || '',
+        updated: item.isoDate || item.pubDate || '',
+      }
+    })
   }
 }

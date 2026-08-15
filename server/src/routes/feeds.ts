@@ -23,8 +23,8 @@ export function handleFeedRoutes(
 
   if (path === '/feeds' && req.method === 'POST') {
     readBody(req).then(async (body) => {
-      const { xmlUrl, title, folder, fullText } = JSON.parse(body)
-      const feed = await feedStore.add(xmlUrl, title, folder, fullText)
+      const { xmlUrl, title, folder, fullText, viaProxy } = JSON.parse(body)
+      const feed = await feedStore.add(xmlUrl, title, folder, fullText, viaProxy)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(feed))
     }).catch((err) => {
@@ -141,6 +141,24 @@ export function handleFeedRoutes(
       })
       return true
     }
+  }
+
+  // Reddit comments — fetches a comment thread's Atom feed (<permalink>.rss)
+  if (path === '/feeds/reddit-comments' && req.method === 'GET') {
+    const permalink = url.searchParams.get('permalink')
+    if (!permalink) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing permalink' }))
+      return true
+    }
+    feedStore.fetchRedditComments(permalink).then((comments) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(comments))
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
   }
 
   // HN comments proxy — fetches comment tree from HN Firebase API
