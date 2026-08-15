@@ -37,17 +37,26 @@ export const SpacesTab = memo(function SpacesTab() {
   const projects = useMemo(() => spaces.filter((s) => s.kind === 'project'), [spaces])
   const active = spaces.find((s) => s.slug === activeSlug) ?? null
 
-  // Agent count per space (forks included) → rail badge.
+  // Agent count + alert state per space (forks included) → rail badge.
+  // Attention (@amar) beats unread, mirroring the org-chart dot priority.
   const roles = useAgentStore((s) => s.agentRoles)
-  const agentCounts = useMemo(() => {
-    const m = new Map<string, number>()
+  const sessions = useAgentStore((s) => s.sessions)
+  const agentBadges = useMemo(() => {
+    const m = new Map<string, { count: number; unread: boolean; attention: boolean }>()
+    const bump = (slug: string, unread: boolean, attention: boolean) => {
+      const cur = m.get(slug) ?? { count: 0, unread: false, attention: false }
+      m.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
+    }
     for (const r of roles) {
       if (r.folder) continue
-      if (r.project) m.set(r.project, (m.get(r.project) ?? 0) + 1)
-      for (const a of r.areas ?? []) m.set(a, (m.get(a) ?? 0) + 1)
+      const live = sessions.find((s) => s.agentKey === r.key && s.status !== 'ended')
+      const unread = !!live?.hasUnread
+      const attention = !!live?.needsAttention
+      if (r.project) bump(r.project, unread, attention)
+      for (const a of r.areas ?? []) bump(a, unread, attention)
     }
     return m
-  }, [roles])
+  }, [roles, sessions])
 
   return (
     <div className="flex flex-1 h-full min-w-0">
@@ -62,12 +71,12 @@ export const SpacesTab = memo(function SpacesTab() {
         <div className="flex-1 overflow-y-auto py-1">
           <RailSection label="Areas">
             {areas.map((s) => (
-              <RailItem key={s.slug} space={s} agentCount={agentCounts.get(s.slug) ?? 0} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
+              <RailItem key={s.slug} space={s} badge={agentBadges.get(s.slug)} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
             ))}
           </RailSection>
           <RailSection label="Projects">
             {projects.map((s) => (
-              <RailItem key={s.slug} space={s} agentCount={agentCounts.get(s.slug) ?? 0} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
+              <RailItem key={s.slug} space={s} badge={agentBadges.get(s.slug)} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
             ))}
           </RailSection>
         </div>
@@ -95,7 +104,8 @@ function RailSection({ label, children }: { label: string; children: React.React
   )
 }
 
-function RailItem({ space, agentCount, active, onClick }: { space: SpaceSummary; agentCount: number; active: boolean; onClick: () => void }) {
+function RailItem({ space, badge, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean }; active: boolean; onClick: () => void }) {
+  const botColor = badge?.attention ? 'text-red-500' : badge?.unread ? 'text-blue-500' : 'text-text-tertiary opacity-60'
   return (
     <button
       onClick={onClick}
@@ -108,9 +118,12 @@ function RailItem({ space, agentCount, active, onClick }: { space: SpaceSummary;
       <span className="truncate">{space.title}</span>
       {space.status === 'dormant' && <span className="ml-auto text-[9px] text-text-tertiary">zzz</span>}
       <span className={clsx('flex items-center gap-1', space.status !== 'dormant' && 'ml-auto')}>
-        {agentCount > 0 && (
-          <span className="flex items-center gap-0.5 text-[9px] text-text-tertiary" title={`${agentCount} agent${agentCount > 1 ? 's' : ''}`}>
-            <Bot size={9} className="opacity-60" />{agentCount}
+        {badge && badge.count > 0 && (
+          <span
+            className={clsx('flex items-center gap-0.5 text-[9px]', botColor)}
+            title={`${badge.count} agent${badge.count > 1 ? 's' : ''}${badge.attention ? ' · needs you' : badge.unread ? ' · unread' : ''}`}
+          >
+            <Bot size={9} />{badge.count}
           </span>
         )}
         {space.boardPath && <Kanban size={9} className="flex-shrink-0 opacity-40" />}
@@ -383,6 +396,7 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
         {spaceRoles.map((r) => {
           const live = sessionFor(r.key)
           const isActive = live?.id === activeSessionId
+          const alert = live?.needsAttention ? 'attention' : live?.hasUnread ? 'unread' : null
           return (
             <button
               key={r.key}
@@ -390,9 +404,11 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
               className={clsx(
                 'flex-shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] transition-colors',
                 isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1',
+                !isActive && alert === 'attention' && 'text-red-400',
+                !isActive && alert === 'unread' && 'text-blue-400',
                 !live && 'opacity-60',
               )}
-              title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}`}
+              title={`${r.fork ? 'fork · ' : ''}${live ? r.title : `${r.title} (parked — click to revive)`} · @${r.key}${alert === 'attention' ? ' · needs you' : alert === 'unread' ? ' · unread' : ''}`}
             >
               {r.fork && <GitBranch size={8} className="mr-0.5 inline opacity-60" />}
               {r.title}{!live && ' ⏾'}
