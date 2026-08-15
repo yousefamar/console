@@ -16,6 +16,7 @@ import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
 import { showPrompt } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
+import { NotesEditor } from './NotesEditor'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
 export const SpacesTab = memo(function SpacesTab() {
@@ -139,6 +140,10 @@ function RailItem({ space, badge, active, onClick }: { space: SpaceSummary; badg
 function SpaceCentre({ space }: { space: SpaceSummary }) {
   const activeView = useSpacesStore((s) => s.activeView)
   const setActiveView = useSpacesStore((s) => s.setActiveView)
+  const activeFilePath = useNotesStore((s) => s.activeFilePath)
+  // Only ONE live CM6 editor per file across the app: the Notes pane already
+  // gates its editor on being the active pane; mirror that here.
+  const isActivePane = useUiStore((s) => s.activePane === 'spaces')
   const hasBoard = !!space.boardPath
 
   return (
@@ -149,10 +154,15 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
           {hasBoard && (
             <ViewTab label="Board" icon={<Kanban size={10} />} active={activeView === 'board'} onClick={() => setActiveView('board')} />
           )}
-          <ViewTab label="Docs" icon={<FileText size={10} />} active={activeView === 'docs' || !hasBoard} onClick={() => setActiveView('docs')} />
+          <ViewTab label="Docs" icon={<FileText size={10} />} active={activeView === 'docs' || (!hasBoard && activeView !== 'note')} onClick={() => setActiveView('docs')} />
+          {activeFilePath && (
+            <ViewTab label="Note" icon={<FileText size={10} />} active={activeView === 'note'} onClick={() => setActiveView('note')} />
+          )}
         </div>
       </div>
-      {activeView === 'board' && hasBoard ? <BoardView /> : <DocsView space={space} />}
+      {activeView === 'note' && activeFilePath
+        ? (isActivePane ? <NotesEditor /> : null)
+        : activeView === 'board' && hasBoard ? <BoardView /> : <DocsView space={space} />}
     </>
   )
 }
@@ -305,6 +315,12 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign }: {
 
 function DocsView({ space }: { space: SpaceSummary }) {
   const files = useNotesStore((s) => s.files)
+  // Cold pane: the vault adapter only exists after NotesTab mounts. Connect
+  // it ourselves so Spaces works without ever visiting Notes.
+  useEffect(() => {
+    const notes = useNotesStore.getState()
+    if (!notes.adapter && !notes.loading) void notes.reconnectVault()
+  }, [])
   const prefix = `projects/${space.slug}/`
   const flat = `projects/${space.slug}.md`
   const spaceFiles = useMemo(
@@ -312,11 +328,12 @@ function DocsView({ space }: { space: SpaceSummary }) {
     [files, prefix, flat],
   )
 
+  // Open IN PLACE — the centre panel becomes the editor (Notes-tab absorption).
   const openInNotes = async (path: string) => {
     const notes = useNotesStore.getState()
     if (!notes.adapter) await notes.reconnectVault()
-    useUiStore.getState().setActivePane('notes')
     await useNotesStore.getState().openFile(path)
+    useSpacesStore.getState().setActiveView('note')
   }
 
   if (space.kind === 'area') {
@@ -385,7 +402,7 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
   }
 
   return (
-    <div className="flex w-[560px] max-w-[45vw] flex-shrink-0 flex-col border-l border-border overflow-hidden">
+    <div className="flex flex-1 min-w-0 flex-col border-l border-border overflow-hidden">
       <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5 overflow-x-auto">
         <Bot size={11} className="flex-shrink-0 text-text-tertiary" />
         {spaceRoles.length === 0 && (
