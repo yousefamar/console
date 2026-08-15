@@ -243,7 +243,8 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     if (missing.has('minBathrooms') && c.minBathrooms != null && l.bathrooms != null && l.bathrooms < c.minBathrooms) {
       return false
     }
-    if (missing.has('excludeSchemes') && c.excludeSchemes && isScheme(l)) return false
+    if (missing.has('excludeSchemes') && c.excludeSchemes && matchesAny(l, SCHEME_TERMS)) return false
+    if (missing.has('excludeAuctions') && c.excludeAuctions && matchesAny(l, AUCTION_TERMS)) return false
     if (missing.has('keywords') && c.keywords?.length) {
       const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''}`.toLowerCase()
       if (!c.keywords.some((k) => hay.includes(k.toLowerCase()))) return false
@@ -252,24 +253,17 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
   })
 }
 
-/** Words that mark a listing as an auction/scheme rather than a normal sale. */
-const SCHEME_TERMS = [
-  'auction',
-  'for sale by tender',
-  'shared ownership',
-  'shared equity',
-  'part buy',
-  'retirement',
-  'over 55',
-  'over 60',
-  'zwangsversteigerung',
-  'asta',
-  'nuda proprietà',
-]
+/**
+ * Auctions and schemes are separate axes — an auction isn't inherently
+ * undesirable (just a faster, cash-ready completion process), so it's a
+ * distinct opt-out from retirement/shared-ownership stock.
+ */
+const AUCTION_TERMS = ['auction', 'for sale by tender', 'zwangsversteigerung', 'asta']
+const SCHEME_TERMS = ['shared ownership', 'shared equity', 'part buy', 'retirement', 'over 55', 'over 60']
 
-function isScheme(l: Listing): boolean {
+function matchesAny(l: Listing, terms: string[]): boolean {
   const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.propertyType ?? ''}`.toLowerCase()
-  return SCHEME_TERMS.some((t) => hay.includes(t))
+  return terms.some((t) => hay.includes(t))
 }
 
 function sortNewestFirst(listings: Listing[]): Listing[] {

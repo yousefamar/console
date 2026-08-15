@@ -180,4 +180,22 @@ describe('postFilter', () => {
     ]
     expect(postFilter(rows, criteria, ['keywords']).map((l) => l.id)).toEqual(['a', 'b'])
   })
+
+  it('treats auctions and schemes as independent axes', () => {
+    const rows = [
+      listing('normal', { summary: 'A lovely family home' }),
+      listing('auction', { summary: 'For sale by auction, guide price £200k' }),
+      listing('retirement', { summary: 'Retirement living, over 55s only' }),
+    ]
+    const auctionsOnly = postFilter(rows, { excludeAuctions: true }, ['excludeAuctions']).map((l) => l.id)
+    expect(auctionsOnly).toEqual(['normal', 'retirement'])
+
+    const schemesOnly = postFilter(rows, { excludeSchemes: true }, ['excludeSchemes']).map((l) => l.id)
+    expect(schemesOnly).toEqual(['normal', 'auction'])
+
+    const both = postFilter(rows, { excludeAuctions: true, excludeSchemes: true }, ['excludeAuctions', 'excludeSchemes']).map(
+      (l) => l.id,
+    )
+    expect(both).toEqual(['normal'])
+  })
 })
