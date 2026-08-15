@@ -372,7 +372,7 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
   }
 
   return (
-    <div className="flex w-[380px] flex-shrink-0 flex-col border-l border-border overflow-hidden">
+    <div className="flex w-[560px] max-w-[45vw] flex-shrink-0 flex-col border-l border-border overflow-hidden">
       <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5 overflow-x-auto">
         <Bot size={11} className="flex-shrink-0 text-text-tertiary" />
         {spaceRoles.length === 0 && (
