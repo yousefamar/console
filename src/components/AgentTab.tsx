@@ -679,7 +679,9 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
               )}
               {cronCount > 0 && (
                 <span
-                  className="flex items-center gap-0.5 text-[10px] text-blue-400 font-medium flex-shrink-0"
+                  // Neutral grey, NOT blue — blue is the unread colour and a
+                  // blue count here reads as unread messages.
+                  className="flex items-center gap-0.5 text-[10px] text-text-tertiary font-medium flex-shrink-0"
                   title={`${cronCount} scheduled prompt${cronCount === 1 ? '' : 's'}`}
                 >
                   <Clock size={10} />
