@@ -54,6 +54,12 @@ export function handleGmapsRoutes(
     })
   }
 
+  if (path === '/gmaps/credentials' && req.method === 'DELETE') {
+    authStore.clearGoogleMaps()
+    json({ ok: true, configured: false })
+    return true
+  }
+
   if (path === '/gmaps/search' && req.method === 'GET') {
     return handleAsync(async () => {
       const q = url.searchParams.get('q')?.trim()
@@ -64,6 +70,34 @@ export function handleGmapsRoutes(
       const bias = lat != null && lon != null ? { lat, lon, radiusMeters: radius ?? undefined } : undefined
       const results = await gmaps.searchText(q, bias)
       json({ results })
+    })
+  }
+
+  if (path === '/gmaps/autocomplete' && req.method === 'GET') {
+    return handleAsync(async () => {
+      const input = url.searchParams.get('q')?.trim()
+      if (!input) return json({ suggestions: [] })
+      const lat = numParam(url, 'lat')
+      const lon = numParam(url, 'lon')
+      const radius = numParam(url, 'radius')
+      const sessionToken = url.searchParams.get('session') ?? undefined
+      const suggestions = await gmaps.autocomplete(input, {
+        lat: lat ?? undefined,
+        lon: lon ?? undefined,
+        radiusMeters: radius ?? undefined,
+        sessionToken,
+      })
+      json({ suggestions })
+    })
+  }
+
+  if (path.startsWith('/gmaps/place/') && req.method === 'GET') {
+    return handleAsync(async () => {
+      const placeId = decodeURIComponent(path.slice('/gmaps/place/'.length))
+      if (!placeId) return error(400, 'place id required')
+      const sessionToken = url.searchParams.get('session') ?? undefined
+      const place = await gmaps.placeDetails(placeId, sessionToken)
+      json({ place })
     })
   }
 

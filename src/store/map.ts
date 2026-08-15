@@ -1,6 +1,17 @@
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
 
+// Places Autocomplete session token: groups a burst of keystrokes + the final
+// details fetch into one billable session. Rotated after each details fetch.
+let _gmapsSession: string | null = null
+function gmapsSessionToken(): string {
+  if (!_gmapsSession) _gmapsSession = crypto.randomUUID()
+  return _gmapsSession
+}
+function resetGmapsSession(): void {
+  _gmapsSession = null
+}
+
 // --- OwnTracks --------------------------------------------------------------
 
 export interface OtFix {
@@ -81,6 +92,36 @@ export interface MeetupStatus {
   lastFetch: number
 }
 
+// --- Google Maps (search + directions) --------------------------------------
+
+export interface GPlace {
+  id: string
+  name: string
+  address?: string
+  lat: number
+  lon: number
+  types?: string[]
+  rating?: number
+  userRatingCount?: number
+  googleMapsUri?: string
+}
+
+export interface GSuggestion {
+  placeId: string
+  text: string
+  mainText: string
+  secondaryText?: string
+}
+
+export type GTravelMode = 'DRIVE' | 'WALK' | 'BICYCLE' | 'TRANSIT'
+
+export interface GRoute {
+  description?: string
+  durationSec: number
+  distanceMeters: number
+  geometry: { type: 'LineString'; coordinates: [number, number][] }
+}
+
 // --- Agent-authored layers --------------------------------------------------
 
 export interface MapLayerStyle {
@@ -94,6 +135,14 @@ export interface MapLayerStyle {
   lineWidth?: number
   animated?: boolean
   popup?: Array<string | { key: string; label?: string }>
+  /** open a rich side panel (image, summary, link) on click instead of a popup. */
+  panel?: boolean
+}
+
+/** A clicked feature from an agent layer whose style asks for a panel. */
+export interface LayerFeatureSel {
+  slug: string
+  props: Record<string, unknown>
 }
 
 export interface MapLayerMeta {
@@ -213,6 +262,39 @@ interface MapState {
   setMeetupQuery: (q: string) => void
   setMeetupDays: (d: number) => void
 
+  // Google Maps search + directions
+  gmapsConfigured: boolean | null // null = not yet probed
+  gmapsQuery: string
+  gmapsResults: GPlace[]
+  gmapsSelectedPlaceId: string | null
+  gmapsSearching: boolean
+  // type-ahead autocomplete
+  gmapsSuggestions: GSuggestion[]
+  gmapsSuggesting: boolean
+  // directions: origin/destination places + the computed routes
+  gmapsRouteFrom: GPlace | null
+  gmapsRouteTo: GPlace | null
+  gmapsMode: GTravelMode
+  gmapsRoutes: GRoute[]
+  gmapsSelectedRoute: number // index into gmapsRoutes
+  gmapsRouting: boolean
+  gmapsError: string | null
+  probeGmaps: () => Promise<void>
+  setGmapsKey: (apiKey: string) => Promise<void>
+  setGmapsQuery: (q: string) => void
+  searchGmaps: (query: string, bias?: { lat: number; lon: number; radiusMeters?: number }) => Promise<void>
+  autocompleteGmaps: (query: string, bias?: { lat: number; lon: number }) => Promise<void>
+  pickSuggestion: (placeId: string) => Promise<void>
+  clearSuggestions: () => void
+  selectPlace: (id: string | null) => void
+  clearGmapsSearch: () => void
+  setRouteFrom: (p: GPlace | null) => void
+  setRouteTo: (p: GPlace | null) => void
+  setGmapsMode: (m: GTravelMode) => void
+  computeDirections: () => Promise<void>
+  selectRoute: (idx: number) => void
+  clearDirections: () => void
+
   // built-in layers (hub-backed overlays surfaced in the Layers panel)
   builtinVisible: Record<BuiltinLayerId, boolean>
   toggleBuiltin: (id: BuiltinLayerId) => void
@@ -221,11 +303,13 @@ interface MapState {
   layers: MapLayerMeta[]
   layerData: Record<string, unknown> // slug → geojson
   layerVisible: Record<string, boolean>
+  selectedLayerFeature: LayerFeatureSel | null
   loadLayers: () => Promise<void>
   setLayers: (metas: MapLayerMeta[]) => void
   setLayerData: (slug: string, geojson: unknown) => void
   toggleLayer: (slug: string) => void
   setGroupVisible: (group: string, visible: boolean) => void
+  selectLayerFeature: (sel: LayerFeatureSel | null) => void
   setCredentials: (creds: { username?: string; password?: string; cookie?: string }) => Promise<void>
   selectAdjacentPin: (dir: 1 | -1) => void
 }
@@ -433,6 +517,128 @@ export const useMapStore = create<MapState>((set, get) => ({
   setMeetupQuery: (q) => set({ meetupQuery: q }),
   setMeetupDays: (d) => set({ meetupDays: d }),
 
+  gmapsConfigured: null,
+  gmapsQuery: '',
+  gmapsResults: [],
+  gmapsSelectedPlaceId: null,
+  gmapsSearching: false,
+  gmapsSuggestions: [],
+  gmapsSuggesting: false,
+  gmapsRouteFrom: null,
+  gmapsRouteTo: null,
+  gmapsMode: 'DRIVE',
+  gmapsRoutes: [],
+  gmapsSelectedRoute: 0,
+  gmapsRouting: false,
+  gmapsError: null,
+
+  probeGmaps: async () => {
+    try {
+      const { configured } = await hubFetch<{ configured: boolean }>('/gmaps/status')
+      set({ gmapsConfigured: configured })
+    } catch {
+      set({ gmapsConfigured: false })
+    }
+  },
+
+  setGmapsKey: async (apiKey) => {
+    await hubFetch('/gmaps/credentials', { method: 'POST', body: JSON.stringify({ apiKey }) })
+    set({ gmapsConfigured: true, gmapsError: null })
+  },
+
+  setGmapsQuery: (q) => set({ gmapsQuery: q }),
+
+  searchGmaps: async (query, bias) => {
+    const q = query.trim()
+    if (!q) return
+    set({ gmapsSearching: true, gmapsError: null })
+    try {
+      const params = new URLSearchParams({ q })
+      if (bias) {
+        params.set('lat', String(bias.lat))
+        params.set('lon', String(bias.lon))
+        if (bias.radiusMeters) params.set('radius', String(bias.radiusMeters))
+      }
+      const { results } = await hubFetch<{ results: GPlace[] }>(`/gmaps/search?${params.toString()}`)
+      set({ gmapsResults: results, gmapsSelectedPlaceId: results[0]?.id ?? null })
+    } catch (err) {
+      set({ gmapsError: (err as Error).message, gmapsResults: [] })
+    } finally {
+      set({ gmapsSearching: false })
+    }
+  },
+
+  autocompleteGmaps: async (query, bias) => {
+    const q = query.trim()
+    if (q.length < 2) {
+      set({ gmapsSuggestions: [], gmapsSuggesting: false })
+      return
+    }
+    set({ gmapsSuggesting: true })
+    try {
+      const params = new URLSearchParams({ q, session: gmapsSessionToken() })
+      if (bias) {
+        params.set('lat', String(bias.lat))
+        params.set('lon', String(bias.lon))
+      }
+      const { suggestions } = await hubFetch<{ suggestions: GSuggestion[] }>(`/gmaps/autocomplete?${params.toString()}`)
+      // ignore a stale response if the query moved on
+      if (get().gmapsQuery.trim() === q) set({ gmapsSuggestions: suggestions })
+    } catch {
+      set({ gmapsSuggestions: [] })
+    } finally {
+      set({ gmapsSuggesting: false })
+    }
+  },
+
+  pickSuggestion: async (placeId) => {
+    set({ gmapsSuggestions: [], gmapsSearching: true, gmapsError: null })
+    try {
+      const params = new URLSearchParams({ session: gmapsSessionToken() })
+      const { place } = await hubFetch<{ place: GPlace }>(`/gmaps/place/${encodeURIComponent(placeId)}?${params.toString()}`)
+      resetGmapsSession() // a details fetch ends the billing session
+      set({ gmapsResults: [place], gmapsSelectedPlaceId: place.id, gmapsQuery: place.name })
+    } catch (err) {
+      set({ gmapsError: (err as Error).message })
+    } finally {
+      set({ gmapsSearching: false })
+    }
+  },
+
+  clearSuggestions: () => set({ gmapsSuggestions: [] }),
+
+  selectPlace: (id) => set({ gmapsSelectedPlaceId: id }),
+  clearGmapsSearch: () => set({ gmapsResults: [], gmapsSelectedPlaceId: null, gmapsQuery: '', gmapsSuggestions: [] }),
+
+  setRouteFrom: (p) => set({ gmapsRouteFrom: p }),
+  setRouteTo: (p) => set({ gmapsRouteTo: p }),
+  setGmapsMode: (m) => set({ gmapsMode: m }),
+
+  computeDirections: async () => {
+    const { gmapsRouteFrom, gmapsRouteTo, gmapsMode } = get()
+    if (!gmapsRouteFrom || !gmapsRouteTo) return
+    set({ gmapsRouting: true, gmapsError: null })
+    try {
+      const { routes } = await hubFetch<{ routes: GRoute[] }>('/gmaps/directions', {
+        method: 'POST',
+        body: JSON.stringify({
+          origin: { lat: gmapsRouteFrom.lat, lon: gmapsRouteFrom.lon },
+          destination: { lat: gmapsRouteTo.lat, lon: gmapsRouteTo.lon },
+          mode: gmapsMode,
+          alternatives: true,
+        }),
+      })
+      set({ gmapsRoutes: routes, gmapsSelectedRoute: 0 })
+    } catch (err) {
+      set({ gmapsError: (err as Error).message, gmapsRoutes: [] })
+    } finally {
+      set({ gmapsRouting: false })
+    }
+  },
+
+  selectRoute: (idx) => set({ gmapsSelectedRoute: idx }),
+  clearDirections: () => set({ gmapsRouteFrom: null, gmapsRouteTo: null, gmapsRoutes: [], gmapsSelectedRoute: 0 }),
+
   builtinVisible: loadBuiltinVis(),
   toggleBuiltin: (id) =>
     set((s) => {
@@ -444,6 +650,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   layers: [],
   layerData: {},
   layerVisible: loadLayerVis(),
+  selectedLayerFeature: null,
+  selectLayerFeature: (sel) => set({ selectedLayerFeature: sel }),
   loadLayers: async () => {
     try {
       const { layers } = await hubFetch<{ layers: MapLayerMeta[] }>('/map/layers')
