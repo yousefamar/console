@@ -18,6 +18,17 @@ export interface FeedSubscription {
   fullText?: boolean
   maxItems?: number
   addedAt: string
+  viaProxy?: boolean
+}
+
+// Folders whose contents never appear in the aggregated "All" view or its
+// unread badge — they only surface when the folder or one of its feeds is
+// opened directly. For high-volume/low-signal sources that would otherwise
+// drown the main list. Case-insensitive.
+const HIDDEN_FOLDERS = new Set(['x'])
+
+function isHiddenFolder(folder: string | null): boolean {
+  return !!folder && HIDDEN_FOLDERS.has(folder.toLowerCase())
 }
 
 export interface FeedItem {
@@ -480,6 +491,10 @@ export const useFeedStore = create<FeedState>((set, get) => ({
       items = await db.feedItems.where('feedId').anyOf(feedIds).reverse().sortBy('publishedAt')
     } else {
       items = await db.feedItems.orderBy('publishedAt').reverse().toArray()
+      // "All" view: exclude hidden-folder feeds — they only show when their
+      // folder/feed is opened directly.
+      const hiddenFeedIds = new Set(feeds.filter((f) => isHiddenFolder(f.folder)).map((f) => f.id))
+      if (hiddenFeedIds.size > 0) items = items.filter((i) => !hiddenFeedIds.has(i.feedId))
     }
 
     // Filter unread only (unread = NOT in read set)
@@ -507,6 +522,7 @@ export const useFeedStore = create<FeedState>((set, get) => ({
   computeUnreadCounts: async () => {
     const readSet = new Set((await db.feedRead.toArray()).map((r) => r.itemId))
     const allItems = await db.feedItems.toArray()
+    const hiddenFeedIds = new Set(get().feeds.filter((f) => isHiddenFolder(f.folder)).map((f) => f.id))
 
     const counts: Record<string, number> = {}
     let total = 0
@@ -514,7 +530,9 @@ export const useFeedStore = create<FeedState>((set, get) => ({
     for (const item of allItems) {
       if (!readSet.has(item.id)) {
         counts[item.feedId] = (counts[item.feedId] || 0) + 1
-        total++
+        // Per-feed/per-folder badges still count hidden-folder unreads (so the
+        // folder shows its own count) — only the "All" total excludes them.
+        if (!hiddenFeedIds.has(item.feedId)) total++
       }
     }
 

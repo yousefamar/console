@@ -93,6 +93,83 @@ function formatTimeAgo(unixTime: number): string {
   return `${days}d ago`
 }
 
+// --- Reddit comments ---
+// Reddit's comment-thread RSS (<permalink>.rss) is a flat Atom feed — no
+// depth/parent field like HN's tree — so entries render as a plain
+// chronological list rather than nested threads.
+
+interface RedditComment {
+  id: string
+  author: string
+  content: string
+  link: string
+  updated: string
+}
+
+function RedditCommentRow({ comment }: { comment: RedditComment }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const sanitized = useMemo(() => DOMPurify.sanitize(comment.content), [comment.content])
+  const timeAgo = comment.updated ? formatTimeAgo(Math.floor(new Date(comment.updated).getTime() / 1000)) : ''
+
+  const onToggle = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('a')) return
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed && sel.toString().length > 0) return
+    e.stopPropagation()
+    setCollapsed((c) => !c)
+  }
+
+  return (
+    <div className="py-1.5 min-w-0 border-b border-border last:border-0">
+      <div onClick={onToggle} className="cursor-pointer">
+        <div className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+          {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+          <span className="font-medium text-text-secondary">{comment.author}</span>
+          {timeAgo && (<><span>·</span><span>{timeAgo}</span></>)}
+        </div>
+        {!collapsed && (
+          <div
+            className="mt-1 text-xs text-text-secondary leading-relaxed min-w-0 max-w-full overflow-hidden break-words [&_a]:text-blue-400 [&_a]:underline [&_a]:break-all [&_p]:mb-1.5"
+            dangerouslySetInnerHTML={{ __html: sanitized }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function RedditComments({ permalink }: { permalink: string }) {
+  const [comments, setComments] = useState<RedditComment[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    fetch(`${getHubUrl()}/feeds/reddit-comments?permalink=${encodeURIComponent(permalink)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.error) throw new Error(data.error)
+        setComments(data)
+        setLoading(false)
+      })
+      .catch((e) => { setError(e.message); setLoading(false) })
+  }, [permalink])
+
+  if (loading) return <div className="text-xs text-text-tertiary py-2">Loading comments...</div>
+  if (error) return <div className="text-xs text-red-400 py-2">Failed to load comments: {error}</div>
+  if (!comments) return null
+
+  return (
+    <div className="mt-4 border-t border-border pt-3 min-w-0 max-w-full overflow-hidden">
+      <h2 className="text-xs font-semibold text-text-primary mb-2">
+        {comments.length} Comment{comments.length === 1 ? '' : 's'}
+      </h2>
+      {comments.map((c) => <RedditCommentRow key={c.id} comment={c} />)}
+    </div>
+  )
+}
+
 function HNComments({ itemId }: { itemId: string }) {
   const [comments, setComments] = useState<HNComment | null>(null)
   const [loading, setLoading] = useState(true)
@@ -542,6 +619,9 @@ export function FeedItemView() {
 
         {/* HN comments */}
         {hnItemId && <HNComments itemId={hnItemId} />}
+
+        {/* Reddit comments */}
+        {!hnItemId && isReddit && <RedditComments permalink={item.link} />}
       </div>
     </div>
   )
