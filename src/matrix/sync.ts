@@ -83,6 +83,13 @@ export function buildMessageFromContent(
     : undefined
   const isVoiceNote = type === 'audio' && 'org.matrix.msc3245.voice' in content
 
+  const imageWidth = (type === 'image' || type === 'video')
+    ? (info?.w as number | undefined)
+    : undefined
+  const imageHeight = (type === 'image' || type === 'video')
+    ? (info?.h as number | undefined)
+    : undefined
+
   return {
     id: event.event_id!,
     roomId,
@@ -101,6 +108,8 @@ export function buildMessageFromContent(
     isEdited: false,
     reactions: undefined,
     mediaMimeType: (info?.mimetype as string) ?? undefined,
+    imageWidth,
+    imageHeight,
     audioDuration,
     audioWaveform,
     isVoiceNote,
@@ -1048,8 +1057,8 @@ export async function processChatQueue(): Promise<void> {
           break
         }
         case 'chatMarkRead': {
-          const p = action.payload as { roomId: string; eventId: string }
-          await hubRpc('matrix', 'markRead', { roomId: p.roomId, eventId: p.eventId })
+          const p = action.payload as { roomId: string; eventId: string; lastReadTs?: number }
+          await hubRpc('matrix', 'markRead', { roomId: p.roomId, eventId: p.eventId, lastReadTs: p.lastReadTs })
           break
         }
         case 'chatReact': {
