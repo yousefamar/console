@@ -245,9 +245,15 @@ interface RawEntry {
     '@xsi.type'?: string
     contactDetails?: { company?: string }
     galleryAttachments?: {
-      attachment?: Array<{ urls?: Array<{ url?: Array<{ '@href'?: string }> }> }>
+      // `url` is a single object, not an array (XML→JSON singleton flattening).
+      attachment?: Array<{ urls?: Array<{ url?: { '@href'?: string } }> }>
     }
   }
+}
+
+/** IS24 image URLs carry literal `%WIDTH%x%HEIGHT%` placeholders — fill them. */
+function imageUrl(href: string | undefined): string | undefined {
+  return href?.replace('%WIDTH%x%HEIGHT%', '600x400')
 }
 
 function normalise(e: RawEntry, markers: Map<string, [number, number]>): Listing | null {
@@ -279,6 +285,6 @@ function normalise(e: RawEntry, markers: Map<string, [number, number]>): Listing
     lon: a?.wgs84Coordinate?.longitude ?? marker?.[1],
     listedAt: e['@creation'],
     agent: re.contactDetails?.company,
-    image: re.galleryAttachments?.attachment?.[0]?.urls?.[0]?.url?.[0]?.['@href'],
+    image: imageUrl(re.galleryAttachments?.attachment?.[0]?.urls?.[0]?.url?.['@href']),
   }
 }
