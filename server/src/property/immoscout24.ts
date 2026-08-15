@@ -178,7 +178,15 @@ interface RawEntry {
   '@creation'?: string
   'resultlist.realEstate'?: {
     title?: string
-    address?: { postcode?: string; city?: string; quarter?: string; street?: string }
+    address?: {
+      postcode?: string
+      city?: string
+      quarter?: string
+      street?: string
+      houseNumber?: string
+      // Absent when the seller hides the exact address — then there's no pin.
+      wgs84Coordinate?: { latitude?: number; longitude?: number }
+    }
     price?: { value?: number }
     livingSpace?: number
     plotArea?: number
@@ -197,7 +205,8 @@ function normalise(e: RawEntry): Listing | null {
   const re = e['resultlist.realEstate']
   if (id == null || !re) return null
   const a = re.address
-  const address = [a?.street, a?.quarter, [a?.postcode, a?.city].filter(Boolean).join(' ')]
+  const street = [a?.street, a?.houseNumber].filter(Boolean).join(' ') || undefined
+  const address = [street, a?.quarter, [a?.postcode, a?.city].filter(Boolean).join(' ')]
     .filter(Boolean)
     .join(', ') || undefined
   return {
@@ -215,6 +224,8 @@ function normalise(e: RawEntry): Listing | null {
     floorArea: re.livingSpace,
     plotArea: re.plotArea,
     propertyType: re['@xsi.type']?.replace(/^search:/, ''),
+    lat: a?.wgs84Coordinate?.latitude,
+    lon: a?.wgs84Coordinate?.longitude,
     listedAt: e['@creation'],
     agent: re.contactDetails?.company,
     image: re.galleryAttachments?.attachment?.[0]?.urls?.[0]?.url?.[0]?.['@href'],
