@@ -21,6 +21,14 @@ describe('isTransientApiError', () => {
     expect(isTransientApiError('read ECONNRESET')).toBe(true)
     expect(isTransientApiError('socket hang up')).toBe(true)
     expect(isTransientApiError('TypeError: fetch failed')).toBe(true)
+    expect(isTransientApiError('API Error: Unable to connect to API (ConnectionRefused)')).toBe(true)
+  })
+
+  it('matches server-error shapes (seen live 2026-08-15)', () => {
+    expect(isTransientApiError('API Error: 503 Bedrock is unable to process your request. This is a server-side issue, usually temporary — try again in a moment.')).toBe(true)
+    expect(isTransientApiError('API Error: Server error mid-response. The response above may be incomplete.')).toBe(true)
+    expect(isTransientApiError('500 Internal Server Error')).toBe(true)
+    expect(isTransientApiError('502 Bad Gateway')).toBe(true)
   })
 
   it('does NOT match model-unavailable errors (those advance the fallback chain)', () => {

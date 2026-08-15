@@ -928,7 +928,7 @@ export class Session extends EventEmitter {
         // Both flavours arrive with NO preceding stream_event partials, so
         // handleAssistantMessage's text-block skip would drop them silently.
         // We emit text/error explicitly here based on the flag.
-        const anyMsg = msg as unknown as { isApiErrorMessage?: boolean; message: { model?: string } }
+        const anyMsg = msg as unknown as { isApiErrorMessage?: boolean; is_api_error_message?: boolean; error?: string; message: { model?: string } }
         const isSynthetic = anyMsg.message?.model === '<synthetic>'
         if (isSynthetic) {
           const text = msg.message.content
@@ -937,7 +937,15 @@ export class Session extends EventEmitter {
             .join('\n')
             .trim()
           if (text) {
-            if (anyMsg.isApiErrorMessage) {
+            // The CLI's stream-json flag is `is_api_error_message` (snake_case)
+            // as of 2.1.220 — the camelCase form is the on-disk JSONL shape and
+            // matched NOTHING on the wire, so the whole error branch (incl.
+            // transient auto-resume) silently dead-ended and 503s/timeouts left
+            // sessions halted. Accept both, plus a text-prefix fallback so the
+            // next field rename can't kill auto-resume silently again.
+            const isApiError = anyMsg.isApiErrorMessage || anyMsg.is_api_error_message
+              || anyMsg.error != null || /^API Error/i.test(text)
+            if (isApiError) {
               if (isTransientApiError(text)) {
                 // 429/503/overloaded: the turn died but the session is fine.
                 // Schedule a backoff "Continue." nudge instead of sitting
