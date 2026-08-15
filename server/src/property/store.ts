@@ -16,7 +16,9 @@ import { randomBytes } from 'node:crypto'
 import type { Criteria, Listing, Portal } from './types.js'
 
 const SEEN_LIMIT = 4000
-const RESULTS_LIMIT = 40
+// The map pins are drawn from `lastResults`, so this also caps how many pins a
+// search can ever show — keep it at or above sync.ts's MAX_PINS.
+const RESULTS_LIMIT = 200
 const HISTORY_LIMIT = 60
 
 export type Country = 'UK' | 'DE' | 'IT'
