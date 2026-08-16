@@ -1,7 +1,7 @@
 // Auth store — manages OAuth tokens for Google and Matrix
 // Persists to ~/.config/console/auth.json (mode 0600)
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, statSync, renameSync } from 'node:fs'
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -114,6 +114,7 @@ function safeEqualHex(a: string, b: string): boolean {
 export class AuthStore {
   private config: AuthConfig
   private refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private lastWriteMtimeMs = 0
 
   constructor() {
     this.config = this.load()
@@ -151,7 +152,9 @@ export class AuthStore {
   private load(): AuthConfig {
     try {
       if (existsSync(AUTH_FILE)) {
-        return JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as AuthConfig
+        const config = JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as AuthConfig
+        this.lastWriteMtimeMs = statSync(AUTH_FILE).mtimeMs
+        return config
       }
     } catch {
       // Corrupted file — start fresh
@@ -161,11 +164,39 @@ export class AuthStore {
 
   private save(): void {
     mkdirSync(CONFIG_DIR, { recursive: true })
-    writeFileSync(AUTH_FILE, JSON.stringify(this.config, null, 2), 'utf8')
+
+    // Every save writes the WHOLE in-memory config, so a second process holding
+    // its own AuthStore silently reverts anything the hub changed since that
+    // process booted (this is how a re-added Google account kept disappearing —
+    // a stray script had a 2-week-old snapshot). Can't merge safely from here,
+    // but a recurrence must not be silent again.
+    if (this.lastWriteMtimeMs) {
+      try {
+        const onDisk = statSync(AUTH_FILE).mtimeMs
+        if (onDisk > this.lastWriteMtimeMs + 1) {
+          console.warn(
+            `[auth] auth.json changed underneath us (disk ${new Date(onDisk).toISOString()} > ours ${new Date(this.lastWriteMtimeMs).toISOString()}) — another process holds an AuthStore; overwriting with our snapshot`,
+          )
+        }
+      } catch {
+        // File vanished — the write below re-creates it.
+      }
+    }
+
+    // Atomic: a crash mid-write would otherwise truncate the file, and load()
+    // silently falls back to DEFAULT_CONFIG on a parse error — i.e. every token gone.
+    const tmp = `${AUTH_FILE}.tmp`
+    writeFileSync(tmp, JSON.stringify(this.config, null, 2), 'utf8')
     try {
-      chmodSync(AUTH_FILE, 0o600)
+      chmodSync(tmp, 0o600)
     } catch {
       // chmod may fail on some platforms
+    }
+    renameSync(tmp, AUTH_FILE)
+    try {
+      this.lastWriteMtimeMs = statSync(AUTH_FILE).mtimeMs
+    } catch {
+      // Non-fatal: the guard above just won't fire until the next successful stat.
     }
   }
 
@@ -294,9 +325,12 @@ export class AuthStore {
 
     // Refresh 5 minutes before expiry
     const delay = Math.max(account.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
+    // unref: each refresh re-arms the next one, so a one-off script that merely
+    // constructs an AuthStore would otherwise never exit — and its frozen config
+    // snapshot keeps overwriting auth.json for as long as it lives.
     this.refreshTimers.set(email, setTimeout(() => {
       this.refreshGoogleToken(email)
-    }, delay))
+    }, delay).unref())
   }
 
   /**
@@ -518,7 +552,7 @@ export class AuthStore {
     const delay = Math.max(monzo.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
     this.monzoRefreshTimer = setTimeout(() => {
       this.refreshMonzoToken()
-    }, delay)
+    }, delay).unref()
   }
 
   setMonzoAccountId(accountId: string): void {
@@ -697,7 +731,7 @@ export class AuthStore {
     const delay = Math.max(spotify.accessTokenExpiry - Date.now() - 5 * 60 * 1000, 10000)
     this.spotifyRefreshTimer = setTimeout(() => {
       this.refreshSpotifyToken()
-    }, delay)
+    }, delay).unref()
   }
 
   clearSpotify(): void {
