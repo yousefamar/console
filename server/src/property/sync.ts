@@ -245,6 +245,10 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     }
     if (missing.has('excludeSchemes') && c.excludeSchemes && matchesAny(l, SCHEME_TERMS)) return false
     if (missing.has('excludeAuctions') && c.excludeAuctions && matchesAny(l, AUCTION_TERMS)) return false
+    // "Price on request" listings have no price field at all on any portal —
+    // IS24 sends price.value: 0 for these (verified: the live page shows "Auf
+    // Anfrage", not a data error), and normalise() already reads 0 as absent.
+    if (missing.has('excludePriceOnRequest') && c.excludePriceOnRequest && l.price == null) return false
     if (missing.has('keywords') && c.keywords?.length) {
       const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''}`.toLowerCase()
       if (!c.keywords.some((k) => hay.includes(k.toLowerCase()))) return false

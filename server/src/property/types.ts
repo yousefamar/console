@@ -86,6 +86,14 @@ export interface Criteria {
   noBuyerFee?: boolean
   /** Only listings added within N days. Rightmove only, and only 1 | 3 | 7 | 14. */
   maxDaysSinceAdded?: number
+  /**
+   * Drop "price on request" listings — IS24 sends `price.value: 0` for these
+   * (verified live: the listing's own page shows "Auf Anfrage", not a data
+   * error), and the same convention holds on the other two portals. No
+   * portal filters this server-side, so it's always post-filtered on
+   * `Listing.price` being absent.
+   */
+  excludePriceOnRequest?: boolean
 }
 
 /** A normalised listing. Fields absent from a portal stay undefined. */

@@ -92,6 +92,8 @@ export class RightmoveClient implements PortalClient {
     // Rightmove's dontShow=auction flag is feature-switched off, so auctions
     // are always matched on listing text, on every portal.
     if (criteria.excludeAuctions) unsupported.push('excludeAuctions')
+    // No portal filters "price on request" server-side — always post-filtered.
+    if (criteria.excludePriceOnRequest) unsupported.push('excludePriceOnRequest')
 
     return {
       portal: this.portal,

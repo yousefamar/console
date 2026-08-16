@@ -200,6 +200,12 @@ describe('postFilter', () => {
     )
     expect(both).toEqual(['normal'])
   })
+
+  it('drops price-on-request listings (no price field at all)', () => {
+    const rows = [listing('priced', { price: 250000 }), listing('onRequest', { price: undefined })]
+    const filtered = postFilter(rows, { excludePriceOnRequest: true }, ['excludePriceOnRequest']).map((l) => l.id)
+    expect(filtered).toEqual(['priced'])
+  })
 })
 
 describe('asEntryArray', () => {

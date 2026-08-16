@@ -718,6 +718,7 @@ export const COMMANDS: CommandDef[] = [
       'exclude-auctions': { type: 'boolean', description: 'Drop auction/forced-sale listings — a faster completion process, not inherently undesirable, so kept separate from --exclude-schemes' },
       'exclude-new-build': { type: 'boolean', description: 'Drop new-builds (Rightmove only)' },
       'no-buyer-fee': { type: 'boolean', description: 'No buyer-side commission (IS24 Courtage, Germany only)' },
+      'exclude-price-on-request': { type: 'boolean', description: 'Drop listings with no published price ("Auf Anfrage" / "Trattative riservate") — no portal filters this server-side, always post-filtered' },
     },
     examples: ['con map property add --country DE --layer where-to-move/livable-zone --label "DE houses" --max-price 500000 --min-plot 800 --min-beds 3'] },
   { name: 'map property get', description: 'One search incl. its latest listings', safety: 'read',

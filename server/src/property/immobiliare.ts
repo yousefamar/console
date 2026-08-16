@@ -81,6 +81,8 @@ export class ImmobiliareClient implements PortalClient {
     if (criteria.excludeCommonhold) unsupported.push('excludeCommonhold')
     // No bungalow-equivalent typology id and no land/plot category (see api notes).
     if (criteria.houseSubtypes?.some((s) => !IT_TIPOLOGIA[s])) unsupported.push('houseSubtypes')
+    // No portal filters "price on request" server-side — always post-filtered.
+    if (criteria.excludePriceOnRequest) unsupported.push('excludePriceOnRequest')
 
     return { portal: this.portal, total, listings: [...seen.values()], truncated, unsupported }
   }

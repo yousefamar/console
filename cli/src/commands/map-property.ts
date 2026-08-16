@@ -123,5 +123,6 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   if (o['exclude-auctions']) c.excludeAuctions = o['exclude-auctions'] !== 'false'
   if (o['exclude-new-build']) c.excludeNewBuild = o['exclude-new-build'] !== 'false'
   if (o['no-buyer-fee']) c.noBuyerFee = o['no-buyer-fee'] !== 'false'
+  if (o['exclude-price-on-request']) c.excludePriceOnRequest = o['exclude-price-on-request'] !== 'false'
   return c
 }

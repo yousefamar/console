@@ -63,6 +63,8 @@ export class ImmoScout24Client implements PortalClient {
     // No verified houseTypes value covers villa/farmhouse/land as a single
     // list entry beyond what's already mapped — see queryModel().
     if (criteria.houseSubtypes?.some((s) => !IS24_HOUSE_TYPE[s])) unsupported.push('houseSubtypes')
+    // No portal filters "price on request" server-side — always post-filtered.
+    if (criteria.excludePriceOnRequest) unsupported.push('excludePriceOnRequest')
     if (criteria.propertyType === 'flat') {
       if (criteria.minPlotArea != null) unsupported.push('minPlotArea')
       if (criteria.maxPlotArea != null) unsupported.push('maxPlotArea')
