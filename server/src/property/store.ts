@@ -17,8 +17,10 @@ import type { Criteria, Listing, Portal } from './types.js'
 
 const SEEN_LIMIT = 4000
 // The map pins are drawn from `lastResults`, so this also caps how many pins a
-// search can ever show — keep it at or above sync.ts's MAX_PINS.
-const RESULTS_LIMIT = 200
+// search can ever show — keep it at or above sync.ts's MAX_PINS. Bumped from
+// 200 so a backfill's whole point (showing more of what's actually out there,
+// not just the newest 50-a-poll) isn't immediately thrown away by this cap.
+const RESULTS_LIMIT = 600
 const HISTORY_LIMIT = 60
 
 export type Country = 'UK' | 'DE' | 'IT'
@@ -53,6 +55,14 @@ export interface PropertySearch {
   /** Portal admitted it truncated the result set on the last poll. */
   truncated?: boolean
   seenIds?: string[]
+  /**
+   * Listing ids Yousef explicitly said no to — hidden from the map on every
+   * future poll. Unlike `seenIds` (the alerting substrate, cleared whenever
+   * criteria/layer/country change so an edit re-seeds instead of re-alerting),
+   * this must survive those edits: a dismissal is about the listing, not
+   * about whether the current query happens to still match it.
+   */
+  dismissedIds?: string[]
   /** Most recent hits, newest first — what the SPA renders. */
   lastResults?: Listing[]
   history?: Array<{ at: number; total: number }>
@@ -116,6 +126,19 @@ export class PropertySearchStore {
     return next
   }
 
+  /** Hide a listing from this search's map layer, permanently (until undismiss). */
+  dismiss(id: string, listingId: string, dismissed = true): PropertySearch | undefined {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s) return undefined
+    const set = new Set(s.dismissedIds ?? [])
+    if (dismissed) set.add(listingId)
+    else set.delete(listingId)
+    s.dismissedIds = [...set]
+    this.save()
+    return s
+  }
+
   remove(id: string): boolean {
     this.load()
     const before = this.items.length
@@ -164,6 +187,33 @@ export class PropertySearchStore {
 
     this.save()
     return { current: s, fresh, seeding }
+  }
+
+  /**
+   * Merge a deeper one-off pull into `lastResults`, silently — a backfill is
+   * catching up on stock that predates this search, not a "what's new since
+   * last check" event, so every id it touches is marked seen and nothing is
+   * ever reported as fresh. Existing pins survive even if the backfill
+   * (bounded by BACKFILL_LIMIT, not truly exhaustive) doesn't happen to
+   * re-surface them.
+   */
+  recordBackfill(id: string, listings: Listing[]): PropertySearch | undefined {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s) return undefined
+
+    const byId = new Map((s.lastResults ?? []).map((l) => [l.id, l]))
+    for (const l of listings) byId.set(l.id, l)
+    s.lastResults = [...byId.values()].slice(0, RESULTS_LIMIT)
+
+    const seen = new Set(s.seenIds ?? [])
+    for (const l of listings) seen.add(l.id)
+    s.seenIds = [...seen].slice(-SEEN_LIMIT)
+    s.seeded = true
+    s.lastCheckedAt = Date.now()
+
+    this.save()
+    return s
   }
 
   private load(): void {

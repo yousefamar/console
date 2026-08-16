@@ -9,6 +9,7 @@ import type { FeatureCollection as GJ } from 'geojson'
 import { darkRasterStyle } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { hubFetch } from '@/hub'
 
 /** Colour a log entry by its type — same family as the pins, so the detail panel
  *  reads at a glance: green found, red DNF, amber maintenance, slate the rest. */
@@ -935,13 +936,37 @@ function CredentialsPanel({ onClose }: { onClose: () => void }) {
 
 // Keys the panel renders specially (hero image, title, link, badges); anything
 // else falls through to plain key→value rows so non-property layers work too.
-const PANEL_SPECIAL = new Set(['image', 'title', 'address', 'url', 'price', 'portal', 'summary', '_color', '_size', '_icon', '_label'])
+const PANEL_SPECIAL = new Set([
+  'image', 'title', 'address', 'url', 'price', 'portal', 'summary',
+  '_color', '_size', '_icon', '_label',
+  // Property-only plumbing for the dismiss action below — not for display.
+  'listingId', 'searchId',
+])
 
 function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: () => void }) {
   const p = sel.props
   const s = (k: string): string | undefined => (p[k] != null && p[k] !== '' ? String(p[k]) : undefined)
   const rows = Object.keys(p).filter((k) => !PANEL_SPECIAL.has(k) && p[k] != null && p[k] !== '')
   const url = s('url')
+  const listingId = s('listingId')
+  const searchId = s('searchId')
+  const [dismissing, setDismissing] = useState(false)
+
+  const dismiss = async () => {
+    if (!listingId || !searchId || dismissing) return
+    setDismissing(true)
+    try {
+      await hubFetch(`/property/searches/${encodeURIComponent(searchId)}/dismiss`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ listingId }),
+      })
+      onClose()
+    } catch {
+      setDismissing(false)
+    }
+  }
+
   return (
     <div className="absolute top-2 right-14 z-10 w-80 max-h-[80%] overflow-y-auto rounded border border-border bg-surface-0 text-sm shadow-xl">
       {s('image') && (
@@ -969,11 +994,23 @@ function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: ()
           </div>
         )}
         {s('summary') && <p className="text-xs text-text-secondary whitespace-pre-line mb-2">{s('summary')}</p>}
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline">
-            <ExternalLink size={11} /> open on {s('portal') ?? new URL(url).hostname.replace(/^www\./, '')}
-          </a>
-        )}
+        <div className="flex items-center justify-between gap-2 mt-1">
+          {url && (
+            <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline">
+              <ExternalLink size={11} /> open on {s('portal') ?? new URL(url).hostname.replace(/^www\./, '')}
+            </a>
+          )}
+          {listingId && searchId && (
+            <button
+              onClick={dismiss}
+              disabled={dismissing}
+              className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-red-400 disabled:opacity-50 shrink-0"
+              title="Hide this listing from the map — permanent, survives future polls"
+            >
+              <X size={11} /> {dismissing ? 'hiding…' : 'not interested'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

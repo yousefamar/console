@@ -22,8 +22,15 @@ const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
 const LAYER_GROUP = 'property'
 /** Newest-first listings pulled per poll. Enough to catch a busy day, not the world. */
 const FETCH_LIMIT = 50
-/** Pins kept on the map per search. */
-const MAX_PINS = 200
+/**
+ * One-off backfill limit — far beyond FETCH_LIMIT, deliberately not "unlimited":
+ * each client already stops at its own real ceiling (Rightmove index>1000,
+ * IS24 page>=50, immobiliare isResultsLimitReached/maxPages), so this just has
+ * to be large enough to never be the thing that cuts a backfill short.
+ */
+const BACKFILL_LIMIT = 5000
+/** Pins kept on the map per search — keep at or below store.ts's RESULTS_LIMIT. */
+const MAX_PINS = 600
 /** Notifications per poll per search — beyond this, one summary push. */
 const MAX_ALERTS = 5
 
@@ -66,6 +73,40 @@ export class PropertySync {
     if (!s) return undefined
     await this.pollSearch(s)
     return this.searches.get(id)
+  }
+
+  /**
+   * One-off deeper pull past the hourly poll's FETCH_LIMIT — for catching up a
+   * search on stock that already existed before it was created (or before
+   * criteria widened its ring coverage), not for routine use. Always merges
+   * silently: never notifies, however many "new" ids it turns up.
+   */
+  async backfill(id: string): Promise<PropertySearch | undefined> {
+    const s = this.searches.get(id)
+    if (!s) return undefined
+    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const rings = this.rings(s.layer, s.country, s.maxRings)
+    const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
+    const listings = postFilter(r.listings, s.criteria, r.unsupported)
+    const updated = this.searches.recordBackfill(id, listings)
+    if (!updated) return undefined
+    this.bus.broadcast('property', 'polled', updated)
+    this.updateLayer(updated)
+    this.log(`[property-sync] ${id} backfilled: ${listings.length} listings merged (portal reports ${r.total} total)`)
+    return updated
+  }
+
+  /**
+   * Hide (or restore) a listing on this search's map. Refreshes the layer
+   * immediately rather than waiting for the next hourly poll, since the point
+   * is to make the pin disappear the moment Yousef says no to it.
+   */
+  dismiss(id: string, listingId: string, dismissed = true): PropertySearch | undefined {
+    const s = this.searches.dismiss(id, listingId, dismissed)
+    if (!s) return undefined
+    this.updateLayer(s)
+    this.bus.broadcast('property', 'updated', s)
+    return s
   }
 
   /** Ad-hoc count for a candidate criteria set, without saving anything. */
@@ -154,8 +195,15 @@ export class PropertySync {
 
   /** One pin layer per search, so each toggles independently on the Map tab. */
   private updateLayer(s: PropertySearch): void {
-    const listings = (s.lastResults ?? []).filter((l) => l.lat != null && l.lon != null).slice(0, MAX_PINS)
-    if (listings.length === 0) return
+    const dismissed = new Set(s.dismissedIds ?? [])
+    const listings = (s.lastResults ?? [])
+      .filter((l) => l.lat != null && l.lon != null && !dismissed.has(l.id))
+      .slice(0, MAX_PINS)
+    // Skip only when there's genuinely never been anything to draw (a
+    // brand-new search's very first poll can be empty before any listing
+    // exists). A dismiss that empties an already-populated layer must still
+    // write through — otherwise the last-hidden pin would stick around stale.
+    if (listings.length === 0 && !this.mapLayers.getMeta(`${LAYER_GROUP}/${slugFor(s)}`)) return
     const geojson = {
       type: 'FeatureCollection',
       features: listings.map((l) => ({
@@ -176,6 +224,9 @@ export class PropertySync {
           agent: l.agent,
           image: l.image,
           portal: l.portal,
+          // Needed for the "not interested" dismiss action, not shown in the popup.
+          listingId: l.id,
+          searchId: s.id,
         },
       })),
     }
