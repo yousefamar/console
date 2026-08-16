@@ -153,6 +153,59 @@ describe('PropertySearchStore.update', () => {
     expect(next?.seeded).toBe(true)
     expect(next?.seenIds).toEqual(['a'])
   })
+
+  it('does not touch dismissedIds even when criteria change re-seeds seenIds', () => {
+    // A dismissal is about the listing, not about whether the current query
+    // still matches it — unlike seenIds, it must survive a criteria edit.
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l', criteria: { maxPrice: 500000 } })
+    store.recordPoll(s.id, { listings: [listing('a')] })
+    store.dismiss(s.id, 'a')
+    const next = store.update(s.id, { criteria: { maxPrice: 900000 } })
+    expect(next?.seeded).toBe(false)
+    expect(next?.dismissedIds).toEqual(['a'])
+  })
+})
+
+describe('PropertySearchStore.dismiss', () => {
+  it('adds and removes a listing id, idempotently', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    expect(store.dismiss(s.id, 'a')?.dismissedIds).toEqual(['a'])
+    expect(store.dismiss(s.id, 'a')?.dismissedIds).toEqual(['a'])
+    expect(store.dismiss(s.id, 'b')?.dismissedIds?.sort()).toEqual(['a', 'b'])
+    expect(store.dismiss(s.id, 'a', false)?.dismissedIds).toEqual(['b'])
+  })
+
+  it('returns undefined for an unknown search', () => {
+    const store = tmpStore()
+    expect(store.dismiss('ps_nope', 'a')).toBeUndefined()
+  })
+})
+
+describe('PropertySearchStore.recordBackfill', () => {
+  it('merges into lastResults and marks every id seen, without reporting fresh', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: [listing('a')] })
+
+    const updated = store.recordBackfill(s.id, [listing('a'), listing('b'), listing('c')])
+    expect(updated?.lastResults?.map((l) => l.id).sort()).toEqual(['a', 'b', 'c'])
+    expect(updated?.seenIds?.sort()).toEqual(['a', 'b', 'c'])
+    expect(updated?.seeded).toBe(true)
+
+    // A subsequent real poll must not treat the backfilled ids as fresh.
+    const poll = store.recordPoll(s.id, { listings: [listing('b')] })
+    expect(poll?.fresh).toEqual([])
+  })
+
+  it('keeps existing pins that the backfill did not re-surface', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: [listing('old')] })
+    const updated = store.recordBackfill(s.id, [listing('new')])
+    expect(updated?.lastResults?.map((l) => l.id).sort()).toEqual(['new', 'old'])
+  })
 })
 
 describe('postFilter', () => {

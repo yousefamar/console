@@ -1,13 +1,15 @@
 // Property search routes (house hunt across Rightmove / IS24 / immobiliare).
 //
-// GET    /property/searches            — list saved searches
-// POST   /property/searches            — create one
-// GET    /property/searches/:id        — one search incl. last results
-// PATCH  /property/searches/:id        — edit (criteria, label, enabled, …)
-// DELETE /property/searches/:id        — remove (drops its map layer too)
-// POST   /property/searches/:id/run    — poll now
-// POST   /property/count               — ad-hoc count, nothing saved
-// GET    /property/listings            — merged newest listings across searches
+// GET    /property/searches               — list saved searches
+// POST   /property/searches               — create one
+// GET    /property/searches/:id           — one search incl. last results
+// PATCH  /property/searches/:id           — edit (criteria, label, enabled, …)
+// DELETE /property/searches/:id           — remove (drops its map layer too)
+// POST   /property/searches/:id/run       — poll now
+// POST   /property/searches/:id/backfill  — one-off deeper pull, merges silently
+// POST   /property/searches/:id/dismiss   — hide (or restore) one listing's pin
+// POST   /property/count                  — ad-hoc count, nothing saved
+// GET    /property/listings               — merged newest listings across searches
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MapLayerStore } from '../map-layers/store.js'
@@ -89,12 +91,12 @@ export function handlePropertyRoutes(
     return true
   }
 
-  const match = path.match(/^\/property\/searches\/([^/]+)(\/run)?$/)
+  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss))?$/)
   if (match) {
     const id = decodeURIComponent(match[1]!)
-    const isRun = !!match[2]
+    const verb = match[3]
 
-    if (isRun && req.method === 'POST') {
+    if (verb === 'run' && req.method === 'POST') {
       return handleAsync(async () => {
         const updated = await sync.pollOne(id)
         if (!updated) return error(404, 'search not found')
@@ -102,7 +104,25 @@ export function handlePropertyRoutes(
       })
     }
 
-    if (!isRun && req.method === 'GET') {
+    if (verb === 'backfill' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const updated = await sync.backfill(id)
+        if (!updated) return error(404, 'search not found')
+        json(updated)
+      })
+    }
+
+    if (verb === 'dismiss' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const body = JSON.parse((await readBody(req)) || '{}') as { listingId?: string; dismissed?: boolean }
+        if (!body.listingId) return error(400, 'listingId required')
+        const updated = sync.dismiss(id, body.listingId, body.dismissed ?? true)
+        if (!updated) return error(404, 'search not found')
+        json(updated)
+      })
+    }
+
+    if (!verb && req.method === 'GET') {
       const s = searches.get(id)
       if (!s) {
         error(404, 'search not found')
@@ -112,7 +132,7 @@ export function handlePropertyRoutes(
       return true
     }
 
-    if (!isRun && req.method === 'PATCH') {
+    if (!verb && req.method === 'PATCH') {
       return handleAsync(async () => {
         const body = JSON.parse((await readBody(req)) || '{}')
         const s = searches.update(id, body)
@@ -122,7 +142,7 @@ export function handlePropertyRoutes(
       })
     }
 
-    if (!isRun && req.method === 'DELETE') {
+    if (!verb && req.method === 'DELETE') {
       const s = searches.get(id)
       if (!s) {
         error(404, 'search not found')
