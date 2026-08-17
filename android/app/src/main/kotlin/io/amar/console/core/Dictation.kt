@@ -81,10 +81,14 @@ object Dictation {
                         "final" -> {
                             val t = m.optString("text")
                             if (t.isNotEmpty()) {
-                                // The relay sends ONE final carrying the whole
-                                // turn, so it supersedes the accumulated deltas
-                                // rather than appending to them.
-                                finals.setLength(0)
+                                // A final arrives per COMMIT, and the relay's
+                                // idle timer commits at every ~600ms pause —
+                                // so a long dictation yields MANY finals, each
+                                // carrying only its own segment. It supersedes
+                                // that segment's interim deltas (cleared
+                                // below), NOT prior finals: resetting the
+                                // whole buffer here made each pause erase
+                                // everything said before it.
                                 finals.append(t).append(' ')
                                 sawFinal = true
                             }

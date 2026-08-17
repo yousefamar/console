@@ -251,13 +251,25 @@ fun Composer(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                // TextFieldValue (not String): when dictation grows the text
+                // EXTERNALLY, a String-valued field keeps its old cursor
+                // position — the caret visibly lags behind the transcript.
+                // Track selection ourselves and pin it to the end whenever
+                // the text changed from outside the keyboard.
+                var fieldValue by remember {
+                    mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(displayText, androidx.compose.ui.text.TextRange(displayText.length)))
+                }
+                if (fieldValue.text != displayText) {
+                    fieldValue = androidx.compose.ui.text.input.TextFieldValue(displayText, androidx.compose.ui.text.TextRange(displayText.length))
+                }
                 BasicTextField(
-                    value = displayText,
+                    value = fieldValue,
                     onValueChange = {
                         // Manual edits while dictating fold the transcript in.
                         if (dictation.active) Dictation.cancel()
-                        draft = it
-                        onTextChange(it)
+                        fieldValue = it
+                        draft = it.text
+                        onTextChange(it.text)
                     },
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
