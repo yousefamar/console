@@ -14,6 +14,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+_(none right now)_
+
+## Shipped
+
+### v81 (2026-08-17)
 - Property listing pins/pushes: two dead ends, one root cause each. (1) Tapping
   a property push notification opened a bare Map pane with no indication of
   which listing it was about — `handleGenericPush`'s tapIntent only ever built
@@ -47,7 +52,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   feedback — Claude keeps planning" while an ExitPlanMode approval is pending
   (the hub routes such sends into plan feedback, so no APK logic needed) and
   "Answer the question above first…" for AskUserQuestion.
-
 - Dictation/PTT dropped the end of every utterance (and produced nothing at all
   for short ones). The STT model rejects `turn_detection`, so a transcription
   turn only ends when the client asks it to — but both native mic paths just
@@ -58,15 +62,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   cap instead of sleeping a fixed grace. Also: the single `final` carries the
   WHOLE turn, so it now replaces the accumulated interim deltas rather than
   appending to them (was duplicating the utterance). Hub side already shipped.
-
 - Calendar sidebar's per-account Delete now confirms first. It was the only
   single-account remove UI in either client and fired instantly, inches from
   the visibility toggles — and removing an account silently un-promotes every
   calendar it had better access to back to `reader`, which drops those
   calendars out of the new-event picker with no other symptom. The dialog
   spells that consequence out.
-
-## Shipped
 
 ### v80 (2026-08-10)
 - All chats frozen (stale but scrollable): after a long offline window the
