@@ -510,12 +510,14 @@ class PushService : Service() {
                     val m = JSONObject(text)
                     when (m.optString("type")) {
                         "interim" -> { pttPending += m.optString("text"); }
-                        // ONE final carries the whole turn, so it supersedes the
-                        // accumulated deltas rather than appending to them.
+                        // A final arrives per COMMIT (relay idle timer commits
+                        // at every ~600ms pause), each carrying only its own
+                        // segment — it supersedes that segment's interims,
+                        // NOT prior finals. Resetting the whole buffer made
+                        // each pause erase everything said before it.
                         "final" -> {
                             val t = m.optString("text")
                             if (t.isNotEmpty()) {
-                                pttFinals.setLength(0)
                                 pttFinals.append(t).append(' ')
                                 pttSawFinal = true
                             }
