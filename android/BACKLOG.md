@@ -14,7 +14,22 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
-_(none right now)_
+- Dictation segments overwriting everything before them: the relay commits a
+  turn at every ~600ms pause, so a long dictation yields MANY finals — each
+  carrying only its own segment. Both native paths (Dictation.kt composer
+  mic, PushService PTT) treated every final as THE whole turn and reset the
+  accumulated buffer, so each pause erased all prior speech. Finals now
+  append (superseding only their own segment's interims). The "one final
+  carries the whole turn" rule only holds for the single post-stop final.
+- Composer caret now follows dictation: the text field tracked a String, so
+  externally-grown text (live transcript) left the cursor stranded mid-text.
+  Switched to TextFieldValue with the selection pinned to the end whenever
+  the text changes from outside the keyboard.
+- Chat message forwarding (WhatsApp flow): long-press a message → Forward →
+  searchable recent-room picker → sends into the target room with a
+  confirmation toast. Text forwards plain; media resolves via the bubble
+  render path (spool → decrypted E2EE cache → download) and re-uploads fresh
+  so E2EE originals re-encrypt for the target room. +1 test.
 
 ## Shipped
 
