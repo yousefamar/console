@@ -65,35 +65,110 @@ export const SpacesTab = memo(function SpacesTab() {
 // Rail, top level: all spaces
 // ---------------------------------------------------------------------------
 
+/** Something in a space demanding attention: an unread/alerted agent session
+ *  or an unsaved (dirty) open note. Rendered inline under the space's row so
+ *  it's reachable in one click from the top level. */
+interface SpaceAlert {
+  kind: 'session' | 'file'
+  id: string           // sessionId | file path
+  label: string
+  level: 'attention' | 'unread' | 'dirty'
+  fork?: boolean
+}
+
 function SpaceListRail() {
   const spaces = useSpacesStore((s) => s.spaces)
   const loading = useSpacesStore((s) => s.loading)
   const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
   const selectSpace = useSpacesStore((s) => s.selectSpace)
+  const setActiveView = useSpacesStore((s) => s.setActiveView)
 
-  const areas = useMemo(() => spaces.filter((s) => s.kind === 'area'), [spaces])
-  const projects = useMemo(() => spaces.filter((s) => s.kind === 'project'), [spaces])
-
-  // Agent count + alert state per space (forks included) → rail badge.
-  // Attention (@amar) beats unread, mirroring the org-chart dot priority.
+  // Agent count per space + the concrete alert items (unread/alerted sessions,
+  // dirty notes) that make a space "dirty". Dirty spaces sort first.
   const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
-  const agentBadges = useMemo(() => {
-    const m = new Map<string, { count: number; unread: boolean; attention: boolean }>()
+  const openFiles = useNotesStore((s) => s.openFiles)
+  const { agentBadges, alertsBySlug } = useMemo(() => {
+    const badges = new Map<string, { count: number; unread: boolean; attention: boolean }>()
+    const alerts = new Map<string, SpaceAlert[]>()
+    const push = (slug: string, a: SpaceAlert) => {
+      const arr = alerts.get(slug) ?? []
+      arr.push(a)
+      alerts.set(slug, arr)
+    }
     const bump = (slug: string, unread: boolean, attention: boolean) => {
-      const cur = m.get(slug) ?? { count: 0, unread: false, attention: false }
-      m.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
+      const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false }
+      badges.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
     }
     for (const r of roles) {
       if (r.folder) continue
       const live = sessions.find((s) => s.agentKey === r.key && s.status !== 'ended')
       const unread = !!live?.hasUnread
       const attention = !!live?.needsAttention
-      if (r.project) bump(r.project, unread, attention)
-      for (const a of r.areas ?? []) bump(a, unread, attention)
+      const slugs = [...(r.project ? [r.project] : []), ...(r.areas ?? [])]
+      for (const slug of slugs) {
+        bump(slug, unread, attention)
+        if (live && (unread || attention)) {
+          push(slug, {
+            kind: 'session', id: live.id,
+            label: (live.name || r.title).replace(/\s\(fork\)$/, ''),
+            level: attention ? 'attention' : 'unread',
+            fork: r.fork,
+          })
+        }
+      }
     }
-    return m
-  }, [roles, sessions])
+    for (const [path, f] of Object.entries(openFiles)) {
+      if (f.content === f.savedContent) continue
+      const m = path.match(/^projects\/([^/.]+)/)
+      if (!m) continue
+      push(m[1]!, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
+    }
+    // Attention first, then unread, then dirty files — within each, stable.
+    const rank = { attention: 0, unread: 1, dirty: 2 }
+    for (const arr of alerts.values()) arr.sort((a, b) => rank[a.level] - rank[b.level])
+    return { agentBadges: badges, alertsBySlug: alerts }
+  }, [roles, sessions, openFiles])
+
+  const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
+    const ad = alertsBySlug.has(a.slug) ? 0 : 1
+    const bd = alertsBySlug.has(b.slug) ? 0 : 1
+    if (ad !== bd) return ad - bd
+    return a.title.localeCompare(b.title)
+  }
+  const areas = useMemo(() => spaces.filter((s) => s.kind === 'area').sort(byDirtyThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
+  const projects = useMemo(() => spaces.filter((s) => s.kind === 'project').sort(byDirtyThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openAlert = (space: SpaceSummary, a: SpaceAlert) => {
+    selectSpace(space.slug)
+    if (a.kind === 'session') {
+      useAgentStore.getState().selectSession(a.id)
+    } else {
+      void useNotesStore.getState().openFile(a.id)
+      setActiveView('docs')
+    }
+  }
+
+  const renderSpace = (s: SpaceSummary) => (
+    <div key={s.slug}>
+      <SpaceListItem space={s} badge={agentBadges.get(s.slug)} onClick={() => selectSpace(s.slug)} />
+      {(alertsBySlug.get(s.slug) ?? []).map((a) => (
+        <button
+          key={`${a.kind}:${a.id}`}
+          onClick={() => openAlert(s, a)}
+          className="flex w-full items-center gap-2 py-0.5 pl-8 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+          title={a.level === 'attention' ? 'Needs you' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
+        >
+          {a.kind === 'file'
+            ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+            : a.fork
+              ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : 'text-blue-500')} />
+              : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : 'text-blue-500')} />}
+          <span className="truncate">{a.label}</span>
+        </button>
+      ))}
+    </div>
+  )
 
   return (
     <>
@@ -104,16 +179,8 @@ function SpaceListRail() {
         </button>
       </div>
       <div className="flex-1 overflow-y-auto py-1">
-        <RailSection label="Areas">
-          {areas.map((s) => (
-            <SpaceListItem key={s.slug} space={s} badge={agentBadges.get(s.slug)} onClick={() => selectSpace(s.slug)} />
-          ))}
-        </RailSection>
-        <RailSection label="Projects">
-          {projects.map((s) => (
-            <SpaceListItem key={s.slug} space={s} badge={agentBadges.get(s.slug)} onClick={() => selectSpace(s.slug)} />
-          ))}
-        </RailSection>
+        <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
+        <RailSection label="Projects">{projects.map(renderSpace)}</RailSection>
       </div>
     </>
   )
