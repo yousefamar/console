@@ -1393,12 +1393,16 @@ class PushService : Service() {
             "money" -> "money"
             else -> null
         }
+        // One specific external thing (e.g. a single property listing) with no
+        // in-app detail route: open its real page directly rather than landing
+        // on a generic pane with no indication of which item this was about.
+        val url = json.optString("url").takeIf { it.isNotEmpty() }
         // Pane suppression (FEATURES app-wide #77): when the app is foreground on
         // the target pane, drop the notification. Exception — an agent push for a
         // session the user is NOT currently viewing still fires (per SPA), so we
         // only suppress agent pushes when viewing that exact session (handled by
         // the item-level isViewing) and suppress other panes on pane match.
-        if (pane != null && type != "agent" &&
+        if (url == null && pane != null && type != "agent" &&
             io.amar.console.core.AppLifecycle.isViewing(pane, null)
         ) return
 
@@ -1413,11 +1417,15 @@ class PushService : Service() {
             else -> CHANNEL_GENERIC
         }
 
-        val tapIntent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            if (pane != null) {
-                action = Intent.ACTION_VIEW
-                data = Uri.parse("console://pane/$pane")
+        val tapIntent = if (url != null) {
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        } else {
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                if (pane != null) {
+                    action = Intent.ACTION_VIEW
+                    data = Uri.parse("console://pane/$pane")
+                }
             }
         }
         val pi = PendingIntent.getActivity(

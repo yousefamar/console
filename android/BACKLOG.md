@@ -14,6 +14,24 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Property listing pins/pushes: two dead ends, one root cause each. (1) Tapping
+  a property push notification opened a bare Map pane with no indication of
+  which listing it was about — `handleGenericPush`'s tapIntent only ever built
+  `console://pane/$pane`, and property pushes carry no roomId-equivalent
+  `navigateDeepLink` could route on. Fix is hub-side + APK-side together: the
+  per-listing push now carries a `url` field (the portal's own listing page),
+  and `handleGenericPush` opens it directly via `ACTION_VIEW` when present,
+  bypassing pane routing entirely — the most useful "took me somewhere"
+  outcome for a notification about one specific external thing with no
+  in-app detail route. (2) The map's `AgentFeaturePanel` DID open on tap (the
+  generic agent-layer hit-test was fine), but rendered `url` as an inert plain-
+  text row and had no dismiss action — reads as "shows nothing useful." Now
+  renders `url` as a tappable "open" button (parity with the SPA's
+  `LayerFeaturePanel`) and adds "not interested" when a feature carries both
+  `listingId`+`searchId` (property pins only), calling the hub's new
+  `POST /property/searches/:id/dismiss` then refreshing the layer so the pin
+  disappears immediately. `FIELD_SPECIAL` keeps `listingId`/`searchId` out of
+  the generic field rows.
 - Chat message forwarding (WhatsApp flow): long-press a message → Forward →
   searchable recent-room picker → sends into the target room with a
   confirmation toast. Text forwards as a plain send (no Matrix relation —
