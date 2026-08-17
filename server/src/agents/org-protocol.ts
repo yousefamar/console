@@ -6,7 +6,7 @@
 // is BOARD-DRIVEN: each project has a markdown kanban board in the vault
 // (Obsidian Kanban format); assigning a card to an agent (`@agentkey` on the
 // line, card under `## In Progress`) is the delegation, and the agent editing
-// its line into `## Done` is the report. Plain text, human- and agent-editable
+// its line into `## Under Review` is the report. Plain text, human- and agent-editable
 // — no RPC, no parallel task store.
 // ============================================================================
 
@@ -19,9 +19,9 @@ export function buildBoardProtocol(): string {
     '',
     'Work is tracked on per-project markdown kanban boards in the vault (`~/sync/brain/root/projects/<slug>/board.md`, Obsidian Kanban format: `## Column` headings + `- [ ] card` lines).',
     '',
-    '- **Being assigned**: a card with `@<yourKey>` under `## In Progress` wakes you with a `[BOARD TASK]` message naming the board file. Do the work, then EDIT THE BOARD: move your line under `## Done` and tick it (`- [x] …`). Blocked? Move it under `## Blocked` with an indented note below the line explaining what you need. Always keep the trailing `^id` token on your line — it is the card\'s identity.',
+    '- **Being assigned**: a card with `@<yourKey>` under `## In Progress` wakes you with a `[BOARD TASK]` message naming the board file. Do the work, then EDIT THE BOARD: move your line under `## Under Review` — a human (or your manager) verifies it and moves it to `## Done`; NEVER move your own card to Done. Stuck? Append `#blocked` to your line (it keeps its column) with an indented note below explaining what you need; remove the tag when unblocked. Always keep the trailing `^id` token on your line — it is the card\'s identity.',
     '- **Assigning others**: add a card to the relevant project board with `@<theirKey>` and put it under `## In Progress` — the hub dispatches it. Under `## Backlog` it is merely planned (not dispatched) until someone moves it. Forks are assignable too (a fork\'s `@key` is its own).',
-    '- **Working through your own queue**: grep the board for `@<yourKey>` — those lines are YOUR tasks, whatever column they sit in. When told to "work through your tasks", process your assigned cards (Backlog ones included) in order, moving each to Done/Blocked as you go.',
+    '- **Working through your own queue**: grep the board for `@<yourKey>` — those lines are YOUR tasks, whatever column they sit in. When told to "work through your tasks", process your assigned cards (Backlog ones included) in order, moving each to Under Review (or tagging `#blocked`) as you go.',
     '- **Planning**: cards without an `@key` are unassigned; boards are as much Yousef\'s as yours. Edit boards with normal file tools; keep the format intact (the file round-trips through Obsidian).',
     '',
     'Rules:',

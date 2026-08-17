@@ -72,8 +72,10 @@ interface SpaceAlert {
   kind: 'session' | 'file'
   id: string           // sessionId | file path
   label: string
-  level: 'attention' | 'unread' | 'dirty'
+  level: 'attention' | 'working' | 'unread' | 'dirty'
   fork?: boolean
+  /** Fork-lineage depth within the space (manager edges) — indents the row. */
+  depth?: number
 }
 
 function SpaceListRail() {
@@ -100,20 +102,31 @@ function SpaceListRail() {
       const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false }
       badges.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
     }
+    // Fork-lineage depth per role (manager edges among non-folder roles) so
+    // alert rows can indent like the drilled rail.
+    const roleByKey = new Map(roles.filter((r) => !r.folder).map((r) => [r.key, r]))
+    const depthOf = (key: string): number => {
+      let d = 0
+      let cur = roleByKey.get(key)
+      while (cur?.manager && roleByKey.has(cur.manager) && d < 6) { d++; cur = roleByKey.get(cur.manager) }
+      return d
+    }
     for (const r of roles) {
       if (r.folder) continue
       const live = sessions.find((s) => s.agentKey === r.key && s.status !== 'ended')
       const unread = !!live?.hasUnread
       const attention = !!live?.needsAttention
+      const working = live?.status === 'running'
       const slugs = [...(r.project ? [r.project] : []), ...(r.areas ?? [])]
       for (const slug of slugs) {
         bump(slug, unread, attention)
-        if (live && (unread || attention)) {
+        if (live && (unread || attention || working)) {
           push(slug, {
             kind: 'session', id: live.id,
             label: (live.name || r.title).replace(/\s\(fork\)$/, ''),
-            level: attention ? 'attention' : 'unread',
+            level: attention ? 'attention' : working ? 'working' : 'unread',
             fork: r.fork,
+            depth: depthOf(r.key),
           })
         }
       }
@@ -124,8 +137,8 @@ function SpaceListRail() {
       if (!m) continue
       push(m[1]!, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
     }
-    // Attention first, then unread, then dirty files — within each, stable.
-    const rank = { attention: 0, unread: 1, dirty: 2 }
+    // Attention first, then working, unread, dirty files — within each, stable.
+    const rank = { attention: 0, working: 1, unread: 2, dirty: 3 }
     for (const arr of alerts.values()) arr.sort((a, b) => rank[a.level] - rank[b.level])
     return { agentBadges: badges, alertsBySlug: alerts }
   }, [roles, sessions, openFiles])
@@ -156,14 +169,15 @@ function SpaceListRail() {
         <button
           key={`${a.kind}:${a.id}`}
           onClick={() => openAlert(s, a)}
-          className="flex w-full items-center gap-2 py-0.5 pl-8 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
-          title={a.level === 'attention' ? 'Needs you' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
+          className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+          style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
+          title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
         >
           {a.kind === 'file'
             ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
             : a.fork
-              ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : 'text-blue-500')} />
-              : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : 'text-blue-500')} />}
+              ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />
+              : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />}
           <span className="truncate">{a.label}</span>
         </button>
       ))}
@@ -308,7 +322,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
           {spaceRoles.map(({ role: r, depth }) => {
             const live = sessionFor(r.key)
             const isActive = live?.id === activeSessionId
-            const alert = live?.needsAttention ? 'attention' : live?.hasUnread ? 'unread' : null
+            const alert = live?.needsAttention ? 'attention' : live?.status === 'running' ? 'working' : live?.hasUnread ? 'unread' : null
             // The live session's name is the CURRENT name (renames land there);
             // the role file title is only the mint-time name. Strip the noisy
             // "(fork)" suffix — the glyph + indent already say fork.
@@ -338,8 +352,8 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                   title={`${r.fork ? 'fork · ' : ''}${live ? displayName : `${displayName} (parked — click to revive)`} · @${r.key}`}
                 >
                   {r.fork
-                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
-                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
+                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
+                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
                   <span className={clsx('truncate', !live && 'opacity-60')}>{displayName}</span>
                   {!live && <span className="ml-auto text-[9px] text-text-tertiary flex-shrink-0">⏾</span>}
                 </button>
@@ -430,6 +444,7 @@ function BoardView() {
   const moveCardTo = useSpacesStore((s) => s.moveCardTo)
   const addCardTo = useSpacesStore((s) => s.addCardTo)
   const assignCard = useSpacesStore((s) => s.assignCard)
+  const toggleBlocked = useSpacesStore((s) => s.toggleBlocked)
   const roles = useAgentStore((s) => s.agentRoles)
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
@@ -475,7 +490,9 @@ function BoardView() {
         </div>
       )}
       <div className="flex flex-1 min-h-0 gap-2 overflow-x-auto p-2">
-      {board.columns.map((col) => (
+      {/* Done stays in the FILE (the watcher's transition diff + history need
+          it) but is noise on screen — a done card was already reviewed. */}
+      {board.columns.filter((col) => !/^(done|complete|completed|shipped)$/i.test(col.title)).map((col) => (
         <div key={col.title} className="flex w-56 flex-shrink-0 flex-col rounded border border-border bg-surface-1/40">
           <div className="flex items-center justify-between px-2 py-1 border-b border-border">
             <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">{col.title}</span>
@@ -502,6 +519,7 @@ function BoardView() {
                   currentColumn={col.title}
                   onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
                   onAssign={() => void promptAssign({ column: col.title, index }, card)}
+                  onToggleBlocked={() => void toggleBlocked({ column: col.title, index })}
                 />
               ) : null
             ))}
@@ -513,16 +531,21 @@ function BoardView() {
   )
 }
 
-function CardTile({ card, columnTitles, currentColumn, onMove, onAssign }: {
+function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
   onMove: (to: string) => void
   onAssign: () => void
+  onToggleBlocked: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
   return (
-    <div className={clsx('rounded-sm border border-border bg-surface-0 px-2 py-1.5', card.checked && 'opacity-50')}>
+    <div className={clsx(
+      'rounded-sm border bg-surface-0 px-2 py-1.5',
+      card.blocked ? 'border-amber-500/50' : 'border-border',
+      card.checked && 'opacity-50',
+    )}>
       <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
       {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
       <div className="mt-1 flex items-center gap-1.5">
@@ -531,8 +554,18 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign }: {
             <Bot size={8} />{card.agentKey}
           </span>
         )}
+        {card.blocked && (
+          <button onClick={onToggleBlocked} className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400" title="Blocked — click to unblock">
+            #blocked
+          </button>
+        )}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
-        <button onClick={onAssign} className="ml-auto text-text-tertiary hover:text-text-primary" title="Assign to agent">
+        {!card.blocked && (
+          <button onClick={onToggleBlocked} className="ml-auto text-text-tertiary hover:text-amber-400 text-[9px]" title="Mark blocked">
+            ⊘
+          </button>
+        )}
+        <button onClick={onAssign} className={clsx(!card.blocked && 'ml-0', card.blocked && 'ml-auto', 'text-text-tertiary hover:text-text-primary')} title="Assign to agent">
           <UserPlus size={10} />
         </button>
         <select

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, useMemo, memo } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, useMemo, memo } from 'react'
 import { liveQuery } from 'dexie'
 import { db } from '@/db'
 import { useChatStore } from '@/store/chat'
@@ -232,6 +232,11 @@ const RoomMessages = memo(function RoomMessages({
   const didInitialScroll = useRef(false)
   const isLoadingOlder = useRef(false)
   const prevMessageCount = useRef(0)
+  // When a load-older grows the window, we stash the pre-grow distance from the
+  // bottom of the scroller. That distance is invariant to prepending content
+  // above the viewport, so restoring scrollTop to it after the new bubbles
+  // mount keeps the user visually anchored to what they were reading.
+  const pendingAnchorFromBottom = useRef<number | null>(null)
   const [showLoadingOlder, setShowLoadingOlder] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
@@ -405,6 +410,19 @@ const RoomMessages = memo(function RoomMessages({
     }
   }, [isVisible, messages, matrixUserId, isNearBottom])
 
+  // Restore the load-older scroll anchor the moment the grown window commits.
+  // useLayoutEffect fires synchronously after DOM mutation but before paint, so
+  // the newly-prepended bubbles are already in the layout when we read
+  // scrollHeight — no jump, no single-rAF race against async image sizing.
+  // Distance-from-bottom is prepend-invariant, so any late reflow above the
+  // viewport (images resolving their box) doesn't move what the user sees.
+  useLayoutEffect(() => {
+    const anchor = pendingAnchorFromBottom.current
+    if (anchor === null || !scrollRef.current) return
+    pendingAnchorFromBottom.current = null
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight - anchor
+  }, [messages])
+
   // Reset when room hides. Shrinking the window back to INITIAL_WINDOW
   // frees the bubbles the user expanded into for that visit — important
   // because every room stays mounted in the pre-render strategy.
@@ -454,7 +472,11 @@ const RoomMessages = memo(function RoomMessages({
     if (el.scrollTop < 100) {
       isLoadingOlder.current = true
       setShowLoadingOlder(true)
-      const prevHeight = el.scrollHeight
+      // Anchor to distance-from-bottom, not a raw height delta: it's invariant
+      // to content prepended above the viewport, so it survives however the new
+      // bubbles lay out (async images/blobs included). The layout effect keyed
+      // on `messages` applies it once the grown window actually commits.
+      pendingAnchorFromBottom.current = el.scrollHeight - el.scrollTop
       // Try expanding the local window first — cheap and avoids a roundtrip
       // when IDB already has older messages cached.
       const totalLocal = await db.chatMessages.where('roomId').equals(roomId).count()
@@ -472,15 +494,7 @@ const RoomMessages = memo(function RoomMessages({
           grew = true
         }
       }
-      if (grew) {
-        // Restore scroll offset after the new bubbles mount so the user
-        // stays anchored to whatever they were reading.
-        requestAnimationFrame(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight - prevHeight
-          }
-        })
-      }
+      if (!grew) pendingAnchorFromBottom.current = null
       isLoadingOlder.current = false
       setShowLoadingOlder(false)
     }
@@ -499,7 +513,7 @@ const RoomMessages = memo(function RoomMessages({
         onScroll={handleScroll}
       >
         {showLoadingOlder && (
-          <div className="flex items-center justify-center py-2">
+          <div className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 z-10 rounded-full bg-bg-tertiary/90 px-2 py-0.5">
             <span className="text-[10px] text-text-tertiary">Loading…</span>
           </div>
         )}

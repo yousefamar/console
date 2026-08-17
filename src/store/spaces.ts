@@ -38,6 +38,8 @@ interface SpacesState {
   moveCardTo: (ref: CardRef, toColumn: string) => Promise<void>
   addCardTo: (column: string, text: string, agentKey?: string) => Promise<void>
   assignCard: (ref: CardRef, agentKey: string | null) => Promise<void>
+  /** Flip the `#blocked` tag on a card (a property, not a column move). */
+  toggleBlocked: (ref: CardRef) => Promise<void>
 }
 
 const ACTIVE_SLUG_KEY = 'console:spaces:active'
@@ -124,6 +126,18 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const card = col?.cards[ref.index]
     if (!card) return
     card.agentKey = agentKey
+    refreshCardLine(card)
+    set({ board: { ...board } })
+    await get().saveBoard()
+  },
+
+  toggleBlocked: async (ref) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card) return
+    card.blocked = !card.blocked
     refreshCardLine(card)
     set({ board: { ...board } })
     await get().saveBoard()

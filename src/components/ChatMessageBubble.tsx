@@ -56,10 +56,67 @@ function markdownToHtml(text: string): string {
   // Links [text](url)
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
 
+  // Lists: group consecutive marker lines into a single <ul>/<ol>. Line-based
+  // (regex-per-line can't group items), and must run after inline formatting so
+  // item text still gets bold/italic/links. `- `, `* `, `+ ` → <ul>; `N. ` → <ol>.
+  html = groupMarkdownLists(html)
+
   // If nothing changed, the text had no actual markdown
   if (html === text) return ''
 
   return html
+}
+
+// Fold runs of bullet/number lines into real list elements. Handles one level
+// of nesting via leading indent (2+ spaces / a tab before the marker).
+function groupMarkdownLists(html: string): string {
+  const lines = html.split('\n')
+  const out: string[] = []
+  let i = 0
+  const ulItem = /^(\s*)[-*+]\s+(.*)$/
+  const olItem = /^(\s*)\d+\.\s+(.*)$/
+  while (i < lines.length) {
+    const line = lines[i]!
+    const isUl = ulItem.test(line)
+    const isOl = !isUl && olItem.test(line)
+    if (!isUl && !isOl) {
+      out.push(line)
+      i++
+      continue
+    }
+    const tag = isUl ? 'ul' : 'ol'
+    const re = isUl ? ulItem : olItem
+    // Consume the contiguous run of same-type items.
+    const items: Array<{ indent: number; text: string }> = []
+    while (i < lines.length && re.test(lines[i]!)) {
+      const m = re.exec(lines[i]!)!
+      items.push({ indent: m[1]!.replace(/\t/g, '  ').length, text: m[2]! })
+      i++
+    }
+    // Render with a single level of nesting: items indented 2+ spaces relative
+    // to the run's base become a sublist under the previous (still-open) item.
+    const base = Math.min(...items.map((it) => it.indent))
+    let buf = `<${tag}>`
+    let liOpen = false
+    let subOpen = false
+    for (const it of items) {
+      const nested = it.indent >= base + 2
+      if (!nested) {
+        if (subOpen) { buf += `</${tag}>`; subOpen = false }
+        if (liOpen) { buf += '</li>'; liOpen = false }
+        buf += `<li>${it.text}`
+        liOpen = true
+      } else {
+        if (!subOpen) { buf += `<${tag}>`; subOpen = true }
+        buf += `<li>${it.text}</li>`
+      }
+    }
+    if (subOpen) buf += `</${tag}>`
+    if (liOpen) buf += '</li>'
+    buf += `</${tag}>`
+    out.push(buf)
+  }
+  return out.join('\n')
 }
 
 // Sanitize HTML (Matrix formatted_body or markdown-converted) for safe rendering
