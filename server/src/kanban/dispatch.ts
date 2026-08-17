@@ -16,7 +16,12 @@ import type { KanbanBoard, BoardCard } from './board.js'
 /** Columns whose cards get dispatched when assigned. Deliberately narrow —
  *  an assigned card in Backlog is "planned for X", not "go now". */
 export const DISPATCH_COLUMN_RE = /^(in.?progress|doing|active|now)$/i
+/** The agent's finish line: work lands here for Yousef/the manager to check.
+ *  Only a HUMAN (or the reviewing manager) moves a card on to Done. */
+export const REVIEW_COLUMN_RE = /^(under.?review|review|needs.?review)$/i
 export const DONE_COLUMN_RE = /^(done|complete|completed|shipped)$/i
+/** Legacy Blocked COLUMNS still count as blocked, but the preferred marker is
+ *  the `#blocked` tag ON the card (a property — keeps its queue position). */
 export const BLOCKED_COLUMN_RE = /^(blocked|waiting|stuck)$/i
 
 export interface DispatchableCard {
@@ -31,7 +36,7 @@ export function findDispatchable(board: KanbanBoard): DispatchableCard[] {
   for (const col of board.columns) {
     if (!DISPATCH_COLUMN_RE.test(col.title)) continue
     col.cards.forEach((card, index) => {
-      if (card.agentKey && !card.blockId && !card.checked) out.push({ column: col.title, index, card })
+      if (card.agentKey && !card.blockId && !card.checked && !card.blocked) out.push({ column: col.title, index, card })
     })
   }
   return out
@@ -42,6 +47,8 @@ export interface InFlightCard {
   agentKey: string | null
   text: string
   column: string
+  /** Landed in Under Review — the agent considers it finished. */
+  review: boolean
   done: boolean
   blocked: boolean
 }
@@ -59,8 +66,9 @@ export function inFlightCards(board: KanbanBoard): InFlightCard[] {
         agentKey: card.agentKey,
         text: card.text,
         column: col.title,
+        review: REVIEW_COLUMN_RE.test(col.title),
         done: DONE_COLUMN_RE.test(col.title) || card.checked,
-        blocked: BLOCKED_COLUMN_RE.test(col.title),
+        blocked: card.blocked || BLOCKED_COLUMN_RE.test(col.title),
       })
     }
   }
@@ -94,9 +102,11 @@ export function buildBoardEnvelope(opts: {
     ...(detail.length ? ['', ...detail] : []),
     '',
     'This card was assigned to you on the kanban board above. Do the work, then',
-    'EDIT THE BOARD FILE to report: move your line under `## Done` and tick it',
-    `(\`- [x] … ^${card.blockId}\`). If stuck, move it under \`## Blocked\` and add an`,
-    'indented line below it explaining what you need. Keep the `^id` on the line.',
+    'EDIT THE BOARD FILE to report: move your line under `## Under Review` —',
+    'a human (or your manager) checks it and moves it to Done; NEVER move your',
+    'own card to Done. If stuck, append a `#blocked` tag to your line (before',
+    `the \`^${card.blockId}\` id, which must stay) plus an indented note below it`,
+    'explaining what you need — the card keeps its place in the column.',
     'The board file is the single source of truth — there is no other reporting step.',
   ].join('\n')
 }
@@ -106,6 +116,6 @@ export function buildStaleNudge(opts: { boardAbsPath: string; text: string; bloc
   return [
     `[BOARD TASK — still open after ~${opts.minutes} min]`,
     `Your card "${opts.text}" (^${opts.blockId}) on ${opts.boardAbsPath} is still under In Progress.`,
-    'If it is done, move the line to `## Done`. If stuck, move it to `## Blocked` with an indented note. If you are mid-work, keep going — this is just a reminder.',
+    'If the work is finished, move the line to `## Under Review`. If stuck, append `#blocked` to it with an indented note. If you are mid-work, keep going — this is just a reminder.',
   ].join('\n')
 }

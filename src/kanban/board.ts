@@ -12,19 +12,22 @@
 // lines under a card.
 //
 // Card grammar (extensions are TRAILING tokens so the plugin renders them
-// as harmless text):
-//   - [ ] Card text @agentkey ^blockid
+// as harmless text / real tags):
+//   - [ ] Card text #blocked @agentkey ^blockid
 // `@agentkey` assigns the card to an agent role (same charset as agent keys);
 // `^blockid` is Obsidian block-ref syntax — Console stamps one only when it
 // dispatches the card, so hand-written cards never need one and a retitled
-// dispatched card keeps its identity.
+// dispatched card keeps its identity. `#blocked` marks a stuck card as a
+// PROPERTY (it keeps its column/queue position) instead of a Blocked column.
 
 export interface BoardCard {
-  /** Card text with trailing @key/^id tokens stripped. */
+  /** Card text with trailing @key/^id/#blocked tokens stripped. */
   text: string
   checked: boolean
   agentKey: string | null
   blockId: string | null
+  /** `#blocked` tag present — stuck, waiting on input; stays in its column. */
+  blocked: boolean
   /** Original lines, verbatim — first line + any indented continuations. */
   lines: string[]
 }
@@ -58,13 +61,14 @@ export function isKanbanBoard(content: string): boolean {
   return /^kanban-plugin:/m.test(fence?.[1] ?? '')
 }
 
-/** Strip trailing `@key` / `^blockid` tokens off card text. Order-agnostic. */
-export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null } {
+/** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
+export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean } {
   let text = rawText.trimEnd()
   let agentKey: string | null = null
   let blockId: string | null = null
+  let blocked = false
   // Up to one of each, trailing, any order.
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 3; i++) {
     const block = text.match(/^(.*?)\s+\^([A-Za-z0-9-]+)$/)
     if (block && blockId === null) {
       text = block[1]!.trimEnd()
@@ -77,9 +81,15 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
       agentKey = agent[2]!
       continue
     }
+    const blk = text.match(/^(.*?)\s+#blocked$/)
+    if (blk && !blocked) {
+      text = blk[1]!.trimEnd()
+      blocked = true
+      continue
+    }
     break
   }
-  return { text, agentKey, blockId }
+  return { text, agentKey, blockId, blocked }
 }
 
 export function parseBoard(content: string): KanbanBoard {
@@ -113,8 +123,8 @@ export function parseBoard(content: string): KanbanBoard {
     if (!col) { header.push(line); continue }
     const card = line.match(CARD_RE)
     if (card) {
-      const { text, agentKey, blockId } = parseCardTokens(card[2]!)
-      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, lines: [line] })
+      const { text, agentKey, blockId, blocked } = parseCardTokens(card[2]!)
+      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, lines: [line] })
       continue
     }
     // Indented continuation attaches to the previous card.
@@ -152,6 +162,7 @@ export function serializeBoard(board: KanbanBoard): string {
 
 function cardFirstLine(card: BoardCard): string {
   const tokens = [card.text]
+  if (card.blocked) tokens.push('#blocked')
   if (card.agentKey) tokens.push(`@${card.agentKey}`)
   if (card.blockId) tokens.push(`^${card.blockId}`)
   return `- [${card.checked ? 'x' : ' '}] ${tokens.join(' ')}`
@@ -214,6 +225,7 @@ export function addCard(board: KanbanBoard, columnTitle: string, text: string, o
     checked: false,
     agentKey: opts?.agentKey ?? null,
     blockId: opts?.blockId ?? null,
+    blocked: false,
     lines: [''],
   }
   refreshCardLine(card)

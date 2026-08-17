@@ -49,20 +49,25 @@ describe('isKanbanBoard', () => {
 
 describe('parseCardTokens', () => {
   it('plain text', () => {
-    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null })
+    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false })
   })
   it('agent only', () => {
-    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null })
+    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false })
   })
   it('agent + block id, either order', () => {
-    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123' })
-    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123' })
+    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false })
+    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false })
   })
   it('mid-text @ / ^ are not tokens', () => {
     expect(parseCardTokens('Email alice@example.com about it')).toEqual({
-      text: 'Email alice@example.com about it', agentKey: null, blockId: null,
+      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false,
     })
-    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null })
+    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false })
+  })
+  it('#blocked is a trailing property, any order with other tokens', () => {
+    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true })
+    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true })
+    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false })
   })
 })
 

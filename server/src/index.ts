@@ -765,16 +765,21 @@ const boardWatcher = new BoardWatcher(noteStore, {
     return true
   },
   onTransition: (t) => {
-    log(`[boards] ^${t.blockId} "${t.text}" → ${t.done ? 'done' : 'blocked'} (${t.boardPath})`)
-    syncBus.broadcast('boards', 'transition', { blockId: t.blockId, boardPath: t.boardPath, done: t.done, blocked: t.blocked, text: t.text, agentKey: t.agentKey })
+    const state = t.done ? 'done' : t.review ? 'review' : 'blocked'
+    log(`[boards] ^${t.blockId} "${t.text}" → ${state} (${t.boardPath})`)
+    syncBus.broadcast('boards', 'transition', { blockId: t.blockId, boardPath: t.boardPath, review: t.review, done: t.done, blocked: t.blocked, text: t.text, agentKey: t.agentKey })
     // Route the outcome up to the assignee's MANAGER (org edge) so results
-    // report up the chain — the root (Al) relays to Yousef.
+    // report up the chain — the root (Al) relays to Yousef. Done needs no
+    // wake: a human moved it there, having already seen the work in review.
+    if (t.done) return
     const managerKey = (t.agentKey && agentRegistry.get(t.agentKey)?.manager) || 'al'
     const manager = liveSessionForRole(agentCtx, managerKey)
     if (manager && manager.agentKey !== t.agentKey) {
       wakeSession(agentCtx, manager, [
-        `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} moved to ${t.done ? 'Done' : 'Blocked'}.`,
-        t.done ? 'Relay or act on the outcome as appropriate.' : 'The assignee is stuck — read their note on the board and unblock or escalate.',
+        `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} ${t.review ? 'is Under Review' : 'turned #blocked'}.`,
+        t.review
+          ? 'The assignee considers it finished — review the work; move the card to `## Done` if it holds up, or back to `## In Progress` with an indented note if not.'
+          : 'The assignee is stuck — read their note on the board and unblock or escalate.',
       ].join('\n'))
     }
   },

@@ -376,7 +376,16 @@ body {
 .chat-formatted-body ul, .chat-formatted-body ol {
   padding-left: 1.4em;
   margin: 0.2em 0;
+  /* Tailwind preflight resets list-style to none; restore markers. */
+  list-style-position: outside;
+  /* Container is pre-wrap, so the newlines between <li> tags would render as
+     blank lines inside a list — reset to normal wrapping for list content. */
+  white-space: normal;
 }
+.chat-formatted-body ul { list-style-type: disc; }
+.chat-formatted-body ol { list-style-type: decimal; }
+.chat-formatted-body ul ul { list-style-type: circle; }
+.chat-formatted-body ul ul ul { list-style-type: square; }
 .chat-formatted-body li {
   margin: 0.1em 0;
 }

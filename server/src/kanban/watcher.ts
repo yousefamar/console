@@ -6,7 +6,7 @@
 // re-classified (a file can become or stop being a board), then:
 //   • dispatchable cards (assigned + unstamped + in a dispatch column) get a
 //     ^blockid stamped INTO THE FILE and the onDispatch callback fires;
-//   • stamped cards that moved to a done/blocked column fire onTransition;
+//   • stamped cards that land in review/done or turn #blocked fire onTransition;
 //   • stamped cards sitting in a dispatch column too long fire onStale
 //     (max twice — the board is human-visible, stale is not an error).
 //
@@ -35,7 +35,7 @@ export interface BoardWatcherOpts {
   /** Wake the assignee. Return false if the agent could not be woken (the
    *  stamp stays — a wake failure is visible on the board, not retried in a loop). */
   onDispatch: (d: BoardDispatch) => boolean
-  /** A stamped card landed in a done or blocked column. */
+  /** A stamped card landed in review/done or turned #blocked. */
   onTransition?: (t: BoardTransition) => void
   /** A stamped card has sat in a dispatch column past staleMs. */
   onStale?: (t: BoardTransition, nudgeCount: number) => void
@@ -165,9 +165,9 @@ export class BoardWatcher {
       const t: BoardTransition = { ...card, boardPath: path }
       const prev = this.inFlight.get(card.blockId)
       this.inFlight.set(card.blockId, t)
-      if (card.done || card.blocked) {
+      if (card.review || card.done || card.blocked) {
         this.staleTrack.delete(card.blockId)
-        const wasOpen = prev ? !prev.done && !prev.blocked : false
+        const wasOpen = prev ? !prev.review && !prev.done && !prev.blocked : false
         if (!boot && wasOpen && this.opts.onTransition) this.opts.onTransition(t)
       } else if (!prev && boot) {
         // Restored in-flight card after a restart — watchdog resumes from now.
@@ -183,7 +183,7 @@ export class BoardWatcher {
       if (track.nudges >= MAX_NUDGES) continue
       if (now - track.since < staleMs * (track.nudges + 1)) continue
       const t = this.inFlight.get(id)
-      if (!t || t.done || t.blocked) { this.staleTrack.delete(id); continue }
+      if (!t || t.review || t.done || t.blocked) { this.staleTrack.delete(id); continue }
       track.nudges++
       if (this.opts.onStale) this.opts.onStale(t, track.nudges)
     }

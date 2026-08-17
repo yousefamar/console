@@ -84,7 +84,9 @@ describe('buildBoardEnvelope', () => {
     expect(env).toContain('Fix the parser')
     expect(env).toContain('see notes/x.md')
     expect(env).toContain('^abc123')
-    expect(env).toContain('## Done')
+    expect(env).toContain('## Under Review')
+    expect(env).toContain('#blocked')
+    expect(env).toContain('NEVER move your')
   })
 })
 
