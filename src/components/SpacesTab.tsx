@@ -1,16 +1,16 @@
-// Spaces — the project-first pane. The left rail is a drill-down: the top
-// level lists spaces (areas + projects); selecting one drills INTO it — the
-// rail becomes that space's contents (its files + its agents, one glance),
-// with a back header. Centre: Board | Docs, where Docs IS the vault editor
-// scoped to the space (this is the Notes tab being absorbed — file list in
-// the rail, editor in the centre). Right: the active agent session, 50/50.
+// Spaces — the project-first pane. TWO persistent rails: rail 1 lists all
+// spaces (areas + projects, alert items inline); rail 2 shows the selected
+// space's contents (agents + files) — both always visible, no drill/back.
+// Centre: Board | Docs, where Docs IS the vault editor scoped to the space
+// (this is the Notes tab being absorbed — file list in rail 2, editor in
+// the centre). Right: the active agent session, 50/50 with the centre.
 //
 // The board is the SAME file the hub's BoardWatcher dispatches from: moving
 // a card into In Progress with an assignee IS delegation; the ^blockid stamps
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Bot, FileText, FolderKanban, GitBranch, Kanban, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
+import { Bot, FileText, FolderKanban, GitBranch, Kanban, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -43,16 +43,21 @@ export const SpacesTab = memo(function SpacesTab() {
 
   return (
     <div className="flex flex-1 h-full min-w-0">
-      {/* Left rail — space list, or the selected space's contents */}
-      <div className="w-60 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
-        {active ? <SpaceRail space={active} /> : <SpaceListRail />}
+      {/* Rail 1 — all spaces, always visible */}
+      <div className="w-44 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+        <SpaceListRail />
+      </div>
+
+      {/* Rail 2 — the selected space's contents (agents + files), always visible */}
+      <div className="w-52 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+        {active ? <SpaceRail space={active} /> : (
+          <div className="flex-1 grid place-items-center px-3 text-center text-[11px] text-text-tertiary">Select a space</div>
+        )}
       </div>
 
       {/* Centre — board / docs (the editor) */}
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        {active ? <SpaceCentre space={active} /> : (
-          <div className="flex-1 grid place-items-center text-sm text-text-tertiary">Select a space</div>
-        )}
+        {active ? <SpaceCentre space={active} /> : <div className="flex-1" />}
       </div>
 
       {/* Right — the active agent session, 50/50 with the centre */}
@@ -80,6 +85,7 @@ interface SpaceAlert {
 
 function SpaceListRail() {
   const spaces = useSpacesStore((s) => s.spaces)
+  const activeSlug = useSpacesStore((s) => s.activeSlug)
   const loading = useSpacesStore((s) => s.loading)
   const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
   const selectSpace = useSpacesStore((s) => s.selectSpace)
@@ -164,7 +170,7 @@ function SpaceListRail() {
 
   const renderSpace = (s: SpaceSummary) => (
     <div key={s.slug}>
-      <SpaceListItem space={s} badge={agentBadges.get(s.slug)} onClick={() => selectSpace(s.slug)} />
+      <SpaceListItem space={s} badge={agentBadges.get(s.slug)} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
       {(alertsBySlug.get(s.slug) ?? []).map((a) => (
         <button
           key={`${a.kind}:${a.id}`}
@@ -209,12 +215,15 @@ function RailSection({ label, children }: { label: string; children: React.React
   )
 }
 
-function SpaceListItem({ space, badge, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean }; onClick: () => void }) {
+function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean }; active: boolean; onClick: () => void }) {
   const botColor = badge?.attention ? 'text-red-500' : badge?.unread ? 'text-blue-500' : 'text-text-tertiary opacity-60'
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+      className={clsx(
+        'flex w-full items-center gap-2 px-3 py-1 text-left text-xs transition-colors',
+        active ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
+      )}
     >
       {space.kind === 'area' ? <Tag size={10} className="flex-shrink-0 opacity-60" /> : <FolderKanban size={10} className="flex-shrink-0 opacity-60" />}
       <span className="truncate">{space.title}</span>
@@ -245,7 +254,6 @@ export function spaceScopePrefixes(space: SpaceSummary): string[] {
 }
 
 function SpaceRail({ space }: { space: SpaceSummary }) {
-  const selectSpace = useSpacesStore((s) => s.selectSpace)
   const setActiveView = useSpacesStore((s) => s.setActiveView)
   const files = useNotesStore((s) => s.files)
   const storeActivePath = useNotesStore((s) => s.activeFilePath)
@@ -304,14 +312,10 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 
   return (
     <>
-      <button
-        onClick={() => selectSpace(null)}
-        className="flex items-center gap-2 px-3 py-1.5 border-b border-border text-left hover:bg-surface-1 transition-colors"
-      >
-        <ArrowLeft size={11} className="text-text-tertiary flex-shrink-0" />
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
         <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
         {space.kind === 'area' && <Tag size={9} className="text-text-tertiary flex-shrink-0" />}
-      </button>
+      </div>
       <div className="flex-1 overflow-y-auto py-1">
         <RailSection label="Agents">
           {spaceRoles.length === 0 && (
