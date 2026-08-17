@@ -468,6 +468,17 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         }
     }
 
+    /** Hide a property listing's pin permanently, then pull the trimmed layer
+     *  down immediately so it visibly disappears without waiting for the next
+     *  hourly poll to push an update. Mirrors the SPA's dismiss button. */
+    suspend fun dismissListing(searchId: String, listingId: String) {
+        hub.post(
+            "/property/searches/${java.net.URLEncoder.encode(searchId, "UTF-8")}/dismiss",
+            buildJsonObject { put("listingId", listingId) }.toString(),
+        )
+        loadLayers()
+    }
+
     /** Apply a fresh layer index: cache it, drop stale geojson, re-fetch each
      *  layer's GeoJSON only when its slug is new or updatedAt changed. */
     private suspend fun applyLayerIndex(metas: List<MapLayerMeta>) {

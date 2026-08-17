@@ -22,6 +22,14 @@ export interface PushMessage {
   body?: string
   /** Optional pane to navigate to when tapped (e.g. "agents", "money") */
   pane?: string
+  /**
+   * Optional external URL to open directly on tap, bypassing pane navigation
+   * entirely. For notifications about one specific external thing (e.g. a
+   * single property listing) where there's no in-app detail route — opening
+   * the real page beats landing on a generic pane with no way to tell which
+   * item the notification was about.
+   */
+  url?: string
   /** Optional stable ID so repeat pushes update the same notification */
   id?: string
   /** Optional extra JSON for richer UI (unused by default handler) */

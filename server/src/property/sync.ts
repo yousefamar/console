@@ -264,6 +264,10 @@ export class PropertySync {
         title: `🏠 ${describe(l)}`,
         body: `${label}${l.address ? ` — ${l.address}` : ''}`,
         pane: 'map',
+        // One specific listing → open its real page directly. The map pane
+        // has no "select this exact pin" deep-link today, so without this a
+        // tap just lands on a generic map view with no indication of why.
+        url: l.url,
         id: `property-${s.id}-${l.id}`,
       })
     }

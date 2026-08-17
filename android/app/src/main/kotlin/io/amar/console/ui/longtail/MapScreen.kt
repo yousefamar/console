@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Checkbox
@@ -321,7 +322,17 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
         } else if (selectedEvent != null) {
             MeetupEventPanel(selectedEvent, onClose = { scope.launch { repo.selectEvent(null) } }, modifier = Modifier.align(Alignment.TopEnd))
         } else featureInfo?.let { info ->
-            AgentFeaturePanel(info, onClose = { featureInfo = null }, modifier = Modifier.align(Alignment.TopEnd))
+            AgentFeaturePanel(
+                info,
+                onClose = { featureInfo = null },
+                onDismiss = { searchId, listingId ->
+                    scope.launch {
+                        runCatching { repo.dismissListing(searchId, listingId) }
+                        featureInfo = null
+                    }
+                },
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
         }
     }
 }
@@ -828,6 +839,10 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
 // ---------------------------------------------------------------------- //
 // Agent-layer feature info (SPA popup parity)
 
+// Keys rendered specially or used as plumbing, not as generic field rows —
+// mirrors the SPA's PANEL_SPECIAL in MapTab.tsx's LayerFeaturePanel.
+private val FIELD_SPECIAL = setOf("name", "title", "url", "listingId", "searchId")
+
 data class AgentFeatureInfo(
     val layerName: String,
     val title: String,
@@ -836,6 +851,13 @@ data class AgentFeatureInfo(
     val fields: List<Pair<String, String>>,
     val lat: Double,
     val lon: Double,
+    /** External link (e.g. the portal listing page) — rendered as a tappable
+     *  "open" row instead of a plain-text field. */
+    val url: String? = null,
+    /** listingId + searchId, present together only for property pins — drives
+     *  the "not interested" dismiss action. */
+    val listingId: String? = null,
+    val searchId: String? = null,
 )
 
 /** Build the info panel model from a tapped feature's properties. Mirrors the
@@ -862,12 +884,29 @@ fun agentFeatureInfo(
     // Prefer the feature's own point coords (navigate target); fall back to tap.
     val geom = feature.geometry()
     val (lat, lon) = if (geom is org.maplibre.geojson.Point) geom.latitude() to geom.longitude() else tapLat to tapLon
-    return AgentFeatureInfo(layer.name, title, fields.filter { it.first != "name" && it.first != "title" || it.second != title }, lat, lon)
+    val listingId = prop("listingId")
+    val searchId = prop("searchId")
+    return AgentFeatureInfo(
+        layerName = layer.name,
+        title = title,
+        fields = fields.filter { (k, v) -> k !in FIELD_SPECIAL && (k != "name" && k != "title" || v != title) },
+        lat = lat,
+        lon = lon,
+        url = prop("url"),
+        listingId = listingId,
+        searchId = searchId,
+    )
 }
 
 @Composable
-private fun AgentFeaturePanel(info: AgentFeatureInfo, onClose: () -> Unit, modifier: Modifier = Modifier) {
+private fun AgentFeaturePanel(
+    info: AgentFeatureInfo,
+    onClose: () -> Unit,
+    onDismiss: (searchId: String, listingId: String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    var dismissing by remember(info.listingId) { mutableStateOf(false) }
     Surface(
         modifier = modifier.padding(top = 8.dp, end = 8.dp).widthIn(max = 320.dp).heightIn(max = 480.dp),
         shape = RoundedCornerShape(8.dp),
@@ -888,10 +927,38 @@ private fun AgentFeaturePanel(info: AgentFeatureInfo, onClose: () -> Unit, modif
                     Text(value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                 }
             }
-            TextButton(onClick = { openInMaps(ctx, info.lat, info.lon, info.title) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
-                Spacer(Modifier.size(4.dp))
-                Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                TextButton(onClick = { openInMaps(ctx, info.lat, info.lon, info.title) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                    Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                    Spacer(Modifier.size(4.dp))
+                    Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                }
+                if (!info.url.isNullOrEmpty()) {
+                    TextButton(onClick = { openUrl(ctx, info.url) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                        Icon(Icons.Filled.OpenInNew, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Spacer(Modifier.size(4.dp))
+                        Text("open", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    }
+                }
+            }
+            if (!info.listingId.isNullOrEmpty() && !info.searchId.isNullOrEmpty()) {
+                TextButton(
+                    onClick = {
+                        if (dismissing) return@TextButton
+                        dismissing = true
+                        onDismiss(info.searchId, info.listingId)
+                    },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Icon(Icons.Filled.Close, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.size(4.dp))
+                    Text(
+                        if (dismissing) "hiding…" else "not interested",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
