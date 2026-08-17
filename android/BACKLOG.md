@@ -25,11 +25,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   externally-grown text (live transcript) left the cursor stranded mid-text.
   Switched to TextFieldValue with the selection pinned to the end whenever
   the text changes from outside the keyboard.
-- Chat message forwarding (WhatsApp flow): long-press a message → Forward →
-  searchable recent-room picker → sends into the target room with a
-  confirmation toast. Text forwards plain; media resolves via the bubble
-  render path (spool → decrypted E2EE cache → download) and re-uploads fresh
-  so E2EE originals re-encrypt for the target room. +1 test.
 
 ## Shipped
 
