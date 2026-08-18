@@ -322,7 +322,12 @@ export class Session extends EventEmitter {
       rl.on('line', (line) => {
         const trimmed = line.trim()
         if (trimmed) {
-          if (looksLikeModelError(trimmed)) this.signalModelFailure(`stderr: ${trimmed.slice(0, 200)}`)
+          // The --resume target's JSONL is gone from disk (CLI retention
+          // prune). The process is about to exit(1) pre-init — flag it so the
+          // exit handler respawns fresh instead of misreading it as a model
+          // failure ("choking on figuring out which model to use").
+          if (/no conversation found with session id/i.test(trimmed)) this.resumeTargetMissing = true
+          else if (looksLikeModelError(trimmed)) this.signalModelFailure(`stderr: ${trimmed.slice(0, 200)}`)
           this.emitHub({ type: 'status', sessionId: this.id, text: trimmed })
         }
       })
@@ -337,6 +342,25 @@ export class Session extends EventEmitter {
         this.restartingForModel = false
         this.reloading = false
         this.doModelRespawn()
+        return
+      }
+      // The --resume target's JSONL was pruned from the CLI's ~/.claude
+      // retention — resuming can never succeed, so retrying (or blaming the
+      // model) just wedges the session forever. Respawn FRESH: the hub-side
+      // log/name/role survive, the CLI mints a new claudeSessionId on init,
+      // and the message that triggered the wake is re-delivered.
+      if (this.resumeTargetMissing && !this.endedByUser) {
+        this.resumeTargetMissing = false
+        // The message that triggered the wake was written to the dying
+        // process's stdin (lastStdinPrompt) or is still parked
+        // (pendingWakeMessage) — either way, re-deliver it to the fresh spawn.
+        const pending = this.pendingWakeMessage ?? this.lastStdinPrompt
+        this.pendingWakeMessage = null
+        this.lastStdinPrompt = null
+        this.emitHub({ type: 'error', sessionId: this.id, message: 'This session\'s transcript was pruned from disk, so it can\'t be resumed — restarted as a fresh conversation (hub history kept; the model starts without its old context).' })
+        this.spawn({ prompt: '', cwd: this.cwd, silent: true, name: this.name })
+        if (pending) this.sendMessage(pending.content, pending.images)
+        else this.status = 'idle'
         return
       }
       // Hibernation: we killed the subprocess of an idle session to reclaim
@@ -471,6 +495,10 @@ export class Session extends EventEmitter {
       this.wakeFromHibernation()
     }
     this.status = 'running'
+    // Keep a copy: if this process dies because its --resume target was
+    // pruned from disk, the write below went nowhere — the fresh respawn
+    // re-delivers it.
+    this.lastStdinPrompt = { content, images }
     if (images && images.length > 0) {
       const blocks: ClaudeStdinContentBlock[] = images.map((img) => ({
         type: 'image' as const,
@@ -670,6 +698,12 @@ export class Session extends EventEmitter {
   hibernated = false
   /** Message that arrived during the hibernating window — sent after exit→wake. */
   private pendingWakeMessage: { content: string; images?: ImageAttachment[] } | null = null
+  /** stderr said "No conversation found with session ID" — the --resume
+   *  target's JSONL was pruned; the exit handler must respawn fresh. */
+  private resumeTargetMissing = false
+  /** Last message written to stdin this process-lifetime — re-delivered when a
+   *  failed resume forces a fresh respawn (the write went to a dying process). */
+  private lastStdinPrompt: { content: string; images?: ImageAttachment[] } | null = null
   /** Wall-clock of the last user message or completed turn — the idle clock. */
   lastActivityAt = Date.now()
   /** An approval (AskUserQuestion / plan) is outstanding — hibernating now
