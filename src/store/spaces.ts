@@ -44,7 +44,29 @@ interface SpacesState {
   switcherOpen: boolean
   openSwitcher: () => void
   closeSwitcher: () => void
+  /** Create projects/<slug>/board.md with the standard columns and open it. */
+  createBoard: (slug: string) => Promise<void>
 }
+
+const BOARD_TEMPLATE = `---
+
+kanban-plugin: board
+
+---
+
+## Backlog
+
+
+## In Progress
+
+
+## Under Review
+
+
+## Done
+
+
+`
 
 const ACTIVE_SLUG_KEY = 'console:spaces:active'
 
@@ -136,6 +158,22 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     refreshCardLine(card)
     set({ board: { ...board } })
     await get().saveBoard()
+  },
+
+  createBoard: async (slug) => {
+    const path = `projects/${slug}/board.md`
+    await hubFetch(`/notes/file/${encodeURIComponent(path)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: BOARD_TEMPLATE }),
+      timeoutMs: 10000,
+    })
+    // Stamp boardPath locally so the Board tab appears immediately (the next
+    // refreshSpaces re-derives it from the hub anyway).
+    set((s) => ({ spaces: s.spaces.map((sp) => (sp.slug === slug ? { ...sp, boardPath: path } : sp)) }))
+    if (get().activeSlug === slug) {
+      set({ activeView: 'board' })
+      await get().loadBoard()
+    }
   },
 
   toggleBlocked: async (ref) => {
