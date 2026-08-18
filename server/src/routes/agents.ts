@@ -571,7 +571,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       let agentKey: string | undefined
       if (msg.asAgent && msg.name?.trim()) {
         agentKey = ctx.agentRegistry.mintKey(msg.name)
-        ctx.agentRegistry.create(agentKey, { title: msg.name.trim(), charter: msg.prompt, cwd: msg.cwd })
+        ctx.agentRegistry.create(agentKey, { title: msg.name.trim(), charter: msg.prompt, cwd: msg.cwd, project: msg.project ?? null, areas: msg.areas ?? [] })
         broadcastAgentsList(ctx)
       }
       const session = createSession(ctx, {

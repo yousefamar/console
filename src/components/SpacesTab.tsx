@@ -10,12 +10,13 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useState } from 'react'
-import { Bot, FileText, FolderKanban, GitBranch, Kanban, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
+import { Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
+import { useMicStore } from '@/store/mic'
 import { showPrompt, showConfirm } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
@@ -359,6 +360,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
     return out
   }, [roles, space])
   const sessionFor = (key: string) => sessions.find((s) => s.agentKey === key && s.status !== 'ended')
+  const micOwnerId = useMicStore((s) => s.owner)
 
   // Unassigned: also list live sessions with NO role at all (chat forks,
   // one-off `con agent create`s) — they have no role row to render.
@@ -374,7 +376,27 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
         {space.kind === 'area' && <Tag size={9} className="text-text-tertiary flex-shrink-0" />}
       </div>
       <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
-        <RailSection label="Agents">
+        <RailSection
+          label="Agents"
+          action={!space.slug.startsWith('~') ? {
+            icon: <Plus size={10} />,
+            title: 'New agent in this space',
+            onClick: async () => {
+              const title = await showPrompt('Agent name', { title: `New agent in ${space.title}`, placeholder: 'e.g. Landing page' })
+              if (!title?.trim()) return
+              const prompt = await showPrompt('What should it do?', { title: title.trim(), placeholder: 'The opening prompt / charter' })
+              if (prompt === null) return
+              // asAgent mints a durable role with the space binding baked into
+              // the role file's frontmatter — it appears here immediately.
+              useAgentStore.getState().createSessionAsAgent(
+                prompt.trim() || 'Await instructions.',
+                undefined,
+                title.trim(),
+                space.kind === 'project' ? { project: space.slug } : { areas: [space.slug] },
+              )
+            },
+          } : undefined}
+        >
           {spaceRoles.length === 0 && rolelessSessions.length === 0 && (
             <div className="px-3 py-1 text-[10px] text-text-tertiary">
               {space.slug === VAULT_SLUG
@@ -396,6 +418,12 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               ...(live ? [
                 { label: 'Mark read', onClick: () => agent.markSessionRead(live.id) },
                 { label: 'Mark unread', onClick: () => agent.markSessionUnread(live.id) },
+                { label: 'Rename', onClick: async () => {
+                  const name = await showPrompt('Session name', { title: 'Rename', defaultValue: live.name ?? '' })
+                  if (name?.trim()) agent.renameSession(live.id, name.trim())
+                } },
+                { label: 'Generate title', onClick: () => agent.generateTitle(live.id) },
+                { label: useMicStore.getState().owner === live.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === live.id ? 'al' : live.id) },
                 { label: 'Fork', onClick: () => agent.forkSession(live.id) },
                 ...(r.fork || r.manager ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(live.id) }] : []),
                 { label: 'End session', onClick: () => agent.killSession(live.id), destructive: true },
@@ -418,7 +446,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                     ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
                     : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
                   <span className={clsx('truncate', !live && 'opacity-60')}>{displayName}</span>
-                  {!live && <span className="ml-auto text-[9px] text-text-tertiary flex-shrink-0">⏾</span>}
+                  <span className="ml-auto flex items-center gap-1 flex-shrink-0">
+                    {live && micOwnerId === live.id && <Mic size={9} className="text-text-primary" />}
+                    {live?.hibernated && <span title="Hibernated — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
+                    {!live && <span className="text-[9px] text-text-tertiary">⏾</span>}
+                  </span>
                 </button>
               </ContextMenu>
             )
