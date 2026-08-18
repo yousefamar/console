@@ -19,6 +19,7 @@ import { useUiStore } from '@/store/ui'
 import { showPrompt } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
+import { NotesFileBrowser } from './NotesFileBrowser'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
 import { NewNoteModal } from './NewNoteModal'
@@ -272,21 +273,11 @@ export function spaceScopePrefixes(space: SpaceSummary): string[] {
 
 function SpaceRail({ space }: { space: SpaceSummary }) {
   const setActiveView = useSpacesStore((s) => s.setActiveView)
-  const files = useNotesStore((s) => s.files)
-  const storeActivePath = useNotesStore((s) => s.activeFilePath)
   const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const selectSession = useAgentStore((s) => s.selectSession)
   const reviveAgent = useAgentStore((s) => s.reviveAgent)
-
-  const prefixes = spaceScopePrefixes(space)
-  const spaceFiles = useMemo(
-    () => files
-      .filter((f) => prefixes.some((p) => f.path.startsWith(p) || f.path === p))
-      .sort((a, b) => a.path.localeCompare(b.path)),
-    [files, space.slug], // eslint-disable-line react-hooks/exhaustive-deps
-  )
 
   // Forks included — they inherit the source role's space binding and are
   // first-class here (assignable on the board, revivable, chattable).
@@ -317,23 +308,13 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
   }, [roles, space])
   const sessionFor = (key: string) => sessions.find((s) => s.agentKey === key && s.status !== 'ended')
 
-  const openDoc = async (path: string) => {
-    const notes = useNotesStore.getState()
-    if (!notes.adapter) await notes.reconnectVault()
-    await useNotesStore.getState().openFile(path)
-    setActiveView('docs')
-  }
-
-  const displayPath = (path: string) =>
-    path === `projects/${space.slug}.md` ? `${space.slug}.md` : path.slice(`projects/${space.slug}/`.length)
-
   return (
     <>
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
         <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
         {space.kind === 'area' && <Tag size={9} className="text-text-tertiary flex-shrink-0" />}
       </div>
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
         <RailSection label="Agents">
           {spaceRoles.length === 0 && (
             <div className="px-3 py-1 text-[10px] text-text-tertiary">
@@ -382,33 +363,22 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             )
           })}
         </RailSection>
-        <RailSection
-          label="Files"
-          action={space.kind === 'project' ? { icon: <Plus size={10} />, title: 'New file in this project', onClick: () => useNotesStore.getState().openNewFileForm(`projects/${space.slug}`) } : undefined}
-        >
-          {space.kind === 'area' && (
-            <div className="px-3 py-1 text-[10px] text-text-tertiary">
-              Area writing lives in the blog (tag: {space.slug})
-            </div>
-          )}
-          {space.kind === 'project' && spaceFiles.length === 0 && (
-            <div className="px-3 py-1 text-[10px] text-text-tertiary">No files under projects/{space.slug}/</div>
-          )}
-          {spaceFiles.map((f) => (
-            <button
-              key={f.path}
-              onClick={() => void openDoc(f.path)}
-              className={clsx(
-                'flex w-full items-center gap-2 px-3 py-1 text-left text-xs transition-colors',
-                storeActivePath === f.path ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
-              )}
-            >
-              <FileText size={10} className="flex-shrink-0 opacity-50" />
-              <span className="truncate">{displayPath(f.path)}</span>
-            </button>
-          ))}
-        </RailSection>
       </div>
+      {/* Files — the full Notes tree (context-menu rename/delete, new-note
+          form, quick switcher), scoped to this project's folder. */}
+      {space.kind === 'project' ? (
+        <div className="flex-1 min-h-0 flex flex-col border-t border-border">
+          <NotesFileBrowser
+            rootPath={`projects/${space.slug}`}
+            compact
+            onOpened={() => setActiveView('docs')}
+          />
+        </div>
+      ) : (
+        <div className="border-t border-border px-3 py-2 text-[10px] text-text-tertiary">
+          Area writing lives in the blog (tag: {space.slug})
+        </div>
+      )}
     </>
   )
 }
@@ -431,9 +401,11 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
       <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-3 py-1.5">
         <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
         <div className="flex items-center gap-1 ml-auto">
-          {hasBoard && (
+          {hasBoard ? (
             <ViewTab label="Board" icon={<Kanban size={10} />} active={showBoard} onClick={() => setActiveView('board')} />
-          )}
+          ) : space.kind === 'project' ? (
+            <ViewTab label="Create board" icon={<Kanban size={10} />} active={false} onClick={() => void useSpacesStore.getState().createBoard(space.slug)} />
+          ) : null}
           <ViewTab label="Docs" icon={<FileText size={10} />} active={!showBoard} onClick={() => setActiveView('docs')} />
         </div>
       </div>

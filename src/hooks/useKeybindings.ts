@@ -33,8 +33,11 @@ export function useKeybindings() {
       const isEmail = activePane === 'email'
       const isBookmarks = activePane === 'bookmarks'
       const isNotes = activePane === 'notes'
+      const isSpaces = activePane === 'spaces'
       // Spaces hosts agent sessions too — it shares the agent bindings.
-      const isAgents = activePane === 'agents' || activePane === 'spaces'
+      const isAgents = activePane === 'agents' || isSpaces
+      // ...and the vault editor, so it shares the notes chords (Ctrl+S/P/N/W…).
+      const isNotesish = isNotes || isSpaces
       const isFeeds = activePane === 'feeds'
       const isCalendar = activePane === 'calendar'
       const isMoney = activePane === 'money'
@@ -117,14 +120,22 @@ export function useKeybindings() {
       }
 
       // Notes: Ctrl+Shift+T for reopen closed tab
-      if (isNotes && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
+      if (isNotesish && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
         e.preventDefault()
         notes.getState().reopenLastClosedTab()
         return
       }
 
       // Notes: Ctrl+Shift+P for command palette, Ctrl+P for Quick Switcher, Ctrl+Shift+F for content search
-      if (isNotes && (e.ctrlKey || e.metaKey)) {
+      if (isNotesish && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+S — save the open note. CM6 has its own Mod-s keymap, but that
+        // only fires while focus is INSIDE the editor; this catches the rest
+        // (and stops the browser's save-page dialog).
+        if (e.key === 's' && !e.shiftKey) {
+          e.preventDefault()
+          if (notes.getState().activeFilePath) void notes.getState().saveFile()
+          return
+        }
         if (e.shiftKey && (e.key === 'p' || e.key === 'P')) {
           e.preventDefault()
           notes.getState().openCommandPalette()

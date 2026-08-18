@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useNotesStore, type TreeNode } from '@/store/notes'
 import { showConfirm } from '@/dialog'
 import { ChevronRight, Circle, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
@@ -11,7 +11,18 @@ interface ContextMenu {
   isDir: boolean
 }
 
-export function NotesFileBrowser() {
+interface NotesFileBrowserProps {
+  /** Scope the tree to one folder (e.g. `projects/console`) — renders that
+   *  node's CHILDREN as roots (plus a flat `<rootPath>.md` sibling if it
+   *  exists). Also the default dir for New Note. Used by the Spaces pane. */
+  rootPath?: string
+  /** Hide the header's blog/circles view-switcher buttons (Spaces). */
+  compact?: boolean
+  /** Called after a file is opened (Spaces flips the centre to Docs). */
+  onOpened?: (path: string) => void
+}
+
+export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrowserProps = {}) {
   const fileTree = useNotesStore((s) => s.fileTree)
   const expandedDirs = useNotesStore((s) => s.expandedDirs)
   const activeFilePath = useNotesStore((s) => s.activeFilePath)
@@ -25,6 +36,39 @@ export function NotesFileBrowser() {
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
+
+  // Scoped subtree: the rootPath folder's children (+ the flat <rootPath>.md).
+  const scopedTree = useMemo(() => {
+    if (!rootPath) return fileTree
+    const parts = rootPath.split('/')
+    let nodes = fileTree
+    let folder: TreeNode | undefined
+    for (const part of parts) {
+      folder = nodes.find((n) => n.isDir && n.name === part)
+      if (!folder) break
+      nodes = folder.children
+    }
+    const out = folder ? [...folder.children] : []
+    // Flat sibling note (projects/<slug>.md) belongs to the space too.
+    const parent = parts.slice(0, -1).join('/')
+    let siblings = fileTree
+    if (parent) {
+      let cur: TreeNode | undefined
+      for (const part of parent.split('/')) {
+        cur = siblings.find((n) => n.isDir && n.name === part)
+        if (!cur) return out
+        siblings = cur.children
+      }
+    }
+    const flat = siblings.find((n) => !n.isDir && n.path === `${rootPath}.md`)
+    if (flat) out.unshift(flat)
+    return out
+  }, [fileTree, rootPath])
+
+  const openAndNotify = useCallback(async (path: string) => {
+    await openFile(path)
+    onOpened?.(path)
+  }, [openFile, onOpened])
 
   // Auto-expand parent dirs and scroll active file into view
   useEffect(() => {
@@ -91,20 +135,24 @@ export function NotesFileBrowser() {
         >
           Find file...
         </button>
-        <button
-          onClick={() => useNotesStore.getState().setViewMode('blog')}
-          className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
-          title="Switch to blog view"
-        >
-          <NotebookPen size={12} />
-        </button>
-        <button
-          onClick={() => useNotesStore.getState().setViewMode('circles')}
-          className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
-          title="Switch to circles view"
-        >
-          <Circle size={12} />
-        </button>
+        {!compact && (
+          <>
+            <button
+              onClick={() => useNotesStore.getState().setViewMode('blog')}
+              className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+              title="Switch to blog view"
+            >
+              <NotebookPen size={12} />
+            </button>
+            <button
+              onClick={() => useNotesStore.getState().setViewMode('circles')}
+              className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+              title="Switch to circles view"
+            >
+              <Circle size={12} />
+            </button>
+          </>
+        )}
         <button
           onClick={() => useNotesStore.getState().loadVaultFiles()}
           className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
@@ -120,7 +168,7 @@ export function NotesFileBrowser() {
           <Search size={12} />
         </button>
         <button
-          onClick={() => openNewFileForm()}
+          onClick={() => openNewFileForm(rootPath)}
           className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
           title="New note (Ctrl+N)"
         >
@@ -132,10 +180,10 @@ export function NotesFileBrowser() {
       <div ref={treeRef} className="flex-1 overflow-y-auto py-0.5" data-notes-tree>
         {loading ? (
           <div className="px-3 py-4 text-center text-xs text-text-tertiary">Scanning vault...</div>
-        ) : fileTree.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-text-tertiary">No files found</div>
+        ) : scopedTree.length === 0 ? (
+          <div className="px-3 py-4 text-center text-xs text-text-tertiary">No files{rootPath ? ` under ${rootPath}/` : ' found'}</div>
         ) : (
-          fileTree.map((node) => (
+          scopedTree.map((node) => (
             <TreeNodeItem
               key={node.path}
               node={node}
@@ -145,7 +193,7 @@ export function NotesFileBrowser() {
               selectedPath={selectedPath}
               renaming={renaming}
               onToggleDir={toggleDir}
-              onOpenFile={openFile}
+              onOpenFile={openAndNotify}
               onSelect={setSelectedPath}
               onContextMenu={handleContextMenu}
               onRenameChange={(v) => setRenaming(renaming ? { ...renaming, value: v } : null)}
