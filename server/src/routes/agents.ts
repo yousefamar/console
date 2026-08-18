@@ -255,6 +255,7 @@ export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | 
   if (existing) return existing
   return createSession(ctx, {
     agentKey,
+    name: role.title,
     cwd: role.cwd ?? ctx.cwd,
     prompt: `You are (re)starting as the "${role.title}" agent. Your charter and memory are in your system prompt above — read them, then await instructions.`,
   })
