@@ -16,7 +16,7 @@ import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
-import { showPrompt } from '@/dialog'
+import { showPrompt, showConfirm } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
@@ -45,7 +45,9 @@ export const SpacesTab = memo(function SpacesTab() {
     if (!notes.adapter && !notes.loading) void notes.reconnectVault()
   }, [refreshSpaces])
 
-  const active = spaces.find((s) => s.slug === activeSlug) ?? null
+  const active = activeSlug === VAULT_SLUG ? VAULT_SPACE
+    : activeSlug === UNASSIGNED_SLUG ? UNASSIGNED_SPACE
+    : spaces.find((s) => s.slug === activeSlug) ?? null
 
   return (
     <div className="flex flex-1 h-full min-w-0">
@@ -107,7 +109,7 @@ function SpaceListRail() {
   const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const openFiles = useNotesStore((s) => s.openFiles)
-  const { agentBadges, alertsBySlug } = useMemo(() => {
+  const { agentBadges, alertsBySlug, unassignedCount } = useMemo(() => {
     const badges = new Map<string, { count: number; unread: boolean; attention: boolean }>()
     const alerts = new Map<string, SpaceAlert[]>()
     const push = (slug: string, a: SpaceAlert) => {
@@ -154,10 +156,34 @@ function SpaceListRail() {
       if (!m) continue
       push(m[1]!, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
     }
+    // Unassigned pseudo-space: live sessions with no space to belong to —
+    // role-less (chat forks, one-off creates) or a role with no binding.
+    let unassigned = 0
+    for (const s of sessions) {
+      if (s.status === 'ended' || s.isAl) continue
+      const r = s.agentKey ? roleByKey.get(s.agentKey) : undefined
+      const bound = !!(r && (r.project || (r.areas ?? []).length))
+      if (bound) continue
+      unassigned++
+      bump(UNASSIGNED_SLUG, !!s.hasUnread, !!s.needsAttention)
+      if (s.hasUnread || s.needsAttention || s.status === 'running') {
+        push(UNASSIGNED_SLUG, {
+          kind: 'session', id: s.id,
+          label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
+          level: s.needsAttention ? 'attention' : s.status === 'running' ? 'working' : 'unread',
+          fork: /\s\(fork\)$/.test(s.name || ''),
+        })
+      }
+    }
+    // Dirty files outside projects/ surface under Vault.
+    for (const [path, f] of Object.entries(openFiles)) {
+      if (f.content === f.savedContent || path.startsWith('projects/')) continue
+      push(VAULT_SLUG, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
+    }
     // Attention first, then working, unread, dirty files — within each, stable.
     const rank = { attention: 0, working: 1, unread: 2, dirty: 3 }
     for (const arr of alerts.values()) arr.sort((a, b) => rank[a.level] - rank[b.level])
-    return { agentBadges: badges, alertsBySlug: alerts }
+    return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
   }, [roles, sessions, openFiles])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
@@ -212,6 +238,10 @@ function SpaceListRail() {
       <div className="flex-1 overflow-y-auto py-1">
         <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
         <RailSection label="Projects">{projects.map(renderSpace)}</RailSection>
+        <RailSection label="Everything else">
+          {renderSpace(VAULT_SPACE)}
+          {unassignedCount > 0 && renderSpace(UNASSIGNED_SPACE)}
+        </RailSection>
       </div>
     </>
   )
@@ -265,9 +295,28 @@ function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary;
 // Rail, drilled in: ONE space's files + agents in a single glance
 // ---------------------------------------------------------------------------
 
+// Pseudo-spaces — client-side constructs (the hub's listSpaces knows nothing
+// of them). "Vault" = the WHOLE tree, no board/agents: everything that lives
+// outside projects/ (scratch/, log/, notes/, people/…) stays reachable, which
+// is what lets the Notes tab retire. "Unassigned" = sessions whose role has
+// no project/areas binding (chat forks, one-off creates) — also a prompt to
+// stamp them.
+export const VAULT_SLUG = '~vault'
+export const UNASSIGNED_SLUG = '~unassigned'
+
+export const VAULT_SPACE: SpaceSummary = {
+  kind: 'project', slug: VAULT_SLUG, title: 'Vault', notePath: null, boardPath: null, status: null, fileCount: 0,
+}
+export const UNASSIGNED_SPACE: SpaceSummary = {
+  kind: 'project', slug: UNASSIGNED_SLUG, title: 'Unassigned', notePath: null, boardPath: null, status: null, fileCount: 0,
+}
+
 export function spaceScopePrefixes(space: SpaceSummary): string[] {
   // Projects own projects/<slug>/** plus the flat projects/<slug>.md; areas
-  // have no folder (their writing is blog posts) — no file scope.
+  // have no folder (their writing is blog posts) — no file scope. The Vault
+  // pseudo-space scopes to nothing = everything.
+  if (space.slug === VAULT_SLUG) return ['']
+  if (space.slug === UNASSIGNED_SLUG) return []
   return space.kind === 'project' ? [`projects/${space.slug}/`, `projects/${space.slug}.md`] : []
 }
 
@@ -284,9 +333,12 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
   // Arranged as a lineage tree via `manager` edges (a fork's manager is its
   // source role), depth-indented like the Agents sidebar.
   const spaceRoles = useMemo(() => {
-    const inSpace = roles.filter((r) => !r.folder && (
-      space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
-    ))
+    const inSpace = roles.filter((r) => {
+      if (r.folder) return false
+      if (space.slug === VAULT_SLUG) return false
+      if (space.slug === UNASSIGNED_SLUG) return !r.project && !(r.areas ?? []).length
+      return space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
+    })
     const keys = new Set(inSpace.map((r) => r.key))
     const childrenOf = new Map<string, typeof inSpace>()
     for (const r of inSpace) {
@@ -308,6 +360,13 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
   }, [roles, space])
   const sessionFor = (key: string) => sessions.find((s) => s.agentKey === key && s.status !== 'ended')
 
+  // Unassigned: also list live sessions with NO role at all (chat forks,
+  // one-off `con agent create`s) — they have no role row to render.
+  const rolelessSessions = useMemo(() => {
+    if (space.slug !== UNASSIGNED_SLUG) return []
+    return sessions.filter((s) => s.status !== 'ended' && !s.isAl && !s.agentKey)
+  }, [space.slug, sessions])
+
   return (
     <>
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
@@ -316,9 +375,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
       </div>
       <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
         <RailSection label="Agents">
-          {spaceRoles.length === 0 && (
+          {spaceRoles.length === 0 && rolelessSessions.length === 0 && (
             <div className="px-3 py-1 text-[10px] text-text-tertiary">
-              None — stamp {space.kind === 'project' ? `project: ${space.slug}` : `areas: [${space.slug}]`} in a role file
+              {space.slug === VAULT_SLUG
+                ? 'The vault has no agents — this is pure notes territory'
+                : `None — stamp ${space.kind === 'project' ? `project: ${space.slug}` : `areas: [${space.slug}]`} in a role file`}
             </div>
           )}
           {spaceRoles.map(({ role: r, depth }) => {
@@ -362,11 +423,45 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               </ContextMenu>
             )
           })}
+          {rolelessSessions.map((sess) => {
+            const isActive = sess.id === activeSessionId
+            const alert = sess.needsAttention ? 'attention' : sess.status === 'running' ? 'working' : sess.hasUnread ? 'unread' : null
+            const agent = useAgentStore.getState()
+            const name = (sess.name || sess.id).replace(/\s\(fork\)$/, '')
+            const menuItems: ContextMenuItem[] = [
+              { label: 'Mark read', onClick: () => agent.markSessionRead(sess.id) },
+              { label: 'Mark unread', onClick: () => agent.markSessionUnread(sess.id) },
+              { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
+            ]
+            return (
+              <ContextMenu key={sess.id} items={menuItems}>
+                <button
+                  onClick={() => selectSession(sess.id)}
+                  className={clsx(
+                    'flex w-full items-center gap-2 py-1 pr-3 pl-3 text-left text-xs transition-colors',
+                    isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
+                  )}
+                  title={`${name} · no role`}
+                >
+                  <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
+                  <span className="truncate">{name}</span>
+                </button>
+              </ContextMenu>
+            )
+          })}
         </RailSection>
       </div>
       {/* Files — the full Notes tree (context-menu rename/delete, new-note
           form, quick switcher), scoped to this project's folder. */}
-      {space.kind === 'project' ? (
+      {space.slug === VAULT_SLUG ? (
+        <div className="flex-1 min-h-0 flex flex-col border-t border-border">
+          <NotesFileBrowser compact onOpened={() => setActiveView('docs')} />
+        </div>
+      ) : space.slug === UNASSIGNED_SLUG ? (
+        <div className="border-t border-border px-3 py-2 text-[10px] text-text-tertiary">
+          Sessions with no space — stamp `project:`/`areas:` in their role file to home them
+        </div>
+      ) : space.kind === 'project' ? (
         <div className="flex-1 min-h-0 flex flex-col border-t border-border">
           <NotesFileBrowser
             rootPath={`projects/${space.slug}`}
@@ -403,7 +498,7 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
         <div className="flex items-center gap-1 ml-auto">
           {hasBoard ? (
             <ViewTab label="Board" icon={<Kanban size={10} />} active={showBoard} onClick={() => setActiveView('board')} />
-          ) : space.kind === 'project' ? (
+          ) : space.kind === 'project' && !space.slug.startsWith('~') ? (
             <ViewTab label="Create board" icon={<Kanban size={10} />} active={false} onClick={() => void useSpacesStore.getState().createBoard(space.slug)} />
           ) : null}
           <ViewTab label="Docs" icon={<FileText size={10} />} active={!showBoard} onClick={() => setActiveView('docs')} />
@@ -441,6 +536,8 @@ function BoardView() {
   const addCardTo = useSpacesStore((s) => s.addCardTo)
   const assignCard = useSpacesStore((s) => s.assignCard)
   const toggleBlocked = useSpacesStore((s) => s.toggleBlocked)
+  const editCard = useSpacesStore((s) => s.editCard)
+  const deleteCard = useSpacesStore((s) => s.deleteCard)
   const roles = useAgentStore((s) => s.agentRoles)
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
@@ -516,6 +613,8 @@ function BoardView() {
                   onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
                   onAssign={() => void promptAssign({ column: col.title, index }, card)}
                   onToggleBlocked={() => void toggleBlocked({ column: col.title, index })}
+                  onEdit={(text, detail) => void editCard({ column: col.title, index }, text, detail)}
+                  onDelete={() => void deleteCard({ column: col.title, index })}
                 />
               ) : null
             ))}
@@ -527,23 +626,59 @@ function BoardView() {
   )
 }
 
-function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked }: {
+function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked, onEdit, onDelete }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
   onMove: (to: string) => void
   onAssign: () => void
   onToggleBlocked: () => void
+  onEdit: (text: string, detail: string[]) => void
+  onDelete: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  // Inline edit: click the text → textarea seeded with "text\ndetail…"; first
+  // line becomes the card, the rest indented continuations. Enter saves,
+  // Shift+Enter newline, Esc cancels, blur saves.
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const startEdit = () => {
+    setDraft([card.text, ...detail].join('\n'))
+    setEditing(true)
+  }
+  const commitEdit = () => {
+    setEditing(false)
+    const [first, ...rest] = draft.split('\n')
+    if (!first?.trim()) return
+    if (first.trim() === card.text && rest.join('\n') === detail.join('\n')) return
+    onEdit(first.trim(), rest)
+  }
   return (
     <div className={clsx(
       'rounded-sm border bg-surface-0 px-2 py-1.5',
       card.blocked ? 'border-amber-500/50' : 'border-border',
       card.checked && 'opacity-50',
     )}>
-      <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
-      {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
+      {editing ? (
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit() }
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
+          }}
+          onBlur={commitEdit}
+          rows={Math.max(2, draft.split('\n').length)}
+          className="w-full resize-none rounded-sm border border-accent bg-surface-1 px-1 py-0.5 text-xs text-text-primary outline-none"
+          placeholder="Card text (first line) + details…"
+        />
+      ) : (
+        <div onClick={startEdit} className="cursor-text" title="Click to edit">
+          <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
+          {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
+        </div>
+      )}
       <div className="mt-1 flex items-center gap-1.5">
         {card.agentKey && (
           <span className="flex items-center gap-0.5 rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400">
@@ -572,6 +707,15 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
         >
           {columnTitles.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
+        <button
+          onClick={async () => {
+            if (await showConfirm(`Delete card "${card.text}"?${card.blockId ? ' It has been dispatched — the assignee loses its board line.' : ''}`, { title: 'Delete card', confirmLabel: 'Delete' })) onDelete()
+          }}
+          className="text-text-tertiary hover:text-destructive"
+          title="Delete card"
+        >
+          <X size={10} />
+        </button>
       </div>
     </div>
   )
@@ -589,13 +733,17 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
 
   // Show the session only when it belongs to this space (rail owns selection).
   const spaceKeys = useMemo(
-    () => new Set(roles.filter((r) => !r.folder && (
-      space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
-    )).map((r) => r.key)),
+    () => new Set(roles.filter((r) => {
+      if (r.folder) return false
+      if (space.slug === UNASSIGNED_SLUG) return !r.project && !(r.areas ?? []).length
+      return space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
+    }).map((r) => r.key)),
     [roles, space],
   )
   const activeSession = sessions.find((s) => s.id === activeSessionId && s.status !== 'ended')
-  const activeBelongs = !!activeSession?.agentKey && spaceKeys.has(activeSession.agentKey)
+  const activeBelongs = space.slug === UNASSIGNED_SLUG
+    ? !!activeSession && !activeSession.isAl && (!activeSession.agentKey || spaceKeys.has(activeSession.agentKey))
+    : !!activeSession?.agentKey && spaceKeys.has(activeSession.agentKey)
 
   if (collapsed) {
     return (

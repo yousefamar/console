@@ -7,6 +7,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Bot, GitBranch, FileText, FolderKanban, Tag, Circle, Plus } from 'lucide-react'
 import { useSpacesStore } from '@/store/spaces'
+import { VAULT_SLUG, UNASSIGNED_SLUG } from './SpacesTab'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 
@@ -106,6 +107,9 @@ export function SpacesQuickSwitcher() {
         },
       })
     }
+    // Pseudo-spaces: Vault (whole tree) + Unassigned.
+    out.push({ key: 'sp:~vault', title: 'Vault', kind: 'project', recency: 1, pick: () => selectSpace(VAULT_SLUG) })
+    out.push({ key: 'sp:~unassigned', title: 'Unassigned', kind: 'project', recency: 0, pick: () => selectSpace(UNASSIGNED_SLUG) })
     // Spaces — recency inherited from their most recent session/file.
     for (const sp of spaces) {
       out.push({

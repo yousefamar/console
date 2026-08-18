@@ -498,6 +498,12 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
       // Update search index
       searchIndex.updateDocument(filePath, file.content)
+
+      // Saving a project index note re-derives its space title (frontmatter
+      // `title:` is where a project is renamed) — refresh the Spaces rail.
+      if (/^projects\/[^/]+(\/index)?\.md$/.test(filePath)) {
+        void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().refreshSpaces())
+      }
     } catch (err) {
       console.error('Failed to save file:', err)
     }
