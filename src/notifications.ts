@@ -57,8 +57,11 @@ export function notify(opts: NotifyOptions): void {
   // Always notify if app doesn't have focus (different workspace, minimized, etc.)
   if (document.hasFocus() && opts.data?.pane) {
     // App is focused on the same pane — suppress unless it's agents pane
-    // (agents pane has multiple sessions; only suppress for the active one)
-    if (activePane === opts.data.pane) {
+    // (agents pane has multiple sessions; only suppress for the active one).
+    // Spaces hosts agent sessions too, so it counts as the agents pane here.
+    const paneMatches = activePane === opts.data.pane ||
+      (opts.data.pane === 'agents' && activePane === 'spaces')
+    if (paneMatches) {
       if (opts.data.pane === 'agents' && opts.data.itemId && opts.data.itemId !== activeAgentSessionId) {
         // Viewing agents pane but a different session — allow notification
       } else {
@@ -117,9 +120,21 @@ function handleNotificationClick(data: { pane: ActivePane; itemId?: string }): v
       })
       break
     case 'agents':
-      import('@/store/agent').then(({ useAgentStore }) => {
-        useAgentStore.getState().selectSession(data.itemId!)
-      })
+      // Agents live in Spaces now — land there with the owning space selected
+      // (Unassigned covers sessions with no binding).
+      Promise.all([import('@/store/agent'), import('@/store/spaces'), import('@/components/SpacesTab'), import('@/store/ui')]).then(
+        ([{ useAgentStore }, { useSpacesStore }, { UNASSIGNED_SLUG }, { useUiStore }]) => {
+          const agent = useAgentStore.getState()
+          const sess = agent.sessions.find((x) => x.id === data.itemId)
+          const role = sess?.agentKey ? agent.agentRoles.find((r) => r.key === sess.agentKey) : undefined
+          const slug = role?.project ?? role?.areas?.[0] ?? (sess && !sess.isAl ? UNASSIGNED_SLUG : null)
+          if (slug) {
+            useUiStore.getState().setActivePane('spaces')
+            useSpacesStore.getState().selectSpace(slug)
+          }
+          agent.selectSession(data.itemId!)
+        },
+      )
       break
   }
 }
