@@ -92,6 +92,35 @@ const DEFAULT_CONFIG: AuthConfig = {
   google: { clientId: '', clientSecret: '', accounts: [] },
 }
 
+/**
+ * Graft keys a newer on-disk config has that our in-memory one lacks, in place.
+ * Pure (no fs): the whole point is additive rescue — return the list of rescued
+ * key labels, never drop anything. A key we already hold (even `undefined` from an
+ * intentional clear) is left untouched so we don't resurrect our own deletions.
+ * Google accounts merge per-email. Exported for unit testing.
+ */
+export function graftNewerKeys(memory: AuthConfig, disk: Partial<AuthConfig>): string[] {
+  const rescued: string[] = []
+  for (const key of Object.keys(disk) as (keyof AuthConfig)[]) {
+    if (key === 'google') continue // accounts merged per-email below
+    if (!(key in memory) && disk[key] !== undefined) {
+      ;(memory as unknown as Record<string, unknown>)[key] = disk[key]
+      rescued.push(String(key))
+    }
+  }
+  const diskAccounts = disk.google?.accounts
+  if (Array.isArray(diskAccounts)) {
+    const have = new Set(memory.google.accounts.map((a) => a.email))
+    for (const acct of diskAccounts) {
+      if (acct?.email && !have.has(acct.email)) {
+        memory.google.accounts.push(acct)
+        rescued.push(`google account ${acct.email}`)
+      }
+    }
+  }
+  return rescued
+}
+
 const DEFAULT_ALLOWED_EMAILS = ['yousefamar@gmail.com']
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const HUB_TOKEN_BYTES = 32
@@ -166,22 +195,17 @@ export class AuthStore {
     mkdirSync(CONFIG_DIR, { recursive: true })
 
     // Every save writes the WHOLE in-memory config, so a second process holding
-    // its own AuthStore silently reverts anything the hub changed since that
-    // process booted (this is how a re-added Google account kept disappearing —
-    // a stray script had a 2-week-old snapshot). Can't merge safely from here,
-    // but a recurrence must not be silent again.
-    if (this.lastWriteMtimeMs) {
-      try {
-        const onDisk = statSync(AUTH_FILE).mtimeMs
-        if (onDisk > this.lastWriteMtimeMs + 1) {
-          console.warn(
-            `[auth] auth.json changed underneath us (disk ${new Date(onDisk).toISOString()} > ours ${new Date(this.lastWriteMtimeMs).toISOString()}) — another process holds an AuthStore; overwriting with our snapshot`,
-          )
-        }
-      } catch {
-        // File vanished — the write below re-creates it.
-      }
-    }
+    // its own AuthStore would silently revert anything the hub changed since that
+    // process booted (this is how the googleMaps key / a re-added Google account
+    // kept disappearing — a stray script had a stale snapshot). Before writing,
+    // rescue any top-level key (or google account) that appeared on disk since we
+    // last wrote — i.e. that another process added while we held a stale copy.
+    // Additive only: we never DROP a key we have, and an intentional clear leaves
+    // the key present-but-undefined (so `k in this.config` stays true and we don't
+    // resurrect it). Caveat: a merge can't tell a deletion from a stale omission
+    // across processes, so a still-running stale orphan could bounce a *removed*
+    // key back — strictly better than losing a *set* one, and orphans shouldn't exist.
+    this.mergeNewerDiskKeys()
 
     // Atomic: a crash mid-write would otherwise truncate the file, and load()
     // silently falls back to DEFAULT_CONFIG on a parse error — i.e. every token gone.
@@ -196,7 +220,43 @@ export class AuthStore {
     try {
       this.lastWriteMtimeMs = statSync(AUTH_FILE).mtimeMs
     } catch {
-      // Non-fatal: the guard above just won't fire until the next successful stat.
+      // Non-fatal: the merge/warn below just won't fire until the next successful stat.
+    }
+  }
+
+  /**
+   * Graft any key another process added to auth.json since our last write, so a
+   * whole-config overwrite can't clobber it. Runs only when the on-disk mtime is
+   * newer than ours (nothing else touched the file → nothing to rescue). Mutates
+   * `this.config` in place — never reassigns it — so live sub-object refs captured
+   * across an `await` (Monzo/Spotify refresh, exchange*) keep pointing at the object
+   * we're about to serialize. Additive only: a key we already have (even set to
+   * `undefined` by an intentional clear) is left untouched, so this never resurrects
+   * a deliberately-removed key from our own process.
+   */
+  private mergeNewerDiskKeys(): void {
+    if (!this.lastWriteMtimeMs) return
+    let onDiskMtime: number
+    try {
+      onDiskMtime = statSync(AUTH_FILE).mtimeMs
+    } catch {
+      return // File vanished — the write recreates it from our snapshot.
+    }
+    if (onDiskMtime <= this.lastWriteMtimeMs + 1) return
+
+    let disk: Partial<AuthConfig>
+    try {
+      disk = JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as Partial<AuthConfig>
+    } catch {
+      console.warn('[auth] auth.json changed underneath us but is unparseable — overwriting with our snapshot')
+      return
+    }
+
+    const rescued = graftNewerKeys(this.config, disk)
+    if (rescued.length) {
+      console.warn(
+        `[auth] auth.json changed underneath us (another process holds an AuthStore) — rescued ${rescued.join(', ')} before overwriting`,
+      )
     }
   }
 
