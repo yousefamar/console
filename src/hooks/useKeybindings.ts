@@ -81,11 +81,11 @@ export function useKeybindings() {
           feeds.getState().setSearchQuery('')
         } else if (isFeeds && feeds.getState().selectedItemId) {
           feeds.getState().selectItem(null)
-        } else if (isNotes && notes.getState().commandPaletteOpen) {
+        } else if (isNotesish && notes.getState().commandPaletteOpen) {
           notes.getState().closeCommandPalette()
-        } else if (isNotes && notes.getState().linkPickerOpen) {
+        } else if (isNotesish && notes.getState().linkPickerOpen) {
           notes.getState().closeLinkPicker()
-        } else if (isNotes && notes.getState().quickSwitcherOpen) {
+        } else if (isNotesish && notes.getState().quickSwitcherOpen) {
           notes.getState().closeQuickSwitcher()
         } else if (isNotes && isEditing) {
           // Let CodeMirror/vim handle Escape in editor

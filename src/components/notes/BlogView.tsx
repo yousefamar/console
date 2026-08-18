@@ -11,13 +11,24 @@ import { useBlogStore } from '@/store/blog'
 import { showAlert, showPrompt } from '@/dialog'
 import { permalinkForLogPath } from '@/utils/frontmatter'
 
-export function BlogView() {
+interface BlogViewProps {
+  /** Spaces embedding: hide the tree/circles view-switcher buttons and call
+   *  back after a file opens (Spaces flips its centre to Docs). */
+  compact?: boolean
+  onOpened?: (path: string) => void
+}
+
+export function BlogView({ compact, onOpened }: BlogViewProps = {}) {
   const drafts = useBlogStore((s) => s.drafts)
   const projects = useBlogStore((s) => s.projects)
   const recentPosts = useBlogStore((s) => s.recentPosts)
   const postsByProject = useBlogStore((s) => s.postsByProject)
-  const openFile = useNotesStore((s) => s.openFile)
+  const rawOpenFile = useNotesStore((s) => s.openFile)
   const setViewMode = useNotesStore((s) => s.setViewMode)
+  const openFile = async (path: string) => {
+    await rawOpenFile(path)
+    onOpened?.(path)
+  }
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
   const [refreshing, setRefreshing] = useState(false)
 
@@ -78,20 +89,24 @@ export function BlogView() {
           >
             <RefreshCw size={12} />
           </button>
-          <button
-            onClick={() => setViewMode('circles')}
-            className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
-            title="Switch to circles view"
-          >
-            <Circle size={12} />
-          </button>
-          <button
-            onClick={() => setViewMode('tree')}
-            className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
-            title="Switch to tree view"
-          >
-            <FolderTree size={12} />
-          </button>
+          {!compact && (
+            <>
+              <button
+                onClick={() => setViewMode('circles')}
+                className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+                title="Switch to circles view"
+              >
+                <Circle size={12} />
+              </button>
+              <button
+                onClick={() => setViewMode('tree')}
+                className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
+                title="Switch to tree view"
+              >
+                <FolderTree size={12} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
