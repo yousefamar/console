@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { showConfirm } from '@/dialog'
+import type { CalendarEvent } from '@/calendar/types'
 import { sanitizeAndLinkify } from '@/utils/html'
 import {
   X, MapPin, Clock, Users, Video,
@@ -19,6 +20,9 @@ export function CalendarEventPopover() {
   const deleteEvent = useCalendarStore((s) => s.deleteEvent)
   const openEditForm = useCalendarStore((s) => s.openEditForm)
   const ref = useRef<HTMLDivElement>(null)
+  const [deleteScopeFor, setDeleteScopeFor] = useState<CalendarEvent | null>(null)
+  const scopeDialogOpen = useRef(false)
+  scopeDialogOpen.current = deleteScopeFor !== null
 
   const event = events.find((e) => e.id === selectedEventId)
   const calendar = event ? calendars.find((c) => c.id === event.calendarId) : null
@@ -26,9 +30,17 @@ export function CalendarEventPopover() {
   // Close on Escape or click outside
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') selectEvent(null)
+      if (e.key !== 'Escape') return
+      if (scopeDialogOpen.current) {
+        setDeleteScopeFor(null)
+        return
+      }
+      selectEvent(null)
     }
     const handleClick = (e: MouseEvent) => {
+      // The delete-scope dialog renders outside `ref` — don't let a click in it
+      // (or its backdrop) tear down the popover underneath it.
+      if (scopeDialogOpen.current) return
       if (ref.current && !ref.current.contains(e.target as Node)) {
         selectEvent(null)
       }
@@ -211,6 +223,12 @@ export function CalendarEventPopover() {
               </button>
               <button
                 onClick={async () => {
+                  // A recurring instance gets the GCal-style scope dialog;
+                  // a one-off keeps the plain confirm.
+                  if (event.recurringEventId) {
+                    setDeleteScopeFor(event)
+                    return
+                  }
                   if (await showConfirm('Delete this event?', { title: 'Delete event', danger: true, confirmLabel: 'Delete' })) {
                     deleteEvent(event.calendarId, event.accountEmail, event.id)
                     selectEvent(null)
@@ -235,6 +253,78 @@ export function CalendarEventPopover() {
               Google
             </a>
           )}
+        </div>
+      </div>
+
+      {deleteScopeFor && (
+        <DeleteScopeDialog
+          event={deleteScopeFor}
+          onClose={() => setDeleteScopeFor(null)}
+          onDone={() => { setDeleteScopeFor(null); selectEvent(null) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// GCal-parity scope chooser for deleting a recurring event's instance.
+function DeleteScopeDialog({ event, onClose, onDone }: {
+  event: CalendarEvent
+  onClose: () => void
+  onDone: () => void
+}) {
+  const deleteEvent = useCalendarStore((s) => s.deleteEvent)
+  const deleteFollowingEvents = useCalendarStore((s) => s.deleteFollowingEvents)
+  const deleteAllEvents = useCalendarStore((s) => s.deleteAllEvents)
+  const [scope, setScope] = useState<'this' | 'following' | 'all'>('this')
+  const masterId = event.recurringEventId!
+  const instanceStart = event.start.dateTime || event.start.date || ''
+
+  const confirm = () => {
+    if (scope === 'this') {
+      deleteEvent(event.calendarId, event.accountEmail, event.id)
+    } else if (scope === 'following') {
+      deleteFollowingEvents(event.calendarId, event.accountEmail, masterId, instanceStart)
+    } else {
+      deleteAllEvents(event.calendarId, event.accountEmail, masterId)
+    }
+    onDone()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={(e) => { e.stopPropagation(); onClose() }}>
+      <div
+        className="bg-surface-0 border border-border rounded-sm shadow-lg w-72 animate-fade-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 pt-3 pb-2">
+          <h3 className="text-sm font-medium text-text-primary">
+            Delete repeat event &ldquo;{event.summary}&rdquo;
+          </h3>
+        </div>
+        <div className="px-4 py-2 space-y-1.5">
+          {([
+            ['this', 'This event'],
+            ['following', 'This and following events'],
+            ['all', 'All events'],
+          ] as const).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="delete-scope" checked={scope === value} onChange={() => setScope(value)} className="accent-accent" />
+              <span className="text-xs text-text-primary">{label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+          <button onClick={onClose} className="px-2 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors">
+            Cancel
+          </button>
+          <div className="flex-1" />
+          <button
+            onClick={confirm}
+            className="px-3 py-1 text-xs font-medium bg-red-500 text-white rounded-sm hover:bg-red-400 transition-colors"
+          >
+            Delete
+          </button>
         </div>
       </div>
     </div>

@@ -213,7 +213,11 @@ export class CalendarSync {
   /** Record an event's reminder hints in the in-memory `upcoming` cache. */
   private cacheReminder(account: string, calendarId: string, ev: any): void {
     const key = `${account}:${ev.id}`
-    if (ev.status === 'cancelled') {
+    const selfDeclined = Array.isArray(ev.attendees)
+      && ev.attendees.some((a: any) => a?.self && a?.responseStatus === 'declined')
+    // Declined = hidden in the UI (GCal parity) — a reminder for it would
+    // ping about an event the user can't even see.
+    if (ev.status === 'cancelled' || selfDeclined) {
       this.upcoming.delete(key)
       this.upcomingAll.delete(key)
       return

@@ -4,6 +4,7 @@
 import { db } from '@/db'
 import { markProcessing, markDone, markFailed } from '@/db/sync-queue'
 import * as api from './api'
+import { truncateRecurrence } from './recurrence'
 import type { CalendarEvent } from './types'
 
 // Shared state — also used by store/calendar.ts
@@ -114,6 +115,29 @@ export async function processCalendarQueue(): Promise<void> {
             break
           }
 
+          case 'calDeleteFollowing': {
+            const acc = p.accountEmail as string
+            const calId = p.calendarId as string
+            const masterId = p.masterEventId as string
+            const fromStart = p.fromStart as string | null
+            if (fromStart === null) {
+              // "All events" — deleting the master removes the whole series.
+              await api.deleteEvent(acc, calId, masterId)
+            } else {
+              const master = await api.getEvent(acc, calId, masterId)
+              const masterStart = master.start.dateTime || master.start.date || ''
+              if (!master.recurrence?.length || masterStart >= fromStart) {
+                // Cutting at (or before) the first instance = the whole series.
+                await api.deleteEvent(acc, calId, masterId)
+              } else {
+                await api.patchEvent(acc, calId, masterId, {
+                  recurrence: truncateRecurrence(master.recurrence, fromStart),
+                })
+              }
+            }
+            break
+          }
+
           case 'calRsvp': {
             const result = await api.patchEvent(
               p.accountEmail as string,
@@ -221,6 +245,10 @@ export async function processCalendarQueue(): Promise<void> {
             const ck = action.eventCompoundKey
             if (ck) optimisticallyDeleted.delete(ck)
             await db.calendarEvents.put(p.rollback as any)
+            reloadEvents()
+          }
+          if (action.type === 'calDeleteFollowing' && Array.isArray(p.rollback)) {
+            await db.calendarEvents.bulkPut(p.rollback as any[])
             reloadEvents()
           }
           // A create/move has no rollback — the local row IS the only copy of
