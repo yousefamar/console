@@ -21,10 +21,15 @@ import { showPrompt, showConfirm } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
+import { BlogView } from './notes/BlogView'
+import { useBlogStore } from '@/store/blog'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
 import { SpacesFleetMenu } from './SpacesFleetMenu'
 import { NewNoteModal } from './NewNoteModal'
+import { NotesQuickSwitcher } from './NotesQuickSwitcher'
+import { NotesLinkPicker } from './NotesLinkPicker'
+import { NotesCommandPalette } from './NotesCommandPalette'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
 export const SpacesTab = memo(function SpacesTab() {
@@ -33,6 +38,9 @@ export const SpacesTab = memo(function SpacesTab() {
   const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
   const switcherOpen = useSpacesStore((s) => s.switcherOpen)
   const newFileFormOpen = useNotesStore((s) => s.newFileFormOpen)
+  const notesQuickSwitcherOpen = useNotesStore((s) => s.quickSwitcherOpen)
+  const linkPickerOpen = useNotesStore((s) => s.linkPickerOpen)
+  const commandPaletteOpen = useNotesStore((s) => s.commandPaletteOpen)
   const isActivePane = useUiStore((s) => s.activePane === 'spaces')
 
   useEffect(() => {
@@ -78,6 +86,12 @@ export const SpacesTab = memo(function SpacesTab() {
       {/* NewNoteModal is store-gated and also mounted by NotesTab — gate on
           the active pane so two panes never render it twice. */}
       {newFileFormOpen && isActivePane && <NewNoteModal />}
+      {/* Notes modals (Ctrl+P find-file, [[link]] picker, Ctrl+Shift+P palette)
+          — store-gated like NewNoteModal, also mounted by NotesTab; pane-gate
+          so only the visible pane renders them. */}
+      {notesQuickSwitcherOpen && isActivePane && <NotesQuickSwitcher />}
+      {linkPickerOpen && isActivePane && <NotesLinkPicker />}
+      {commandPaletteOpen && isActivePane && <NotesCommandPalette />}
     </div>
   )
 })
@@ -520,6 +534,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
           })}
         </RailSection>
       </div>
+      {/* Devlog — projects have blogs too: posts tagged project: <slug>,
+          newest first, + New post into the blog drafts flow. */}
+      {space.kind === 'project' && !space.slug.startsWith('~') && (
+        <ProjectDevlog slug={space.slug} onOpened={() => setActiveView('docs')} />
+      )}
       {/* Files — the full Notes tree (context-menu rename/delete, new-note
           form, quick switcher), scoped to this project's folder. */}
       {space.slug === VAULT_SLUG ? (
@@ -539,11 +558,58 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
           />
         </div>
       ) : (
-        <div className="border-t border-border px-3 py-2 text-[10px] text-text-tertiary">
-          Area writing lives in the blog (tag: {space.slug})
+        /* Areas: writing IS the content — the blog view (drafts, projects
+           with devlogs, recent posts) fills the space rail. */
+        <div className="flex-1 min-h-0 flex flex-col border-t border-border">
+          <BlogView compact onOpened={() => setActiveView('docs')} />
         </div>
       )}
     </>
+  )
+}
+
+// Devlog strip for a project space: its published posts (tag project: slug),
+// collapsed by default to a count, + New post via the blog drafts flow.
+function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
+  const posts = useBlogStore((s) => s.postsByProject[slug])
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    void useBlogStore.getState().refreshProjectPosts(slug)
+  }, [slug])
+  const newPost = async () => {
+    const title = await showPrompt(`Title for the post about ${slug}:`, { title: 'New devlog post', confirmLabel: 'Create' })
+    if (!title?.trim()) return
+    const r = await useBlogStore.getState().createDraft({ title: title.trim(), project: slug })
+    if (r.ok && r.path) {
+      await useNotesStore.getState().openFile(r.path)
+      onOpened()
+    }
+  }
+  return (
+    <div className="flex-shrink-0 border-t border-border max-h-[30%] overflow-y-auto">
+      <div className="flex items-center justify-between px-3 py-1">
+        <button onClick={() => setExpanded((v) => !v)} className="text-[10px] uppercase tracking-wide text-text-tertiary hover:text-text-secondary">
+          Devlog{posts?.length ? ` (${posts.length})` : ''}
+        </button>
+        <button onClick={() => void newPost()} className="text-text-tertiary hover:text-text-primary" title="New devlog post">
+          <Plus size={10} />
+        </button>
+      </div>
+      {expanded && (posts ?? []).map((p) => (
+        <button
+          key={p.path}
+          onClick={() => { void useNotesStore.getState().openFile(p.path).then(onOpened) }}
+          className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-[11px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+        >
+          <FileText size={9} className="flex-shrink-0 opacity-50" />
+          <span className="truncate">{p.title}</span>
+          {p.date && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
+        </button>
+      ))}
+      {expanded && (posts ?? []).length === 0 && (
+        <div className="px-3 pb-1 text-[10px] text-text-tertiary">No posts tagged project: {slug}</div>
+      )}
+    </div>
   )
 }
 
