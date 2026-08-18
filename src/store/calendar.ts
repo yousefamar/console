@@ -898,12 +898,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
 
     merged.sort((a, b) => a.startTime.localeCompare(b.startTime))
-    const events: CalendarEvent[] = merged
-      .map(fromDbEvent)
-      // GCal parity: declining an invite hides it (Google's "Show declined
-      // events" is off by default). Un-declining happens from the invite email
-      // or GCal itself.
-      .filter((e) => e.attendees?.find((a) => a.self)?.responseStatus !== 'declined')
+    const events: CalendarEvent[] = merged.map(fromDbEvent)
 
     // Merge read-only overlay events (e.g. Meetup) — in-memory, never persisted,
     // never touched by stale-range cleanup or Google sync. Filtered to the same

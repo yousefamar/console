@@ -100,6 +100,7 @@ interface PositionedEvent {
   isTask: boolean      // Google Task (has tasks.google.com link in description)
   isOwn: boolean       // true if calendarId matches a connected account email
   accepted: boolean  // false = needsAction, tentative, or declined
+  declined: boolean  // self attendee explicitly declined — struck-through + faded (GCal style)
   hasReminder: boolean // has non-default reminder override
 }
 
@@ -221,6 +222,7 @@ export function CalendarGrid() {
             isTask: !!e.description?.includes('tasks.google.com/task/'),
             isOwn: ownCalendarIds.has(e.calendarId),
             accepted: !e.attendees || e.organizer?.self || e.attendees.find(a => a.self)?.responseStatus === 'accepted',
+            declined: e.attendees?.find(a => a.self)?.responseStatus === 'declined',
             hasReminder: e.reminders
               ? (e.reminders.useDefault ? !!calHasDefaultReminders.get(e.calendarId) : !!e.reminders.overrides?.length)
               : !!calHasDefaultReminders.get(e.calendarId),
@@ -249,6 +251,8 @@ export function CalendarGrid() {
           }
           // If any copy is accepted, the merged event is accepted
           if (ev.accepted) existing.accepted = true
+          // Declined only if every copy is declined
+          if (!ev.declined) existing.declined = false
         } else if (!existing) {
           mergeMap.set(key, ev)
           merged.push(ev)
@@ -627,7 +631,7 @@ export function CalendarGrid() {
                         unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
                       } ${
                         selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'
-                      } ${isDragging ? 'opacity-40' : ''}`}
+                      } ${isDragging ? 'opacity-40' : ev.declined ? 'opacity-45' : ''}`}
                       style={{
                         top: ev.top + 1,
                         height: Math.max(ev.height - 2, 16),
@@ -652,7 +656,7 @@ export function CalendarGrid() {
                         <div className="text-[10px] font-medium truncate leading-tight flex items-center gap-1" style={{ color: muted.text }}>
                           {ev.isTask && <Square size={8} className="flex-shrink-0 opacity-70" strokeWidth={2.5} />}
                           {ev.hasReminder && <Bell size={8} className="flex-shrink-0 opacity-70" />}
-                          <span className="truncate">{ev.summary}</span>
+                          <span className={`truncate ${ev.declined ? 'line-through' : ''}`}>{ev.summary}</span>
                         </div>
                         {ev.height > 30 && (
                           <div className="text-[9px] truncate" style={{ color: muted.text, opacity: 0.8 }}>
@@ -865,13 +869,14 @@ function AllDayBar({ events, days, calColorMap, selectedEventId, selectEvent }: 
           const muted = muteColor(calColorMap.get(event.calendarId) || '#3b82f6')
           const leftPct = (startCol / numDays) * 100
           const widthPct = (span / numDays) * 100
+          const declined = event.attendees?.find((a) => a.self)?.responseStatus === 'declined'
           return (
             <button
               key={event.id}
               onClick={() => selectEvent(event.id)}
               className={`absolute text-left px-1.5 text-[10px] rounded-sm truncate border-l-2 border border-black/30 transition-colors hover:brightness-125 ${
                 selectedEventId === event.id ? 'ring-1 ring-white/30 brightness-125' : ''
-              }`}
+              } ${declined ? 'opacity-45 line-through' : ''}`}
               style={{
                 top: row * (ROW_HEIGHT + 2) + 2,
                 height: ROW_HEIGHT,
