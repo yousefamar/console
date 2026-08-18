@@ -108,6 +108,14 @@ export function buildBoardEnvelope(opts: {
     `the \`^${card.blockId}\` id, which must stay) plus an indented note below it`,
     'explaining what you need — the card keeps its place in the column.',
     'The board file is the single source of truth — there is no other reporting step.',
+    '',
+    'WORKTREE: for code work of any substance, isolate yourself first —',
+    '`autowt switch <ticket-slug> --terminal echo -y` prints a fresh worktree',
+    'path (no terminal opens); do ALL work there, with your own dev server and',
+    'tests. When done: fold the work back into the project\'s main branch per',
+    'that repo\'s convention (Console: commit lands on `main`, a branch never',
+    'survives), then `autowt cleanup <ticket-slug> -y`. Trivial edits (docs,',
+    'one-liners) can skip the worktree — your judgment.',
   ].join('\n')
 }
 

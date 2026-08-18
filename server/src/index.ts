@@ -29,7 +29,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, wakeSession, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher } from './kanban/watcher.js'
 import { buildBoardEnvelope, buildStaleNudge } from './kanban/dispatch.js'
@@ -755,7 +755,19 @@ const boardWatcher = new BoardWatcher(noteStore, {
   onDispatch: ({ boardPath, card, column, project }) => {
     const role = agentRegistry.get(card.agentKey!)
     if (!role || role.folder) { log(`[boards] no such agent role: @${card.agentKey} (${boardPath})`); return false }
-    const worker = reviveAgentRole(agentCtx, card.agentKey!)
+    // Assigning a ticket to a LIVE durable role forks it: the fork inherits
+    // the role's context, works just this ticket (in its own worktree, per
+    // the envelope), and is merged/reaped after — the role's main session
+    // stays free for conversation. Forks themselves, parked roles, and
+    // pre-init sessions get the direct wake instead (a fork of a fresh spawn
+    // adds nothing; a fork needs the source's claudeSessionId).
+    const live = liveSessionForRole(agentCtx, card.agentKey!)
+    let worker: Session | null = null
+    if (live && !role.fork && live.claudeSessionId) {
+      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!)
+      if (worker) log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}`)
+    }
+    if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
     if (!worker) return false
     wakeSession(agentCtx, worker, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
