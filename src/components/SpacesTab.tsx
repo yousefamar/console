@@ -9,7 +9,7 @@
 // a card into In Progress with an assignee IS delegation; the ^blockid stamps
 // and Done/Blocked transitions all round-trip through the vault file.
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
@@ -19,6 +19,8 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
 import { showPrompt, showConfirm } from '@/dialog'
+import { useDictation } from '@/hooks/useDictation'
+import { dictationSeparator } from '@/utils/dictation-text'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
@@ -706,6 +708,17 @@ function BoardView() {
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
+  // Which column has an open new-card editor (one at a time).
+  const [addingTo, setAddingTo] = useState<string | null>(null)
+  const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
+    await addCardTo(column, text)
+    // The fresh card is the column's last — stamp its detail lines in.
+    const board = useSpacesStore.getState().board
+    const col = board?.columns.find((c) => c.title === column)
+    if (col && detail.some((l) => l.trim())) {
+      await editCard({ column, index: col.cards.length - 1 }, text, detail)
+    }
+  }
 
   if (boardError) return <div className="flex-1 grid place-items-center text-xs text-destructive">{boardError}</div>
   if (!board) return <div className="flex-1 grid place-items-center text-xs text-text-tertiary">Loading board…</div>
@@ -754,10 +767,7 @@ function BoardView() {
           <div className="flex items-center justify-between px-2 py-1 border-b border-border">
             <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">{col.title}</span>
             <button
-              onClick={async () => {
-                const text = await showPrompt('Card text', { title: `Add to ${col.title}` })
-                if (text?.trim()) await addCardTo(col.title, text.trim())
-              }}
+              onClick={() => setAddingTo(addingTo === col.title ? null : col.title)}
               className="text-text-tertiary hover:text-text-primary"
               title={`Add card to ${col.title}`}
             >
@@ -765,6 +775,20 @@ function BoardView() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-1.5 space-y-1.5">
+            {addingTo === col.title && (
+              <div className="rounded-sm border border-accent/50 bg-surface-0 px-2 py-1.5">
+                <CardEditor
+                  initial=""
+                  placeholder={`New card in ${col.title}…`}
+                  onCommit={(draft) => {
+                    setAddingTo(null)
+                    const [first, ...rest] = draft.split('\n')
+                    if (first?.trim()) void addCardWithDetail(col.title, first.trim(), rest)
+                  }}
+                  onCancel={() => setAddingTo(null)}
+                />
+              </div>
+            )}
             {/* Filter hides non-matching cards but `index` stays the column-
                 relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
@@ -790,6 +814,63 @@ function BoardView() {
   )
 }
 
+/** Card content editor — one dictate-able textarea. There is no separate
+ *  title/body: the card IS its first line (the board format is one `- [ ]`
+ *  line), and any further lines become the indented detail. Dictation streams
+ *  into the draft at the end; Enter commits, Shift+Enter breaks a line. */
+function CardEditor({ initial, placeholder, onCommit, onCancel }: {
+  initial: string
+  placeholder: string
+  onCommit: (draft: string) => void
+  onCancel: () => void
+}) {
+  const [draft, setDraft] = useState(initial)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const dictation = useDictation({
+    onText: (text, verbatim) => {
+      const before = draftRef.current
+      setDraft(before + dictationSeparator(before, text, verbatim) + text)
+    },
+  })
+  const commit = () => { dictation.stop(); onCommit(draftRef.current) }
+  return (
+    <div>
+      <textarea
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit() }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dictation.stop(); onCancel() }
+        }}
+        onBlur={(e) => {
+          // Clicking the mic must not commit-and-close the editor.
+          if (e.relatedTarget instanceof HTMLElement && e.relatedTarget.dataset.cardMic) return
+          commit()
+        }}
+        rows={Math.max(2, draft.split('\n').length + (dictation.interim ? 1 : 0))}
+        className="w-full resize-none rounded-sm border border-accent bg-surface-1 px-1 py-0.5 text-xs text-text-primary outline-none"
+        placeholder={placeholder}
+      />
+      {dictation.interim && <div className="px-1 text-[10px] italic text-text-tertiary">{dictation.interim}</div>}
+      <div className="mt-0.5 flex items-center justify-between">
+        <button
+          data-card-mic="1"
+          onMouseDown={(e) => e.preventDefault() /* keep textarea focus */}
+          onClick={() => dictation.recording ? dictation.stop() : dictation.start()}
+          className={clsx('flex items-center gap-1 rounded-sm px-1 py-0.5 text-[10px]', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
+          title={dictation.recording ? 'Stop dictation' : 'Dictate'}
+        >
+          <Mic size={10} className={dictation.recording ? 'animate-pulse' : ''} />
+          {dictation.recording ? 'listening…' : 'dictate'}
+        </button>
+        <span className="text-[9px] text-text-tertiary">↵ save · ⇧↵ new line · esc cancel</span>
+      </div>
+    </div>
+  )
+}
+
 function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked, onEdit, onDelete }: {
   card: BoardCard
   columnTitles: string[]
@@ -801,16 +882,8 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
   onDelete: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
-  // Inline edit: click the text → textarea seeded with "text\ndetail…"; first
-  // line becomes the card, the rest indented continuations. Enter saves,
-  // Shift+Enter newline, Esc cancels, blur saves.
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const startEdit = () => {
-    setDraft([card.text, ...detail].join('\n'))
-    setEditing(true)
-  }
-  const commitEdit = () => {
+  const commitEdit = (draft: string) => {
     setEditing(false)
     const [first, ...rest] = draft.split('\n')
     if (!first?.trim()) return
@@ -824,21 +897,14 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
       card.checked && 'opacity-50',
     )}>
       {editing ? (
-        <textarea
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit() }
-            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
-          }}
-          onBlur={commitEdit}
-          rows={Math.max(2, draft.split('\n').length)}
-          className="w-full resize-none rounded-sm border border-accent bg-surface-1 px-1 py-0.5 text-xs text-text-primary outline-none"
+        <CardEditor
+          initial={[card.text, ...detail].join('\n')}
           placeholder="Card text (first line) + details…"
+          onCommit={commitEdit}
+          onCancel={() => setEditing(false)}
         />
       ) : (
-        <div onClick={startEdit} className="cursor-text" title="Click to edit">
+        <div onClick={() => setEditing(true)} className="cursor-text" title="Click to edit">
           <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
           {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
         </div>

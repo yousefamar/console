@@ -256,6 +256,39 @@ export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | 
   })
 }
 
+/** Fork a durable role's live session for ONE board ticket. The fork gets its
+ *  own role (fork:true, inherits the source's project/areas so it stays in the
+ *  same space and its @key is board-addressable) and is meant to work the
+ *  ticket in its own worktree, then be merged/reaped. Returns null when the
+ *  source has no claudeSessionId yet (pre-init) — caller falls back to waking
+ *  the source directly. The ENVELOPE must be sent immediately after this
+ *  returns: `claude --fork-session` emits no init until its first message. */
+export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string): Session | null {
+  if (!source.claudeSessionId) return null
+  const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
+  const title = `${sourceRole?.title ?? source.name ?? 'agent'} ^${blockId} (fork)`
+  const forkKey = ctx.agentRegistry.mintKey(title)
+  ctx.agentRegistry.create(forkKey, {
+    title, manager: source.agentKey ?? null, cwd: source.cwd, fork: true,
+    project: sourceRole?.project ?? null, areas: sourceRole?.areas ?? [],
+  })
+  broadcastAgentsList(ctx)
+  const session = createSession(ctx, {
+    prompt: '',
+    cwd: source.cwd,
+    resume: source.claudeSessionId,
+    fork: true,
+    silent: true,
+    name: title,
+    parentClaudeSessionId: source.claudeSessionId,
+    agentKey: forkKey,
+  })
+  const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
+  session.logMessage(created)
+  broadcast(ctx.clients, created)
+  return session
+}
+
 /** Re-derive a role from its (possibly-edited) file and fresh-spawn it. The only
  *  way to apply a changed charter, since --append-system-prompt is fresh-spawn
  *  only; the agent's ## Memory carries forward across the new conversation. */
