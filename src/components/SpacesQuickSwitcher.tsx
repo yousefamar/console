@@ -5,7 +5,7 @@
 // the most recent thing in it).
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Search, Bot, GitBranch, FileText, FolderKanban, Tag, Circle } from 'lucide-react'
+import { Search, Bot, GitBranch, FileText, FolderKanban, Tag, Circle, Plus } from 'lucide-react'
 import { useSpacesStore } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
@@ -15,7 +15,7 @@ interface Entry {
   title: string
   /** Secondary label (space slug / dir). */
   hint?: string
-  kind: 'area' | 'project' | 'session' | 'parked' | 'file'
+  kind: 'area' | 'project' | 'session' | 'parked' | 'file' | 'create'
   recency: number
   isFork?: boolean
   running?: boolean
@@ -122,12 +122,25 @@ export function SpacesQuickSwitcher() {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return [...entries].sort((a, b) => b.recency - a.recency).slice(0, 40)
-    return entries
+    const matched = entries
       .map((e) => ({ e, score: fuzzyScore(`${e.title} ${e.hint ?? ''}`.toLowerCase(), q) }))
       .filter((x) => x.score >= 0)
       .sort((a, b) => a.score - b.score || b.e.recency - a.e.recency)
       .slice(0, 40)
       .map((x) => x.e)
+    // Trailing create-note escape hatch — pre-fills the new-note form with
+    // the query as title, defaulting into the active project.
+    matched.push({
+      key: '~create',
+      title: `New note: “${query.trim()}”`,
+      kind: 'create',
+      recency: 0,
+      pick: () => {
+        const active = useSpacesStore.getState().activeSlug
+        useNotesStore.getState().openNewFileForm(active ? `projects/${active}` : 'scratch', query.trim())
+      },
+    })
+    return matched
   }, [entries, query])
 
   useEffect(() => { if (sel >= results.length) setSel(Math.max(0, results.length - 1)) }, [results.length, sel])
@@ -150,6 +163,7 @@ export function SpacesQuickSwitcher() {
     if (e.kind === 'area') return <Tag size={11} className="flex-shrink-0 text-text-tertiary" />
     if (e.kind === 'project') return <FolderKanban size={11} className="flex-shrink-0 text-text-tertiary" />
     if (e.kind === 'file') return <FileText size={11} className="flex-shrink-0 text-text-tertiary" />
+    if (e.kind === 'create') return <Plus size={11} className="flex-shrink-0 text-text-tertiary" />
     if (e.isFork) return <GitBranch size={11} className="flex-shrink-0 text-violet-400/70" />
     return <Bot size={11} className="flex-shrink-0 text-text-tertiary" />
   }
