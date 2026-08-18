@@ -78,6 +78,9 @@ export interface SessionOptions {
    * Ignored on `resume` — Claude's CLI uses the prompt from the original spawn.
    */
   systemPrompt?: string
+  /** Apply `systemPrompt` even though this spawn is a --resume (charter
+   *  reload: new prompt, full history). See the spawn-args comment. */
+  reapplyPromptOnResume?: boolean
   /** Restore the `@amar` attention flag on hub-restart resume (from manifest). */
   needsAttention?: AttentionState | null
   /** Durable org-chart role this session embodies (see agents/registry.ts). The
@@ -280,10 +283,14 @@ export class Session extends EventEmitter {
       args.push('--name', options.name)
     }
 
-    // Only append the system prompt on FRESH spawn (no resume). When the
-    // Claude CLI resumes a session it carries the original system-prompt; a
-    // second --append-system-prompt would stack on top of it on every restart.
-    if (options.systemPrompt && !options.resume) {
+    // Append the system prompt on fresh spawns, and on resumes ONLY when the
+    // caller explicitly asks (role reload): --append-system-prompt applies per
+    // INVOCATION — a resume without it keeps the original prompt, a resume
+    // with it REPLACES the previous append (empirically verified 2026-08-18:
+    // ALPHA appended at spawn, BETA appended at resume → model sees only BETA,
+    // history intact). So charter reloads can keep full history. Ordinary
+    // hub-restart resumes still pass no prompt (charter unchanged).
+    if (options.systemPrompt && (!options.resume || options.reapplyPromptOnResume)) {
       args.push('--append-system-prompt', options.systemPrompt)
     }
 

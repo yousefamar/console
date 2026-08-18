@@ -318,13 +318,30 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
  *  only; the agent's ## Memory carries forward across the new conversation. */
 export function reloadAgentRole(ctx: AgentContext, agentKey: string): Session | null {
   ctx.agentRegistry.load()
-  if (!ctx.agentRegistry.get(agentKey)) return null
+  const role = ctx.agentRegistry.get(agentKey)
+  if (!role) return null
   const existing = liveSessionForRole(ctx, agentKey)
+  const resumeCsid = existing?.claudeSessionId
+  const keepName = existing?.name
   if (existing) {
     existing.kill()
     ctx.sessions.delete(existing.id)
   }
-  const session = reviveAgentRole(ctx, agentKey)
+  // Re-derive the charter WITHOUT losing the conversation: resume the same
+  // claudeSessionId and re-apply the (new) prompt — --append-system-prompt is
+  // per-invocation, so the resume sees the fresh charter on top of the full
+  // history (verified; see session.ts spawn-args comment). Only a role with
+  // no prior claudeSessionId (never initialised) falls back to a fresh spawn.
+  const session = resumeCsid
+    ? createSession(ctx, {
+        agentKey,
+        name: keepName ?? role.title,
+        cwd: existing!.cwd ?? role.cwd ?? ctx.cwd,
+        resume: resumeCsid,
+        reapplyPromptOnResume: true,
+        prompt: `Your role charter/system prompt was just reloaded (your conversation history is intact). Re-read the new instructions above, then continue.`,
+      })
+    : reviveAgentRole(ctx, agentKey)
   const remaining = Array.from(ctx.sessions.values()).map((s) => s.getInfo())
   broadcast(ctx.clients, { type: 'sessions_list', sessions: remaining })
   return session
@@ -394,11 +411,12 @@ export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
 }
 
 export function createSession(ctx: AgentContext, options: SessionOptions): Session {
-  // Resolve the durable role's charter into the system prompt — but only on a
-  // FRESH spawn (!resume, mirroring session.ts:195, else restarts double-stack
-  // --append-system-prompt), and only when the caller hasn't already supplied a
-  // prompt (lets Al keep its richer buildAlSystemPrompt).
-  if (options.agentKey && !options.resume) {
+  // Resolve the durable role's charter into the system prompt — on a FRESH
+  // spawn, or on a charter-reload resume (reapplyPromptOnResume: the append is
+  // per-invocation, so the resume gets the new prompt + full history). Plain
+  // hub-restart resumes pass neither and keep their original prompt. Skipped
+  // when the caller supplied its own prompt (Al's buildAlSystemPrompt).
+  if (options.agentKey && (!options.resume || options.reapplyPromptOnResume)) {
     // Charter + delegation verbs only when the caller didn't supply a prompt
     // (Al passes his own richer buildAlSystemPrompt, which already includes them).
     if (!options.systemPrompt) {
