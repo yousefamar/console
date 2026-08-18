@@ -4,7 +4,8 @@
 // POST /gmaps/credentials                    — set/rotate the Maps Platform key
 // GET  /gmaps/search?q=…[&lat&lon&radius]    — Places API (New) text search
 // POST /gmaps/directions                     — Routes API computeRoutes
-//        body { origin:{lat,lon}, destination:{lat,lon}, mode?, alternatives? }
+//        body { origin:{lat,lon}, destination:{lat,lon}, mode?, alternatives?, departureTime? }
+//        departureTime (RFC3339 UTC) only affects TRANSIT — see gmaps/client.ts
 //
 // Pure read proxy: search results + routes live in the client store and render
 // as dedicated MapLibre sources (like geocache/meetup pins), not persisted
@@ -108,6 +109,7 @@ export function handleGmapsRoutes(
         destination?: { lat?: number; lon?: number }
         mode?: TravelMode
         alternatives?: boolean
+        departureTime?: string
       }
       const o = body.origin, d = body.destination
       if (o?.lat == null || o?.lon == null || d?.lat == null || d?.lon == null) {
@@ -118,6 +120,7 @@ export function handleGmapsRoutes(
         destination: { lat: d.lat, lon: d.lon },
         travelMode: body.mode,
         alternatives: body.alternatives,
+        departureTime: body.departureTime,
       })
       json({ routes })
     })

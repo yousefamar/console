@@ -67,6 +67,16 @@ export interface ComputeRoutesInput {
   travelMode?: TravelMode
   /** ask Google for alternate routes (default true) */
   alternatives?: boolean
+  /**
+   * RFC3339 UTC timestamp, e.g. "2026-08-25T09:00:00Z" — only meaningful (and
+   * only sent) for `travelMode: 'TRANSIT'`. TRANSIT results are
+   * schedule-dependent: asking Google for "now" makes a poll's result depend
+   * on the wall-clock moment it happened to run, which can land on a
+   * dead-of-night query with sparse or zero service. Callers that want a
+   * reproducible "typical" transit time should always pass a near weekday
+   * morning here.
+   */
+  departureTime?: string
 }
 
 export class GoogleMapsClient {
@@ -230,6 +240,11 @@ export class GoogleMapsClient {
     // routingPreference is only valid for DRIVE / TWO_WHEELER — sending it for
     // WALK/BICYCLE/TRANSIT 400s the request.
     if (mode === 'DRIVE') body.routingPreference = 'TRAFFIC_AWARE'
+    // Only TRANSIT is schedule-dependent; DRIVE with TRAFFIC_AWARE already
+    // models "now" via live conditions, and departureTime in the past/future
+    // for WALK/BICYCLE/DRIVE either does nothing or 400s depending on mode —
+    // simplest correct rule is to only ever send it for TRANSIT.
+    if (mode === 'TRANSIT' && input.departureTime) body.departureTime = input.departureTime
 
     const fieldMask = [
       'routes.duration',
