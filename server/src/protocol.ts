@@ -22,7 +22,7 @@ export type ClientMessage =
   | { type: 'interrupt'; sessionId: string }
   | { type: 'kill_session'; sessionId: string }
   | { type: 'delete_session'; sessionId: string }
-  | { type: 'reload_session'; sessionId: string }
+  | { type: 'reload_session'; sessionId: string; fromCsid?: string }
   | { type: 'reload_al' }
   | { type: 'list_sessions' }
   | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string }

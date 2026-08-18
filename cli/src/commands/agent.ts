@@ -294,8 +294,9 @@ async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
 // sessions are resumed in place (history preserved). Mirrors the SPA's intent
 // of a reloadable session; the lever for applying persona/AL.md edits.
 async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
-  const target = args[0]
-  if (!target) exitWithError('USAGE', 'Usage: con agent reload <session-id|name|Al>', flags)
+  const opts = parseFlags(args)
+  const target = args.filter((a) => !a.startsWith('--'))[0]
+  if (!target) exitWithError('USAGE', 'Usage: con agent reload <session-id|name|agentKey|Al> [--from-csid <claudeSessionId>]', flags)
   const { sendAndReceive } = await import('../ws-client.js')
 
   if (target.toLowerCase() === 'al') {
@@ -322,8 +323,8 @@ async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
     }
   } catch { /* /health unavailable — treat target as a raw id (exitWithError never throws; it exits) */ }
 
-  await sendAndReceive({ type: 'reload_session', sessionId }, () => false)
-  output({ reloaded: sessionId }, flags)
+  await sendAndReceive({ type: 'reload_session', sessionId, ...(opts['from-csid'] ? { fromCsid: opts['from-csid'] } : {}) }, () => false)
+  output({ reloaded: sessionId, ...(opts['from-csid'] ? { fromCsid: opts['from-csid'] } : {}) }, flags)
 }
 
 interface ModelState { model: string; chain: string[]; lockedByEnv: boolean }

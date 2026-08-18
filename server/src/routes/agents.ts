@@ -316,12 +316,14 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
 /** Re-derive a role from its (possibly-edited) file and fresh-spawn it. The only
  *  way to apply a changed charter, since --append-system-prompt is fresh-spawn
  *  only; the agent's ## Memory carries forward across the new conversation. */
-export function reloadAgentRole(ctx: AgentContext, agentKey: string): Session | null {
+export function reloadAgentRole(ctx: AgentContext, agentKey: string, fromCsid?: string): Session | null {
   ctx.agentRegistry.load()
   const role = ctx.agentRegistry.get(agentKey)
   if (!role) return null
   const existing = liveSessionForRole(ctx, agentKey)
-  const resumeCsid = existing?.claudeSessionId
+  // fromCsid = restore-from-a-specific-transcript (e.g. re-point a role at its
+  // pre-incident conversation). Default: continue the live session's own.
+  const resumeCsid = fromCsid ?? existing?.claudeSessionId
   const keepName = existing?.name
   if (existing) {
     existing.kill()
@@ -870,7 +872,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       } else if (session.agentKey) {
         // A role-backed session re-derives its (possibly-edited) charter via a
         // fresh spawn; a role-less session just resumes (history preserved).
-        reloadAgentRole(ctx, session.agentKey)
+        reloadAgentRole(ctx, session.agentKey, msg.fromCsid)
         log(`Role reloaded: ${session.agentKey}`)
       } else {
         session.reload()
