@@ -186,10 +186,15 @@ export function useKeybindings() {
 
       // Agent-specific keybindings
       if (isAgents) {
-        // "/" — fuzzy-find an agent and jump to it (works in list + org-chart).
+        // "/" — fuzzy-jump. Spaces gets its own everything-switcher
+        // (spaces + agents + files); the Agents pane keeps the agent one.
         if (e.key === '/') {
           e.preventDefault()
-          agent.getState().openAgentSwitcher()
+          if (activePane === 'spaces') {
+            void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().openSwitcher())
+          } else {
+            agent.getState().openAgentSwitcher()
+          }
           return
         }
         const approval = agent.getState().pendingApproval

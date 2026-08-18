@@ -40,6 +40,10 @@ interface SpacesState {
   assignCard: (ref: CardRef, agentKey: string | null) => Promise<void>
   /** Flip the `#blocked` tag on a card (a property, not a column move). */
   toggleBlocked: (ref: CardRef) => Promise<void>
+  /** "/" command bar — jump to any space/agent/file. */
+  switcherOpen: boolean
+  openSwitcher: () => void
+  closeSwitcher: () => void
 }
 
 const ACTIVE_SLUG_KEY = 'console:spaces:active'
@@ -53,6 +57,9 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   boardPath: null,
   boardMtime: null,
   boardError: null,
+  switcherOpen: false,
+  openSwitcher: () => set({ switcherOpen: true }),
+  closeSwitcher: () => set({ switcherOpen: false }),
 
   refreshSpaces: async () => {
     set({ loading: true })

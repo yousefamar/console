@@ -20,12 +20,17 @@ import { showPrompt } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
+import { NewNoteModal } from './NewNoteModal'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
 export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
   const activeSlug = useSpacesStore((s) => s.activeSlug)
   const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
+  const switcherOpen = useSpacesStore((s) => s.switcherOpen)
+  const newFileFormOpen = useNotesStore((s) => s.newFileFormOpen)
+  const isActivePane = useUiStore((s) => s.activePane === 'spaces')
 
   useEffect(() => {
     void refreshSpaces().then(() => {
@@ -62,6 +67,11 @@ export const SpacesTab = memo(function SpacesTab() {
 
       {/* Right — the active agent session, 50/50 with the centre */}
       {active && <SpaceAgentPanel space={active} />}
+
+      {switcherOpen && <SpacesQuickSwitcher />}
+      {/* NewNoteModal is store-gated and also mounted by NotesTab — gate on
+          the active pane so two panes never render it twice. */}
+      {newFileFormOpen && isActivePane && <NewNoteModal />}
     </div>
   )
 })
@@ -206,10 +216,17 @@ function SpaceListRail() {
   )
 }
 
-function RailSection({ label, children }: { label: string; children: React.ReactNode }) {
+function RailSection({ label, action, children }: { label: string; action?: { icon: React.ReactNode; title: string; onClick: () => void }; children: React.ReactNode }) {
   return (
     <div className="mb-2">
-      <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-text-tertiary">{label}</div>
+      <div className="flex items-center justify-between px-3 py-1">
+        <span className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</span>
+        {action && (
+          <button onClick={action.onClick} className="text-text-tertiary hover:text-text-primary" title={action.title}>
+            {action.icon}
+          </button>
+        )}
+      </div>
       {children}
     </div>
   )
@@ -365,7 +382,10 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             )
           })}
         </RailSection>
-        <RailSection label="Files">
+        <RailSection
+          label="Files"
+          action={space.kind === 'project' ? { icon: <Plus size={10} />, title: 'New file in this project', onClick: () => useNotesStore.getState().openNewFileForm(`projects/${space.slug}`) } : undefined}
+        >
           {space.kind === 'area' && (
             <div className="px-3 py-1 text-[10px] text-text-tertiary">
               Area writing lives in the blog (tag: {space.slug})
