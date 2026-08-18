@@ -62,6 +62,7 @@ interface CellEvent {
   isTask: boolean
   isOwn: boolean
   accepted: boolean
+  declined: boolean
   hasReminder: boolean
   spanStart: string  // YYYY-MM-DD inclusive
   spanEnd: string    // YYYY-MM-DD exclusive
@@ -147,6 +148,7 @@ export function CalendarMonth() {
         isTask: !!e.description?.includes('tasks.google.com/task/'),
         isOwn: ownCalendarIds.has(e.calendarId),
         accepted: !e.attendees || e.organizer?.self || e.attendees.find((a) => a.self)?.responseStatus === 'accepted',
+        declined: e.attendees?.find((a) => a.self)?.responseStatus === 'declined',
         hasReminder: e.reminders
           ? (e.reminders.useDefault ? !!calHasDefaultReminders.get(e.calendarId) : !!e.reminders.overrides?.length)
           : !!calHasDefaultReminders.get(e.calendarId),
@@ -164,6 +166,7 @@ export function CalendarMonth() {
           existing.isOwn = true
         }
         if (ev.accepted) existing.accepted = true
+        if (!ev.declined) existing.declined = false
       } else if (!existing) {
         merged.set(key, ev)
       }
@@ -360,7 +363,7 @@ export function CalendarMonth() {
                           onClick={(e) => { e.stopPropagation(); selectEvent(event.id) }}
                           className={`absolute left-1 right-1 rounded-sm overflow-hidden text-left px-1 ${
                             unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
-                          } ${selectedEventId === event.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'}`}
+                          } ${selectedEventId === event.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'} ${event.declined ? 'opacity-45' : ''}`}
                           style={{
                             top: CELL_HEADER_HEIGHT + lane * (LANE_HEIGHT + LANE_GAP),
                             height: LANE_HEIGHT,
@@ -380,7 +383,7 @@ export function CalendarMonth() {
                                   {formatTime(event.startTime)}
                                 </span>
                               )}
-                              <span className="text-[10px] truncate">{event.summary}</span>
+                              <span className={`text-[10px] truncate ${event.declined ? 'line-through' : ''}`}>{event.summary}</span>
                             </div>
                           )}
                         </button>
@@ -412,7 +415,7 @@ export function CalendarMonth() {
                     onClick={(e) => { e.stopPropagation(); selectEvent(ev.id) }}
                     className={`absolute rounded-sm overflow-hidden text-left px-1.5 ${
                       unaccepted ? 'border border-dashed' : 'border-l-2 border border-black/30'
-                    } ${selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'}`}
+                    } ${selectedEventId === ev.id ? 'ring-1 ring-white/30 brightness-125' : 'hover:brightness-125'} ${ev.declined ? 'opacity-45' : ''}`}
                     style={{
                       left: `calc(${(s.startCol / 7) * 100}% + 4px)`,
                       width: `calc(${(s.span / 7) * 100}% - 8px)`,
@@ -428,7 +431,7 @@ export function CalendarMonth() {
                       zIndex: 5,
                     }}
                   >
-                    {!isMobile && <span className="text-[10px] truncate block">{ev.summary}</span>}
+                    {!isMobile && <span className={`text-[10px] truncate block ${ev.declined ? 'line-through' : ''}`}>{ev.summary}</span>}
                   </button>
                 )
               })}
