@@ -46,6 +46,7 @@ export interface CalendarEvent {
   creator?: { email: string; displayName?: string }
   colorId?: string
   recurringEventId?: string
+  recurrence?: string[]   // RRULE/EXDATE lines — present on the series master only
   htmlLink: string
   hangoutLink?: string
   conferenceData?: {

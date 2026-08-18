@@ -157,6 +157,7 @@ export type QueueActionType =
   | 'calCreate'
   | 'calUpdate'
   | 'calDelete'
+  | 'calDeleteFollowing'
   | 'calRsvp'
   | 'calReminder'
   | 'calLocation'

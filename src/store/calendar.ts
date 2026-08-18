@@ -41,6 +41,48 @@ function isTempEventId(id: string): boolean {
   return id.startsWith('~')
 }
 
+// Shared body of deleteFollowingEvents / deleteAllEvents (fromStart null = all).
+// Optimistically removes every local instance row of the series, then enqueues
+// ONE calDeleteFollowing action against the master id.
+async function deleteSeriesRows(
+  calendarId: string,
+  accountEmail: string,
+  masterEventId: string,
+  fromStart: string | null,
+  get: () => { loadEventsFromDb: () => Promise<void> },
+): Promise<void> {
+  const rows = await db.calendarEvents
+    .where('calendarId').equals(calendarId)
+    .filter((e) =>
+      (e.recurringEventId === masterEventId || e.id === masterEventId)
+      && (fromStart === null || e.startTime >= fromStart))
+    .toArray()
+
+  const masterCk = compoundKey(accountEmail, calendarId, masterEventId)
+  for (const r of rows) optimisticallyDeleted.add(r.compoundKey)
+  await db.calendarEvents.bulkDelete(rows.map((r) => r.compoundKey))
+  await get().loadEventsFromDb()
+
+  useUiStore.getState().setUndoAction({
+    label: fromStart === null ? 'Series deleted' : 'Deleted from here on',
+    expiresAt: Date.now() + 5000,
+    undo: async () => {
+      for (const r of rows) optimisticallyDeleted.delete(r.compoundKey)
+      await db.calendarEvents.bulkPut(rows)
+      await removeByEvent(masterCk, 'calDeleteFollowing')
+      await get().loadEventsFromDb()
+    },
+  })
+
+  const bg = async () => {
+    for (const r of rows) optimisticallyDeleted.delete(r.compoundKey)
+    await enqueue('calDeleteFollowing', {
+      calendarId, accountEmail, masterEventId, fromStart, rollback: rows,
+    }, { eventCompoundKey: masterCk })
+  }
+  bg().catch(() => {})
+}
+
 function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): DbCalendarEvent {
   return {
     id: e.id,
@@ -179,6 +221,8 @@ interface CalendarState {
   createEvent: (calendarId: string, accountEmail: string, event: Partial<CalendarEvent>) => Promise<void>
   updateEvent: (calendarId: string, accountEmail: string, eventId: string, updates: Partial<CalendarEvent>) => Promise<void>
   deleteEvent: (calendarId: string, accountEmail: string, eventId: string) => Promise<void>
+  deleteFollowingEvents: (calendarId: string, accountEmail: string, masterEventId: string, fromStart: string) => Promise<void>
+  deleteAllEvents: (calendarId: string, accountEmail: string, masterEventId: string) => Promise<void>
   rsvp: (calendarId: string, accountEmail: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
   setReminder: (calendarId: string, accountEmail: string, eventId: string, minutes: number | null) => Promise<void>
   updateLocation: (calendarId: string, accountEmail: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
@@ -689,6 +733,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     bg().catch(() => {})
   },
 
+  // Recurring-series scopes. Instances arrive via singleEvents:true, so the
+  // local rows are per-instance; the master lives only on Google. Both scopes
+  // enqueue ONE calDeleteFollowing action keyed on the master id — the queue
+  // processor fetches the master and either truncates its RRULE (following)
+  // or deletes it outright (all / series-start cut).
+  deleteFollowingEvents: async (calendarId, accountEmail, masterEventId, fromStart) => {
+    await deleteSeriesRows(calendarId, accountEmail, masterEventId, fromStart, get)
+  },
+
+  deleteAllEvents: async (calendarId, accountEmail, masterEventId) => {
+    await deleteSeriesRows(calendarId, accountEmail, masterEventId, null, get)
+  },
+
   rsvp: async (calendarId, accountEmail, eventId, status) => {
     const ck = compoundKey(accountEmail, calendarId, eventId)
     const existing = await db.calendarEvents.get(ck)
@@ -841,7 +898,12 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
 
     merged.sort((a, b) => a.startTime.localeCompare(b.startTime))
-    const events: CalendarEvent[] = merged.map(fromDbEvent)
+    const events: CalendarEvent[] = merged
+      .map(fromDbEvent)
+      // GCal parity: declining an invite hides it (Google's "Show declined
+      // events" is off by default). Un-declining happens from the invite email
+      // or GCal itself.
+      .filter((e) => e.attendees?.find((a) => a.self)?.responseStatus !== 'declined')
 
     // Merge read-only overlay events (e.g. Meetup) — in-memory, never persisted,
     // never touched by stale-range cleanup or Google sync. Filtered to the same
