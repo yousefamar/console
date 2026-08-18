@@ -293,6 +293,9 @@ interface AgentState {
   connect: () => void
   disconnect: () => void
   createSession: (prompt: string, cwd?: string, images?: Array<{ media_type: string; data: string }>, name?: string) => void
+  /** Create a session that mints a durable role up front (asAgent) — the
+   *  prompt doubles as the charter. Used by the Spaces new-agent flow. */
+  createSessionAsAgent: (prompt: string, cwd: string | undefined, name: string, binding?: { project?: string; areas?: string[] }) => void
   sendMessage: (content: string, images?: Array<{ media_type: string; data: string }>) => void
   /** Queue a prompt for delivery when the CURRENT TURN FULLY ENDS (not the next
    *  tool boundary — that's steering). Appends to any existing queued text. */
@@ -488,6 +491,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       pendingApproval: null,
       creatingNewSession: false,
     })
+  },
+
+  createSessionAsAgent: (prompt, cwd, name, binding) => {
+    sendWs({ type: 'create_session', prompt, ...(cwd ? { cwd } : {}), name, asAgent: true, ...(binding?.project ? { project: binding.project } : {}), ...(binding?.areas?.length ? { areas: binding.areas } : {}) })
+    set({ pendingPrompt: prompt, pendingSessionActivate: true, pendingApproval: null, creatingNewSession: false })
   },
 
   sendMessage: (content, images) => {
