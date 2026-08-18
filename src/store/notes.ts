@@ -177,6 +177,7 @@ interface NotesState {
   // New file form (triggered from Ctrl+N, context menu, sidebar button)
   newFileFormOpen: boolean
   newFileFormDir: string  // pre-filled directory
+  newFileFormTitle: string // pre-filled title (e.g. from the Spaces switcher query)
 
   // Link picker
   linkPickerOpen: boolean
@@ -214,7 +215,7 @@ interface NotesState {
   closeQuickSwitcher: () => void
   openCommandPalette: () => void
   closeCommandPalette: () => void
-  openNewFileForm: (dir?: string) => void
+  openNewFileForm: (dir?: string, title?: string) => void
   closeNewFileForm: () => void
   openLinkPicker: (ctx: { from: number; to: number; selectedText: string; mode: 'wiki' | 'both' }) => void
   closeLinkPicker: () => void
@@ -312,6 +313,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   commandPaletteOpen: false,
   newFileFormOpen: false,
   newFileFormDir: 'scratch',
+  newFileFormTitle: '',
   linkPickerOpen: false,
   linkPickerContext: null,
   editorView: null,
@@ -646,7 +648,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette: () => set({ commandPaletteOpen: false }),
 
-  openNewFileForm: (dir = 'scratch') => set({ newFileFormOpen: true, newFileFormDir: dir }),
+  openNewFileForm: (dir = 'scratch', title = '') => set({ newFileFormOpen: true, newFileFormDir: dir, newFileFormTitle: title }),
   closeNewFileForm: () => set({ newFileFormOpen: false, newFileFormDir: 'scratch' }),
 
   openLinkPicker: (ctx) => set({ linkPickerOpen: true, linkPickerContext: ctx }),

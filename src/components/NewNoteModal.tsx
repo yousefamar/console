@@ -3,7 +3,7 @@ import { useNotesStore, slugify, getDirectoriesByRecency } from '@/store/notes'
 import { Folder } from 'lucide-react'
 
 export function NewNoteModal() {
-  const [title, setTitle] = useState('')
+  const [title, setTitle] = useState(() => useNotesStore.getState().newFileFormTitle)
   const dir = useNotesStore((s) => s.newFileFormDir)
   const [dirInput, setDirInput] = useState(dir)
   const [showSuggestions, setShowSuggestions] = useState(false)
