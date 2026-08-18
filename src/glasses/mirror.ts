@@ -32,6 +32,7 @@ import { useMoneyStore } from '@/store/money'
 import { useNotesStore } from '@/store/notes'
 import { useDashboardStore } from '@/store/dashboard'
 import { renderNotes } from './panes/notes'
+import { useSpacesStore } from '@/store/spaces'
 import { renderChat } from './panes/chat'
 import { renderAgents } from './panes/agents'
 import { renderMail } from './panes/mail'
@@ -78,7 +79,19 @@ const renderers: Record<ActivePane, PaneRenderer> = {
   bookmarks: renderBookmarks,
   money: renderMoney,
   map: renderMap,
-  spaces: () => null,
+  // Spaces hosts both an agent session and the notes editor; mirror whichever
+  // is the likely focus — the editor when a file is open in Docs view, else
+  // the active agent session.
+  spaces: renderSpaces,
+}
+
+function renderSpaces(): MirrorFrame | null {
+  const view = useSpacesStore.getState().activeView
+  if (view === 'docs') {
+    const frame = renderNotes()
+    if (frame) return frame
+  }
+  return renderAgents()
 }
 
 // --- Enable / persistence --------------------------------------------------

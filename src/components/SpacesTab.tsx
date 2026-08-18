@@ -16,6 +16,7 @@ import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
 import { showPrompt, showConfirm } from '@/dialog'
 import { AgentSessionView } from './AgentSessionView'
@@ -58,6 +59,34 @@ export const SpacesTab = memo(function SpacesTab() {
   const active = activeSlug === VAULT_SLUG ? VAULT_SPACE
     : activeSlug === UNASSIGNED_SLUG ? UNASSIGNED_SPACE
     : spaces.find((s) => s.slug === activeSlug) ?? null
+
+  const isMobile = useIsMobile()
+  const activeSessionId = useAgentStore((s) => s.activeSessionId)
+  const activeFilePath = useNotesStore((s) => s.activeFilePath)
+  if (isMobile) {
+    // One page at a time: space list → space contents → detail (session or
+    // editor). mobileGoBack('spaces') walks this in reverse.
+    const detail = activeSessionId ? 'session' : activeFilePath ? 'editor' : null
+    return (
+      <div className="flex flex-1 h-full min-w-0 flex-col">
+        {!active ? (
+          <div className="flex flex-1 min-h-0 flex-col"><SpaceListRail /></div>
+        ) : detail === 'session' ? (
+          <SpaceAgentPanel space={active} />
+        ) : detail === 'editor' && isActivePane ? (
+          <NotesEditor scopePrefixes={spaceScopePrefixes(active)} />
+        ) : (
+          <div className="flex flex-1 min-h-0 flex-col"><SpaceRail space={active} /></div>
+        )}
+        {switcherOpen && <SpacesQuickSwitcher />}
+        <SpacesHandoffBanner />
+        {newFileFormOpen && isActivePane && <NewNoteModal />}
+        {notesQuickSwitcherOpen && isActivePane && <NotesQuickSwitcher />}
+        {linkPickerOpen && isActivePane && <NotesLinkPicker />}
+        {commandPaletteOpen && isActivePane && <NotesCommandPalette />}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-1 h-full min-w-0">

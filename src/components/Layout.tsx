@@ -182,6 +182,10 @@ export function Layout() {
   const gmailConnected = useGmailConnected()
   const matrixConnected = isMatrixConnected()
 
+  // Legacy Agents/Notes tabs — hidden once Spaces has absorbed them (flip in
+  // localStorage: console:ui:legacyTabs = 'true' to bring them back; keep the
+  // panes themselves mounted so deep links / fallbacks still work).
+  const showLegacyTabs = localStorage.getItem('console:ui:legacyTabs') !== 'false'
   const isHome = activePane === 'home'
   const isEmail = activePane === 'email'
   const isChat = activePane === 'chat'
@@ -311,9 +315,9 @@ export function Layout() {
                 </button>
               )}
               <PaneTab pane="spaces" icon={<FolderKanban size={11} />} label="Spaces" activePane={activePane} setActivePane={setActivePane} />
-              <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />
+              {showLegacyTabs && <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />}
               <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
-              <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />
+              {showLegacyTabs && <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />}
               <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="map" icon={<MapPin size={11} />} label="Map" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="money" icon={<PoundSterling size={11} />} label="Money" activePane={activePane} setActivePane={setActivePane} />
@@ -513,9 +517,9 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
     { pane: 'spaces', icon: <FolderKanban size={18} />, label: 'Spaces' },
-    { pane: 'agents', icon: <Bot size={18} />, label: 'Agents' },
+    ...(localStorage.getItem('console:ui:legacyTabs') !== 'false' ? [{ pane: 'agents' as ActivePane, icon: <Bot size={18} />, label: 'Agents' }] : []),
     { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
-    { pane: 'notes', icon: <FileText size={18} />, label: 'Notes' },
+    ...(localStorage.getItem('console:ui:legacyTabs') !== 'false' ? [{ pane: 'notes' as ActivePane, icon: <FileText size={18} />, label: 'Notes' }] : []),
     { pane: 'bookmarks', icon: <Bookmark size={18} />, label: 'Marks' },
     { pane: 'map', icon: <MapPin size={18} />, label: 'Map' },
     { pane: 'money', icon: <PoundSterling size={18} />, label: 'Money' },
@@ -726,6 +730,19 @@ function mobileGoBack(pane: ActivePane) {
       if (ag.activeSessionId) ag.selectSession(null)
       // selectSession(null) sets creatingNewSession: true, so always clear it on back
       useAgentStore.setState({ creatingNewSession: false })
+      break
+    }
+    case 'spaces': {
+      const ag = useAgentStore.getState()
+      const notes = useNotesStore.getState()
+      if (ag.activeSessionId) {
+        ag.selectSession(null)
+        useAgentStore.setState({ creatingNewSession: false })
+      } else if (notes.activeFilePath) {
+        notes.closeFile(notes.activeFilePath, true)
+      } else {
+        void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().selectSpace(null))
+      }
       break
     }
   }

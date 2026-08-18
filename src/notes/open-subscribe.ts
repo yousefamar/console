@@ -42,7 +42,14 @@ async function handleOpen(data: unknown): Promise<void> {
     return
   }
 
-  useUiStore.getState().setActivePane('notes')
+  // Notes are being absorbed into Spaces — land there, in the owning project
+  // (or the Vault pseudo-space for anything outside projects/).
+  const { useSpacesStore } = await import('@/store/spaces')
+  const { VAULT_SLUG } = await import('@/components/SpacesTab')
+  const slug = path.match(/^projects\/([^/.]+)/)?.[1] ?? VAULT_SLUG
+  useUiStore.getState().setActivePane('spaces')
+  useSpacesStore.getState().selectSpace(slug)
+  useSpacesStore.getState().setActiveView('docs')
   await useNotesStore.getState().openFile(path)
   if (useNotesStore.getState().activeFilePath !== path) return
 
