@@ -40,6 +40,11 @@ interface SpacesState {
   assignCard: (ref: CardRef, agentKey: string | null) => Promise<void>
   /** Flip the `#blocked` tag on a card (a property, not a column move). */
   toggleBlocked: (ref: CardRef) => Promise<void>
+  /** Rewrite a card's text and detail (indented continuation lines). Tokens
+   *  (@key/^id/#blocked) survive — only the human-readable content changes. */
+  editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
+  /** Remove a card entirely (a human judgment — agents never delete cards). */
+  deleteCard: (ref: CardRef) => Promise<void>
   /** "/" command bar — jump to any space/agent/file. */
   switcherOpen: boolean
   openSwitcher: () => void
@@ -148,6 +153,33 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     await get().saveBoard()
   },
 
+  editCard: async (ref, text, detail) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card || !text.trim()) return
+    card.text = text.trim()
+    refreshCardLine(card)
+    // Detail lines are the indented continuations under the first line.
+    card.lines = [card.lines[0]!, ...detail.map((l) => l.trim()).filter(Boolean).map((l) => `  ${l}`)]
+    set({ board: { ...board } })
+    await get().saveBoard()
+  },
+
+  deleteCard: async (ref) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    if (!col || !col.cards[ref.index]) return
+    col.cards.splice(ref.index, 1)
+    for (const x of col.interstitials) {
+      if (x.afterCard >= ref.index) x.afterCard = Math.max(-1, x.afterCard - 1)
+    }
+    set({ board: { ...board } })
+    await get().saveBoard()
+  },
+
   assignCard: async (ref, agentKey) => {
     const { board } = get()
     if (!board) return
@@ -187,6 +219,7 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     set({ board: { ...board } })
     await get().saveBoard()
   },
+
 }))
 
 export { findCard }
