@@ -23,6 +23,7 @@ import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
+import { SpacesFleetMenu } from './SpacesFleetMenu'
 import { NewNoteModal } from './NewNoteModal'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
@@ -73,12 +74,45 @@ export const SpacesTab = memo(function SpacesTab() {
       {active && <SpaceAgentPanel space={active} />}
 
       {switcherOpen && <SpacesQuickSwitcher />}
+      <SpacesHandoffBanner />
       {/* NewNoteModal is store-gated and also mounted by NotesTab — gate on
           the active pane so two panes never render it twice. */}
       {newFileFormOpen && isActivePane && <NewNoteModal />}
     </div>
   )
 })
+
+// Al hand-off affordances (mirror AgentTab's): the opt-in "Talk to X" banner
+// + the "Back to Al" return chip. Global overlays, shown wherever agent
+// sessions are hosted — which now includes Spaces.
+function SpacesHandoffBanner() {
+  const pendingHandoff = useAgentStore((s) => s.pendingHandoff)
+  const handoffReturnTo = useAgentStore((s) => s.handoffReturnTo)
+  const acceptHandoff = useAgentStore((s) => s.acceptHandoff)
+  const dismissHandoff = useAgentStore((s) => s.dismissHandoff)
+  const returnFromHandoff = useAgentStore((s) => s.returnFromHandoff)
+  const agentRoles = useAgentStore((s) => s.agentRoles)
+  if (pendingHandoff) {
+    return (
+      <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
+        <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{agentRoles.find((r) => r.key === pendingHandoff.targetAgentKey)?.title ?? pendingHandoff.targetAgentKey}</span></span>
+        <button onClick={() => acceptHandoff(pendingHandoff.targetAgentKey)} className="rounded bg-violet-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-violet-500">Talk →</button>
+        <button onClick={dismissHandoff} className="text-text-tertiary hover:text-text-primary"><X size={12} /></button>
+      </div>
+    )
+  }
+  if (handoffReturnTo) {
+    return (
+      <button
+        onClick={returnFromHandoff}
+        className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text-secondary shadow-xl hover:text-text-primary"
+      >
+        ↩ Back to Al
+      </button>
+    )
+  }
+  return null
+}
 
 // ---------------------------------------------------------------------------
 // Rail, top level: all spaces
@@ -232,9 +266,12 @@ function SpaceListRail() {
     <>
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
         <span className="text-xs font-medium text-text-primary">Spaces</span>
-        <button onClick={() => void refreshSpaces()} className="text-text-tertiary hover:text-text-primary" title="Refresh">
-          <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <span className="flex items-center gap-2">
+          <SpacesFleetMenu />
+          <button onClick={() => void refreshSpaces()} className="text-text-tertiary hover:text-text-primary" title="Refresh">
+            <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto py-1">
         <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
