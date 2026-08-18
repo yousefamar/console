@@ -647,7 +647,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry,
+  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry, vaultPath: notesVault,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {

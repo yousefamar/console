@@ -2,7 +2,7 @@
 
 import { WebSocket } from 'ws'
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, type SessionOptions } from '../session.js'
@@ -11,6 +11,7 @@ import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBa
 import { smallFastModel } from '../bedrock-profiles.js'
 import type { AgentRegistry } from '../agents/registry.js'
 import { buildBoardProtocol, buildOrgPosition, renderOrgRoster, shortDescription } from '../agents/org-protocol.js'
+import { isKanbanBoard } from '../kanban/board.js'
 import { buildMergeRequest, buildChildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
@@ -122,6 +123,9 @@ export interface AgentContext {
    *  they survive the child being killed. Wired in index.ts to
    *  `HubCronScheduler.reassignSession`; returns the number of tasks moved. */
   reassignCron?: (fromClaudeSessionId: string, toClaudeSessionId: string) => number
+  /** Absolute vault root (index.ts wires noteStore.vaultPath) — lets a role
+   *  spawn name its project's kanban board in the system prompt. */
+  vaultPath?: string
 }
 
 /** Restart every live session onto the currently-resolved model. Used after a
@@ -254,6 +258,25 @@ export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | 
     cwd: role.cwd ?? ctx.cwd,
     prompt: `You are (re)starting as the "${role.title}" agent. Your charter and memory are in your system prompt above — read them, then await instructions.`,
   })
+}
+
+/** Absolute path of a project's kanban board, mirroring spaces.ts's board
+ *  resolution (board.md / kanban.md by name, else first kanban-flagged .md).
+ *  Sync on purpose — called at spawn time, reads at most a handful of files. */
+export function findProjectBoard(vaultPath: string, slug: string): string | null {
+  const dir = join(vaultPath, 'projects', slug)
+  for (const name of ['board.md', 'kanban.md']) {
+    const p = join(dir, name)
+    if (existsSync(p)) return p
+  }
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.md')) continue
+      const p = join(dir, f)
+      try { if (isKanbanBoard(readFileSync(p, 'utf-8'))) return p } catch { /* skip */ }
+    }
+  } catch { /* no project dir */ }
+  return null
 }
 
 /** Fork a durable role's live session for ONE board ticket. The fork gets its
@@ -395,6 +418,13 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
         reports: reports.map((r) => ({ key: r.key, title: r.title, desc: shortDescription(r.charter), folder: r.folder })),
       })
       options.systemPrompt = options.systemPrompt ? `${options.systemPrompt}\n\n${pos}` : pos
+      // Name the role's project board explicitly — no discovery step needed.
+      if (role.project && ctx.vaultPath) {
+        const boardAbs = findProjectBoard(ctx.vaultPath, role.project)
+        if (boardAbs) {
+          options.systemPrompt += `\n\n# Your project board\nYour project's kanban board is \`${boardAbs}\` — add cards there (\`@key\` to assign), and work cards tagged \`@${role.key}\`.`
+        }
+      }
     }
   }
   const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
