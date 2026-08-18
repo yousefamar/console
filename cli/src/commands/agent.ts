@@ -44,7 +44,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
 //   from the list so it can't be resumed on restart). Or just stop calling.
 // --------------------------------------------------------------------------
 
-interface HealthSession { id: string; claudeSessionId?: string; name?: string; cwd?: string; status: string }
+interface HealthSession { id: string; claudeSessionId?: string; name?: string; agentKey?: string; cwd?: string; status: string }
 
 async function resolveByName(name: string): Promise<HealthSession> {
   const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
@@ -304,17 +304,23 @@ async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Resolve a live session by id or unique name, then respawn it.
+  // Resolve a live session by id, unique name, or agentKey, then respawn it.
+  // MUST fail loudly on no match: the hub replies hub_error to an unknown id,
+  // and printing success on top of that once broke a whole-fleet reload (the
+  // sessions that "reloaded" by role key never actually respawned).
   let sessionId = target
   try {
     const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
     const live = (health.sessions || []).filter((s) => s.status !== 'ended')
     if (!live.some((s) => s.id === target)) {
       const named = live.filter((s) => (s.name || '').toLowerCase() === target.toLowerCase())
-      if (named.length === 1) sessionId = named[0]!.id
-      else if (named.length > 1) exitWithError('AMBIGUOUS', `Multiple sessions named "${target}" — use the id.`, flags)
+      const keyed = live.filter((s) => s.agentKey === target)
+      const matches = named.length ? named : keyed
+      if (matches.length === 1) sessionId = matches[0]!.id
+      else if (matches.length > 1) exitWithError('AMBIGUOUS', `Multiple sessions match "${target}" — use the id.`, flags)
+      else exitWithError('NOT_FOUND', `No live session with id, name, or agentKey "${target}".`, flags)
     }
-  } catch { /* /health unavailable — treat target as a raw id */ }
+  } catch { /* /health unavailable — treat target as a raw id (exitWithError never throws; it exits) */ }
 
   await sendAndReceive({ type: 'reload_session', sessionId }, () => false)
   output({ reloaded: sessionId }, flags)
