@@ -7,6 +7,7 @@ import { PropertySearchStore, PORTAL_BY_COUNTRY } from '../property/store.js'
 import { postFilter } from '../property/sync.js'
 import { asEntryArray } from '../property/immoscout24.js'
 import { isTooSmall } from '../property/immobiliare.js'
+import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
 import type { Listing } from '../property/types.js'
 
 const dirs: string[] = []
@@ -299,5 +300,30 @@ describe('isTooSmall (immobiliare)', () => {
       [13.0, 45.0],
     ]
     expect(isTooSmall(square)).toBe(false)
+  })
+})
+
+describe('nextWeekdayMorningUtc', () => {
+  it('picks the same weekday 09:00 UTC when still in the future', () => {
+    // Monday 2026-08-17, 07:00 UTC — 09:00 same day hasn't happened yet.
+    const now = new Date('2026-08-17T07:00:00Z')
+    expect(nextWeekdayMorningUtc(now)).toBe('2026-08-17T09:00:00Z')
+  })
+
+  it('rolls a Friday-evening query past the weekend to Monday', () => {
+    const now = new Date('2026-08-21T20:00:00Z') // Friday evening
+    expect(nextWeekdayMorningUtc(now)).toBe('2026-08-24T09:00:00Z') // Monday
+  })
+
+  it('never returns a time in the past relative to `now` — the whole point is avoiding a live 2am query', () => {
+    // Same-day 09:00 has already passed by 10am, so it must roll to tomorrow.
+    const now = new Date('2026-08-17T10:00:00Z')
+    const result = new Date(nextWeekdayMorningUtc(now))
+    expect(result.getTime()).toBeGreaterThan(now.getTime())
+  })
+
+  it('skips a Saturday-morning "now" straight to Monday, not Sunday', () => {
+    const now = new Date('2026-08-22T05:00:00Z') // Saturday
+    expect(nextWeekdayMorningUtc(now)).toBe('2026-08-24T09:00:00Z') // Monday
   })
 })

@@ -14,9 +14,11 @@
 import type { PushServer } from '../push.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
+import type { GoogleMapsClient } from '../gmaps/client.js'
 import { ringsInCountry, type Geometry, type Ring } from './geo.js'
 import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore } from './store.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
+import { nearestAirport } from './airport-distance.js'
 
 const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
 const LAYER_GROUP = 'property'
@@ -48,6 +50,7 @@ export class PropertySync {
     private readonly push: PushServer,
     private readonly bus: SyncBus,
     private readonly mapLayers: MapLayerStore,
+    private readonly gmaps: GoogleMapsClient,
     private readonly log: (msg: string) => void,
   ) {}
 
@@ -170,7 +173,42 @@ export class PropertySync {
       this.log(`[property-sync] ${s.id} seeded with ${listings.length} existing listings (no alerts)`)
       return
     }
-    if (update.fresh.length) this.notify(update.current, update.fresh)
+    if (update.fresh.length) await this.notify(update.current, update.fresh)
+  }
+
+  /**
+   * Look up + persist nearest-airport drive/transit time for listings that
+   * are about to get their own individual notification (≤MAX_ALERTS — the
+   * >MAX_ALERTS summary push shows no single listing's detail, so there's
+   * nothing to attach it to). Silently skipped if Google Maps isn't
+   * configured; a per-listing failure just leaves that one without a figure
+   * rather than blocking the notification.
+   */
+  private async attachAirportDistances(s: PropertySearch, fresh: Listing[]): Promise<void> {
+    if (!this.gmaps.isConfigured() || fresh.length > MAX_ALERTS) return
+    let changed = false
+    for (const l of fresh) {
+      if (l.lat == null || l.lon == null) continue
+      try {
+        const dist = await nearestAirport(this.gmaps, { lat: l.lat, lon: l.lon }, s.country)
+        if (!dist) continue
+        const nearestAirportField = {
+          iata: dist.airport.iata,
+          name: dist.airport.name,
+          driveMinutes: dist.driveMinutes,
+          transitMinutes: dist.transitMinutes,
+        }
+        l.nearestAirport = nearestAirportField
+        this.searches.setNearestAirport(s.id, l.id, nearestAirportField)
+        changed = true
+      } catch (e) {
+        this.log(`[property-sync] airport distance failed for ${l.id}: ${(e as Error).message}`)
+      }
+    }
+    if (changed) {
+      const current = this.searches.get(s.id)
+      if (current) this.updateLayer(current)
+    }
   }
 
   /** Resolve a search's polygon from the map-layer store. */
@@ -217,6 +255,9 @@ export class PropertySync {
           plot: l.plotArea,
           listed: l.listedAt?.slice(0, 10),
           url: l.url,
+          airport: l.nearestAirport
+            ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
+            : undefined,
           // Extra detail for the SPA's property panel (not shown in the popup).
           title: l.title,
           baths: l.bathrooms,
@@ -232,7 +273,7 @@ export class PropertySync {
     }
     try {
       this.mapLayers.upsert(`${LAYER_GROUP}/${slugFor(s)}`, geojson, {
-        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'url'] },
+        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'airport', 'url'] },
         fit: false,
         updatedBy: 'property',
       })
@@ -242,7 +283,7 @@ export class PropertySync {
     }
   }
 
-  private notify(s: PropertySearch, fresh: Listing[]): void {
+  private async notify(s: PropertySearch, fresh: Listing[]): Promise<void> {
     const label = s.label || `${s.country} ${s.criteria.channel === 'rent' ? 'rentals' : 'houses'}`
     if (fresh.length > MAX_ALERTS) {
       this.push.broadcast({
@@ -258,11 +299,15 @@ export class PropertySync {
       this.log(`[property-sync] notify (${fresh.length} new): ${s.id}`)
       return
     }
+    // Compute before pushing, per Yousef: "before showing it" the nearest
+    // airport's real drive + typical-morning transit time should already be
+    // on the notification, not a follow-up.
+    await this.attachAirportDistances(s, fresh)
     for (const l of fresh) {
       this.push.broadcast({
         type: 'calendar',
         title: `🏠 ${describe(l)}`,
-        body: `${label}${l.address ? ` — ${l.address}` : ''}`,
+        body: `${label}${l.address ? ` — ${l.address}` : ''}${airportSuffix(l)}`,
         pane: 'map',
         // One specific listing → open its real page directly. The map pane
         // has no "select this exact pin" deep-link today, so without this a
@@ -345,4 +390,11 @@ function formatPrice(major: number, currency: string): string {
   const symbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : ''
   const n = Math.round(major).toLocaleString('en-GB')
   return symbol ? `${symbol}${n}` : `${n} ${currency}`
+}
+
+function airportSuffix(l: Listing): string {
+  const a = l.nearestAirport
+  if (!a) return ''
+  const transit = a.transitMinutes != null ? ` / ${a.transitMinutes}min transit` : ''
+  return ` — ${a.driveMinutes}min drive${transit} to ${a.iata}`
 }

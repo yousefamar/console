@@ -123,6 +123,19 @@ export interface Listing {
   summary?: string
   agent?: string
   image?: string
+  /**
+   * Nearest airport + real drive/transit time, computed once per genuinely-
+   * new listing (not the whole result set — see property/airport-distance.ts
+   * and PropertySync.notify). Absent until computed, or if Google Maps isn't
+   * configured / the lookup failed.
+   */
+  nearestAirport?: {
+    iata: string
+    name: string
+    driveMinutes: number
+    /** null when Google has no transit schedule data for this route. */
+    transitMinutes: number | null
+  }
 }
 
 export interface SearchResult {

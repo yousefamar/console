@@ -324,6 +324,7 @@ const propertySync = new PropertySync(
   pushServer,
   syncBus,
   mapLayerStore,
+  googleMapsClient,
   (msg: string) => { log(msg) },
 )
 propertySync.start()

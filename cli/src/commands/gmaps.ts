@@ -50,7 +50,11 @@ async function gmDirections(args: string[], flags: GlobalFlags): Promise<void> {
   const from = o.from ? String(o.from).split(',').map(Number) : null
   const to = o.to ? String(o.to).split(',').map(Number) : null
   if (!from || from.length !== 2 || !to || to.length !== 2) {
-    return exitWithError('USAGE', 'con map gmaps directions --from <lat,lon> --to <lat,lon> [--mode DRIVE|WALK|BICYCLE|TRANSIT]', flags)
+    return exitWithError(
+      'USAGE',
+      'con map gmaps directions --from <lat,lon> --to <lat,lon> [--mode DRIVE|WALK|BICYCLE|TRANSIT] [--departure <RFC3339>]',
+      flags,
+    )
   }
   const mode = o.mode ? String(o.mode).toUpperCase() : undefined
   output(
@@ -61,6 +65,7 @@ async function gmDirections(args: string[], flags: GlobalFlags): Promise<void> {
         destination: { lat: to[0], lon: to[1] },
         mode,
         alternatives: true,
+        departureTime: o.departure ? String(o.departure) : undefined,
       },
     }),
     flags,

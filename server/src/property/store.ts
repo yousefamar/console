@@ -139,6 +139,23 @@ export class PropertySearchStore {
     return s
   }
 
+  /**
+   * Attach a computed nearest-airport distance to one listing already in
+   * `lastResults`, so it's on the map pin (updateLayer reads from
+   * `lastResults`) as well as whatever notification triggered the lookup.
+   * No-ops if the listing isn't there (e.g. evicted past RESULTS_LIMIT
+   * between the poll and the lookup finishing).
+   */
+  setNearestAirport(id: string, listingId: string, nearestAirport: Listing['nearestAirport']): void {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s?.lastResults) return
+    const l = s.lastResults.find((r) => r.id === listingId)
+    if (!l) return
+    l.nearestAirport = nearestAirport
+    this.save()
+  }
+
   remove(id: string): boolean {
     this.load()
     const before = this.items.length
