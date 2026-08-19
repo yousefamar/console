@@ -14,6 +14,25 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v82 (2026-08-19)
+- SPACES pane v1 (project-first nav; the eventual Notes+Agents replacement,
+  mobile-shaped): grid gains a Spaces app. L1 = space list (Areas, then
+  Projects; alerted spaces float first with attention/working/unread dots via
+  the role project:/areas: ↔ session.agentKey join). L2 = segmented
+  Board | Agents | Docs. Board = horizontally-paged columns, Done hidden
+  on-screen but kept in-file; tap card → sheet: move / assign @role /
+  #blocked toggle / delete / jump to assignee's session; add-card per column.
+  Agents = the space's bound sessions + "New agent in this space" (mints a
+  durable role WITH the binding via create_session{asAgent,project,areas}).
+  Docs = project-scoped file list → note editor. data/spaces/KanbanBoard.kt
+  is a verbatim port of server/src/kanban/board.ts (lossless round-trip is
+  the contract — the hub diffs this file for dispatch; ^blockids are NEVER
+  stamped client-side); board saves PUT with baseMtime and reload on 409
+  (stricter than the SPA). +7 codec tests.
 - Dictation segments overwriting everything before them: the relay commits a
   turn at every ~600ms pause, so a long dictation yields MANY finals — each
   carrying only its own segment. Both native paths (Dictation.kt composer
@@ -26,7 +45,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   Switched to TextFieldValue with the selection pinned to the end whenever
   the text changes from outside the keyboard.
 
-## Shipped
 
 ### v81 (2026-08-17)
 - Property listing pins/pushes: two dead ends, one root cause each. (1) Tapping

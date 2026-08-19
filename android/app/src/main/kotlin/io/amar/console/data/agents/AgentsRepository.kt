@@ -127,6 +127,9 @@ class AgentsRepository(
         val charter: String,
         val folder: Boolean,
         val fork: Boolean,
+        /** Space binding (role frontmatter): project slug / area slugs. */
+        val project: String? = null,
+        val areas: List<String> = emptyList(),
     )
 
     data class AgentTask(
@@ -639,6 +642,8 @@ class AgentsRepository(
         charter = o["charter"]?.jsonPrimitive?.content ?: "",
         folder = o["folder"]?.jsonPrimitive?.booleanOrNull ?: false,
         fork = o["fork"]?.jsonPrimitive?.booleanOrNull ?: false,
+        project = o["project"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+        areas = (o["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList(),
     )
 
     private fun taskFrom(o: JsonObject) = AgentTask(
@@ -885,12 +890,20 @@ class AgentsRepository(
     private val _contextUsage = MutableStateFlow<Map<String, ContextUsage>>(emptyMap())
     val contextUsage: StateFlow<Map<String, ContextUsage>> = _contextUsage
 
-    fun createSession(prompt: String, cwd: String, name: String? = null) {
+    fun createSession(
+        prompt: String, cwd: String, name: String? = null,
+        asAgent: Boolean = false, project: String? = null, areas: List<String> = emptyList(),
+    ) {
         sendWs(buildJsonObject {
             put("type", "create_session")
             put("prompt", prompt)
             put("cwd", cwd)
             name?.let { put("name", it) }
+            if (asAgent) {
+                put("asAgent", true)
+                project?.let { put("project", it) }
+                if (areas.isNotEmpty()) put("areas", JsonArray(areas.map { JsonPrimitive(it) }))
+            }
         })
     }
 
