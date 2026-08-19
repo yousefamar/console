@@ -184,6 +184,8 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     io.amar.console.ui.spaces.SpacesScreen(
                         app.graph.spaces, app.graph.agents, app.graph.notes,
                         onOpenSpace = { key -> navController.navigate("spaces/${android.net.Uri.encode(key)}") },
+                        onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
+                        onOpenNote = { path -> navController.navigate("notes/${android.net.Uri.encode(path)}") },
                         onGrid = toGrid,
                     )
                 }
