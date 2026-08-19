@@ -1,7 +1,9 @@
 package io.amar.console.ui.spaces
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
@@ -105,7 +108,11 @@ fun SpacesScreen(
                 s.hasUnread -> "unread"
                 else -> continue
             }
-            items.add(SpaceAlertItem("session", s.id, s.name.removeSuffix(" (fork)"), level))
+            items.add(SpaceAlertItem(
+                "session", s.id, s.name.removeSuffix(" (fork)"), level,
+                depth = roleDepth(s.agentKey, roles),
+                fork = roles.firstOrNull { it.key == s.agentKey }?.fork == true,
+            ))
         }
         if (kind == "project") {
             for (f in notesFiles) {
@@ -149,6 +156,19 @@ fun SpacesScreen(
     }
 }
 
+/** Fork-lineage depth of a role (manager edges among non-folder roles, cap 6)
+ *  — indents alert rows + the space Agents list like the SPA rails. */
+fun roleDepth(key: String?, roles: List<AgentsRepository.AgentRole>): Int {
+    if (key == null) return 0
+    val byKey = roles.filter { !it.folder }.associateBy { it.key }
+    var d = 0
+    var cur = byKey[key]
+    while (cur?.manager != null && byKey.containsKey(cur.manager) && d < 6) {
+        d++; cur = byKey[cur.manager]
+    }
+    return d
+}
+
 /** Sessions bound to a space: role frontmatter project/areas join (SPA parity). */
 fun sessionsForSpace(
     slug: String,
@@ -162,6 +182,32 @@ fun sessionsForSpace(
     return sessions.filter { it.status != "ended" && it.agentKey in keys }
 }
 
+/** Flattened fork-lineage order: roots first, each followed by its forks
+ *  (DFS over manager edges restricted to the bound set), with depths. */
+fun lineageOrder(
+    bound: List<AgentSessionRow>,
+    roles: List<AgentsRepository.AgentRole>,
+): List<Pair<AgentSessionRow, Int>> {
+    val byKey = roles.filter { !it.folder }.associateBy { it.key }
+    val boundKeys = bound.mapNotNull { it.agentKey }.toSet()
+    val childrenOf = bound.groupBy { s ->
+        val mgr = s.agentKey?.let { byKey[it]?.manager }
+        if (mgr != null && mgr in boundKeys) mgr else null
+    }
+    val out = mutableListOf<Pair<AgentSessionRow, Int>>()
+    fun walk(s: AgentSessionRow, depth: Int) {
+        out.add(s to depth)
+        for (child in (childrenOf[s.agentKey] ?: emptyList()).sortedBy { it.name.lowercase() }) {
+            if (child.id != s.id) walk(child, depth + 1)
+        }
+    }
+    for (root in (childrenOf[null] ?: emptyList()).sortedBy { it.name.lowercase() }) walk(root, 0)
+    // Anything unreached (cycle/self-manager edge) still renders, flat.
+    val seen = out.map { it.first.id }.toSet()
+    for (s in bound) if (s.id !in seen) out.add(s to 0)
+    return out
+}
+
 @Composable
 private fun SectionHeader(label: String) {
     Text(
@@ -173,7 +219,12 @@ private fun SectionHeader(label: String) {
 
 /** A concrete alert item under a space: an unread/alerted session or a
  *  dirty file — SPA SpaceAlert parity, rendered as a tappable row. */
-data class SpaceAlertItem(val kind: String, val id: String, val label: String, val level: String)
+data class SpaceAlertItem(
+    val kind: String, val id: String, val label: String, val level: String,
+    /** Fork-lineage indent depth (sessions only). */
+    val depth: Int = 0,
+    val fork: Boolean = false,
+)
 
 @Composable
 private fun SpaceRow(
@@ -223,7 +274,7 @@ private fun Dot(color: Color) {
 private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(start = 42.dp, end = 16.dp, top = 3.dp, bottom = 3.dp),
+            .padding(start = (42 + a.depth * 14).dp, end = 16.dp, top = 3.dp, bottom = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -232,6 +283,12 @@ private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
             "working" -> androidx.compose.material3.CircularProgressIndicator(Modifier.size(9.dp), strokeWidth = 1.5.dp, color = AMBER)
             "unread" -> Dot(MaterialTheme.colorScheme.primary)
             else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (a.fork) {
+            Icon(
+                Icons.AutoMirrored.Filled.CallSplit,
+                contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(11.dp),
+            )
         }
         Text(
             a.label, style = MaterialTheme.typography.bodySmall,
@@ -564,6 +621,7 @@ private fun AddCardSheet(column: String, onAdd: (String) -> Unit, onDismiss: () 
 // Agents + Docs tabs
 // ------------------------------------------------------------------------- //
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SpaceAgentsList(
     agents: AgentsRepository,
@@ -574,11 +632,19 @@ private fun SpaceAgentsList(
 ) {
     val activity by agents.activity.collectAsState()
     var creating by remember { mutableStateOf(false) }
+    // Fork-lineage order: parents before their forks, indented by depth
+    // (manager edges — SPA SpaceRail tree parity, flattened).
+    val roles by agents.roles.collectAsState()
+    val ordered = remember(bound, roles) { lineageOrder(bound, roles) }
+    var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
+    val micOwner by io.amar.console.data.agents.Mic.owner.collectAsState()
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f)) {
-            items(bound, key = { it.id }) { s ->
+            items(ordered, key = { it.first.id }) { (s, depth) ->
                 Row(
-                    Modifier.fillMaxWidth().clickable { onOpenSession(s.id) }.padding(horizontal = 16.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth()
+                        .combinedClickable(onClick = { onOpenSession(s.id) }, onLongClick = { menuTarget = s })
+                        .padding(start = (16 + depth * 14).dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -589,8 +655,14 @@ private fun SpaceAgentsList(
                         s.hasUnread -> Dot(MaterialTheme.colorScheme.primary)
                         else -> Spacer(Modifier.size(8.dp))
                     }
+                    if (roles.firstOrNull { it.key == s.agentKey }?.fork == true) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.CallSplit,
+                            contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(12.dp),
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
-                        Text(s.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(s.name.removeSuffix(" (fork)"), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(s.status + if (s.hibernated) " · hibernated" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
@@ -609,6 +681,23 @@ private fun SpaceAgentsList(
         TextButton(onClick = { creating = true }, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             Icon(Icons.Filled.Add, null, modifier = Modifier.size(14.dp)); Spacer(Modifier.size(4.dp)); Text("New agent in this space")
         }
+    }
+    menuTarget?.let { target ->
+        io.amar.console.ui.agents.SessionActionsSheet(
+            session = target,
+            micOwner = micOwner == target.id,
+            onDismiss = { menuTarget = null },
+            onRename = { newName -> agents.renameSession(target.id, newName) },
+            onKill = { agents.killSession(target.id) },
+            onMarkUnread = { agents.markUnread(target.id) },
+            onMarkRead = { agents.markRead(target.id) },
+            onGenerateTitle = { agents.generateTitle(target.id) },
+            onReloadHistory = { agents.reloadSessionHistory(target.id) },
+            onFork = { agents.forkSession(target.id, target.cwd) },
+            onMerge = { agents.mergeSession(target.id) },
+            onMic = { io.amar.console.data.agents.Mic.setMic(if (micOwner == target.id) "al" else target.id) },
+            onShowInfo = null,
+        )
     }
     if (creating) {
         NewSpaceAgentSheet(
