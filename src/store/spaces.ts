@@ -28,6 +28,9 @@ interface SpacesState {
   boardPath: string | null
   boardMtime: number | null
   boardError: string | null
+  /** A local mutation's write is in flight — the boards/changed event it
+   *  triggers must not re-read over the (newer) in-memory copy. */
+  saving: boolean
 
   refreshSpaces: () => Promise<void>
   selectSpace: (slug: string | null) => void
@@ -84,6 +87,7 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   boardPath: null,
   boardMtime: null,
   boardError: null,
+  saving: false,
   switcherOpen: false,
   openSwitcher: () => set({ switcherOpen: true }),
   closeSwitcher: () => set({ switcherOpen: false }),
@@ -122,6 +126,7 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   saveBoard: async () => {
     const { board, boardPath } = get()
     if (!board || !boardPath) return false
+    set({ saving: true })
     try {
       await hubFetch(`/notes/file/${encodeURIComponent(boardPath)}`, {
         method: 'PUT',
@@ -134,6 +139,10 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
       // Re-read — our in-memory copy may have raced another writer.
       void get().loadBoard()
       return false
+    } finally {
+      // Linger past the watcher's next poll so the echo of OUR write (up to
+      // one poll interval later) is still suppressed.
+      setTimeout(() => set({ saving: false }), 12_000)
     }
   },
 

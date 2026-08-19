@@ -805,6 +805,9 @@ const boardWatcher = new BoardWatcher(noteStore, {
       text: t.text, blockId: t.blockId, minutes: Math.round((30 * nudges)),
     }))
   },
+  // Any board edit (agent moving its card, Obsidian, Syncthing) → live SPA
+  // refresh. The path is the payload; the client re-reads via /notes/file/.
+  onBoardChanged: (boardPath) => syncBus.broadcast('boards', 'changed', { boardPath }),
 })
 void boardWatcher.start()
 

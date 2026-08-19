@@ -100,6 +100,10 @@ const LazyApp = lazy(async () => {
   const { wireNotesOpenSubscription } = await import('./notes/open-subscribe')
   wireNotesOpenSubscription()
 
+  // Live kanban-board refresh (agent card moves → open Spaces board re-reads).
+  const { wireBoardSubscription } = await import('./kanban/board-subscribe')
+  wireBoardSubscription()
+
   const { App } = await import('./App')
   return { default: App }
 })
