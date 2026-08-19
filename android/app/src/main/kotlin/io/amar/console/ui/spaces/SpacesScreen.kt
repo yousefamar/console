@@ -368,7 +368,7 @@ fun SpaceDetailScreen(
             }
         }
         when (tab) {
-            "board" -> BoardView(spacesRepo, roles, bound, onOpenSession)
+            "board" -> BoardView(spacesRepo, roles, bound, kind, slug, onOpenSession)
             "agents" -> SpaceAgentsList(agents, bound, kind, slug, onOpenSession)
             "docs" -> SpaceDocsList(notes, slug, onOpenNote)
         }
@@ -384,6 +384,8 @@ private fun BoardView(
     spacesRepo: SpacesRepository,
     roles: List<AgentsRepository.AgentRole>,
     bound: List<AgentSessionRow>,
+    kind: String,
+    slug: String,
     onOpenSession: (String) -> Unit,
 ) {
     val loaded by spacesRepo.board.collectAsState()
@@ -442,6 +444,8 @@ private fun BoardView(
             ref = ref,
             roles = roles,
             bound = bound,
+            kind = kind,
+            slug = slug,
             columns = board.columns.map { it.title },
             onOpenSession = onOpenSession,
             onDismiss = { cardSheet = null },
@@ -507,6 +511,8 @@ private fun CardSheet(
     ref: CardRef,
     roles: List<AgentsRepository.AgentRole>,
     bound: List<AgentSessionRow>,
+    kind: String,
+    slug: String,
     columns: List<String>,
     onOpenSession: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -531,6 +537,11 @@ private fun CardSheet(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                 Text("in ${ref.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                card.agentKey?.let { key ->
+                    val t = bound.firstOrNull { it.agentKey == key }?.name
+                        ?: roles.firstOrNull { it.key == key }?.title ?: key
+                    Text("→ ${t.removeSuffix(" (fork)")}", style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1)
+                }
                 if (card.blockId != null) Text("dispatched ^${card.blockId}", style = MaterialTheme.typography.labelSmall, color = GREEN)
                 if (card.blocked) Text("#blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
@@ -550,11 +561,24 @@ private fun CardSheet(
                 }
             }
 
-            // Assign to… (agent roles; assignment is the delegation trigger
-            // once the card sits in an In-Progress column — hub does the rest).
+            // Assign to… (assignment is the delegation trigger once the card
+            // sits in an In-Progress column — hub does the rest). Roles BOUND
+            // to this space come first (they're who board work goes to; the
+            // rest of the org only after), and chips show the role TITLE so
+            // renames read as themselves — @key is the wire token, not a label.
             Text("Assign to", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
+            val inSpace = { r: AgentsRepository.AgentRole ->
+                if (kind == "project") r.project == slug else slug in r.areas
+            }
+            // A renamed SESSION doesn't update the role file's title (hub gap,
+            // being fixed web-side too) — prefer the live session's name.
+            fun roleLabel(r: AgentsRepository.AgentRole): String =
+                (bound.firstOrNull { it.agentKey == r.key }?.name ?: r.title).removeSuffix(" (fork)")
+            val assignable = roles.filter { !it.folder }
+                .sortedWith(compareBy({ !inSpace(it) }, { roleLabel(it).lowercase() }))
+                .take(24)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (role in roles.filter { !it.folder }.sortedBy { it.title.lowercase() }.take(20)) {
+                for (role in assignable) {
                     val selected = card.agentKey == role.key
                     Surface(
                         onClick = {
@@ -567,9 +591,20 @@ private fun CardSheet(
                             }
                         },
                         shape = RoundedCornerShape(8.dp),
-                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        color = when {
+                            selected -> MaterialTheme.colorScheme.secondaryContainer
+                            inSpace(role) -> MaterialTheme.colorScheme.surfaceVariant
+                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        },
                     ) {
-                        Text("@${role.key}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+                        Text(
+                            roleLabel(role),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (inSpace(role) || selected) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
                     }
                 }
             }
