@@ -180,6 +180,29 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         onComposerChange = { app.graph.mirror.setComposerText(it) },
                     )
                 }
+                composable(Pane.Spaces.route) {
+                    io.amar.console.ui.spaces.SpacesScreen(
+                        app.graph.spaces, app.graph.agents,
+                        onOpenSpace = { key -> navController.navigate("spaces/${android.net.Uri.encode(key)}") },
+                        onGrid = toGrid,
+                    )
+                }
+                composable("spaces/{spaceKey}") { entry ->
+                    val key = android.net.Uri.decode(entry.arguments?.getString("spaceKey") ?: "")
+                    val kind = key.substringBefore('/')
+                    val slug = key.substringAfter('/')
+                    io.amar.console.ui.spaces.SpaceDetailScreen(
+                        app.graph.spaces, app.graph.agents, app.graph.notes,
+                        kind = kind, slug = slug,
+                        onBack = { navController.popBackStack() },
+                        onOpenSession = { sessionId ->
+                            navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
+                        },
+                        onOpenNote = { path ->
+                            navController.navigate("notes/${android.net.Uri.encode(path)}")
+                        },
+                    )
+                }
                 composable(Pane.Calendar.route) { CalendarScreen(app.graph.calendar, onGrid = toGrid) }
                 composable(Pane.Notes.route) {
                     NotesBrowserScreen(

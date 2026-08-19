@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.RssFeed
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.StickyNote2
+import androidx.compose.material.icons.outlined.Workspaces
 import androidx.compose.ui.graphics.vector.ImageVector
 
 /**
@@ -42,6 +43,7 @@ enum class Pane(
     Chat("chat", "Chat", Icons.AutoMirrored.Outlined.Chat),
     Mail("mail", "Mail", Icons.Outlined.Email),
     Agents("agents", "Agents", Icons.Outlined.SmartToy),
+    Spaces("spaces", "Spaces", Icons.Outlined.Workspaces),
     Calendar("calendar", "Calendar", Icons.Outlined.CalendarMonth),
     Notes("notes", "Notes", Icons.Outlined.StickyNote2),
     Feeds("feeds", "Feeds", Icons.Outlined.RssFeed),
