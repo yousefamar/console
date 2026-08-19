@@ -1071,6 +1071,15 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       const renamedMsg = { type: 'session_renamed' as const, sessionId: session.id, name: msg.name }
       session.logMessage(renamedMsg)
       broadcast(clients, renamedMsg)
+      // Keep the durable role's title in sync — everything that labels agents
+      // by ROLE (board assign chips, org roster, parked rows) reads the role
+      // file, which otherwise froze at its mint-time name. Surgical stamp
+      // (setTitle), never a yaml round-trip; the registry's fs.watch
+      // re-broadcasts agents_list so all clients pick it up.
+      if (session.agentKey && ctx.agentRegistry.has(session.agentKey)) {
+        ctx.agentRegistry.setTitle(session.agentKey, msg.name.trim() || session.agentKey)
+        broadcastAgentsList(ctx)
+      }
       saveManifest(sessions)
       log(`Session renamed: ${session.id} → "${msg.name}"`)
       break

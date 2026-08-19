@@ -705,9 +705,13 @@ function BoardView() {
   const editCard = useSpacesStore((s) => s.editCard)
   const deleteCard = useSpacesStore((s) => s.deleteCard)
   const roles = useAgentStore((s) => s.agentRoles)
+  const sessions = useAgentStore((s) => s.sessions)
+  const activeSlug = useSpacesStore((s) => s.activeSlug)
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
+  // Assign picker target (card ref) — replaces the raw @key text prompt.
+  const [assignTarget, setAssignTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
   // Which column has an open new-card editor (one at a time).
   const [addingTo, setAddingTo] = useState<string | null>(null)
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
@@ -724,18 +728,24 @@ function BoardView() {
   if (!board) return <div className="flex-1 grid place-items-center text-xs text-text-tertiary">Loading board…</div>
 
   const columnTitles = board.columns.map((c) => c.title)
-  // Assignable = any non-folder role, forks included.
-  const assignable = roles.filter((r) => !r.folder)
+  // Assignable = any non-folder role, forks included — labelled by the live
+  // session's CURRENT name (renames land there) falling back to the role
+  // title, never the raw @key; space-bound roles sort first.
+  const liveByKey = new Map(sessions.filter((x) => x.status !== 'ended' && x.agentKey).map((x) => [x.agentKey!, x]))
+  const inSpace = (r: (typeof roles)[number]) =>
+    r.project === activeSlug || (r.areas ?? []).includes(activeSlug ?? '')
+  const assignable = roles
+    .filter((r) => !r.folder)
+    .map((r) => ({
+      key: r.key,
+      label: (liveByKey.get(r.key)?.name || r.title).replace(/\s\(fork\)$/, ''),
+      fork: !!r.fork,
+      bound: inSpace(r),
+      live: liveByKey.has(r.key),
+    }))
+    .sort((a, b) => Number(b.bound) - Number(a.bound) || Number(b.live) - Number(a.live) || a.label.localeCompare(b.label))
+  const labelFor = (key: string) => assignable.find((a) => a.key === key)?.label ?? key
   const assignees = [...new Set(board.columns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean))] as string[]
-
-  const promptAssign = async (ref: CardRef, card: BoardCard) => {
-    const keys = assignable.map((r) => r.key).join(', ')
-    const key = await showPrompt(`Assign to which agent? (${keys})`, {
-      title: 'Assign card', defaultValue: card.agentKey ?? '', placeholder: 'agentkey — empty to unassign',
-    })
-    if (key === null) return
-    await assignCard(ref, key.trim() || null)
-  }
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
@@ -753,8 +763,9 @@ function BoardView() {
               key={key}
               onClick={() => setAssigneeFilter(assigneeFilter === key ? null : key)}
               className={clsx('flex-shrink-0 rounded-sm px-1.5 py-px text-[10px]', assigneeFilter === key ? 'bg-violet-500/20 text-violet-300' : 'text-text-tertiary hover:text-text-secondary')}
+              title={`@${key}`}
             >
-              @{key}
+              {labelFor(key)}
             </button>
           ))}
         </div>
@@ -799,7 +810,7 @@ function BoardView() {
                   columnTitles={columnTitles}
                   currentColumn={col.title}
                   onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
-                  onAssign={() => void promptAssign({ column: col.title, index }, card)}
+                  onAssign={() => setAssignTarget({ ref: { column: col.title, index }, card })}
                   onToggleBlocked={() => void toggleBlocked({ column: col.title, index })}
                   onEdit={(text, detail) => void editCard({ column: col.title, index }, text, detail)}
                   onDelete={() => void deleteCard({ column: col.title, index })}
@@ -810,6 +821,42 @@ function BoardView() {
         </div>
       ))}
       </div>
+      {assignTarget && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[20vh]" onClick={(e) => { if (e.target === e.currentTarget) setAssignTarget(null) }}>
+          <div className="mx-4 w-full max-w-xs overflow-hidden rounded-lg border border-border bg-surface-0 shadow-xl">
+            <div className="border-b border-border px-3 py-1.5 text-xs text-text-secondary truncate">Assign: {assignTarget.card.text}</div>
+            <div className="max-h-[45vh] overflow-y-auto py-1">
+              {assignTarget.card.agentKey && (
+                <button
+                  onClick={() => { void assignCard(assignTarget.ref, null); setAssignTarget(null) }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-text-tertiary hover:bg-surface-1"
+                >
+                  <X size={11} className="flex-shrink-0" /> Unassign
+                </button>
+              )}
+              {assignable.map((a, i) => (
+                <button
+                  key={a.key}
+                  onClick={() => { void assignCard(assignTarget.ref, a.key); setAssignTarget(null) }}
+                  className={clsx(
+                    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-1',
+                    a.key === assignTarget.card.agentKey ? 'bg-surface-2 text-text-primary' : 'text-text-secondary',
+                    // Divider where space-bound roles end
+                    i > 0 && a.bound !== assignable[i - 1]!.bound && 'border-t border-border',
+                  )}
+                  title={`@${a.key}`}
+                >
+                  {a.fork
+                    ? <GitBranch size={11} className="flex-shrink-0 opacity-60" />
+                    : <Bot size={11} className="flex-shrink-0 opacity-60" />}
+                  <span className="truncate">{a.label}</span>
+                  {!a.live && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">parked</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
