@@ -18,6 +18,15 @@ _(empty)_
 
 ## Shipped
 
+### v86 (2026-08-19)
+- Board assign chips fixed per Yousef: roles BOUND to this space sort first
+  (dimmed styling for the rest of the org), and chips are labelled by live
+  session name → role title (rename-aware, "(fork)" stripped) instead of the
+  raw @key — @key stays the wire token only. Card sheet shows "→ <name>" for
+  the current assignee. Root cause of stale names is hub-side (rename_session
+  never stamped the role title) — handed to the Console general session,
+  which shipped the hub fix + the same SPA picker semantics (0182b1c).
+
 ### v85 (2026-08-19)
 - Spaces Agents tab: fork-lineage tree — sessions render in lineage order
   (parents before their forks, DFS over role manager edges restricted to the
