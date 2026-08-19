@@ -39,6 +39,9 @@ export interface BoardWatcherOpts {
   onTransition?: (t: BoardTransition) => void
   /** A stamped card has sat in a dispatch column past staleMs. */
   onStale?: (t: BoardTransition, nudgeCount: number) => void
+  /** A board file changed on disk (any edit — agent, Obsidian, Syncthing).
+   *  Fired AFTER stamp-writes so the content the client re-reads is final. */
+  onBoardChanged?: (boardPath: string) => void
   log: (msg: string) => void
   pollMs?: number
   staleMs?: number
@@ -174,6 +177,10 @@ export class BoardWatcher {
         this.staleTrack.set(card.blockId, { since: this.now(), nudges: 0 })
       }
     }
+
+    // Tell live clients the board changed (post-stamp, so a re-read is final).
+    // Boot is skipped — nothing is connected-and-stale at boot.
+    if (!boot && this.opts.onBoardChanged) this.opts.onBoardChanged(path)
   }
 
   private checkStale(): void {
