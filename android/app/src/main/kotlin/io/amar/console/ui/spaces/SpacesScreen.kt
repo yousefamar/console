@@ -77,6 +77,8 @@ fun SpacesScreen(
     agents: AgentsRepository,
     notes: io.amar.console.data.notes.NotesRepository,
     onOpenSpace: (String) -> Unit,
+    onOpenSession: (String) -> Unit,
+    onOpenNote: (String) -> Unit,
     onGrid: () -> Unit = {},
 ) {
     val spaces by spacesRepo.spaces.collectAsState()
@@ -88,43 +90,61 @@ fun SpacesScreen(
     fun spaceSessions(slug: String, kind: String): List<AgentSessionRow> =
         sessionsForSpace(slug, kind, roles, sessions)
 
-    // Unsaved (dirty) docs per project — offline edits awaiting a save/flush.
+    // Unsaved (dirty) docs — offline edits awaiting a save/flush.
     val notesFiles by notes.observeFiles().collectAsState(initial = emptyList())
-    val dirtyByProject = remember(notesFiles) {
-        notesFiles.filter { it.dirty && it.path.startsWith("projects/") }
-            .groupBy { it.path.removePrefix("projects/").substringBefore('/').removeSuffix(".md") }
-            .mapValues { it.value.size }
-    }
 
-    fun alerts(slug: String, kind: String): SpaceAlerts {
-        val ss = spaceSessions(slug, kind)
-        return SpaceAlerts(
-            attention = ss.count { it.needsAttention },
-            working = ss.count { activity[it.id]?.running == true },
-            unread = ss.count { it.hasUnread },
-            dirty = if (kind == "project") dirtyByProject[slug] ?: 0 else 0,
-        )
+    // Concrete alert ITEMS per space (SPA SpaceAlert parity): the actual
+    // unread/alerted sessions + dirty files render as tappable rows inline
+    // under the space name, so everything is one tap from the top level.
+    fun alertItems(slug: String, kind: String): List<SpaceAlertItem> {
+        val items = mutableListOf<SpaceAlertItem>()
+        for (s in spaceSessions(slug, kind)) {
+            val level = when {
+                s.needsAttention -> "attention"
+                activity[s.id]?.running == true -> "working"
+                s.hasUnread -> "unread"
+                else -> continue
+            }
+            items.add(SpaceAlertItem("session", s.id, s.name.removeSuffix(" (fork)"), level))
+        }
+        if (kind == "project") {
+            for (f in notesFiles) {
+                if (!f.dirty) continue
+                val inSpace = f.path.startsWith("projects/$slug/") || f.path == "projects/$slug.md"
+                if (inSpace) items.add(SpaceAlertItem("file", f.path, f.path.substringAfterLast('/'), "dirty"))
+            }
+        }
+        val rank = mapOf("attention" to 0, "working" to 1, "unread" to 2, "dirty" to 3)
+        return items.sortedBy { rank[it.level] ?: 4 }
     }
 
     val areas = spaces.filter { it.kind == "area" }
+        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { alertItems(it.slug, it.kind).isEmpty() }.thenBy { it.title.lowercase() })
     val projects = spaces.filter { it.kind == "project" }
-        .sortedWith(compareByDescending<SpacesRepository.SpaceSummary> { alerts(it.slug, it.kind).rank }
+        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { alertItems(it.slug, it.kind).isEmpty() }
             .thenBy { it.status == "dormant" || it.status == "complete" }
             .thenBy { it.title.lowercase() })
 
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(title = "Spaces", onGrid = onGrid, subtitle = "${projects.size} projects · ${areas.size} areas")
         LazyColumn(Modifier.fillMaxSize()) {
-            if (areas.isNotEmpty()) {
-                item { SectionHeader("AREAS") }
-                items(areas, key = { "a:${it.slug}" }) { sp ->
-                    SpaceRow(sp, alerts(sp.slug, sp.kind), onClick = { onOpenSpace("area/${sp.slug}") })
+            fun renderSpace(scope: androidx.compose.foundation.lazy.LazyListScope, sp: SpacesRepository.SpaceSummary) {
+                val items = alertItems(sp.slug, sp.kind)
+                scope.item(key = "${sp.kind}:${sp.slug}") {
+                    SpaceRow(sp, hasAlerts = items.isNotEmpty(), onClick = { onOpenSpace("${sp.kind}/${sp.slug}") })
+                }
+                scope.items(items, key = { "${sp.kind}:${sp.slug}:${it.kind}:${it.id}" }) { a ->
+                    AlertRow(a, onClick = {
+                        if (a.kind == "session") onOpenSession(a.id) else onOpenNote(a.id)
+                    })
                 }
             }
-            item { SectionHeader("PROJECTS") }
-            items(projects, key = { "p:${it.slug}" }) { sp ->
-                SpaceRow(sp, alerts(sp.slug, sp.kind), onClick = { onOpenSpace("project/${sp.slug}") })
+            if (areas.isNotEmpty()) {
+                item { SectionHeader("AREAS") }
+                for (sp in areas) renderSpace(this, sp)
             }
+            item { SectionHeader("PROJECTS") }
+            for (sp in projects) renderSpace(this, sp)
         }
     }
 }
@@ -151,26 +171,19 @@ private fun SectionHeader(label: String) {
     )
 }
 
-/** Per-space alert tallies — ALL surfaced on L1 so no tap-hunting. */
-data class SpaceAlerts(val attention: Int, val working: Int, val unread: Int, val dirty: Int) {
-    val rank: Int get() = when {
-        attention > 0 -> 4
-        working > 0 -> 3
-        unread > 0 -> 2
-        dirty > 0 -> 1
-        else -> 0
-    }
-}
+/** A concrete alert item under a space: an unread/alerted session or a
+ *  dirty file — SPA SpaceAlert parity, rendered as a tappable row. */
+data class SpaceAlertItem(val kind: String, val id: String, val label: String, val level: String)
 
 @Composable
 private fun SpaceRow(
     sp: SpacesRepository.SpaceSummary,
-    alerts: SpaceAlerts,
+    hasAlerts: Boolean,
     onClick: () -> Unit,
 ) {
     val dim = sp.status == "dormant" || sp.status == "complete"
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -183,7 +196,7 @@ private fun SpaceRow(
         Column(Modifier.weight(1f)) {
             Text(
                 sp.title, style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (alerts.rank >= 2) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = if (hasAlerts) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
@@ -196,39 +209,36 @@ private fun SpaceRow(
                 Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        // Explicit counts, not a lone dot — everything visible without a tap:
-        // red = needs you, amber = working, blue = unread, grey ✎ = unsaved.
-        if (alerts.attention > 0) CountBadge(alerts.attention, MaterialTheme.colorScheme.error)
-        if (alerts.working > 0) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                androidx.compose.material3.CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = AMBER)
-                Text("${alerts.working}", style = MaterialTheme.typography.labelSmall, color = AMBER)
-            }
-        }
-        if (alerts.unread > 0) CountBadge(alerts.unread, MaterialTheme.colorScheme.primary)
-        if (alerts.dirty > 0) {
-            Text("✎${alerts.dirty}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun CountBadge(count: Int, color: Color) {
-    Box(
-        Modifier.size(16.dp).clip(CircleShape).background(color),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "$count",
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
-            color = Color.White, maxLines = 1,
-        )
     }
 }
 
 @Composable
 private fun Dot(color: Color) {
     Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+}
+
+/** Inline alert row under a space (indented): dot colour = level, label =
+ *  the session/file name; tap goes STRAIGHT to it (SPA openAlert parity). */
+@Composable
+private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(start = 42.dp, end = 16.dp, top = 3.dp, bottom = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when (a.level) {
+            "attention" -> Dot(MaterialTheme.colorScheme.error)
+            "working" -> androidx.compose.material3.CircularProgressIndicator(Modifier.size(9.dp), strokeWidth = 1.5.dp, color = AMBER)
+            "unread" -> Dot(MaterialTheme.colorScheme.primary)
+            else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(
+            a.label, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 // ------------------------------------------------------------------------- //

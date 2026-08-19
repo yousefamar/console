@@ -18,6 +18,14 @@ _(empty)_
 
 ## Shipped
 
+### v84 (2026-08-19)
+- Spaces L1 alert items are now inline ROWS under the space name (SPA
+  SpaceListRail parity — v83's count badges were the wrong reading of the
+  ask): each unread/attention/working session and each unsaved file renders
+  as its own indented tappable row (dot colour = level, ✎ = dirty file), and
+  tapping goes STRAIGHT to that session / that note — one tap from the top
+  level, no drill-down hunting. Spaces with alert items sort first and bold.
+
 ### v83 (2026-08-19)
 - Spaces L1 shows ALL the signal up front (no tap-hunting): per-space count
   badges instead of a single dot — red = sessions needing you, amber spinner
