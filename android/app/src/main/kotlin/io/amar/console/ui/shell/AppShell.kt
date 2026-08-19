@@ -182,7 +182,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable(Pane.Spaces.route) {
                     io.amar.console.ui.spaces.SpacesScreen(
-                        app.graph.spaces, app.graph.agents,
+                        app.graph.spaces, app.graph.agents, app.graph.notes,
                         onOpenSpace = { key -> navController.navigate("spaces/${android.net.Uri.encode(key)}") },
                         onGrid = toGrid,
                     )

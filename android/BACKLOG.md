@@ -18,6 +18,18 @@ _(empty)_
 
 ## Shipped
 
+### v83 (2026-08-19)
+- Spaces L1 shows ALL the signal up front (no tap-hunting): per-space count
+  badges instead of a single dot — red = sessions needing you, amber spinner
+  = working, blue = unread, grey ✎N = unsaved local doc edits (dirty notes
+  rows grouped by project). Alerted spaces bold + float first (attention >
+  working > unread > dirty).
+- Space detail default-tab priority per Yousef: Board above all else when the
+  project has one; otherwise Agents whenever there are bound sessions or any
+  unread/attention/working signal; Docs only when there's nothing
+  agent-shaped to show.
+
+
 ### v82 (2026-08-19)
 - SPACES pane v1 (project-first nav; the eventual Notes+Agents replacement,
   mobile-shaped): grid gains a Spaces app. L1 = space list (Areas, then
