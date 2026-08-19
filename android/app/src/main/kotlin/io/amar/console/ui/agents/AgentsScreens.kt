@@ -306,7 +306,7 @@ private fun sessionSubtitle(session: AgentSessionRow, act: AgentsRepository.Acti
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionActionsSheet(
+fun SessionActionsSheet(
     session: AgentSessionRow,
     micOwner: Boolean,
     onDismiss: () -> Unit,

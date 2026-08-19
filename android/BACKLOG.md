@@ -18,6 +18,17 @@ _(empty)_
 
 ## Shipped
 
+### v85 (2026-08-19)
+- Spaces Agents tab: fork-lineage tree — sessions render in lineage order
+  (parents before their forks, DFS over role manager edges restricted to the
+  space's bound set), indented 14dp per depth with the violet fork glyph;
+  cycle/self-manager edges fall back to flat rather than vanishing. The same
+  depth indents L1 inline alert rows.
+- Spaces Agents tab: long-press a session → the SAME actions sheet as Agents
+  proper (rename, mark read/unread, generate title, reload history, fork,
+  merge, mic, end) — SessionActionsSheet made shared; Spaces is the
+  replacement so it gets the full menu, not a subset.
+
 ### v84 (2026-08-19)
 - Spaces L1 alert items are now inline ROWS under the space name (SPA
   SpaceListRail parity — v83's count badges were the wrong reading of the
