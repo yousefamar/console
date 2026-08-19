@@ -75,6 +75,7 @@ private val GREEN = Color(0xFF4ADE80)
 fun SpacesScreen(
     spacesRepo: SpacesRepository,
     agents: AgentsRepository,
+    notes: io.amar.console.data.notes.NotesRepository,
     onOpenSpace: (String) -> Unit,
     onGrid: () -> Unit = {},
 ) {
@@ -87,19 +88,27 @@ fun SpacesScreen(
     fun spaceSessions(slug: String, kind: String): List<AgentSessionRow> =
         sessionsForSpace(slug, kind, roles, sessions)
 
-    fun alertRank(slug: String, kind: String): Int {
+    // Unsaved (dirty) docs per project — offline edits awaiting a save/flush.
+    val notesFiles by notes.observeFiles().collectAsState(initial = emptyList())
+    val dirtyByProject = remember(notesFiles) {
+        notesFiles.filter { it.dirty && it.path.startsWith("projects/") }
+            .groupBy { it.path.removePrefix("projects/").substringBefore('/').removeSuffix(".md") }
+            .mapValues { it.value.size }
+    }
+
+    fun alerts(slug: String, kind: String): SpaceAlerts {
         val ss = spaceSessions(slug, kind)
-        return when {
-            ss.any { it.needsAttention } -> 3
-            ss.any { activity[it.id]?.running == true } -> 2
-            ss.any { it.hasUnread } -> 1
-            else -> 0
-        }
+        return SpaceAlerts(
+            attention = ss.count { it.needsAttention },
+            working = ss.count { activity[it.id]?.running == true },
+            unread = ss.count { it.hasUnread },
+            dirty = if (kind == "project") dirtyByProject[slug] ?: 0 else 0,
+        )
     }
 
     val areas = spaces.filter { it.kind == "area" }
     val projects = spaces.filter { it.kind == "project" }
-        .sortedWith(compareByDescending<SpacesRepository.SpaceSummary> { alertRank(it.slug, it.kind) }
+        .sortedWith(compareByDescending<SpacesRepository.SpaceSummary> { alerts(it.slug, it.kind).rank }
             .thenBy { it.status == "dormant" || it.status == "complete" }
             .thenBy { it.title.lowercase() })
 
@@ -109,12 +118,12 @@ fun SpacesScreen(
             if (areas.isNotEmpty()) {
                 item { SectionHeader("AREAS") }
                 items(areas, key = { "a:${it.slug}" }) { sp ->
-                    SpaceRow(sp, spaceSessions(sp.slug, sp.kind), activity, onClick = { onOpenSpace("area/${sp.slug}") })
+                    SpaceRow(sp, alerts(sp.slug, sp.kind), onClick = { onOpenSpace("area/${sp.slug}") })
                 }
             }
             item { SectionHeader("PROJECTS") }
             items(projects, key = { "p:${it.slug}" }) { sp ->
-                SpaceRow(sp, spaceSessions(sp.slug, sp.kind), activity, onClick = { onOpenSpace("project/${sp.slug}") })
+                SpaceRow(sp, alerts(sp.slug, sp.kind), onClick = { onOpenSpace("project/${sp.slug}") })
             }
         }
     }
@@ -142,11 +151,21 @@ private fun SectionHeader(label: String) {
     )
 }
 
+/** Per-space alert tallies — ALL surfaced on L1 so no tap-hunting. */
+data class SpaceAlerts(val attention: Int, val working: Int, val unread: Int, val dirty: Int) {
+    val rank: Int get() = when {
+        attention > 0 -> 4
+        working > 0 -> 3
+        unread > 0 -> 2
+        dirty > 0 -> 1
+        else -> 0
+    }
+}
+
 @Composable
 private fun SpaceRow(
     sp: SpacesRepository.SpaceSummary,
-    bound: List<AgentSessionRow>,
-    activity: Map<String, AgentsRepository.Activity>,
+    alerts: SpaceAlerts,
     onClick: () -> Unit,
 ) {
     val dim = sp.status == "dormant" || sp.status == "complete"
@@ -164,6 +183,7 @@ private fun SpaceRow(
         Column(Modifier.weight(1f)) {
             Text(
                 sp.title, style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (alerts.rank >= 2) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
@@ -171,18 +191,38 @@ private fun SpaceRow(
                 sp.status,
                 if (sp.boardPath != null) "board" else null,
                 if (sp.fileCount > 0) "${sp.fileCount} files" else null,
-                if (bound.isNotEmpty()) "${bound.size} agents" else null,
             ).joinToString(" · ")
             if (meta.isNotEmpty()) {
                 Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        // Alert dots: attention (red) > working (amber spinner-dot) > unread (blue).
-        when {
-            bound.any { it.needsAttention } -> Dot(MaterialTheme.colorScheme.error)
-            bound.any { activity[it.id]?.running == true } -> Dot(AMBER)
-            bound.any { it.hasUnread } -> Dot(MaterialTheme.colorScheme.primary)
+        // Explicit counts, not a lone dot — everything visible without a tap:
+        // red = needs you, amber = working, blue = unread, grey ✎ = unsaved.
+        if (alerts.attention > 0) CountBadge(alerts.attention, MaterialTheme.colorScheme.error)
+        if (alerts.working > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp, color = AMBER)
+                Text("${alerts.working}", style = MaterialTheme.typography.labelSmall, color = AMBER)
+            }
         }
+        if (alerts.unread > 0) CountBadge(alerts.unread, MaterialTheme.colorScheme.primary)
+        if (alerts.dirty > 0) {
+            Text("✎${alerts.dirty}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun CountBadge(count: Int, color: Color) {
+    Box(
+        Modifier.size(16.dp).clip(CircleShape).background(color),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "$count",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = androidx.compose.ui.unit.TextUnit(9f, androidx.compose.ui.unit.TextUnitType.Sp)),
+            color = Color.White, maxLines = 1,
+        )
     }
 }
 
@@ -213,9 +253,19 @@ fun SpaceDetailScreen(
     val bound = remember(roles, sessions) { sessionsForSpace(slug, kind, roles, sessions) }
     val scope = rememberCoroutineScope()
 
-    // Tab: default Board when the space has one, else Agents, else Docs.
+    // Default tab priority: board above all else when it exists; otherwise
+    // whichever has signal — unreads/attention pull Agents forward; Docs only
+    // when there is nothing agent-shaped to look at.
+    val activityMap by agents.activity.collectAsState()
     var tab by remember(slug) {
-        mutableStateOf(if (sp?.boardPath != null) "board" else if (kind == "area") "agents" else "docs")
+        val hasSignal = bound.any { it.hasUnread || it.needsAttention || activityMap[it.id]?.running == true }
+        mutableStateOf(
+            when {
+                sp?.boardPath != null -> "board"
+                hasSignal || bound.isNotEmpty() || kind == "area" -> "agents"
+                else -> "docs"
+            }
+        )
     }
     LaunchedEffect(slug) {
         spacesRepo.refreshSpaces()
