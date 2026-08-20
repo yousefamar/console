@@ -59,6 +59,15 @@ export function isKanbanBoard(content: string): boolean {
   return /^kanban-plugin:/m.test(fence?.[1] ?? '')
 }
 
+/** Board-level frontmatter: `deploy_gate: review` means merging to main IS
+ *  deploying (auto-deploy-on-main repos), so task work must stay on its
+ *  branch until the card owner approves — Under Review gates the merge, not
+ *  just the diff. Absent/anything else = fold-into-main as usual. */
+export function boardDeployGate(content: string): 'review' | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  return /^deploy_gate:\s*review\s*$/m.test(fence?.[1] ?? '') ? 'review' : null
+}
+
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
 export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean } {
   let text = rawText.trimEnd()

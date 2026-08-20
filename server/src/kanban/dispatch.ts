@@ -90,8 +90,11 @@ export function buildBoardEnvelope(opts: {
   card: { text: string; blockId: string; lines: string[] }
   column: string
   project?: string | null
+  /** Board frontmatter `deploy_gate: review` — merging to main IS deploying
+   *  (auto-deploy repos), so work stays on its branch until card approval. */
+  deployGate?: 'review' | null
 }): string {
-  const { boardAbsPath, card, column, project } = opts
+  const { boardAbsPath, card, column, project, deployGate } = opts
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
   return [
     '[BOARD TASK — action required]',
@@ -109,13 +112,24 @@ export function buildBoardEnvelope(opts: {
     'explaining what you need — the card keeps its place in the column.',
     'The board file is the single source of truth — there is no other reporting step.',
     '',
-    'WORKTREE: for code work of any substance, isolate yourself first —',
-    '`autowt switch <ticket-slug> --terminal echo -y` prints a fresh worktree',
-    'path (no terminal opens); do ALL work there, with your own dev server and',
-    'tests. When done: fold the work back into the project\'s main branch per',
-    'that repo\'s convention (Console: commit lands on `main`, a branch never',
-    'survives), then `autowt cleanup <ticket-slug> -y`. Trivial edits (docs,',
-    'one-liners) can skip the worktree — your judgment.',
+    ...(deployGate === 'review' ? [
+      'DEPLOY GATE (this board sets `deploy_gate: review` — merging to main',
+      'DEPLOYS): do NOT merge to main. Work on a branch in your worktree',
+      '(`autowt switch <ticket-slug> --terminal echo -y` prints the path), PUSH',
+      'THE BRANCH, and when moving the card to Under Review add an indented',
+      'note with the branch name + the preview URL (e.g. the Vercel branch',
+      'preview). The merge to main happens only after the card owner approves —',
+      'they merge, or tell you to. Keep the worktree until then;',
+      '`autowt cleanup <ticket-slug> -y` only after the merge lands.',
+    ] : [
+      'WORKTREE: for code work of any substance, isolate yourself first —',
+      '`autowt switch <ticket-slug> --terminal echo -y` prints a fresh worktree',
+      'path (no terminal opens); do ALL work there, with your own dev server and',
+      'tests. When done: fold the work back into the project\'s main branch per',
+      'that repo\'s convention (Console: commit lands on `main`, a branch never',
+      'survives), then `autowt cleanup <ticket-slug> -y`. Trivial edits (docs,',
+      'one-liners) can skip the worktree — your judgment.',
+    ]),
   ].join('\n')
 }
 

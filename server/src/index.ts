@@ -752,7 +752,7 @@ cronScheduler.start()
 // re-derives everything (the ^id stamp marks already-dispatched).
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
-  onDispatch: ({ boardPath, card, column, project }) => {
+  onDispatch: ({ boardPath, card, column, project, deployGate }) => {
     const role = agentRegistry.get(card.agentKey!)
     if (!role || role.folder) { log(`[boards] no such agent role: @${card.agentKey} (${boardPath})`); return false }
     // Assigning a ticket to a LIVE durable role forks it: the fork inherits
@@ -774,6 +774,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       card: { text: card.text, blockId: card.blockId!, lines: card.lines },
       column,
       project,
+      deployGate,
     }))
     return true
   },
