@@ -74,14 +74,15 @@ export class NoteStore {
     }
   }
 
-  /** List all .md files recursively */
-  async list(): Promise<NoteFile[]> {
+  /** List all .md files recursively. `includeHidden` also walks dotfiles/dot-dirs
+   *  (SKIP_DIRS like .obsidian/.git are ALWAYS excluded — never useful, huge). */
+  async list(includeHidden = false): Promise<NoteFile[]> {
     const files: NoteFile[] = []
-    await this.walkDir(this.vaultPath, '', files)
+    await this.walkDir(this.vaultPath, '', files, includeHidden)
     return files.sort((a, b) => a.path.localeCompare(b.path))
   }
 
-  private async walkDir(absDir: string, relDir: string, out: NoteFile[]): Promise<void> {
+  private async walkDir(absDir: string, relDir: string, out: NoteFile[], includeHidden = false): Promise<void> {
     let entries
     try {
       entries = await readdir(absDir, { withFileTypes: true })
@@ -90,14 +91,14 @@ export class NoteStore {
     }
 
     for (const entry of entries) {
-      if (entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name)) continue
       if (SKIP_DIRS.has(entry.name)) continue
+      if (!includeHidden && entry.name.startsWith('.')) continue
 
       const absPath = join(absDir, entry.name)
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name
 
       if (entry.isDirectory()) {
-        await this.walkDir(absPath, relPath, out)
+        await this.walkDir(absPath, relPath, out, includeHidden)
       } else if (
         entry.isFile() &&
         (extname(entry.name) === '.md' ||

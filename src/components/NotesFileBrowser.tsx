@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useNotesStore, type TreeNode } from '@/store/notes'
 import { showConfirm } from '@/dialog'
-import { ChevronRight, Circle, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
+import { ChevronRight, Circle, Eye, EyeOff, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
 
 interface ContextMenu {
   x: number
@@ -33,6 +33,7 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
   const setSelectedPath = useNotesStore((s) => s.setSelectedPath)
   const openQuickSwitcher = useNotesStore((s) => s.openQuickSwitcher)
   const openNewFileForm = useNotesStore((s) => s.openNewFileForm)
+  const showHidden = useNotesStore((s) => s.showHidden)
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
@@ -153,6 +154,13 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
             </button>
           </>
         )}
+        <button
+          onClick={() => void useNotesStore.getState().toggleShowHidden()}
+          className={`transition-colors p-0.5 ${showHidden ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'}`}
+          title={showHidden ? 'Hide dotfiles' : 'Show hidden files (dotfiles)'}
+        >
+          {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+        </button>
         <button
           onClick={() => useNotesStore.getState().loadVaultFiles()}
           className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5"
