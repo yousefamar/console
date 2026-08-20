@@ -285,25 +285,51 @@ function SpaceListRail() {
     }
   }
 
+  // Session alert rows get the same context menu as the drilled rail's agent
+  // rows — right-click works ANYWHERE a session appears, not just rail 2.
+  const sessionMenuItems = (sessionId: string): ContextMenuItem[] => {
+    const agent = useAgentStore.getState()
+    const sess = agent.sessions.find((x) => x.id === sessionId)
+    const role = sess?.agentKey ? agent.agentRoles.find((r) => r.key === sess.agentKey) : undefined
+    return [
+      ...(role ? [{ label: 'Show info', onClick: () => agent.openRoleInfo(role.key) }] : []),
+      { label: 'Mark read', onClick: () => agent.markSessionRead(sessionId) },
+      { label: 'Mark unread', onClick: () => agent.markSessionUnread(sessionId) },
+      { label: 'Rename', onClick: async () => {
+        const name = await showPrompt('Session name', { title: 'Rename', defaultValue: sess?.name ?? '' })
+        if (name?.trim()) agent.renameSession(sessionId, name.trim())
+      } },
+      { label: 'Generate title', onClick: () => agent.generateTitle(sessionId) },
+      { label: useMicStore.getState().owner === sessionId ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
+      { label: 'Fork', onClick: () => agent.forkSession(sessionId) },
+      ...((role?.fork || role?.manager || sess?.parentClaudeSessionId) ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
+      { label: 'End session', onClick: () => agent.killSession(sessionId), destructive: true },
+    ]
+  }
+
   const renderSpace = (s: SpaceSummary) => (
     <div key={s.slug}>
       <SpaceListItem space={s} badge={agentBadges.get(s.slug)} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
-      {(alertsBySlug.get(s.slug) ?? []).map((a) => (
-        <button
-          key={`${a.kind}:${a.id}`}
-          onClick={() => openAlert(s, a)}
-          className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
-          style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
-          title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
-        >
-          {a.kind === 'file'
-            ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-            : a.fork
-              ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />
-              : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />}
-          <span className="truncate">{a.label}</span>
-        </button>
-      ))}
+      {(alertsBySlug.get(s.slug) ?? []).map((a) => {
+        const row = (
+          <button
+            onClick={() => openAlert(s, a)}
+            className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+            style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
+            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
+          >
+            {a.kind === 'file'
+              ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+              : a.fork
+                ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />
+                : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />}
+            <span className="truncate">{a.label}</span>
+          </button>
+        )
+        return a.kind === 'session'
+          ? <ContextMenu key={`${a.kind}:${a.id}`} items={sessionMenuItems(a.id)}>{row}</ContextMenu>
+          : <div key={`${a.kind}:${a.id}`}>{row}</div>
+      })}
     </div>
   )
 
@@ -723,11 +749,9 @@ function BoardView() {
   const [dragOverCol, setDragOverCol] = useState<string | null>(null)
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
     await addCardTo(column, text)
-    // The fresh card is the column's last — stamp its detail lines in.
-    const board = useSpacesStore.getState().board
-    const col = board?.columns.find((c) => c.title === column)
-    if (col && detail.some((l) => l.trim())) {
-      await editCard({ column, index: col.cards.length - 1 }, text, detail)
+    // The fresh card lands on TOP (newest-first) — stamp its detail lines in.
+    if (detail.some((l) => l.trim())) {
+      await editCard({ column, index: 0 }, text, detail)
     }
   }
 
