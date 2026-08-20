@@ -1029,6 +1029,9 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           >
             ⊘ {blocked ? 'blocked' : 'block'}
           </button>
+          {splitTrailingTags(card.text).tags.map((t) => (
+            <span key={t} className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">#{t}</span>
+          ))}
           {card.blockId && (
             <span className="rounded-full border border-transparent px-2 py-0.5 text-[11px] text-text-tertiary" title="Dispatch id — the agent's board line identity">
               ^{card.blockId}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard,
+  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
 } from '../kanban/board.js'
 
@@ -68,6 +68,18 @@ describe('parseCardTokens', () => {
     expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true })
     expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true })
     expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false })
+  })
+})
+
+describe('splitTrailingTags (display badges)', () => {
+  it('splits a trailing tag run, preserves order', () => {
+    expect(splitTrailingTags('Ship the digest #bi #email')).toEqual({ text: 'Ship the digest', tags: ['bi', 'email'] })
+  })
+  it('mid-text hashtags are prose, not tags', () => {
+    expect(splitTrailingTags('The #blocked drain and #bi stuff need work')).toEqual({ text: 'The #blocked drain and #bi stuff need work', tags: [] })
+  })
+  it('no tags → identity', () => {
+    expect(splitTrailingTags('Plain card')).toEqual({ text: 'Plain card', tags: [] })
   })
 })
 
