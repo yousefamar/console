@@ -2,7 +2,7 @@
 // broadcasts `changed {boardPath}` on ANY board-file edit (an agent moving
 // its card, Obsidian, Syncthing) and `transition` on review/done/#blocked.
 // If the changed board is the one open in Spaces, re-read it — UNLESS a
-// local mutation is being saved right now (saveBoard sets `saving`), in
+// local mutation is being POSTed right now (boardApi sets `saving`), in
 // which case our own write triggered the event and the in-memory copy is
 // already the newest.
 //
