@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { parseBoard } from '../kanban/board.js'
-import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope } from '../kanban/dispatch.js'
+import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope } from '../kanban/dispatch.js'
 import { BoardWatcher, projectForBoardPath, type BoardDispatch, type BoardTransition } from '../kanban/watcher.js'
 import { NoteStore } from '../notes.js'
 
@@ -111,6 +111,50 @@ describe('buildBoardEnvelope fork identity', () => {
       column: 'In Progress',
     })
     expect(env).not.toContain('IDENTITY')
+  })
+})
+
+describe('buildWindDownEnvelope', () => {
+  it('gated: approval is the merge/deploy signal', () => {
+    const env = buildWindDownEnvelope({ boardAbsPath: '/v/b.md', text: 'Fix nav', blockId: 'aa', deployGate: 'review' })
+    expect(env).toContain('[CARD APPROVED — wind down]')
+    expect(env).toContain('Merge your branch into main (this deploys)')
+    expect(env).toContain('autowt cleanup')
+    expect(env).toContain('hub automatically merges your summary')
+  })
+  it('ungated: verify folded + clean up', () => {
+    const env = buildWindDownEnvelope({ boardAbsPath: '/v/b.md', text: 'x', blockId: 'aa', deployGate: null })
+    expect(env).toContain('folded into the project')
+    expect(env).not.toContain('this deploys')
+  })
+})
+
+describe('transition deployGate threading', () => {
+  it('BoardTransition carries the board gate', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    const gated = (inprog: string, done: string) => `---\nkanban-plugin: board\ndeploy_gate: review\n---\n\n## In Progress\n${inprog}\n## Done\n${done}`
+    writeFileSync(boardAbs, gated('\n- [ ] Work @eng ^gg11\n', '\n'))
+    const transitions: BoardTransition[] = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true, onTransition: (t) => transitions.push(t), pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      void readFileSync
+      writeFileSync(boardAbs, gated('\n', '\n- [x] Work @eng ^gg11\n'))
+      await watcher.poll()
+      expect(transitions).toHaveLength(1)
+      expect(transitions[0]!.done).toBe(true)
+      expect(transitions[0]!.deployGate).toBe('review')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

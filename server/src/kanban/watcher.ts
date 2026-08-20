@@ -31,6 +31,9 @@ export interface BoardDispatch {
 
 export interface BoardTransition extends InFlightCard {
   boardPath: string
+  /** Board frontmatter `deploy_gate: review` — Done approval means "merge the
+   *  branch now" on gated boards (merging deploys). */
+  deployGate: 'review' | null
 }
 
 export interface BoardWatcherOpts {
@@ -203,8 +206,9 @@ export class BoardWatcher {
     }
 
     // Diff in-flight state for transitions.
+    const gate = boardDeployGate(content)
     for (const card of inFlightCards(board)) {
-      const t: BoardTransition = { ...card, boardPath: path }
+      const t: BoardTransition = { ...card, boardPath: path, deployGate: gate }
       const prev = this.inFlight.get(card.blockId)
       this.inFlight.set(card.blockId, t)
       if (card.review || card.done || card.blocked) {
