@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, cardImagePaths, splitTrailingTags,
+  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
 } from '../kanban/board.js'
 
@@ -80,6 +80,34 @@ describe('splitTrailingTags (display badges)', () => {
   })
   it('no tags → identity', () => {
     expect(splitTrailingTags('Plain card')).toEqual({ text: 'Plain card', tags: [] })
+  })
+})
+
+describe('sanitizeCardText (write-path token-collision guard)', () => {
+  it('backtick-wraps a trailing #blocked so it survives a round-trip as prose', () => {
+    expect(sanitizeCardText('UI like #blocked')).toBe('UI like `#blocked`')
+  })
+  it('handles @key and ^id tails; one wrap suffices (earlier tokens become mid-text)', () => {
+    expect(sanitizeCardText('ping @al')).toBe('ping `@al`')
+    expect(sanitizeCardText('see ^abc123')).toBe('see `^abc123`')
+    // Only the TAIL parses as a token — once wrapped, "@al" is mid-text and
+    // parseCardTokens never touches it.
+    expect(sanitizeCardText('both @al #blocked')).toBe('both @al `#blocked`')
+    const round = parseCardTokens(sanitizeCardText('both @al #blocked'))
+    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false })
+  })
+  it('leaves mid-text and non-token tails alone', () => {
+    expect(sanitizeCardText('email alice@example.com')).toBe('email alice@example.com')
+    expect(sanitizeCardText('#blocked at the start')).toBe('#blocked at the start')
+    expect(sanitizeCardText('normal card')).toBe('normal card')
+  })
+  it('LIVE REPRO: addCard with token-tailed text round-trips losslessly', () => {
+    const board = parseBoard(REAL_BOARD)
+    addCard(board, 'Backlog', 'opt-out UI like #blocked')
+    const reparsed = parseBoard(serializeBoard(board))
+    const card = reparsed.columns[0]!.cards.find((c) => c.text.includes('opt-out'))!
+    expect(card.blocked).toBe(false)
+    expect(card.text).toBe('opt-out UI like `#blocked`')
   })
 })
 

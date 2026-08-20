@@ -176,7 +176,27 @@ export function serializeBoard(board: KanbanBoard): string {
 // lines ride along untouched.
 // ---------------------------------------------------------------------------
 
+/** Neutralize a token collision in card TEXT: prose whose tail matches the
+ *  trailing-token grammar (`#blocked`, `@key`, `^id`) would be stripped into
+ *  tokens on the next parse — truncating the text and flipping card state
+ *  (live bug: a card titled "… UI like #blocked" came back blocked with a
+ *  cut title). Wrap the colliding tail in backticks: renders as a code span
+ *  in Obsidian, reads as the literal the author meant, and no longer matches
+ *  (the token regexes require the bare word at end-of-line). Applied at the
+ *  refreshCardLine choke point, so every writer (add/edit/assign/block) is
+ *  covered; parse-only paths never mutate text. */
+export function sanitizeCardText(text: string): string {
+  let t = text
+  // Repeat: "foo @a #blocked" collides twice.
+  for (;;) {
+    const m = t.match(/(\s)(#blocked|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
+    if (!m) return t
+    t = `${t.slice(0, m.index! + m[1]!.length)}\`${m[2]!}\``
+  }
+}
+
 function cardFirstLine(card: BoardCard): string {
+  card.text = sanitizeCardText(card.text)
   const tokens = [card.text]
   if (card.blocked) tokens.push('#blocked')
   if (card.agentKey) tokens.push(`@${card.agentKey}`)
