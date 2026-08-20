@@ -52,7 +52,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.db.AgentSessionRow
-import io.amar.console.data.spaces.CardRef
 import io.amar.console.data.spaces.KanbanCodec
 import io.amar.console.data.spaces.SpacesRepository
 import kotlinx.coroutines.launch
@@ -336,9 +335,9 @@ fun SpaceDetailScreen(
     }
     LaunchedEffect(slug) {
         spacesRepo.refreshSpaces()
-        sp?.boardPath?.let { spacesRepo.loadBoard(it) } ?: spacesRepo.clearBoard()
+        if (sp?.boardPath != null) spacesRepo.loadBoard(slug) else spacesRepo.clearBoard()
     }
-    LaunchedEffect(sp?.boardPath) { sp?.boardPath?.let { spacesRepo.loadBoard(it) } }
+    LaunchedEffect(sp?.boardPath) { if (sp?.boardPath != null) spacesRepo.loadBoard(slug) }
 
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
@@ -389,48 +388,61 @@ private fun BoardView(
     onOpenSession: (String) -> Unit,
 ) {
     val loaded by spacesRepo.board.collectAsState()
+    val error by spacesRepo.boardError.collectAsState()
     val scope = rememberCoroutineScope()
-    var cardSheet by remember { mutableStateOf<CardRef?>(null) }
+    var sheetCard by remember { mutableStateOf<SpacesRepository.CardView?>(null) }
     var addToColumn by remember { mutableStateOf<String?>(null) }
-    val board = loaded?.board ?: run {
-        Text("Loading board…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
+    val board = loaded ?: run {
+        Text(
+            error ?: "Loading board…",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(16.dp),
+        )
         return
     }
-    // Done columns stay in the FILE but hide on screen (SPA parity).
+    // Done columns stay in the FILE but hide on screen (SPA parity). Moving
+    // TO Done stays available in the card sheet — this app is Yousef's
+    // device and he alone approves.
     val visibleCols = board.columns.filter { !KanbanCodec.DONE_COLUMN_RE.matches(it.title) }
     val doneCount = board.columns.filter { KanbanCodec.DONE_COLUMN_RE.matches(it.title) }.sumOf { it.cards.size }
 
-    LazyRow(
-        Modifier.fillMaxSize().padding(top = 4.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        items(visibleCols, key = { it.title }) { col ->
-            Column(
-                Modifier.width(290.dp).fillMaxSize()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                    .padding(8.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(col.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                    Text("${col.cards.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    IconButton(onClick = { addToColumn = col.title }, modifier = Modifier.size(26.dp)) {
-                        Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
+    Column(Modifier.fillMaxSize()) {
+        error?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+        }
+        LazyRow(
+            Modifier.fillMaxSize().padding(top = 4.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(visibleCols, key = { it.title }) { col ->
+                Column(
+                    Modifier.width(290.dp).fillMaxSize()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .padding(8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(col.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                        Text("${col.cards.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        IconButton(onClick = { addToColumn = col.title }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
+                        }
                     }
-                }
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-                    items(col.cards.size) { i ->
-                        val card = col.cards[i]
-                        CardChip(card, roles) { cardSheet = CardRef(col.title, i) }
-                    }
-                    if (doneCount > 0 && col === visibleCols.last()) {
-                        item {
-                            Text(
-                                "$doneCount done (hidden)", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                modifier = Modifier.padding(top = 8.dp),
-                            )
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+                        items(col.cards.size) { i ->
+                            CardChip(col.cards[i], roles, bound) { sheetCard = col.cards[i] }
+                        }
+                        if (doneCount > 0 && col === visibleCols.last()) {
+                            item {
+                                Text(
+                                    "$doneCount done (hidden)", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    modifier = Modifier.padding(top = 8.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -438,17 +450,17 @@ private fun BoardView(
         }
     }
 
-    cardSheet?.let { ref ->
+    sheetCard?.let { card ->
         CardSheet(
             spacesRepo = spacesRepo,
-            ref = ref,
+            card = card,
             roles = roles,
             bound = bound,
             kind = kind,
             slug = slug,
             columns = board.columns.map { it.title },
             onOpenSession = onOpenSession,
-            onDismiss = { cardSheet = null },
+            onDismiss = { sheetCard = null },
         )
     }
     addToColumn?.let { colTitle ->
@@ -456,7 +468,7 @@ private fun BoardView(
             column = colTitle,
             onAdd = { text ->
                 addToColumn = null
-                scope.launch { spacesRepo.mutateBoard { b -> KanbanCodec.addCard(b, colTitle, text) != null } }
+                scope.launch { spacesRepo.addCard(slug, text, colTitle) }
             },
             onDismiss = { addToColumn = null },
         )
@@ -464,7 +476,12 @@ private fun BoardView(
 }
 
 @Composable
-private fun CardChip(card: io.amar.console.data.spaces.BoardCard, roles: List<AgentsRepository.AgentRole>, onClick: () -> Unit) {
+private fun CardChip(
+    card: SpacesRepository.CardView,
+    roles: List<AgentsRepository.AgentRole>,
+    bound: List<AgentSessionRow>,
+    onClick: () -> Unit,
+) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
@@ -476,7 +493,17 @@ private fun CardChip(card: io.amar.console.data.spaces.BoardCard, roles: List<Ag
             style = MaterialTheme.typography.bodySmall,
             color = if (card.checked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
         )
-        val hasMeta = card.blocked || card.agentKey != null || card.lines.size > 1
+        // Detail preview, newline-preserved, clamped (SPA 6-line clamp).
+        if (card.detail.isNotEmpty()) {
+            Text(
+                card.detail.joinToString("\n"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        val hasMeta = card.blocked || card.agentKey != null || card.blockId != null
         if (hasMeta) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 if (card.blocked) {
@@ -486,18 +513,15 @@ private fun CardChip(card: io.amar.console.data.spaces.BoardCard, roles: List<Ag
                     }
                 }
                 card.agentKey?.let { key ->
-                    val title = roles.firstOrNull { it.key == key }?.title ?: key
+                    val label = (bound.firstOrNull { it.agentKey == key }?.name
+                        ?: roles.firstOrNull { it.key == key }?.title ?: key).removeSuffix(" (fork)")
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         Icon(Icons.Filled.SmartToy, null, tint = VIOLET, modifier = Modifier.size(11.dp))
-                        Text(title, style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(label, style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 if (card.blockId != null) {
-                    // Stamped = dispatched (hub-owned marker).
                     Text("dispatched", style = MaterialTheme.typography.labelSmall, color = GREEN)
-                }
-                if (card.lines.size > 1) {
-                    Text("…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -508,7 +532,7 @@ private fun CardChip(card: io.amar.console.data.spaces.BoardCard, roles: List<Ag
 @Composable
 private fun CardSheet(
     spacesRepo: SpacesRepository,
-    ref: CardRef,
+    card: SpacesRepository.CardView,
     roles: List<AgentsRepository.AgentRole>,
     bound: List<AgentSessionRow>,
     kind: String,
@@ -517,26 +541,21 @@ private fun CardSheet(
     onOpenSession: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val loaded by spacesRepo.board.collectAsState()
-    val card = loaded?.let { KanbanCodec.getCard(it.board, ref) } ?: return
     val scope = rememberCoroutineScope()
-    fun mutate(block: (io.amar.console.data.spaces.KanbanBoard) -> Boolean) {
-        scope.launch { spacesRepo.mutateBoard(block); onDismiss() }
-    }
+    fun run(block: suspend () -> Unit) { scope.launch { block(); onDismiss() } }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text(card.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-            // Detail lines (indented continuations), verbatim minus indent.
-            if (card.lines.size > 1) {
+            if (card.detail.isNotEmpty()) {
                 Text(
-                    card.lines.drop(1).joinToString("\n") { it.trimStart() },
+                    card.detail.joinToString("\n"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
-                Text("in ${ref.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("in ${card.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 card.agentKey?.let { key ->
                     val t = bound.firstOrNull { it.agentKey == key }?.name
                         ?: roles.firstOrNull { it.key == key }?.title ?: key
@@ -546,13 +565,11 @@ private fun CardSheet(
                 if (card.blocked) Text("#blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
 
-            // Move to… (never a client-side Done shortcut for agent cards —
-            // humans certify; Done IS offered since the human is the reviewer.)
             Text("Move to", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (colTitle in columns.filter { it != ref.column }) {
+                for (colTitle in columns.filter { it != card.column }) {
                     Surface(
-                        onClick = { mutate { b -> KanbanCodec.moveCard(b, ref, colTitle) } },
+                        onClick = { run { spacesRepo.moveCard(slug, card, colTitle) } },
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
@@ -561,35 +578,25 @@ private fun CardSheet(
                 }
             }
 
-            // Assign to… (assignment is the delegation trigger once the card
-            // sits in an In-Progress column — hub does the rest). Roles BOUND
-            // to this space come first (they're who board work goes to; the
-            // rest of the org only after), and chips show the role TITLE so
-            // renames read as themselves — @key is the wire token, not a label.
+            // Assignment is the delegation trigger once in an In-Progress
+            // column (hub stamps + forks + wakes). Space-bound roles first,
+            // labelled by live name; the rest of the org dimmed after.
             Text("Assign to", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
             val inSpace = { r: AgentsRepository.AgentRole ->
                 if (kind == "project") r.project == slug else slug in r.areas
             }
-            // A renamed SESSION doesn't update the role file's title (hub gap,
-            // being fixed web-side too) — prefer the live session's name.
             fun roleLabel(r: AgentsRepository.AgentRole): String =
                 (bound.firstOrNull { it.agentKey == r.key }?.name ?: r.title).removeSuffix(" (fork)")
-            val assignable = roles.filter { !it.folder }
+            // Per-ticket forks are the DISPATCH result, not assign targets
+            // (SPA PillPicker excludes them).
+            val assignable = roles.filter { !it.folder && !it.fork }
                 .sortedWith(compareBy({ !inSpace(it) }, { roleLabel(it).lowercase() }))
                 .take(24)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for (role in assignable) {
                     val selected = card.agentKey == role.key
                     Surface(
-                        onClick = {
-                            mutate { b ->
-                                KanbanCodec.getCard(b, ref)?.let { c ->
-                                    c.agentKey = if (selected) null else role.key
-                                    KanbanCodec.refreshCardLine(c)
-                                    true
-                                } ?: false
-                            }
-                        },
+                        onClick = { run { spacesRepo.assignCard(slug, card, if (selected) null else role.key) } },
                         shape = RoundedCornerShape(8.dp),
                         color = when {
                             selected -> MaterialTheme.colorScheme.secondaryContainer
@@ -610,22 +617,15 @@ private fun CardSheet(
             }
 
             Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                TextButton(onClick = {
-                    mutate { b ->
-                        KanbanCodec.getCard(b, ref)?.let { c ->
-                            c.blocked = !c.blocked
-                            KanbanCodec.refreshCardLine(c)
-                            true
-                        } ?: false
-                    }
-                }) { Text(if (card.blocked) "Unblock" else "Mark #blocked") }
-                // Jump to the assignee's live session when it's in this space.
+                TextButton(onClick = { run { spacesRepo.setBlocked(slug, card, !card.blocked) } }) {
+                    Text(if (card.blocked) "Unblock" else "Mark #blocked")
+                }
                 card.agentKey?.let { key ->
                     bound.firstOrNull { it.agentKey == key }?.let { sess ->
                         TextButton(onClick = { onDismiss(); onOpenSession(sess.id) }) { Text("Open agent") }
                     }
                 }
-                TextButton(onClick = { mutate { b -> KanbanCodec.deleteCard(b, ref) } }) {
+                TextButton(onClick = { run { spacesRepo.removeCard(slug, card) } }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             }
@@ -643,7 +643,7 @@ private fun AddCardSheet(column: String, onAdd: (String) -> Unit, onDismiss: () 
             Text("New card in $column", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
             androidx.compose.material3.OutlinedTextField(
                 value = text, onValueChange = { text = it },
-                placeholder = { Text("Card text (@key to assign)") },
+                placeholder = { Text("Card text") },
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             )
             TextButton(onClick = { if (text.isNotBlank()) onAdd(text.trim()) }, enabled = text.isNotBlank()) { Text("Add") }

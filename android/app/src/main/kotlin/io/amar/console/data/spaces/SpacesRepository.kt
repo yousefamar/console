@@ -1,32 +1,41 @@
 package io.amar.console.data.spaces
 
 import io.amar.console.core.HubClient
+import io.amar.console.sync.SyncBusClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
- * Spaces domain (SPA SpacesTab parity, mobile-shaped). A space = a vault
- * PROJECT (folder/flat .md under projects/) or an AREA (_data/areas.json
- * entry). Boards are Obsidian-Kanban markdown IN the vault — the same file
- * humans, agents, and the hub's dispatch watcher edit, so board writes go
- * through the lossless KanbanCodec and PUT with baseMtime (409 → reload;
- * stricter than the SPA, which last-writer-wins).
+ * Spaces domain — hub-API-first (spaces-parity-report.md M1/M2 shape).
  *
- * Transient/online-leaning by design for v1: spaces list + boards fetch over
- * HTTP on entry (the vault is the persistence; notes offline cache already
- * covers Docs reads via NotesRepository).
+ * Boards: ALL reads and mutations go through the hub's BoardOps routes
+ * (`GET /board/:project`, `POST /board/:project/{cards,move,assign,block,
+ * note,edit,remove}`) — the hub holds a per-board write queue, so concurrent
+ * editors (Obsidian, agents, SPA, this app) serialize instead of clobbering.
+ * The v1 approach (raw /notes/file/ PUT of re-serialized markdown) is GONE:
+ * clients never hand-write board files. Cards are addressed by `^id` or a
+ * unique text substring; every mutation response is the fresh card view.
+ *
+ * Live refresh: SyncBus service `boards` broadcasts `changed {boardPath}` +
+ * `transition {...}` — any event for the open board re-fetches it.
  */
-class SpacesRepository(private val hub: HubClient) {
+class SpacesRepository(
+    private val hub: HubClient,
+    private val syncBus: SyncBusClient,
+) {
     private val json = Json { ignoreUnknownKeys = true }
 
     data class SpaceSummary(
@@ -39,17 +48,40 @@ class SpacesRepository(private val hub: HubClient) {
         val fileCount: Int,
     )
 
-    data class LoadedBoard(
-        val path: String,
-        val board: KanbanBoard,
-        /** Server mtime at load — echoed back as baseMtime on save. */
-        val mtime: Long?,
+    /** Hub CardView (board-ops.ts): detail = trimmed continuation lines. */
+    data class CardView(
+        val text: String,
+        val column: String,
+        val agentKey: String?,
+        val blockId: String?,
+        val blocked: Boolean,
+        val checked: Boolean,
+        val detail: List<String>,
     )
+
+    data class BoardColumnView(val title: String, val cards: List<CardView>)
+    data class BoardView(val project: String, val path: String, val columns: List<BoardColumnView>)
 
     private val _spaces = MutableStateFlow<List<SpaceSummary>>(emptyList())
     val spaces: StateFlow<List<SpaceSummary>> = _spaces
-    private val _board = MutableStateFlow<LoadedBoard?>(null)
-    val board: StateFlow<LoadedBoard?> = _board
+    private val _board = MutableStateFlow<BoardView?>(null)
+    val board: StateFlow<BoardView?> = _board
+    private val _boardError = MutableStateFlow<String?>(null)
+    val boardError: StateFlow<String?> = _boardError
+
+    /** Wire the boards live-refresh subscription once (AppGraph). */
+    fun wireLive(scope: CoroutineScope) {
+        syncBus.on("boards", "*") { data ->
+            val path = runCatching {
+                data.jsonObject["boardPath"]?.jsonPrimitive?.content
+            }.getOrNull()
+            val open = _board.value ?: return@on
+            // transition events carry boardPath; changed too. No path → refresh anyway.
+            if (path == null || path == open.path) {
+                scope.launch { runCatching { loadBoard(open.project) } }
+            }
+        }
+    }
 
     suspend fun refreshSpaces() {
         runCatching {
@@ -69,37 +101,81 @@ class SpacesRepository(private val hub: HubClient) {
         }
     }
 
-    suspend fun loadBoard(path: String) {
+    suspend fun loadBoard(project: String) {
         runCatching {
-            val resp = json.parseToJsonElement(hub.get("/notes/file/" + java.net.URLEncoder.encode(path, "UTF-8"))).jsonObject
-            val content = resp["content"]?.jsonPrimitive?.content ?: return
-            _board.value = LoadedBoard(path, KanbanCodec.parse(content), resp["mtime"]?.jsonPrimitive?.longOrNull)
-        }
+            val resp = json.parseToJsonElement(hub.get("/board/" + java.net.URLEncoder.encode(project, "UTF-8"))).jsonObject
+            val cols = (resp["columns"] as? JsonArray)?.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                BoardColumnView(
+                    title = o["title"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                    cards = (o["cards"] as? JsonArray)?.mapNotNull { cardFrom(it as? JsonObject) } ?: emptyList(),
+                )
+            } ?: emptyList()
+            _board.value = BoardView(project, resp["path"]?.jsonPrimitive?.content ?: "", cols)
+            _boardError.value = null
+        }.onFailure { _boardError.value = it.message }
     }
 
-    fun clearBoard() { _board.value = null }
+    fun clearBoard() { _board.value = null; _boardError.value = null }
 
-    /**
-     * Mutate-and-save: apply [mutate] to a fresh copy of the loaded board,
-     * serialize losslessly, PUT with baseMtime. A 409 (concurrent edit by
-     * Obsidian/agent/hub-stamp) or any failure → reload from the hub and
-     * return false so the UI re-renders truth instead of a phantom.
-     */
-    suspend fun mutateBoard(mutate: (KanbanBoard) -> Boolean): Boolean {
-        val loaded = _board.value ?: return false
-        val b = KanbanCodec.parse(KanbanCodec.serialize(loaded.board)) // defensive copy via round-trip
-        if (!mutate(b)) return false
-        val body = buildJsonObject {
-            put("content", KanbanCodec.serialize(b))
-            loaded.mtime?.let { put("baseMtime", it) }
-        }
+    private fun cardFrom(o: JsonObject?): CardView? {
+        if (o == null) return null
+        return CardView(
+            text = o["text"]?.jsonPrimitive?.content ?: return null,
+            column = o["column"]?.jsonPrimitive?.content ?: "",
+            agentKey = o["agentKey"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            blockId = o["blockId"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            blocked = o["blocked"]?.jsonPrimitive?.content == "true",
+            checked = o["checked"]?.jsonPrimitive?.content == "true",
+            detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+        )
+    }
+
+    /** Card address for BoardOps: `^id` when stamped, else the exact text
+     *  (unique-substring resolution is the hub's). */
+    fun cardAddress(c: CardView): String = c.blockId?.let { "^$it" } ?: c.text
+
+    // --- mutations (hub-serialized; every call re-loads the board after) --- //
+
+    private suspend fun post(project: String, verb: String, body: JsonObject): Boolean {
         val ok = runCatching {
-            val resp = json.parseToJsonElement(
-                hub.put("/notes/file/" + java.net.URLEncoder.encode(loaded.path, "UTF-8"), body.toString())
-            ).jsonObject
-            _board.value = LoadedBoard(loaded.path, b, resp["mtime"]?.jsonPrimitive?.longOrNull)
-        }.isSuccess
-        if (!ok) loadBoard(loaded.path)
+            val resp = hub.post("/board/" + java.net.URLEncoder.encode(project, "UTF-8") + "/" + verb, body.toString())
+            val o = json.parseToJsonElement(resp).jsonObject
+            if (o["error"] != null) throw IllegalStateException(o["error"]!!.jsonPrimitive.content)
+        }.onFailure { _boardError.value = it.message }.isSuccess
+        loadBoard(project) // truth after every attempt, success or not
         return ok
     }
+
+    suspend fun moveCard(project: String, card: CardView, to: String): Boolean =
+        post(project, "move", buildJsonObject { put("card", cardAddress(card)); put("to", to) })
+
+    suspend fun assignCard(project: String, card: CardView, agent: String?): Boolean =
+        post(project, "assign", buildJsonObject {
+            put("card", cardAddress(card))
+            if (agent == null) put("agent", JsonNull) else put("agent", agent)
+        })
+
+    suspend fun setBlocked(project: String, card: CardView, blocked: Boolean, note: String? = null): Boolean =
+        post(project, "block", buildJsonObject {
+            put("card", cardAddress(card)); put("blocked", blocked)
+            note?.let { put("note", it) }
+        })
+
+    suspend fun addCard(project: String, text: String, column: String?, detail: List<String> = emptyList()): Boolean =
+        post(project, "cards", buildJsonObject {
+            put("text", text)
+            column?.let { put("column", it) }
+            if (detail.isNotEmpty()) putJsonArray("detail") { detail.forEach { add(it) } }
+        })
+
+    suspend fun editCard(project: String, card: CardView, text: String?, detail: List<String>?): Boolean =
+        post(project, "edit", buildJsonObject {
+            put("card", cardAddress(card))
+            text?.let { put("text", it) }
+            detail?.let { d -> putJsonArray("detail") { d.forEach { add(it) } } }
+        })
+
+    suspend fun removeCard(project: String, card: CardView): Boolean =
+        post(project, "remove", buildJsonObject { put("card", cardAddress(card)) })
 }

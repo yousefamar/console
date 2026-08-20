@@ -7,16 +7,33 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
-- Remove delegation-tasks UI (agents area): the hub's task system (`/agents/tasks`,
-  `delegate`/`report`/`tasks` protocol) was torn out 2026-08-14 in favour of
-  vault kanban boards (`server/src/kanban/`). The APK's delegation panels now
-  point at nothing — strip them (and later render boards natively instead).
+_(empty)_
 
 ## Built, awaiting release
 
 _(empty)_
 
 ## Shipped
+
+### v87 (2026-08-20)
+- Board card ^240ofe (Spaces parity M1+M2 core, per
+  projects/console/spaces-parity-report.md): board I/O migrated OFF raw
+  /notes/file/ markdown writes onto the hub's BoardOps API — GET
+  /board/:project for reads (CardView shape), POST /board/:project/{cards,
+  move,assign,block,edit,remove} for every mutation. The hub's per-board
+  write queue now serializes this app against Obsidian/agents/SPA instead of
+  last-writer-wins racing them; cards address by ^id (fallback: exact text →
+  hub unique-substring). SyncBus `boards` service wired: changed/transition
+  events for the open board re-fetch it live (the SPA doesn't even do this
+  yet). Board errors surface inline instead of a silent stale view. Card
+  chips gained the newline-preserved detail preview; per-ticket forks are
+  excluded from assign options (SPA PillPicker parity — forks are the
+  dispatch RESULT). KanbanCodec stays for isKanbanBoard/Done-column regexes
+  only — clients never hand-write board files now.
+- Dead delegation-tasks UI stripped (hub tore the system out 2026-08-14 for
+  kanban boards): TasksSheet/TaskRow, the tasks toolbar badge, org-roster
+  task counts, and AgentsRepository delegate/cancelTask/AgentTask/tasks
+  stream handling are gone.
 
 ### v86 (2026-08-19)
 - Board assign chips fixed per Yousef: roles BOUND to this space sort first

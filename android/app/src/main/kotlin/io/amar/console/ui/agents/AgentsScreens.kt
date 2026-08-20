@@ -87,7 +87,6 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     val connected by repo.connectedFlow.collectAsState()
     val activityMap by repo.activity.collectAsState()
     val todosMap by repo.todos.collectAsState()
-    val tasks by repo.tasks.collectAsState()
     val fallback by repo.fallbackNotice.collectAsState()
     val handoff by repo.handoff.collectAsState()
     val roles by repo.roles.collectAsState()
@@ -98,7 +97,6 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
     val prefsCtx = androidx.compose.ui.platform.LocalContext.current
     val filterPrefs = remember { prefsCtx.getSharedPreferences("agents_view", android.content.Context.MODE_PRIVATE) }
     var filterAlerted by remember { mutableStateOf(filterPrefs.getBoolean("filterAlerted", false)) }
-    var showTasks by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
     var showOrg by remember { mutableStateOf(false) }
     var showSwitcher by remember { mutableStateOf(false) }
@@ -131,7 +129,6 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
         else flattenSidebar(rest, sessionOrder, collapsedGroups)
     }
     val visibleCount = rows.count { it is SidebarRow.Session } + (if (al != null && !filterAlerted) 1 else 0)
-    val openTaskCount = tasks.count { it.status in setOf("pending", "in_progress", "blocked") }
 
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
     var creating by remember { mutableStateOf(false) }
@@ -146,14 +143,6 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
                 }
                 IconButton(onClick = { showOrg = true }) {
                     Icon(Icons.Filled.AccountTree, contentDescription = "Org chart", modifier = Modifier.size(20.dp))
-                }
-                if (openTaskCount > 0 || tasks.isNotEmpty()) {
-                    IconButton(onClick = { showTasks = true }) {
-                        Box {
-                            Icon(Icons.Filled.Terminal, contentDescription = "Tasks", modifier = Modifier.size(20.dp))
-                            if (openTaskCount > 0) Badge(openTaskCount, VIOLET, Modifier.align(Alignment.TopEnd))
-                        }
-                    }
                 }
                 IconButton(onClick = { showModelSheet = true }) {
                     Icon(Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
@@ -275,7 +264,6 @@ fun AgentSessionListScreen(repo: AgentsRepository, onOpenSession: (String) -> Un
             onResume = { csid, prompt, cwd -> creating = false; repo.resumeSession(csid, prompt, cwd) },
         )
     }
-    if (showTasks) TasksSheet(repo, tasks, onOpenSession = { onOpenSession(it) }, onDismiss = { showTasks = false })
     handoff?.let { h ->
         val title = roles.firstOrNull { it.key == h.targetAgentKey }?.title ?: h.targetAgentKey
         HandoffBanner(
