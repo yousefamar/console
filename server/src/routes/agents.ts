@@ -636,6 +636,9 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
   }
 
   try { child.kill() } catch { /* ignore */ }
+  // A merged-away FORK's role is clutter (nothing revives it) — reap it like
+  // kill_session/delete_session do; merges were leaving orphan rail entries.
+  reapForkRole(ctx, child)
   ctx.sessions.delete(child.id)
   saveManifest(ctx.sessions)
   broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
