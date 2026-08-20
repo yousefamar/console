@@ -35,6 +35,7 @@ import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
 import { splitTrailingTags } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
+import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 
 export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
@@ -1017,11 +1018,18 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   onMoveColumn: (to: string) => void
   onDelete: () => void
 }) {
-  const initialDetail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  const allDetail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  // Image detail lines render as thumbnails, not text — keep them out of the
+  // editable buffer and re-append on commit.
+  const initialImages = allDetail.filter(isImageLine).map((l) => imagePathOf(l)!)
+  const initialDetail = allDetail.filter((l) => !isImageLine(l))
   // ONE buffer, git-commit style: first line = the card (rendered bold),
   // everything after = the indented detail lines.
   const initialBody = [card.text, ...(initialDetail.length ? ['', ...initialDetail] : [])].join('\n')
   const [body, setBody] = useState(initialBody)
+  const [images, setImages] = useState<string[]>(initialImages)
+  const imagesRef = useRef(images)
+  imagesRef.current = images
   // Instant-apply property state (mirrors what we've already persisted).
   const [agentKey, setAgentKey] = useState<string | null>(card.agentKey)
   const [blocked, setBlocked] = useState(card.blocked)
@@ -1030,15 +1038,26 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   bodyRef.current = body
   const savedRef = useRef(initialBody)
 
+  const savedImagesRef = useRef(initialImages.join('\n'))
   const commitContent = () => {
     const raw = bodyRef.current
     const [first, ...rest] = raw.split('\n')
     if (!first?.trim()) return
-    if (raw === savedRef.current) return
+    const imgs = imagesRef.current.join('\n')
+    if (raw === savedRef.current && imgs === savedImagesRef.current) return
     savedRef.current = raw
+    savedImagesRef.current = imgs
     // Blank separator line(s) between title and detail are presentational.
     while (rest.length && !rest[0]!.trim()) rest.shift()
-    onEditContent(first.trim(), rest)
+    onEditContent(first.trim(), [...rest, ...imagesRef.current.map(imageLineFor)])
+  }
+  const pasteImages = async (blobs: Blob[]) => {
+    for (const blob of blobs) {
+      const path = await uploadCardImage(blob)
+      if (path) setImages((cur) => [...cur, path])
+    }
+    // setState is async — commit on the next tick with the ref current.
+    setTimeout(commitContent, 0)
   }
   const close = () => {
     dictation.stop()
@@ -1120,8 +1139,29 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
 
         {/* One buffer, git-commit style: bold first line = title, rest = detail. */}
         <div className="flex min-h-0 flex-1 flex-col px-5 pb-3 pt-2">
-          <CardBodyEditor value={body} onChange={setBody} onBlur={commitContent} />
+          <CardBodyEditor
+            value={body}
+            onChange={setBody}
+            onBlur={commitContent}
+            onPasteImages={(blobs) => void pasteImages(blobs)}
+          />
           {dictation.interim && <div className="text-[11px] italic text-text-tertiary">{dictation.interim}</div>}
+          {images.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {images.map((path) => (
+                <span key={path} className="group/thumb relative">
+                  <CardImageThumb path={path} size={96} />
+                  <button
+                    onClick={() => { setImages((cur) => cur.filter((x) => x !== path)); setTimeout(commitContent, 0) }}
+                    className="absolute -right-1.5 -top-1.5 hidden rounded-full border border-border bg-surface-0 p-0.5 text-text-tertiary hover:text-destructive group-hover/thumb:block"
+                    title="Remove image"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Footer — just the mic */}
@@ -1144,10 +1184,11 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
  *  everything below is the detail. `::first-line` applies to textareas in
  *  Chromium, so the title renders bold+large in a single plain textarea —
  *  no mirror-div alignment tricks, native caret/selection throughout. */
-function CardBodyEditor({ value, onChange, onBlur }: {
+function CardBodyEditor({ value, onChange, onBlur, onPasteImages }: {
   value: string
   onChange: (v: string) => void
   onBlur: () => void
+  onPasteImages?: (blobs: Blob[]) => void
 }) {
   return (
     <>
@@ -1157,6 +1198,10 @@ function CardBodyEditor({ value, onChange, onBlur }: {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
+        onPaste={(e) => {
+          const blobs = imagesFromPaste(e)
+          if (blobs.length && onPasteImages) { e.preventDefault(); onPasteImages(blobs) }
+        }}
         placeholder={'Card title\n\nDetails — like a commit message: first line is the card, the rest is the description.'}
         className="card-body-ta min-h-40 w-full flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-text-secondary outline-none placeholder:text-text-tertiary"
       />
@@ -1190,6 +1235,17 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
+        onPaste={(e) => {
+          const blobs = imagesFromPaste(e)
+          if (!blobs.length) return
+          e.preventDefault()
+          void (async () => {
+            for (const blob of blobs) {
+              const path = await uploadCardImage(blob)
+              if (path) setDraft((cur) => cur + (cur.endsWith('\n') || !cur ? '' : '\n') + imageLineFor(path))
+            }
+          })()
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit() }
           else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dictation.stop(); onCancel() }
@@ -1219,6 +1275,18 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
   )
 }
 
+/** Async blob-URL thumbnail for a card image (asset-relative path). */
+function CardImageThumb({ path, size }: { path: string; size: number }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    void assetBlobUrl(path).then((u) => { if (alive) setUrl(u) })
+    return () => { alive = false }
+  }, [path])
+  if (!url) return <span style={{ width: size, height: size }} className="inline-block rounded-sm border border-border bg-surface-1" />
+  return <img src={url} alt="" style={{ maxWidth: size, maxHeight: size }} className="rounded-sm border border-border object-cover" />
+}
+
 function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
   card: BoardCard
   onAssign: () => void
@@ -1227,7 +1295,10 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
   onDragStart: () => void
   onDragEnd: () => void
 }) {
-  const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  const allDetail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  // Image lines render as thumbnails below the text, not as markdown noise.
+  const imagePaths = allDetail.filter(isImageLine).map((l) => imagePathOf(l)!)
+  const detail = allDetail.filter((l) => !isImageLine(l))
   // Trailing #tags render as badges (like #blocked, which keeps its own
   // amber treatment); they're display-split only — the board line is untouched.
   const { text: tileText, tags } = splitTrailingTags(card.text)
@@ -1248,6 +1319,11 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
       <div onClick={onOpen} className="cursor-pointer" title="Open">
         <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{tileText}</div>
         {detail.length > 0 && <div className="mt-0.5 whitespace-pre-wrap text-[10px] leading-snug text-text-tertiary line-clamp-6">{detail.join('\n')}</div>}
+        {imagePaths.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {imagePaths.map((path) => <CardImageThumb key={path} path={path} size={48} />)}
+          </div>
+        )}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
         <button

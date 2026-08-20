@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { Session, type SessionOptions } from '../session.js'
+import { Session, type SessionOptions, type ImageAttachment } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
 import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
 import { smallFastModel } from '../bedrock-profiles.js'
@@ -515,11 +515,14 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
 /** Inject a message into a live session's timeline + wake it — the same path
  *  cron and Al's inbound use (broadcast user_prompt + log + write stdin).
  *  Exported for the board-dispatch wiring in index.ts. */
-export function wakeSession(ctx: AgentContext, session: Session, content: string): void {
-  const msg = { type: 'user_prompt' as const, sessionId: session.id, content }
+export function wakeSession(ctx: AgentContext, session: Session, content: string, images?: ImageAttachment[]): void {
+  const msg = {
+    type: 'user_prompt' as const, sessionId: session.id, content,
+    ...(images?.length ? { images: images.map((i) => `data:${i.media_type};base64,${i.data}`) } : {}),
+  }
   session.logMessage(msg) // stamps absIndex
   broadcast(ctx.clients, msg)
-  session.sendMessage(content)
+  session.sendMessage(content, images)
 }
 
 

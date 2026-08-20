@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { Session, setAgentModelResolver } from './session.js'
+import { Session, setAgentModelResolver, type ImageAttachment } from './session.js'
 import { ModelConfig } from './model-config.js'
 import { AgentRegistry } from './agents/registry.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
@@ -32,6 +32,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher } from './kanban/watcher.js'
+import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
@@ -770,6 +771,19 @@ const boardWatcher = new BoardWatcher(noteStore, {
     }
     if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
     if (!worker) return false
+    // Card image attachments (markdown-image detail lines → sibling assets
+    // dir) ride the wake as REAL session images, like any composer attachment.
+    const images: ImageAttachment[] = []
+    for (const path of cardImagePaths(card)) {
+      try {
+        const buf = readFileSync(join(noteStore.assetsPath, path))
+        const ext = path.split('.').pop()?.toLowerCase() ?? 'png'
+        const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`
+        images.push({ media_type: mime, data: buf.toString('base64') })
+      } catch (e) {
+        log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
+      }
+    }
     wakeSession(agentCtx, worker, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
       card: { text: card.text, blockId: card.blockId!, lines: card.lines },
@@ -780,7 +794,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
       forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey } : null,
-    }))
+    }), images)
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not
     // the source role, which would otherwise start working alongside it.

@@ -205,6 +205,19 @@ export function refreshCardLine(card: BoardCard): void {
   card.lines[0] = cardFirstLine(card)
 }
 
+
+/** Image attachments on a card: detail lines that are markdown images
+ *  (`![alt](path)`). Paths are relative to the vault's sibling assets dir
+ *  (the pasteImage convention) — served at /notes/asset/<path>. */
+export function cardImagePaths(card: BoardCard): string[] {
+  const out: string[] = []
+  for (const line of card.lines.slice(1)) {
+    const m = line.trim().match(/^!\[[^\]]*\]\(([^)]+)\)$/)
+    if (m) out.push(m[1]!)
+  }
+  return out
+}
+
 export interface CardRef {
   column: string
   /** Index within the column. */
