@@ -843,16 +843,17 @@ const boardWatcher = new BoardWatcher(noteStore, {
       }
       return
     }
+    // Under Review does NOT wake anyone: Yousef is the reviewer and sees it
+    // on the live board + rail markers — a manager wake was pure noise (and
+    // an earlier "review the work" version walked managers into approving
+    // their own forks' cards). Only #blocked is actionable by the org.
+    if (t.review) return
     const managerKey = (t.agentKey && agentRegistry.get(t.agentKey)?.manager) || 'al'
     const manager = liveSessionForRole(agentCtx, managerKey)
     if (manager && manager.agentKey !== t.agentKey) {
       wakeSession(agentCtx, manager, [
-        `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} ${t.review ? 'is Under Review' : 'turned #blocked'}.`,
-        t.review
-          // Review verdicts are YOUSEF's, not the org's — a manager sanity-
-          // checking its own fork's work is self-review with extra steps.
-          ? 'FYI only — Yousef reviews Under Review cards and moves them to Done himself. Do NOT review, approve, or move this card. No action needed unless he asks.'
-          : 'The assignee is stuck — read their note on the board and unblock or escalate.',
+        `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} turned #blocked.`,
+        'The assignee is stuck — read their note on the board and unblock or escalate.',
       ].join('\n'))
     }
   },
