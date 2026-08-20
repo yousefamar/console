@@ -68,6 +68,15 @@ export function boardDeployGate(content: string): 'review' | null {
   return /^deploy_gate:\s*review\s*$/m.test(fence?.[1] ?? '') ? 'review' : null
 }
 
+/** Board-level frontmatter: `default_owner: <agentKey>` — the role that
+ *  unassigned cards dragged into In Progress are auto-assigned to. Set once
+ *  per project; overrides the "-general" naming-convention resolution. */
+export function boardDefaultOwner(content: string): string | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  const m = (fence?.[1] ?? '').match(/^default_owner:\s*(\S+)\s*$/m)
+  return m ? m[1]! : null
+}
+
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
 export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean } {
   let text = rawText.trimEnd()

@@ -32,7 +32,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher } from './kanban/watcher.js'
-import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -854,6 +854,18 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // Any board edit (agent moving its card, Obsidian, Syncthing) → live SPA
   // refresh. The path is the payload; the client re-reads via /notes/file/.
   onBoardChanged: (boardPath) => syncBus.broadcast('boards', 'changed', { boardPath }),
+  // Unassigned card dragged into In Progress → the project's default owner:
+  // frontmatter `default_owner:` (checked upstream) beats the "* general"
+  // naming convention over the project's bound roles. If it's ambiguous the
+  // resolver logs the pick — set default_owner: in the board frontmatter to
+  // make it explicit per project.
+  resolveOwner: (project) => {
+    if (!project) return null
+    const bound = agentRegistry.list().filter((r) => r.project === project)
+    const owner = resolveDefaultOwner(bound)
+    if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork && !r.folder).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
+    return owner
+  },
 })
 void boardWatcher.start()
 

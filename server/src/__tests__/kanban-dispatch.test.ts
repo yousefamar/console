@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { parseBoard } from '../kanban/board.js'
-import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope } from '../kanban/dispatch.js'
+import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope, resolveDefaultOwner } from '../kanban/dispatch.js'
 import { BoardWatcher, projectForBoardPath, type BoardDispatch, type BoardTransition } from '../kanban/watcher.js'
 import { NoteStore } from '../notes.js'
 
@@ -29,12 +29,30 @@ ${inProgress}
 `
 
 describe('findDispatchable', () => {
-  it('dispatches only assigned+unstamped cards in dispatch columns', () => {
+  it('includes unstamped cards in dispatch columns — assigned AND unassigned', () => {
     const board = parseBoard(BOARD('\n- [ ] Do the thing @eng\n- [ ] Already going @eng ^aa11bb\n- [ ] No assignee\n'))
     const d = findDispatchable(board)
-    expect(d).toHaveLength(1)
-    expect(d[0]!.card.text).toBe('Do the thing')
-    expect(d[0]!.card.agentKey).toBe('eng')
+    expect(d.map((x) => [x.card.text, x.card.agentKey])).toEqual([
+      ['Do the thing', 'eng'],
+      ['No assignee', null], // resolved to the default owner by the watcher
+    ])
+  })
+})
+
+describe('resolveDefaultOwner', () => {
+  const role = (key: string, title = key, extra: { fork?: boolean; folder?: boolean } = {}) => ({ key, title, ...extra })
+  it('single role wins', () => {
+    expect(resolveDefaultOwner([role('feeds-tab')])).toBe('feeds-tab')
+  })
+  it('"general" suffix wins among several', () => {
+    expect(resolveDefaultOwner([role('astera-kitchen'), role('astera-general', 'Astera general'), role('astera-planning')])).toBe('astera-general')
+  })
+  it('falls back to first by key order', () => {
+    expect(resolveDefaultOwner([role('zeta'), role('alpha')])).toBe('alpha')
+  })
+  it('ignores forks and folders; empty → null', () => {
+    expect(resolveDefaultOwner([role('x-general-fork', 'X general (fork)', { fork: true }), role('grp', 'grp', { folder: true })])).toBeNull()
+    expect(resolveDefaultOwner([])).toBeNull()
   })
 })
 
@@ -151,6 +169,71 @@ describe('transition deployGate threading', () => {
       expect(transitions).toHaveLength(1)
       expect(transitions[0]!.done).toBe(true)
       expect(transitions[0]!.deployGate).toBe('review')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('BoardWatcher default owner', () => {
+  it('auto-assigns an unassigned In Progress card via resolveOwner and stamps it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, BOARD('\n- [ ] Ownerless work\n'))
+    const dispatches: BoardDispatch[] = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {},
+      onDispatch: (d) => { dispatches.push(d); return true },
+      resolveOwner: (project) => (project === 'demo' ? 'demo-general' : null),
+      pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(1)
+      expect(dispatches[0]!.card.agentKey).toBe('demo-general')
+      expect(readFileSync(boardAbs, 'utf-8')).toMatch(/- \[ \] Ownerless work @demo-general \^[a-z0-9]{6}/)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('frontmatter default_owner beats the resolver', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, `---\nkanban-plugin: board\ndefault_owner: demo-special\n---\n\n## In Progress\n\n- [ ] Ownerless work\n`)
+    const dispatches: BoardDispatch[] = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {},
+      onDispatch: (d) => { dispatches.push(d); return true },
+      resolveOwner: () => 'demo-general',
+      pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      expect(dispatches[0]!.card.agentKey).toBe('demo-special')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('no owner resolvable → card left unstamped and undispatched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, BOARD('\n- [ ] Ownerless work\n'))
+    const dispatches: BoardDispatch[] = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: (d) => { dispatches.push(d); return true }, pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(0)
+      expect(readFileSync(boardAbs, 'utf-8')).toContain('- [ ] Ownerless work\n')
     } finally {
       watcher.stop()
       rmSync(dir, { recursive: true, force: true })

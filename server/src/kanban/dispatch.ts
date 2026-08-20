@@ -30,13 +30,15 @@ export interface DispatchableCard {
   card: BoardCard
 }
 
-/** Cards ready to dispatch: assigned, un-stamped, in a dispatch column. */
+/** Cards ready to dispatch: un-stamped, in a dispatch column. UNASSIGNED
+ *  cards are included — the watcher resolves them to the project's default
+ *  owner (or leaves them alone when no owner is resolvable). */
 export function findDispatchable(board: KanbanBoard): DispatchableCard[] {
   const out: DispatchableCard[] = []
   for (const col of board.columns) {
     if (!DISPATCH_COLUMN_RE.test(col.title)) continue
     col.cards.forEach((card, index) => {
-      if (card.agentKey && !card.blockId && !card.checked && !card.blocked) out.push({ column: col.title, index, card })
+      if (!card.blockId && !card.checked && !card.blocked) out.push({ column: col.title, index, card })
     })
   }
   return out
@@ -73,6 +75,20 @@ export function inFlightCards(board: KanbanBoard): InFlightCard[] {
     }
   }
   return out
+}
+
+/** Resolve a project's default owner from its bound roles — the "* general"
+ *  convention: one role → it; several → the one whose key/title ends with
+ *  "general"; else the first (stable key order). Board frontmatter
+ *  `default_owner:` overrides all of this (checked by the caller). Fork and
+ *  folder roles never own by default. */
+export function resolveDefaultOwner(roles: Array<{ key: string; title: string; fork?: boolean; folder?: boolean }>): string | null {
+  const real = roles.filter((r) => !r.fork && !r.folder)
+  if (real.length === 0) return null
+  if (real.length === 1) return real[0]!.key
+  const general = real.find((r) => r.key.endsWith('general') || /\bgeneral$/i.test(r.title))
+  if (general) return general.key
+  return [...real].sort((a, b) => a.key.localeCompare(b.key))[0]!.key
 }
 
 /** Mint a short block id (Obsidian-style: lowercase alphanumeric). */
