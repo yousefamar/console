@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, RefreshCw, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -18,6 +18,8 @@ import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
+import { useCronStore } from '@/store/cron'
+import { todoLabel, todoProgress } from './agent/TodoList'
 import { showPrompt, showConfirm } from '@/dialog'
 import { useDictation } from '@/hooks/useDictation'
 import { dictationSeparator } from '@/utils/dictation-text'
@@ -128,6 +130,45 @@ export const SpacesTab = memo(function SpacesTab() {
     </div>
   )
 })
+
+/** The Agents-tab per-session badges (shells, crons, todo progress), reused
+ *  on the Spaces agent rows. Same data sources + colour vocabulary as
+ *  AgentTab's SessionListItem: amber Terminal = live background processes,
+ *  grey Clock = active cron prompts (grey NOT blue — blue means unread),
+ *  violet ListTodo = outstanding CLI task-list progress (hidden when done). */
+function SessionBadges({ session }: { session: import('@/store/agent').SessionInfo }) {
+  const bg = session.backgroundProcessCount ?? 0
+  const cronCount = useCronStore((s) => {
+    const csid = session.claudeSessionId
+    if (!csid) return 0
+    return (s.tasksBySession[csid] ?? []).filter((t) => !t.disabledAt).length
+  })
+  const todo = useMemo(() => {
+    if (!session.todos?.length) return null
+    const { done, total, current } = todoProgress(session.todos)
+    if (done === total) return null
+    return { done, total, title: current ? `${done}/${total} tasks · ${todoLabel(current)}` : `${done}/${total} tasks` }
+  }, [session.todos])
+  return (
+    <>
+      {bg > 0 && (
+        <span className="flex items-center gap-0.5 text-[9px] font-medium text-amber-400 flex-shrink-0" title={`${bg} background process${bg === 1 ? '' : 'es'} alive`}>
+          <Terminal size={9} />{bg}
+        </span>
+      )}
+      {cronCount > 0 && (
+        <span className="flex items-center gap-0.5 text-[9px] font-medium text-text-tertiary flex-shrink-0" title={`${cronCount} scheduled prompt${cronCount === 1 ? '' : 's'}`}>
+          <Clock size={9} />{cronCount}
+        </span>
+      )}
+      {todo && (
+        <span className="flex items-center gap-0.5 text-[9px] font-medium text-violet-400 flex-shrink-0" title={todo.title}>
+          <ListTodo size={9} />{todo.done}/{todo.total}
+        </span>
+      )}
+    </>
+  )
+}
 
 // Al hand-off affordances (mirror AgentTab's): the opt-in "Talk to X" banner
 // + the "Back to Al" return chip. Global overlays, shown wherever agent
@@ -602,6 +643,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                     : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
                   <span className={clsx('truncate', !live && 'opacity-60')}>{displayName}</span>
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
+                    {live && <SessionBadges session={live} />}
                     {live && micOwnerId === live.id && <Mic size={9} className="text-text-primary" />}
                     {live?.hibernated && <span title="Hibernated — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
                     {!live && <span className="text-[9px] text-text-tertiary">⏾</span>}
@@ -632,6 +674,10 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                 >
                   <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
                   <span className="truncate">{name}</span>
+                  <span className="ml-auto flex items-center gap-1 flex-shrink-0">
+                    <SessionBadges session={sess} />
+                    {sess.hibernated && <span title="Hibernated — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
+                  </span>
                 </button>
               </ContextMenu>
             )
