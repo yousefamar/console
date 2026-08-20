@@ -140,6 +140,27 @@ describe('BoardWatcher', () => {
     }
   })
 
+  it('onDispatch returning a string reassigns the card to the fork key on disk', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, BOARD('\n- [ ] Ship it @eng\n'))
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {},
+      onDispatch: () => 'eng-abc123-fork', // ticket-fork owns the card now
+      pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      const onDisk = readFileSync(boardAbs, 'utf-8')
+      expect(onDisk).toMatch(/- \[ \] Ship it @eng-abc123-fork \^[a-z0-9]{6}/)
+      expect(onDisk).not.toMatch(/@eng \^/)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('poll: detects a card assigned after boot, then its transition to Done', async () => {
     const { dir, boardAbs, watcher, dispatches, transitions, tick } = await setup(BOARD('\n'))
     try {

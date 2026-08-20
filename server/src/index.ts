@@ -776,6 +776,10 @@ const boardWatcher = new BoardWatcher(noteStore, {
       project,
       deployGate,
     }))
+    // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
+    // the board line) so stale nudges and transition wakes hit the fork — not
+    // the source role, which would otherwise start working alongside it.
+    if (worker.agentKey && worker.agentKey !== card.agentKey) return worker.agentKey
     return true
   },
   onTransition: (t) => {
