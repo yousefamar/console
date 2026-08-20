@@ -118,7 +118,7 @@ export function buildBoardEnvelope(opts: {
     '',
     'This card was assigned to you on the kanban board above. Do the work, then',
     'EDIT THE BOARD FILE to report: move your line under `## Under Review` —',
-    'a human (or your manager) checks it and moves it to Done; NEVER move your',
+    'Yousef reviews it and moves it to Done; NEVER move your',
     'own card to Done. If stuck, append a `#blocked` tag to your line (before',
     `the \`^${card.blockId}\` id, which must stay) plus an indented note below it`,
     'explaining what you need — the card keeps its place in the column.',

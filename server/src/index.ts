@@ -801,7 +801,9 @@ const boardWatcher = new BoardWatcher(noteStore, {
       wakeSession(agentCtx, manager, [
         `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} ${t.review ? 'is Under Review' : 'turned #blocked'}.`,
         t.review
-          ? 'The assignee considers it finished — review the work; move the card to `## Done` if it holds up, or back to `## In Progress` with an indented note if not.'
+          // Review verdicts are YOUSEF's, not the org's — a manager sanity-
+          // checking its own fork's work is self-review with extra steps.
+          ? 'FYI only — Yousef reviews Under Review cards and moves them to Done himself. Do NOT review, approve, or move this card. No action needed unless he asks.'
           : 'The assignee is stuck — read their note on the board and unblock or escalate.',
       ].join('\n'))
     }
