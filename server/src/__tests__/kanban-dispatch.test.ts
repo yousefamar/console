@@ -179,3 +179,28 @@ describe('BoardWatcher', () => {
     }
   })
 })
+
+describe('boardDeployGate + envelope', () => {
+  it('detects deploy_gate: review in frontmatter, absent otherwise', async () => {
+    const { boardDeployGate } = await import('../kanban/board.js')
+    expect(boardDeployGate('---\nkanban-plugin: board\ndeploy_gate: review\n---\n## A\n')).toBe('review')
+    expect(boardDeployGate('---\nkanban-plugin: board\n---\n## A\n')).toBeNull()
+    expect(boardDeployGate('---\nkanban-plugin: board\ndeploy_gate: nonsense\n---\n')).toBeNull()
+  })
+
+  it('gated envelope forbids merge + demands branch/preview; ungated keeps fold-into-main', () => {
+    const base = {
+      boardAbsPath: '/v/projects/astera/board.md',
+      card: { text: 'Ship it', blockId: 'ab12cd', lines: ['- [ ] Ship it @eng ^ab12cd'] },
+      column: 'In Progress',
+      project: 'astera',
+    }
+    const gated = buildBoardEnvelope({ ...base, deployGate: 'review' })
+    expect(gated).toContain('do NOT merge to main')
+    expect(gated).toContain('preview')
+    expect(gated).not.toContain('fold the work back')
+    const ungated = buildBoardEnvelope({ ...base, deployGate: null })
+    expect(ungated).toContain('fold the work back')
+    expect(ungated).not.toContain('do NOT merge to main')
+  })
+})

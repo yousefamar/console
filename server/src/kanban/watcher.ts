@@ -15,7 +15,7 @@
 // dispatched", so nothing double-fires).
 
 import type { NoteStore } from '../notes.js'
-import { isKanbanBoard, parseBoard, serializeBoard, refreshCardLine, type BoardCard } from './board.js'
+import { isKanbanBoard, boardDeployGate, parseBoard, serializeBoard, refreshCardLine, type BoardCard } from './board.js'
 import { findDispatchable, inFlightCards, mintBlockId, type InFlightCard } from './dispatch.js'
 
 export interface BoardDispatch {
@@ -25,6 +25,8 @@ export interface BoardDispatch {
   column: string
   /** projects/<slug>/… boards carry the slug. */
   project: string | null
+  /** Board frontmatter `deploy_gate: review` — see boardDeployGate(). */
+  deployGate: 'review' | null
 }
 
 export interface BoardTransition extends InFlightCard {
@@ -157,7 +159,7 @@ export class BoardWatcher {
         return
       }
       for (const d of todo) {
-        const ok = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project })
+        const ok = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate: boardDeployGate(content) })
         this.opts.log(`[boards] dispatch ${path} ^${d.card.blockId} → @${d.card.agentKey}${ok ? '' : ' (wake FAILED)'}`)
         this.staleTrack.set(d.card.blockId!, { since: this.now(), nudges: 0 })
       }
