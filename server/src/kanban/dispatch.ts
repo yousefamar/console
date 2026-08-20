@@ -93,11 +93,23 @@ export function buildBoardEnvelope(opts: {
   /** Board frontmatter `deploy_gate: review` — merging to main IS deploying
    *  (auto-deploy repos), so work stays on its branch until card approval. */
   deployGate?: 'review' | null
+  /** The worker is a fresh TICKET-FORK whose @key differs from the source
+   *  role it inherited its context (and self-identity prompt) from. Without
+   *  this the fork reads the reassigned board line, believes it's still the
+   *  source role, and STANDS DOWN from its own card ("a dedicated fork owns
+   *  this") — observed live 2026-08-20. */
+  forkIdentity?: { key: string; sourceKey: string | null } | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity } = opts
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
   return [
     '[BOARD TASK — action required]',
+    ...(forkIdentity ? [
+      `IDENTITY: YOU are the dedicated fork for this card. Your agentKey is now \`${forkIdentity.key}\`` +
+      (forkIdentity.sourceKey ? ` (no longer \`${forkIdentity.sourceKey}\` — your system prompt predates the fork)` : '') +
+      `. The board line's \`@${forkIdentity.key}\` means YOU. Do not stand down or defer to "the fork" — you ARE it.`,
+      '',
+    ] : []),
     `Board: ${boardAbsPath}${project ? `   Project: ${project}` : ''}`,
     `Card (in "${column}", id ^${card.blockId}):`,
     '',

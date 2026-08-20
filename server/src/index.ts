@@ -763,9 +763,10 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // adds nothing; a fork needs the source's claudeSessionId).
     const live = liveSessionForRole(agentCtx, card.agentKey!)
     let worker: Session | null = null
+    let forked = false
     if (live && !role.fork && live.claudeSessionId) {
       worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!)
-      if (worker) log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}`)
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}`) }
     }
     if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
     if (!worker) return false
@@ -775,6 +776,10 @@ const boardWatcher = new BoardWatcher(noteStore, {
       column,
       project,
       deployGate,
+      // A ticket-fork inherits the SOURCE role's self-identity prompt — tell
+      // it who it is now, or it reads the reassigned board line and stands
+      // down from its own card.
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey } : null,
     }))
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not

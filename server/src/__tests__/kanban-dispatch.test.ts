@@ -90,6 +90,30 @@ describe('buildBoardEnvelope', () => {
   })
 })
 
+describe('buildBoardEnvelope fork identity', () => {
+  it('names the fork key and warns against standing down', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/vault/projects/astera/board.md',
+      card: { text: 'Fix nav', blockId: 'tgcekv', lines: ['- [ ] Fix nav @astera-general-tgcekv-fork ^tgcekv'] },
+      column: 'In Progress',
+      forkIdentity: { key: 'astera-general-tgcekv-fork', sourceKey: 'astera-general' },
+    })
+    expect(env).toContain('YOU are the dedicated fork')
+    expect(env).toContain('`astera-general-tgcekv-fork`')
+    expect(env).toContain('no longer `astera-general`')
+    expect(env).toContain('you ARE it')
+  })
+
+  it('omits the identity block for non-fork dispatch', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/v/b.md',
+      card: { text: 'x', blockId: 'aa', lines: ['- [ ] x @eng ^aa'] },
+      column: 'In Progress',
+    })
+    expect(env).not.toContain('IDENTITY')
+  })
+})
+
 describe('projectForBoardPath', () => {
   it('extracts the project slug', () => {
     expect(projectForBoardPath('projects/astera/board.md')).toBe('astera')
