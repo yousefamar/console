@@ -15,7 +15,7 @@
 // dispatched", so nothing double-fires).
 
 import type { NoteStore } from '../notes.js'
-import { isKanbanBoard, boardDeployGate, parseBoard, serializeBoard, refreshCardLine, type BoardCard } from './board.js'
+import { isKanbanBoard, boardDeployGate, boardDefaultOwner, parseBoard, serializeBoard, refreshCardLine, type BoardCard } from './board.js'
 import { findDispatchable, inFlightCards, mintBlockId, type InFlightCard } from './dispatch.js'
 
 export interface BoardDispatch {
@@ -50,6 +50,10 @@ export interface BoardWatcherOpts {
   /** A board file changed on disk (any edit — agent, Obsidian, Syncthing).
    *  Fired AFTER stamp-writes so the content the client re-reads is final. */
   onBoardChanged?: (boardPath: string) => void
+  /** Resolve the default owner for UNASSIGNED cards dragged into a dispatch
+   *  column (frontmatter `default_owner:` wins before this is consulted).
+   *  Null = leave the card unassigned and undispatched. */
+  resolveOwner?: (project: string | null, boardPath: string) => string | null
   log: (msg: string) => void
   pollMs?: number
   staleMs?: number
@@ -162,7 +166,18 @@ export class BoardWatcher {
       // card on this board has the same text, this is stamp-LOSS, not new
       // work: restore its id + assignee and do NOT dispatch again.
       const dispatchNow: typeof todo = []
+      const fmOwner = boardDefaultOwner(content)
       for (const d of todo) {
+        // Unassigned card in a dispatch column → the project's default owner
+        // ("* general" convention / frontmatter default_owner). Unresolvable
+        // → leave it be (unstamped, unassigned): stamping would mark it
+        // dispatched-to-nobody.
+        if (!d.card.agentKey) {
+          const owner = fmOwner ?? this.opts.resolveOwner?.(project, path) ?? null
+          if (!owner) continue
+          d.card.agentKey = owner
+          this.opts.log(`[boards] auto-assigned "${d.card.text.slice(0, 40)}" → @${owner} (default owner, ${path})`)
+        }
         const prior = [...this.inFlight.values()].find((t) => t.boardPath === path && !t.done && t.text === d.card.text)
         if (prior) {
           d.card.blockId = prior.blockId
