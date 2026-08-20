@@ -290,7 +290,8 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
 export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string): Session | null {
   if (!source.claudeSessionId) return null
   const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
-  const title = `${sourceRole?.title ?? source.name ?? 'agent'} ^${blockId} (fork)`
+  const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9]+$/, '')
+  const title = `${baseTitle} ^${blockId} (fork)`
   const forkKey = ctx.agentRegistry.mintKey(title)
   ctx.agentRegistry.create(forkKey, {
     title, manager: source.agentKey ?? null, cwd: source.cwd, fork: true,
@@ -1109,7 +1110,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       const forkCwd = msg.cwd || sourceSession.cwd
-      const forkName = sourceSession.name ? `${sourceSession.name} (fork)` : undefined
+      const forkName = sourceSession.name ? `${sourceSession.name.replace(/(\s*\(fork\))+$/, '')} (fork)` : undefined
       // A UI fork (seedRole) becomes its own org node reporting to the source's
       // role; the charter applies on a future fresh revive (this spawn resumes,
       // so it inherits the source's conversation + system prompt). `con agent
