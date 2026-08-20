@@ -920,7 +920,7 @@ function BoardView() {
             className={clsx(
               'flex flex-shrink-0 items-center justify-center rounded border border-dashed transition-all',
               dragging
-                ? (over ? 'w-24 border-green-500/80 bg-green-500/15 text-green-400' : 'w-16 border-green-500/40 bg-green-500/5 text-green-500/70')
+                ? (over ? 'w-12 border-green-500/80 bg-green-500/15 text-green-400' : 'w-8 border-green-500/40 bg-green-500/5 text-green-500/70')
                 : 'w-5 border-border/60 bg-transparent text-text-tertiary/40 hover:text-text-tertiary',
             )}
             title="Drop a card here to mark it Done"
