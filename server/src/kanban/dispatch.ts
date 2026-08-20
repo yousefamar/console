@@ -112,6 +112,8 @@ export function buildBoardEnvelope(opts: {
     'explaining what you need — the card keeps its place in the column.',
     'The board file is the single source of truth — there is no other reporting step.',
     '',
+    // GOTCHA: the gated/ungated stanzas share no text — an edit to the
+    // worktree instructions must be made in BOTH branches or they drift.
     ...(deployGate === 'review' ? [
       'DEPLOY GATE (this board sets `deploy_gate: review` — merging to main',
       'DEPLOYS): do NOT merge to main. Work on a branch in your worktree',
