@@ -1403,6 +1403,16 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
     },
   })
   const commit = () => { dictation.stop(); onCommit(draftRef.current) }
+  // Auto-grow to fit WRAPPED content — a `rows={newline count}` sizing stays
+  // two lines tall while a long sentence wraps to many visual lines in the
+  // narrow column. scrollHeight is the only measure that sees wrapping.
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = `${ta.scrollHeight}px`
+  }, [draft, dictation.interim])
   return (
     <div>
       <textarea
@@ -1429,8 +1439,9 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
           if (e.relatedTarget instanceof HTMLElement && e.relatedTarget.dataset.cardMic) return
           commit()
         }}
-        rows={Math.max(2, draft.split('\n').length + (dictation.interim ? 1 : 0))}
-        className="w-full resize-none rounded-sm border border-accent bg-surface-1 px-1 py-0.5 text-xs text-text-primary outline-none"
+        ref={taRef}
+        rows={2}
+        className="w-full resize-none overflow-hidden rounded-sm border border-accent bg-surface-1 px-1 py-0.5 text-xs leading-relaxed text-text-primary outline-none"
         placeholder={placeholder}
       />
       {dictation.interim && <div className="px-1 text-[10px] italic text-text-tertiary">{dictation.interim}</div>}
