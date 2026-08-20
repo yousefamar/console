@@ -777,6 +777,17 @@ function BoardView() {
     }))
     .sort((a, b) => Number(b.bound) - Number(a.bound) || Number(b.live) - Number(a.live) || a.label.localeCompare(b.label))
   const labelFor = (key: string) => assignable.find((a) => a.key === key)?.label ?? key
+  // Clicking an assignee chip OPENS that agent's session (the common case) —
+  // reassignment lives in the card modal's assignee pill instead.
+  const openAssigneeSession = (key: string) => {
+    const agent = useAgentStore.getState()
+    const live = agent.sessions.find((x) => x.agentKey === key && x.status !== 'ended')
+    if (live) agent.selectSession(live.id)
+    else {
+      useAgentStore.setState({ pendingSessionActivate: true })
+      agent.reviveAgent(key)
+    }
+  }
   // The filter groups by ROOT role, not raw @key: every dispatched card is
   // reassigned to a per-ticket fork key, so filtering by literal assignee
   // yields one useless chip per card. Walk fork manager-edges up to the
@@ -876,7 +887,10 @@ function BoardView() {
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
-                  onAssign={() => setAssignTarget({ ref: { column: col.title, index }, card })}
+                  onAssign={() => {
+                    if (card.agentKey) openAssigneeSession(card.agentKey)
+                    else setAssignTarget({ ref: { column: col.title, index }, card })
+                  }}
                   onOpen={() => setDetailTarget({ ref: { column: col.title, index }, card })}
                   onDragStart={() => setDragging({ column: col.title, index })}
                   onDragEnd={() => { setDragging(null); setDragOverCol(null) }}
@@ -1242,7 +1256,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
             'flex items-center gap-0.5 rounded-sm px-1 py-px text-[9px]',
             card.agentKey ? 'bg-violet-500/15 text-violet-400 hover:bg-violet-500/25' : 'text-text-tertiary opacity-0 group-hover:opacity-100 hover:text-text-primary',
           )}
-          title={card.agentKey ? `@${card.agentKey} — click to reassign` : 'Assign to agent'}
+          title={card.agentKey ? `@${card.agentKey} — open session (reassign in the card)` : 'Assign to agent'}
         >
           {card.agentKey ? <><Bot size={8} />{card.agentKey}</> : <UserPlus size={10} />}
         </button>
