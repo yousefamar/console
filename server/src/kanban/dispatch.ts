@@ -147,6 +147,36 @@ export function buildBoardEnvelope(opts: {
   ].join('\n')
 }
 
+/** Done wind-down for a ticket-fork: Yousef approved the card — finish the
+ *  lifecycle. Gated boards: approval IS the merge signal (merging deploys).
+ *  Ungated: work should already be on main; verify, then clean up. The fork's
+ *  turn-end triggers the hub's merge-back + self-destruct — no action needed
+ *  from the fork beyond this checklist. */
+export function buildWindDownEnvelope(opts: {
+  boardAbsPath: string
+  text: string
+  blockId: string
+  deployGate: 'review' | null
+}): string {
+  return [
+    `[CARD APPROVED — wind down] "${opts.text}" (^${opts.blockId}) was moved to Done on ${opts.boardAbsPath}.`,
+    '',
+    ...(opts.deployGate === 'review' ? [
+      'This board is deploy-gated: approval IS the merge signal. NOW:',
+      '1. Merge your branch into main (this deploys) — resolve conflicts if any.',
+      '2. Verify the merge landed (git log on main).',
+      '3. Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+    ] : [
+      'Finish the lifecycle NOW:',
+      '1. Verify your work is folded into the project\'s main branch (commit it if anything is still only in your worktree).',
+      '2. Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+    ]),
+    '4. End your turn with a one-line confirmation.',
+    '',
+    'When this turn ends, the hub automatically merges your summary into your parent session and closes you — do not do that yourself, and do not start new work.',
+  ].join('\n')
+}
+
 /** Watchdog nudge for a dispatched card that has sat untouched. */
 export function buildStaleNudge(opts: { boardAbsPath: string; text: string; blockId: string; minutes: number }): string {
   return [

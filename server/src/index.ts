@@ -29,10 +29,10 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher } from './kanban/watcher.js'
-import { buildBoardEnvelope, buildStaleNudge } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope } from './kanban/dispatch.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -791,10 +791,44 @@ const boardWatcher = new BoardWatcher(noteStore, {
     const state = t.done ? 'done' : t.review ? 'review' : 'blocked'
     log(`[boards] ^${t.blockId} "${t.text}" → ${state} (${t.boardPath})`)
     syncBus.broadcast('boards', 'transition', { blockId: t.blockId, boardPath: t.boardPath, review: t.review, done: t.done, blocked: t.blocked, text: t.text, agentKey: t.agentKey })
-    // Route the outcome up to the assignee's MANAGER (org edge) so results
-    // report up the chain — the root (Al) relays to Yousef. Done needs no
-    // wake: a human moved it there, having already seen the work in review.
-    if (t.done) return
+    // DONE = Yousef approved → wind the ticket-fork down: it merges/cleans
+    // its worktree (gated boards: approval IS the merge/deploy signal), then
+    // on its next turn-end the hub folds its summary into the parent and
+    // closes it (the context-menu merge, automated). Only ticket-forks —
+    // a durable role moved to Done just carries on.
+    if (t.done) {
+      const doneRole = t.agentKey ? agentRegistry.get(t.agentKey) : undefined
+      const worker = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
+      if (doneRole?.fork && worker && worker.status !== 'ended') {
+        wakeSession(agentCtx, worker, buildWindDownEnvelope({
+          boardAbsPath: join(noteStore.vaultPath, t.boardPath),
+          text: t.text, blockId: t.blockId, deployGate: t.deployGate,
+        }))
+        // Merge-back + self-destruct when the wind-down turn completes.
+        // One-shot listener; 30-min inactivity cap so a dead fork doesn't
+        // leak the listener forever.
+        const onMsg = (m: HubMessage) => {
+          if (m.type !== 'result') return
+          worker.off('hub_message', onMsg)
+          clearTimeout(cap)
+          // Give the turn a beat to settle (status flips to idle after result).
+          setTimeout(() => {
+            void mergeIntoParent(agentCtx, worker.id).then((r) => {
+              if (r.ok) {
+                broadcast({ type: 'session_merged', forkId: worker.id, parentId: r.parentId!, summary: r.summary! })
+                log(`[boards] ^${t.blockId} wound down: fork ${worker.id} merged into ${r.parentId}`)
+              } else {
+                log(`[boards] ^${t.blockId} wind-down merge failed: ${r.error} — fork left alive`)
+              }
+            })
+          }, 2_000)
+        }
+        const cap = setTimeout(() => worker.off('hub_message', onMsg), 30 * 60_000)
+        cap.unref?.()
+        worker.on('hub_message', onMsg)
+      }
+      return
+    }
     const managerKey = (t.agentKey && agentRegistry.get(t.agentKey)?.manager) || 'al'
     const manager = liveSessionForRole(agentCtx, managerKey)
     if (manager && manager.agentKey !== t.agentKey) {
