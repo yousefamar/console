@@ -151,9 +151,26 @@ export class BoardWatcher {
     // you want after a hub outage during which someone assigned work).
     const todo = findDispatchable(board)
     if (todo.length) {
+      // DUPLICATE-FORK GUARD: a stale whole-file write (the SPA saving an old
+      // in-memory copy between two of the user's drags) can wipe a fresh
+      // stamp — the card comes back "unstamped" and would re-dispatch,
+      // spawning a SECOND fork for the same work (observed live 2026-08-20:
+      // 5 rapid card moves produced duplicate forks). If an OPEN in-flight
+      // card on this board has the same text, this is stamp-LOSS, not new
+      // work: restore its id + assignee and do NOT dispatch again.
+      const dispatchNow: typeof todo = []
       for (const d of todo) {
+        const prior = [...this.inFlight.values()].find((t) => t.boardPath === path && !t.done && t.text === d.card.text)
+        if (prior) {
+          d.card.blockId = prior.blockId
+          if (prior.agentKey) d.card.agentKey = prior.agentKey
+          refreshCardLine(d.card)
+          this.opts.log(`[boards] re-stamped ^${prior.blockId} on ${path} (stale write wiped it) — no re-dispatch`)
+          continue
+        }
         d.card.blockId = mintBlockId()
         refreshCardLine(d.card)
+        dispatchNow.push(d)
       }
       try {
         await this.store.write(path, serializeBoard(board))
@@ -162,7 +179,7 @@ export class BoardWatcher {
         return
       }
       let reassigned = false
-      for (const d of todo) {
+      for (const d of dispatchNow) {
         const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate: boardDeployGate(content) })
         // A string result = the worker is a ticket-FORK with its own @key —
         // rewrite the card's assignee so everything downstream (stale nudges,

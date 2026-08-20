@@ -185,6 +185,30 @@ describe('BoardWatcher', () => {
     }
   })
 
+  it('a stale write wiping a fresh stamp re-stamps WITHOUT re-dispatching (duplicate-fork guard)', async () => {
+    const { dir, boardAbs, watcher, dispatches, tick } = await setup(BOARD('\n'))
+    try {
+      await watcher.start()
+      // Assign → first dispatch stamps ^id (+ fork key via string return in prod).
+      tick(5_000)
+      writeFileSync(boardAbs, BOARD('\n- [ ] Big feature @eng\n'))
+      await watcher.poll()
+      expect(dispatches).toHaveLength(1)
+      const id = dispatches[0]!.card.blockId!
+      // A client holding a PRE-stamp copy saves the whole file — the stamp
+      // vanishes (exactly what the SPA did between two rapid drags).
+      tick(5_000)
+      writeFileSync(boardAbs, BOARD('\n- [ ] Big feature @eng\n'))
+      await watcher.poll()
+      // No second dispatch; the original id is restored on disk.
+      expect(dispatches).toHaveLength(1)
+      expect(readFileSync(boardAbs, 'utf-8')).toContain(`^${id}`)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('poll: detects a card assigned after boot, then its transition to Done', async () => {
     const { dir, boardAbs, watcher, dispatches, transitions, tick } = await setup(BOARD('\n'))
     try {
