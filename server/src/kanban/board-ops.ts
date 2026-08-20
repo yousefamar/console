@@ -158,6 +158,16 @@ export class BoardOps {
     })
   }
 
+  setNofork(project: string, query: string, nofork: boolean): Promise<CardView> {
+    return this.mutate(project, (board) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      hit.card.nofork = nofork
+      refreshCardLine(hit.card)
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+    })
+  }
+
   note(project: string, query: string, note: string): Promise<CardView> {
     return this.mutate(project, (board) => {
       const hit = findCardByQuery(board, query)

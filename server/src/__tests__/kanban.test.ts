@@ -49,25 +49,30 @@ describe('isKanbanBoard', () => {
 
 describe('parseCardTokens', () => {
   it('plain text', () => {
-    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false })
+    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false, nofork: false })
   })
   it('agent only', () => {
-    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false })
+    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false, nofork: false })
   })
   it('agent + block id, either order', () => {
-    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false })
-    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false })
+    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false })
+    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false })
   })
   it('mid-text @ / ^ are not tokens', () => {
     expect(parseCardTokens('Email alice@example.com about it')).toEqual({
-      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false,
+      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false, nofork: false,
     })
-    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false })
+    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false, nofork: false })
+  })
+  it('#nofork is a trailing property; blocked/nofork/key/id compose', () => {
+    expect(parseCardTokens('Fix it #nofork @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: false, nofork: true })
+    expect(parseCardTokens('Fix it #nofork #blocked @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: true })
+    expect(parseCardTokens('The #nofork policy is fine')).toEqual({ text: 'The #nofork policy is fine', agentKey: null, blockId: null, blocked: false, nofork: false })
   })
   it('#blocked is a trailing property, any order with other tokens', () => {
-    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true })
-    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true })
-    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false })
+    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false })
+    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: false })
+    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false, nofork: false })
   })
 })
 
