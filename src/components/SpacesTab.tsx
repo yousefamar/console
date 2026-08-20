@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
+import { Bot, FileText, FolderKanban, GitBranch, Kanban, Maximize2, Mic, Moon, Plus, RefreshCw, Tag, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -712,6 +712,9 @@ function BoardView() {
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
   // Assign picker target (card ref) — replaces the raw @key text prompt.
   const [assignTarget, setAssignTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
+  // Card detail modal — the roomy editing surface (title, details, assignee,
+  // column, blocked, delete in one place).
+  const [detailTarget, setDetailTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
   // Which column has an open new-card editor (one at a time).
   const [addingTo, setAddingTo] = useState<string | null>(null)
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
@@ -814,6 +817,7 @@ function BoardView() {
                   onToggleBlocked={() => void toggleBlocked({ column: col.title, index })}
                   onEdit={(text, detail) => void editCard({ column: col.title, index }, text, detail)}
                   onDelete={() => void deleteCard({ column: col.title, index })}
+                  onOpen={() => setDetailTarget({ ref: { column: col.title, index }, card })}
                 />
               ) : null
             ))}
@@ -821,6 +825,32 @@ function BoardView() {
         </div>
       ))}
       </div>
+      {detailTarget && (
+        <CardDetailModal
+          card={detailTarget.card}
+          columnTitles={columnTitles}
+          currentColumn={detailTarget.ref.column}
+          assignable={assignable}
+          onClose={() => setDetailTarget(null)}
+          onSave={async (draft) => {
+            const { ref, card } = detailTarget
+            setDetailTarget(null)
+            // Order matters: content first (ref stays valid), then tokens,
+            // then the column move LAST (it changes the card's ref).
+            if (draft.text !== card.text || draft.detail.join('\n') !== card.lines.slice(1).map((l) => l.trim()).filter(Boolean).join('\n')) {
+              await editCard(ref, draft.text, draft.detail)
+            }
+            if (draft.agentKey !== card.agentKey) await assignCard(ref, draft.agentKey)
+            if (draft.blocked !== card.blocked) await toggleBlocked(ref)
+            if (draft.column !== ref.column) await moveCardTo(ref, draft.column)
+          }}
+          onDelete={() => {
+            const { ref } = detailTarget
+            setDetailTarget(null)
+            void deleteCard(ref)
+          }}
+        />
+      )}
       {assignTarget && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[20vh]" onClick={(e) => { if (e.target === e.currentTarget) setAssignTarget(null) }}>
           <div className="mx-4 w-full max-w-xs overflow-hidden rounded-lg border border-border bg-surface-0 shadow-xl">
@@ -857,6 +887,122 @@ function BoardView() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** The roomy card editing surface: full-size title input + details textarea
+ *  (with dictation), assignee dropdown, column select, blocked toggle,
+ *  dispatch id, delete — everything in one modal. Enter in the title /
+ *  Ctrl+Enter anywhere saves; Esc closes without saving. */
+function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onSave, onDelete }: {
+  card: BoardCard
+  columnTitles: string[]
+  currentColumn: string
+  assignable: Array<{ key: string; label: string; fork: boolean; bound: boolean; live: boolean }>
+  onClose: () => void
+  onSave: (draft: { text: string; detail: string[]; agentKey: string | null; blocked: boolean; column: string }) => void
+  onDelete: () => void
+}) {
+  const initialDetail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  const [text, setText] = useState(card.text)
+  const [detail, setDetail] = useState(initialDetail.join('\n'))
+  const [agentKey, setAgentKey] = useState<string | null>(card.agentKey)
+  const [blocked, setBlocked] = useState(card.blocked)
+  const [column, setColumn] = useState(currentColumn)
+  const detailRef = useRef(detail)
+  detailRef.current = detail
+  const dictation = useDictation({
+    onText: (t, verbatim) => {
+      const before = detailRef.current
+      setDetail(before + dictationSeparator(before, t, verbatim) + t)
+    },
+  })
+  const save = () => {
+    dictation.stop()
+    if (!text.trim()) return
+    onSave({ text: text.trim(), detail: detail.split('\n'), agentKey, blocked, column })
+  }
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save() }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dictation.stop(); onClose() }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[12vh]" onClick={(e) => { if (e.target === e.currentTarget) { dictation.stop(); onClose() } }}>
+      <div className="mx-4 flex w-full max-w-xl flex-col overflow-hidden rounded-lg border border-border bg-surface-0 shadow-xl" onKeyDown={onKeyDown}>
+        {/* Title */}
+        <input
+          autoFocus
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save() } }}
+          placeholder="Card title…"
+          className="w-full bg-transparent px-4 pt-3 pb-2 text-sm font-medium text-text-primary outline-none placeholder:text-text-tertiary"
+        />
+        {/* Details */}
+        <div className="px-4 pb-2">
+          <textarea
+            value={detail}
+            onChange={(e) => setDetail(e.target.value)}
+            placeholder="Details — one point per line (indented under the card on the board)…"
+            rows={Math.min(14, Math.max(5, detail.split('\n').length + 1))}
+            className="w-full resize-y rounded-sm border border-border bg-surface-1 px-2 py-1.5 text-xs leading-relaxed text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
+          />
+          {dictation.interim && <div className="px-1 text-[10px] italic text-text-tertiary">{dictation.interim}</div>}
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => dictation.recording ? dictation.stop() : dictation.start()}
+            className={clsx('mt-0.5 flex items-center gap-1 rounded-sm px-1 py-0.5 text-[10px]', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
+          >
+            <Mic size={10} className={dictation.recording ? 'animate-pulse' : ''} />
+            {dictation.recording ? 'listening…' : 'dictate'}
+          </button>
+        </div>
+        {/* Meta row */}
+        <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-2">
+          <label className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+            Assignee
+            <select
+              value={agentKey ?? ''}
+              onChange={(e) => setAgentKey(e.target.value || null)}
+              className="max-w-40 cursor-pointer rounded-sm border border-border bg-surface-1 px-1 py-0.5 text-[11px] text-text-secondary outline-none"
+            >
+              <option value="">unassigned</option>
+              {assignable.map((a) => (
+                <option key={a.key} value={a.key}>{a.label}{a.fork ? ' ⑂' : ''}{a.live ? '' : ' (parked)'}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+            Column
+            <select
+              value={column}
+              onChange={(e) => setColumn(e.target.value)}
+              className="cursor-pointer rounded-sm border border-border bg-surface-1 px-1 py-0.5 text-[11px] text-text-secondary outline-none"
+            >
+              {columnTitles.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-text-tertiary">
+            <input type="checkbox" checked={blocked} onChange={(e) => setBlocked(e.target.checked)} className="accent-amber-500" />
+            <span className={blocked ? 'text-amber-400' : ''}>#blocked</span>
+          </label>
+          {card.blockId && <span className="text-[10px] text-text-tertiary" title="Dispatch id">^{card.blockId}</span>}
+        </div>
+        {/* Actions */}
+        <div className="flex items-center justify-between border-t border-border px-4 py-2">
+          <button
+            onClick={() => { void showConfirm('Delete this card?', { title: 'Delete card', confirmLabel: 'Delete' }).then((ok) => { if (ok) onDelete() }) }}
+            className="text-[11px] text-destructive/80 hover:text-destructive"
+          >
+            Delete
+          </button>
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] text-text-tertiary">⌃↵ save · esc close</span>
+            <button onClick={save} className="rounded bg-accent/20 px-3 py-1 text-[11px] font-medium text-accent hover:bg-accent/30">Save</button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -918,7 +1064,7 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
   )
 }
 
-function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked, onEdit, onDelete }: {
+function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked, onEdit, onDelete, onOpen }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
@@ -927,6 +1073,8 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
   onToggleBlocked: () => void
   onEdit: (text: string, detail: string[]) => void
   onDelete: () => void
+  /** Open the roomy detail modal (dbl-click or the expand button). */
+  onOpen: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
   const [editing, setEditing] = useState(false)
@@ -951,7 +1099,12 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
           onCancel={() => setEditing(false)}
         />
       ) : (
-        <div onClick={() => setEditing(true)} className="cursor-text" title="Click to edit">
+        <div
+          onClick={() => setEditing(true)}
+          onDoubleClick={(e) => { e.preventDefault(); setEditing(false); onOpen() }}
+          className="cursor-text"
+          title="Click: quick edit · double-click: open"
+        >
           <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
           {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
         </div>
@@ -968,12 +1121,15 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
           </button>
         )}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
+        <button onClick={onOpen} className="ml-auto text-text-tertiary hover:text-text-primary" title="Open card">
+          <Maximize2 size={9} />
+        </button>
         {!card.blocked && (
-          <button onClick={onToggleBlocked} className="ml-auto text-text-tertiary hover:text-amber-400 text-[9px]" title="Mark blocked">
+          <button onClick={onToggleBlocked} className="text-text-tertiary hover:text-amber-400 text-[9px]" title="Mark blocked">
             ⊘
           </button>
         )}
-        <button onClick={onAssign} className={clsx(!card.blocked && 'ml-0', card.blocked && 'ml-auto', 'text-text-tertiary hover:text-text-primary')} title="Assign to agent">
+        <button onClick={onAssign} className="text-text-tertiary hover:text-text-primary" title="Assign to agent">
           <UserPlus size={10} />
         </button>
         <select
