@@ -129,6 +129,18 @@ describe('mutations', () => {
     expect(serializeBoard(board)).toContain('- [ ] New work @al ^zz9')
   })
 
+  it("addCard position:'top' puts the card first, below the heading separator", () => {
+    const board = parseBoard(REAL_BOARD)
+    addCard(board, 'Backlog', 'Newest thing', { position: 'top' })
+    const backlog = board.columns[0]!
+    expect(backlog.cards[0]!.text).toBe('Newest thing')
+    // The blank line under `## Backlog` must stay ABOVE the new card.
+    const out = serializeBoard(board)
+    expect(out).toContain('## Backlog\n\n- [ ] Newest thing')
+    // Existing card interstitials still follow their cards (round-trip sane).
+    expect(out).toContain('- [ ] Cancel Telnyx subscription\n\n- [x]')
+  })
+
   it('refreshCardLine after stamping a block id', () => {
     const board = parseBoard(REAL_BOARD)
     const card = getCard(board, { column: 'Backlog', index: 2 })!

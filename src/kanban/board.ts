@@ -92,6 +92,22 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
   return { text, agentKey, blockId, blocked }
 }
 
+/** Trailing `#tag` run on a card's (token-stripped) text — display-layer
+ *  split so the UI can render them as badges. `#blocked` never appears here
+ *  (parseCardTokens strips it into `blocked` first); mid-text hashtags stay
+ *  in the text (they read as prose, not labels). */
+export function splitTrailingTags(text: string): { text: string; tags: string[] } {
+  const tags: string[] = []
+  let t = text.trimEnd()
+  for (;;) {
+    const m = t.match(/^(.*?)\s+#([A-Za-z0-9][\w/-]*)$/)
+    if (!m) break
+    t = m[1]!.trimEnd()
+    tags.unshift(m[2]!)
+  }
+  return { text: t, tags }
+}
+
 export function parseBoard(content: string): KanbanBoard {
   const lines = content.split('\n')
   const header: string[] = []
@@ -217,7 +233,7 @@ export function moveCard(board: KanbanBoard, ref: CardRef, toColumn: string): bo
   return true
 }
 
-export function addCard(board: KanbanBoard, columnTitle: string, text: string, opts?: { agentKey?: string; blockId?: string }): BoardCard | null {
+export function addCard(board: KanbanBoard, columnTitle: string, text: string, opts?: { agentKey?: string; blockId?: string; position?: 'top' | 'bottom' }): BoardCard | null {
   const col = board.columns.find((c) => c.title === columnTitle)
   if (!col) return null
   const card: BoardCard = {
@@ -229,6 +245,16 @@ export function addCard(board: KanbanBoard, columnTitle: string, text: string, o
     lines: [''],
   }
   refreshCardLine(card)
-  col.cards.push(card)
+  if (opts?.position === 'top') {
+    col.cards.unshift(card)
+    // Interstitials are keyed by the card index they follow — everything
+    // shifts down one, EXCEPT pre-first-card lines (-1): those are the
+    // blank separator under the heading, which must stay above the new top.
+    for (const x of col.interstitials) {
+      if (x.afterCard >= 0) x.afterCard += 1
+    }
+  } else {
+    col.cards.push(card)
+  }
   return card
 }
