@@ -911,25 +911,27 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   onDelete: () => void
 }) {
   const initialDetail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
-  const [text, setText] = useState(card.text)
-  const [detail, setDetail] = useState(initialDetail.join('\n'))
+  // ONE buffer, git-commit style: first line = the card (rendered bold),
+  // everything after = the indented detail lines.
+  const initialBody = [card.text, ...(initialDetail.length ? ['', ...initialDetail] : [])].join('\n')
+  const [body, setBody] = useState(initialBody)
   // Instant-apply property state (mirrors what we've already persisted).
   const [agentKey, setAgentKey] = useState<string | null>(card.agentKey)
   const [blocked, setBlocked] = useState(card.blocked)
   const [column, setColumn] = useState(currentColumn)
-  const textRef = useRef(text)
-  const detailStrRef = useRef(detail)
-  textRef.current = text
-  detailStrRef.current = detail
-  const savedRef = useRef({ text: card.text, detail: initialDetail.join('\n') })
+  const bodyRef = useRef(body)
+  bodyRef.current = body
+  const savedRef = useRef(initialBody)
 
   const commitContent = () => {
-    const t = textRef.current.trim()
-    const d = detailStrRef.current
-    if (!t) return
-    if (t === savedRef.current.text && d === savedRef.current.detail) return
-    savedRef.current = { text: t, detail: d }
-    onEditContent(t, d.split('\n'))
+    const raw = bodyRef.current
+    const [first, ...rest] = raw.split('\n')
+    if (!first?.trim()) return
+    if (raw === savedRef.current) return
+    savedRef.current = raw
+    // Blank separator line(s) between title and detail are presentational.
+    while (rest.length && !rest[0]!.trim()) rest.shift()
+    onEditContent(first.trim(), rest)
   }
   const close = () => {
     dictation.stop()
@@ -939,14 +941,10 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
 
   const dictation = useDictation({
     onText: (t, verbatim) => {
-      const before = detailStrRef.current
-      setDetail(before + dictationSeparator(before, t, verbatim) + t)
+      const before = bodyRef.current
+      setBody(before + dictationSeparator(before, t, verbatim) + t)
     },
   })
-
-  // Description auto-grows; title is a single auto-wrapping textarea too
-  // (Linear titles wrap, they don't scroll).
-  const titleRows = Math.max(1, Math.ceil(text.length / 52))
 
   const pill = 'flex items-center gap-1 rounded-full border border-border bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary hover:border-text-tertiary transition-colors cursor-pointer'
 
@@ -1010,27 +1008,9 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           </button>
         </div>
 
-        {/* Title — borderless, wraps like Linear */}
-        <textarea
-          autoFocus
-          value={text}
-          onChange={(e) => setText(e.target.value.replace(/\n/g, ' '))}
-          onBlur={commitContent}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }}
-          rows={titleRows}
-          placeholder="Card title"
-          className="w-full resize-none bg-transparent px-5 pt-3 pb-1 text-lg font-semibold leading-snug text-text-primary outline-none placeholder:text-text-tertiary"
-        />
-
-        {/* Description — borderless, fills the modal */}
-        <div className="flex min-h-0 flex-1 flex-col px-5 pb-3">
-          <textarea
-            value={detail}
-            onChange={(e) => setDetail(e.target.value)}
-            onBlur={commitContent}
-            placeholder="Add description…"
-            className="min-h-40 w-full flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-text-secondary outline-none placeholder:text-text-tertiary"
-          />
+        {/* One buffer, git-commit style: bold first line = title, rest = detail. */}
+        <div className="flex min-h-0 flex-1 flex-col px-5 pb-3 pt-2">
+          <CardBodyEditor value={body} onChange={setBody} onBlur={commitContent} />
           {dictation.interim && <div className="text-[11px] italic text-text-tertiary">{dictation.interim}</div>}
         </div>
 
@@ -1048,6 +1028,30 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
         </div>
       </div>
     </div>
+  )
+}
+
+/** One buffer, git-commit-message style: the FIRST LINE is the card title,
+ *  everything below is the detail. `::first-line` applies to textareas in
+ *  Chromium, so the title renders bold+large in a single plain textarea —
+ *  no mirror-div alignment tricks, native caret/selection throughout. */
+function CardBodyEditor({ value, onChange, onBlur }: {
+  value: string
+  onChange: (v: string) => void
+  onBlur: () => void
+}) {
+  return (
+    <>
+      <style>{`.card-body-ta::first-line { font-size: 1.125rem; font-weight: 600; color: var(--color-text-primary); }`}</style>
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        placeholder={'Card title\n\nDetails — like a commit message: first line is the card, the rest is the description.'}
+        className="card-body-ta min-h-40 w-full flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-text-secondary outline-none placeholder:text-text-tertiary"
+      />
+    </>
   )
 }
 
