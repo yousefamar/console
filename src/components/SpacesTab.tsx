@@ -1028,17 +1028,16 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           {dictation.interim && <div className="text-[11px] italic text-text-tertiary">{dictation.interim}</div>}
         </div>
 
-        {/* Footer — dictation + hint, quiet */}
-        <div className="flex items-center justify-between border-t border-border px-5 py-2">
+        {/* Footer — just the mic */}
+        <div className="flex items-center border-t border-border px-5 py-2">
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => dictation.recording ? dictation.stop() : dictation.start()}
-            className={clsx('flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-[11px]', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
+            className={clsx('rounded-sm p-1', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
+            title={dictation.recording ? 'Stop dictation' : 'Dictate'}
           >
-            <Mic size={11} className={dictation.recording ? 'animate-pulse' : ''} />
-            {dictation.recording ? 'listening…' : 'Dictate'}
+            <Mic size={12} className={dictation.recording ? 'animate-pulse' : ''} />
           </button>
-          <span className="text-[10px] text-text-tertiary">Changes save automatically · esc to close</span>
         </div>
       </div>
     </div>
@@ -1109,18 +1108,16 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
         placeholder={placeholder}
       />
       {dictation.interim && <div className="px-1 text-[10px] italic text-text-tertiary">{dictation.interim}</div>}
-      <div className="mt-0.5 flex items-center justify-between">
+      <div className="mt-0.5 flex items-center">
         <button
           data-card-mic="1"
           onMouseDown={(e) => e.preventDefault() /* keep textarea focus */}
           onClick={() => dictation.recording ? dictation.stop() : dictation.start()}
-          className={clsx('flex items-center gap-1 rounded-sm px-1 py-0.5 text-[10px]', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
+          className={clsx('rounded-sm p-0.5', dictation.recording ? 'bg-surface-2 text-red-400' : 'text-text-tertiary hover:text-text-primary')}
           title={dictation.recording ? 'Stop dictation' : 'Dictate'}
         >
           <Mic size={10} className={dictation.recording ? 'animate-pulse' : ''} />
-          {dictation.recording ? 'listening…' : 'dictate'}
         </button>
-        <span className="text-[9px] text-text-tertiary">↵ save · ⇧↵ new line · esc cancel</span>
       </div>
     </div>
   )
