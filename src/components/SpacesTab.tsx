@@ -886,6 +886,37 @@ function BoardView() {
           </div>
         </div>
       ))}
+      {/* Done drop track — the Done COLUMN is hidden (reviewed cards are
+          noise), but finishing a card needs a drop target. A slim, barely-
+          visible rail at the right edge that wakes up while dragging. */}
+      {(() => {
+        const doneCol = board.columns.find((c) => /^(done|complete|completed|shipped)$/i.test(c.title))
+        if (!doneCol) return null
+        const over = dragOverCol === doneCol.title
+        return (
+          <div
+            onDragOver={(e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverCol(doneCol.title) } }}
+            onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOverCol(null) }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOverCol(null)
+              if (dragging && dragging.column !== doneCol.title) void moveCardTo(dragging, doneCol.title)
+              setDragging(null)
+            }}
+            className={clsx(
+              'flex flex-shrink-0 items-center justify-center rounded border border-dashed transition-all',
+              dragging
+                ? (over ? 'w-24 border-green-500/80 bg-green-500/15 text-green-400' : 'w-16 border-green-500/40 bg-green-500/5 text-green-500/70')
+                : 'w-5 border-border/60 bg-transparent text-text-tertiary/40 hover:text-text-tertiary',
+            )}
+            title="Drop a card here to mark it Done"
+          >
+            <span className={clsx('select-none uppercase tracking-widest', dragging ? 'text-[10px] font-medium' : 'text-[9px]')} style={{ writingMode: 'vertical-rl' }}>
+              Done
+            </span>
+          </div>
+        )
+      })()}
       </div>
       {detailTarget && (
         <CardDetailModal
