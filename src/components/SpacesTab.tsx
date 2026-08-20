@@ -717,6 +717,10 @@ function BoardView() {
   const [detailTarget, setDetailTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
   // Which column has an open new-card editor (one at a time).
   const [addingTo, setAddingTo] = useState<string | null>(null)
+  // HTML5 drag-and-drop: the dragged card's ref rides component state (not
+  // dataTransfer — same-window drag, and Chrome hides the payload until drop).
+  const [dragging, setDragging] = useState<CardRef | null>(null)
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null)
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
     await addCardTo(column, text)
     // The fresh card is the column's last — stamp its detail lines in.
@@ -777,7 +781,21 @@ function BoardView() {
       {/* Done stays in the FILE (the watcher's transition diff + history need
           it) but is noise on screen — a done card was already reviewed. */}
       {board.columns.filter((col) => !/^(done|complete|completed|shipped)$/i.test(col.title)).map((col) => (
-        <div key={col.title} className="flex w-56 flex-shrink-0 flex-col rounded border border-border bg-surface-1/40">
+        <div
+          key={col.title}
+          onDragOver={(e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverCol(col.title) } }}
+          onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOverCol(null) }}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragOverCol(null)
+            if (dragging && dragging.column !== col.title) void moveCardTo(dragging, col.title)
+            setDragging(null)
+          }}
+          className={clsx(
+            'flex w-56 flex-shrink-0 flex-col rounded border bg-surface-1/40 transition-colors',
+            dragOverCol === col.title && dragging?.column !== col.title ? 'border-accent/70 bg-surface-1' : 'border-border',
+          )}
+        >
           <div className="flex items-center justify-between px-2 py-1 border-b border-border">
             <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">{col.title}</span>
             <button
@@ -810,14 +828,10 @@ function BoardView() {
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
-                  columnTitles={columnTitles}
-                  currentColumn={col.title}
-                  onMove={(to) => void moveCardTo({ column: col.title, index }, to)}
                   onAssign={() => setAssignTarget({ ref: { column: col.title, index }, card })}
-                  onToggleBlocked={() => void toggleBlocked({ column: col.title, index })}
-                  onEdit={(text, detail) => void editCard({ column: col.title, index }, text, detail)}
-                  onDelete={() => void deleteCard({ column: col.title, index })}
                   onOpen={() => setDetailTarget({ ref: { column: col.title, index }, card })}
+                  onDragStart={() => setDragging({ column: col.title, index })}
+                  onDragEnd={() => { setDragging(null); setDragOverCol(null) }}
                 />
               ) : null
             ))}
@@ -1112,30 +1126,29 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
   )
 }
 
-function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggleBlocked, onEdit, onDelete, onOpen }: {
+function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
   card: BoardCard
-  columnTitles: string[]
-  currentColumn: string
-  onMove: (to: string) => void
   onAssign: () => void
-  onToggleBlocked: () => void
-  onEdit: (text: string, detail: string[]) => void
-  onDelete: () => void
-  /** Open the roomy detail modal (dbl-click or the expand button). */
+  /** Open the detail modal (single click on the card body). */
   onOpen: () => void
+  onDragStart: () => void
+  onDragEnd: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
-  // Linear model: the card is a clean summary tile — click opens the issue
-  // view where ALL editing happens. The footer keeps two zero-navigation
-  // affordances (assignee chip → picker, quick column select); everything
-  // else lives in the modal.
-  void onToggleBlocked; void onEdit; void onDelete
+  // Linear model: the tile is a clean summary — click opens the issue view,
+  // DRAG moves it between columns (no dropdown). Assignee chip stays as the
+  // one zero-navigation affordance.
   return (
-    <div className={clsx(
-      'group rounded-sm border bg-surface-0 px-2 py-1.5 transition-colors hover:border-text-tertiary/40',
-      card.blocked ? 'border-amber-500/50' : 'border-border',
-      card.checked && 'opacity-50',
-    )}>
+    <div
+      draggable
+      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart() }}
+      onDragEnd={onDragEnd}
+      className={clsx(
+        'group cursor-grab rounded-sm border bg-surface-0 px-2 py-1.5 transition-colors hover:border-text-tertiary/40 active:cursor-grabbing',
+        card.blocked ? 'border-amber-500/50' : 'border-border',
+        card.checked && 'opacity-50',
+      )}
+    >
       <div onClick={onOpen} className="cursor-pointer" title="Open">
         <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
         {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
@@ -1153,15 +1166,6 @@ function CardTile({ card, columnTitles, currentColumn, onMove, onAssign, onToggl
         </button>
         {card.blocked && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400">#blocked</span>}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
-        <select
-          value={currentColumn}
-          onChange={(e) => { if (e.target.value !== currentColumn) onMove(e.target.value) }}
-          onClick={(e) => e.stopPropagation()}
-          className="ml-auto max-w-24 cursor-pointer border-none bg-transparent text-[9px] text-text-tertiary opacity-0 outline-none transition-opacity group-hover:opacity-100"
-          title="Move to column"
-        >
-          {columnTitles.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
       </div>
     </div>
   )
