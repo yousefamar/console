@@ -35,8 +35,11 @@ export interface BoardTransition extends InFlightCard {
 
 export interface BoardWatcherOpts {
   /** Wake the assignee. Return false if the agent could not be woken (the
-   *  stamp stays — a wake failure is visible on the board, not retried in a loop). */
-  onDispatch: (d: BoardDispatch) => boolean
+   *  stamp stays — a wake failure is visible on the board, not retried in a
+   *  loop). Return a STRING to reassign the card to that agentKey — the
+   *  ticket-fork case: the fork (not the source role) now owns the card, so
+   *  the stale watchdog / assignee filter / transition wake all follow IT. */
+  onDispatch: (d: BoardDispatch) => boolean | string
   /** A stamped card landed in review/done or turned #blocked. */
   onTransition?: (t: BoardTransition) => void
   /** A stamped card has sat in a dispatch column past staleMs. */
@@ -158,10 +161,27 @@ export class BoardWatcher {
         this.opts.log(`[boards] stamp write failed for ${path}: ${(e as Error).message}`)
         return
       }
+      let reassigned = false
       for (const d of todo) {
-        const ok = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate: boardDeployGate(content) })
-        this.opts.log(`[boards] dispatch ${path} ^${d.card.blockId} → @${d.card.agentKey}${ok ? '' : ' (wake FAILED)'}`)
+        const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate: boardDeployGate(content) })
+        // A string result = the worker is a ticket-FORK with its own @key —
+        // rewrite the card's assignee so everything downstream (stale nudges,
+        // transition wakes, the assignee filter) targets the fork, not the
+        // source role that stayed free for conversation.
+        if (typeof res === 'string' && res !== d.card.agentKey) {
+          d.card.agentKey = res
+          refreshCardLine(d.card)
+          reassigned = true
+        }
+        this.opts.log(`[boards] dispatch ${path} ^${d.card.blockId} → @${d.card.agentKey}${res === false ? ' (wake FAILED)' : ''}`)
         this.staleTrack.set(d.card.blockId!, { since: this.now(), nudges: 0 })
+      }
+      if (reassigned) {
+        try {
+          await this.store.write(path, serializeBoard(board))
+        } catch (e) {
+          this.opts.log(`[boards] reassign write failed for ${path}: ${(e as Error).message}`)
+        }
       }
     }
 
