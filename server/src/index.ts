@@ -771,9 +771,14 @@ const boardWatcher = new BoardWatcher(noteStore, {
     const live = liveSessionForRole(agentCtx, card.agentKey!)
     let worker: Session | null = null
     let forked = false
-    if (live && !role.fork && live.claudeSessionId) {
+    // #nofork = the card opts out of the fork+worktree+merge ceremony: wake
+    // the role's own session directly (trivial cards; Yousef's opt-OUT call —
+    // fork stays the default).
+    if (live && !role.fork && live.claudeSessionId && !card.nofork) {
       worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!)
       if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}`) }
+    } else if (card.nofork && live) {
+      log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
     if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
     if (!worker) return false

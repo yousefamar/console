@@ -82,6 +82,13 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/assign`, { method: 'POST', body: { card, agent: agent === 'none' ? null : agent } }), flags)
       return
     }
+    case 'nofork':
+    case 'forkok': {
+      const card = pos[0]
+      if (!card) { exitWithError('USAGE', `Usage: con spaces board <project> ${action} "<card>"`, flags); return }
+      output(await hubFetch(`/board/${enc}/nofork`, { method: 'POST', body: { card, nofork: action === 'nofork' } }), flags)
+      return
+    }
     case 'block':
     case 'unblock': {
       const card = pos[0]
