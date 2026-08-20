@@ -1,10 +1,14 @@
 // Spaces — project-first nav state. A space is a project (folder under
-// projects/) or an area (registry tag). Backed by /blog/spaces; boards are
-// read/written through /notes/file/ so they stay plain vault markdown.
+// projects/) or an area (registry tag). Backed by /blog/spaces. Board READS
+// come via /notes/file/ (plain vault markdown); board MUTATIONS go through
+// POST /board/:project/* (BoardOps) — the hub's per-board lock serializes
+// concurrent writers, so a stale SPA copy can never wipe fresh ^id stamps
+// the way whole-file writes could. Local mutations still apply optimistically
+// for instant UI; the API result is canonical and errors trigger a re-read.
 
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
-import { parseBoard, serializeBoard, moveCard, addCard, refreshCardLine, findCard, type KanbanBoard, type CardRef } from '@/kanban/board'
+import { parseBoard, moveCard, addCard, refreshCardLine, findCard, type KanbanBoard, type CardRef } from '@/kanban/board'
 
 export interface SpaceSummary {
   kind: 'project' | 'area'
@@ -36,8 +40,10 @@ interface SpacesState {
   selectSpace: (slug: string | null) => void
   setActiveView: (v: 'board' | 'docs') => void
   loadBoard: () => Promise<void>
-  /** Persist the current in-memory board back to the vault (conditional write). */
-  saveBoard: () => Promise<boolean>
+  /** POST one mutation to /board/:project/:verb (BoardOps serializes writers).
+   *  Body's `card` addresses by ^id or unique text. Errors surface in
+   *  boardError + trigger a re-read (the server copy is canonical). */
+  boardApi: (verb: string, body: Record<string, unknown>) => Promise<boolean>
   moveCardTo: (ref: CardRef, toColumn: string) => Promise<void>
   addCardTo: (column: string, text: string, agentKey?: string) => Promise<void>
   assignCard: (ref: CardRef, agentKey: string | null) => Promise<void>
@@ -79,6 +85,15 @@ kanban-plugin: board
 `
 
 const ACTIVE_SLUG_KEY = 'console:spaces:active'
+
+/** Address a card for the /board/* API: `^id` when stamped (unambiguous),
+ *  else its exact text — BoardOps errors on ambiguity rather than guessing,
+ *  which surfaces as boardError + a re-read. */
+function cardQuery(board: KanbanBoard, ref: CardRef): string | null {
+  const card = board.columns.find((c) => c.title === ref.column)?.cards[ref.index]
+  if (!card) return null
+  return card.blockId ? `^${card.blockId}` : card.text
+}
 
 export const useSpacesStore = create<SpacesState>((set, get) => ({
   spaces: [],
@@ -125,28 +140,27 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     }
   },
 
-  saveBoard: async () => {
-    const { board, boardPath } = get()
-    if (!board || !boardPath) return false
+  boardApi: async (verb, body) => {
+    const { activeSlug } = get()
+    if (!activeSlug || activeSlug.startsWith('~')) return false
     set({ saving: true })
     try {
-      await hubFetch(`/notes/file/${encodeURIComponent(boardPath)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ content: serializeBoard(board) }),
+      await hubFetch(`/board/${encodeURIComponent(activeSlug)}/${verb}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
         timeoutMs: 10000,
       })
       return true
     } catch (e) {
       set({ boardError: (e as Error).message })
-      // Re-read — our in-memory copy may have raced another writer.
+      // The server copy is canonical — re-read over our optimistic state.
       void get().loadBoard()
       return false
     } finally {
-      // Only cover the PUT itself. Re-reading our own write's echo is
-      // idempotent (identical content) — but a LONG linger here made the SPA
-      // blind to the watcher's ^id stamp writes, so the next drag saved a
-      // stale copy, wiped the stamp, and the card re-dispatched (the
-      // duplicate-fork bug, 2026-08-20).
+      // Cover only the POST itself (no linger): BoardOps edits surgically, so
+      // the watcher's boards/changed echo re-reads identical-or-newer content
+      // — and staying subscribed keeps the SPA current with ^id stamps (the
+      // stale-copy wipe that whole-file writes suffered can't happen at all).
       set({ saving: false })
     }
   },
@@ -154,9 +168,10 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   moveCardTo: async (ref, toColumn) => {
     const { board } = get()
     if (!board) return
+    const q = cardQuery(board, ref)
     if (!moveCard(board, ref, toColumn)) return
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('move', { card: q, to: toColumn })
   },
 
   addCardTo: async (column, text, agentKey) => {
@@ -165,7 +180,7 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     // UI-added cards land on TOP — newest-first is how the backlog reads.
     if (!addCard(board, column, text, { ...(agentKey ? { agentKey } : {}), position: 'top' })) return
     set({ board: { ...board } })
-    await get().saveBoard()
+    await get().boardApi('cards', { text, column, ...(agentKey ? { assign: agentKey } : {}) })
   },
 
   editCard: async (ref, text, detail) => {
@@ -174,12 +189,13 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const col = board.columns.find((c) => c.title === ref.column)
     const card = col?.cards[ref.index]
     if (!card || !text.trim()) return
+    const q = cardQuery(board, ref) // BEFORE the text changes — it's the address
     card.text = text.trim()
     refreshCardLine(card)
     // Detail lines are the indented continuations under the first line.
     card.lines = [card.lines[0]!, ...detail.map((l) => l.trim()).filter(Boolean).map((l) => `  ${l}`)]
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('edit', { card: q, text: text.trim(), detail: detail.map((l) => l.trim()).filter(Boolean) })
   },
 
   deleteCard: async (ref) => {
@@ -187,12 +203,13 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     if (!board) return
     const col = board.columns.find((c) => c.title === ref.column)
     if (!col || !col.cards[ref.index]) return
+    const q = cardQuery(board, ref)
     col.cards.splice(ref.index, 1)
     for (const x of col.interstitials) {
       if (x.afterCard >= ref.index) x.afterCard = Math.max(-1, x.afterCard - 1)
     }
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('remove', { card: q })
   },
 
   assignCard: async (ref, agentKey) => {
@@ -201,10 +218,11 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const col = board.columns.find((c) => c.title === ref.column)
     const card = col?.cards[ref.index]
     if (!card) return
+    const q = cardQuery(board, ref)
     card.agentKey = agentKey
     refreshCardLine(card)
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('assign', { card: q, agent: agentKey })
   },
 
   createBoard: async (slug) => {
@@ -229,10 +247,12 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const col = board.columns.find((c) => c.title === ref.column)
     const card = col?.cards[ref.index]
     if (!card) return
-    card.blocked = !card.blocked
+    const q = cardQuery(board, ref)
+    const nowBlocked = !card.blocked
+    card.blocked = nowBlocked
     refreshCardLine(card)
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('block', { card: q, blocked: nowBlocked })
   },
 
   toggleNofork: async (ref) => {
