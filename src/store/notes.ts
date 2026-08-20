@@ -301,7 +301,8 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   files: [],
   fileTree: [],
   loading: false,
-  showHidden: localStorage.getItem('console:notes:showHidden') === 'true',
+  // typeof guard: node-env unit tests import this store without a DOM.
+  showHidden: typeof localStorage !== 'undefined' && localStorage.getItem('console:notes:showHidden') === 'true',
   penActivePagePath: null,
   penActiveAt: 0,
   penStreaming: false,
