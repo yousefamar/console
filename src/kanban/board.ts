@@ -64,6 +64,15 @@ export function isKanbanBoard(content: string): boolean {
   return /^kanban-plugin:/m.test(fence?.[1] ?? '')
 }
 
+/** Board-level frontmatter: `default_owner: <agentKey>` — the role that
+ *  unassigned cards dragged into In Progress are auto-assigned to, and the
+ *  agent a project opens on by default. */
+export function boardDefaultOwner(content: string): string | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  const m = (fence?.[1] ?? '').match(/^default_owner:\s*(\S+)\s*$/m)
+  return m ? m[1]! : null
+}
+
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
 export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean } {
   let text = rawText.trimEnd()
