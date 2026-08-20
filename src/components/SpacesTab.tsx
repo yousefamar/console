@@ -1454,6 +1454,24 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
           </div>
         )}
       </div>
+      {urls.length > 0 && (
+        <div className="mt-1 flex flex-col items-start gap-0.5">
+          {urls.map(({ url, label }) => (
+            <a
+              key={url}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="flex max-w-full items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+              title={url}
+            >
+              <ExternalLink size={9} className="flex-shrink-0" />
+              <span className="truncate">{label}</span>
+            </a>
+          ))}
+        </div>
+      )}
       <div className="mt-1 flex items-center gap-1.5">
         <button
           onClick={onAssign}
@@ -1469,20 +1487,6 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>
-        ))}
-        {urls.map(({ url, label }) => (
-          <a
-            key={url}
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="flex max-w-32 items-center gap-0.5 rounded-sm bg-surface-2 px-1 py-px text-[9px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
-            title={url}
-          >
-            <ExternalLink size={8} className="flex-shrink-0" />
-            <span className="truncate">{label}</span>
-          </a>
         ))}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
       </div>
