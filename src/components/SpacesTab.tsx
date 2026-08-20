@@ -777,7 +777,30 @@ function BoardView() {
     }))
     .sort((a, b) => Number(b.bound) - Number(a.bound) || Number(b.live) - Number(a.live) || a.label.localeCompare(b.label))
   const labelFor = (key: string) => assignable.find((a) => a.key === key)?.label ?? key
-  const assignees = [...new Set(board.columns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean))] as string[]
+  // The filter groups by ROOT role, not raw @key: every dispatched card is
+  // reassigned to a per-ticket fork key, so filtering by literal assignee
+  // yields one useless chip per card. Walk fork manager-edges up to the
+  // first non-fork role (or the topmost known ancestor) and filter on that.
+  const roleByKey = new Map(roles.map((r) => [r.key, r]))
+  const rootOf = (key: string): string => {
+    let cur = roleByKey.get(key)
+    let k = key
+    for (let i = 0; cur?.fork && cur.manager && i < 6; i++) {
+      k = cur.manager
+      cur = roleByKey.get(cur.manager)
+    }
+    // A merged fork's role file is reaped — no edges to walk. Ticket-fork
+    // keys are minted as `<root>-<blockId>-fork` / `<root>-fork[-N]`; strip
+    // that shape so orphaned cards still group under their root.
+    if (!roleByKey.has(k)) {
+      const stripped = k.replace(/(-[a-z0-9]{6})?-fork(-\d+)?$/, '')
+      if (stripped !== k && roleByKey.has(stripped)) return stripped
+    }
+    return k
+  }
+  const assignees = [...new Set(
+    board.columns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean).map((k) => rootOf(k!)),
+  )] as string[]
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
@@ -849,7 +872,7 @@ function BoardView() {
             {/* Filter hides non-matching cards but `index` stays the column-
                 relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
-              (assigneeFilter === null || card.agentKey === assigneeFilter) ? (
+              (assigneeFilter === null || (card.agentKey && rootOf(card.agentKey) === assigneeFilter)) ? (
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
@@ -989,11 +1012,11 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[8vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[4vh]"
       onClick={(e) => { if (e.target === e.currentTarget) close() }}
       onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close() } }}
     >
-      <div className="mx-4 flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-surface-0 shadow-2xl">
+      <div className="mx-4 flex h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-surface-0 shadow-2xl">
         {/* Property pills — instant apply, Linear-style header row */}
         <div className="flex flex-wrap items-center gap-1.5 px-5 pt-4">
           {/* Column pill (status) */}
@@ -1179,7 +1202,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
     >
       <div onClick={onOpen} className="cursor-pointer" title="Open">
         <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{tileText}</div>
-        {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
+        {detail.length > 0 && <div className="mt-0.5 whitespace-pre-wrap text-[10px] leading-snug text-text-tertiary line-clamp-6">{detail.join('\n')}</div>}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
         <button
