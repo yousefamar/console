@@ -33,6 +33,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
+import { splitTrailingTags } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 
 export const SpacesTab = memo(function SpacesTab() {
@@ -1156,6 +1157,9 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
   onDragEnd: () => void
 }) {
   const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  // Trailing #tags render as badges (like #blocked, which keeps its own
+  // amber treatment); they're display-split only — the board line is untouched.
+  const { text: tileText, tags } = splitTrailingTags(card.text)
   // Linear model: the tile is a clean summary — click opens the issue view,
   // DRAG moves it between columns (no dropdown). Assignee chip stays as the
   // one zero-navigation affordance.
@@ -1171,7 +1175,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
       )}
     >
       <div onClick={onOpen} className="cursor-pointer" title="Open">
-        <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{card.text}</div>
+        <div className={clsx('text-xs text-text-primary', card.checked && 'line-through')}>{tileText}</div>
         {detail.length > 0 && <div className="mt-0.5 text-[10px] text-text-tertiary line-clamp-2">{detail.join(' · ')}</div>}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
@@ -1186,6 +1190,9 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
           {card.agentKey ? <><Bot size={8} />{card.agentKey}</> : <UserPlus size={10} />}
         </button>
         {card.blocked && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400">#blocked</span>}
+        {tags.map((t) => (
+          <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">#{t}</span>
+        ))}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
       </div>
     </div>
