@@ -44,7 +44,7 @@ class AppGraph(context: Context) {
     val notes = NotesRepository(db, hub, syncBus, outbox)
     val feeds = FeedsRepository(db, hub, outbox)
     val agents = AgentsRepository(appScope, db, hub, outbox)
-    val spaces = io.amar.console.data.spaces.SpacesRepository(hub)
+    val spaces = io.amar.console.data.spaces.SpacesRepository(hub, syncBus)
     val bookmarks = BookmarksRepository(db, hub, outbox)
     val map = MapRepository(db, hub)
     val music = MusicRepository(hub)
@@ -55,6 +55,7 @@ class AppGraph(context: Context) {
     init {
         chat.registerOutboxHandlers()
         chat.wireLiveDeltas(appScope)
+        spaces.wireLive(appScope)
         syncEngine.addDomain("chat") { chat.reconcile() }
         // Warm every unread room's first page in the background once per app
         // launch, after the first sync connects (SPA useSync parity). Keeps the

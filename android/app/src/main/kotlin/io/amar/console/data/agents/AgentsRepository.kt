@@ -101,8 +101,6 @@ class AgentsRepository(
     // --- Org-chart roles + delegation tasks + fleet model state (transient) ---
     private val _roles = MutableStateFlow<List<AgentRole>>(emptyList())
     val roles: StateFlow<List<AgentRole>> = _roles
-    private val _tasks = MutableStateFlow<List<AgentTask>>(emptyList())
-    val tasks: StateFlow<List<AgentTask>> = _tasks
     private val _modelState = MutableStateFlow(ModelState())
     val modelState: StateFlow<ModelState> = _modelState
     private val _pastSessions = MutableStateFlow<List<PastSession>>(emptyList())
@@ -130,19 +128,6 @@ class AgentsRepository(
         /** Space binding (role frontmatter): project slug / area slugs. */
         val project: String? = null,
         val areas: List<String> = emptyList(),
-    )
-
-    data class AgentTask(
-        val id: String,
-        val title: String,
-        val brief: String,
-        val fromKey: String,
-        val toKey: String,
-        val origin: String,
-        val chain: List<String>,
-        val status: String,
-        val result: String?,
-        val updatedAt: Long,
     )
 
     data class ModelState(
@@ -410,9 +395,6 @@ class AgentsRepository(
                     _roles.value = (_roles.value.filter { it.key != role.key } + role)
                 }
             }
-            "tasks" -> {
-                _tasks.value = (msg["tasks"] as? JsonArray)?.mapNotNull { runCatching { taskFrom(it.jsonObject) }.getOrNull() } ?: emptyList()
-            }
             "session_todos" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 val items = todosFrom(msg["todos"] as? JsonArray)
@@ -644,19 +626,6 @@ class AgentsRepository(
         fork = o["fork"]?.jsonPrimitive?.booleanOrNull ?: false,
         project = o["project"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
         areas = (o["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList(),
-    )
-
-    private fun taskFrom(o: JsonObject) = AgentTask(
-        id = o["id"]!!.jsonPrimitive.content,
-        title = o["title"]?.jsonPrimitive?.content ?: "",
-        brief = o["brief"]?.jsonPrimitive?.content ?: "",
-        fromKey = o["fromKey"]?.jsonPrimitive?.content ?: "",
-        toKey = o["toKey"]?.jsonPrimitive?.content ?: "",
-        origin = o["origin"]?.jsonPrimitive?.content ?: "agent",
-        chain = (o["chain"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList(),
-        status = o["status"]?.jsonPrimitive?.content ?: "pending",
-        result = o["result"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-        updatedAt = o["updatedAt"]?.jsonPrimitive?.longOrNull ?: 0,
     )
 
     /** Fixed index the current streaming turn's text row occupies. */
@@ -1063,14 +1032,6 @@ class AgentsRepository(
     fun reviveAgent(agentKey: String) = sendWs(buildJsonObject { put("type", "revive_agent"); put("agentKey", agentKey) })
     fun deleteRole(agentKey: String) = sendWs(buildJsonObject { put("type", "delete_role"); put("agentKey", agentKey) })
 
-    // --- Delegation ---
-    fun delegate(toKey: String, brief: String, fromKey: String = "al") = sendWs(buildJsonObject {
-        put("type", "delegate"); put("toKey", toKey); put("brief", brief); put("fromKey", fromKey)
-    })
-    fun cancelTask(taskId: String) {
-        _tasks.value = _tasks.value.map { if (it.id == taskId) it.copy(status = "cancelled") else it }
-        sendWs(buildJsonObject { put("type", "cancel_task"); put("taskId", taskId) })
-    }
 
     // --- Handoff ---
     fun dismissHandoff() { _handoff.value = null }

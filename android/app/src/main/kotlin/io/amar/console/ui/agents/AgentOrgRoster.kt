@@ -112,7 +112,6 @@ fun OrgRosterSheet(
 ) {
     val roles by repo.roles.collectAsState()
     val sessions by repo.observeSessions().collectAsState(initial = emptyList())
-    val tasks by repo.tasks.collectAsState()
     val nodes = remember(roles) { buildRoster(roles) }
     var infoKey by remember { mutableStateOf<String?>(null) }
 
@@ -122,8 +121,7 @@ fun OrgRosterSheet(
             if (nodes.isEmpty()) Text("No agent roles yet", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(4.dp))
             for (node in nodes) {
                 val live = sessions.firstOrNull { it.agentKey == node.role.key && it.status != "ended" }
-                val openTasks = tasks.count { it.toKey == node.role.key && it.status in setOf("pending", "in_progress", "blocked") }
-                RosterRow(node, live?.let { it.status == "running" } ?: false, live != null, openTasks, live?.hasUnread ?: false, live?.needsAttention ?: false,
+                RosterRow(node, live?.let { it.status == "running" } ?: false, live != null, 0, live?.hasUnread ?: false, live?.needsAttention ?: false,
                     onClick = { if (live != null) onOpenSession(live.id) else infoKey = node.role.key })
             }
             Box(Modifier.size(20.dp))
