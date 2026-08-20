@@ -1083,31 +1083,32 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
       <div className="mx-4 flex h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-surface-0 shadow-2xl">
         {/* Property pills — instant apply, Linear-style header row */}
         <div className="flex flex-wrap items-center gap-1.5 px-5 pt-4">
-          {/* Column pill (status) */}
-          <label className={pill} title="Column">
-            <Kanban size={10} className="text-text-tertiary" />
-            <select
-              value={column}
-              onChange={(e) => { setColumn(e.target.value); onMoveColumn(e.target.value) }}
-              className="cursor-pointer appearance-none bg-transparent outline-none"
-            >
-              {columnTitles.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </label>
-          {/* Assignee pill */}
-          <label className={pill} title="Assignee">
-            <Bot size={10} className={agentKey ? 'text-violet-400' : 'text-text-tertiary'} />
-            <select
-              value={agentKey ?? ''}
-              onChange={(e) => { const k = e.target.value || null; setAgentKey(k); onAssignKey(k) }}
-              className="max-w-36 cursor-pointer appearance-none truncate bg-transparent outline-none"
-            >
-              <option value="">Unassigned</option>
-              {assignable.map((a) => (
-                <option key={a.key} value={a.key}>{a.label}{a.fork ? ' ⑂' : ''}{a.live ? '' : ' · parked'}</option>
-              ))}
-            </select>
-          </label>
+          {/* Column pill (status) — styled picker, not the native select */}
+          <PillPicker
+            icon={<Kanban size={10} className="text-text-tertiary" />}
+            value={column}
+            options={columnTitles.map((t) => ({ value: t, label: t }))}
+            onPick={(v) => { setColumn(v!); onMoveColumn(v!) }}
+            title="Column"
+          />
+          {/* Assignee pill — durable roles only (forks are per-ticket workers,
+              not assign targets; reassigning to one is never what you want) */}
+          <PillPicker
+            icon={<Bot size={10} className={agentKey ? 'text-violet-400' : 'text-text-tertiary'} />}
+            value={agentKey}
+            valueLabel={agentKey ? (assignable.find((a) => a.key === agentKey)?.label ?? agentKey) : 'Unassigned'}
+            options={[
+              { value: null, label: 'Unassigned' },
+              ...assignable.filter((a) => !a.fork).map((a) => ({
+                value: a.key as string | null,
+                label: a.label,
+                hint: a.live ? undefined : 'parked',
+                divider: false,
+              })),
+            ]}
+            onPick={(v) => { setAgentKey(v); onAssignKey(v) }}
+            title="Assignee"
+          />
           {/* Blocked pill */}
           <button
             onClick={() => { setBlocked(!blocked); onToggleBlockedNow() }}
@@ -1176,6 +1177,62 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** Pill-shaped picker: a dark themed popover list instead of the native
+ *  <select> (whose menu ignores the app theme and reads glaring-light).
+ *  Click-outside/Esc closes; the trigger mirrors the pill styling. */
+function PillPicker({ icon, value, valueLabel, options, onPick, title }: {
+  icon: React.ReactNode
+  value: string | null
+  valueLabel?: string
+  options: Array<{ value: string | null; label: string; hint?: string; divider?: boolean }>
+  onPick: (value: string | null) => void
+  title: string
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) } }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', esc, true)
+    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc, true) }
+  }, [open])
+  const current = valueLabel ?? options.find((o) => o.value === value)?.label ?? String(value ?? '')
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex cursor-pointer items-center gap-1 rounded-full border border-border bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary transition-colors hover:border-text-tertiary"
+        title={title}
+      >
+        {icon}
+        <span className="max-w-36 truncate">{current}</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-64 min-w-40 overflow-y-auto rounded-lg border border-border bg-surface-0 py-1 shadow-xl">
+          {options.map((o, i) => (
+            <button
+              key={o.value ?? '~none'}
+              onClick={() => { setOpen(false); if (o.value !== value) onPick(o.value) }}
+              className={clsx(
+                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-1',
+                o.value === value ? 'bg-surface-2 text-text-primary' : 'text-text-secondary',
+                i > 0 && o.divider && 'border-t border-border',
+              )}
+            >
+              <span className="truncate">{o.label}</span>
+              {o.hint && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">{o.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
