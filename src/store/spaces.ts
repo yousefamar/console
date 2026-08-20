@@ -261,10 +261,12 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const col = board.columns.find((c) => c.title === ref.column)
     const card = col?.cards[ref.index]
     if (!card) return
-    card.nofork = !card.nofork
+    const q = cardQuery(board, ref)
+    const now = !card.nofork
+    card.nofork = now
     refreshCardLine(card)
     set({ board: { ...board } })
-    await get().saveBoard()
+    if (q) await get().boardApi('nofork', { card: q, nofork: now })
   },
 
 }))
