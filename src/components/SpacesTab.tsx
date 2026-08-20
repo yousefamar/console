@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, FileText, FolderKanban, GitBranch, Kanban, Mic, Moon, Plus, RefreshCw, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -33,7 +33,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags } from '@/kanban/board'
+import { splitTrailingTags, cardUrls } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 
@@ -1430,6 +1430,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
   // Trailing #tags render as badges (like #blocked, which keeps its own
   // amber treatment); they're display-split only — the board line is untouched.
   const { text: tileText, tags } = splitTrailingTags(card.text)
+  const urls = cardUrls(card)
   // Linear model: the tile is a clean summary — click opens the issue view,
   // DRAG moves it between columns (no dropdown). Assignee chip stays as the
   // one zero-navigation affordance.
@@ -1468,6 +1469,20 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>
+        ))}
+        {urls.map(({ url, label }) => (
+          <a
+            key={url}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="flex max-w-32 items-center gap-0.5 rounded-sm bg-surface-2 px-1 py-px text-[9px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+            title={url}
+          >
+            <ExternalLink size={8} className="flex-shrink-0" />
+            <span className="truncate">{label}</span>
+          </a>
         ))}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
       </div>

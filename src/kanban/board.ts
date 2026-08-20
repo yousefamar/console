@@ -224,6 +224,39 @@ export function refreshCardLine(card: BoardCard): void {
 /** Image attachments on a card: detail lines that are markdown images
  *  (`![alt](path)`). Paths are relative to the vault's sibling assets dir
  *  (the pasteImage convention) — served at /notes/asset/<path>. */
+/** Every http(s) URL on a card (text + detail lines), for click-from-the-tile
+ *  affordances. Markdown links yield their label; bare URLs label as their
+ *  hostname. Image lines are EXCLUDED — they render as thumbnails already. */
+export function cardUrls(card: BoardCard): Array<{ url: string; label: string }> {
+  const out: Array<{ url: string; label: string }> = []
+  const seen = new Set<string>()
+  const push = (url: string, label: string) => {
+    // Trailing punctuation clings to bare URLs in prose ("see https://x.com.").
+    const clean = url.replace(/[.,;:!?)\]}>'"]+$/, '')
+    if (seen.has(clean)) return
+    seen.add(clean)
+    out.push({ url: clean, label })
+  }
+  for (const line of card.lines) {
+    if (/!\[[^\]]*\]\(/.test(line)) continue // image line — thumbnail territory
+    // Markdown links first (label wins over hostname)…
+    const mdRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g
+    let consumed = line
+    for (let m = mdRe.exec(line); m; m = mdRe.exec(line)) {
+      push(m[2]!, m[1]!)
+      consumed = consumed.replace(m[0], ' ')
+    }
+    // …then bare URLs not inside a markdown link.
+    const bareRe = /https?:\/\/[^\s)\]}>"']+/g
+    for (let m = bareRe.exec(consumed); m; m = bareRe.exec(consumed)) {
+      let label = m[0]!
+      try { label = new URL(m[0]!).hostname.replace(/^www\./, '') } catch { /* keep raw */ }
+      push(m[0]!, label)
+    }
+  }
+  return out
+}
+
 export function cardImagePaths(card: BoardCard): string[] {
   const out: string[] = []
   for (const line of card.lines.slice(1)) {
