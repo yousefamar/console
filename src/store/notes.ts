@@ -193,6 +193,9 @@ interface NotesState {
   connectVault: () => Promise<void>
   reconnectVault: () => Promise<void>
   loadVaultFiles: () => Promise<void>
+  /** Show dotfiles/dot-dirs in listings (persisted per device). */
+  showHidden: boolean
+  toggleShowHidden: () => Promise<void>
   restoreTabs: () => Promise<void>
   openFile: (path: string) => Promise<void>
   closeFile: (path: string, force?: boolean) => boolean
@@ -298,6 +301,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   files: [],
   fileTree: [],
   loading: false,
+  showHidden: localStorage.getItem('console:notes:showHidden') === 'true',
   penActivePagePath: null,
   penActiveAt: 0,
   penStreaming: false,
@@ -372,12 +376,19 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     }
   },
 
+  toggleShowHidden: async () => {
+    const next = !get().showHidden
+    localStorage.setItem('console:notes:showHidden', String(next))
+    set({ showHidden: next })
+    await get().loadVaultFiles()
+  },
+
   loadVaultFiles: async () => {
     const { adapter } = get()
     if (!adapter) return
     set({ loading: true })
     try {
-      const files = await adapter.listFiles()
+      const files = await adapter.listFiles(get().showHidden)
       const tree = buildFileTree(files)
       const current = get().expandedDirs
       // Auto-expand top-level directories on first load (when nothing persisted)

@@ -89,7 +89,7 @@ export function handleNoteRoutes(
     return true
   }
 
-  if (path === '/notes' && req.method === 'GET') {
+  if ((path === '/notes' || path.startsWith('/notes?')) && req.method === 'GET') {
     // `?since=<ms>` — changed-files listing + deletion tombstones, the cheap
     // offline-client polling primitive. Plain form stays the full listing.
     const sinceParam = /[?&]since=(\d+)/.exec(req.url ?? '')?.[1]
@@ -103,7 +103,9 @@ export function handleNoteRoutes(
       })
       return true
     }
-    noteStore.list().then((files) => {
+    // `?hidden=1` — include dotfiles/dot-dirs (SKIP_DIRS still excluded).
+    const includeHidden = /[?&]hidden=1/.test(req.url ?? '')
+    noteStore.list(includeHidden).then((files) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(files))
     }).catch((err) => {

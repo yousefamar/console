@@ -11,7 +11,8 @@ export interface VaultFile {
 }
 
 export interface VaultAdapter {
-  listFiles(): Promise<VaultFile[]>
+  /** `includeHidden` also lists dotfiles/dot-dirs (never SKIP_DIRS). */
+  listFiles(includeHidden?: boolean): Promise<VaultFile[]>
   readFile(path: string): Promise<string>
   readFileBinary(path: string): Promise<Blob>
   writeFile(path: string, content: string): Promise<void>
@@ -71,9 +72,9 @@ const SKIP_DIRS = new Set(['.obsidian', '.trash', 'bookmarks', 'bookmarks-meta',
 export class FsaVaultAdapter implements VaultAdapter {
   constructor(private root: FileSystemDirectoryHandle) {}
 
-  async listFiles(): Promise<VaultFile[]> {
+  async listFiles(includeHidden = false): Promise<VaultFile[]> {
     const files: VaultFile[] = []
-    await this.walkDir(this.root, '', files)
+    await this.walkDir(this.root, '', files, includeHidden)
     return files.sort((a, b) => a.path.localeCompare(b.path))
   }
 
@@ -81,16 +82,17 @@ export class FsaVaultAdapter implements VaultAdapter {
     dir: FileSystemDirectoryHandle,
     prefix: string,
     out: VaultFile[],
+    includeHidden = false,
   ): Promise<void> {
     for await (const [name, handle] of dir as any) {
-      // Skip hidden files/dirs
-      if (name.startsWith('.')) continue
+      if (SKIP_DIRS.has(name)) continue
+      // Skip hidden files/dirs unless asked for
+      if (!includeHidden && name.startsWith('.')) continue
 
       const path = prefix ? `${prefix}/${name}` : name
 
       if (handle.kind === 'directory') {
-        if (SKIP_DIRS.has(name)) continue
-        await this.walkDir(handle as FileSystemDirectoryHandle, path, out)
+        await this.walkDir(handle as FileSystemDirectoryHandle, path, out, includeHidden)
       } else if (
         handle.kind === 'file' &&
         (name.endsWith('.md') || (name.endsWith('.svg') && path.startsWith('scratch/pen/')))
@@ -184,8 +186,8 @@ export class FsaVaultAdapter implements VaultAdapter {
 import { getHubUrl } from '@/hub'
 
 export class HubVaultAdapter implements VaultAdapter {
-  async listFiles(): Promise<VaultFile[]> {
-    const res = await fetch(`${getHubUrl()}/notes`)
+  async listFiles(includeHidden = false): Promise<VaultFile[]> {
+    const res = await fetch(`${getHubUrl()}/notes${includeHidden ? '?hidden=1' : ''}`)
     if (!res.ok) throw new Error(`Hub list failed: ${res.status}`)
     return res.json()
   }
