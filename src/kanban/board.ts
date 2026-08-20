@@ -199,7 +199,7 @@ export function sanitizeCardText(text: string): string {
   let t = text
   // Repeat: "foo @a #blocked" collides twice.
   for (;;) {
-    const m = t.match(/(\s)(#blocked|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
+    const m = t.match(/(\s)(#blocked|#nofork|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
     if (!m) return t
     t = `${t.slice(0, m.index! + m[1]!.length)}\`${m[2]!}\``
   }
