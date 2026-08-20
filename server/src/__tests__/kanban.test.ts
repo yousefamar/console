@@ -99,7 +99,7 @@ describe('sanitizeCardText (write-path token-collision guard)', () => {
     // parseCardTokens never touches it.
     expect(sanitizeCardText('both @al #blocked')).toBe('both @al `#blocked`')
     const round = parseCardTokens(sanitizeCardText('both @al #blocked'))
-    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false })
+    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false, nofork: false })
   })
   it('leaves mid-text and non-token tails alone', () => {
     expect(sanitizeCardText('email alice@example.com')).toBe('email alice@example.com')
