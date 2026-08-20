@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, splitTrailingTags,
+  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, cardImagePaths, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
 } from '../kanban/board.js'
 
@@ -108,6 +108,19 @@ describe('parseBoard / serializeBoard round-trip', () => {
   it('preserves an empty column', () => {
     const src = `---\nkanban-plugin: board\n---\n\n## Empty\n\n\n## Full\n\n- [ ] x\n`
     expect(serializeBoard(parseBoard(src))).toBe(src)
+  })
+})
+
+describe('cardImagePaths', () => {
+  it('extracts markdown-image detail lines, ignores text lines', () => {
+    const board = parseBoard(`---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Card with images @al ^ab12cd\n  some detail text\n  ![img](images/card-1.png)\n  ![screenshot](images/shot.jpg)\n`)
+    const card = board.columns[0]!.cards[0]!
+    expect(cardImagePaths(card)).toEqual(['images/card-1.png', 'images/shot.jpg'])
+  })
+
+  it('empty for a card with no image lines', () => {
+    const board = parseBoard(`---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Plain card\n  just text\n`)
+    expect(cardImagePaths(board.columns[0]!.cards[0]!)).toEqual([])
   })
 })
 
