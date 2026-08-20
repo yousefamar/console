@@ -228,8 +228,14 @@ export class BoardWatcher {
       this.inFlight.set(card.blockId, t)
       if (card.review || card.done || card.blocked) {
         this.staleTrack.delete(card.blockId)
-        const wasOpen = prev ? !prev.review && !prev.done && !prev.blocked : false
-        if (!boot && wasOpen && this.opts.onTransition) this.opts.onTransition(t)
+        // Fire on any STATE CHANGE, not just open→closed: the normal approval
+        // path is review→done and must fire the Done wind-down (the old
+        // wasOpen gate silently swallowed it — a card could only ever fire
+        // ONE transition in its life).
+        const stateOf = (x: { review: boolean; done: boolean; blocked: boolean }) =>
+          x.done ? 'done' : x.review ? 'review' : x.blocked ? 'blocked' : 'open'
+        const changed = prev ? stateOf(prev) !== stateOf(t) : false
+        if (!boot && changed && this.opts.onTransition) this.opts.onTransition(t)
       } else if (!prev && boot) {
         // Restored in-flight card after a restart — watchdog resumes from now.
         this.staleTrack.set(card.blockId, { since: this.now(), nudges: 0 })
