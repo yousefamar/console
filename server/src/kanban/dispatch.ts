@@ -117,7 +117,10 @@ export function buildBoardEnvelope(opts: {
   forkIdentity?: { key: string; sourceKey: string | null } | null
 }): string {
   const { boardAbsPath, card, column, project, deployGate, forkIdentity } = opts
-  const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
+  // Image detail lines are delivered as REAL image attachments on the wake —
+  // echoing them as text renders a broken ![img] box in the transcript.
+  const detail = card.lines.slice(1).map((l) => l.trim())
+    .filter((l) => l && !/^!\[[^\]]*\]\([^)]+\)$/.test(l))
   return [
     '[BOARD TASK — action required]',
     ...(forkIdentity ? [
@@ -133,12 +136,11 @@ export function buildBoardEnvelope(opts: {
     ...(detail.length ? ['', ...detail] : []),
     '',
     'This card was assigned to you on the kanban board above. Do the work, then',
-    'EDIT THE BOARD FILE to report: move your line under `## Under Review` —',
+    `report via CLI: \`con spaces board ${project ?? boardAbsPath} move "^${card.blockId}" "Under Review"\` —`,
     'Yousef reviews it and moves it to Done; NEVER move your',
-    'own card to Done. If stuck, append a `#blocked` tag to your line (before',
-    `the \`^${card.blockId}\` id, which must stay) plus an indented note below it`,
-    'explaining what you need — the card keeps its place in the column.',
-    'The board file is the single source of truth — there is no other reporting step.',
+    `own card to Done. If stuck: \`con spaces board ${project ?? boardAbsPath} block "^${card.blockId}" --note "what you need"\``,
+    '— the card keeps its place in the column. The board is the single source of',
+    'truth; the CLI serializes concurrent edits (never hand-edit the file).',
     '',
     // GOTCHA: the gated/ungated stanzas share no text — an edit to the
     // worktree instructions must be made in BOTH branches or they drift.
