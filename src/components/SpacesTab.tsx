@@ -1112,7 +1112,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           {/* Blocked pill */}
           <button
             onClick={() => { setBlocked(!blocked); onToggleBlockedNow() }}
-            className={clsx(pill, blocked && 'border-amber-500/50 bg-amber-500/10 text-amber-400')}
+            className={clsx(pill, blocked && 'border-red-500/50 bg-red-500/10 text-red-500')}
             title={blocked ? 'Unblock' : 'Mark blocked'}
           >
             ⊘ {blocked ? 'blocked' : 'block'}
@@ -1369,7 +1369,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
       onDragEnd={onDragEnd}
       className={clsx(
         'group cursor-grab rounded-sm border bg-surface-0 px-2 py-1.5 transition-colors hover:border-text-tertiary/40 active:cursor-grabbing',
-        card.blocked ? 'border-amber-500/50' : 'border-border',
+        card.blocked ? 'border-red-500/50' : 'border-border',
         card.checked && 'opacity-50',
       )}
     >
@@ -1393,7 +1393,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
         >
           {card.agentKey ? <><Bot size={8} />{card.agentKey}</> : <UserPlus size={10} />}
         </button>
-        {card.blocked && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400">#blocked</span>}
+        {card.blocked && <span className="rounded-sm bg-red-500/15 px-1 py-px text-[9px] text-red-500">blocked</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>
         ))}
