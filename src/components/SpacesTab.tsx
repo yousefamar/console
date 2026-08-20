@@ -803,8 +803,14 @@ function BoardView() {
     }
   }
 
-  if (boardError) return <div className="flex-1 grid place-items-center text-xs text-destructive">{boardError}</div>
-  if (!board) return <div className="flex-1 grid place-items-center text-xs text-text-tertiary">Loading board…</div>
+  // A mutation error must NOT take over the board (it made the whole pane
+  // flash "Not found" on any failed POST) — the board stays; a dismissible
+  // banner reports the failure. Full takeover only when there IS no board.
+  if (!board) {
+    return boardError
+      ? <div className="flex-1 grid place-items-center text-xs text-destructive">{boardError}</div>
+      : <div className="flex-1 grid place-items-center text-xs text-text-tertiary">Loading board…</div>
+  }
 
   const columnTitles = board.columns.map((c) => c.title)
   // Assignable = any non-folder role, forks included — labelled by the live
@@ -862,6 +868,14 @@ function BoardView() {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
+      {boardError && (
+        <div className="flex flex-shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1 text-[11px] text-destructive">
+          <span className="flex-1 truncate">Board edit failed: {boardError}</span>
+          <button onClick={() => useSpacesStore.setState({ boardError: null })} className="flex-shrink-0 hover:text-text-primary">
+            <X size={11} />
+          </button>
+        </div>
+      )}
       {assignees.length > 0 && (
         <div className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1 overflow-x-auto">
           <span className="text-[9px] uppercase tracking-wide text-text-tertiary flex-shrink-0">Assignee</span>
