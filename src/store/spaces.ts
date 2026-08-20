@@ -140,9 +140,12 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
       void get().loadBoard()
       return false
     } finally {
-      // Linger past the watcher's next poll so the echo of OUR write (up to
-      // one poll interval later) is still suppressed.
-      setTimeout(() => set({ saving: false }), 12_000)
+      // Only cover the PUT itself. Re-reading our own write's echo is
+      // idempotent (identical content) — but a LONG linger here made the SPA
+      // blind to the watcher's ^id stamp writes, so the next drag saved a
+      // stale copy, wiped the stamp, and the card re-dispatched (the
+      // duplicate-fork bug, 2026-08-20).
+      set({ saving: false })
     }
   },
 
