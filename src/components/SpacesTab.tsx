@@ -172,10 +172,14 @@ interface SpaceAlert {
   kind: 'session' | 'file'
   id: string           // sessionId | file path
   label: string
-  level: 'attention' | 'working' | 'unread' | 'dirty'
+  /** 'context' = a non-alerted parent shown only so its alerted fork nests
+   *  under it (neutral icon — it isn't itself unread). */
+  level: 'attention' | 'working' | 'unread' | 'context' | 'dirty'
   fork?: boolean
   /** Fork-lineage depth within the space (manager edges) — indents the row. */
   depth?: number
+  /** Role key for session rows — the lineage-tree join. */
+  roleKey?: string
 }
 
 function SpaceListRail() {
@@ -203,15 +207,7 @@ function SpaceListRail() {
       const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false }
       badges.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
     }
-    // Fork-lineage depth per role (manager edges among non-folder roles) so
-    // alert rows can indent like the drilled rail.
     const roleByKey = new Map(roles.filter((r) => !r.folder).map((r) => [r.key, r]))
-    const depthOf = (key: string): number => {
-      let d = 0
-      let cur = roleByKey.get(key)
-      while (cur?.manager && roleByKey.has(cur.manager) && d < 6) { d++; cur = roleByKey.get(cur.manager) }
-      return d
-    }
     for (const r of roles) {
       if (r.folder) continue
       const live = sessions.find((s) => s.agentKey === r.key && s.status !== 'ended')
@@ -227,7 +223,7 @@ function SpaceListRail() {
             label: (live.name || r.title).replace(/\s\(fork\)$/, ''),
             level: attention ? 'attention' : working ? 'working' : 'unread',
             fork: r.fork,
-            depth: depthOf(r.key),
+            roleKey: r.key,
           })
         }
       }
@@ -262,9 +258,58 @@ function SpaceListRail() {
       if (f.content === f.savedContent || path.startsWith('projects/')) continue
       push(VAULT_SLUG, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
     }
-    // Attention first, then working, unread, dirty files — within each, stable.
-    const rank = { attention: 0, working: 1, unread: 2, dirty: 3 }
-    for (const arr of alerts.values()) arr.sort((a, b) => rank[a.level] - rank[b.level])
+    // Order each space's session alerts as a LINEAGE TREE: a fork always sits
+    // directly beneath its parent (indent = tree depth). A parent that isn't
+    // itself alerted still appears — as a neutral 'context' row — when one of
+    // its forks is. Siblings sort attention > working > unread > context;
+    // dirty-file rows trail.
+    const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4 }
+    for (const [slug, arr] of alerts) {
+      const sessionRows = arr.filter((a) => a.kind === 'session')
+      const fileRows = arr.filter((a) => a.kind === 'file')
+      const byKey = new Map(sessionRows.filter((a) => a.roleKey).map((a) => [a.roleKey!, a]))
+      // Pull in non-alerted ancestors (live, same-space) as context rows.
+      for (const a of [...sessionRows]) {
+        let cur = a.roleKey ? roleByKey.get(a.roleKey) : undefined
+        while (cur?.manager && roleByKey.has(cur.manager)) {
+          const mgr = roleByKey.get(cur.manager)!
+          if (byKey.has(mgr.key)) break
+          const bound = mgr.project === slug || (mgr.areas ?? []).includes(slug)
+          if (!bound) break
+          const live = sessions.find((x) => x.agentKey === mgr.key && x.status !== 'ended')
+          if (!live) break // parked parent — the fork roots itself
+          const ctx: SpaceAlert = {
+            kind: 'session', id: live.id,
+            label: (live.name || mgr.title).replace(/\s\(fork\)$/, ''),
+            level: 'context', fork: mgr.fork, roleKey: mgr.key,
+          }
+          byKey.set(mgr.key, ctx)
+          sessionRows.push(ctx)
+          cur = mgr
+        }
+      }
+      const byRank = (x: SpaceAlert, y: SpaceAlert) => rank[x.level] - rank[y.level] || x.label.localeCompare(y.label)
+      const childrenOf = new Map<string, SpaceAlert[]>()
+      const roots: SpaceAlert[] = []
+      for (const a of sessionRows) {
+        const mgrKey = a.roleKey ? roleByKey.get(a.roleKey)?.manager : null
+        if (mgrKey && byKey.has(mgrKey)) {
+          const kids = childrenOf.get(mgrKey) ?? []
+          kids.push(a)
+          childrenOf.set(mgrKey, kids)
+        } else {
+          roots.push(a)
+        }
+      }
+      const ordered: SpaceAlert[] = []
+      const emit = (a: SpaceAlert, depth: number) => {
+        a.depth = depth
+        ordered.push(a)
+        for (const c of (a.roleKey ? childrenOf.get(a.roleKey) ?? [] : []).sort(byRank)) emit(c, depth + 1)
+      }
+      for (const r of roots.sort(byRank)) emit(r, 0)
+      alerts.set(slug, [...ordered, ...fileRows])
+    }
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
   }, [roles, sessions, openFiles])
 
@@ -318,13 +363,13 @@ function SpaceListRail() {
             onClick={() => openAlert(s, a)}
             className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
             style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
-            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : 'Unsaved changes'}
+            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : a.level === 'context' ? 'Parent of an alerted fork' : 'Unsaved changes'}
           >
             {a.kind === 'file'
               ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
               : a.fork
-                ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />
-                : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />}
+                ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
+                : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />}
             <span className="truncate">{a.label}</span>
           </button>
         )
