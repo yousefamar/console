@@ -34,6 +34,8 @@ import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-b
 import { BoardWatcher } from './kanban/watcher.js'
 import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
+import { BoardOps } from './kanban/board-ops.js'
+import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -751,6 +753,10 @@ cronScheduler.start()
 // completion is the agent editing its line into Done. Stale in-progress
 // cards get nudged (max 2). All state lives in the board files — a restart
 // re-derives everything (the ^id stamp marks already-dispatched).
+// Software mutation layer over boards — the CLI/agents edit via /board/*
+// instead of hand-editing markdown (single writer, per-board lock).
+const boardOps = new BoardOps(noteStore)
+
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate }) => {
@@ -1385,6 +1391,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     clientCount: () => syncBus.subscriberCount('notes'),
   })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
+  if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody)) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
