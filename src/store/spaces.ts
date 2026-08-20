@@ -152,9 +152,11 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
       })
       return true
     } catch (e) {
+      // Rollback FIRST (loadBoard clears boardError on success), THEN set the
+      // error — otherwise the banner flashed for the split second before the
+      // re-read wiped it, which read as an unexplained blink.
+      await get().loadBoard().catch(() => {})
       set({ boardError: (e as Error).message })
-      // The server copy is canonical — re-read over our optimistic state.
-      void get().loadBoard()
       return false
     } finally {
       // Cover only the POST itself (no linger): BoardOps edits surgically, so
