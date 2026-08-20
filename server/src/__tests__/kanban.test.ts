@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  cardUrls,
   isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
 } from '../kanban/board.js'
@@ -206,5 +207,26 @@ describe('mutations', () => {
     card.blockId = 'fresh1'
     refreshCardLine(card)
     expect(card.lines[0]).toBe('- [ ] Evening digest @al ^fresh1')
+  })
+})
+
+describe('cardUrls', () => {
+  const card = (lines: string[]) => ({ text: '', checked: false, agentKey: null, blockId: null, blocked: false, nofork: false, lines }) as never
+
+  it('extracts bare URLs with hostname labels, strips clinging punctuation', () => {
+    expect(cardUrls(card(['- [ ] see https://vercel.app/preview-abc.', '  and https://www.example.com/x,']))).toEqual([
+      { url: 'https://vercel.app/preview-abc', label: 'vercel.app' },
+      { url: 'https://www.example.com/x', label: 'example.com' },
+    ])
+  })
+
+  it('markdown links use their label and are not double-counted', () => {
+    expect(cardUrls(card(['- [ ] [preview](https://x.dev/p) and https://x.dev/p']))).toEqual([
+      { url: 'https://x.dev/p', label: 'preview' },
+    ])
+  })
+
+  it('image lines are excluded (thumbnails own those)', () => {
+    expect(cardUrls(card(['- [ ] card', '  ![img](https://cdn.example.com/a.png)']))).toEqual([])
   })
 })
