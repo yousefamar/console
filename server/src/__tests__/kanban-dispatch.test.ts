@@ -155,6 +155,7 @@ describe('buildWindDownEnvelope', () => {
     expect(env).toContain('Merge your branch into main (this deploys)')
     expect(env).toContain('autowt cleanup')
     expect(env).toContain('hub automatically merges your summary')
+    expect(env).toContain('learnings durable')
   })
   it('ungated: verify folded + clean up', () => {
     const env = buildWindDownEnvelope({ boardAbsPath: '/v/b.md', text: 'x', blockId: 'aa', deployGate: null })

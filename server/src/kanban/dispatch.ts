@@ -223,7 +223,8 @@ export function buildWindDownEnvelope(opts: {
       '1. Verify your work is folded into the project\'s main branch (commit it if anything is still only in your worktree).',
       '2. Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
     ]),
-    '4. End your turn with a one-line confirmation.',
+    '4. Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your `## Memory` — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
+    '5. End your turn with a one-line confirmation.',
     '',
     'When this turn ends, the hub automatically merges your summary into your parent session and closes you — do not do that yourself, and do not start new work.',
   ].join('\n')
