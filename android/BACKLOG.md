@@ -11,6 +11,16 @@ _(empty)_
 
 ## Built, awaiting release
 
+- "Hub disconnected" wedge needing a force-stop: a hub restart racing a
+  background flip could kill the WS while its scheduled reconnect got lost —
+  and start() on BOTH WS clients (sync bus + agents) was `if (wantConnected)
+  return`, so every later foreground was a no-op; nothing could ever kick a
+  reconnect again. start() now self-heals: want-connected but not connected →
+  cancel stale reconnect job, reset backoff, re-open (generation-guarded, no
+  socket duplication). SyncBusClient also gained the agents-WS stop()
+  hardening (orphan callbacks via generation bump; openSocket cancels any
+  prior socket).
+
 _(empty)_
 
 ## Shipped

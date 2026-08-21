@@ -239,7 +239,12 @@ class AgentsRepository(
     // WS lifecycle (foreground-gated by SyncEngine-style start/stop)
 
     fun start() {
-        if (wantConnected) return
+        if (wantConnected) {
+            // Foreground kick (SyncBusClient parity): self-heal a wedged
+            // disconnect instead of requiring a force-stop.
+            if (!_connected.value) { reconnectJob?.cancel(); open() }
+            return
+        }
         wantConnected = true
         scope.launch {
             // One-time purge of pre-v67 duplicated transcripts (replay bursts
