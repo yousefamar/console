@@ -47,6 +47,10 @@ export interface BoardWatcherOpts {
   onTransition?: (t: BoardTransition) => void
   /** A stamped card has sat in a dispatch column past staleMs. */
   onStale?: (t: BoardTransition, nudgeCount: number) => void
+  /** An OPEN in-flight card's CONTENT changed (text/detail edits, not column
+   *  moves) — instructions get added after dispatch, and the working session
+   *  won't re-read its card unprompted. Not fired on boot or transitions. */
+  onCardEdited?: (t: BoardTransition) => void
   /** A board file changed on disk (any edit — agent, Obsidian, Syncthing).
    *  Fired AFTER stamp-writes so the content the client re-reads is final. */
   onBoardChanged?: (boardPath: string) => void
@@ -239,6 +243,11 @@ export class BoardWatcher {
       } else if (!prev && boot) {
         // Restored in-flight card after a restart — watchdog resumes from now.
         this.staleTrack.set(card.blockId, { since: this.now(), nudges: 0 })
+      } else if (!boot && prev && !prev.review && !prev.done && !prev.blocked
+          && prev.content !== card.content) {
+        // Content edit on a still-OPEN card (instructions added after
+        // dispatch) → tell the assignee to re-read.
+        this.opts.onCardEdited?.(t)
       }
     }
 

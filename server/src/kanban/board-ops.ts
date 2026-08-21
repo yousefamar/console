@@ -101,6 +101,11 @@ export class BoardOps {
     }
   }
 
+  /** Who last mutated a card via /board/* (undefined = unknown/file edit). */
+  lastActor(path: string, blockId: string): { actor: string; ts: number } | undefined {
+    return this.actors[`${path}#${blockId}`]
+  }
+
   private recordActor(path: string, blockId: string | null | undefined, actor: string | undefined): void {
     if (!actor || !blockId || !this.actorFile) return
     this.actors[`${path}#${blockId}`] = { actor, ts: Date.now() }

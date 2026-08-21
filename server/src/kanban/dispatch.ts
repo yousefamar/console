@@ -49,6 +49,10 @@ export interface InFlightCard {
   agentKey: string | null
   text: string
   column: string
+  /** Card content (text + detail lines), for change detection: an edit to an
+   *  in-flight card should re-notify its assignee — forks don't re-read their
+   *  card unprompted, and instructions get added after dispatch. */
+  content: string
   /** Landed in Under Review — the agent considers it finished. */
   review: boolean
   done: boolean
@@ -68,6 +72,7 @@ export function inFlightCards(board: KanbanBoard): InFlightCard[] {
         agentKey: card.agentKey,
         text: card.text,
         column: col.title,
+        content: card.lines.map((l) => l.trim()).join('\n'),
         review: REVIEW_COLUMN_RE.test(col.title),
         done: DONE_COLUMN_RE.test(col.title) || card.checked,
         blocked: card.blocked || BLOCKED_COLUMN_RE.test(col.title),

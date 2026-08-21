@@ -868,6 +868,20 @@ const boardWatcher = new BoardWatcher(noteStore, {
       ].join('\n'))
     }
   },
+  // An OPEN in-flight card's content changed (instructions added after
+  // dispatch) → tell the ASSIGNEE to re-read; working sessions don't re-read
+  // their card unprompted. Self-echo suppressed via BoardOps' actor record —
+  // an assignee's own /board/* report must not ping it back. Console-wide;
+  // replaces the Astera-only ~/exec cron-guard hack.
+  onCardEdited: (t) => {
+    if (!t.agentKey) return
+    const rec = boardOps.lastActor(t.boardPath, t.blockId)
+    if (rec && rec.actor === t.agentKey && Date.now() - rec.ts < 10 * 60_000) return
+    const worker = liveSessionForRole(agentCtx, t.agentKey)
+    if (!worker) return
+    wakeSession(agentCtx, worker, `[BOARD NOTE] Your card ^${t.blockId} ("${t.text.slice(0, 60)}") on ${join(noteStore.vaultPath, t.boardPath)} was edited — re-read it before continuing; instructions may have changed.`)
+    log(`[boards] ^${t.blockId} edited → re-read ping @${t.agentKey}`)
+  },
   onStale: (t, nudges) => {
     if (!t.agentKey) return
     const worker = liveSessionForRole(agentCtx, t.agentKey)

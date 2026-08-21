@@ -177,6 +177,37 @@ describe('transition deployGate threading', () => {
   })
 })
 
+describe('BoardWatcher onCardEdited', () => {
+  it('fires on content change to an OPEN card; not on boot, moves, or transitions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    const b = (inprog: string, review = '\n') => `---\nkanban-plugin: board\n---\n\n## In Progress\n${inprog}\n## Under Review\n${review}\n## Done\n`
+    writeFileSync(boardAbs, b('\n- [ ] Work @eng ^ed1\n'))
+    const edited: BoardTransition[] = []
+    let clock = 1_000_000 // fake clock: lastPoll stays tiny so listSince always sees the file
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true, onCardEdited: (t) => edited.push(t), pollMs: 999_999, now: () => (clock += 1000),
+    })
+    try {
+      await watcher.start()
+      expect(edited).toHaveLength(0) // boot never fires
+      // Content edit: add a detail line.
+      writeFileSync(boardAbs, b('\n- [ ] Work @eng ^ed1\n\tuse the fork DB\n'))
+      await watcher.poll()
+      expect(edited).toHaveLength(1)
+      expect(edited[0]!.blockId).toBe('ed1')
+      // Move to review with same content: transition, NOT an edit ping.
+      writeFileSync(boardAbs, b('\n', '\n- [ ] Work @eng ^ed1\n\tuse the fork DB\n'))
+      await watcher.poll()
+      expect(edited).toHaveLength(1)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('BoardWatcher default owner', () => {
   it('auto-assigns an unassigned In Progress card via resolveOwner and stamps it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'boards-'))
