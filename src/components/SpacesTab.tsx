@@ -875,7 +875,14 @@ function BoardView() {
       live: liveByKey.has(r.key),
     }))
     .sort((a, b) => Number(b.bound) - Number(a.bound) || Number(b.live) - Number(a.live) || a.label.localeCompare(b.label))
-  const labelFor = (key: string) => assignable.find((a) => a.key === key)?.label ?? key
+  const labelFor = (key: string): string => {
+    const hit = assignable.find((a) => a.key === key)
+    if (hit) return hit.label
+    // Reaped fork (merged after Done) — no role file left. Fall back to the
+    // root role's label so the badge stays readable instead of the raw key.
+    const root = rootOf(key)
+    return root !== key ? (assignable.find((a) => a.key === root)?.label ?? key) : key
+  }
   // Clicking an assignee chip OPENS that agent's session (the common case) —
   // reassignment lives in the card modal's assignee pill instead.
   const openAssigneeSession = (key: string) => {
@@ -900,11 +907,18 @@ function BoardView() {
       cur = roleByKey.get(cur.manager)
     }
     // A merged fork's role file is reaped — no edges to walk. Ticket-fork
-    // keys are minted as `<root>-<blockId>-fork` / `<root>-fork[-N]`; strip
-    // that shape so orphaned cards still group under their root.
+    // keys are minted as `<root>-<blockId>-fork` (blockId may itself contain
+    // dashes: word-pair ids like `bold-fox`); strip `-fork` then drop trailing
+    // segments until a known role matches, so orphaned cards still group
+    // under their root.
     if (!roleByKey.has(k)) {
-      const stripped = k.replace(/(-[a-z0-9]{6})?-fork(-\d+)?$/, '')
-      if (stripped !== k && roleByKey.has(stripped)) return stripped
+      let s = k.replace(/-fork(-\d+)?$/, '')
+      while (s && !roleByKey.has(s)) {
+        const i = s.lastIndexOf('-')
+        if (i === -1) break
+        s = s.slice(0, i)
+      }
+      if (s && roleByKey.has(s)) return s
     }
     return k
   }
@@ -994,6 +1008,7 @@ function BoardView() {
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
+                  assigneeLabel={card.agentKey ? labelFor(card.agentKey) : undefined}
                   onAssign={() => {
                     if (card.agentKey) openAssigneeSession(card.agentKey)
                     else setAssignTarget({ ref: { column: col.title, index }, card })
@@ -1472,8 +1487,11 @@ function CardImageThumb({ path, size }: { path: string; size: number }) {
   return <img src={url} alt="" style={{ maxWidth: size, maxHeight: size }} className="rounded-sm border border-border object-cover" />
 }
 
-function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
+function CardTile({ card, assigneeLabel, onAssign, onOpen, onDragStart, onDragEnd }: {
   card: BoardCard
+  /** Human label for the assignee badge (live session name / role title —
+   *  fork keys like `console-general-bold-fox-fork` are unreadable raw). */
+  assigneeLabel?: string
   onAssign: () => void
   /** Open the detail modal (single click on the card body). */
   onOpen: () => void
@@ -1538,7 +1556,7 @@ function CardTile({ card, onAssign, onOpen, onDragStart, onDragEnd }: {
           )}
           title={card.agentKey ? `@${card.agentKey} — open session (reassign in the card)` : 'Assign to agent'}
         >
-          {card.agentKey ? <><Bot size={8} />{card.agentKey}</> : <UserPlus size={10} />}
+          {card.agentKey ? <><Bot size={8} />{assigneeLabel ?? card.agentKey}</> : <UserPlus size={10} />}
         </button>
         {card.blocked && <span className="rounded-sm bg-red-500/15 px-1 py-px text-[9px] text-red-500">blocked</span>}
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}

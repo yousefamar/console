@@ -291,8 +291,12 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   if (!source.claudeSessionId) return null
   const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
   const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
-  const title = `${baseTitle} ^${blockId} (fork)`
-  const forkKey = ctx.agentRegistry.mintKey(title)
+  // Title = just the readable ticket id ("Bold fox (fork)") — the parent is
+  // already visible via indent/filter, so repeating its name is noise. The KEY
+  // stays parent-prefixed (`console-general-bold-fox-fork`): the board's
+  // assignee filter groups orphaned fork keys under their root by that shape.
+  const title = `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
+  const forkKey = ctx.agentRegistry.mintKey(`${baseTitle} ${blockId} fork`)
   ctx.agentRegistry.create(forkKey, {
     title, manager: source.agentKey ?? null, cwd: source.cwd, fork: true,
     project: sourceRole?.project ?? null, areas: sourceRole?.areas ?? [],
