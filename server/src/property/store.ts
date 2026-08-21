@@ -42,10 +42,14 @@ export interface PropertySearch {
   maxRings?: number
   /**
    * If set, a genuinely-new listing only gets pushed when it falls inside
-   * this map-layer's polygon (e.g. `where-to-move/lhr-catchment`) — a
-   * push-noise filter, not a search filter. Listings outside it still show
-   * up on the map and get merged into `lastResults` as normal; they just
-   * don't buzz the phone. `null`/unset = notify on everything, as before.
+   * this geofence — a push-noise filter, not a search filter. Listings
+   * outside it still show up on the map and get merged into `lastResults` as
+   * normal; they just don't buzz the phone. `null`/unset = notify on
+   * everything, as before. Either a published map-layer slug (e.g.
+   * `where-to-move/lhr-catchment`) or a raw geojson file path (e.g. a vault
+   * isochrone under `data/iso/` that doesn't need its own visible Map-tab
+   * layer) — see `PropertySync.geometriesForNotify` for how the two are told
+   * apart.
    */
   notifyLayer?: string
   criteria: Criteria

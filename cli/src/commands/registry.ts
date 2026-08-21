@@ -745,7 +745,7 @@ export const COMMANDS: CommandDef[] = [
       'exclude-new-build': { type: 'boolean', description: 'Drop new-builds (Rightmove only)' },
       'no-buyer-fee': { type: 'boolean', description: 'No buyer-side commission (IS24 Courtage, Germany only)' },
       'exclude-price-on-request': { type: 'boolean', description: 'Drop listings with no published price ("Auf Anfrage" / "Trattative riservate") — no portal filters this server-side, always post-filtered' },
-      'notify-layer': { type: 'string', description: 'Push-noise filter, not a search filter: a genuinely-new listing only triggers a push when it falls inside this map-layer\'s polygon (e.g. where-to-move/lhr-catchment). Listings outside it still show on the map, just silently. Unset = notify on everything' },
+      'notify-layer': { type: 'string', description: 'Push-noise filter, not a search filter: a genuinely-new listing only triggers a push when it falls inside this geofence. Either a map-layer slug or a raw geojson file path (e.g. a vault isochrone that shouldn\'t clutter the Map tab). Listings outside it still show on the map, just silently. Unset = notify on everything' },
     },
     examples: ['con map property add --country DE --layer where-to-move/livable-zone --label "DE houses" --max-price 500000 --min-plot 800 --min-beds 3'] },
   { name: 'map property get', description: 'One search incl. its latest listings', safety: 'read',

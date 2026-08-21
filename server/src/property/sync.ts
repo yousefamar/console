@@ -11,6 +11,9 @@
 //      whatever it reports as `unsupported` we enforce locally, so a search
 //      means the same thing in all three countries.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { PushServer } from '../push.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
@@ -234,6 +237,33 @@ export class PropertySync {
   }
 
   /**
+   * `s.notifyLayer` resolves against a published map layer OR a raw geojson
+   * file path — the latter so a one-off geofence (e.g. a single airport's
+   * isochrone, already sitting in the vault's data/iso/ from the isochrone
+   * pipeline) doesn't have to be re-published as a visible Map-tab layer just
+   * to be usable here. A layer slug is a bare `group/name` (no leading slash,
+   * no `~`, no file extension); anything else is treated as a path.
+   */
+  private geometriesForNotify(ref: string): Geometry[] {
+    const looksLikePath = ref.startsWith('/') || ref.startsWith('~') || /\.(geo)?json$/i.test(ref)
+    if (!looksLikePath) return this.geometriesOf(ref)
+    try {
+      const raw = readFileSync(ref.startsWith('~') ? join(homedir(), ref.slice(1)) : ref, 'utf8')
+      const gj = JSON.parse(raw) as { type?: string; features?: Array<{ geometry?: Geometry }>; geometry?: Geometry }
+      return gj.type === 'FeatureCollection'
+        ? (gj.features ?? []).map((f) => f.geometry).filter((g): g is Geometry => !!g)
+        : gj.type === 'Feature'
+          ? gj.geometry
+            ? [gj.geometry]
+            : []
+          : [gj as unknown as Geometry]
+    } catch (e) {
+      this.log(`[property-sync] failed to read notify geofence file '${ref}': ${(e as Error).message}`)
+      return []
+    }
+  }
+
+  /**
    * A push-noise filter, not a search filter — narrows fresh listings to the
    * ones inside `s.notifyLayer`'s polygon before deciding whether/how to
    * notify. Listings outside it were already merged into `lastResults` and
@@ -242,7 +272,7 @@ export class PropertySync {
    */
   private filterForNotify(s: PropertySearch, fresh: Listing[]): Listing[] {
     if (!s.notifyLayer) return fresh
-    const geometries = this.geometriesOf(s.notifyLayer)
+    const geometries = this.geometriesForNotify(s.notifyLayer)
     if (!geometries.length) {
       this.log(`[property-sync] ${s.id}: notifyLayer '${s.notifyLayer}' not found or empty — notifying on everything`)
       return fresh
