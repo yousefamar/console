@@ -822,36 +822,64 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // closes it (the context-menu merge, automated). Only ticket-forks —
     // a durable role moved to Done just carries on.
     if (t.done) {
-      const doneRole = t.agentKey ? agentRegistry.get(t.agentKey) : undefined
-      const worker = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
-      if (doneRole?.fork && worker && worker.status !== 'ended') {
-        wakeSession(agentCtx, worker, buildWindDownEnvelope({
-          boardAbsPath: join(noteStore.vaultPath, t.boardPath),
-          text: t.text, blockId: t.blockId, deployGate: t.deployGate,
-        }))
-        // Merge-back + self-destruct when the wind-down turn completes.
-        // One-shot listener; 30-min inactivity cap so a dead fork doesn't
-        // leak the listener forever.
-        const onMsg = (m: HubMessage) => {
-          if (m.type !== 'result') return
-          worker.off('hub_message', onMsg)
-          clearTimeout(cap)
-          // Give the turn a beat to settle (status flips to idle after result).
-          setTimeout(() => {
-            void mergeIntoParent(agentCtx, worker.id).then((r) => {
-              if (r.ok) {
-                broadcast({ type: 'session_merged', forkId: worker.id, parentId: r.parentId!, summary: r.summary! })
-                log(`[boards] ^${t.blockId} wound down: fork ${worker.id} merged into ${r.parentId}`)
-              } else {
-                log(`[boards] ^${t.blockId} wind-down merge failed: ${r.error} — fork left alive`)
-              }
-            })
-          }, 2_000)
-        }
-        const cap = setTimeout(() => worker.off('hub_message', onMsg), 30 * 60_000)
-        cap.unref?.()
-        worker.on('hub_message', onMsg)
+      // Resolve the winding-down fork. Normally the card's @key IS the fork's
+      // key (the watcher rewrote the line at dispatch) — but a stale whole-file
+      // write or a manual assignee edit can revert it to the SOURCE role, so
+      // fall back to the fork-key convention (…-<blockId>-fork) before giving
+      // up (^ssahjf hit this 2026-08-21: card said @astera-general, wind-down
+      // silently no-oped).
+      let doneRole = t.agentKey ? agentRegistry.get(t.agentKey) : undefined
+      if (!doneRole?.fork) {
+        doneRole = agentRegistry.list().find((r) => r.fork && r.key.endsWith(`-${t.blockId}-fork`)) ?? doneRole
       }
+      const worker = doneRole ? liveSessionForRole(agentCtx, doneRole.key) : undefined
+      if (!doneRole?.fork || !worker || worker.status === 'ended') {
+        // A durable role moved to Done just carries on — but say WHY nothing
+        // happened, so a missed wind-down is diagnosable from the log.
+        const why = !doneRole ? `no role for @${t.agentKey ?? '∅'}`
+          : !doneRole.fork ? `@${doneRole.key} is durable, not a fork`
+          : 'fork has no live session'
+        log(`[boards] ^${t.blockId} done — no wind-down (${why})`)
+        return
+      }
+      wakeSession(agentCtx, worker, buildWindDownEnvelope({
+        boardAbsPath: join(noteStore.vaultPath, t.boardPath),
+        text: t.text, blockId: t.blockId, deployGate: t.deployGate,
+      }))
+      // Merge-back + self-destruct when the wind-down turn completes.
+      // One-shot listener; the 30-min cap is INACTIVITY-based, not fixed — a
+      // wind-down turn (hibernated wake on a big transcript + worktree merge
+      // + verification) routinely runs past 30 min, and the old fixed cap
+      // dropped the listener mid-turn so the merge never fired (^asts1z 66min,
+      // ^bs5wsn 44min, 2026-08-21). Any sign of life re-arms it.
+      let cap: ReturnType<typeof setTimeout> | undefined
+      const armCap = () => {
+        if (cap) clearTimeout(cap)
+        cap = setTimeout(() => {
+          worker.off('hub_message', onMsg)
+          log(`[boards] ^${t.blockId} wind-down listener expired (30min inactivity) — merge fork ${worker.id} manually`)
+        }, 30 * 60_000)
+        cap.unref?.()
+      }
+      const onMsg = (m: HubMessage) => {
+        armCap()
+        if (m.type !== 'result') return
+        worker.off('hub_message', onMsg)
+        if (cap) clearTimeout(cap)
+        // Give the turn a beat to settle (status flips to idle after result).
+        setTimeout(() => {
+          void mergeIntoParent(agentCtx, worker.id).then((r) => {
+            if (r.ok) {
+              broadcast({ type: 'session_merged', forkId: worker.id, parentId: r.parentId!, summary: r.summary! })
+              log(`[boards] ^${t.blockId} wound down: fork ${worker.id} merged into ${r.parentId}`)
+            } else {
+              log(`[boards] ^${t.blockId} wind-down merge failed: ${r.error} — fork left alive`)
+            }
+          })
+        }, 2_000)
+      }
+      armCap()
+      worker.on('hub_message', onMsg)
       return
     }
     // Under Review does NOT wake anyone: Yousef is the reviewer and sees it
