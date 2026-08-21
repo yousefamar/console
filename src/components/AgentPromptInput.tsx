@@ -5,7 +5,7 @@ import { useMicStore } from '@/store/mic'
 import { getHubUrl } from '@/hub'
 import { useDictation } from '@/hooks/useDictation'
 import { dictationSeparator } from '@/utils/dictation-text'
-import { Send, Square, Plus, FolderOpen, RotateCcw, X, Mic, Paperclip, Clock } from 'lucide-react'
+import { Send, Square, FolderOpen, RotateCcw, X, Mic, Paperclip, Clock } from 'lucide-react'
 
 // ============================================================================
 // AgentPromptInput — text input for sending prompts to the agent.
@@ -724,8 +724,13 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
           disabled={!connected}
         />
 
-        {isRunning ? (
-          <div className="flex items-center gap-1">
+        {/* One cluster, always: dictation fills the textarea and the paperclip
+            stages images regardless of turn state — a mid-turn send is just a
+            steer (or a long-press queue), which the composer already supports.
+            Running only ADDS the interrupt button. (New-session button removed
+            — unused; Shift+Cmd+Enter remains.) */}
+        <div className="flex items-center gap-1">
+          {isRunning && (
             <button
               onClick={interrupt}
               className="flex-shrink-0 text-warning hover:text-warning/80 transition-colors duration-fast p-1"
@@ -733,62 +738,41 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
             >
               <Square size={14} />
             </button>
-            {/* Tap = steer now (lands at the next tool boundary), long-press =
-                queue until the whole turn ends. */}
-            <button
-              onClick={() => {
-                if (longPressFired.current) { longPressFired.current = false; return }
-                handleSend()
-              }}
-              onPointerDown={startLongPress}
-              onPointerUp={cancelLongPress}
-              onPointerLeave={cancelLongPress}
-              onContextMenu={(e) => e.preventDefault()}
-              disabled={!hasContent && images.length === 0}
-              className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
-              title="Send now — steers mid-turn. Hold (or Ctrl+Enter) to queue until the turn ends."
-            >
-              <Send size={14} />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex-shrink-0 text-text-tertiary hover:text-text-secondary transition-colors duration-fast p-1"
-              title="Attach image"
-            >
-              <Paperclip size={14} />
-            </button>
-            {activeSessionId && (
-              <button
-                onClick={handleNewSession}
-                disabled={!hasContent && images.length === 0}
-                className="flex-shrink-0 text-text-tertiary hover:text-text-secondary disabled:opacity-30 transition-colors duration-fast p-1"
-                title="New session (Shift+Cmd+Enter)"
-              >
-                <Plus size={14} />
-              </button>
-            )}
-            <button
-              onClick={toggleListening}
-              className={`flex-shrink-0 transition-colors duration-fast p-1 cursor-pointer ${
-                listening ? 'text-destructive animate-pulse' : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-              title={listening ? 'Stop listening' : 'Voice input'}
-            >
-              <Mic size={14} />
-            </button>
-            <button
-              onClick={handleSend}
-              disabled={!hasContent && images.length === 0}
-              className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
-              title="Send (Enter)"
-            >
-              <Send size={14} />
-            </button>
-          </div>
-        )}
+          )}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex-shrink-0 text-text-tertiary hover:text-text-secondary transition-colors duration-fast p-1"
+            title="Attach image"
+          >
+            <Paperclip size={14} />
+          </button>
+          <button
+            onClick={toggleListening}
+            className={`flex-shrink-0 transition-colors duration-fast p-1 cursor-pointer ${
+              listening ? 'text-destructive animate-pulse' : 'text-text-tertiary hover:text-text-secondary'
+            }`}
+            title={listening ? 'Stop listening' : 'Voice input'}
+          >
+            <Mic size={14} />
+          </button>
+          {/* Tap = send (steers mid-turn at the next tool boundary); hold (or
+              Ctrl+Enter) = queue until the whole turn ends. */}
+          <button
+            onClick={() => {
+              if (longPressFired.current) { longPressFired.current = false; return }
+              handleSend()
+            }}
+            onPointerDown={startLongPress}
+            onPointerUp={cancelLongPress}
+            onPointerLeave={cancelLongPress}
+            onContextMenu={(e) => e.preventDefault()}
+            disabled={!hasContent && images.length === 0}
+            className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
+            title={isRunning ? 'Send now — steers mid-turn. Hold (or Ctrl+Enter) to queue until the turn ends.' : 'Send (Enter)'}
+          >
+            <Send size={14} />
+          </button>
+        </div>
       </div>
     </div>
   )
