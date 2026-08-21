@@ -10,12 +10,25 @@ export interface VaultFile {
   size: number      // file size in bytes
 }
 
+/** A conditional write lost: the on-disk copy is newer than the buffer's base.
+ *  Carries the disk copy so the caller can offer a merge — never a silent clobber. */
+export class VaultConflictError extends Error {
+  constructor(public serverMtime: number, public serverContent: string) {
+    super('vault write conflict — disk copy is newer')
+  }
+}
+
 export interface VaultAdapter {
   /** `includeHidden` also lists dotfiles/dot-dirs (never SKIP_DIRS). */
   listFiles(includeHidden?: boolean): Promise<VaultFile[]>
   readFile(path: string): Promise<string>
+  /** Read + the mtime this content corresponds to (the conflict-guard base). */
+  readFileWithMeta(path: string): Promise<{ content: string; mtime?: number }>
   readFileBinary(path: string): Promise<Blob>
-  writeFile(path: string, content: string): Promise<void>
+  /** With `baseMtime`, throws VaultConflictError instead of overwriting a newer
+   *  disk copy (the stale-buffer clobber that ate a blog post, 2026-08-21).
+   *  Returns the new mtime so the caller re-arms its base. */
+  writeFile(path: string, content: string, opts?: { baseMtime?: number }): Promise<{ mtime?: number }>
   writeFileBinary(path: string, data: Blob): Promise<void>
   deleteFile(path: string): Promise<void>
   createDirectory(path: string): Promise<void>
@@ -115,16 +128,29 @@ export class FsaVaultAdapter implements VaultAdapter {
     return file.text()
   }
 
+  async readFileWithMeta(path: string): Promise<{ content: string; mtime?: number }> {
+    const handle = await this.getFileHandle(path, false)
+    const file = await handle.getFile()
+    return { content: await file.text(), mtime: file.lastModified }
+  }
+
   async readFileBinary(path: string): Promise<Blob> {
     const handle = await this.getFileHandle(path, false)
     return handle.getFile()
   }
 
-  async writeFile(path: string, content: string): Promise<void> {
+  async writeFile(path: string, content: string, opts?: { baseMtime?: number }): Promise<{ mtime?: number }> {
     const handle = await this.getFileHandle(path, true)
+    if (opts?.baseMtime !== undefined) {
+      const current = await handle.getFile()
+      if (current.lastModified - opts.baseMtime > 2) {
+        throw new VaultConflictError(current.lastModified, await current.text())
+      }
+    }
     const writable = await handle.createWritable()
     await writable.write(content)
     await writable.close()
+    return { mtime: (await handle.getFile()).lastModified }
   }
 
   async writeFileBinary(path: string, data: Blob): Promise<void> {
@@ -193,10 +219,14 @@ export class HubVaultAdapter implements VaultAdapter {
   }
 
   async readFile(path: string): Promise<string> {
+    return (await this.readFileWithMeta(path)).content
+  }
+
+  async readFileWithMeta(path: string): Promise<{ content: string; mtime?: number }> {
     const res = await fetch(`${getHubUrl()}/notes/file/${encodeURIComponent(path)}`)
     if (!res.ok) throw new Error(`Hub read failed: ${res.status}`)
     const data = await res.json()
-    return data.content
+    return { content: data.content, mtime: data.mtime }
   }
 
   async readFileBinary(path: string): Promise<Blob> {
@@ -213,13 +243,19 @@ export class HubVaultAdapter implements VaultAdapter {
     if (!res.ok) throw new Error(`Hub write binary failed: ${res.status}`)
   }
 
-  async writeFile(path: string, content: string): Promise<void> {
+  async writeFile(path: string, content: string, opts?: { baseMtime?: number }): Promise<{ mtime?: number }> {
     const res = await fetch(`${getHubUrl()}/notes/file/${encodeURIComponent(path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(opts?.baseMtime !== undefined ? { baseMtime: opts.baseMtime } : {}) }),
     })
+    if (res.status === 409) {
+      const data = await res.json()
+      throw new VaultConflictError(data.serverMtime, data.serverContent)
+    }
     if (!res.ok) throw new Error(`Hub write failed: ${res.status}`)
+    const data = await res.json().catch(() => ({}))
+    return { mtime: data.mtime }
   }
 
   async deleteFile(path: string): Promise<void> {

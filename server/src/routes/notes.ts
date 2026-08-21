@@ -133,9 +133,9 @@ export function handleNoteRoutes(
       })
       return true
     }
-    noteStore.read(filePath).then((content) => {
+    noteStore.readWithMeta(filePath).then(({ content, mtime }) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ content }))
+      res.end(JSON.stringify({ content, mtime }))
     }).catch((err) => {
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))

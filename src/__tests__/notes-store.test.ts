@@ -97,6 +97,7 @@ describe('notes store', () => {
   it('openFile adds to openFiles and sets active', async () => {
     const mockAdapter = {
       readFile: vi.fn().mockResolvedValue('# Hello'),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: '# Hello', mtime: 1000 }),
       listFiles: vi.fn(),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),
@@ -118,6 +119,7 @@ describe('notes store', () => {
   it('openFile switches to existing tab without re-reading', async () => {
     const mockAdapter = {
       readFile: vi.fn().mockResolvedValue('content'),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: 'content', mtime: 1000 }),
       listFiles: vi.fn(),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),
@@ -133,7 +135,7 @@ describe('notes store', () => {
 
     expect(useNotesStore.getState().activeFilePath).toBe('a.md')
     // readFile called twice (a.md + b.md), not three times
-    expect(mockAdapter.readFile).toHaveBeenCalledTimes(2)
+    expect(mockAdapter.readFileWithMeta).toHaveBeenCalledTimes(2)
   })
 
   it('closeFile removes from openFiles', async () => {
@@ -178,11 +180,48 @@ describe('notes store', () => {
     expect(useNotesStore.getState().openFiles['a.md']).toBeUndefined()
   })
 
+  // The stale-buffer clobber guard (a 394-byte early copy overwrote a full
+  // blog post, 2026-08-21): a conflicting save must NEVER silently overwrite.
+  it('saveFile on VaultConflictError keeps the buffer and re-arms, no clobber', async () => {
+    const { VaultConflictError } = await import('@/notes/vault-adapter')
+    const dialog = await import('@/dialog')
+    const confirmSpy = vi.spyOn(dialog, 'showConfirm').mockResolvedValue(false) // "Keep editing"
+    const mockAdapter = {
+      readFile: vi.fn(),
+      readFileWithMeta: vi.fn(),
+      listFiles: vi.fn(),
+      writeFile: vi.fn().mockRejectedValue(new VaultConflictError(9000, 'newer disk copy')),
+      deleteFile: vi.fn(),
+      createDirectory: vi.fn(),
+      renameFile: vi.fn(),
+      exists: vi.fn(),
+    }
+    useNotesStore.setState({
+      adapter: mockAdapter as any,
+      vaultConnected: true,
+      openFiles: {
+        'a.md': { path: 'a.md', content: 'my long post', savedContent: 'old', baseMtime: 1000 },
+      },
+      activeFilePath: 'a.md',
+    })
+
+    await useNotesStore.getState().saveFile()
+
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(mockAdapter.writeFile).toHaveBeenCalledTimes(1) // no forced retry
+    const file = useNotesStore.getState().openFiles['a.md']!
+    expect(file.content).toBe('my long post')       // buffer untouched
+    expect(file.savedContent).toBe('newer disk copy') // re-armed against disk
+    expect(file.baseMtime).toBe(9000)
+    confirmSpy.mockRestore()
+  })
+
   it('saveFile writes content and marks clean', async () => {
     const mockAdapter = {
       readFile: vi.fn(),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: '', mtime: 1000 }),
       listFiles: vi.fn(),
-      writeFile: vi.fn().mockResolvedValue(undefined),
+      writeFile: vi.fn().mockResolvedValue({ mtime: 2000 }),
       deleteFile: vi.fn(),
       createDirectory: vi.fn(),
       renameFile: vi.fn(),
@@ -199,7 +238,7 @@ describe('notes store', () => {
 
     await useNotesStore.getState().saveFile()
 
-    expect(mockAdapter.writeFile).toHaveBeenCalledWith('a.md', 'updated content')
+    expect(mockAdapter.writeFile).toHaveBeenCalledWith('a.md', 'updated content', expect.anything())
     const file = useNotesStore.getState().openFiles['a.md']!
     expect(file.savedContent).toBe('updated content')
   })
@@ -269,6 +308,7 @@ describe('notes store', () => {
   it('deleteFile removes from vault and closes tab', async () => {
     const mockAdapter = {
       readFile: vi.fn(),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: '', mtime: 1000 }),
       listFiles: vi.fn().mockResolvedValue([]),
       writeFile: vi.fn(),
       deleteFile: vi.fn().mockResolvedValue(undefined),
@@ -300,6 +340,7 @@ describe('notes store', () => {
 
     const mockAdapter = {
       readFile: vi.fn().mockResolvedValue('body'),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: 'body', mtime: 1000 }),
       listFiles: vi.fn().mockResolvedValue([]),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),
@@ -339,6 +380,7 @@ describe('notes store', () => {
   it('renameFile updates open tab path', async () => {
     const mockAdapter = {
       readFile: vi.fn(),
+      readFileWithMeta: vi.fn().mockResolvedValue({ content: '', mtime: 1000 }),
       listFiles: vi.fn().mockResolvedValue([]),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),

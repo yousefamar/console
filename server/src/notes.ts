@@ -127,6 +127,14 @@ export class NoteStore {
     return readFile(absPath, 'utf-8')
   }
 
+  /** Read + mtime, the base for conditional writes (writeConditional). */
+  async readWithMeta(relPath: string): Promise<{ content: string; mtime: number }> {
+    this.validatePath(relPath)
+    const absPath = join(this.vaultPath, relPath)
+    const [content, st] = await Promise.all([readFile(absPath, 'utf-8'), stat(absPath)])
+    return { content, mtime: st.mtimeMs }
+  }
+
   /** Write file content (create or update) */
   async write(relPath: string, content: string): Promise<void> {
     this.validatePath(relPath)

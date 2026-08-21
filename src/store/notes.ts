@@ -24,6 +24,9 @@ export interface OpenFile {
   path: string
   content: string
   savedContent: string   // last saved version — dirty = content !== savedContent
+  /** Disk mtime this buffer is based on — the conflict-guard base for saves.
+   *  Undefined = unknown (legacy tab), save falls back to last-writer-wins. */
+  baseMtime?: number
 }
 
 export interface TreeNode {
@@ -439,11 +442,11 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     }
 
     try {
-      const content = await adapter.readFile(path)
+      const { content, mtime } = await adapter.readFileWithMeta(path)
       set((s) => ({
         openFiles: {
           ...s.openFiles,
-          [path]: { path, content, savedContent: content },
+          [path]: { path, content, savedContent: content, baseMtime: mtime },
         },
         activeFilePath: path,
       }))
@@ -496,11 +499,35 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     if (!file) return
 
     try {
-      await adapter.writeFile(filePath, file.content)
+      let mtime: number | undefined
+      try {
+        mtime = (await adapter.writeFile(filePath, file.content, { baseMtime: file.baseMtime })).mtime
+      } catch (err) {
+        const { VaultConflictError } = await import('@/notes/vault-adapter')
+        if (!(err instanceof VaultConflictError)) throw err
+        // Disk moved under us (another device/agent saved since this tab
+        // loaded). NEVER silently clobber — this ate a blog post (2026-08-21).
+        const { showConfirm } = await import('@/dialog')
+        const keepMine = await showConfirm(
+          `"${filePath}" changed on disk since this tab loaded (this buffer: ${file.content.length} chars, disk: ${err.serverContent.length} chars).\n\nOverwrite the disk copy with this buffer? "Cancel" keeps YOUR text in the tab (unsaved) and re-arms against the disk version so you can compare first.`,
+          { confirmLabel: 'Overwrite disk', cancelLabel: 'Keep editing', danger: true },
+        )
+        if (!keepMine) {
+          // Re-arm the base so a LATER deliberate save wins; buffer untouched.
+          set((s) => ({
+            openFiles: {
+              ...s.openFiles,
+              [filePath]: { ...s.openFiles[filePath]!, savedContent: err.serverContent, baseMtime: err.serverMtime },
+            },
+          }))
+          return
+        }
+        mtime = (await adapter.writeFile(filePath, file.content)).mtime
+      }
       set((s) => ({
         openFiles: {
           ...s.openFiles,
-          [filePath]: { ...s.openFiles[filePath]!, savedContent: file.content },
+          [filePath]: { ...s.openFiles[filePath]!, savedContent: file.content, baseMtime: mtime ?? Date.now() },
         },
         // Bump the in-memory mtime so consumers that compare against it
         // (recency sorts, the blog live-status chip) see the write without

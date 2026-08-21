@@ -81,8 +81,11 @@ async function refreshFromDisk(path: string, view: any): Promise<void> {
   const notes = useNotesStore.getState()
   if (notes.isFileDirty(path)) return
   let fresh: string
+  let freshMtime: number | undefined
   try {
-    fresh = await notes.adapter!.readFile(path)
+    const meta = await notes.adapter!.readFileWithMeta(path)
+    fresh = meta.content
+    freshMtime = meta.mtime
   } catch {
     return
   }
@@ -95,7 +98,7 @@ async function refreshFromDisk(path: string, view: any): Promise<void> {
   useNotesStore.setState((s) => {
     const file = s.openFiles[path]
     if (!file) return s
-    return { openFiles: { ...s.openFiles, [path]: { ...file, content: fresh, savedContent: fresh } } }
+    return { openFiles: { ...s.openFiles, [path]: { ...file, content: fresh, savedContent: fresh, baseMtime: freshMtime } } }
   })
 }
 
