@@ -80,7 +80,7 @@ export const SpacesTab = memo(function SpacesTab() {
         ) : detail === 'session' ? (
           <SpaceAgentPanel space={active} />
         ) : detail === 'editor' && isActivePane ? (
-          <NotesEditor scopePrefixes={spaceScopePrefixes(active)} />
+          <ScopedNotesEditor space={active} />
         ) : (
           <div className="flex flex-1 min-h-0 flex-col"><SpaceRail space={active} /></div>
         )}
@@ -509,12 +509,38 @@ export const UNASSIGNED_SPACE: SpaceSummary = {
 }
 
 export function spaceScopePrefixes(space: SpaceSummary): string[] {
-  // Projects own projects/<slug>/** plus the flat projects/<slug>.md; areas
-  // have no folder (their writing is blog posts) — no file scope. The Vault
-  // pseudo-space scopes to nothing = everything.
+  // Projects own projects/<slug>/** plus the flat projects/<slug>.md — AND
+  // their writing, which lives OUTSIDE the folder: drafts are named
+  // scratch/blog-drafts/<slug>-… (hub createDraft convention) and published
+  // posts sit in log/<ts>.md (matched per-path via useSpaceScope below).
+  // The Vault pseudo-space scopes to nothing = everything.
   if (space.slug === VAULT_SLUG) return ['']
   if (space.slug === UNASSIGNED_SLUG) return []
-  return space.kind === 'project' ? [`projects/${space.slug}/`, `projects/${space.slug}.md`] : []
+  if (space.kind === 'project') {
+    return [`projects/${space.slug}/`, `projects/${space.slug}.md`, `scratch/blog-drafts/${space.slug}-`]
+  }
+  // Areas: writing IS the content (BlogView fills the rail), so the writing
+  // dirs are the scope — without this, a draft opened from the rail rendered
+  // the "No file open" placeholder and the old code bounced to the Notes pane.
+  return ['scratch/blog-drafts/', 'log/']
+}
+
+/** The space's Docs editor: static scope prefixes + the project's published
+ *  posts (log/<ts>.md carries no slug in its path, so membership comes from
+ *  the devlog post list — refreshed by ProjectDevlog on mount and by
+ *  publish). A component so the subscription hook has an unconditional home. */
+function ScopedNotesEditor({ space }: { space: SpaceSummary }) {
+  const posts = useBlogStore((s) => (space.kind === 'project' ? s.postsByProject[space.slug] : undefined))
+  // ProjectDevlog also refreshes this, but on mobile the rail (and thus the
+  // devlog strip) isn't mounted while the editor page shows.
+  useEffect(() => {
+    if (space.kind === 'project' && !space.slug.startsWith('~')) void useBlogStore.getState().refreshProjectPosts(space.slug)
+  }, [space.kind, space.slug])
+  const scope = useMemo(
+    () => [...spaceScopePrefixes(space), ...(posts ?? []).map((p) => p.path)],
+    [space, posts],
+  )
+  return <NotesEditor scopePrefixes={scope} />
 }
 
 function SpaceRail({ space }: { space: SpaceSummary }) {
@@ -791,7 +817,7 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
       </div>
       {showBoard
         ? <BoardView />
-        : (isActivePane ? <NotesEditor scopePrefixes={spaceScopePrefixes(space)} /> : null)}
+        : (isActivePane ? <ScopedNotesEditor space={space} /> : null)}
     </>
   )
 }
