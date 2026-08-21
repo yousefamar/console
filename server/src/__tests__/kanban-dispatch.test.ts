@@ -84,8 +84,23 @@ kanban-plugin: board
 })
 
 describe('mintBlockId', () => {
-  it('is 6 chars lowercase alphanumeric', () => {
-    expect(mintBlockId()).toMatch(/^[a-z0-9]{6}$/)
+  it('is a readable adjective-noun pair, valid Obsidian block-ref charset', () => {
+    expect(mintBlockId()).toMatch(/^[a-z]+-[a-z]+$/)
+  })
+  it('avoids taken ids, suffixing numerically when the space is exhausted', () => {
+    const seen = new Set<string>()
+    for (let i = 0; i < 200; i++) {
+      const id = mintBlockId({ taken: seen })
+      expect(seen.has(id)).toBe(false)
+      seen.add(id)
+    }
+    // Force total exhaustion of the random tries: everything is taken.
+    const all = new Set<string>()
+    let fixed = 0
+    const cycle = () => ((fixed = (fixed + 1) % 7), fixed / 7)
+    for (let i = 0; i < 5000; i++) all.add(mintBlockId({ random: cycle }))
+    const suffixed = mintBlockId({ taken: all, random: cycle })
+    expect(suffixed).toMatch(/^[a-z]+-[a-z]+-\d+$/)
   })
 })
 
@@ -225,7 +240,7 @@ describe('BoardWatcher default owner', () => {
       await watcher.start()
       expect(dispatches).toHaveLength(1)
       expect(dispatches[0]!.card.agentKey).toBe('demo-general')
-      expect(readFileSync(boardAbs, 'utf-8')).toMatch(/- \[ \] Ownerless work @demo-general \^[a-z0-9]{6}/)
+      expect(readFileSync(boardAbs, 'utf-8')).toMatch(/- \[ \] Ownerless work @demo-general \^[a-z0-9-]+/)
     } finally {
       watcher.stop()
       rmSync(dir, { recursive: true, force: true })
@@ -308,7 +323,7 @@ describe('BoardWatcher', () => {
       expect(dispatches[0]!.card.agentKey).toBe('eng')
       expect(dispatches[0]!.project).toBe('demo')
       const onDisk = readFileSync(boardAbs, 'utf-8')
-      expect(onDisk).toMatch(/- \[ \] Ship it @eng \^[a-z0-9]{6}/)
+      expect(onDisk).toMatch(/- \[ \] Ship it @eng \^[a-z0-9-]+/)
       // A restart must NOT re-dispatch (the stamp marks it).
       const { watcher: w2, dispatches: d2 } = { ...(await setup('')), dispatches: [] as BoardDispatch[] }
       void w2
@@ -336,7 +351,7 @@ describe('BoardWatcher', () => {
     try {
       await watcher.start()
       const onDisk = readFileSync(boardAbs, 'utf-8')
-      expect(onDisk).toMatch(/- \[ \] Ship it @eng-abc123-fork \^[a-z0-9]{6}/)
+      expect(onDisk).toMatch(/- \[ \] Ship it @eng-abc123-fork \^[a-z0-9-]+/)
       expect(onDisk).not.toMatch(/@eng \^/)
     } finally {
       watcher.stop()

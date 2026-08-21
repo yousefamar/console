@@ -290,7 +290,7 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
 export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string): Session | null {
   if (!source.claudeSessionId) return null
   const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
-  const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9]+$/, '')
+  const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
   const title = `${baseTitle} ^${blockId} (fork)`
   const forkKey = ctx.agentRegistry.mintKey(title)
   ctx.agentRegistry.create(forkKey, {

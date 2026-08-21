@@ -96,12 +96,41 @@ export function resolveDefaultOwner(roles: Array<{ key: string; title: string; f
   return [...real].sort((a, b) => a.key.localeCompare(b.key))[0]!.key
 }
 
-/** Mint a short block id (Obsidian-style: lowercase alphanumeric). */
-export function mintBlockId(random: () => number = Math.random): string {
-  let id = ''
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  for (let i = 0; i < 6; i++) id += chars[Math.floor(random() * chars.length)]
-  return id
+// Readable block ids: `bold-fox` beats `p2asvl` — the id lands in fork
+// titles/agentKeys ("Console general ^bold-fox (fork)"), so Yousef tracks
+// tickets by name, not by six random glyphs. Obsidian block-ref grammar
+// allows dashes, so these are still valid ^ids. Words kept ≤5 chars.
+const ID_ADJECTIVES = [
+  'able', 'bold', 'blue', 'brisk', 'busy', 'calm', 'cool', 'cosy', 'deft', 'dry',
+  'fond', 'glad', 'gold', 'gray', 'green', 'hazy', 'jade', 'keen', 'kind', 'lean',
+  'loud', 'lime', 'mild', 'neat', 'odd', 'pale', 'pink', 'plum', 'prim', 'quick',
+  'rare', 'red', 'ripe', 'rosy', 'shy', 'sly', 'snug', 'soft', 'spry', 'tall',
+  'tame', 'teal', 'tidy', 'trim', 'warm', 'wavy', 'wise', 'zany',
+]
+const ID_NOUNS = [
+  'ant', 'bass', 'bat', 'bear', 'bee', 'boar', 'carp', 'colt', 'crab', 'crow',
+  'deer', 'dove', 'duck', 'eel', 'elk', 'fawn', 'finch', 'fox', 'frog', 'goat',
+  'gull', 'hare', 'hawk', 'heron', 'ibis', 'kite', 'kiwi', 'koi', 'lark', 'loon',
+  'lynx', 'mole', 'moth', 'newt', 'orca', 'otter', 'owl', 'pony', 'ram', 'seal',
+  'stag', 'swan', 'tern', 'toad', 'vole', 'wolf', 'wren', 'yak',
+]
+
+/** Mint a short, READABLE block id — `<adjective>-<animal>`, collision-checked
+ *  against `taken` (the watcher's global in-flight set is keyed by id alone,
+ *  and 48×48 combos make birthday collisions real where 36^6 didn't). Falls
+ *  back to a numeric suffix if the random picks keep colliding. */
+export function mintBlockId(opts: { taken?: ReadonlySet<string>; random?: () => number } = {}): string {
+  const random = opts.random ?? Math.random
+  const pick = (list: string[]) => list[Math.floor(random() * list.length)]!
+  for (let i = 0; i < 40; i++) {
+    const id = `${pick(ID_ADJECTIVES)}-${pick(ID_NOUNS)}`
+    if (!opts.taken?.has(id)) return id
+  }
+  const base = `${pick(ID_ADJECTIVES)}-${pick(ID_NOUNS)}`
+  for (let n = 2; ; n++) {
+    const id = `${base}-${n}`
+    if (!opts.taken?.has(id)) return id
+  }
 }
 
 /** The wake envelope injected into the assignee's session. Self-instructing:

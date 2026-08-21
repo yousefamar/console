@@ -171,6 +171,9 @@ export class BoardWatcher {
       // work: restore its id + assignee and do NOT dispatch again.
       const dispatchNow: typeof todo = []
       const fmOwner = boardDefaultOwner(content)
+      // Word-pair ids collide far sooner than 36^6 — take everything in
+      // flight PLUS ids minted earlier in this very loop.
+      const taken = new Set(this.inFlight.keys())
       for (const d of todo) {
         // Unassigned card in a dispatch column → the project's default owner
         // ("* general" convention / frontmatter default_owner). Unresolvable
@@ -190,7 +193,8 @@ export class BoardWatcher {
           this.opts.log(`[boards] re-stamped ^${prior.blockId} on ${path} (stale write wiped it) — no re-dispatch`)
           continue
         }
-        d.card.blockId = mintBlockId()
+        d.card.blockId = mintBlockId({ taken })
+        taken.add(d.card.blockId)
         refreshCardLine(d.card)
         dispatchNow.push(d)
       }
