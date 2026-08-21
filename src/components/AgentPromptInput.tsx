@@ -280,18 +280,21 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
 
     sendingRef.current = false
     inputRef.current?.focus()
-  }, [imagePayload, activeSessionId, sendMessage, createSession, resumeSession, selectedResumeId, resolvedCwd, clearInput])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imagePayload, activeSessionId, sendMessage, createSession, resumeSession, selectedResumeId, resolvedCwd, clearInput, dictation.recording, dictation.stop])
 
   const handleNewSession = useCallback(() => {
     const body = textRef.current.trim()
     if (!body && !imagePayload) return
+    if (dictation.recording) dictation.stop()
     clearInput()
     setImages([])
     createSession(body || 'What do you see in this image?', resolvedCwd, imagePayload)
     setSelectedDir(null)
     setDirInput('')
     inputRef.current?.focus()
-  }, [imagePayload, createSession, resolvedCwd, clearInput])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imagePayload, createSession, resolvedCwd, clearInput, dictation.recording, dictation.stop])
 
   // Queue for turn-end rather than steering mid-turn. On an idle session the hub
   // flushes immediately, so this is also a safe no-op-ish path when not running.
