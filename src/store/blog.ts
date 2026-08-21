@@ -328,7 +328,9 @@ export const useBlogStore = create<BlogState>((set) => ({
     // Lazy import to avoid circular dependencies between stores.
     const { useNotesStore } = await import('./notes')
     const { useUiStore } = await import('./ui')
-    useUiStore.getState().setActivePane('notes')
+    // Spaces has its own Docs editor — a draft created there opens in place;
+    // everywhere else jumps to the Notes pane as before.
+    if (useUiStore.getState().activePane !== 'spaces') useUiStore.getState().setActivePane('notes')
     // New file → rescan so the tree/browser sees it before opening.
     if (!result.alreadyExists) await useNotesStore.getState().loadVaultFiles()
     await useNotesStore.getState().openFile(result.path)
