@@ -1477,6 +1477,15 @@ const httpServer = tlsOpts
   ? createHttpsServer(tlsOpts, requestHandler)
   : createHttpServer(requestHandler)
 
+// Node's default keepAliveTimeout (5 s) races Caddy's connection reuse: a
+// proxied request landing just as Node closes an idle keep-alive socket gets
+// RST → sporadic 502 "connection reset by peer" (ate a dictated board card,
+// 2026-08-21). Outlive the proxy's idle window so Caddy always closes first;
+// headersTimeout must exceed keepAliveTimeout or Node kills the next request
+// on the reused socket instead.
+httpServer.keepAliveTimeout = 75_000
+httpServer.headersTimeout = 76_000
+
 // --------------------------------------------------------------------------
 // WebSocket server
 // --------------------------------------------------------------------------

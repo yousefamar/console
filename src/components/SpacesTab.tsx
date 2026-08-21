@@ -844,8 +844,11 @@ function BoardView() {
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
     await addCardTo(column, text)
     // The fresh card lands on TOP (newest-first) — stamp its detail lines in.
+    // Verify it actually IS ours first: after a failed add + rollback, index 0
+    // is some OTHER card, and editing it would overwrite that card's text.
     if (detail.some((l) => l.trim())) {
-      await editCard({ column, index: 0 }, text, detail)
+      const top = useSpacesStore.getState().board?.columns.find((c) => c.title === column)?.cards[0]
+      if (top?.text === text) await editCard({ column, index: 0 }, text, detail)
     }
   }
 

@@ -217,7 +217,19 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     // UI-added cards land on TOP — newest-first is how the backlog reads.
     if (!addCard(board, column, text, { ...(agentKey ? { agentKey } : {}), position: 'top' })) return
     set({ board: { ...board } })
-    await get().boardApi('cards', { text, column, ...(agentKey ? { assign: agentKey } : {}) })
+    const body = { text, column, ...(agentKey ? { assign: agentKey } : {}) }
+    if (await get().boardApi('cards', body)) return
+    // A failed ADD just rolled back the optimistic row — which was the ONLY
+    // copy of what the user typed (a transient 502 ate a dictated card,
+    // 2026-08-21). Retry once; if that also fails, put the text in the error
+    // banner so it's at least recoverable by hand.
+    await new Promise((r) => setTimeout(r, 1000))
+    if (await get().boardApi('cards', body)) {
+      set({ boardError: null })
+      await get().loadBoard().catch(() => {})
+    } else {
+      set({ boardError: `${get().boardError ?? 'add failed'} — unsaved card text: "${text}"` })
+    }
   },
 
   editCard: async (ref, text, detail) => {
