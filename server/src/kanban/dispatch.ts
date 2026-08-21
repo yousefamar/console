@@ -210,21 +210,25 @@ export function buildWindDownEnvelope(opts: {
   blockId: string
   deployGate: 'review' | null
 }): string {
+  const [header, ...steps] = opts.deployGate === 'review' ? [
+    'This board is deploy-gated: approval IS the merge signal. NOW:',
+    'Merge your branch into main (this deploys) — resolve conflicts if any.',
+    'Verify the merge landed (git log on main).',
+    'Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+  ] : [
+    'Finish the lifecycle NOW:',
+    'Verify your work is folded into the project\'s main branch (commit it if anything is still only in your worktree).',
+    'Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+  ]
+  steps.push(
+    'Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your `## Memory` — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
+    'End your turn with a one-line confirmation.',
+  )
   return [
     `[CARD APPROVED — wind down] "${opts.text}" (^${opts.blockId}) was moved to Done on ${opts.boardAbsPath}.`,
     '',
-    ...(opts.deployGate === 'review' ? [
-      'This board is deploy-gated: approval IS the merge signal. NOW:',
-      '1. Merge your branch into main (this deploys) — resolve conflicts if any.',
-      '2. Verify the merge landed (git log on main).',
-      '3. Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
-    ] : [
-      'Finish the lifecycle NOW:',
-      '1. Verify your work is folded into the project\'s main branch (commit it if anything is still only in your worktree).',
-      '2. Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
-    ]),
-    '4. Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your `## Memory` — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
-    '5. End your turn with a one-line confirmation.',
+    header!,
+    ...steps.map((s, i) => `${i + 1}. ${s}`),
     '',
     'When this turn ends, the hub automatically merges your summary into your parent session and closes you — do not do that yourself, and do not start new work.',
   ].join('\n')
