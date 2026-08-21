@@ -26,6 +26,15 @@ export function WriteMetaBar({ path }: Props) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === 'true')
   useEffect(() => { localStorage.setItem(COLLAPSE_KEY, String(collapsed)) }, [collapsed])
 
+  // Self-heal: the blog store only fetches on NotesTab mount, so an HMR
+  // module reset (or a hub-down boot) leaves tags/projects empty forever —
+  // no area suggestions, project select blank. Refetch at the point of use.
+  useEffect(() => {
+    const b = useBlogStore.getState()
+    if (b.tags.length === 0 || b.validTags.length === 0) void b.refreshTags()
+    if (b.projects.length === 0) void b.refreshProjects()
+  }, [])
+
   const fm = useMemo(() => parseFrontmatter(content).fm, [content])
 
   // Local title state so typing isn't fighting the round-trip; synced on blur
@@ -205,6 +214,12 @@ export function WriteMetaBar({ path }: Props) {
           title="Project (devlog)"
         >
           <option value="">no project</option>
+          {/* A stamped project missing from the tracked list (no `log: true`,
+              or the list hasn't loaded) must still render — otherwise the
+              select silently falls back to "no project" and lies. */}
+          {fm.project && !projects.some((p) => p.slug === fm.project) && (
+            <option value={fm.project}>{fm.project}</option>
+          )}
           {projects.map((p) => (
             <option key={p.slug} value={p.slug}>{p.title}</option>
           ))}
