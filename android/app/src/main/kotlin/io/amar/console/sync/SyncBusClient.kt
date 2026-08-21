@@ -81,13 +81,29 @@ class SyncBusClient(
     private var everConnected = false
 
     fun start() {
-        if (wantConnected) return
+        if (wantConnected) {
+            // Foreground kick: if we're wedged (want connected, socket dead,
+            // scheduled reconnect lost — seen after a hub-restart storm racing
+            // a background flip), re-opening the app must self-heal instead of
+            // sitting "hub disconnected" until a force-stop. openSocket() is
+            // idempotent-safe: it bumps the generation and cancels the prior
+            // socket, so a live/connecting socket isn't duplicated.
+            if (!connected) {
+                reconnectJob?.cancel()
+                backoffMs = initialBackoffMs
+                openSocket()
+            }
+            return
+        }
         wantConnected = true
         openSocket()
     }
 
     fun stop() {
         wantConnected = false
+        // Orphan the live socket's callbacks (agents-WS parity): a late
+        // onClosed must not race a following start()'s fresh socket.
+        generation.incrementAndGet()
         reconnectJob?.cancel()
         heartbeatJob?.cancel()
         ws?.close(1000, "client-stop")
@@ -146,6 +162,7 @@ class SyncBusClient(
     private fun openSocket() {
         if (!wantConnected) return
         val gen = generation.incrementAndGet()
+        ws?.cancel() // never two live sockets; its callbacks are stale-gen now
         val builder = Request.Builder().url(HubConfig.syncWsUrl)
         HubTokenStore.get()?.let { builder.header("Authorization", "Bearer $it") }
         ws = okHttp.newWebSocket(builder.build(), object : WebSocketListener() {
