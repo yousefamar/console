@@ -40,6 +40,14 @@ export interface PropertySearch {
   layer: string
   /** Query at most this many of the layer's rings, largest first. */
   maxRings?: number
+  /**
+   * If set, a genuinely-new listing only gets pushed when it falls inside
+   * this map-layer's polygon (e.g. `where-to-move/lhr-catchment`) — a
+   * push-noise filter, not a search filter. Listings outside it still show
+   * up on the map and get merged into `lastResults` as normal; they just
+   * don't buzz the phone. `null`/unset = notify on everything, as before.
+   */
+  notifyLayer?: string
   criteria: Criteria
   enabled?: boolean
   createdAt: number
@@ -69,7 +77,7 @@ export interface PropertySearch {
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled'>>
+  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer'>>
 
 export class PropertySearchStore {
   private items: PropertySearch[] = []
