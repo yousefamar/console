@@ -15,7 +15,7 @@ import type { PushServer } from '../push.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
-import { ringsInCountry, type Geometry, type Ring } from './geo.js'
+import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo.js'
 import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore } from './store.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
@@ -211,24 +211,47 @@ export class PropertySync {
     }
   }
 
-  /** Resolve a search's polygon from the map-layer store. */
-  private rings(layer: string, country: keyof typeof PORTAL_BY_COUNTRY, maxRings?: number): Ring[] {
+  /** Every Polygon/MultiPolygon geometry in a map layer, FeatureCollection or bare Feature/Geometry. */
+  private geometriesOf(layer: string): Geometry[] {
     const gj = this.mapLayers.getGeojson(layer) as
       | { type?: string; features?: Array<{ geometry?: Geometry }>; geometry?: Geometry }
       | null
-    if (!gj) throw new Error(`map layer '${layer}' not found`)
-    const geometries: Geometry[] =
-      gj.type === 'FeatureCollection'
-        ? (gj.features ?? []).map((f) => f.geometry).filter((g): g is Geometry => !!g)
-        : gj.type === 'Feature'
-          ? gj.geometry
-            ? [gj.geometry]
-            : []
-          : [gj as unknown as Geometry]
+    if (!gj) return []
+    return gj.type === 'FeatureCollection'
+      ? (gj.features ?? []).map((f) => f.geometry).filter((g): g is Geometry => !!g)
+      : gj.type === 'Feature'
+        ? gj.geometry
+          ? [gj.geometry]
+          : []
+        : [gj as unknown as Geometry]
+  }
 
-    const rings = geometries.flatMap((g) => ringsInCountry(g, country))
+  /** Resolve a search's polygon from the map-layer store. */
+  private rings(layer: string, country: keyof typeof PORTAL_BY_COUNTRY, maxRings?: number): Ring[] {
+    const rings = this.geometriesOf(layer).flatMap((g) => ringsInCountry(g, country))
     if (rings.length === 0) throw new Error(`layer '${layer}' has no rings in ${country}`)
     return maxRings && maxRings > 0 ? rings.slice(0, maxRings) : rings
+  }
+
+  /**
+   * A push-noise filter, not a search filter — narrows fresh listings to the
+   * ones inside `s.notifyLayer`'s polygon before deciding whether/how to
+   * notify. Listings outside it were already merged into `lastResults` and
+   * drawn on the map by the caller; this only decides whether the phone buzzes.
+   * No `notifyLayer` set → notify on everything, as before.
+   */
+  private filterForNotify(s: PropertySearch, fresh: Listing[]): Listing[] {
+    if (!s.notifyLayer) return fresh
+    const geometries = this.geometriesOf(s.notifyLayer)
+    if (!geometries.length) {
+      this.log(`[property-sync] ${s.id}: notifyLayer '${s.notifyLayer}' not found or empty — notifying on everything`)
+      return fresh
+    }
+    return fresh.filter((l) => {
+      if (l.lat == null || l.lon == null) return false
+      const point: [number, number] = [l.lon, l.lat]
+      return geometries.some((g) => pointInGeometry(point, g))
+    })
   }
 
   /** One pin layer per search, so each toggles independently on the Map tab. */
@@ -283,7 +306,14 @@ export class PropertySync {
     }
   }
 
-  private async notify(s: PropertySearch, fresh: Listing[]): Promise<void> {
+  private async notify(s: PropertySearch, allFresh: Listing[]): Promise<void> {
+    const fresh = this.filterForNotify(s, allFresh)
+    if (fresh.length === 0) {
+      if (allFresh.length) {
+        this.log(`[property-sync] ${s.id}: ${allFresh.length} new but 0 inside notifyLayer, no push`)
+      }
+      return
+    }
     const label = s.label || `${s.country} ${s.criteria.channel === 'rent' ? 'rentals' : 'houses'}`
     if (fresh.length > MAX_ALERTS) {
       this.push.broadcast({

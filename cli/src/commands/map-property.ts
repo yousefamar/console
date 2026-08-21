@@ -49,6 +49,7 @@ async function add(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (o.label) body.label = String(o.label)
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
+  if (o['notify-layer']) body.notifyLayer = String(o['notify-layer'])
   output(await hubFetch('/property/searches', { method: 'POST', body }), flags)
 }
 
@@ -62,6 +63,8 @@ async function set(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.country) body.country = String(o.country).toUpperCase()
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
   if (o.enabled) body.enabled = o.enabled !== 'false'
+  // --notify-layer none clears the filter (push on everything again).
+  if (o['notify-layer']) body.notifyLayer = String(o['notify-layer']) === 'none' ? null : String(o['notify-layer'])
   const criteria = criteriaFrom(o)
   // Only send criteria when a criteria flag was actually passed — an empty
   // object would wipe the search's filters and force a re-seed.

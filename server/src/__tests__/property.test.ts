@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry } from '../property/geo.js'
+import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGeometry } from '../property/geo.js'
 import { PropertySearchStore, PORTAL_BY_COUNTRY } from '../property/store.js'
 import { postFilter } from '../property/sync.js'
 import { asEntryArray } from '../property/immoscout24.js'
@@ -66,6 +66,26 @@ describe('outerRings', () => {
     const rings = outerRings({ type: 'MultiPolygon', coordinates: [[small], [big, hole]] })
     expect(rings).toHaveLength(2)
     expect(rings[0]).toEqual(big)
+  })
+})
+
+describe('pointInGeometry', () => {
+  const square = { type: 'Polygon', coordinates: [[[-1, 51], [1, 51], [1, 53], [-1, 53], [-1, 51]]] }
+
+  it('true for a point inside the ring', () => {
+    expect(pointInGeometry([0, 52], square)).toBe(true)
+  })
+
+  it('false for a point outside the ring', () => {
+    expect(pointInGeometry([10, 52], square)).toBe(false)
+  })
+
+  it('checks every ring of a MultiPolygon, not just the first', () => {
+    const other = { type: 'Polygon', coordinates: [[[10, 10], [12, 10], [12, 12], [10, 12], [10, 10]]] }
+    const multi = { type: 'MultiPolygon', coordinates: [square.coordinates, other.coordinates] }
+    expect(pointInGeometry([11, 11], multi)).toBe(true)
+    expect(pointInGeometry([0, 52], multi)).toBe(true)
+    expect(pointInGeometry([50, 50], multi)).toBe(false)
   })
 })
 

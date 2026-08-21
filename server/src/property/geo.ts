@@ -141,6 +141,23 @@ export function ringsInCountry(geometry: Geometry, country: keyof typeof COUNTRY
   })
 }
 
+/** Standard ray-casting point-in-polygon test. `ring` and `point` are [lng, lat]. */
+function pointInRing(point: [number, number], ring: Ring): boolean {
+  const [x, y] = point
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i]!
+    const [xj, yj] = ring[j]!
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+/** True if the point falls inside any outer ring of the geometry (holes ignored — none of our polygons have any). */
+export function pointInGeometry(point: [number, number], geometry: Geometry): boolean {
+  return outerRings(geometry).some((ring) => pointInRing(point, ring))
+}
+
 /** Clamp a ring's coordinates into a country bbox — trims cross-border lobes. */
 export function clampRingToCountry(ring: Ring, country: keyof typeof COUNTRY_BBOX): Ring {
   const box = COUNTRY_BBOX[country]
