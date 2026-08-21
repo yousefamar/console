@@ -19,6 +19,17 @@
 import { useCallback, useRef, useState } from 'react'
 import { isNative } from '@/platform'
 
+// Browsers that block SpeechRecognition (Brave) fail it with a `network` error
+// only AFTER recognition.start() — seconds during which no audio is captured
+// at all, so the opening of every dictation was lost. Remember the failure and
+// go straight to hub STT forever after (one lossy dictation per browser, ever).
+const HUB_ONLY_KEY = 'console:dictation:hubOnly'
+const hubOnly = () => { try { return localStorage.getItem(HUB_ONLY_KEY) === '1' } catch { return false } }
+const rememberHubOnly = () => { try { localStorage.setItem(HUB_ONLY_KEY, '1') } catch { /* */ } }
+
+/** ~20s of pre-open audio frames (170ms each) — far beyond any WS handshake. */
+const MAX_PREOPEN_FRAMES = 120
+
 interface DictationOptions {
   /** Called with each committed text chunk, in order. `verbatim` means the
    *  chunk is a streaming token delta carrying its own spacing — insert it
@@ -108,12 +119,19 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
 
   const startHubSTT = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
+      // Open the WS and the mic CONCURRENTLY — serializing them added the
+      // handshake latencies together, all of it dead air at the start of
+      // the utterance.
       const { getHubWsUrl } = await import('@/hub')
       const ws = new WebSocket(getHubWsUrl().replace(/\/$/, '') + '/stt')
       sttWsRef.current = ws
       sawDeltaRef.current = false
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (sttWsRef.current !== ws) { // stop() raced us — release the mic
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      mediaStreamRef.current = stream
 
       ws.onmessage = (event) => {
         try {
@@ -137,31 +155,43 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
       ws.onclose = () => { stop() }
       ws.onerror = () => { ws.close() }
 
+      // Capture starts NOW, not on WS open — the handshake takes long enough
+      // that the first words were lost. Frames queue until the socket opens.
+      const preOpen: string[] = []
       ws.onopen = () => {
-        const audioCtx = new AudioContext({ sampleRate: 24000 })
-        audioContextRef.current = audioCtx
-        // Mobile WebViews/Safari create the context suspended even from a user
-        // gesture; without resume() onaudioprocess never fires → no audio sent.
-        if (audioCtx.state === 'suspended') void audioCtx.resume()
-        const source = audioCtx.createMediaStreamSource(stream)
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-        sourceRef.current = source
-        processorRef.current = processor
-        processor.onaudioprocess = (e) => {
-          if (ws.readyState !== WebSocket.OPEN) return
-          const pcm = e.inputBuffer.getChannelData(0)
-          const int16 = new Int16Array(pcm.length)
-          for (let i = 0; i < pcm.length; i++) {
-            int16[i] = Math.max(-32768, Math.min(32767, pcm[i]! * 32768))
-          }
-          const bytes = new Uint8Array(int16.buffer)
-          let binary = ''
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
-          ws.send(JSON.stringify({ type: 'audio', data: btoa(binary) }))
+        for (const data of preOpen.splice(0)) {
+          ws.send(JSON.stringify({ type: 'audio', data }))
         }
-        source.connect(processor)
-        processor.connect(audioCtx.destination)
       }
+
+      const audioCtx = new AudioContext({ sampleRate: 24000 })
+      audioContextRef.current = audioCtx
+      // Mobile WebViews/Safari create the context suspended even from a user
+      // gesture; without resume() onaudioprocess never fires → no audio sent.
+      if (audioCtx.state === 'suspended') void audioCtx.resume()
+      const source = audioCtx.createMediaStreamSource(stream)
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      sourceRef.current = source
+      processorRef.current = processor
+      processor.onaudioprocess = (e) => {
+        const pcm = e.inputBuffer.getChannelData(0)
+        const int16 = new Int16Array(pcm.length)
+        for (let i = 0; i < pcm.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, pcm[i]! * 32768))
+        }
+        const bytes = new Uint8Array(int16.buffer)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
+        const data = btoa(binary)
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'audio', data }))
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          preOpen.push(data)
+          if (preOpen.length > MAX_PREOPEN_FRAMES) preOpen.shift()
+        }
+      }
+      source.connect(processor)
+      processor.connect(audioCtx.destination)
     } catch (err) {
       // Surface the cause (e.g. NotAllowedError = mic permission denied)
       console.warn('[dictation] mic capture failed:', (err as Error).name, (err as Error).message)
@@ -198,7 +228,17 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
       }
     }
     recognition.onerror = (e: any) => {
-      if (e.error === 'network' || e.error === 'service-not-allowed' || e.error === 'not-allowed') {
+      if (e.error === 'network' || e.error === 'service-not-allowed') {
+        // The browser blocks SR (Brave) — this failure arrives seconds after
+        // start(), during which nothing was captured. Never try SR again.
+        rememberHubOnly()
+        failed = true
+        recognition.stop()
+        recognitionRef.current = null
+        void startHubSTT()
+      } else if (e.error === 'not-allowed') {
+        // Mic permission denied — hub STT needs the same permission, but let
+        // it surface its own getUserMedia error rather than dying silently.
         failed = true
         recognition.stop()
         recognitionRef.current = null
@@ -217,8 +257,10 @@ export function useDictation(opts: DictationOptions = {}): Dictation {
   const start = useCallback(() => {
     if (recording) return
     setRecording(true)
-    // APK WebView's SpeechRecognition shim is unreliable — go straight to hub STT.
-    if (isNative() || !startBrowserSTT()) {
+    // APK WebView's SpeechRecognition shim is unreliable, and a browser that
+    // once failed SR (Brave's network-error path) loses the dictation's opening
+    // seconds re-discovering it — go straight to hub STT.
+    if (isNative() || hubOnly() || !startBrowserSTT()) {
       void startHubSTT()
     }
   }, [recording, startBrowserSTT, startHubSTT])

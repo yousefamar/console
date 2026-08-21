@@ -40,7 +40,7 @@ import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } fro
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
-import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
+import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, pushCapped, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
 import { handleAuthRoutes } from './routes/auth.js'
 import { enforce as enforceHubAuth, authEnforcementActive, decideWsUpgrade } from './auth-middleware.js'
@@ -1631,8 +1631,26 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       try { ws.close() } catch { /* */ }
     }
 
+    // Frames that arrive while the OpenAI WS is still CONNECTING (~0.5–1.5 s
+    // TLS+WS handshake) used to be dropped — the opening words of every
+    // dictation were lost if the user spoke immediately. Buffer + flush on open.
+    const preOpen: string[] = []
+    let preOpenBytes = 0
+    let pendingDone = false
+
     openaiWs.on('open', () => {
       openaiWs.send(JSON.stringify(buildTranscriptionSessionUpdate()))
+      for (const audio of preOpen) {
+        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio }))
+      }
+      preOpen.length = 0
+      if (pendingDone) {
+        // Mic already released during the handshake — commit right away.
+        flushTail()
+      } else if (preOpenBytes > 0) {
+        if (flushTimer) clearTimeout(flushTimer)
+        flushTimer = setTimeout(flushTail, STT_FLUSH_IDLE_MS)
+      }
     })
 
     openaiWs.on('message', (data) => {
@@ -1671,14 +1689,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString())
-        if (msg.type === 'audio' && openaiWs.readyState === WebSocket.OPEN) {
-          openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: msg.data }))
-          if (flushTimer) clearTimeout(flushTimer)
-          flushTimer = setTimeout(flushTail, STT_FLUSH_IDLE_MS)
+        if (msg.type === 'audio') {
+          if (openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: msg.data }))
+            if (flushTimer) clearTimeout(flushTimer)
+            flushTimer = setTimeout(flushTail, STT_FLUSH_IDLE_MS)
+          } else if (openaiWs.readyState === WebSocket.CONNECTING) {
+            preOpenBytes = pushCapped(preOpen, String(msg.data ?? ''), preOpenBytes)
+          }
         } else if (msg.type === 'done') {
           if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
           awaitingFinal = true
-          flushTail()
+          if (openaiWs.readyState === WebSocket.OPEN) flushTail()
+          else pendingDone = true // buffered audio commits once the WS opens
           // Cap the wait — a model that never completes must not strand the mic.
           doneTimer = setTimeout(finish, STT_DONE_TIMEOUT_MS)
         }

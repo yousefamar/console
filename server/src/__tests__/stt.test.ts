@@ -19,6 +19,7 @@ import {
   buildSttHeaders,
   buildTranscriptionSessionUpdate,
   translateOpenAiEvent,
+  pushCapped,
 } from '../stt.js'
 
 describe('STT GA endpoint config', () => {
@@ -131,4 +132,32 @@ describe('translateOpenAiEvent', () => {
       .toEqual({ type: 'error', message: 'Transcription error' })
     expect(translateOpenAiEvent({})).toBeNull()
   })
+})
+
+describe('pushCapped (pre-open audio buffer)', () => {
+  it('appends and returns the running byte total', () => {
+    const buf: string[] = []
+    let bytes = 0
+    bytes = pushCapped(buf, 'aaaa', bytes, 100)
+    bytes = pushCapped(buf, 'bb', bytes, 100)
+    expect(buf).toEqual(['aaaa', 'bb'])
+    expect(bytes).toBe(6)
+  })
+
+  it('evicts OLDEST frames past the cap, never the newest', () => {
+    const buf: string[] = []
+    let bytes = 0
+    bytes = pushCapped(buf, 'a'.repeat(60), bytes, 100)
+    bytes = pushCapped(buf, 'b'.repeat(60), bytes, 100)
+    expect(buf).toEqual(['b'.repeat(60)])
+    expect(bytes).toBe(60)
+  })
+
+  it('keeps a single over-cap frame rather than emptying the buffer', () => {
+    const buf: string[] = []
+    const bytes = pushCapped(buf, 'x'.repeat(500), 0, 100)
+    expect(buf).toHaveLength(1)
+    expect(bytes).toBe(500)
+  })
+
 })

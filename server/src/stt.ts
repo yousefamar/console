@@ -53,6 +53,28 @@ export const STT_FLUSH_IDLE_MS = 600
  */
 export const STT_DONE_TIMEOUT_MS = 4_000
 
+/**
+ * Byte cap on audio frames buffered while the OpenAI WS is still CONNECTING.
+ *
+ * The TLS+WS handshake to api.openai.com takes ~0.5–1.5 s, and the relay used
+ * to silently DROP any audio arriving before it completed — so the opening
+ * words of every dictation were lost for anyone who starts talking the moment
+ * they press the mic (the "it only starts recording a few seconds in" bug).
+ * Frames are queued and flushed on open instead. ~2 MB of base64 PCM16@24kHz
+ * ≈ 30 s of speech — far beyond any real handshake; overflow drops the OLDEST
+ * frames (the tail is closer to the commit).
+ */
+export const STT_PREBUFFER_MAX_BYTES = 2 * 1024 * 1024
+
+/** Append a frame to a pre-open buffer, evicting OLDEST frames past the byte
+ *  cap. Returns the new byte total (callers track it to avoid re-summing). */
+export function pushCapped(buf: string[], frame: string, bytes: number, maxBytes = STT_PREBUFFER_MAX_BYTES): number {
+  buf.push(frame)
+  bytes += frame.length
+  while (bytes > maxBytes && buf.length > 1) bytes -= buf.shift()!.length
+  return bytes
+}
+
 /** Batch (`/v1/audio/transcriptions`) model, for the whole-file paths: the
  *  `/stt` upload endpoint and Al's WhatsApp voice notes. Deliberately a
  *  DIFFERENT model from the realtime one above — the realtime endpoint rejects
