@@ -21,8 +21,6 @@ _(empty)_
   hardening (orphan callbacks via generation bump; openSocket cancels any
   prior socket).
 
-_(empty)_
-
 ## Shipped
 
 ### v87 (2026-08-20)
