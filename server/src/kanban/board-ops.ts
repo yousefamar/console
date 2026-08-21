@@ -8,6 +8,7 @@
 // writes whole files via /notes/file/; the watcher's duplicate-fork guard
 // covers that residual race.)
 
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import type { NoteStore } from '../notes.js'
 import {
   isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
@@ -86,7 +87,33 @@ export class BoardOps {
   /** Per-board-path write queue — mutations on the same board serialize. */
   private locks = new Map<string, Promise<unknown>>()
 
-  constructor(private store: NoteStore) {}
+  /** Last actor per card — `"<boardPath>#<blockId>" → {actor, ts}`. Lets
+   *  notifiers (e.g. the Astera board-change guard) skip echoing an agent's
+   *  OWN edit back at it — the self-echo that confused winding-down forks.
+   *  Persisted so guards in other processes can read it; pruned at 500. */
+  private actors: Record<string, { actor: string; ts: number }> = {}
+  private readonly actorFile?: string
+
+  constructor(private store: NoteStore, actorFile?: string) {
+    this.actorFile = actorFile
+    if (actorFile && existsSync(actorFile)) {
+      try { this.actors = JSON.parse(readFileSync(actorFile, 'utf-8')) } catch { this.actors = {} }
+    }
+  }
+
+  private recordActor(path: string, blockId: string | null | undefined, actor: string | undefined): void {
+    if (!actor || !blockId || !this.actorFile) return
+    this.actors[`${path}#${blockId}`] = { actor, ts: Date.now() }
+    const keys = Object.keys(this.actors)
+    if (keys.length > 500) {
+      for (const k of keys.sort((a, b) => this.actors[a]!.ts - this.actors[b]!.ts).slice(0, keys.length - 500)) delete this.actors[k]
+    }
+    try {
+      const tmp = `${this.actorFile}.tmp`
+      writeFileSync(tmp, JSON.stringify(this.actors))
+      renameSync(tmp, this.actorFile)
+    } catch { /* best effort */ }
+  }
 
   /** Run `fn` with exclusive access to the board (fresh parse inside the lock). */
   private async mutate<T>(project: string, fn: (board: KanbanBoard, path: string) => T | Promise<T>): Promise<T> {
@@ -111,7 +138,7 @@ export class BoardOps {
   }
 
   add(project: string, text: string, opts: { column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<CardView> {
-    return this.mutate(project, (board) => {
+    return this.mutate(project, (board, path) => {
       const column = opts.column ?? board.columns[0]?.title
       if (!column) throw new Error('board has no columns')
       const card = addCard(board, column, text, {
@@ -124,8 +151,8 @@ export class BoardOps {
     })
   }
 
-  move(project: string, query: string, toColumn: string): Promise<CardView> {
-    return this.mutate(project, (board) => {
+  move(project: string, query: string, toColumn: string, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
       // Column matched case-insensitively — "done" means "## Done".
@@ -133,46 +160,51 @@ export class BoardOps {
       if (!target) throw new Error(`no column "${toColumn}" (have: ${board.columns.map((c) => c.title).join(', ')})`)
       if (!moveCard(board, hit.ref, target.title)) throw new Error('move failed')
       const card = target.cards[target.cards.length - 1]!
+      this.recordActor(path, card.blockId, actor)
       return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
-  assign(project: string, query: string, agentKey: string | null): Promise<CardView> {
-    return this.mutate(project, (board) => {
+  assign(project: string, query: string, agentKey: string | null, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
       hit.card.agentKey = agentKey
       refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor)
       return { text: hit.card.text, column: hit.ref.column, agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
-  setBlocked(project: string, query: string, blocked: boolean, note?: string): Promise<CardView> {
-    return this.mutate(project, (board) => {
+  setBlocked(project: string, query: string, blocked: boolean, note?: string, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
       hit.card.blocked = blocked
       refreshCardLine(hit.card)
       if (blocked && note?.trim()) hit.card.lines.push(`  ${note.trim()}`)
+      this.recordActor(path, hit.card.blockId, actor)
       return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
-  setNofork(project: string, query: string, nofork: boolean): Promise<CardView> {
-    return this.mutate(project, (board) => {
+  setNofork(project: string, query: string, nofork: boolean, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
       hit.card.nofork = nofork
       refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor)
       return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
-  note(project: string, query: string, note: string): Promise<CardView> {
-    return this.mutate(project, (board) => {
+  note(project: string, query: string, note: string, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
       hit.card.lines.push(`  ${note.trim()}`)
+      this.recordActor(path, hit.card.blockId, actor)
       return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }

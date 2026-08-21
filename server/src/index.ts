@@ -755,7 +755,7 @@ cronScheduler.start()
 // re-derives everything (the ^id stamp marks already-dispatched).
 // Software mutation layer over boards — the CLI/agents edit via /board/*
 // instead of hand-editing markdown (single writer, per-board lock).
-const boardOps = new BoardOps(noteStore)
+const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json'))
 
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),

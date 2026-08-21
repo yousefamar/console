@@ -299,7 +299,11 @@ export class Session extends EventEmitter {
     this.process = spawn('claude', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      // The session's own agentKey rides the env so the `con` CLI (and any
+      // script the agent runs) can self-identify to the hub — board mutations
+      // carry an X-Console-Agent header, letting notifiers skip echoing an
+      // agent's own edits back at it.
+      env: { ...process.env, ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}) },
     })
     this.processAlive = true
 
