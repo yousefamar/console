@@ -30,6 +30,9 @@ export function handleBoardRoutes(
   if (!m) return false
   const project = decodeURIComponent(m[1]!)
   const verb = m[2]
+  // Acting agent (X-Console-Agent, set by the CLI from CONSOLE_AGENT_KEY) —
+  // recorded per card so notifiers can skip echoing an agent's own edits.
+  const actor = (req.headers['x-console-agent'] as string | undefined)?.trim() || undefined
 
   const run = (fn: (b: Record<string, unknown>) => Promise<unknown>) => {
     readBody(req).then(async (raw) => {
@@ -60,19 +63,19 @@ export function handleBoardRoutes(
       }))
       return true
     case 'move':
-      run((b) => ops.move(project, String(b.card ?? ''), String(b.to ?? '')))
+      run((b) => ops.move(project, String(b.card ?? ''), String(b.to ?? ''), actor))
       return true
     case 'assign':
-      run((b) => ops.assign(project, String(b.card ?? ''), (b.agent as string | null) ?? null))
+      run((b) => ops.assign(project, String(b.card ?? ''), (b.agent as string | null) ?? null, actor))
       return true
     case 'block':
-      run((b) => ops.setBlocked(project, String(b.card ?? ''), b.blocked !== false, b.note as string | undefined))
+      run((b) => ops.setBlocked(project, String(b.card ?? ''), b.blocked !== false, b.note as string | undefined, actor))
       return true
     case 'nofork':
-      run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false))
+      run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))
       return true
     case 'note':
-      run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? '')))
+      run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? ''), actor))
       return true
     case 'edit':
       run((b) => ops.edit(project, String(b.card ?? ''), { text: b.text as string | undefined, detail: b.detail as string[] | undefined }))

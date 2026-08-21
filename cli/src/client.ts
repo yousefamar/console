@@ -133,6 +133,9 @@ export async function hubFetch<T = unknown>(
   }
 
   const headers: Record<string, string> = {}
+  // Agent self-identification (set by the hub at session spawn) — lets the
+  // hub attribute board mutations to the acting agent.
+  if (process.env.CONSOLE_AGENT_KEY) headers['X-Console-Agent'] = process.env.CONSOLE_AGENT_KEY
   let body: string | undefined
   if (opts.body) {
     headers['Content-Type'] = 'application/json'

@@ -116,3 +116,31 @@ describe('BoardOps mutations', () => {
     expect(onDisk()).toContain('After failure')
   })
 })
+
+describe('actor ledger', () => {
+  it('records the acting agent per card and prunes', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'boardops-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    writeFileSync(join(dir, 'projects', 'demo', 'board.md'),
+      '---\nkanban-plugin: board\n---\n\n## In Progress\n\n- [ ] Work @eng ^ab12cd\n\n## Under Review\n')
+    const actorFile = join(dir, 'actors.json')
+    const ops = new BoardOps(new NoteStore(dir), actorFile)
+    try {
+      await ops.move('demo', '^ab12cd', 'Under Review', 'eng')
+      expect(existsSync(actorFile)).toBe(true)
+      const ledger = JSON.parse(readFileSync(actorFile, 'utf-8'))
+      const rec = ledger['projects/demo/board.md#ab12cd']
+      expect(rec.actor).toBe('eng')
+      expect(typeof rec.ts).toBe('number')
+      // No actor header → no record change.
+      await ops.note('demo', '^ab12cd', 'anonymous note')
+      const after = JSON.parse(readFileSync(actorFile, 'utf-8'))
+      expect(after['projects/demo/board.md#ab12cd'].actor).toBe('eng')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
