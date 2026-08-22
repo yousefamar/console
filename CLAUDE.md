@@ -81,7 +81,10 @@ curl -sk https://localhost:9877/debug/log?n=100 | jq '.[] | select(.cat=="error"
 curl -sk https://localhost:9877/debug/log?n=100 | jq '.[] | select(.cat=="net" and .status >= 400)'
 
 # Execute JS in the browser (replaces Chrome MCP javascript_tool)
-curl -sk -X POST https://localhost:9877/debug/eval -H 'Content-Type: application/json' -d '{"code":"document.title"}'
+# ALWAYS pass ?target=chrome — with the APK also connected, an untargeted eval
+# can hit its native debug agent, which errors "unknown command" on any JS
+# (looks like a syntax problem, is a routing problem).
+curl -sk -X POST 'https://localhost:9877/debug/eval?target=chrome' -H 'Content-Type: application/json' -d '{"code":"document.title"}'
 
 # Get Zustand store state
 curl -sk https://localhost:9877/debug/state
