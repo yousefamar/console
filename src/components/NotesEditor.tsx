@@ -23,9 +23,14 @@ interface NotesEditorProps {
    *  underlying open-file set stays global; out-of-scope tabs are just hidden
    *  here, and a foreign active file renders a placeholder instead. */
   scopePrefixes?: string[]
+  /** Spaces Docs mode: no tab strip (the file tree IS the tabs) and only one
+   *  buffer at a time — opening a file closes the previous one unless it has
+   *  unsaved changes (unsaved = still open, surfaced as a blue icon in the
+   *  tree; saved = might as well be closed). */
+  singleBuffer?: boolean
 }
 
-export const NotesEditor = memo(function NotesEditor({ scopePrefixes }: NotesEditorProps) {
+export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuffer }: NotesEditorProps) {
   const openFiles = useNotesStore((s) => s.openFiles)
   const storeActivePath = useNotesStore((s) => s.activeFilePath)
   const setActiveFile = useNotesStore((s) => s.setActiveFile)
@@ -75,6 +80,18 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes }: NotesEdi
 
   const paths = Object.keys(openFiles).filter((p) => inScope(p))
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
+
+  // Single-buffer: opening a file closes the previous in-scope one — unless
+  // it's dirty (closeFile without force refuses), in which case it stays
+  // "open" and the tree shows its blue icon.
+  useEffect(() => {
+    if (!singleBuffer || !activeFilePath) return
+    const s = useNotesStore.getState()
+    for (const p of Object.keys(s.openFiles)) {
+      if (p !== activeFilePath && inScope(p)) s.closeFile(p, false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [singleBuffer, activeFilePath])
 
   // "Writing files" get the focused-writing chrome: meta bar, action bar,
   // no gutters. Drafts AND published posts qualify.
@@ -211,8 +228,8 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes }: NotesEdi
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Tab bar */}
-      <div className="flex items-center border-b border-border overflow-x-auto flex-shrink-0">
+      {/* Tab bar — hidden in single-buffer (Spaces) mode: the file tree is the tabs */}
+      <div className={`${singleBuffer && !isMobile ? 'hidden ' : ''}flex items-center border-b border-border overflow-x-auto flex-shrink-0`}>
         {isMobile && (
           <button
             onClick={() => useNotesStore.setState({ activeFilePath: null })}

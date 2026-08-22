@@ -90,6 +90,11 @@ export function useKeybindings() {
         } else if (isNotes && isEditing) {
           // Let CodeMirror/vim handle Escape in editor
           return
+        } else if (isSpaces && isEditing && (target as HTMLElement).closest('.cm-editor')) {
+          // Spaces Docs editor: Escape is vim's insert→normal, same as the
+          // Notes pane. Blurring here (the isAgents branch below) dropped
+          // focus so the next j/k switched agent sessions mid-edit.
+          return
         } else if (isMoney && money.getState().selectedTransactionId) {
           money.getState().selectTransaction(null)
         } else if (isMoney && money.getState().searchQuery) {
@@ -687,6 +692,26 @@ export function useKeybindings() {
       const isH = e.key === 'h' || e.key === 'H'
       const isL = e.key === 'l' || e.key === 'L'
       if (!isH && !isL) return
+      // Spaces: Ctrl+H/L jumps FOCUS between the pane's regions (rails ·
+      // docs editor · agent composer) instead of item nav — Spaces docs
+      // have no tab strip (the file tree is the tabs), and an explicit
+      // focus jump is what lets j/k stay vim motion inside the doc.
+      const spacesFocus = (dir: -1 | 1) => {
+        const el = document.activeElement as HTMLElement | null
+        const cur = el?.closest('.cm-editor') ? 1 : el?.matches('[data-agent-input]') ? 2 : 0
+        for (let step = 1; step <= 2; step++) {
+          const next = (((cur + dir * step) % 3) + 3) % 3
+          if (next === 0) { el?.blur(); return }
+          if (next === 1) {
+            const view = notes.getState().editorView
+            if (view) { view.focus(); return }
+          } else {
+            const input = document.querySelector<HTMLTextAreaElement>('[data-agent-input]')
+            if (input) { input.focus(); return }
+          }
+        }
+        el?.blur()
+      }
       // [prev, next] per pane — the pane's "scroll through the list" action.
       // Calendar has no item list; prev/next week matches its bare h/l.
       const nav: Record<string, [() => void, () => void]> = {
@@ -694,6 +719,7 @@ export function useKeybindings() {
         email: [() => inbox.getState().selectPrevThread(), () => inbox.getState().selectNextThread()],
         chat: [() => chat.getState().selectPrevRoom(), () => chat.getState().selectNextRoom()],
         agents: [() => agent.getState().selectPrevSession(), () => agent.getState().selectNextSession()],
+        spaces: [() => spacesFocus(-1), () => spacesFocus(1)],
         feeds: [() => feeds.getState().selectPrevItem(), () => feeds.getState().selectNextItem()],
         bookmarks: [() => bm.getState().selectPrevBookmark(), () => bm.getState().selectNextBookmark()],
         money: [() => money.getState().selectPrevTransaction(), () => money.getState().selectNextTransaction()],

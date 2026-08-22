@@ -34,6 +34,14 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
   const openQuickSwitcher = useNotesStore((s) => s.openQuickSwitcher)
   const openNewFileForm = useNotesStore((s) => s.openNewFileForm)
   const showHidden = useNotesStore((s) => s.showHidden)
+  // Unsaved buffers — the tree doubles as the tab strip in Spaces (single-
+  // buffer docs): a dirty file is "open", shown with a blue (accent) icon.
+  const openFiles = useNotesStore((s) => s.openFiles)
+  const dirtyPaths = useMemo(() => {
+    const out = new Set<string>()
+    for (const [path, f] of Object.entries(openFiles)) if (f.content !== f.savedContent) out.add(path)
+    return out
+  }, [openFiles])
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
@@ -198,6 +206,7 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
               depth={0}
               expandedDirs={expandedDirs}
               activeFilePath={activeFilePath}
+              dirtyPaths={dirtyPaths}
               selectedPath={selectedPath}
               renaming={renaming}
               onToggleDir={toggleDir}
@@ -255,6 +264,7 @@ function TreeNodeItem({
   depth,
   expandedDirs,
   activeFilePath,
+  dirtyPaths,
   selectedPath,
   renaming,
   onToggleDir,
@@ -269,6 +279,7 @@ function TreeNodeItem({
   depth: number
   expandedDirs: Set<string>
   activeFilePath: string | null
+  dirtyPaths: Set<string>
   selectedPath: string | null
   renaming: { path: string; value: string } | null
   onToggleDir: (path: string) => void
@@ -311,6 +322,7 @@ function TreeNodeItem({
               depth={depth + 1}
               expandedDirs={expandedDirs}
               activeFilePath={activeFilePath}
+              dirtyPaths={dirtyPaths}
               selectedPath={selectedPath}
               renaming={renaming}
               onToggleDir={onToggleDir}
@@ -364,8 +376,9 @@ function TreeNodeItem({
       `}
       style={{ paddingLeft }}
     >
-      <File size={10} className="text-text-tertiary flex-shrink-0" />
+      <File size={10} className={`flex-shrink-0 ${dirtyPaths.has(node.path) ? 'text-accent' : 'text-text-tertiary'}`} />
       <span className="truncate">{displayName}</span>
+      {dirtyPaths.has(node.path) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" title="Unsaved changes" />}
     </div>
   )
 }

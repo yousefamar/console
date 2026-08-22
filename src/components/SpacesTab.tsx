@@ -550,7 +550,7 @@ function ScopedNotesEditor({ space }: { space: SpaceSummary }) {
     () => [...spaceScopePrefixes(space), ...(posts ?? []).map((p) => p.path)],
     [space, posts],
   )
-  return <NotesEditor scopePrefixes={scope} />
+  return <NotesEditor scopePrefixes={scope} singleBuffer />
 }
 
 function SpaceRail({ space }: { space: SpaceSummary }) {
