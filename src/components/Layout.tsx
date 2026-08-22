@@ -460,7 +460,7 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
 }) {
   const isActive = activePane === pane
 
-  // Tabs with counts: Mail (inbox), Chat (unread rooms), Feeds (unread items), Agents (unread sessions)
+  // Tabs with counts: Mail (inbox), Chat (unread rooms), Feeds (unread items), Agents (unread sessions), Spaces (unread+unsaved)
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'chat'
@@ -471,7 +471,9 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
           ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
           : pane === 'notes'
             ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : 0
+            : pane === 'spaces'
+              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+              : 0
   // Red dot on a tab: Agents when a session emits @amar; Notes when the pen is
   // streaming new strokes you haven't seen. Visible from any other pane.
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
