@@ -1,7 +1,8 @@
 // con blog — drafts, projects, and publish for the personal blog at
 // yousefamar.com/memo. Vault lives at ~/sync/brain/root and Eleventy reads
-// posts from log/<timestamp>.md. Drafts go to scratch/blog-drafts/.
-// Publishing moves the file into log/<timestamp>.md, stamps frontmatter,
+// posts from log/<timestamp>.md or projects/<slug>/log/<timestamp>.md.
+// Drafts go to scratch/blog-drafts/. Publishing moves the file into
+// log/<timestamp>.md (project drafts into the project's log/), stamps frontmatter,
 // then hits https://yousefamar.com/rebuild to trigger an Eleventy build.
 
 import { hubFetch } from '../client.js'

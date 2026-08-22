@@ -126,9 +126,15 @@ describe('permalinkForLogPath', () => {
       .toBe('https://yousefamar.com/memo/log/2026-06-08-10-00-00/')
   })
 
+  it('maps project log path to the same /memo/log/ URL', () => {
+    expect(permalinkForLogPath('projects/bonsai/log/2026-06-08-10-00-00.md'))
+      .toBe('https://yousefamar.com/memo/log/2026-06-08-10-00-00/')
+  })
+
   it('null for non-log paths', () => {
     expect(permalinkForLogPath('scratch/blog-drafts/foo.md')).toBeNull()
     expect(permalinkForLogPath('projects/al/index.md')).toBeNull()
+    expect(permalinkForLogPath('projects/al/log.md')).toBeNull()
   })
 })
 
@@ -141,7 +147,9 @@ describe('path classifiers', () => {
 
   it('isPublishedPath', () => {
     expect(isPublishedPath('log/x.md')).toBe(true)
+    expect(isPublishedPath('projects/bonsai/log/x.md')).toBe(true)
     expect(isPublishedPath('log/sub/x.md')).toBe(false)
+    expect(isPublishedPath('projects/bonsai/notes/x.md')).toBe(false)
     expect(isPublishedPath('scratch/blog-drafts/x.md')).toBe(false)
   })
 })

@@ -111,9 +111,12 @@ export function frontmatterRange(content: string): { from: number; to: number } 
   return { from: 0, to: m[0]!.length }
 }
 
-/** Public URL for a published post: log/<name>.md → https://yousefamar.com/memo/log/<name>/ */
+/**
+ * Public URL for a published post. Posts live in log/<name>.md or
+ * projects/<slug>/log/<name>.md; both publish at /memo/log/<name>/.
+ */
 export function permalinkForLogPath(path: string): string | null {
-  const m = path.match(/^log\/(.+)\.md$/)
+  const m = path.match(/^projects\/[^/]+\/log\/([^/]+)\.md$/) ?? path.match(/^log\/(.+)\.md$/)
   if (!m) return null
   return `https://yousefamar.com/memo/log/${m[1]}/`
 }
@@ -126,5 +129,5 @@ export function isDraftPath(path: string | null | undefined): boolean {
 }
 
 export function isPublishedPath(path: string | null | undefined): boolean {
-  return !!path && /^log\/[^/]+\.md$/.test(path)
+  return !!path && /^(?:projects\/[^/]+\/)?log\/[^/]+\.md$/.test(path)
 }

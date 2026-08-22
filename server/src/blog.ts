@@ -3,8 +3,9 @@
 // Three concerns:
 // - List drafts in scratch/blog-drafts/
 // - List active projects + the most recent log entry per project
-// - Publish a draft: move to log/<YYYY-MM-DD-HH-mm-ss>.md, stamp frontmatter,
-//   then GET https://yousefamar.com/rebuild
+// - Publish a draft: move to log/<YYYY-MM-DD-HH-mm-ss>.md (or
+//   projects/<slug>/log/<…>.md when the draft has a project), stamp
+//   frontmatter, then GET https://yousefamar.com/rebuild
 
 import { join } from 'node:path'
 import { NoteStore } from './notes.js'
@@ -14,6 +15,22 @@ const DRAFTS_DIR = 'scratch/blog-drafts'
 const LOG_DIR = 'log'
 const PROJECTS_DIR = 'projects'
 const REBUILD_URL = 'https://yousefamar.com/rebuild'
+
+// Posts live in log/ (no project) OR projects/<slug>/log/ (project devlogs).
+// Either way they publish at /memo/log/<name>/ — Eleventy pins the permalink
+// and derives `project` from the path (_data/eleventyComputed.js in the vault).
+export function isPostPath(path: string): boolean {
+  return /^log\/[^/]+\.md$/.test(path) || /^projects\/[^/]+\/log\/[^/]+\.md$/.test(path)
+}
+
+/** Project slug implied by a post's location, or null for log/ posts. */
+export function projectForPostPath(path: string): string | null {
+  return path.match(/^projects\/([^/]+)\/log\/[^/]+\.md$/)?.[1] ?? null
+}
+
+function postFiles<T extends { path: string }>(all: T[]): T[] {
+  return all.filter((f) => isPostPath(f.path))
+}
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing — small purpose-built parser.
@@ -217,19 +234,22 @@ export async function listProjects(store: NoteStore): Promise<ProjectSummary[]> 
     return rest.endsWith('.md')
   })
 
-  // Compute last-post-per-project from log/*.md
-  const logFiles = all.filter((f) => f.dir === LOG_DIR)
+  // Compute last-post-per-project from posts in log/ and projects/*/log/
+  const logFiles = postFiles(all)
   const lastBySlug = new Map<string, { mtime: number; path: string }>()
   for (const f of logFiles) {
-    try {
-      const content = await store.read(f.path)
-      const { fm } = parseFrontmatter(content)
-      if (!fm.project) continue
-      const cur = lastBySlug.get(fm.project)
-      if (!cur || f.mtime > cur.mtime) {
-        lastBySlug.set(fm.project, { mtime: f.mtime, path: f.path })
-      }
-    } catch {}
+    let slug = projectForPostPath(f.path)
+    if (!slug) {
+      try {
+        const { fm } = parseFrontmatter(await store.read(f.path))
+        slug = fm.project ?? null
+      } catch {}
+    }
+    if (!slug) continue
+    const cur = lastBySlug.get(slug)
+    if (!cur || f.mtime > cur.mtime) {
+      lastBySlug.set(slug, { mtime: f.mtime, path: f.path })
+    }
   }
 
   const out: ProjectSummary[] = []
@@ -285,13 +305,13 @@ export interface ProjectPost {
 
 export async function listProjectPosts(store: NoteStore, slug: string): Promise<ProjectPost[]> {
   const all = await store.list()
-  const logFiles = all.filter((f) => f.dir === LOG_DIR)
+  const logFiles = postFiles(all)
   const out: ProjectPost[] = []
   for (const f of logFiles) {
     try {
       const content = await store.read(f.path)
       const { fm, body } = parseFrontmatter(content)
-      if (fm.project !== slug) continue
+      if ((projectForPostPath(f.path) ?? fm.project) !== slug) continue
       let title = fm.title ?? f.name.replace(/\.md$/, '')
       if (!fm.title) {
         const h1 = body.match(/^#\s+(.+)$/m)
@@ -325,7 +345,7 @@ export interface PublishedPost {
 export async function listRecentPosts(store: NoteStore, limit = 20): Promise<PublishedPost[]> {
   const capped = Math.min(Math.max(1, limit), 100)
   const all = await store.list()
-  const logFiles = all.filter((f) => f.dir === LOG_DIR)
+  const logFiles = postFiles(all)
   const out: PublishedPost[] = []
   for (const f of logFiles) {
     try {
@@ -341,7 +361,7 @@ export async function listRecentPosts(store: NoteStore, limit = 20): Promise<Pub
         title,
         date: fm.date ?? null,
         mtime: f.mtime,
-        project: fm.project ?? null,
+        project: projectForPostPath(f.path) ?? fm.project ?? null,
         tags: fm.tags ?? [],
       })
     } catch {}
@@ -497,7 +517,7 @@ export async function setProjectStatus(
 
 export async function listAllTags(store: NoteStore): Promise<string[]> {
   const all = await store.list()
-  const logFiles = all.filter((f) => f.dir === LOG_DIR)
+  const logFiles = postFiles(all)
   const counts = new Map<string, number>()
   for (const f of logFiles) {
     try {
@@ -556,12 +576,18 @@ export async function publishDraft(store: NoteStore, fromPath: string): Promise<
     return { ok: false, error: 'Draft is missing a title in frontmatter' }
   }
 
-  const stamped = stampFrontmatter(content, {
+  let stamped = stampFrontmatter(content, {
     date: nowFrontmatterDate(),
     public: true,
     post: true,
   })
-  const newPath = `${LOG_DIR}/${nowTimestamp()}.md`
+  // Project posts live in the project's own log/ dir; the path implies the
+  // project (Eleventy derives it), so the frontmatter line is dropped.
+  let newPath = `${LOG_DIR}/${nowTimestamp()}.md`
+  if (fm.project) {
+    newPath = `${PROJECTS_DIR}/${fm.project}/${LOG_DIR}/${nowTimestamp()}.md`
+    stamped = stamped.replace(/^project:\s*[^\n]*\n/m, '')
+  }
 
   try {
     await store.write(newPath, stamped)
@@ -612,7 +638,7 @@ async function triggerRebuild(): Promise<{ rebuildOk: boolean; rebuildBody?: str
  * is immutable). `newPath` echoes the unchanged path for a uniform result.
  */
 export async function republishPost(store: NoteStore, path: string): Promise<PublishResult> {
-  if (!/^log\/[^/]+\.md$/.test(path)) {
+  if (!isPostPath(path)) {
     return { ok: false, error: `Not a published post: ${path}` }
   }
   try {
