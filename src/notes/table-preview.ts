@@ -263,14 +263,22 @@ class TableWidget extends WidgetType {
 
 const MAX_SCAN_LENGTH = 512_000 // skip table scanning on pathological docs
 
-function buildTableDecorations(state: EditorState): DecorationSet {
+export function buildTableDecorations(state: EditorState): DecorationSet {
   if (state.doc.length > MAX_SCAN_LENGTH) return Decoration.none
   const text = state.doc.toString()
   if (!text.includes('|')) return Decoration.none
   const builder = new RangeSetBuilder<Decoration>()
   for (const t of scanTables(text)) {
-    // Cursor/selection anywhere inside the table → reveal raw markdown.
-    const revealed = state.selection.ranges.some((r) => r.from <= t.to && r.to >= t.from)
+    // Cursor/selection inside the table OR on an adjacent line → reveal raw
+    // markdown. Adjacency is load-bearing: a block-replace range acts like a
+    // fold, so vertical cursor motion (arrows, vim j/k) SKIPS it — the cursor
+    // can never land inside a rendered table. Landing next to it unfolds it,
+    // and the next keypress enters the real lines.
+    const fromLine = state.doc.lineAt(t.from)
+    const toLine = state.doc.lineAt(Math.min(t.to, state.doc.length))
+    const revealFrom = fromLine.number > 1 ? state.doc.line(fromLine.number - 1).from : t.from
+    const revealTo = toLine.number < state.doc.lines ? state.doc.line(toLine.number + 1).to : t.to
+    const revealed = state.selection.ranges.some((r) => r.from <= revealTo && r.to >= revealFrom)
     if (revealed) continue
     builder.add(t.from, t.to, Decoration.replace({
       widget: new TableWidget(t, text.slice(t.from, t.to)),
