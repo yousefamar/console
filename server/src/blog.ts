@@ -476,7 +476,9 @@ export async function createProject(
   // New projects are directory-based: projects/<slug>/index.md.
   // This matches the migrated convention so each project can host attachments,
   // sub-notes, etc. alongside its index without a separate top-level file.
-  const body = `---\ntitle: ${cleanTitle}\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
+  // public+listed match templates/project.md in the vault — without them the
+  // project page never builds and published posts' "Parent project" links 404.
+  const body = `---\ntitle: ${cleanTitle}\npublic: true\nlisted: true\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
   try {
     await store.write(indexPath, body)
     return { ok: true, path: indexPath, slug: finalSlug }
