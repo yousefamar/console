@@ -30,21 +30,36 @@ const BEDROCK_MODELS = [
 
 export function SpacesFleetMenu() {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ left: 0, top: 0 })
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const modelFallbackNotice = useAgentStore((s) => s.modelFallbackNotice)
+
+  // The rail this button sits in clips overflow (a real file tree needs a
+  // scrollbar), so `position: absolute` got silently clipped to the rail's
+  // width — visible only as a sliver of cut-off labels with no controls.
+  // `fixed`, positioned from the button's own rect, escapes that ancestor.
+  useEffect(() => {
+    if (!open || !btnRef.current) return
+    const rect = btnRef.current.getBoundingClientRect()
+    setPos({ left: rect.left, top: rect.bottom + 4 })
+  }, [open])
 
   useEffect(() => {
     if (!open) return
     const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      if (panelRef.current?.contains(e.target as Node)) return
+      if (btnRef.current?.contains(e.target as Node)) return
+      setOpen(false)
     }
     window.addEventListener('mousedown', close)
     return () => window.removeEventListener('mousedown', close)
   }, [open])
 
   return (
-    <div ref={ref} className="relative">
+    <>
       <button
+        ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         className={clsx('transition-colors', modelFallbackNotice ? 'text-amber-400 hover:text-amber-300' : 'text-text-tertiary hover:text-text-primary')}
         title="Fleet settings (model, backend)"
@@ -52,13 +67,17 @@ export function SpacesFleetMenu() {
         <Settings size={11} />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded border border-border bg-surface-0 p-2 shadow-xl space-y-2">
+        <div
+          ref={panelRef}
+          className="fixed z-40 w-72 rounded border border-border bg-surface-0 p-2 shadow-xl space-y-2"
+          style={{ left: pos.left, top: pos.top }}
+        >
           <FallbackNotice />
           <ModelPicker />
           <BackendSwitch />
         </div>
       )}
-    </div>
+    </>
   )
 }
 
