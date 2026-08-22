@@ -51,6 +51,7 @@ interface SpacesState {
   toggleBlocked: (ref: CardRef) => Promise<void>
   /** Flip the `#nofork` tag — dispatch wakes the role directly, no fork. */
   toggleNofork: (ref: CardRef) => Promise<void>
+  setCardModel: (ref: CardRef, model: string | null) => Promise<void>
   /** Rewrite a card's text and detail (indented continuation lines). Tokens
    *  (@key/^id/#blocked) survive — only the human-readable content changes. */
   editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
@@ -316,6 +317,19 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     refreshCardLine(card)
     set({ board: { ...board } })
     if (q) await get().boardApi('nofork', { card: q, nofork: now })
+  },
+
+  setCardModel: async (ref, model) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card) return
+    const q = cardQuery(board, ref)
+    card.model = model
+    refreshCardLine(card)
+    set({ board: { ...board } })
+    if (q) await get().boardApi('model', { card: q, model })
   },
 
 }))

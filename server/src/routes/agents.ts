@@ -287,7 +287,7 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
  *  source has no claudeSessionId yet (pre-init) — caller falls back to waking
  *  the source directly. The ENVELOPE must be sent immediately after this
  *  returns: `claude --fork-session` emits no init until its first message. */
-export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string): Session | null {
+export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null): Session | null {
   if (!source.claudeSessionId) return null
   const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
   const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
@@ -311,6 +311,9 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
     name: title,
     parentClaudeSessionId: source.claudeSessionId,
     agentKey: forkKey,
+    // Card `#model/<alias-or-id>` → per-fork model pin (a fast fix on haiku,
+    // a cheap one on sonnet). Same plumbing as the session-status-bar pin.
+    ...(model ? { modelOverride: model } : {}),
   })
   const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
   session.logMessage(created)

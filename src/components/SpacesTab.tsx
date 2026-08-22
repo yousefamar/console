@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, RefreshCw, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, RefreshCw, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -848,6 +848,7 @@ function BoardView() {
   const assignCard = useSpacesStore((s) => s.assignCard)
   const toggleBlocked = useSpacesStore((s) => s.toggleBlocked)
   const toggleNofork = useSpacesStore((s) => s.toggleNofork)
+  const setCardModel = useSpacesStore((s) => s.setCardModel)
   const editCard = useSpacesStore((s) => s.editCard)
   const deleteCard = useSpacesStore((s) => s.deleteCard)
   const roles = useAgentStore((s) => s.agentRoles)
@@ -1095,6 +1096,7 @@ function BoardView() {
           onAssignKey={(key) => void assignCard(detailTarget.ref, key)}
           onToggleBlockedNow={() => void toggleBlocked(detailTarget.ref)}
           onToggleNoforkNow={() => void toggleNofork(detailTarget.ref)}
+          onSetModel={(m) => void setCardModel(detailTarget.ref, m)}
           onMoveColumn={(to) => {
             const { ref } = detailTarget
             // moveCard appends to the destination column — track the new ref
@@ -1155,7 +1157,7 @@ function BoardView() {
  *  properties (column, assignee, #blocked) are pills that apply INSTANTLY;
  *  title + description are borderless editors that autosave on blur/close.
  *  Esc / backdrop / X close (committing any pending text). */
-function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onMoveColumn, onDelete }: {
+function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onSetModel, onMoveColumn, onDelete }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
@@ -1166,6 +1168,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   onAssignKey: (key: string | null) => void
   onToggleBlockedNow: () => void
   onToggleNoforkNow: () => void
+  onSetModel: (model: string | null) => void
   /** Moves the card; parent updates the tracked ref. */
   onMoveColumn: (to: string) => void
   onDelete: () => void
@@ -1186,6 +1189,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   const [agentKey, setAgentKey] = useState<string | null>(card.agentKey)
   const [blocked, setBlocked] = useState(card.blocked)
   const [nofork, setNofork] = useState(card.nofork)
+  const [model, setModel] = useState(card.model)
   const [column, setColumn] = useState(currentColumn)
   const bodyRef = useRef(body)
   bodyRef.current = body
@@ -1278,6 +1282,21 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           >
             ⑂̸ {nofork ? 'nofork' : 'fork ok'}
           </button>
+          {/* Model pill — pins the ticket-fork's model at dispatch (#model/… token).
+              Aliases stay valid on both backends; no-op for #nofork direct wakes. */}
+          <PillPicker
+            icon={<Cpu size={10} className={model ? 'text-amber-400' : 'text-text-tertiary'} />}
+            value={model}
+            valueLabel={model ?? 'Role model'}
+            options={[
+              { value: null, label: 'Role model (default)' },
+              { value: 'haiku', label: 'haiku — fast/cheap' },
+              { value: 'sonnet', label: 'sonnet — balanced' },
+              { value: 'opus', label: 'opus — deep' },
+            ]}
+            onPick={(v) => { setModel(v); onSetModel(v) }}
+            title="Fork model — the ticket-fork spawns pinned to this"
+          />
           {splitTrailingTags(card.text).tags.map((t) => (
             <span key={t} className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">{t}</span>
           ))}
@@ -1589,6 +1608,7 @@ function CardTile({ card, assigneeLabel, onAssign, onOpen, onDragStart, onDragEn
         </button>
         {card.blocked && <span className="rounded-sm bg-red-500/15 px-1 py-px text-[9px] text-red-500">blocked</span>}
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}
+        {card.model && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400" title="Ticket-fork spawns pinned to this model">{card.model}</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>
         ))}

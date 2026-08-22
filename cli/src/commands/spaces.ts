@@ -32,7 +32,7 @@ interface CardView {
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [add|move|assign|block|unblock|note|edit|remove] …', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [add|move|assign|model|block|unblock|note|edit|remove] …', flags)
     return
   }
   const project = args[0]
@@ -80,6 +80,12 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       const [card, agent] = [pos[0], pos[1]]
       if (!card || !agent) { exitWithError('USAGE', 'Usage: con spaces board <project> assign "<card>" <agentKey|none>', flags); return }
       output(await hubFetch(`/board/${enc}/assign`, { method: 'POST', body: { card, agent: agent === 'none' ? null : agent } }), flags)
+      return
+    }
+    case 'model': {
+      const [card, model] = [pos[0], pos[1]]
+      if (!card || !model) { exitWithError('USAGE', 'Usage: con spaces board <project> model "<card>" <model|none>   (alias like haiku/sonnet, or a full id; none clears)', flags); return }
+      output(await hubFetch(`/board/${enc}/model`, { method: 'POST', body: { card, model: model === 'none' ? null : model } }), flags)
       return
     }
     case 'nofork':

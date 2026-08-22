@@ -775,11 +775,14 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // the role's own session directly (trivial cards; Yousef's opt-OUT call —
     // fork stays the default).
     if (live && !role.fork && live.claudeSessionId && !card.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!)
-      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}`) }
+      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model)
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}${card.model ? ` (model ${card.model})` : ''}`) }
     } else if (card.nofork && live) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
+    // `#model/…` only pins the ticket-FORK's spawn — a direct wake would
+    // re-pin the durable role's whole session, leaking past the ticket.
+    if (card.model && !forked) log(`[boards] ^${card.blockId} #model/${card.model} ignored — dispatch was a direct wake, not a fork`)
     if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
     if (!worker) return false
     // Card image attachments (markdown-image detail lines → sibling assets

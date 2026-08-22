@@ -50,30 +50,33 @@ describe('isKanbanBoard', () => {
 
 describe('parseCardTokens', () => {
   it('plain text', () => {
-    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false, nofork: false })
+    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
   })
   it('agent only', () => {
-    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false, nofork: false })
+    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false, nofork: false, model: null })
   })
   it('agent + block id, either order', () => {
-    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false })
-    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false })
+    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, model: null })
   })
   it('mid-text @ / ^ are not tokens', () => {
     expect(parseCardTokens('Email alice@example.com about it')).toEqual({
-      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false, nofork: false,
+      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false, nofork: false, model: null,
     })
-    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false, nofork: false })
+    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
   })
   it('#nofork is a trailing property; blocked/nofork/key/id compose', () => {
-    expect(parseCardTokens('Fix it #nofork @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: false, nofork: true })
-    expect(parseCardTokens('Fix it #nofork #blocked @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: true })
-    expect(parseCardTokens('The #nofork policy is fine')).toEqual({ text: 'The #nofork policy is fine', agentKey: null, blockId: null, blocked: false, nofork: false })
+    expect(parseCardTokens('Fix it #nofork @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: false, nofork: true, model: null })
+    expect(parseCardTokens('Fix it #nofork #blocked @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: true, model: null })
+    expect(parseCardTokens('The #nofork policy is fine')).toEqual({ text: 'The #nofork policy is fine', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Quick fix #model/haiku @al ^ab12')).toEqual({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', blocked: false, nofork: false, model: 'haiku' })
+    expect(parseCardTokens('Pin full id #model/us.anthropic.claude-haiku-4-5-20251001-v1:0')).toEqual({ text: 'Pin full id', agentKey: null, blockId: null, blocked: false, nofork: false, model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' })
+    expect(parseCardTokens('Discussing the #model/haiku tag here today')).toEqual({ text: 'Discussing the #model/haiku tag here today', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
   })
   it('#blocked is a trailing property, any order with other tokens', () => {
-    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false })
-    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: false })
-    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false, nofork: false })
+    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false, model: null })
+    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: false, model: null })
+    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
   })
 })
 
@@ -100,7 +103,7 @@ describe('sanitizeCardText (write-path token-collision guard)', () => {
     // parseCardTokens never touches it.
     expect(sanitizeCardText('both @al #blocked')).toBe('both @al `#blocked`')
     const round = parseCardTokens(sanitizeCardText('both @al #blocked'))
-    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false, nofork: false })
+    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
   })
   it('leaves mid-text and non-token tails alone', () => {
     expect(sanitizeCardText('email alice@example.com')).toBe('email alice@example.com')

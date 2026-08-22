@@ -193,6 +193,17 @@ export class BoardOps {
     })
   }
 
+  setModel(project: string, query: string, model: string | null, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      hit.card.model = model
+      refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor)
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+    })
+  }
+
   setNofork(project: string, query: string, nofork: boolean, actor?: string): Promise<CardView> {
     return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)

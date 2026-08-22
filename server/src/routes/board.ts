@@ -8,6 +8,7 @@
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
 //   POST /board/:project/note               {card, note}
+//   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
 //   POST /board/:project/edit               {card, text?, detail?}
 //   POST /board/:project/remove             {card}
 
@@ -70,6 +71,9 @@ export function handleBoardRoutes(
       return true
     case 'block':
       run((b) => ops.setBlocked(project, String(b.card ?? ''), b.blocked !== false, b.note as string | undefined, actor))
+      return true
+    case 'model':
+      run((b) => ops.setModel(project, String(b.card ?? ''), typeof b.model === 'string' && b.model.trim() ? b.model.trim() : null, actor))
       return true
     case 'nofork':
       run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))
