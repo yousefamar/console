@@ -143,7 +143,10 @@ export class FsaVaultAdapter implements VaultAdapter {
     const handle = await this.getFileHandle(path, true)
     if (opts?.baseMtime !== undefined) {
       const current = await handle.getFile()
-      if (current.lastModified - opts.baseMtime > 2) {
+      // Guard: disk is NEWER (not just different). A negative diff means our
+      // base is fresher, which is fine (clock skew / quantization). Only throw
+      // when current > base beyond the 2ms tolerance.
+      if (current.lastModified > opts.baseMtime + 2) {
         throw new VaultConflictError(current.lastModified, await current.text())
       }
     }
