@@ -62,6 +62,16 @@ export const SpacesTab = memo(function SpacesTab() {
     if (!notes.adapter && !notes.loading) void notes.reconnectVault()
   }, [refreshSpaces])
 
+  // HMR-recovery self-heal: HMR resets stores but preserves component instances
+  // → the mount effect above doesn't re-fire. When the pane becomes visible
+  // with empty stores, refetch (mirrors WriteMetaBar's fix for the blog store).
+  useEffect(() => {
+    if (!isActivePane) return
+    if (spaces.length === 0) void refreshSpaces()
+    const notes = useNotesStore.getState()
+    if (!notes.adapter && !notes.loading) void notes.reconnectVault()
+  }, [isActivePane, spaces.length, refreshSpaces])
+
   const active = activeSlug === VAULT_SLUG ? VAULT_SPACE
     : activeSlug === UNASSIGNED_SLUG ? UNASSIGNED_SPACE
     : spaces.find((s) => s.slug === activeSlug) ?? null
