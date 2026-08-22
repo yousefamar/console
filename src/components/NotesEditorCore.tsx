@@ -13,6 +13,7 @@ import { vim, Vim } from '@replit/codemirror-vim'
 import { consoleEditorTheme } from '@/notes/editor-theme'
 import { insertFootnote } from '@/notes/editor-actions'
 import { livePreview } from '@/notes/live-preview'
+import { tablePreview } from '@/notes/table-preview'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
@@ -288,6 +289,7 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       highlightSelectionMatches(),
       yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }),
       livePreview(filePath),
+      tablePreview(),
       // Detect [[ typed in insert mode → open wiki link picker
       EditorView.inputHandler.of((view, from, to, text) => {
         if (text === '[' && from > 0 && view.state.sliceDoc(from - 1, from) === '[') {
