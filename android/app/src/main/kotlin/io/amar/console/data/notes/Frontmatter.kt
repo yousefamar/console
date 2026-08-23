@@ -138,7 +138,7 @@ object FrontmatterParser {
         return "https://yousefamar.com/memo/log/${m.groupValues[1]}/"
     }
 
-    fun isDraftPath(path: String?): Boolean = path != null && path.startsWith("$DRAFTS_DIR/")
+    fun isDraftPath(path: String?): Boolean = path != null && (path.startsWith("$DRAFTS_DIR/") || Regex("^projects/[^/]+/drafts/[^/]+\\.md$").matches(path))
 
     fun isPublishedPath(path: String?): Boolean =
         path != null && Regex("^log/[^/]+\\.md$").matches(path)

@@ -125,7 +125,12 @@ export const DRAFTS_DIR = 'scratch/blog-drafts'
 export const LOG_DIR = 'log'
 
 export function isDraftPath(path: string | null | undefined): boolean {
-  return !!path && path.startsWith(`${DRAFTS_DIR}/`)
+  return !!path && (path.startsWith(`${DRAFTS_DIR}/`) || /^projects\/[^/]+\/drafts\/[^/]+\.md$/.test(path))
+}
+
+/** Project slug implied by a draft's location, or null for scratch drafts. */
+export function projectForDraftPath(path: string | null | undefined): string | null {
+  return path?.match(/^projects\/([^/]+)\/drafts\/[^/]+\.md$/)?.[1] ?? null
 }
 
 export function isPublishedPath(path: string | null | undefined): boolean {

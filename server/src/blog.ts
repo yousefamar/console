@@ -32,6 +32,19 @@ function postFiles<T extends { path: string }>(all: T[]): T[] {
   return all.filter((f) => isPostPath(f.path))
 }
 
+// Drafts live in scratch/blog-drafts/ (legacy / no project) OR in the
+// project's own folder at projects/<slug>/drafts/ — a project's writing
+// belongs WITH the project. `public: false` keeps a draft out of every
+// Eleventy collection and permalink regardless of location.
+export function isDraftPath(path: string): boolean {
+  return path.startsWith(`${DRAFTS_DIR}/`) || /^projects\/[^/]+\/drafts\/[^/]+\.md$/.test(path)
+}
+
+/** Project slug implied by a draft's location, or null for scratch drafts. */
+export function projectForDraftPath(path: string): string | null {
+  return path.match(/^projects\/([^/]+)\/drafts\/[^/]+\.md$/)?.[1] ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter parsing — small purpose-built parser.
 // Handles the keys we care about (title, date, post, public, project, status,
@@ -123,6 +136,8 @@ export interface DraftSummary {
   path: string
   title: string
   mtime: number
+  /** From the path (projects/<slug>/drafts/) or `project:` frontmatter. */
+  project: string | null
 }
 
 export interface CreateDraftResult {
@@ -139,8 +154,10 @@ export async function createDraft(
   const cleanTitle = title.trim()
   if (!cleanTitle) return { ok: false, error: 'Title required' }
   const titleSlug = slugifyTitle(cleanTitle)
-  const filenameSlug = project ? `${slugifyTitle(project)}-${titleSlug}` : titleSlug
-  const path = `${DRAFTS_DIR}/${filenameSlug}.md`
+  // Project drafts live IN the project folder; scratch is for unhomed drafts.
+  const path = project
+    ? `${PROJECTS_DIR}/${slugifyTitle(project)}/drafts/${titleSlug}.md`
+    : `${DRAFTS_DIR}/${titleSlug}.md`
 
   const all = await store.list()
   if (all.some((f) => f.path === path)) {
@@ -185,10 +202,11 @@ export async function createDraft(
 
 export async function listDrafts(store: NoteStore): Promise<DraftSummary[]> {
   const all = await store.list()
-  const drafts = all.filter((f) => f.dir === DRAFTS_DIR)
+  const drafts = all.filter((f) => isDraftPath(f.path))
   const summaries: DraftSummary[] = []
   for (const f of drafts) {
     let title = f.name.replace(/\.md$/, '')
+    let project = projectForDraftPath(f.path)
     try {
       const content = await store.read(f.path)
       const { fm, body } = parseFrontmatter(content)
@@ -197,8 +215,9 @@ export async function listDrafts(store: NoteStore): Promise<DraftSummary[]> {
         const h1 = body.match(/^#\s+(.+)$/m)
         if (h1) title = h1[1]!.trim()
       }
+      if (!project && fm.project) project = fm.project
     } catch {}
-    summaries.push({ path: f.path, title, mtime: f.mtime })
+    summaries.push({ path: f.path, title, mtime: f.mtime, project })
   }
   summaries.sort((a, b) => b.mtime - a.mtime)
   return summaries
@@ -564,8 +583,8 @@ export interface PublishResult {
 }
 
 export async function publishDraft(store: NoteStore, fromPath: string): Promise<PublishResult> {
-  if (!fromPath.startsWith(`${DRAFTS_DIR}/`)) {
-    return { ok: false, error: `Path is not in ${DRAFTS_DIR}/` }
+  if (!isDraftPath(fromPath)) {
+    return { ok: false, error: `Path is not a draft (${DRAFTS_DIR}/ or projects/<slug>/drafts/)` }
   }
   let content: string
   try {
@@ -586,8 +605,9 @@ export async function publishDraft(store: NoteStore, fromPath: string): Promise<
   // Project posts live in the project's own log/ dir; the path implies the
   // project (Eleventy derives it), so the frontmatter line is dropped.
   let newPath = `${LOG_DIR}/${nowTimestamp()}.md`
-  if (fm.project) {
-    newPath = `${PROJECTS_DIR}/${fm.project}/${LOG_DIR}/${nowTimestamp()}.md`
+  const project = fm.project ?? projectForDraftPath(fromPath)
+  if (project) {
+    newPath = `${PROJECTS_DIR}/${project}/${LOG_DIR}/${nowTimestamp()}.md`
     stamped = stamped.replace(/^project:\s*[^\n]*\n/m, '')
   }
 

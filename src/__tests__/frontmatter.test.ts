@@ -141,6 +141,9 @@ describe('permalinkForLogPath', () => {
 describe('path classifiers', () => {
   it('isDraftPath', () => {
     expect(isDraftPath('scratch/blog-drafts/x.md')).toBe(true)
+    expect(isDraftPath('projects/console/drafts/x.md')).toBe(true)
+    expect(isDraftPath('projects/console/log/x.md')).toBe(false)
+    expect(isDraftPath('projects/console/index.md')).toBe(false)
     expect(isDraftPath('log/x.md')).toBe(false)
     expect(isDraftPath(null)).toBe(false)
   })

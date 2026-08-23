@@ -8,6 +8,7 @@ export interface DraftSummary {
   path: string
   title: string
   mtime: number
+  project: string | null
 }
 
 export interface ProjectSummary {

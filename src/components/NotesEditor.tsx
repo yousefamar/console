@@ -12,7 +12,7 @@ import { X, ChevronLeft, ExternalLink, Send } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
 import { useUiStore } from '@/store/ui'
-import { isDraftPath, isPublishedPath, parseFrontmatter, permalinkForLogPath } from '@/utils/frontmatter'
+import { isDraftPath, isPublishedPath, parseFrontmatter, permalinkForLogPath, projectForDraftPath } from '@/utils/frontmatter'
 
 const PANEL_TOGGLE_KEY = 'console:notes:projectPanelOpen'
 const MOBILE_VIM_KEY = 'console:notes:mobileVim'
@@ -161,7 +161,7 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
     // the published log/<ts>.md is only in the Docs editor's scope via the
     // postsByProject list — opening it first would render the out-of-scope
     // placeholder.
-    const fmProject = parseFrontmatter(activeFile?.content ?? '').fm.project
+    const fmProject = parseFrontmatter(activeFile?.content ?? '').fm.project ?? projectForDraftPath(path)
     if (fmProject) await blog.refreshProjectPosts(fmProject)
     if (r.newPath) await notes.openFile(r.newPath)
     void blog.refreshDrafts()

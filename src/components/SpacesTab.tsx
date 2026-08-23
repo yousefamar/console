@@ -541,14 +541,20 @@ export function spaceScopePrefixes(space: SpaceSummary): string[] {
  *  publish). A component so the subscription hook has an unconditional home. */
 function ScopedNotesEditor({ space }: { space: SpaceSummary }) {
   const posts = useBlogStore((s) => (space.kind === 'project' ? s.postsByProject[space.slug] : undefined))
+  const drafts = useBlogStore((s) => s.drafts)
   // ProjectDevlog also refreshes this, but on mobile the rail (and thus the
   // devlog strip) isn't mounted while the editor page shows.
   useEffect(() => {
     if (space.kind === 'project' && !space.slug.startsWith('~')) void useBlogStore.getState().refreshProjectPosts(space.slug)
   }, [space.kind, space.slug])
   const scope = useMemo(
-    () => [...spaceScopePrefixes(space), ...(posts ?? []).map((p) => p.path)],
-    [space, posts],
+    () => [
+      ...spaceScopePrefixes(space),
+      ...(posts ?? []).map((p) => p.path),
+      // Legacy scratch drafts claim a project via frontmatter, not path.
+      ...drafts.filter((d) => d.project === space.slug).map((d) => d.path),
+    ],
+    [space, posts, drafts],
   )
   return <NotesEditor scopePrefixes={scope} singleBuffer />
 }
@@ -758,9 +764,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 // collapsed by default to a count, + New post via the blog drafts flow.
 function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
   const posts = useBlogStore((s) => s.postsByProject[slug])
+  const drafts = useBlogStore((s) => s.drafts).filter((d) => d.project === slug)
   const [expanded, setExpanded] = useState(false)
   useEffect(() => {
     void useBlogStore.getState().refreshProjectPosts(slug)
+    void useBlogStore.getState().refreshDrafts()
   }, [slug])
   const newPost = async () => {
     const title = await showPrompt(`Title for the post about ${slug}:`, { title: 'New devlog post', confirmLabel: 'Create' })
@@ -775,12 +783,23 @@ function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void 
     <div className="flex-shrink-0 border-t border-border max-h-[30%] overflow-y-auto">
       <div className="flex items-center justify-between px-3 py-1">
         <button onClick={() => setExpanded((v) => !v)} className="text-[10px] uppercase tracking-wide text-text-tertiary hover:text-text-secondary">
-          Devlog{posts?.length ? ` (${posts.length})` : ''}
+          Devlog{posts?.length || drafts.length ? ` (${(posts?.length ?? 0) + drafts.length})` : ''}
         </button>
         <button onClick={() => void newPost()} className="text-text-tertiary hover:text-text-primary" title="New devlog post">
           <Plus size={10} />
         </button>
       </div>
+      {expanded && drafts.map((d) => (
+        <button
+          key={d.path}
+          onClick={() => { void useNotesStore.getState().openFile(d.path).then(onOpened) }}
+          className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-[11px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+        >
+          <FileText size={9} className="flex-shrink-0 opacity-50" />
+          <span className="truncate">{d.title}</span>
+          <span className="ml-auto flex-shrink-0 text-[9px] text-amber-500">draft</span>
+        </button>
+      ))}
       {expanded && (posts ?? []).map((p) => (
         <button
           key={p.path}
@@ -792,8 +811,8 @@ function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void 
           {p.date && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
         </button>
       ))}
-      {expanded && (posts ?? []).length === 0 && (
-        <div className="px-3 pb-1 text-[10px] text-text-tertiary">No posts tagged project: {slug}</div>
+      {expanded && (posts ?? []).length === 0 && drafts.length === 0 && (
+        <div className="px-3 pb-1 text-[10px] text-text-tertiary">No posts or drafts for {slug}</div>
       )}
     </div>
   )
