@@ -433,14 +433,13 @@ function SpaceListRail() {
 
   return (
     <>
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
-        <span className="text-xs font-medium text-text-primary">Spaces</span>
-        <span className="flex items-center gap-2">
-          <SpacesFleetMenu />
-          <button onClick={() => void refreshSpaces()} className="text-text-tertiary hover:text-text-primary" title="Refresh">
-            <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-          </button>
-        </span>
+      {/* No "Spaces" label — the pane tab already says it. Uniform h-8 across
+          all four pane headers (the centre's tab buttons used to make it taller). */}
+      <div className="flex h-8 flex-shrink-0 items-center justify-end gap-2 border-b border-border px-3">
+        <SpacesFleetMenu />
+        <button onClick={() => void refreshSpaces()} className="text-text-tertiary hover:text-text-primary" title="Refresh">
+          <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto py-1">
         <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
@@ -610,7 +609,8 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
+      {/* The ONE place the space title renders (the centre header dropped its copy). */}
+      <div className="flex h-8 flex-shrink-0 items-center gap-2 border-b border-border px-3">
         <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
         {space.kind === 'area' && <Tag size={9} className="text-text-tertiary flex-shrink-0" />}
       </div>
@@ -834,9 +834,8 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
 
   return (
     <>
-      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-3 py-1.5">
-        <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
-        <div className="flex items-center gap-1 ml-auto">
+      <div className="flex h-8 flex-shrink-0 items-center border-b border-border px-2">
+        <div className="flex items-center gap-1">
           {hasBoard ? (
             <ViewTab label="Board" icon={<Kanban size={10} />} active={showBoard} onClick={() => setActiveView('board')} />
           ) : space.kind === 'project' && !space.slug.startsWith('~') ? (
@@ -1686,7 +1685,7 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
 
   return (
     <div className="flex flex-1 min-w-0 flex-col border-l border-border overflow-hidden">
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-2 py-1.5">
+      <div className="flex h-8 flex-shrink-0 items-center justify-between border-b border-border px-2">
         <span className="flex items-center gap-1.5 text-xs text-text-secondary truncate">
           <Bot size={11} className="text-text-tertiary flex-shrink-0" />
           {activeBelongs ? (activeSession?.name ?? 'Agent') : 'Agent chat'}
