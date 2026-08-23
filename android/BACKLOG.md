@@ -11,9 +11,10 @@ _(empty)_
 
 ## Built, awaiting release
 
-- Project drafts moved into project folders: `Frontmatter.isDraftPath` widened
-  to accept `projects/<slug>/drafts/*.md` alongside `scratch/blog-drafts/`
-  (hub createDraft now writes project drafts there; ^bold-hawk).
+- Drafts relocated to log/drafts/ + projects/<slug>/log/drafts/ (beside where
+  they publish): `Frontmatter.isDraftPath` widened (scratch legacy kept),
+  `permalinkForLogPath` tightened to direct log/ children so drafts never
+  mint permalinks (^bold-hawk + follow-up).
 - "Hub disconnected" wedge needing a force-stop: a hub restart racing a
   background flip could kill the WS while its scheduled reconnect got lost —
   and start() on BOTH WS clients (sync bus + agents) was `if (wantConnected)
