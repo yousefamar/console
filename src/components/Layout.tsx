@@ -265,6 +265,10 @@ export function Layout() {
     } else if (isMap) {
       const { useMapStore } = await import('@/store/map')
       await useMapStore.getState().refresh()
+    } else if (isSpaces) {
+      const { useSpacesStore } = await import('@/store/spaces')
+      const spaces = useSpacesStore.getState()
+      await Promise.all([spaces.refreshSpaces(), spaces.loadBoard().catch(() => {})])
     } else if (isChat && matrixConnected) {
       if (e.ctrlKey || e.metaKey) {
         await db.chatMessages.clear()
@@ -327,7 +331,7 @@ export function Layout() {
         <div className="flex items-center gap-3 md:gap-4">
           <HubOfflineIndicator />
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap ? true : matrixConnected) && (
+          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"

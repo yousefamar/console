@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, RefreshCw, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -236,8 +236,6 @@ interface SpaceAlert {
 function SpaceListRail() {
   const spaces = useSpacesStore((s) => s.spaces)
   const activeSlug = useSpacesStore((s) => s.activeSlug)
-  const loading = useSpacesStore((s) => s.loading)
-  const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
   const selectSpace = useSpacesStore((s) => s.selectSpace)
   const setActiveView = useSpacesStore((s) => s.setActiveView)
 
@@ -433,14 +431,8 @@ function SpaceListRail() {
 
   return (
     <>
-      {/* No "Spaces" label — the pane tab already says it. Uniform h-8 across
-          all four pane headers (the centre's tab buttons used to make it taller). */}
-      <div className="flex h-8 flex-shrink-0 items-center justify-end gap-2 border-b border-border px-3">
-        <SpacesFleetMenu />
-        <button onClick={() => void refreshSpaces()} className="text-text-tertiary hover:text-text-primary" title="Refresh">
-          <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-        </button>
-      </div>
+      {/* No header at all: "Spaces" is the pane tab, refresh is the global
+          Layout button (pane-aware), the fleet gear lives in rail 2's Agents row. */}
       <div className="flex-1 overflow-y-auto py-1">
         <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
         <RailSection label="Projects">{projects.map(renderSpace)}</RailSection>
@@ -453,16 +445,19 @@ function SpaceListRail() {
   )
 }
 
-function RailSection({ label, action, children }: { label: string; action?: { icon: React.ReactNode; title: string; onClick: () => void }; children: React.ReactNode }) {
+function RailSection({ label, action, extra, children }: { label: string; action?: { icon: React.ReactNode; title: string; onClick: () => void }; extra?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="mb-2">
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</span>
-        {action && (
-          <button onClick={action.onClick} className="text-text-tertiary hover:text-text-primary" title={action.title}>
-            {action.icon}
-          </button>
-        )}
+        <span className="flex items-center gap-2">
+          {extra}
+          {action && (
+            <button onClick={action.onClick} className="text-text-tertiary hover:text-text-primary" title={action.title}>
+              {action.icon}
+            </button>
+          )}
+        </span>
       </div>
       {children}
     </div>
@@ -609,14 +604,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 
   return (
     <>
-      {/* The ONE place the space title renders (the centre header dropped its copy). */}
-      <div className="flex h-8 flex-shrink-0 items-center gap-2 border-b border-border px-3">
-        <span className="text-xs font-medium text-text-primary truncate">{space.title}</span>
-        {space.kind === 'area' && <Tag size={9} className="text-text-tertiary flex-shrink-0" />}
-      </div>
+      {/* No title header — rail 1's highlighted row already says which space. */}
       <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
         <RailSection
           label="Agents"
+          extra={<SpacesFleetMenu />}
           action={!space.slug.startsWith('~') ? {
             icon: <Plus size={10} />,
             title: 'New agent in this space',
