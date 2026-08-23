@@ -350,15 +350,12 @@ export class BookmarkStore {
     return bm
   }
 
-  /** Suggest tags for a bookmark using Claude API */
+  /** Suggest tags for a bookmark via the claude CLI (rides Bedrock/subscription, no API key) */
   async suggestTags(
     title: string,
     description: string,
     url: string,
   ): Promise<string[]> {
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) return []
-
     // Gather existing tags for context
     await this.ensureLoaded()
     const allTags = new Set<string>()
@@ -382,28 +379,20 @@ URL: ${url}
 Respond with ONLY a JSON array of tag strings, e.g. ["dev/tools", "ai-ml/tools"]. Always include "status/active".`
 
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 256,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(15000),
+      const { execFile } = await import('node:child_process')
+      const { smallFastModel } = await import('./bedrock-profiles.js')
+      const text = await new Promise<string>((resolve) => {
+        const child = execFile(
+          'claude',
+          ['-p', prompt, '--output-format', 'text', '--model', smallFastModel()],
+          { timeout: 30_000, maxBuffer: 1024 * 1024, env: { ...process.env } },
+          (err, stdout) => resolve(err ? '' : stdout),
+        )
+        child.on('error', () => resolve(''))
       })
-      if (!res.ok) return []
-      const data = await res.json() as { content: Array<{ text: string }> }
-      const text = data.content[0]?.text ?? ''
-      // Extract JSON array from response
       const match = text.match(/\[[\s\S]*\]/)
       if (!match) return []
       const tags = JSON.parse(match[0]) as string[]
-      // Ensure status/active is included
       if (!tags.includes('status/active')) tags.push('status/active')
       return tags.filter((t) => typeof t === 'string')
     } catch {
