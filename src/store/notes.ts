@@ -260,6 +260,10 @@ type PersistedTabs = { paths: string[]; active: string | null }
 // mid-restore would truncate the saved tabs to however many had re-opened.
 let restoring = false
 
+/** Per-path save queue — see saveFile. Zustand-declaration-order note: must
+ *  sit ABOVE the store (create() runs eagerly; a const below is in its TDZ). */
+const savesInFlight = new Map<string, Promise<void>>()
+
 function persistTabs(openFiles: Record<string, OpenFile>, activeFilePath: string | null) {
   if (restoring) return
   const data: PersistedTabs = {
@@ -496,12 +500,20 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   },
 
   saveFile: async (path?) => {
-    const { adapter, openFiles, searchIndex } = get()
+    const { adapter, searchIndex } = get()
     const filePath = path ?? get().activeFilePath
     if (!adapter || !filePath) return
 
-    const file = openFiles[filePath]
+    // Serialize concurrent saves of the same file: Ctrl+S reaches BOTH the
+    // window keybinding and CM6's Mod-s keymap, and two racing writes made
+    // the second 409 against the first's fresh mtime (a false conflict
+    // dialog with identical byte counts). Queue, and re-read state inside —
+    // the second save then sees the re-armed baseMtime and no-ops clean.
+    const prev = savesInFlight.get(filePath) ?? Promise.resolve()
+    const run = prev.catch(() => {}).then(async () => {
+    const file = get().openFiles[filePath]
     if (!file) return
+    if (file.content === file.savedContent && file.baseMtime !== undefined) return
 
     try {
       let mtime: number | undefined
@@ -555,6 +567,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     } catch (err) {
       console.error('Failed to save file:', err)
     }
+    })
+    savesInFlight.set(filePath, run)
+    return run
   },
 
   updateFileContent: (path, content) => {

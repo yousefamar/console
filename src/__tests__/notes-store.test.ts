@@ -231,6 +231,48 @@ describe('notes store', () => {
     confirmSpy.mockRestore()
   })
 
+  it('concurrent Ctrl+S saves serialize — the double-fire never false-conflicts', async () => {
+    let disk = { content: 'original', mtime: 1000 }
+    const mockAdapter = {
+      readFile: vi.fn(),
+      readFileWithMeta: vi.fn(),
+      listFiles: vi.fn(),
+      writeFile: vi.fn().mockImplementation(async (_p: string, content: string, opts?: { baseMtime?: number }) => {
+        const { VaultConflictError } = await import('@/notes/vault-adapter')
+        if (opts?.baseMtime !== undefined && disk.mtime - opts.baseMtime > 2) {
+          throw new VaultConflictError(disk.mtime, disk.content)
+        }
+        disk = { content, mtime: disk.mtime + 100 }
+        return { mtime: disk.mtime }
+      }),
+      deleteFile: vi.fn(),
+      createDirectory: vi.fn(),
+      renameFile: vi.fn(),
+      exists: vi.fn(),
+    }
+    const dialog = await import('@/dialog')
+    const confirmSpy = vi.spyOn(dialog, 'showConfirm')
+    useNotesStore.setState({
+      adapter: mockAdapter as any,
+      vaultConnected: true,
+      openFiles: {
+        'a.md': { path: 'a.md', content: 'edited', savedContent: 'original', baseMtime: 1000 },
+      },
+      activeFilePath: 'a.md',
+    })
+
+    // Window keybinding + CM6 Mod-s both fire — unserialized this raced.
+    await Promise.all([
+      useNotesStore.getState().saveFile('a.md'),
+      useNotesStore.getState().saveFile('a.md'),
+    ])
+
+    expect(confirmSpy).not.toHaveBeenCalled()          // no false conflict dialog
+    expect(mockAdapter.writeFile).toHaveBeenCalledTimes(1) // second save no-oped clean
+    expect(useNotesStore.getState().openFiles['a.md']!.savedContent).toBe('edited')
+    confirmSpy.mockRestore()
+  })
+
   it('saveFile writes content and marks clean', async () => {
     const mockAdapter = {
       readFile: vi.fn(),
