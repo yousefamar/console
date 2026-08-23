@@ -33,6 +33,8 @@ export interface TreeNode {
   name: string
   path: string
   isDir: boolean
+  /** File mtime; for dirs, the newest descendant's mtime (drives recency sort). */
+  mtime: number
   children: TreeNode[]
 }
 
@@ -42,21 +44,22 @@ export interface TreeNode {
 
 /** Build a tree structure from flat file list */
 export function buildFileTree(files: VaultFile[]): TreeNode[] {
-  const root: TreeNode = { name: '', path: '', isDir: true, children: [] }
+  const root: TreeNode = { name: '', path: '', isDir: true, mtime: 0, children: [] }
 
   for (const f of files) {
     const parts = f.path.split('/')
     let node = root
 
-    // Create intermediate directories
+    // Create intermediate directories; a dir's mtime is its newest descendant
     for (let i = 0; i < parts.length - 1; i++) {
       const dirName = parts[i]!
       const dirPath = parts.slice(0, i + 1).join('/')
       let child = node.children.find((c) => c.isDir && c.name === dirName)
       if (!child) {
-        child = { name: dirName, path: dirPath, isDir: true, children: [] }
+        child = { name: dirName, path: dirPath, isDir: true, mtime: 0, children: [] }
         node.children.push(child)
       }
+      child.mtime = Math.max(child.mtime, f.mtime)
       node = child
     }
 
@@ -65,15 +68,17 @@ export function buildFileTree(files: VaultFile[]): TreeNode[] {
       name: parts[parts.length - 1]!,
       path: f.path,
       isDir: false,
+      mtime: f.mtime,
       children: [],
     })
   }
 
-  // Sort: directories first, then alphabetical
+  // Sort: directories first, then most recently modified first (dirs by
+  // their newest descendant), name as tiebreaker
   const sortChildren = (node: TreeNode) => {
     node.children.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-      return a.name.localeCompare(b.name)
+      return b.mtime - a.mtime || a.name.localeCompare(b.name)
     })
     for (const child of node.children) {
       if (child.isDir) sortChildren(child)
@@ -524,16 +529,20 @@ export const useNotesStore = create<NotesState>((set, get) => ({
         }
         mtime = (await adapter.writeFile(filePath, file.content)).mtime
       }
-      set((s) => ({
-        openFiles: {
-          ...s.openFiles,
-          [filePath]: { ...s.openFiles[filePath]!, savedContent: file.content, baseMtime: mtime ?? Date.now() },
-        },
+      set((s) => {
         // Bump the in-memory mtime so consumers that compare against it
         // (recency sorts, the blog live-status chip) see the write without
         // waiting for a full vault rescan.
-        files: s.files.map((f) => (f.path === filePath ? { ...f, mtime: Date.now() } : f)),
-      }))
+        const files = s.files.map((f) => (f.path === filePath ? { ...f, mtime: Date.now() } : f))
+        return {
+          openFiles: {
+            ...s.openFiles,
+            [filePath]: { ...s.openFiles[filePath]!, savedContent: file.content, baseMtime: mtime ?? Date.now() },
+          },
+          files,
+          fileTree: buildFileTree(files),
+        }
+      })
 
       // Update search index
       searchIndex.updateDocument(filePath, file.content)

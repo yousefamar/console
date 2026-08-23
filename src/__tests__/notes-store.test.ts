@@ -39,6 +39,21 @@ describe('buildFileTree', () => {
     expect(tree[1]!.name).toBe('a-file.md') // then file
   })
 
+  it('sorts by most recently modified first, dirs by newest descendant', () => {
+    const files: VaultFile[] = [
+      { path: 'old.md', name: 'old.md', dir: '', mtime: 1, size: 0 },
+      { path: 'new.md', name: 'new.md', dir: '', mtime: 9, size: 0 },
+      { path: 'stale-dir/a.md', name: 'a.md', dir: 'stale-dir', mtime: 2, size: 0 },
+      { path: 'fresh-dir/b.md', name: 'b.md', dir: 'fresh-dir', mtime: 8, size: 0 },
+      { path: 'fresh-dir/c.md', name: 'c.md', dir: 'fresh-dir', mtime: 3, size: 0 },
+    ]
+    const tree = buildFileTree(files)
+    expect(tree.map((n) => n.name)).toEqual(['fresh-dir', 'stale-dir', 'new.md', 'old.md'])
+    const fresh = tree[0]!
+    expect(fresh.mtime).toBe(8)
+    expect(fresh.children.map((n) => n.name)).toEqual(['b.md', 'c.md'])
+  })
+
   it('handles empty file list', () => {
     expect(buildFileTree([])).toEqual([])
   })
