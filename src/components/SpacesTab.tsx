@@ -521,18 +521,19 @@ export const UNASSIGNED_SPACE: SpaceSummary = {
 export function spaceScopePrefixes(space: SpaceSummary): string[] {
   // Projects own projects/<slug>/** plus the flat projects/<slug>.md — AND
   // their writing, which lives OUTSIDE the folder: drafts are named
-  // scratch/blog-drafts/<slug>-… (hub createDraft convention) and published
+  // the project's log/drafts/ dir (in-folder, covered by the project prefix),
+  // legacy scratch/blog-drafts/<slug>-… files, and published
   // posts sit in log/<ts>.md (matched per-path via useSpaceScope below).
   // The Vault pseudo-space scopes to nothing = everything.
   if (space.slug === VAULT_SLUG) return ['']
   if (space.slug === UNASSIGNED_SLUG) return []
   if (space.kind === 'project') {
-    return [`projects/${space.slug}/`, `projects/${space.slug}.md`, `scratch/blog-drafts/${space.slug}-`]
+    return [`projects/${space.slug}/`, `projects/${space.slug}.md`, `scratch/blog-drafts/${space.slug}-`]  // legacy prefix kept
   }
   // Areas: writing IS the content (BlogView fills the rail), so the writing
   // dirs are the scope — without this, a draft opened from the rail rendered
   // the "No file open" placeholder and the old code bounced to the Notes pane.
-  return ['scratch/blog-drafts/', 'log/']
+  return ['log/', 'scratch/blog-drafts/']  // log/ covers log/drafts/ too; scratch = legacy
 }
 
 /** The space's Docs editor: static scope prefixes + the project's published

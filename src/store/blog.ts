@@ -115,7 +115,7 @@ interface BlogState {
   checkLiveStatus: (path: string) => Promise<void>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
-   * Create a new draft in `scratch/blog-drafts/`, write starter frontmatter
+   * Create a new draft in `log/drafts/` (or `projects/<slug>/log/drafts/`), write starter frontmatter
    * (public: false — flipped to true on publish), and open it in the Notes
    * pane. If a draft with the same slug already exists, just opens it.
    */

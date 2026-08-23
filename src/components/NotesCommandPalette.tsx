@@ -1,3 +1,4 @@
+import { isDraftPath } from '@/utils/frontmatter'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNotesStore } from '@/store/notes'
 import { Command, Trash2, PenLine, FilePlus, Save, Send, X, XCircle, RotateCcw, FileText, Folder, Bot } from 'lucide-react'
@@ -171,7 +172,7 @@ export function NotesCommandPalette() {
       })
     }
 
-    if (hasActiveFile && activeFilePath!.startsWith('scratch/blog-drafts/')) {
+    if (hasActiveFile && isDraftPath(activeFilePath)) {
       cmds.push({
         id: 'publish',
         label: 'Publish Draft',

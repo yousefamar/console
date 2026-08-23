@@ -20,7 +20,8 @@ data class Frontmatter(
 )
 
 object FrontmatterParser {
-    const val DRAFTS_DIR = "scratch/blog-drafts"
+    const val DRAFTS_DIR = "log/drafts"
+    const val LEGACY_DRAFTS_DIR = "scratch/blog-drafts"
     const val LOG_DIR = "log"
 
     private val blockRe = Regex("^---\\n([\\s\\S]*?)\\n---\\n?([\\s\\S]*)$")
@@ -134,11 +135,11 @@ object FrontmatterParser {
 
     /** log/<name>.md → https://yousefamar.com/memo/log/<name>/ ; else null. */
     fun permalinkForLogPath(path: String): String? {
-        val m = Regex("^log/(.+)\\.md$").find(path) ?: return null
+        val m = Regex("^log/([^/]+)\\.md$").find(path) ?: return null
         return "https://yousefamar.com/memo/log/${m.groupValues[1]}/"
     }
 
-    fun isDraftPath(path: String?): Boolean = path != null && (path.startsWith("$DRAFTS_DIR/") || Regex("^projects/[^/]+/drafts/[^/]+\\.md$").matches(path))
+    fun isDraftPath(path: String?): Boolean = path != null && (path.startsWith("$DRAFTS_DIR/") || path.startsWith("$LEGACY_DRAFTS_DIR/") || Regex("^projects/[^/]+/log/drafts/[^/]+\\.md$").matches(path))
 
     fun isPublishedPath(path: String?): Boolean =
         path != null && Regex("^log/[^/]+\\.md$").matches(path)

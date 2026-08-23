@@ -641,14 +641,14 @@ export const COMMANDS: CommandDef[] = [
   { name: 'cron ics-url', description: 'Print the calendar subscription URL (token-protected) for the hub schedule', safety: 'read' },
 
   // blog — drafts, projects, publish for the personal blog (~/sync/brain/root → yousefamar.com/memo)
-  { name: 'blog drafts', description: 'List blog drafts in scratch/blog-drafts/', safety: 'read',
+  { name: 'blog drafts', description: 'List blog drafts (log/drafts/ + projects/<slug>/log/drafts/)', safety: 'read',
     examples: ['con blog drafts'] },
   { name: 'blog draft', description: 'Create a new blog draft (writes a stub with `title`, `post:true`, `public:false`, optional `project`)', safety: 'write',
     args: [{ name: 'title', required: true, description: 'Draft title' }],
     flags: { project: { type: 'string', description: 'Tie to a project by slug' } },
     examples: ['con blog draft "Why I switched to vim"', 'con blog draft "Memo update" --project memo'] },
   { name: 'blog publish', description: 'Publish a draft → log/<timestamp>.md, stamp `date` + `public:true`, hit /rebuild', safety: 'write',
-    args: [{ name: 'path', required: true, description: 'Vault-relative draft path (e.g. scratch/blog-drafts/foo.md)' }] },
+    args: [{ name: 'path', required: true, description: 'Vault-relative draft path (e.g. log/drafts/foo.md)' }] },
   { name: 'blog republish', description: 'Re-trigger the Eleventy build for an already-published post (edits go live; no move, date unchanged)', safety: 'write',
     args: [{ name: 'path', required: true, description: 'Published post path (e.g. log/2026-07-09-16-12-35.md)' }] },
   { name: 'blog projects', description: 'List, add, or set status on projects', safety: 'write',

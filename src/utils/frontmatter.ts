@@ -116,21 +116,26 @@ export function frontmatterRange(content: string): { from: number; to: number } 
  * projects/<slug>/log/<name>.md; both publish at /memo/log/<name>/.
  */
 export function permalinkForLogPath(path: string): string | null {
-  const m = path.match(/^projects\/[^/]+\/log\/([^/]+)\.md$/) ?? path.match(/^log\/(.+)\.md$/)
+  const m = path.match(/^projects\/[^/]+\/log\/([^/]+)\.md$/) ?? path.match(/^log\/([^/]+)\.md$/)
   if (!m) return null
   return `https://yousefamar.com/memo/log/${m[1]}/`
 }
 
-export const DRAFTS_DIR = 'scratch/blog-drafts'
+export const DRAFTS_DIR = 'log/drafts'
+export const LEGACY_DRAFTS_DIR = 'scratch/blog-drafts'
 export const LOG_DIR = 'log'
 
 export function isDraftPath(path: string | null | undefined): boolean {
-  return !!path && (path.startsWith(`${DRAFTS_DIR}/`) || /^projects\/[^/]+\/drafts\/[^/]+\.md$/.test(path))
+  return !!path && (
+    path.startsWith(`${DRAFTS_DIR}/`)
+    || path.startsWith(`${LEGACY_DRAFTS_DIR}/`)
+    || /^projects\/[^/]+\/log\/drafts\/[^/]+\.md$/.test(path)
+  )
 }
 
-/** Project slug implied by a draft's location, or null for scratch drafts. */
+/** Project slug implied by a draft's location, or null for unhomed drafts. */
 export function projectForDraftPath(path: string | null | undefined): string | null {
-  return path?.match(/^projects\/([^/]+)\/drafts\/[^/]+\.md$/)?.[1] ?? null
+  return path?.match(/^projects\/([^/]+)\/log\/drafts\/[^/]+\.md$/)?.[1] ?? null
 }
 
 export function isPublishedPath(path: string | null | undefined): boolean {

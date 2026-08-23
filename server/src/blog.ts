@@ -1,7 +1,7 @@
 // Blog tooling backed by the Eleventy/Obsidian vault at ~/sync/brain/root.
 //
 // Three concerns:
-// - List drafts in scratch/blog-drafts/
+// - List drafts in log/drafts/ + projects/<slug>/log/drafts/ (legacy scratch/blog-drafts/ still read)
 // - List active projects + the most recent log entry per project
 // - Publish a draft: move to log/<YYYY-MM-DD-HH-mm-ss>.md (or
 //   projects/<slug>/log/<…>.md when the draft has a project), stamp
@@ -11,7 +11,8 @@ import { join } from 'node:path'
 import { NoteStore } from './notes.js'
 import { waitForVaultSync } from './syncthing.js'
 
-const DRAFTS_DIR = 'scratch/blog-drafts'
+const DRAFTS_DIR = 'log/drafts'
+const LEGACY_DRAFTS_DIR = 'scratch/blog-drafts'
 const LOG_DIR = 'log'
 const PROJECTS_DIR = 'projects'
 const REBUILD_URL = 'https://yousefamar.com/rebuild'
@@ -32,17 +33,21 @@ function postFiles<T extends { path: string }>(all: T[]): T[] {
   return all.filter((f) => isPostPath(f.path))
 }
 
-// Drafts live in scratch/blog-drafts/ (legacy / no project) OR in the
-// project's own folder at projects/<slug>/drafts/ — a project's writing
-// belongs WITH the project. `public: false` keeps a draft out of every
-// Eleventy collection and permalink regardless of location.
+// Drafts sit BESIDE where they publish: log/drafts/ (unhomed) or
+// projects/<slug>/log/drafts/ (project) — publishing is "move up one level".
+// Legacy scratch/blog-drafts/ files are still recognised. `public: false`
+// keeps a draft out of every Eleventy collection and permalink regardless
+// of location, and the post/permalink regexes only match DIRECT children
+// of log/, so drafts never build.
 export function isDraftPath(path: string): boolean {
-  return path.startsWith(`${DRAFTS_DIR}/`) || /^projects\/[^/]+\/drafts\/[^/]+\.md$/.test(path)
+  return path.startsWith(`${DRAFTS_DIR}/`)
+    || path.startsWith(`${LEGACY_DRAFTS_DIR}/`)
+    || /^projects\/[^/]+\/log\/drafts\/[^/]+\.md$/.test(path)
 }
 
-/** Project slug implied by a draft's location, or null for scratch drafts. */
+/** Project slug implied by a draft's location, or null for unhomed drafts. */
 export function projectForDraftPath(path: string): string | null {
-  return path.match(/^projects\/([^/]+)\/drafts\/[^/]+\.md$/)?.[1] ?? null
+  return path.match(/^projects\/([^/]+)\/log\/drafts\/[^/]+\.md$/)?.[1] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -154,9 +159,9 @@ export async function createDraft(
   const cleanTitle = title.trim()
   if (!cleanTitle) return { ok: false, error: 'Title required' }
   const titleSlug = slugifyTitle(cleanTitle)
-  // Project drafts live IN the project folder; scratch is for unhomed drafts.
+  // Drafts sit beside where they publish; publishing moves them up a level.
   const path = project
-    ? `${PROJECTS_DIR}/${slugifyTitle(project)}/drafts/${titleSlug}.md`
+    ? `${PROJECTS_DIR}/${slugifyTitle(project)}/${LOG_DIR}/drafts/${titleSlug}.md`
     : `${DRAFTS_DIR}/${titleSlug}.md`
 
   const all = await store.list()
@@ -584,7 +589,7 @@ export interface PublishResult {
 
 export async function publishDraft(store: NoteStore, fromPath: string): Promise<PublishResult> {
   if (!isDraftPath(fromPath)) {
-    return { ok: false, error: `Path is not a draft (${DRAFTS_DIR}/ or projects/<slug>/drafts/)` }
+    return { ok: false, error: `Path is not a draft (${DRAFTS_DIR}/ or projects/<slug>/log/drafts/)` }
   }
   let content: string
   try {
