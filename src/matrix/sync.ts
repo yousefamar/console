@@ -574,15 +574,28 @@ async function processJoinedRoom(
         const targetId = relates.event_id as string
         const newContent = content['m.new_content'] as Record<string, unknown> | undefined
         if (newContent) {
-          const target = await db.chatMessages.get(targetId)
-          await db.chatMessages.update(targetId, {
-            originalBody: target?.originalBody ?? target?.body,
+          // The target may be in THIS batch, not yet persisted (a resume/
+          // backfill delivers the original + its edit together) — a bare
+          // db.update() no-ops on the missing row and bulkPut then persists
+          // the pre-edit body, losing the edit. Mirror the reaction handler:
+          // mutate the in-flight copy first, fall back to the DB row.
+          const patch = {
             body: (newContent.body as string) ?? '',
             formattedBody: newContent.format === 'org.matrix.custom.html'
               ? (newContent.formatted_body as string)
               : undefined,
             isEdited: true,
-          })
+          }
+          const inFlight = messages.find((m) => m.id === targetId)
+          if (inFlight) {
+            Object.assign(inFlight, { originalBody: inFlight.originalBody ?? inFlight.body, ...patch })
+          } else {
+            const target = await db.chatMessages.get(targetId)
+            await db.chatMessages.update(targetId, {
+              originalBody: target?.originalBody ?? target?.body,
+              ...patch,
+            })
+          }
         }
       }
     }
