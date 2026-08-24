@@ -195,6 +195,30 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       await state.saveFile()
       if (state.activeFilePath) state.closeFile(state.activeFilePath, true)
     })
+    Vim.defineEx('e', 'e', async () => {
+      const state = useNotesStore.getState()
+      const path = state.activeFilePath
+      if (!path) return
+      // Refuse when dirty — vim's :e also blocks on modified buffers without :e!.
+      if (state.isFileDirty(path)) {
+        console.warn('File has unsaved changes. Use :e! to discard and reload.')
+        return
+      }
+      // Re-read from disk and dispatch into the live editor.
+      const view = state.editorView
+      if (!view || state.editorViewPath !== path) return
+      const { refreshFromDisk } = await import('@/notes/open-subscribe')
+      await refreshFromDisk(path, view)
+    })
+    Vim.defineEx('e!', 'e!', async () => {
+      const state = useNotesStore.getState()
+      const path = state.activeFilePath
+      if (!path) return
+      const view = state.editorView
+      if (!view || state.editorViewPath !== path) return
+      const { refreshFromDisk } = await import('@/notes/open-subscribe')
+      await refreshFromDisk(path, view)
+    })
 
     const extensions = [
       // Intercept app-level shortcuts BEFORE vim consumes them

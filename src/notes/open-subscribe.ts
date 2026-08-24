@@ -76,8 +76,10 @@ async function handleOpen(data: unknown): Promise<void> {
  * shown a stale buffer (and an anchor added by that write jumps nowhere).
  *
  * Skipped when the tab is dirty — never clobber unsaved edits.
+ *
+ * Exported so `:e` can refresh the buffer from disk.
  */
-async function refreshFromDisk(path: string, view: any): Promise<void> {
+export async function refreshFromDisk(path: string, view: any): Promise<void> {
   const notes = useNotesStore.getState()
   if (notes.isFileDirty(path)) return
   let fresh: string
