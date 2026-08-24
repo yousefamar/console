@@ -7,7 +7,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
-_(empty)_
+- Notes editor: send `baseMtime` on save (conditional write) — the SPA gained
+  optimistic-concurrency saves (f866974: reads carry disk mtime, hub 409s on
+  conflict, Overwrite/Keep-editing dialog) after a stale writer clobbered a
+  draft. Android still saves last-writer-wins, so the same clobber class
+  exists there. Hub GET `/notes/file/` already returns `mtime`; PUT accepts
+  `baseMtime` and 409s — client-side only.
 
 ## Built, awaiting release
 
