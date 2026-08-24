@@ -890,7 +890,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // an earlier "review the work" version walked managers into approving
     // their own forks' cards). Only #blocked is actionable by the org.
     if (t.review) return
-    const managerKey = (t.agentKey && agentRegistry.get(t.agentKey)?.manager) || 'al'
+    const managerKey = (t.agentKey && agentRegistry.workingManager(t.agentKey)) || 'al'
     const manager = liveSessionForRole(agentCtx, managerKey)
     if (manager && manager.agentKey !== t.agentKey) {
       wakeSession(agentCtx, manager, [

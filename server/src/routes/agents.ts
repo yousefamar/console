@@ -250,7 +250,7 @@ function reapForkRole(ctx: AgentContext, session: Session): void {
  *  already-live session instead of duplicating. Returns null if the role is gone. */
 export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | null {
   const role = ctx.agentRegistry.get(agentKey)
-  if (!role) return null
+  if (!role || role.folder) return null // folders group; they never hold sessions
   const existing = liveSessionForRole(ctx, agentKey)
   if (existing) return existing
   return createSession(ctx, {
@@ -589,8 +589,11 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
     if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
   } else if (child.agentKey) {
     childRoleKey = child.agentKey
-    const mgr = ctx.agentRegistry.get(child.agentKey)?.manager
-    if (!mgr) return { ok: false, error: 'no parent to merge into — this agent has no manager (it is a root)' }
+    // Skip folder managers: a folder never holds a session, so reviving it
+    // spawns a charterless husk that swallows the merge (the Sainsburys →
+    // "Life admin" loss). The digest must land on a real working ancestor.
+    const mgr = ctx.agentRegistry.workingManager(child.agentKey)
+    if (!mgr) return { ok: false, error: 'no parent to merge into — this agent has no non-folder manager above it' }
     parent = liveSessionForRole(ctx, mgr) ?? reviveAgentRole(ctx, mgr) ?? undefined
     if (!parent) return { ok: false, error: `manager "${mgr}" could not be brought up to receive the merge` }
     kind = 'agent'

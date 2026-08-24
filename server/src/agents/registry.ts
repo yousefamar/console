@@ -210,6 +210,23 @@ export class AgentRegistry {
     return role.charter && role.charter.trim() ? role.charter : null
   }
 
+  /** First non-folder ancestor via manager edges — folders group, they never
+   *  hold sessions, so anything that needs a manager to ACT (receive a merge,
+   *  be woken for a #blocked card) must skip them. Null when the chain ends at
+   *  a root folder (caller decides the fallback, usually 'al'). A dangling
+   *  manager key is returned as-is — the caller's lookup will fail loudly. */
+  workingManager(key: string): string | null {
+    let mgr = this.roles.get(key)?.manager ?? null
+    const seen = new Set<string>()
+    while (mgr && !seen.has(mgr)) {
+      const r = this.roles.get(mgr)
+      if (!r || !r.folder) return mgr
+      seen.add(mgr)
+      mgr = r.manager ?? null
+    }
+    return null
+  }
+
   /** Mint a unique, immutable key from a display title (collision-suffixed). */
   mintKey(title: string): string {
     const base = slugify(title)

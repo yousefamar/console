@@ -33,6 +33,18 @@ function stubRegistry(roles: RoleLite[]) {
     mintKey: (t: string) => t.toLowerCase().replace(/\s+/g, '-'),
     create: (k: string, init: { manager?: string | null; folder?: boolean }) => { const r = role(k, init.manager ?? null, !!init.folder); m.set(k, r); return r },
     setManager: () => {},
+    delete: (k: string) => m.delete(k),
+    workingManager: (k: string) => {
+      let mgr = m.get(k)?.manager ?? null
+      const seen = new Set<string>()
+      while (mgr && !seen.has(mgr)) {
+        const r = m.get(mgr)
+        if (!r || !r.folder) return mgr
+        seen.add(mgr)
+        mgr = r.manager ?? null
+      }
+      return null
+    },
   }
 }
 
@@ -92,6 +104,28 @@ describe('mergeFork', () => {
     const fork = new TestSession('s-f', { claudeSessionId: 'c-f', parentClaudeSessionId: 'c-p', status: 'running' })
     const res = await mergeFork(ctxOf(new Map([['s-p', parent], ['s-f', fork]]), stubRegistry([])), 's-f', 300)
     expect(res.error).toMatch(/busy/i)
+  })
+
+  it('org child with a FOLDER manager merges into the folder\'s own manager, never the folder', async () => {
+    // worker → folder "life-admin" → real manager "al". The Sainsburys loss:
+    // merging revived the folder as a charterless session that ate the digest.
+    const reg = stubRegistry([role('al'), role('life-admin', 'al', true), role('worker', 'life-admin')])
+    const grandparent = new TestSession('s-al', { claudeSessionId: 'c-al', agentKey: 'al', name: 'Al' })
+    const child = new TestSession('s-w', { claudeSessionId: 'c-w', agentKey: 'worker', name: 'Worker', reply: 'grocery order 123 placed.' })
+    const ctx = ctxOf(new Map([['s-al', grandparent], ['s-w', child]]), reg)
+    const res = await mergeFork(ctx, 's-w', 2000)
+    expect(res.ok).toBe(true)
+    expect(res.parentId).toBe('s-al')
+    expect(grandparent.sent.some((s) => s.includes('grocery order 123'))).toBe(true)
+  })
+
+  it('org child whose chain ends at a root folder refuses cleanly', async () => {
+    const reg = stubRegistry([role('lonely-folder', null, true), role('worker', 'lonely-folder')])
+    const child = new TestSession('s-w', { claudeSessionId: 'c-w', agentKey: 'worker', reply: 'x' })
+    const res = await mergeFork(ctxOf(new Map([['s-w', child]]), reg), 's-w', 300)
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/non-folder/i)
+    expect(child.killed).toBe(false)
   })
 
   it('leaves the fork ALIVE if it produces no summary (timeout)', async () => {
