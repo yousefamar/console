@@ -790,7 +790,7 @@ function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void 
         >
           <FileText size={9} className="flex-shrink-0 opacity-50" />
           <span className="truncate">{d.title}</span>
-          <span className="ml-auto flex-shrink-0 text-[9px] text-amber-500">draft</span>
+          <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>
         </button>
       ))}
       {expanded && (posts ?? []).map((p) => (

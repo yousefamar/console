@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useNotesStore, type TreeNode } from '@/store/notes'
 import { showConfirm } from '@/dialog'
+import { isDraftPath } from '@/utils/frontmatter'
 import { ChevronRight, Circle, Eye, EyeOff, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
 
 interface ContextMenu {
@@ -35,7 +36,8 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
   const openNewFileForm = useNotesStore((s) => s.openNewFileForm)
   const showHidden = useNotesStore((s) => s.showHidden)
   // Unsaved buffers — the tree doubles as the tab strip in Spaces (single-
-  // buffer docs): a dirty file is "open", shown with a blue (accent) icon.
+  // buffer docs): a dirty file is "open". Colour vocabulary matches agents:
+  // amber = unsaved (working), blue = unpublished draft (pending attention).
   const openFiles = useNotesStore((s) => s.openFiles)
   const dirtyPaths = useMemo(() => {
     const out = new Set<string>()
@@ -376,9 +378,11 @@ function TreeNodeItem({
       `}
       style={{ paddingLeft }}
     >
-      <File size={10} className={`flex-shrink-0 ${dirtyPaths.has(node.path) ? 'text-accent' : 'text-text-tertiary'}`} />
+      <File size={10} className={`flex-shrink-0 ${dirtyPaths.has(node.path) ? 'text-amber-500' : isDraftPath(node.path) ? 'text-blue-500' : 'text-text-tertiary'}`} />
       <span className="truncate">{displayName}</span>
-      {dirtyPaths.has(node.path) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" title="Unsaved changes" />}
+      {dirtyPaths.has(node.path)
+        ? <span className="ml-auto w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" title="Unsaved changes" />
+        : isDraftPath(node.path) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" title="Unpublished draft" />}
     </div>
   )
 }

@@ -254,7 +254,7 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
                   : 'bg-surface-1 text-text-tertiary hover:text-text-secondary'
               }`}
             >
-              {dirty && <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />}
+              {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />}
               <span className="truncate max-w-32">{displayName(path)}</span>
               <button
                 onClick={(e) => handleClose(path, e)}
@@ -337,7 +337,7 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
             <ProjectPill slug={slug} open={panelOpen} onToggle={() => setPanelOpen((v) => !v)} />
           )}
           {isFileDirty(activeFilePath!) && (
-            <span className="text-[10px] text-accent">modified</span>
+            <span className="text-[10px] text-amber-500">modified</span>
           )}
           {isMobile ? (
             <button
