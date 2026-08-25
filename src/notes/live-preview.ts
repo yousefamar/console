@@ -56,11 +56,23 @@ class WikiLinkWidget extends WidgetType {
       e.preventDefault()
       e.stopPropagation()
       const target = pipeIdx >= 0 ? this.text.slice(0, pipeIdx) : this.text
-      Promise.all([import('@/store/notes'), import('./wiki-target')]).then(([{ useNotesStore }, { resolveWikiTarget }]) => {
-        const { files, openFile } = useNotesStore.getState()
-        const path = resolveWikiTarget(target, files.map((f) => f.path))
-        if (path) void openFile(path)
-      })
+      Promise.all([import('@/store/notes'), import('./wiki-target'), import('@/store/spaces'), import('@/store/ui')])
+        .then(([{ useNotesStore }, { resolveWikiTarget }, { useSpacesStore }, { useUiStore }]) => {
+          const { files, openFile } = useNotesStore.getState()
+          const path = resolveWikiTarget(target, files.map((f) => f.path))
+          if (!path) return
+          // On the Spaces pane the Docs editor is scope-gated to the selected
+          // space — opening an out-of-scope file just shows the placeholder.
+          // Switch to the target's owning project first (else the whole-vault
+          // pseudo-space), mirroring the "/" switcher's pick behaviour.
+          if (useUiStore.getState().activePane === 'spaces') {
+            const spaces = useSpacesStore.getState()
+            const slug = path.match(/^projects\/([^/.]+)/)?.[1] ?? '~vault'
+            if (spaces.activeSlug !== slug) spaces.selectSpace(slug)
+            spaces.setActiveView('docs')
+          }
+          void openFile(path)
+        })
     })
     return span
   }
