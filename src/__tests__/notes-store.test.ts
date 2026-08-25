@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useNotesStore, buildFileTree, slugify } from '@/store/notes'
+import { useNotesStore, buildFileTree, slugify, flushDraftsNow } from '@/store/notes'
 import { initPrefs, getPref } from '@/prefs'
 import type { VaultFile } from '@/notes/vault-adapter'
 
@@ -460,5 +460,84 @@ describe('notes store', () => {
     expect(useNotesStore.getState().openFiles['old.md']).toBeUndefined()
     expect(useNotesStore.getState().openFiles['new.md']).toBeDefined()
     expect(useNotesStore.getState().activeFilePath).toBe('new.md')
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// Draft persistence — unsaved buffers survive a refresh
+// ---------------------------------------------------------------------------
+
+describe('draft persistence', () => {
+  const mem = new Map<string, string>()
+  beforeEach(() => {
+    mem.clear()
+    ;(globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => { mem.set(k, v) },
+      removeItem: (k: string) => { mem.delete(k) },
+    }
+    useNotesStore.setState({
+      adapter: null, vaultConnected: false, openFiles: {}, activeFilePath: null,
+    })
+  })
+
+  const adapter = (disk: string, mtime = 1000) => ({
+    readFile: vi.fn().mockResolvedValue(disk),
+    readFileWithMeta: vi.fn().mockResolvedValue({ content: disk, mtime }),
+    listFiles: vi.fn(), writeFile: vi.fn(), deleteFile: vi.fn(),
+    createDirectory: vi.fn(), renameFile: vi.fn(), exists: vi.fn(),
+  })
+
+  it('a dirty buffer survives a "reload" and keeps its conflict base', async () => {
+    useNotesStore.setState({ adapter: adapter('disk text') as any, vaultConnected: true })
+    await useNotesStore.getState().openFile('a.md')
+    useNotesStore.getState().updateFileContent('a.md', 'my unsaved edits')
+    flushDraftsNow()
+    const persisted = mem.get('console:notes:draft:a.md')!
+    expect(JSON.parse(persisted).content).toBe('my unsaved edits')
+
+    // Simulate reload: fresh store state, same localStorage. Emptying
+    // openFiles via setState LOOKS like a tab close to the module-scope
+    // subscriber (which rightly drops drafts on close) — a real reload has
+    // fresh module state instead — so re-seed the persisted draft after.
+    useNotesStore.setState({ openFiles: {}, activeFilePath: null, adapter: adapter('disk text', 2000) as any })
+    mem.set('console:notes:draft:a.md', persisted)
+    await useNotesStore.getState().openFile('a.md')
+
+    const file = useNotesStore.getState().openFiles['a.md']!
+    expect(file.content).toBe('my unsaved edits')     // draft restored
+    expect(file.savedContent).toBe('disk text')       // still dirty
+    expect(file.baseMtime).toBe(1000)                 // ORIGINAL base — disk moving 1000→2000 must 409 later
+  })
+
+  it('a stale draft (disk caught up) is dropped', async () => {
+    useNotesStore.setState({ adapter: adapter('same') as any, vaultConnected: true })
+    await useNotesStore.getState().openFile('a.md')
+    useNotesStore.setState({ openFiles: {}, activeFilePath: null, adapter: adapter('same', 3000) as any })
+    mem.set('console:notes:draft:a.md', JSON.stringify({ content: 'same', baseMtime: 500, ts: 1 }))
+    await useNotesStore.getState().openFile('a.md')
+
+    expect(useNotesStore.getState().openFiles['a.md']!.content).toBe('same')
+    expect(mem.has('console:notes:draft:a.md')).toBe(false)
+  })
+
+  it('a buffer going clean removes its draft; closing a tab removes its draft', async () => {
+    useNotesStore.setState({ adapter: adapter('disk') as any, vaultConnected: true })
+    await useNotesStore.getState().openFile('a.md')
+    useNotesStore.getState().updateFileContent('a.md', 'dirty')
+    flushDraftsNow()
+    expect(mem.has('console:notes:draft:a.md')).toBe(true)
+
+    // Revert to clean → draft dropped by the subscriber (synchronous).
+    useNotesStore.getState().updateFileContent('a.md', 'disk')
+    expect(mem.has('console:notes:draft:a.md')).toBe(false)
+
+    // Dirty again, then force-close (explicit discard) → draft dropped.
+    useNotesStore.getState().updateFileContent('a.md', 'dirty2')
+    flushDraftsNow()
+    expect(mem.has('console:notes:draft:a.md')).toBe(true)
+    useNotesStore.getState().closeFile('a.md', true)
+    expect(mem.has('console:notes:draft:a.md')).toBe(false)
   })
 })

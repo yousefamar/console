@@ -264,6 +264,69 @@ let restoring = false
  *  sit ABOVE the store (create() runs eagerly; a const below is in its TDZ). */
 const savesInFlight = new Map<string, Promise<void>>()
 
+// ---------------------------------------------------------------------------
+// Draft persistence — unsaved buffers survive a refresh
+//
+// The open-tab SET persists (hub pref above), but a dirty buffer's content
+// lived only in memory — a reload discarded the edits. A store subscriber (at
+// the bottom of this file) mirrors every dirty buffer to localStorage
+// (debounced, plus a synchronous pagehide/hidden flush), and drops the draft
+// the moment the buffer is clean or its tab is closed (a forced close of a
+// dirty tab is an explicit discard). openFile() restores a draft over the
+// disk copy — keeping the draft's ORIGINAL baseMtime, so if the disk moved
+// while the draft slept, the next save trips the existing conflict dialog
+// instead of silently clobbering either side. localStorage, not Dexie: the
+// pagehide flush must be synchronous.
+// ---------------------------------------------------------------------------
+
+const DRAFT_KEY_PREFIX = 'console:notes:draft:'
+const DRAFT_MAX_BYTES = 1_000_000
+const DRAFT_FLUSH_MS = 400
+
+interface NoteDraft { content: string; baseMtime?: number; ts: number }
+
+function draftKey(path: string): string {
+  return DRAFT_KEY_PREFIX + path
+}
+
+function loadDraft(path: string): NoteDraft | null {
+  try {
+    const raw = localStorage.getItem(draftKey(path))
+    if (!raw) return null
+    const d = JSON.parse(raw) as NoteDraft
+    return typeof d.content === 'string' ? d : null
+  } catch {
+    return null
+  }
+}
+
+function removeDraft(path: string): void {
+  try { localStorage.removeItem(draftKey(path)) } catch {}
+}
+
+function writeDraft(path: string, file: OpenFile): void {
+  if (file.content.length > DRAFT_MAX_BYTES) return // quota safety; buffer itself unaffected
+  try {
+    localStorage.setItem(draftKey(path), JSON.stringify({
+      content: file.content, baseMtime: file.baseMtime, ts: Date.now(),
+    } satisfies NoteDraft))
+  } catch {} // quota exceeded — nothing to do, the in-memory buffer still holds the text
+}
+
+const pendingDraftPaths = new Set<string>()
+let draftTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Write all pending dirty buffers NOW (pagehide, tests). */
+export function flushDraftsNow(): void {
+  if (draftTimer) { clearTimeout(draftTimer); draftTimer = null }
+  const { openFiles } = useNotesStore.getState()
+  for (const path of pendingDraftPaths) {
+    const file = openFiles[path]
+    if (file && file.content !== file.savedContent) writeDraft(path, file)
+  }
+  pendingDraftPaths.clear()
+}
+
 function persistTabs(openFiles: Record<string, OpenFile>, activeFilePath: string | null) {
   if (restoring) return
   const data: PersistedTabs = {
@@ -452,10 +515,23 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
     try {
       const { content, mtime } = await adapter.readFileWithMeta(path)
+      // Unsaved edits that survived a reload supersede the disk copy. The
+      // draft's own baseMtime stays the conflict-guard base: if the disk
+      // moved while the draft slept, the next save 409s into the existing
+      // Overwrite/Keep-editing dialog rather than clobbering either side.
+      const draft = loadDraft(path)
+      let buffer = content
+      let base = mtime
+      if (draft && draft.content !== content) {
+        buffer = draft.content
+        base = draft.baseMtime ?? mtime
+      } else if (draft) {
+        removeDraft(path) // disk caught up — draft is stale
+      }
       set((s) => ({
         openFiles: {
           ...s.openFiles,
-          [path]: { path, content, savedContent: content, baseMtime: mtime },
+          [path]: { path, content: buffer, savedContent: content, baseMtime: base },
         },
         activeFilePath: path,
       }))
@@ -894,4 +970,48 @@ if (typeof window !== 'undefined') {
   hubFetch<{ active?: boolean }>('/pen/stream')
     .then((r) => useNotesStore.setState({ penStreaming: r?.active === true }))
     .catch(() => {})
+}
+
+// ---------------------------------------------------------------------------
+// Draft mirror — see the "Draft persistence" block above. Subscribes at module
+// scope (not in a component) so drafts track every buffer edit regardless of
+// which pane hosts the editor.
+// ---------------------------------------------------------------------------
+
+let prevOpenFilesForDrafts: Record<string, OpenFile> = {}
+useNotesStore.subscribe((state) => {
+  const { openFiles } = state
+  if (openFiles === prevOpenFilesForDrafts) return
+  const prev = prevOpenFilesForDrafts
+  prevOpenFilesForDrafts = openFiles
+  // A closed tab's draft dies with it — closing a dirty tab is forced
+  // (closeFile(path, true)), i.e. an explicit discard.
+  for (const path of Object.keys(prev)) {
+    if (!openFiles[path]) {
+      pendingDraftPaths.delete(path)
+      removeDraft(path)
+    }
+  }
+  for (const [path, file] of Object.entries(openFiles)) {
+    if (file === prev[path]) continue
+    if (file.content !== file.savedContent) {
+      pendingDraftPaths.add(path)
+      if (!draftTimer) draftTimer = setTimeout(() => { draftTimer = null; flushDraftsNow() }, DRAFT_FLUSH_MS)
+    } else {
+      // Clean again (saved, :e!-reloaded, or reverted by hand) — drop the draft.
+      pendingDraftPaths.delete(path)
+      removeDraft(path)
+    }
+  }
+})
+
+// The debounce window must never be where the only copy of typed text lives:
+// flush synchronously when the page goes away or is backgrounded (pagehide
+// covers reload/close; hidden covers mobile app-switch, where pagehide may
+// never fire before the process is killed).
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushDraftsNow)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushDraftsNow()
+  })
 }
