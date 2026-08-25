@@ -102,6 +102,9 @@ The debug agent:
 
 ## Key Patterns
 
+### SPA reads a new hub field → optional-guard it, always
+Vite HMR ships the SPA reader IMMEDIATELY; the hub writer only ships at Yousef's next restart. In that window the live hub serves payloads WITHOUT the new field, and an unguarded access (`d.tags.includes(…)`) crashes the whole React tree, not just one component ("screen goes dark"). Three whole-tree crashes from this class in one night (spaces store, blog store, drafts.tags — f46404a). Rule: any new field on a hub payload consumed by the SPA gets `?? []` / `?.` at the point of use, no exceptions.
+
 ### Auth
 - **Hub-managed OAuth** — all tokens stored server-side in `~/.config/console/auth.json`. Frontend bootstraps via `GET /auth/token`. Sign-in opens hub's `/auth/google/start` in a popup.
 - **Multi-account** — hub stores multiple Google accounts. Calendar sidebar can add accounts via OAuth flow. **Adding an ADDITIONAL account must pass `?add=1`** to `/auth/google/start` — that switches `prompt` from `consent` to `select_account consent`. Without it Google silently re-consents whichever account the browser is already signed into, so "Add calendar account" just re-links the existing account and the new one never appears. The plain sign-in path deliberately stays `consent` (no chooser).
