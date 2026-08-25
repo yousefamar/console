@@ -482,7 +482,7 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
   // streaming new strokes you haven't seen. Visible from any other pane.
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
   const penStreaming = useNotesStore((s) => s.penStreaming)
-  const attention = (pane === 'agents' && agentsAttention) || (pane === 'notes' && penStreaming)
+  const attention = ((pane === 'agents' || pane === 'spaces') && agentsAttention) || (pane === 'notes' && penStreaming)
 
   return (
     <button
@@ -499,7 +499,7 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
       {attention && (
         <span
           className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500"
-          title={pane === 'notes' ? 'Pen is streaming into Notes' : 'A session wants your attention (@amar)'}
+          title={pane === 'notes' ? 'Pen is streaming into Notes' : 'A session wants your attention'}
         />
       )}
     </button>
@@ -580,7 +580,11 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
           ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
           : pane === 'notes'
             ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : 0
+            : pane === 'spaces'
+              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+              : 0
+  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
+  const attention = (pane === 'agents' || pane === 'spaces') && agentsAttention
 
   return (
     <button
@@ -595,6 +599,9 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
           <span className="absolute -top-1 -right-2 min-w-[14px] h-3.5 flex items-center justify-center px-0.5 text-[9px] font-medium bg-blue-500 text-white rounded-full">
             {count > 99 ? '99+' : count}
           </span>
+        )}
+        {attention && count === 0 && (
+          <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />
         )}
       </div>
       <span className="truncate w-full text-center">{label}</span>
