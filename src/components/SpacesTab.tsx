@@ -789,7 +789,8 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
 function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
   const posts = useBlogStore((s) => s.postsByArea[slug])
   const loading = useBlogStore((s) => s.areaPostsLoading)
-  const drafts = useBlogStore((s) => s.drafts).filter((d) => d.tags.includes(slug))
+  // `?? []` — a pre-restart hub serves drafts without `tags`; crashing here darkened the whole app.
+  const drafts = useBlogStore((s) => s.drafts).filter((d) => (d.tags ?? []).includes(slug))
   useEffect(() => {
     void useBlogStore.getState().refreshAreaPosts(slug)
     void useBlogStore.getState().refreshDrafts()
