@@ -60,6 +60,9 @@ export const SpacesTab = memo(function SpacesTab() {
     // Spaces works without ever visiting the Notes pane.
     const notes = useNotesStore.getState()
     if (!notes.adapter && !notes.loading) void notes.reconnectVault()
+    // Rail 1 shows unpublished-draft rows per project — needs the draft list
+    // without waiting for a devlog strip to mount.
+    void useBlogStore.getState().refreshDrafts()
   }, [refreshSpaces])
 
   // HMR-recovery self-heal: HMR resets stores but preserves component instances
@@ -216,16 +219,18 @@ function SpacesHandoffBanner() {
 // Rail, top level: all spaces
 // ---------------------------------------------------------------------------
 
-/** Something in a space demanding attention: an unread/alerted agent session
- *  or an unsaved (dirty) open note. Rendered inline under the space's row so
- *  it's reachable in one click from the top level. */
+/** Something in a space demanding attention: an unread/alerted agent session,
+ *  an unsaved (dirty) open note, or an unpublished draft. Rendered inline
+ *  under the space's row so it's reachable in one click from the top level.
+ *  Colours match the agent vocabulary: amber = in progress (working/dirty),
+ *  blue = pending attention (unread/draft). */
 interface SpaceAlert {
   kind: 'session' | 'file'
   id: string           // sessionId | file path
   label: string
   /** 'context' = a non-alerted parent shown only so its alerted fork nests
    *  under it (neutral icon — it isn't itself unread). */
-  level: 'attention' | 'working' | 'unread' | 'context' | 'dirty'
+  level: 'attention' | 'working' | 'unread' | 'context' | 'dirty' | 'draft'
   fork?: boolean
   /** Fork-lineage depth within the space (manager edges) — indents the row. */
   depth?: number
@@ -244,6 +249,7 @@ function SpaceListRail() {
   const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const openFiles = useNotesStore((s) => s.openFiles)
+  const blogDrafts = useBlogStore((s) => s.drafts)
   const { agentBadges, alertsBySlug, unassignedCount } = useMemo(() => {
     const badges = new Map<string, { count: number; unread: boolean; attention: boolean }>()
     const alerts = new Map<string, SpaceAlert[]>()
@@ -283,6 +289,15 @@ function SpaceListRail() {
       if (!m) continue
       push(m[1]!, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
     }
+    // Unpublished drafts (path- or frontmatter-claimed) — skip ones already
+    // shown as a dirty row for the same file.
+    for (const d of blogDrafts) {
+      const slug = d.project ?? d.path.match(/^projects\/([^/.]+)/)?.[1]
+      if (!slug) continue
+      const dirty = openFiles[d.path] && openFiles[d.path]!.content !== openFiles[d.path]!.savedContent
+      if (dirty) continue
+      push(slug, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
+    }
     // Unassigned pseudo-space: live sessions with no space to belong to —
     // role-less (chat forks, one-off creates) or a role with no binding.
     let unassigned = 0
@@ -312,7 +327,7 @@ function SpaceListRail() {
     // itself alerted still appears — as a neutral 'context' row — when one of
     // its forks is. Siblings sort attention > working > unread > context;
     // dirty-file rows trail.
-    const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4 }
+    const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4, draft: 5 }
     for (const [slug, arr] of alerts) {
       const sessionRows = arr.filter((a) => a.kind === 'session')
       const fileRows = arr.filter((a) => a.kind === 'file')
@@ -360,7 +375,7 @@ function SpaceListRail() {
       alerts.set(slug, [...ordered, ...fileRows])
     }
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
-  }, [roles, sessions, openFiles])
+  }, [roles, sessions, openFiles, blogDrafts])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
     const ad = alertsBySlug.has(a.slug) ? 0 : 1
@@ -412,10 +427,10 @@ function SpaceListRail() {
             onClick={() => openAlert(s, a)}
             className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
             style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
-            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : a.level === 'context' ? 'Parent of an alerted fork' : 'Unsaved changes'}
+            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : a.level === 'context' ? 'Parent of an alerted fork' : a.level === 'draft' ? 'Unpublished draft' : 'Unsaved changes'}
           >
             {a.kind === 'file'
-              ? <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+              ? <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', a.level === 'draft' ? 'bg-blue-500' : 'bg-amber-500')} />
               : a.fork
                 ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
                 : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />}
