@@ -169,6 +169,10 @@ interface NotesState {
   // Recently closed tabs (for reopen)
   recentlyClosedPaths: string[]
 
+  // path → ms timestamp of last openFile — "recently VISITED", which mtime
+  // can't express (reading a file doesn't touch it). Session-scoped.
+  openedAt: Record<string, number>
+
   // File browser
   expandedDirs: Set<string>
   selectedPath: string | null
@@ -384,6 +388,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   openFiles: {},
   activeFilePath: null,
   recentlyClosedPaths: [],
+  openedAt: {},
   expandedDirs: new Set<string>(getPref<string[]>(EXPANDED_DIRS_PREF, [])),
   selectedPath: null,
   viewMode: getPref<NotesViewMode>(VIEW_MODE_PREF, 'tree'),
@@ -508,7 +513,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
 
     // Already open — just switch to it
     if (openFiles[path]) {
-      set({ activeFilePath: path })
+      set((s) => ({ activeFilePath: path, openedAt: { ...s.openedAt, [path]: Date.now() } }))
       persistTabs(get().openFiles, path)
       return
     }
@@ -534,6 +539,7 @@ export const useNotesStore = create<NotesState>((set, get) => ({
           [path]: { path, content: buffer, savedContent: content, baseMtime: base },
         },
         activeFilePath: path,
+        openedAt: { ...s.openedAt, [path]: Date.now() },
       }))
       persistTabs(get().openFiles, path)
     } catch (err) {
