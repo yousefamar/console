@@ -166,7 +166,7 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
         )}
         <button
           onClick={() => void useNotesStore.getState().toggleShowHidden()}
-          className={`transition-colors p-0.5 ${showHidden ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'}`}
+          className={`transition-colors p-0.5 text-text-tertiary hover:text-text-secondary`}
           title={showHidden ? 'Hide dotfiles' : 'Show hidden files (dotfiles)'}
         >
           {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
