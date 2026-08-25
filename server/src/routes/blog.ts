@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { NoteStore } from '../notes.js'
-import { listDrafts, listProjects, listProjectPosts, listAllTags, publishDraft, republishPost, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
+import { listDrafts, listProjects, listAreaPosts, listProjectPosts, listAllTags, publishDraft, republishPost, setProjectStatus, createProject, createDraft, listRecentPosts, formatDictation } from '../blog.js'
 import { loadAreaRegistry, lintVaultTags } from '../areas.js'
 import { listSpaces } from '../spaces.js'
 
@@ -88,6 +88,16 @@ export function handleBlogRoutes(
     return true
   }
 
+  // /blog/area/:slug/posts → every published post tagged with this area
+  const areaPostsMatch = path.match(/^\/blog\/area\/([^/]+)\/posts$/)
+  if (areaPostsMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(areaPostsMatch[1]!)
+    listAreaPosts(noteStore, slug)
+      .then((posts) => json(res, 200, posts))
+      .catch((err) => json(res, 500, { error: (err as Error).message }))
+    return true
+  }
+
   // /blog/project/:slug/posts → chronological list of posts tagged with this project
   const postsMatch = path.match(/^\/blog\/project\/([^/]+)\/posts$/)
   if (postsMatch && req.method === 'GET') {
@@ -136,9 +146,9 @@ export function handleBlogRoutes(
   if (path === '/blog/draft' && req.method === 'POST') {
     readBody(req).then(async (body) => {
       try {
-        const { title, project } = JSON.parse(body) as { title?: string; project?: string }
+        const { title, project, area } = JSON.parse(body) as { title?: string; project?: string; area?: string }
         if (!title) return json(res, 400, { ok: false, error: 'Missing `title`' })
-        const result = await createDraft(noteStore, { title, project })
+        const result = await createDraft(noteStore, { title, project, area })
         json(res, result.ok ? 200 : 400, result)
       } catch (err) {
         json(res, 500, { ok: false, error: (err as Error).message })

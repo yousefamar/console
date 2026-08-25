@@ -9,6 +9,7 @@ export interface DraftSummary {
   title: string
   mtime: number
   project: string | null
+  tags: string[]
 }
 
 export interface ProjectSummary {
@@ -53,6 +54,8 @@ export interface CreateDraftArgs {
   title: string
   /** Optional project slug — adds `project: <slug>` to frontmatter and prefixes filename to dodge cross-project collisions. */
   project?: string
+  /** Optional area slug — seeds `tags: [<area>]` so the post belongs to the area from birth. */
+  area?: string
 }
 
 export interface CreateDraftResult {
@@ -86,6 +89,9 @@ interface BlogState {
   /** Registered area/reserved tag slugs from the vault's `_data/areas.json`. Empty = registry unavailable (validation disabled). */
   validTags: string[]
   postsByProject: Record<string, ProjectPost[]>
+  /** Published posts per area tag — ALL history, newest first. */
+  postsByArea: Record<string, PublishedPost[]>
+  areaPostsLoading: boolean
   draftsLoading: boolean
   projectsLoading: boolean
   recentPosts: PublishedPost[]
@@ -94,6 +100,7 @@ interface BlogState {
   refreshProjects: () => Promise<void>
   refreshTags: () => Promise<void>
   refreshProjectPosts: (slug: string) => Promise<void>
+  refreshAreaPosts: (slug: string) => Promise<void>
   refreshRecentPosts: (limit?: number) => Promise<void>
   /** Format dictated text via the hub LLM endpoint. Returns formatted text or null on failure. */
   formatDictation: (text: string) => Promise<{ ok: boolean; text?: string; error?: string }>
@@ -134,6 +141,8 @@ export const useBlogStore = create<BlogState>((set) => ({
   tags: [],
   validTags: [],
   postsByProject: {},
+  postsByArea: {},
+  areaPostsLoading: false,
   draftsLoading: false,
   projectsLoading: false,
   recentPosts: [],
@@ -180,6 +189,16 @@ export const useBlogStore = create<BlogState>((set) => ({
       set((s) => ({ postsByProject: { ...s.postsByProject, [slug]: posts } }))
     } catch {
       // keep last known
+    }
+  },
+
+  refreshAreaPosts: async (slug: string) => {
+    set({ areaPostsLoading: true })
+    try {
+      const posts = await hubFetch<PublishedPost[]>(`/blog/area/${encodeURIComponent(slug)}/posts`, { timeoutMs: 12000 })
+      set((s) => ({ postsByArea: { ...s.postsByArea, [slug]: posts }, areaPostsLoading: false }))
+    } catch {
+      set({ areaPostsLoading: false })
     }
   },
 
@@ -307,7 +326,7 @@ export const useBlogStore = create<BlogState>((set) => ({
     return false
   },
 
-  createDraft: async ({ title, project }): Promise<CreateDraftResult> => {
+  createDraft: async ({ title, project, area }): Promise<CreateDraftResult> => {
     const trimmed = title.trim()
     if (!trimmed) return { ok: false, error: 'Title is required' }
 
@@ -318,7 +337,7 @@ export const useBlogStore = create<BlogState>((set) => ({
     try {
       result = await hubFetch<CreateDraftResult>('/blog/draft', {
         method: 'POST',
-        body: JSON.stringify({ title: trimmed, project }),
+        body: JSON.stringify({ title: trimmed, project, area }),
         timeoutMs: 12000,
       })
     } catch (e) {

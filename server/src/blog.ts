@@ -143,6 +143,7 @@ export interface DraftSummary {
   mtime: number
   /** From the path (projects/<slug>/drafts/) or `project:` frontmatter. */
   project: string | null
+  tags: string[]
 }
 
 export interface CreateDraftResult {
@@ -154,7 +155,7 @@ export interface CreateDraftResult {
 
 export async function createDraft(
   store: NoteStore,
-  { title, project }: { title: string; project?: string },
+  { title, project, area }: { title: string; project?: string; area?: string },
 ): Promise<CreateDraftResult> {
   const cleanTitle = title.trim()
   if (!cleanTitle) return { ok: false, error: 'Title required' }
@@ -192,6 +193,9 @@ export async function createDraft(
       }
     } catch {}
     fm.push('tags:', ...tags.map((t) => `  - ${t}`))
+  } else if (area) {
+    // Area post: the tag IS the area membership — how listAreaPosts finds it.
+    fm.push('tags:', `  - ${area}`)
   } else {
     fm.push('tags: ')
   }
@@ -212,6 +216,7 @@ export async function listDrafts(store: NoteStore): Promise<DraftSummary[]> {
   for (const f of drafts) {
     let title = f.name.replace(/\.md$/, '')
     let project = projectForDraftPath(f.path)
+    let tags: string[] = []
     try {
       const content = await store.read(f.path)
       const { fm, body } = parseFrontmatter(content)
@@ -221,8 +226,9 @@ export async function listDrafts(store: NoteStore): Promise<DraftSummary[]> {
         if (h1) title = h1[1]!.trim()
       }
       if (!project && fm.project) project = fm.project
+      tags = fm.tags ?? []
     } catch {}
-    summaries.push({ path: f.path, title, mtime: f.mtime, project })
+    summaries.push({ path: f.path, title, mtime: f.mtime, project, tags })
   }
   summaries.sort((a, b) => b.mtime - a.mtime)
   return summaries
@@ -345,6 +351,38 @@ export async function listProjectPosts(store: NoteStore, slug: string): Promise<
     } catch {}
   }
   // Newest first — date frontmatter is the canonical order, fall back to mtime
+  out.sort((a, b) => {
+    const ad = a.date ? Date.parse(a.date.replace(' ', 'T')) : a.mtime
+    const bd = b.date ? Date.parse(b.date.replace(' ', 'T')) : b.mtime
+    return bd - ad
+  })
+  return out
+}
+
+/** Every published post carrying the area tag — project posts included (a
+ *  devlog post tagged `ai` belongs in the AI area too). Areas are tags, so
+ *  frontmatter `tags:` is the sole membership test. Unbounded on purpose:
+ *  an area view wants ALL its history, not a recency cap. */
+export async function listAreaPosts(store: NoteStore, areaSlug: string): Promise<PublishedPost[]> {
+  const all = await store.list()
+  const logFiles = postFiles(all)
+  const out: PublishedPost[] = []
+  for (const f of logFiles) {
+    try {
+      const content = await store.read(f.path)
+      const { fm, body } = parseFrontmatter(content)
+      if (!(fm.tags ?? []).includes(areaSlug)) continue
+      let title = fm.title ?? f.name.replace(/\.md$/, '')
+      if (!fm.title) {
+        const h1 = body.match(/^#\s+(.+)$/m)
+        if (h1) title = h1[1]!.trim()
+      }
+      out.push({
+        path: f.path, title, date: fm.date ?? null, mtime: f.mtime,
+        project: projectForPostPath(f.path) ?? fm.project ?? null, tags: fm.tags ?? [],
+      })
+    } catch {}
+  }
   out.sort((a, b) => {
     const ad = a.date ? Date.parse(a.date.replace(' ', 'T')) : a.mtime
     const bd = b.date ? Date.parse(b.date.replace(' ', 'T')) : b.mtime

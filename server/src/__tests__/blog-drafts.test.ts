@@ -23,3 +23,37 @@ describe('draft paths', () => {
     expect(isPostPath('projects/console/log/x.md')).toBe(true)
   })
 })
+
+describe('area posts + area drafts', () => {
+  it('listAreaPosts matches on the tag across log/ AND project logs; createDraft seeds the area tag', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { NoteStore } = await import('../notes.js')
+    const { listAreaPosts, createDraft, listDrafts } = await import('../blog.js')
+    const dir = mkdtempSync(join(tmpdir(), 'blog-'))
+    mkdirSync(join(dir, 'log', 'drafts'), { recursive: true })
+    mkdirSync(join(dir, 'projects', 'console', 'log'), { recursive: true })
+    writeFileSync(join(dir, 'log', '2026-01-01-00-00-00.md'), '---\ntitle: AI post\npublic: true\npost: true\ndate: 2026-01-01 00:00:00\ntags: ai\n---\nbody\n')
+    writeFileSync(join(dir, 'log', '2026-01-02-00-00-00.md'), '---\ntitle: Dev post\npublic: true\npost: true\ndate: 2026-01-02 00:00:00\ntags: dev\n---\nbody\n')
+    writeFileSync(join(dir, 'projects', 'console', 'log', '2026-01-03-00-00-00.md'), '---\ntitle: Console AI devlog\npublic: true\npost: true\ndate: 2026-01-03 00:00:00\ntags:\n  - projects\n  - ai\n---\nbody\n')
+    const store = new NoteStore(dir)
+    try {
+      const ai = await listAreaPosts(store, 'ai')
+      expect(ai.map((p) => [p.title, p.project])).toEqual([
+        ['Console AI devlog', 'console'], // newest first, project post included
+        ['AI post', null],
+      ])
+      expect(await listAreaPosts(store, 'life')).toEqual([])
+
+      const r = await createDraft(store, { title: 'Thoughts on agents', area: 'ai' })
+      expect(r.ok).toBe(true)
+      expect(r.path).toBe('log/drafts/thoughts-on-agents.md')
+      expect(readFileSync(join(dir, r.path!), 'utf-8')).toContain('tags:\n  - ai')
+      const drafts = await listDrafts(store)
+      expect(drafts.find((d) => d.path === r.path)?.tags).toEqual(['ai'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

@@ -26,7 +26,6 @@ import { dictationSeparator } from '@/utils/dictation-text'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
-import { BlogView } from './notes/BlogView'
 import { useBlogStore } from '@/store/blog'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
@@ -539,9 +538,11 @@ export function spaceScopePrefixes(space: SpaceSummary): string[] {
   if (space.kind === 'project') {
     return [`projects/${space.slug}/`, `projects/${space.slug}.md`, `scratch/blog-drafts/${space.slug}-`]  // legacy prefix kept
   }
-  // Areas: writing IS the content (BlogView fills the rail), so the writing
+  // Areas: writing IS the content (AreaDevlog fills the rail), so the writing
   // dirs are the scope — without this, a draft opened from the rail rendered
   // the "No file open" placeholder and the old code bounced to the Notes pane.
+  // Project-homed posts tagged with the area are appended per-path by
+  // ScopedNotesEditor (they live under projects/<slug>/log/).
   return ['log/', 'scratch/blog-drafts/']  // log/ covers log/drafts/ too; scratch = legacy
 }
 
@@ -551,20 +552,26 @@ export function spaceScopePrefixes(space: SpaceSummary): string[] {
  *  publish). A component so the subscription hook has an unconditional home. */
 function ScopedNotesEditor({ space }: { space: SpaceSummary }) {
   const posts = useBlogStore((s) => (space.kind === 'project' ? s.postsByProject[space.slug] : undefined))
+  const areaPosts = useBlogStore((s) => (space.kind === 'area' ? s.postsByArea[space.slug] : undefined))
   const drafts = useBlogStore((s) => s.drafts)
-  // ProjectDevlog also refreshes this, but on mobile the rail (and thus the
-  // devlog strip) isn't mounted while the editor page shows.
+  // ProjectDevlog/AreaDevlog also refresh these, but on mobile the rail
+  // isn't mounted while the editor page shows.
   useEffect(() => {
-    if (space.kind === 'project' && !space.slug.startsWith('~')) void useBlogStore.getState().refreshProjectPosts(space.slug)
+    if (space.slug.startsWith('~')) return
+    if (space.kind === 'project') void useBlogStore.getState().refreshProjectPosts(space.slug)
+    else void useBlogStore.getState().refreshAreaPosts(space.slug)
   }, [space.kind, space.slug])
   const scope = useMemo(
     () => [
       ...spaceScopePrefixes(space),
       ...(posts ?? []).map((p) => p.path),
+      // Area posts can live in project folders (projects/<slug>/log/) — the
+      // area's static prefixes only cover log/, so add them per-path.
+      ...(areaPosts ?? []).map((p) => p.path),
       // Legacy scratch drafts claim a project via frontmatter, not path.
       ...drafts.filter((d) => d.project === space.slug).map((d) => d.path),
     ],
-    [space, posts, drafts],
+    [space, posts, areaPosts, drafts],
   )
   return <NotesEditor scopePrefixes={scope} singleBuffer />
 }
@@ -617,10 +624,15 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
     return sessions.filter((s) => s.status !== 'ended' && !s.isAl && !s.agentKey)
   }, [space.slug, sessions])
 
+  // Areas are "large projects without agents" — an empty Agents box is
+  // noise there. Render the section only when something is actually bound
+  // (projects + pseudo-spaces keep it: the + button / hints live there).
+  const showAgents = space.kind !== 'area' || spaceRoles.length > 0
+
   return (
     <>
       {/* No title header — rail 1's highlighted row already says which space. */}
-      <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
+      {showAgents && <div className="max-h-[40%] flex-shrink-0 overflow-y-auto py-1">
         <RailSection
           label="Agents"
           extra={<SpacesFleetMenu />}
@@ -733,7 +745,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             )
           })}
         </RailSection>
-      </div>
+      </div>}
       {/* Devlog — projects have blogs too: posts tagged project: <slug>,
           newest first, + New post into the blog drafts flow. */}
       {space.kind === 'project' && !space.slug.startsWith('~') && (
@@ -758,12 +770,82 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
           />
         </div>
       ) : (
-        /* Areas: writing IS the content — the blog view (drafts, projects
-           with devlogs, recent posts) fills the space rail. */
-        <div className="flex-1 min-h-0 flex flex-col border-t border-border">
-          <BlogView compact onOpened={() => setActiveView('docs')} />
+        /* Areas: writing IS the content — the area's full post history
+           (devlog-style: every post ever tagged with this area, drafts on
+           top) fills the rail. */
+        <div className={clsx('flex-1 min-h-0 flex flex-col', showAgents && 'border-t border-border')}>
+          <AreaDevlog slug={space.slug} onOpened={() => setActiveView('docs')} />
         </div>
       )}
+    </>
+  )
+}
+
+// Area devlog: the area analogue of ProjectDevlog, but full-height and always
+// expanded — for an area the writing IS the content, not a strip. Lists every
+// draft carrying the area tag, then every published post that has ever been
+// tagged with it (project posts included), newest first, + New post seeded
+// with the tag.
+function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
+  const posts = useBlogStore((s) => s.postsByArea[slug])
+  const loading = useBlogStore((s) => s.areaPostsLoading)
+  const drafts = useBlogStore((s) => s.drafts).filter((d) => d.tags.includes(slug))
+  useEffect(() => {
+    void useBlogStore.getState().refreshAreaPosts(slug)
+    void useBlogStore.getState().refreshDrafts()
+  }, [slug])
+  const newPost = async () => {
+    const title = await showPrompt(`Title for the ${slug} post:`, { title: 'New post', confirmLabel: 'Create' })
+    if (!title?.trim()) return
+    const r = await useBlogStore.getState().createDraft({ title: title.trim(), area: slug })
+    if (r.ok && r.path) {
+      await useNotesStore.getState().openFile(r.path)
+      onOpened()
+    }
+  }
+  const open = (path: string) => { void useNotesStore.getState().openFile(path).then(onOpened) }
+  return (
+    <>
+      <div className="flex flex-shrink-0 items-center justify-between px-3 py-1">
+        <span className="text-[10px] uppercase tracking-wide text-text-tertiary">
+          Posts{posts?.length ? ` (${posts.length})` : ''}
+        </span>
+        <button onClick={() => void newPost()} className="text-text-tertiary hover:text-text-primary" title={`New ${slug} post`}>
+          <Plus size={10} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto pb-2">
+        {drafts.map((d) => (
+          <button
+            key={d.path}
+            onClick={() => open(d.path)}
+            className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-[11px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+          >
+            <FileText size={9} className="flex-shrink-0 opacity-50" />
+            <span className="truncate">{d.title}</span>
+            <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>
+          </button>
+        ))}
+        {(posts ?? []).map((p) => (
+          <button
+            key={p.path}
+            onClick={() => open(p.path)}
+            className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-[11px] text-text-secondary hover:bg-surface-1 hover:text-text-primary"
+            title={p.project ? `${p.title} · ${p.project}` : p.title}
+          >
+            <FileText size={9} className="flex-shrink-0 opacity-50" />
+            <span className="truncate">{p.title}</span>
+            <span className="ml-auto flex flex-shrink-0 items-center gap-1.5">
+              {p.project && <span className="rounded-sm bg-surface-2 px-1 text-[9px] text-text-tertiary">{p.project}</span>}
+              {p.date && <span className="text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
+            </span>
+          </button>
+        ))}
+        {!loading && (posts ?? []).length === 0 && drafts.length === 0 && (
+          <div className="px-3 py-1 text-[10px] text-text-tertiary">No posts tagged {slug} yet</div>
+        )}
+        {loading && !posts && <div className="px-3 py-1 text-[10px] text-text-tertiary">Loading…</div>}
+      </div>
     </>
   )
 }
