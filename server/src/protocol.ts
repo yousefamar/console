@@ -102,7 +102,7 @@ export type HubMessage =
    *  clears the marker. `push` is a transport-only hint (not persisted) telling
    *  the hub whether to also fire a push notification this time (dedup/anti-noise
    *  gated in Session). */
-  | { type: 'session_attention'; sessionId: string; sessionName?: string; needsAttention: AttentionState | null; push?: boolean }
+  | { type: 'session_attention'; sessionId: string; sessionName?: string; needsAttention: AttentionState | null; push?: boolean; notify?: boolean }
   /** The session's queued-until-turn-end prompt changed (queued / appended /
    *  edited / cleared / flushed). Ephemeral — deliberately NOT loggable; the
    *  authoritative value rides SessionInfo.queuedMessage. */

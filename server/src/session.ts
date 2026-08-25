@@ -636,10 +636,20 @@ export class Session extends EventEmitter {
         response: inner,
       },
     }
-    this.approvalPending = false
-    this.pendingApprovalRequest = null
+    this.resolveUserApproval(requestId)
     this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
+  }
+
+  /** Answering a user-facing approval (AskUserQuestion/ExitPlanMode) IS the
+   *  acknowledgement — drop the red marker it raised. Auto-approvals of
+   *  ordinary tools never set pendingApprovalRequest, so a genuine @amar
+   *  marker survives them. */
+  private resolveUserApproval(requestId: string) {
+    const wasUserFacing = this.pendingApprovalRequest?.requestId === requestId
+    this.approvalPending = false
+    this.pendingApprovalRequest = null
+    if (wasUserFacing) this.clearAttention()
   }
 
   /** Deny a tool use request */
@@ -652,8 +662,7 @@ export class Session extends EventEmitter {
         response: { behavior: 'deny', message: reason ?? 'Denied by user' },
       },
     }
-    this.approvalPending = false
-    this.pendingApprovalRequest = null
+    this.resolveUserApproval(requestId)
     this.lastActivityAt = Date.now()
     this.writeStdin(response as any)
   }
@@ -1044,6 +1053,16 @@ export class Session extends EventEmitter {
               toolName,
               input,
             })
+            // A pending question IS "this session wants Yousef" — raise the
+            // same red marker @amar sets so it can't be missed in the sidebar.
+            // push:false — approval_required already fires its own phone push.
+            // Cleared on approve/deny (answering is the acknowledgement).
+            const q = (input as any)?.questions?.[0]?.question ?? (input as any)?.question
+            this.flagAttention(
+              typeof q === 'string' && q ? q :
+                toolName === 'ExitPlanMode' ? 'Plan ready for review' : 'Question for you',
+              false,
+            )
           } else {
             // Auto-approve all other tools (replaces --dangerously-skip-permissions)
             this.approveTool(requestId)
@@ -1493,15 +1512,21 @@ export class Session extends EventEmitter {
 
   private scanForAttention(content: string) {
     if (!mentionsAmar(content)) return
+    this.flagAttention(extractAttentionSnippet(content), true)
+  }
+
+  /** Raise the red attention marker. `wantPush:false` for callers whose event
+   *  already has its own notification (pending AskUserQuestion/ExitPlanMode). */
+  flagAttention(snippet: string, wantPush: boolean) {
     const now = Date.now()
-    this.needsAttention = { ts: now, snippet: extractAttentionSnippet(content) }
+    this.needsAttention = { ts: now, snippet }
 
     // Anti-noise: dedup pushes within 60s; suppress (marker-only) if a session
     // floods ≥5 pushes in 10 min — a misbehaving session per the CLAUDE.md rule.
     this.attentionPushTimes = this.attentionPushTimes.filter((t) => now - t < 10 * 60_000)
     const within60s = now - this.lastAttentionPushAt < 60_000
     const flooding = this.attentionPushTimes.length >= 5
-    const push = !within60s && !flooding
+    const push = wantPush && !within60s && !flooding
     if (push) { this.lastAttentionPushAt = now; this.attentionPushTimes.push(now) }
     if (flooding) console.warn(`[attention] session ${this.id} (${this.name ?? '?'}) flooding @amar — suppressing push, keeping marker`)
 
@@ -1511,6 +1536,9 @@ export class Session extends EventEmitter {
       sessionName: this.name,
       needsAttention: this.needsAttention,
       push,
+      // Desktop-notification hint: false when the triggering event already
+      // notifies (approval_required does its own) — the marker still sticks.
+      notify: wantPush,
     } satisfies HubMessage)
   }
 

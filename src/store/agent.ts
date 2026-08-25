@@ -1585,8 +1585,10 @@ function handleHubMessage(msg: Record<string, unknown>) {
       updateSession(sessionId, { needsAttention })
       // The marker stays sticky until Yousef marks the session read — opening it
       // (even being the active session) does NOT clear it. Only skip the desktop
-      // notification when he's already looking at this session, or during replay.
-      if (needsAttention && !suppressNotifications) {
+      // notification when he's already looking at this session, during replay,
+      // or when the hub says the triggering event already notified (notify:false
+      // — pending-approval markers ride approval_required's own notification).
+      if (needsAttention && !suppressNotifications && msg.notify !== false) {
         const active = useAgentStore.getState().activeSessionId === sessionId
         if (!active) {
           const sess = useAgentStore.getState().sessions.find((s) => s.id === sessionId)
