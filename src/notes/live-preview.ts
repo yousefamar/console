@@ -56,18 +56,28 @@ class WikiLinkWidget extends WidgetType {
       e.preventDefault()
       e.stopPropagation()
       const target = pipeIdx >= 0 ? this.text.slice(0, pipeIdx) : this.text
-      Promise.all([import('@/store/notes'), import('./wiki-target'), import('@/store/spaces'), import('@/store/ui')])
-        .then(([{ useNotesStore }, { resolveWikiTarget }, { useSpacesStore }, { useUiStore }]) => {
-          const { files, openFile } = useNotesStore.getState()
+      Promise.all([import('@/store/notes'), import('./wiki-target'), import('@/store/spaces'), import('@/store/ui'), import('@/utils/frontmatter')])
+        .then(async ([{ useNotesStore }, { resolveWikiTarget }, { useSpacesStore }, { useUiStore }, { parseFrontmatter }]) => {
+          const { files, openFile, adapter } = useNotesStore.getState()
           const path = resolveWikiTarget(target, files.map((f) => f.path))
           if (!path) return
           // On the Spaces pane the Docs editor is scope-gated to the selected
           // space — opening an out-of-scope file just shows the placeholder.
-          // Switch to the target's owning project first (else the whole-vault
-          // pseudo-space), mirroring the "/" switcher's pick behaviour.
+          // Resolve the owning space: path project → frontmatter project →
+          // first tag matching an area (the post's primary area) → Vault.
           if (useUiStore.getState().activePane === 'spaces') {
             const spaces = useSpacesStore.getState()
-            const slug = path.match(/^projects\/([^/.]+)/)?.[1] ?? '~vault'
+            let slug = path.match(/^projects\/([^/.]+)/)?.[1] ?? null
+            if (!slug && adapter) {
+              try {
+                const { fm } = parseFrontmatter(await adapter.readFile(path))
+                const known = new Set(spaces.spaces.map((sp) => sp.slug))
+                slug = (fm.project && known.has(fm.project) ? fm.project : null)
+                  ?? fm.tags?.find((t) => known.has(t))
+                  ?? null
+              } catch { /* unreadable → Vault */ }
+            }
+            slug ??= '~vault'
             if (spaces.activeSlug !== slug) spaces.selectSpace(slug)
             spaces.setActiveView('docs')
           }
