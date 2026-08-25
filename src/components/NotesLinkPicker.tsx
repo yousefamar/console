@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNotesStore } from '@/store/notes'
-import { File, Link, ExternalLink } from 'lucide-react'
+import { wikiTarget, wikiDisplay } from '@/notes/wiki-target'
+import { File, FileSearch, Link, ExternalLink } from 'lucide-react'
 
 type Mode = 'wiki' | 'url'
 
@@ -14,6 +15,7 @@ export function NotesLinkPicker() {
   const closeLinkPicker = useNotesStore((s) => s.closeLinkPicker)
   const context = useNotesStore((s) => s.linkPickerContext)
   const searchFilenames = useNotesStore((s) => s.searchFilenames)
+  const searchContent = useNotesStore((s) => s.searchContent)
   const files = useNotesStore((s) => s.files)
 
   const inputRef = useRef<HTMLInputElement>(null)
@@ -48,12 +50,25 @@ export function NotesLinkPicker() {
           path: f.path,
           name: f.name,
           dir: f.dir,
-          score: 0,
-          positions: new Set<number>(),
+          byContent: false,
         }))
     }
-    return searchFilenames(query)
-  }, [query, files, searchFilenames, mode])
+    // Filename matches first, then full-text content hits the name search
+    // missed — one list, content hits flagged so the row can say why it's here.
+    const byName = searchFilenames(query).map((r) => ({
+      path: r.path, name: r.name, dir: r.dir, byContent: false,
+    }))
+    const seen = new Set(byName.map((r) => r.path))
+    const byContent = searchContent(query)
+      .filter((r) => !seen.has(r.path))
+      .slice(0, 15)
+      .map((r) => {
+        const parts = r.path.split('/')
+        const name = parts.pop() ?? r.path
+        return { path: r.path, name, dir: parts.join('/'), byContent: true }
+      })
+    return [...byName, ...byContent]
+  }, [query, files, searchFilenames, searchContent, mode])
 
   const resultCount = results.length
 
@@ -69,19 +84,23 @@ export function NotesLinkPicker() {
     item?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  const insertWikiLink = useCallback((_: string, name: string) => {
-    const { editorView, linkPickerContext, closeLinkPicker: close } = useNotesStore.getState()
+  const insertWikiLink = useCallback((path: string, _name: string) => {
+    const { editorView, linkPickerContext, closeLinkPicker: close, files: allFiles } = useNotesStore.getState()
     if (!editorView || !linkPickerContext) return
 
     const { from, to, selectedText } = linkPickerContext
-    const linkTarget = name.replace(/\.md$/, '')
-    const insert = selectedText
-      ? `[[${linkTarget}|${selectedText}]]`
-      : `[[${linkTarget}]]`
+    // Target must be unambiguous: basename when unique across the vault,
+    // full path otherwise (many index.mds — a bare "index" link is a coin flip).
+    const linkTarget = wikiTarget(path, allFiles.map((f) => f.path))
+    const display = selectedText || wikiDisplay(path)
+    const insert = `[[${linkTarget}|${display}]]`
 
+    // Select the display segment so typing renames it immediately; two
+    // backspaces remove display + pipe for a bare [[target]].
+    const displayFrom = from + 2 + linkTarget.length + 1
     editorView.dispatch({
       changes: { from, to, insert },
-      selection: { anchor: from + insert.length },
+      selection: { anchor: displayFrom, head: displayFrom + display.length },
     })
     editorView.focus()
     close()
@@ -192,7 +211,7 @@ export function NotesLinkPicker() {
               <input
                 ref={inputRef}
                 type="text"
-                placeholder="Link to file..."
+                placeholder="Search by name or content..."
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
                 className="w-full bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none"
@@ -214,7 +233,9 @@ export function NotesLinkPicker() {
                       i === selectedIndex ? 'bg-surface-2' : 'hover:bg-surface-1'
                     }`}
                   >
-                    <File size={11} className="text-text-tertiary flex-shrink-0" />
+                    {result.byContent
+                      ? <FileSearch size={11} className="text-accent flex-shrink-0" />
+                      : <File size={11} className="text-text-tertiary flex-shrink-0" />}
                     <div className="min-w-0 flex-1">
                       <div className="text-xs text-text-primary truncate">
                         {displayName(result.name)}

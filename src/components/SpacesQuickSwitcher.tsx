@@ -35,6 +35,7 @@ export function SpacesQuickSwitcher() {
   const sessions = useAgentStore((s) => s.sessions)
   const roles = useAgentStore((s) => s.agentRoles)
   const files = useNotesStore((s) => s.files)
+  const openedAt = useNotesStore((s) => s.openedAt)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -89,17 +90,20 @@ export function SpacesQuickSwitcher() {
         },
       })
     }
-    // Files — the whole vault (not just project files), mtime recency.
+    // Files — the whole vault (not just project files). Recency = max(mtime,
+    // last opened this session): "the file I was just reading" must rank even
+    // though reading never touches mtime.
     for (const f of files.slice(0, FILE_CAP)) {
       const m = f.path.match(/^projects\/([^/.]+)/)
       const slug = m?.[1] ?? null
-      bumpSpace(slug, f.mtime)
+      const recency = Math.max(f.mtime, openedAt[f.path] ?? 0)
+      bumpSpace(slug, recency)
       out.push({
         key: `f:${f.path}`,
         title: f.name,
         hint: f.dir || undefined,
         kind: 'file',
-        recency: f.mtime,
+        recency,
         pick: () => {
           if (slug) selectSpace(slug)
           void useNotesStore.getState().openFile(f.path)
@@ -121,7 +125,7 @@ export function SpacesQuickSwitcher() {
       })
     }
     return out
-  }, [spaces, sessions, roles, files, selectSpace, setActiveView])
+  }, [spaces, sessions, roles, files, openedAt, selectSpace, setActiveView])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()

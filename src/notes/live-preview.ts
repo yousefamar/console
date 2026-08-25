@@ -49,17 +49,17 @@ class WikiLinkWidget extends WidgetType {
     // Handle display text with alias: [[target|display]]
     const pipeIdx = this.text.indexOf('|')
     span.textContent = pipeIdx >= 0 ? this.text.slice(pipeIdx + 1) : this.text
-    span.addEventListener('click', (e) => {
+    // mousedown, NOT click: a click's mousedown half moves the CM cursor onto
+    // this line, the live-preview reveal then DESTROYS the widget, and the
+    // click never fires — "clicking wiki-links does nothing".
+    span.addEventListener('mousedown', (e) => {
       e.preventDefault()
       e.stopPropagation()
       const target = pipeIdx >= 0 ? this.text.slice(0, pipeIdx) : this.text
-      // Resolve wiki-link to vault file path and open
-      import('@/store/notes').then(({ useNotesStore }) => {
+      Promise.all([import('@/store/notes'), import('./wiki-target')]).then(([{ useNotesStore }, { resolveWikiTarget }]) => {
         const { files, openFile } = useNotesStore.getState()
-        const match = files.find((f) =>
-          f.name.replace(/\.md$/, '') === target || f.path === target || f.path === target + '.md'
-        )
-        if (match) openFile(match.path)
+        const path = resolveWikiTarget(target, files.map((f) => f.path))
+        if (path) void openFile(path)
       })
     })
     return span
