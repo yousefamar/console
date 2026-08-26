@@ -104,6 +104,20 @@ const LazyApp = lazy(async () => {
   const { wireBoardSubscription } = await import('./kanban/board-subscribe')
   wireBoardSubscription()
 
+  // Agents WS + mic + cron + session-list refresh — this lived in the
+  // always-mounted AgentTab; with that tab gone (Spaces mounts lazily) the
+  // fleet connection must be a boot concern or the sidebar counts, pushes,
+  // and Spaces agent panels all sit empty until first visit.
+  const { useAgentStore } = await import('./store/agent')
+  const { useMicStore } = await import('./store/mic')
+  const { useCronStore } = await import('./store/cron')
+  useAgentStore.getState().connect()
+  useMicStore.getState().init()
+  useCronStore.getState().refreshAll()
+  setInterval(() => useCronStore.getState().refreshAll(), 30_000)
+  // `backgroundProcessCount` is only recomputed hub-side on getInfo() calls.
+  setInterval(() => useAgentStore.getState().listSessions(), 10_000)
+
   const { App } = await import('./App')
   return { default: App }
 })
