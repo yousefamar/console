@@ -559,10 +559,11 @@ function HtmlFence({ code }: { code: string }) {
   const [expanded, setExpanded] = useState(false)
   if (showSource) {
     return (
-      <div>
-        <CodeFence lang="html" code={code} />
-        <button type="button" onClick={() => setShowSource(false)} className="text-[9px] text-text-tertiary hover:text-text-primary">render</button>
-      </div>
+      <CodeFence
+        lang="html"
+        code={code}
+        extra={<button type="button" onClick={() => setShowSource(false)} className="text-[9px] text-text-tertiary hover:text-text-primary">render</button>}
+      />
     )
   }
   const srcdoc = `<!doctype html><html><head><style>body{margin:8px;background:#0a0a0a;color:#e5e5e5;font:13px/1.5 system-ui,sans-serif}</style></head><body>${code}</body></html>`
@@ -571,8 +572,8 @@ function HtmlFence({ code }: { code: string }) {
       <div className="flex items-center justify-between px-2 py-0.5 border-b border-border/40 bg-surface-2">
         <span className="text-[9px] text-text-tertiary uppercase tracking-wider">html</span>
         <div className="flex gap-2">
-          <button type="button" onClick={() => setExpanded((e) => !e)} className="text-[9px] text-text-tertiary hover:text-text-primary">{expanded ? 'collapse' : 'expand'}</button>
           <button type="button" onClick={() => setShowSource(true)} className="text-[9px] text-text-tertiary hover:text-text-primary">source</button>
+          <button type="button" onClick={() => setExpanded((e) => !e)} className="text-[9px] text-text-tertiary hover:text-text-primary">{expanded ? 'collapse' : 'expand'}</button>
         </div>
       </div>
       <iframe
@@ -586,7 +587,7 @@ function HtmlFence({ code }: { code: string }) {
   )
 }
 
-function CodeFence({ lang, code }: { lang?: string; code: string }) {
+function CodeFence({ lang, code, extra }: { lang?: string; code: string; extra?: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
   const copy = useCallback(async () => {
     try {
@@ -601,15 +602,18 @@ function CodeFence({ lang, code }: { lang?: string; code: string }) {
       {(lang || true) && (
         <div className="flex items-center justify-between px-2 py-0.5 border-b border-border/40">
           <span className="text-[9px] text-text-tertiary uppercase tracking-wider">{lang || 'code'}</span>
-          <button
-            type="button"
-            onClick={copy}
-            className="flex items-center gap-1 text-[9px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
-            title="Copy code"
-          >
-            {copied ? <Check size={10} /> : <Copy size={10} />}
-            {copied ? 'copied' : 'copy'}
-          </button>
+          <div className="flex items-center gap-2">
+            {extra}
+            <button
+              type="button"
+              onClick={copy}
+              className="flex items-center gap-1 text-[9px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+              title="Copy code"
+            >
+              {copied ? <Check size={10} /> : <Copy size={10} />}
+              {copied ? 'copied' : 'copy'}
+            </button>
+          </div>
         </div>
       )}
       <pre className="px-2 py-1.5 text-[11px] font-mono overflow-x-auto">
