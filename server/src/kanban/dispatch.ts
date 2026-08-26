@@ -225,7 +225,7 @@ export function buildWindDownEnvelope(opts: {
     'Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
   ]
   steps.push(
-    'Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your `## Memory` — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
+    'Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your auto-memory — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
     'End your turn with a one-line confirmation.',
   )
   return [
