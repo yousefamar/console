@@ -191,11 +191,10 @@ function SpacesHandoffBanner() {
   const acceptHandoff = useAgentStore((s) => s.acceptHandoff)
   const dismissHandoff = useAgentStore((s) => s.dismissHandoff)
   const returnFromHandoff = useAgentStore((s) => s.returnFromHandoff)
-  const agentRoles = useAgentStore((s) => s.agentRoles)
   if (pendingHandoff) {
     return (
       <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
-        <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{agentRoles.find((r) => r.key === pendingHandoff.targetAgentKey)?.title ?? pendingHandoff.targetAgentKey}</span></span>
+        <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{useAgentStore.getState().sessions.find((s2) => s2.agentKey === pendingHandoff.targetAgentKey)?.name ?? pendingHandoff.targetAgentKey}</span></span>
         <button onClick={() => acceptHandoff(pendingHandoff.targetAgentKey)} className="rounded bg-violet-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-violet-500">Talk →</button>
         <button onClick={dismissHandoff} className="text-text-tertiary hover:text-text-primary"><X size={12} /></button>
       </div>
@@ -234,7 +233,7 @@ interface SpaceAlert {
   /** Fork-lineage depth within the space (manager edges) — indents the row. */
   depth?: number
   /** Role key for session rows — the lineage-tree join. */
-  roleKey?: string
+  sessionId?: string
 }
 
 function SpaceListRail() {
@@ -245,7 +244,6 @@ function SpaceListRail() {
 
   // Agent count per space + the concrete alert items (unread/alerted sessions,
   // dirty notes) that make a space "dirty". Dirty spaces sort first.
-  const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const openFiles = useNotesStore((s) => s.openFiles)
   const blogDrafts = useBlogStore((s) => s.drafts)
@@ -261,23 +259,22 @@ function SpaceListRail() {
       const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false }
       badges.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
     }
-    const roleByKey = new Map(roles.filter((r) => !r.folder).map((r) => [r.key, r]))
-    for (const r of roles) {
-      if (r.folder) continue
-      const live = sessions.find((s) => s.agentKey === r.key && s.status !== 'ended')
-      const unread = !!live?.hasUnread
-      const attention = !!live?.needsAttention
-      const working = live?.status === 'running'
-      const slugs = [...(r.project ? [r.project] : []), ...(r.areas ?? [])]
+    const live = sessions.filter((s) => s.status !== 'ended')
+    const byCsid = new Map(live.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
+    for (const s of live) {
+      const unread = !!s.hasUnread
+      const attention = !!s.needsAttention
+      const working = s.status === 'running'
+      const slugs = [...(s.project ? [s.project] : []), ...(s.areas ?? [])]
       for (const slug of slugs) {
         bump(slug, unread, attention)
-        if (live && (unread || attention || working)) {
+        if (unread || attention || working) {
           push(slug, {
-            kind: 'session', id: live.id,
-            label: (live.name || r.title).replace(/\s\(fork\)$/, ''),
+            kind: 'session', id: s.id,
+            label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
             level: attention ? 'attention' : working ? 'working' : 'unread',
-            fork: r.fork,
-            roleKey: r.key,
+            fork: !!s.parentClaudeSessionId,
+            sessionId: s.id,
           })
         }
       }
@@ -297,14 +294,12 @@ function SpaceListRail() {
       if (dirty) continue
       push(slug, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
     }
-    // Unassigned pseudo-space: live sessions with no space to belong to —
-    // role-less (chat forks, one-off creates) or a role with no binding.
+    // Unassigned pseudo-space: live sessions with no space binding
+    // (chat forks, one-off creates).
     let unassigned = 0
-    for (const s of sessions) {
-      if (s.status === 'ended' || s.isAl) continue
-      const r = s.agentKey ? roleByKey.get(s.agentKey) : undefined
-      const bound = !!(r && (r.project || (r.areas ?? []).length))
-      if (bound) continue
+    for (const s of live) {
+      if (s.isAl) continue
+      if (s.project || (s.areas ?? []).length) continue
       unassigned++
       bump(UNASSIGNED_SLUG, !!s.hasUnread, !!s.needsAttention)
       if (s.hasUnread || s.needsAttention || s.status === 'running') {
@@ -312,7 +307,8 @@ function SpaceListRail() {
           kind: 'session', id: s.id,
           label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
           level: s.needsAttention ? 'attention' : s.status === 'running' ? 'working' : 'unread',
-          fork: /\s\(fork\)$/.test(s.name || ''),
+          fork: !!s.parentClaudeSessionId,
+          sessionId: s.id,
         })
       }
     }
@@ -330,36 +326,37 @@ function SpaceListRail() {
     for (const [slug, arr] of alerts) {
       const sessionRows = arr.filter((a) => a.kind === 'session')
       const fileRows = arr.filter((a) => a.kind === 'file')
-      const byKey = new Map(sessionRows.filter((a) => a.roleKey).map((a) => [a.roleKey!, a]))
-      // Pull in non-alerted ancestors (live, same-space) as context rows.
+      const bySession = new Map(sessionRows.map((a) => [a.id, a]))
+      const parentOf = (id: string): typeof live[number] | undefined => {
+        const sess = live.find((x) => x.id === id)
+        return sess?.parentClaudeSessionId ? byCsid.get(sess.parentClaudeSessionId) : undefined
+      }
+      // Pull in non-alerted fork PARENTS (live, same-space) as context rows.
       for (const a of [...sessionRows]) {
-        let cur = a.roleKey ? roleByKey.get(a.roleKey) : undefined
-        while (cur?.manager && roleByKey.has(cur.manager)) {
-          const mgr = roleByKey.get(cur.manager)!
-          if (byKey.has(mgr.key)) break
-          const bound = mgr.project === slug || (mgr.areas ?? []).includes(slug)
+        let cur = parentOf(a.id)
+        while (cur) {
+          if (bySession.has(cur.id)) break
+          const bound = cur.project === slug || (cur.areas ?? []).includes(slug)
           if (!bound) break
-          const live = sessions.find((x) => x.agentKey === mgr.key && x.status !== 'ended')
-          if (!live) break // parked parent — the fork roots itself
           const ctx: SpaceAlert = {
-            kind: 'session', id: live.id,
-            label: (live.name || mgr.title).replace(/\s\(fork\)$/, ''),
-            level: 'context', fork: mgr.fork, roleKey: mgr.key,
+            kind: 'session', id: cur.id,
+            label: (cur.name || cur.id).replace(/\s\(fork\)$/, ''),
+            level: 'context', fork: !!cur.parentClaudeSessionId, sessionId: cur.id,
           }
-          byKey.set(mgr.key, ctx)
+          bySession.set(cur.id, ctx)
           sessionRows.push(ctx)
-          cur = mgr
+          cur = parentOf(cur.id)
         }
       }
       const byRank = (x: SpaceAlert, y: SpaceAlert) => rank[x.level] - rank[y.level] || x.label.localeCompare(y.label)
       const childrenOf = new Map<string, SpaceAlert[]>()
       const roots: SpaceAlert[] = []
       for (const a of sessionRows) {
-        const mgrKey = a.roleKey ? roleByKey.get(a.roleKey)?.manager : null
-        if (mgrKey && byKey.has(mgrKey)) {
-          const kids = childrenOf.get(mgrKey) ?? []
+        const parent = parentOf(a.id)
+        if (parent && bySession.has(parent.id)) {
+          const kids = childrenOf.get(parent.id) ?? []
           kids.push(a)
-          childrenOf.set(mgrKey, kids)
+          childrenOf.set(parent.id, kids)
         } else {
           roots.push(a)
         }
@@ -368,13 +365,13 @@ function SpaceListRail() {
       const emit = (a: SpaceAlert, depth: number) => {
         a.depth = depth
         ordered.push(a)
-        for (const c of (a.roleKey ? childrenOf.get(a.roleKey) ?? [] : []).sort(byRank)) emit(c, depth + 1)
+        for (const c of (childrenOf.get(a.id) ?? []).sort(byRank)) emit(c, depth + 1)
       }
       for (const r of roots.sort(byRank)) emit(r, 0)
       alerts.set(slug, [...ordered, ...fileRows])
     }
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
-  }, [roles, sessions, openFiles, blogDrafts])
+  }, [sessions, openFiles, blogDrafts])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
     const ad = alertsBySlug.has(a.slug) ? 0 : 1
@@ -400,9 +397,7 @@ function SpaceListRail() {
   const sessionMenuItems = (sessionId: string): ContextMenuItem[] => {
     const agent = useAgentStore.getState()
     const sess = agent.sessions.find((x) => x.id === sessionId)
-    const role = sess?.agentKey ? agent.agentRoles.find((r) => r.key === sess.agentKey) : undefined
     return [
-      ...(role ? [{ label: 'Show info', onClick: () => agent.openRoleInfo(role.key) }] : []),
       { label: 'Mark read', onClick: () => agent.markSessionRead(sessionId) },
       { label: 'Mark unread', onClick: () => agent.markSessionUnread(sessionId) },
       { label: 'Rename', onClick: async () => {
@@ -413,7 +408,7 @@ function SpaceListRail() {
       { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sessionId) },
       { label: useMicStore.getState().owner === sessionId ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
       { label: 'Fork', onClick: () => agent.forkSession(sessionId) },
-      ...((role?.fork || role?.manager || sess?.parentClaudeSessionId) ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
+      ...(sess?.parentClaudeSessionId ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
       { label: 'End session', onClick: () => agent.killSession(sessionId), destructive: true },
     ]
   }
@@ -579,56 +574,47 @@ function ScopedNotesEditor({ space }: { space: SpaceSummary }) {
 
 function SpaceRail({ space }: { space: SpaceSummary }) {
   const setActiveView = useSpacesStore((s) => s.setActiveView)
-  const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const selectSession = useAgentStore((s) => s.selectSession)
-  const reviveAgent = useAgentStore((s) => s.reviveAgent)
 
-  // Forks included — they inherit the source role's space binding and are
-  // first-class here (assignable on the board, revivable, chattable).
-  // Arranged as a lineage tree via `manager` edges (a fork's manager is its
-  // source role), depth-indented like the Agents sidebar.
-  const spaceRoles = useMemo(() => {
-    const inSpace = roles.filter((r) => {
-      if (r.folder) return false
+  // Forks included — they inherit the source session's space binding and are
+  // first-class here (assignable on the board, chattable). Arranged as a
+  // lineage tree via parentClaudeSessionId, depth-indented.
+  const spaceSessions = useMemo(() => {
+    const live = sessions.filter((s) => s.status !== 'ended')
+    const inSpace = live.filter((s) => {
       if (space.slug === VAULT_SLUG) return false
-      if (space.slug === UNASSIGNED_SLUG) return !r.project && !(r.areas ?? []).length
-      return space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
+      if (space.slug === UNASSIGNED_SLUG) return !s.isAl && !s.project && !(s.areas ?? []).length
+      return space.kind === 'project' ? s.project === space.slug : (s.areas ?? []).includes(space.slug)
     })
-    const keys = new Set(inSpace.map((r) => r.key))
+    const byCsid = new Map(inSpace.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
     const childrenOf = new Map<string, typeof inSpace>()
-    for (const r of inSpace) {
-      if (r.manager && keys.has(r.manager)) {
-        const arr = childrenOf.get(r.manager) ?? []
-        arr.push(r)
-        childrenOf.set(r.manager, arr)
+    for (const s of inSpace) {
+      const parent = s.parentClaudeSessionId ? byCsid.get(s.parentClaudeSessionId) : undefined
+      if (parent) {
+        const arr = childrenOf.get(parent.id) ?? []
+        arr.push(s)
+        childrenOf.set(parent.id, arr)
       }
     }
-    const out: Array<{ role: (typeof inSpace)[number]; depth: number }> = []
-    const emit = (r: (typeof inSpace)[number], depth: number) => {
-      out.push({ role: r, depth })
-      for (const child of childrenOf.get(r.key) ?? []) emit(child, depth + 1)
+    const out: Array<{ sess: (typeof inSpace)[number]; depth: number }> = []
+    const emit = (s: (typeof inSpace)[number], depth: number) => {
+      out.push({ sess: s, depth })
+      for (const child of childrenOf.get(s.id) ?? []) emit(child, depth + 1)
     }
-    for (const r of inSpace) {
-      if (!r.manager || !keys.has(r.manager)) emit(r, 0)
+    for (const s of inSpace) {
+      const parent = s.parentClaudeSessionId ? byCsid.get(s.parentClaudeSessionId) : undefined
+      if (!parent) emit(s, 0)
     }
     return out
-  }, [roles, space])
-  const sessionFor = (key: string) => sessions.find((s) => s.agentKey === key && s.status !== 'ended')
+  }, [sessions, space])
   const micOwnerId = useMicStore((s) => s.owner)
-
-  // Unassigned: also list live sessions with NO role at all (chat forks,
-  // one-off `con agent create`s) — they have no role row to render.
-  const rolelessSessions = useMemo(() => {
-    if (space.slug !== UNASSIGNED_SLUG) return []
-    return sessions.filter((s) => s.status !== 'ended' && !s.isAl && !s.agentKey)
-  }, [space.slug, sessions])
 
   // Areas are "large projects without agents" — an empty Agents box is
   // noise there. Render the section only when something is actually bound
   // (projects + pseudo-spaces keep it: the + button / hints live there).
-  const showAgents = space.kind !== 'area' || spaceRoles.length > 0
+  const showAgents = space.kind !== 'area' || spaceSessions.length > 0
 
   return (
     <>
@@ -645,8 +631,8 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               if (!title?.trim()) return
               const prompt = await showPrompt('What should it do?', { title: title.trim(), placeholder: 'The opening prompt / charter' })
               if (prompt === null) return
-              // asAgent mints a durable role with the space binding baked into
-              // the role file's frontmatter — it appears here immediately.
+              // asAgent mints a stable agentKey; the space binding rides the
+              // session/manifest — it appears here immediately.
               useAgentStore.getState().createSessionAsAgent(
                 prompt.trim() || 'Await instructions.',
                 undefined,
@@ -656,75 +642,32 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             },
           } : undefined}
         >
-          {spaceRoles.length === 0 && rolelessSessions.length === 0 && (
+          {spaceSessions.length === 0 && (
             <div className="px-3 py-1 text-[10px] text-text-tertiary">
               {space.slug === VAULT_SLUG
                 ? 'The vault has no agents — this is pure notes territory'
-                : `None — stamp ${space.kind === 'project' ? `project: ${space.slug}` : `areas: [${space.slug}]`} in a role file`}
+                : 'None — use + to start an agent in this space'}
             </div>
           )}
-          {spaceRoles.map(({ role: r, depth }) => {
-            const live = sessionFor(r.key)
-            const isActive = live?.id === activeSessionId
-            const alert = live?.needsAttention ? 'attention' : live?.status === 'running' ? 'working' : live?.hasUnread ? 'unread' : null
-            // The live session's name is the CURRENT name (renames land there);
-            // the role file title is only the mint-time name. Strip the noisy
-            // "(fork)" suffix — the glyph + indent already say fork.
-            const displayName = (live?.name || r.title).replace(/\s\(fork\)$/, '')
-            const agent = useAgentStore.getState()
-            const menuItems: ContextMenuItem[] = [
-              { label: 'Show info', onClick: () => agent.openRoleInfo(r.key) },
-              ...(live ? [
-                { label: 'Mark read', onClick: () => agent.markSessionRead(live.id) },
-                { label: 'Mark unread', onClick: () => agent.markSessionUnread(live.id) },
-                { label: 'Rename', onClick: async () => {
-                  const name = await showPrompt('Session name', { title: 'Rename', defaultValue: live.name ?? '' })
-                  if (name?.trim()) agent.renameSession(live.id, name.trim())
-                } },
-                { label: 'Generate title', onClick: () => agent.generateTitle(live.id) },
-                { label: 'Reload history', onClick: () => agent.reloadSessionHistory(live.id) },
-                { label: useMicStore.getState().owner === live.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === live.id ? 'al' : live.id) },
-                { label: 'Fork', onClick: () => agent.forkSession(live.id) },
-                ...(r.fork || r.manager ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(live.id) }] : []),
-                { label: 'End session', onClick: () => agent.killSession(live.id), destructive: true },
-              ] : [
-                { label: 'Revive', onClick: () => reviveAgent(r.key) },
-              ]),
-            ]
-            return (
-              <ContextMenu key={r.key} items={menuItems}>
-                <button
-                  onClick={() => { if (live) selectSession(live.id); else reviveAgent(r.key) }}
-                  className={clsx(
-                    'flex w-full items-center gap-2 py-1 pr-3 text-left text-xs transition-colors',
-                    isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
-                  )}
-                  style={{ paddingLeft: `${12 + depth * 14}px` }}
-                  title={`${r.fork ? 'fork · ' : ''}${live ? displayName : `${displayName} (parked — click to revive)`} · @${r.key}`}
-                >
-                  {r.fork
-                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
-                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
-                  <span className={clsx('truncate', !live && 'opacity-60')}>{displayName}</span>
-                  <span className="ml-auto flex items-center gap-1 flex-shrink-0">
-                    {live && <SessionBadges session={live} />}
-                    {live && micOwnerId === live.id && <Mic size={9} className="text-text-primary" />}
-                    {live?.hibernated && <span title="Hibernated — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
-                    {!live && <span className="text-[9px] text-text-tertiary">⏾</span>}
-                  </span>
-                </button>
-              </ContextMenu>
-            )
-          })}
-          {rolelessSessions.map((sess) => {
+          {spaceSessions.map(({ sess, depth }) => {
             const isActive = sess.id === activeSessionId
             const alert = sess.needsAttention ? 'attention' : sess.status === 'running' ? 'working' : sess.hasUnread ? 'unread' : null
+            const isFork = !!sess.parentClaudeSessionId
+            // Strip the noisy "(fork)" suffix — the glyph + indent already say fork.
+            const displayName = (sess.name || sess.id).replace(/\s\(fork\)$/, '')
             const agent = useAgentStore.getState()
-            const name = (sess.name || sess.id).replace(/\s\(fork\)$/, '')
             const menuItems: ContextMenuItem[] = [
               { label: 'Mark read', onClick: () => agent.markSessionRead(sess.id) },
               { label: 'Mark unread', onClick: () => agent.markSessionUnread(sess.id) },
+              { label: 'Rename', onClick: async () => {
+                const name = await showPrompt('Session name', { title: 'Rename', defaultValue: sess.name ?? '' })
+                if (name?.trim()) agent.renameSession(sess.id, name.trim())
+              } },
+              { label: 'Generate title', onClick: () => agent.generateTitle(sess.id) },
               { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sess.id) },
+              { label: useMicStore.getState().owner === sess.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sess.id ? 'al' : sess.id) },
+              { label: 'Fork', onClick: () => agent.forkSession(sess.id) },
+              ...(isFork ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sess.id) }] : []),
               { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
             ]
             return (
@@ -732,16 +675,20 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                 <button
                   onClick={() => selectSession(sess.id)}
                   className={clsx(
-                    'flex w-full items-center gap-2 py-1 pr-3 pl-3 text-left text-xs transition-colors',
+                    'flex w-full items-center gap-2 py-1 pr-3 text-left text-xs transition-colors',
                     isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
                   )}
-                  title={`${name} · no role`}
+                  style={{ paddingLeft: `${12 + depth * 14}px` }}
+                  title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}`}
                 >
-                  <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
-                  <span className="truncate">{name}</span>
+                  {isFork
+                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
+                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
+                  <span className="truncate">{displayName}</span>
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
                     <SessionBadges session={sess} />
-                    {sess.hibernated && <span title="Hibernated — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
+                    {micOwnerId === sess.id && <Mic size={9} className="text-text-primary" />}
+                    {sess.hibernated && <span title="Dormant — wakes on next message"><Moon size={9} className="text-text-tertiary" /></span>}
                   </span>
                 </button>
               </ContextMenu>
@@ -973,7 +920,6 @@ function BoardView() {
   const setCardModel = useSpacesStore((s) => s.setCardModel)
   const editCard = useSpacesStore((s) => s.editCard)
   const deleteCard = useSpacesStore((s) => s.deleteCard)
-  const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const activeSlug = useSpacesStore((s) => s.activeSlug)
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
@@ -1011,27 +957,25 @@ function BoardView() {
   }
 
   const columnTitles = board.columns.map((c) => c.title)
-  // Assignable = any non-folder role, forks included — labelled by the live
-  // session's CURRENT name (renames land there) falling back to the role
-  // title, never the raw @key; space-bound roles sort first.
-  const liveByKey = new Map(sessions.filter((x) => x.status !== 'ended' && x.agentKey).map((x) => [x.agentKey!, x]))
-  const inSpace = (r: (typeof roles)[number]) =>
-    r.project === activeSlug || (r.areas ?? []).includes(activeSlug ?? '')
-  const assignable = roles
-    .filter((r) => !r.folder)
-    .map((r) => ({
-      key: r.key,
-      label: (liveByKey.get(r.key)?.name || r.title).replace(/\s\(fork\)$/, ''),
-      fork: !!r.fork,
-      bound: inSpace(r),
-      live: liveByKey.has(r.key),
+  // Assignable = any live keyed session, forks included — labelled by the
+  // session's CURRENT name, never the raw @key; space-bound sessions sort first.
+  const liveKeyed = sessions.filter((x) => x.status !== 'ended' && x.agentKey)
+  const liveByKey = new Map(liveKeyed.map((x) => [x.agentKey!, x]))
+  const byCsid = new Map(liveKeyed.filter((x) => x.claudeSessionId).map((x) => [x.claudeSessionId!, x]))
+  const assignable = liveKeyed
+    .map((x) => ({
+      key: x.agentKey!,
+      label: (x.name || x.agentKey!).replace(/\s\(fork\)$/, ''),
+      fork: !!x.parentClaudeSessionId,
+      bound: x.project === activeSlug || (x.areas ?? []).includes(activeSlug ?? ''),
+      live: true,
     }))
-    .sort((a, b) => Number(b.bound) - Number(a.bound) || Number(b.live) - Number(a.live) || a.label.localeCompare(b.label))
+    .sort((a, b) => Number(b.bound) - Number(a.bound) || a.label.localeCompare(b.label))
   const labelFor = (key: string): string => {
     const hit = assignable.find((a) => a.key === key)
     if (hit) return hit.label
-    // Reaped fork (merged after Done) — no role file left. Fall back to the
-    // root role's label so the badge stays readable instead of the raw key.
+    // Merged/dead fork — no session left. Fall back to the root key's label
+    // so the badge stays readable instead of the raw key.
     const root = rootOf(key)
     return root !== key ? (assignable.find((a) => a.key === root)?.label ?? key) : key
   }
@@ -1041,36 +985,31 @@ function BoardView() {
     const agent = useAgentStore.getState()
     const live = agent.sessions.find((x) => x.agentKey === key && x.status !== 'ended')
     if (live) agent.selectSession(live.id)
-    else {
-      useAgentStore.setState({ pendingSessionActivate: true })
-      agent.reviveAgent(key)
-    }
   }
-  // The filter groups by ROOT role, not raw @key: every dispatched card is
+  // The filter groups by ROOT session, not raw @key: every dispatched card is
   // reassigned to a per-ticket fork key, so filtering by literal assignee
-  // yields one useless chip per card. Walk fork manager-edges up to the
-  // first non-fork role (or the topmost known ancestor) and filter on that.
-  const roleByKey = new Map(roles.map((r) => [r.key, r]))
+  // yields one useless chip per card. Walk fork lineage up to the first
+  // non-fork session; for dead forks fall back to the key convention
+  // (`<root>-<blockId>-fork` — blockId may itself contain dashes): strip
+  // `-fork` then drop trailing segments until a known key matches, so
+  // orphaned cards still group under their root.
   const rootOf = (key: string): string => {
-    let cur = roleByKey.get(key)
+    let cur = liveByKey.get(key)
     let k = key
-    for (let i = 0; cur?.fork && cur.manager && i < 6; i++) {
-      k = cur.manager
-      cur = roleByKey.get(cur.manager)
+    for (let i = 0; cur?.parentClaudeSessionId && i < 6; i++) {
+      const parent = byCsid.get(cur.parentClaudeSessionId)
+      if (!parent?.agentKey) break
+      k = parent.agentKey
+      cur = parent
     }
-    // A merged fork's role file is reaped — no edges to walk. Ticket-fork
-    // keys are minted as `<root>-<blockId>-fork` (blockId may itself contain
-    // dashes: word-pair ids like `bold-fox`); strip `-fork` then drop trailing
-    // segments until a known role matches, so orphaned cards still group
-    // under their root.
-    if (!roleByKey.has(k)) {
-      let s = k.replace(/-fork(-\d+)?$/, '')
-      while (s && !roleByKey.has(s)) {
-        const i = s.lastIndexOf('-')
+    if (!liveByKey.has(k)) {
+      let str = k.replace(/-fork(-\d+)?$/, '')
+      while (str && !liveByKey.has(str)) {
+        const i = str.lastIndexOf('-')
         if (i === -1) break
-        s = s.slice(0, i)
+        str = str.slice(0, i)
       }
-      if (s && roleByKey.has(s)) return s
+      if (str && liveByKey.has(str)) return str
     }
     return k
   }
@@ -1745,24 +1684,17 @@ function CardTile({ card, assigneeLabel, onAssign, onOpen, onDragStart, onDragEn
 // ---------------------------------------------------------------------------
 
 function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
-  const roles = useAgentStore((s) => s.agentRoles)
   const sessions = useAgentStore((s) => s.sessions)
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const [collapsed, setCollapsed] = useState(false)
 
   // Show the session only when it belongs to this space (rail owns selection).
-  const spaceKeys = useMemo(
-    () => new Set(roles.filter((r) => {
-      if (r.folder) return false
-      if (space.slug === UNASSIGNED_SLUG) return !r.project && !(r.areas ?? []).length
-      return space.kind === 'project' ? r.project === space.slug : (r.areas ?? []).includes(space.slug)
-    }).map((r) => r.key)),
-    [roles, space],
-  )
   const activeSession = sessions.find((s) => s.id === activeSessionId && s.status !== 'ended')
   const activeBelongs = space.slug === UNASSIGNED_SLUG
-    ? !!activeSession && !activeSession.isAl && (!activeSession.agentKey || spaceKeys.has(activeSession.agentKey))
-    : !!activeSession?.agentKey && spaceKeys.has(activeSession.agentKey)
+    ? !!activeSession && !activeSession.isAl && !activeSession.project && !(activeSession.areas ?? []).length
+    : !!activeSession && (space.kind === 'project'
+        ? activeSession.project === space.slug
+        : (activeSession.areas ?? []).includes(space.slug))
 
   if (collapsed) {
     return (
@@ -1792,7 +1724,7 @@ function SpaceAgentPanel({ space }: { space: SpaceSummary }) {
           <AgentSessionView />
         ) : (
           <div className="flex-1 grid place-items-center px-4 text-center text-[11px] text-text-tertiary">
-            {spaceKeys.size ? 'Pick an agent in the left rail' : 'No agents bound to this space yet'}
+            Pick an agent in the left rail
           </div>
         )}
       </div>

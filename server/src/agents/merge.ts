@@ -40,22 +40,6 @@ export function buildMergeRequest(parentTitle: string): string {
   ].join('\n')
 }
 
-/** Injected into an ORG CHILD (a separate agent reporting to this manager, not a
- *  fork) to elicit its hand-back summary before it's absorbed + closed. Unlike a
- *  fork it shares no conversation history, so it summarises its whole role. */
-export function buildChildMergeRequest(parentTitle: string): string {
-  return [
-    `[MERGE — folding you into your manager, ${parentTitle}]`,
-    '',
-    `You are being merged into ${parentTitle} and then closed — they are absorbing`,
-    'your role. Write a CONCISE hand-back summary of everything they must take over:',
-    'what you know, have done, decided, and produced (files, PRs, commands, contacts),',
-    'the current state of your domain, and any open threads or warnings. Pull in the',
-    'durable notes from your `## Memory`. Plain prose, no preamble — just the summary.',
-    'This is your final message; you will be closed right after.',
-  ].join('\n')
-}
-
 /** Injected into the parent — the child's digest, framed as an absorb-this event.
  *  `kind` distinguishes a disposable fork from an absorbed org child/agent. */
 export function buildMergeEnvelope(childName: string, summary: string, kind: 'fork' | 'agent' = 'fork'): string {

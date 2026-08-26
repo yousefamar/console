@@ -296,8 +296,6 @@ Commands:
   chat          Talk to another agent (forks it, returns its reply)
   merge         Merge a fork back into its parent (summary folded in), then close it
   model         Inspect/switch the model all agents spawn with
-  role          Inspect/maintain durable org-chart roles
-  revive        Spawn a fresh session for a parked role
 
 Examples:
   con agent create "Fix the auth bug" --cwd /path/to/project --wait
@@ -306,9 +304,6 @@ Examples:
   con agent chat "Gravel general" "what auth does the control plane use?"
   con agent chat --id <conv-id> "follow-up question"
   con agent chat --id <conv-id> --end
-  con agent role                     # list roles + org tree
-  con agent role manager feeds-tab al
-  con agent revive feeds-tab
 `.trim(),
 
   auth: `

@@ -5,7 +5,6 @@
 // are JSON-encoded instances of these types.
 // ============================================================================
 
-import type { AgentRole, OrgNode } from './agents/registry.js'
 import type { TodoItem } from './agents/todo-store.js'
 
 export type { TodoItem }
@@ -30,7 +29,7 @@ export type ClientMessage =
   | { type: 'get_session_history'; sessionId: string }
   | { type: 'rename_session'; sessionId: string; name: string }
   | { type: 'generate_title'; sessionId: string }
-  | { type: 'fork_session'; sessionId: string; cwd?: string; seedRole?: boolean; seed?: boolean }
+  | { type: 'fork_session'; sessionId: string; cwd?: string; seed?: boolean }
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
   | { type: 'set_collapsed_groups'; collapsed: string[] }
@@ -48,13 +47,6 @@ export type ClientMessage =
   /** Pin ONE session to a model (mid-session; fast set_model path with respawn
    *  fallback). `model: null` clears the pin — back to the hub-wide model. */
   | { type: 'set_session_model'; sessionId: string; model: string | null }
-  | { type: 'list_agents' }
-  | { type: 'set_manager'; agentKey: string; manager: string | null }
-  | { type: 'get_agent_role'; agentKey: string }
-  | { type: 'revive_agent'; agentKey: string }
-  | { type: 'delete_role'; agentKey: string }
-  | { type: 'create_folder'; title: string; manager?: string | null }
-  | { type: 'rename_role'; agentKey: string; title: string }
   /** Merge a fork back into its parent: the fork summarises, the digest is
    *  injected into the parent, then the fork is killed. */
   | { type: 'merge_session'; sessionId: string }
@@ -115,10 +107,6 @@ export type HubMessage =
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
   | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; backend?: 'first_party' | 'bedrock'; autoFellBack?: boolean; failedModel?: string }
-  /** Org-chart roles + derived manager tree. Pushed on connect and on every
-   *  registry change (an agent editing its file, a reparent, create/delete). */
-  | { type: 'agents_list'; roles: AgentRole[]; tree: OrgNode[] }
-  | { type: 'agent_role'; role: AgentRole }
   /** An agent emitted `@handoff(<agentKey>)` — Al wants to put Yousef in direct
    *  contact with that agent. The SPA renders an opt-in "Talk to X" affordance. */
   | { type: 'session_handoff'; sessionId: string; targetAgentKey: string }
@@ -203,9 +191,14 @@ export interface SessionInfo {
   /** claudeSessionId of the parent session if this is a fork — nests forks
    *  under their parent in the sidebar. */
   parentClaudeSessionId?: string
-  /** Durable org-chart role key (agents/registry.ts) this session embodies, if
-   *  any. The client joins to the role tree (agents_list) to find its manager. */
+  /** Stable slug for this session — board `@key` addressing + the CONSOLE_AGENT_KEY
+   *  env the `con` CLI forwards for actor attribution. Pure identifier, no file. */
   agentKey?: string
+  /** Vault project slug this session is bound to (Spaces agent panel, board
+   *  default-owner). */
+  project?: string
+  /** PARA area tags this session is bound to. */
+  areas?: string[]
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   prompt: string

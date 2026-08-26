@@ -89,33 +89,32 @@ const ACTIVE_SLUG_KEY = 'console:spaces:active'
 
 /** Opening a project focuses its default agent (the "general purpose" one)
  *  in the agent panel — same picking order as the server's unassigned-card
- *  auto-assign (resolveDefaultOwner): single bound role → it; several → the
- *  `-general`-suffixed one; else first by key. Board frontmatter
- *  `default_owner:` wins when the board is loaded. Only LIVE sessions are
- *  selected — merely clicking a project must never revive/spawn a process.
- *  A session already active in this space is left alone. */
+ *  auto-assign (resolveDefaultOwner): single bound session → it; several →
+ *  the `-general`-suffixed one; else first by key. Board frontmatter
+ *  `default_owner:` wins when the board is loaded. A session already active
+ *  in this space is left alone. */
 async function selectDefaultAgent(slug: string): Promise<void> {
   if (slug.startsWith('~')) return
   const { useAgentStore } = await import('@/store/agent')
   const agent = useAgentStore.getState()
-  const bound = agent.agentRoles.filter((r) => !r.folder && !r.fork && (r.project === slug || (r.areas ?? []).includes(slug)))
+  const inSpace = (x: { project?: string; areas?: string[] }) => x.project === slug || (x.areas ?? []).includes(slug)
+  const bound = agent.sessions.filter((x) => x.status !== 'ended' && x.agentKey && !x.parentClaudeSessionId && inSpace(x))
   if (bound.length === 0) return
   // Keep the current selection if it already belongs to this space.
   const cur = agent.sessions.find((x) => x.id === agent.activeSessionId && x.status !== 'ended')
-  if (cur?.agentKey && agent.agentRoles.some((r) => r.key === cur.agentKey && (r.project === slug || (r.areas ?? []).includes(slug)))) return
+  if (cur && inSpace(cur)) return
   // Board frontmatter default_owner (if the board happens to be loaded for
   // this slug) → picking order fallback.
   const st = useSpacesStore.getState()
   const fmOwner = st.activeSlug === slug && st.board
     ? boardDefaultOwner(st.board.header.join('\n'))
     : null
-  const pick = (fmOwner && bound.find((r) => r.key === fmOwner))
+  const pick = (fmOwner && bound.find((x) => x.agentKey === fmOwner))
     ?? (bound.length === 1 ? bound[0] : undefined)
-    ?? bound.find((r) => r.key.endsWith('general') || /\bgeneral$/i.test(r.title))
-    ?? [...bound].sort((a, b) => a.key.localeCompare(b.key))[0]
+    ?? bound.find((x) => x.agentKey!.endsWith('general') || /\bgeneral$/i.test(x.name ?? ''))
+    ?? [...bound].sort((a, b) => a.agentKey!.localeCompare(b.agentKey!))[0]
   if (!pick) return
-  const live = agent.sessions.find((x) => x.agentKey === pick.key && x.status !== 'ended')
-  if (live) agent.selectSession(live.id)
+  agent.selectSession(pick.id)
 }
 
 /** Address a card for the /board/* API: `^id` when stamped (unambiguous),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildMergeRequest, buildChildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
+import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 
 describe('buildForkSeed', () => {
   it('names the parent and marks the inherited/own-branch boundary', () => {
@@ -18,18 +18,6 @@ describe('buildMergeRequest', () => {
     expect(r).toContain('MERGE')
     expect(r).toMatch(/concise|summary/i)
     expect(r).toMatch(/final message|closed/i)
-  })
-})
-
-describe('buildChildMergeRequest', () => {
-  it('names the manager and asks the org child to summarise its whole role', () => {
-    const r = buildChildMergeRequest('Console general')
-    expect(r).toContain('Console general')
-    expect(r).toContain('MERGE')
-    expect(r).toMatch(/manager/i)
-    expect(r).toMatch(/Memory/) // org child folds in its durable notes
-    expect(r).toMatch(/final message|closed/i)
-    expect(r).not.toMatch(/you are a fork/i) // it's NOT a fork
   })
 })
 

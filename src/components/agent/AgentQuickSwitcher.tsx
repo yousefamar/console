@@ -2,36 +2,27 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, GitBranch, Circle } from 'lucide-react'
 import { useAgentStore } from '@/store/agent'
 
-// "/" quick-switcher for the Agents pane — fuzzy-find an agent by name and jump
-// to it. Lists live sessions (selectable) + parked roles (revive-on-pick).
-// Works in both the list and org-chart views (it's a modal overlay).
+// "/" quick-switcher for the Agents pane — fuzzy-find an agent by name and
+// jump to it. Lists live sessions (modal overlay).
 
-interface Entry { id?: string; key?: string; title: string; kind: 'session' | 'parked'; status?: string; isFork?: boolean }
+interface Entry { id?: string; title: string; kind: 'session'; status?: string; isFork?: boolean }
 
 export function AgentQuickSwitcher() {
   const [query, setQuery] = useState('')
   const [sel, setSel] = useState(0)
   const close = useAgentStore((s) => s.closeAgentSwitcher)
   const sessions = useAgentStore((s) => s.sessions)
-  const roles = useAgentStore((s) => s.agentRoles)
   const selectSession = useAgentStore((s) => s.selectSession)
-  const reviveAgent = useAgentStore((s) => s.reviveAgent)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
   const entries = useMemo<Entry[]>(() => {
-    const live = sessions.filter((s) => s.status !== 'ended')
-    const liveKeys = new Set(live.map((s) => s.agentKey).filter(Boolean) as string[])
-    const sessionEntries: Entry[] = live.map((s) => ({
-      id: s.id, title: s.name || s.id, kind: 'session', status: s.status, isFork: /\s\(fork\)$/.test(s.name || ''),
+    return sessions.filter((s) => s.status !== 'ended').map((s) => ({
+      id: s.id, title: s.name || s.id, kind: 'session' as const, status: s.status, isFork: !!s.parentClaudeSessionId || /\s\(fork\)$/.test(s.name || ''),
     }))
-    const parkedEntries: Entry[] = roles
-      .filter((r) => !r.folder && r.key !== 'al' && !liveKeys.has(r.key))
-      .map((r) => ({ key: r.key, title: r.title, kind: 'parked' as const }))
-    return [...sessionEntries, ...parkedEntries]
-  }, [sessions, roles])
+  }, [sessions])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -48,14 +39,9 @@ export function AgentQuickSwitcher() {
 
   const pick = useCallback((e: Entry | undefined) => {
     if (!e) return
-    if (e.kind === 'session' && e.id) {
-      selectSession(e.id)
-    } else if (e.kind === 'parked' && e.key) {
-      useAgentStore.setState({ pendingSessionActivate: true }) // open the revived agent when it spawns
-      reviveAgent(e.key)
-    }
+    if (e.id) selectSession(e.id)
     close()
-  }, [selectSession, reviveAgent, close])
+  }, [selectSession, close])
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.key === 'ArrowDown' || (ev.ctrlKey && ev.key === 'n')) { ev.preventDefault(); setSel((i) => Math.min(i + 1, results.length - 1)) }
@@ -82,15 +68,14 @@ export function AgentQuickSwitcher() {
           {results.length === 0 && <div className="px-3 py-6 text-center text-xs text-text-tertiary">No agents match</div>}
           {results.map((e, i) => (
             <button
-              key={e.id ?? e.key}
+              key={e.id}
               onClick={() => pick(e)}
               onMouseEnter={() => setSel(i)}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${i === sel ? 'bg-surface-2' : 'hover:bg-surface-1'}`}
             >
               {e.isFork && <GitBranch size={11} className="flex-shrink-0 text-violet-400/70" />}
               <span className="flex-1 truncate text-text-primary">{e.title.replace(/\s\(fork\)$/, '')}</span>
-              {e.kind === 'session' && e.status === 'running' && <Circle size={6} className="flex-shrink-0 fill-current text-warning" />}
-              {e.kind === 'parked' && <span className="flex-shrink-0 text-[10px] text-text-tertiary">parked · revive</span>}
+              {e.status === 'running' && <Circle size={6} className="flex-shrink-0 fill-current text-warning" />}
             </button>
           ))}
         </div>
@@ -101,9 +86,7 @@ export function AgentQuickSwitcher() {
 }
 
 function rank(e: Entry): number {
-  if (e.title === 'Al') return 0
-  if (e.kind === 'session') return 1
-  return 2
+  return e.title === 'Al' ? 0 : 1
 }
 
 /** Subsequence fuzzy match → score (lower is better), or -1 for no match.

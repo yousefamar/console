@@ -126,8 +126,7 @@ function handleNotificationClick(data: { pane: ActivePane; itemId?: string }): v
         ([{ useAgentStore }, { useSpacesStore }, { UNASSIGNED_SLUG }, { useUiStore }]) => {
           const agent = useAgentStore.getState()
           const sess = agent.sessions.find((x) => x.id === data.itemId)
-          const role = sess?.agentKey ? agent.agentRoles.find((r) => r.key === sess.agentKey) : undefined
-          const slug = role?.project ?? role?.areas?.[0] ?? (sess && !sess.isAl ? UNASSIGNED_SLUG : null)
+          const slug = sess?.project ?? sess?.areas?.[0] ?? (sess && !sess.isAl ? UNASSIGNED_SLUG : null)
           if (slug) {
             useUiStore.getState().setActivePane('spaces')
             useSpacesStore.getState().selectSpace(slug)

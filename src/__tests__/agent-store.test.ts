@@ -844,7 +844,7 @@ describe('handoff + org store', () => {
   const sent = (ws: MockWebSocket) => ws.sentMessages.map((m) => JSON.parse(m))
 
   beforeEach(() => useAgentStore.setState({
-    agentRoles: [], agentTree: [], pendingHandoff: null, handoffReturnTo: null, orgPast: [], orgFuture: [],
+    pendingHandoff: null, handoffReturnTo: null,
   }))
 
   it('`session_handoff` message sets pendingHandoff', async () => {
@@ -859,25 +859,6 @@ describe('handoff + org store', () => {
     expect(sent(ws)).toContainEqual({ type: 'merge_session', sessionId: 's-fork' })
   })
 
-  it('setAgentManager is optimistic, records history, and undo/redo round-trips', async () => {
-    const ws = await connected()
-    useAgentStore.setState({ agentRoles: [{ key: 'eng', title: 'Eng', manager: 'al', goals: [], cwd: null, created: null, charter: '', hasFile: true, folder: false }] })
-    const mgr = () => useAgentStore.getState().agentRoles[0]!.manager
-
-    useAgentStore.getState().setAgentManager('eng', 'cg')
-    expect(mgr()).toBe('cg')                                   // optimistic
-    expect(useAgentStore.getState().orgPast).toHaveLength(1)
-
-    useAgentStore.getState().undoOrg()
-    expect(mgr()).toBe('al')
-    expect(useAgentStore.getState().orgFuture).toHaveLength(1)
-
-    useAgentStore.getState().redoOrg()
-    expect(mgr()).toBe('cg')
-    expect(useAgentStore.getState().orgFuture).toHaveLength(0)
-
-    expect(sent(ws).filter((m) => m.type === 'set_manager')).toHaveLength(3) // initial + undo + redo
-  })
 
   it('acceptHandoff opens the target session + sets a return marker; returnFromHandoff goes back', async () => {
     await connected()

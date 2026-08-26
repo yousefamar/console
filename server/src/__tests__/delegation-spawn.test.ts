@@ -1,8 +1,7 @@
-// Covers the spawn path the merge tests can't (they pre-seed live sessions to
-// avoid spawning): reviveAgentRole, which goes through createSession →
-// `new Session(...)`. We mock Session with a recording stub, so this also
-// asserts the system-prompt INJECTION wiring (charter + board protocol +
-// org-position: roster, self-identity, manager).
+// Covers the spawn injection path: a keyed session's system prompt gets the
+// board protocol + its @key identity (and a project-board pointer when the
+// project has a board). Charters/memory are deliberately NOT injected — they
+// live in the project's CLAUDE.md / Claude Code's auto-memory.
 
 import { describe, it, expect, vi } from 'vitest'
 
@@ -36,40 +35,42 @@ vi.mock('../session.js', () => {
   return { Session: StubSession }
 })
 
-import { reviveAgentRole, type AgentContext } from '../routes/agents.js'
-
-function reg() {
-  const roles: Record<string, { key: string; title: string; manager: string | null; charter: string; folder: boolean; cwd: string | null }> = {
-    al: { key: 'al', title: 'Al', manager: null, charter: 'Al charter.', folder: false, cwd: '/tmp' },
-    eng: { key: 'eng', title: 'Engineering', manager: 'al', charter: 'Owns engineering. Builds things.', folder: false, cwd: '/tmp' },
-  }
-  return {
-    get: (k: string) => roles[k],
-    has: (k: string) => k in roles,
-    list: () => Object.values(roles),
-    resolveCharter: (k: string) => (roles[k]?.folder ? null : roles[k]?.charter ?? null),
-    tree: () => [{ role: roles.al, children: [{ role: roles.eng, children: [] }] }],
-    mintKey: (t: string) => t.toLowerCase().replace(/\s+/g, '-'),
-    create: () => roles.eng,
-    setManager: () => {},
-  }
-}
+import { createSession, mintAgentKey, type AgentContext } from '../routes/agents.js'
 
 function ctxOf(sessions: Map<string, unknown>): AgentContext {
-  return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, agentRegistry: reg(), modelConfig: {} } as unknown as AgentContext
+  return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, modelConfig: {} } as unknown as AgentContext
 }
 
-describe('createSession charter injection (fresh role spawn)', () => {
-  it('reviveAgentRole spawns with charter + protocol + org-position (roster, self-identity, manager)', () => {
+describe('createSession prompt injection (fresh keyed spawn)', () => {
+  it('keyed spawn gets board protocol + @key identity; no charter injection', () => {
     const ctx = ctxOf(new Map())
-    const s = reviveAgentRole(ctx, 'eng') as unknown as { systemPrompt: string }
-    expect(s).toBeTruthy()
-    expect(s.systemPrompt).toContain('Owns engineering')           // charter body
-    expect(s.systemPrompt).toContain('Work boards (kanban)')       // board-protocol preamble
-    expect(s.systemPrompt).toContain('You are:')                   // self-identity line
-    expect(s.systemPrompt).toContain('Engineering (`eng`)')
-    expect(s.systemPrompt).toContain('Al (`al`)')                  // full roster
-    expect(s.systemPrompt).toContain('You report to:')             // manager
+    const s = createSession(ctx, { prompt: 'go', cwd: '/tmp', agentKey: 'eng' }) as unknown as { systemPrompt: string }
+    expect(s.systemPrompt).toContain('Work boards (kanban)')  // board-protocol preamble
+    expect(s.systemPrompt).toContain('`eng`')                 // self-identity @key
     expect(ctx.sessions.size).toBe(1)
+  })
+
+  it('key-less spawn gets no injected prompt', () => {
+    const ctx = ctxOf(new Map())
+    const s = createSession(ctx, { prompt: 'go', cwd: '/tmp' }) as unknown as { systemPrompt?: string }
+    expect(s.systemPrompt).toBeUndefined()
+  })
+
+  it('caller-supplied systemPrompt (Al) is kept, identity appended', () => {
+    const ctx = ctxOf(new Map())
+    const s = createSession(ctx, { prompt: 'go', cwd: '/tmp', agentKey: 'al', systemPrompt: 'AL PERSONA' }) as unknown as { systemPrompt: string }
+    expect(s.systemPrompt).toContain('AL PERSONA')
+    expect(s.systemPrompt).toContain('`al`')
+    expect(s.systemPrompt).not.toContain('Work boards (kanban)') // Al's persona already includes it
+  })
+})
+
+describe('mintAgentKey', () => {
+  it('slugs and collision-suffixes against live sessions', () => {
+    const sessions = new Map<string, unknown>()
+    const ctx = ctxOf(sessions)
+    expect(mintAgentKey(ctx, 'Feeds Tab')).toBe('feeds-tab')
+    sessions.set('a', { agentKey: 'feeds-tab', status: 'idle' })
+    expect(mintAgentKey(ctx, 'Feeds Tab')).toBe('feeds-tab-1')
   })
 })

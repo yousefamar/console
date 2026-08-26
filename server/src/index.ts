@@ -18,19 +18,19 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Session, setAgentModelResolver, type ImageAttachment } from './session.js'
 import { ModelConfig } from './model-config.js'
-import { AgentRegistry } from './agents/registry.js'
 import { MAX_LOCAL_FILE_BYTES, resolveLocalMedia } from './agents/local-file.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
 import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
+import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, broadcastAgentsList, reviveAgentRole, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher } from './kanban/watcher.js'
 import { cardImagePaths } from './kanban/board.js'
@@ -88,6 +88,7 @@ import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecorded
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
+import { routeInbound, startConversationForks } from './al/conversation-forks.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { CanvasPublicTokens } from './canvas-public-tokens.js'
@@ -192,7 +193,6 @@ setBedrockProfileLogger((m) => log(m))
 void refreshBedrockProfiles()
 // Durable agent roles / org chart. Loaded before any session spawn so charter
 // injection (createSession) can resolve a restored session's role.
-const agentRegistry = new AgentRegistry(join(feedsConfigDir, 'agents'), (m) => log(m))
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const publicCanvasTokens = new CanvasPublicTokens()
@@ -651,7 +651,7 @@ const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
 const agentCtx: AgentContext = {
-  sessions, clients, cwd, log, truncate, modelConfig, agentRegistry, vaultPath: notesVault,
+  sessions, clients, cwd, log, truncate, modelConfig, vaultPath: notesVault,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
   // in Session; this only fires when Session decides `push: true`.
   notifyAttention: (sessionId, name, snippet) => {
@@ -736,10 +736,6 @@ micState.onChange(() => {
   syncBus.broadcast('mic', 'state', { owner, ownerName: micOwnerName(owner), hot: micState.isHot() })
 })
 
-// Live org-chart updates when an agent edits its own role file. Content-compared
-// inside the registry so the hub's own writes don't re-fire.
-agentRegistry.watch(() => broadcastAgentsList(agentCtx))
-
 const cronScheduler = new HubCronScheduler(
   join(feedsConfigDir, 'agent-cron.json'),
   () => sessions,
@@ -761,30 +757,30 @@ const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate }) => {
-    const role = agentRegistry.get(card.agentKey!)
-    if (!role || role.folder) { log(`[boards] no such agent role: @${card.agentKey} (${boardPath})`); return false }
-    // Assigning a ticket to a LIVE durable role forks it: the fork inherits
-    // the role's context, works just this ticket (in its own worktree, per
-    // the envelope), and is merged/reaped after — the role's main session
-    // stays free for conversation. Forks themselves, parked roles, and
-    // pre-init sessions get the direct wake instead (a fork of a fresh spawn
-    // adds nothing; a fork needs the source's claudeSessionId).
+    // Assigning a ticket to a LIVE session forks it: the fork inherits the
+    // session's context, works just this ticket (in its own worktree, per
+    // the envelope), and is merged after — the main session stays free for
+    // conversation. Forks themselves and pre-init sessions get the direct
+    // wake instead. No live session with this key = no dispatch (the stamp
+    // stays off so a later revive/assign re-arms it).
     const live = liveSessionForRole(agentCtx, card.agentKey!)
+    if (!live) { log(`[boards] no live session for @${card.agentKey} (${boardPath})`); return false }
     let worker: Session | null = null
     let forked = false
+    const isFork = !!live.parentClaudeSessionId
     // #nofork = the card opts out of the fork+worktree+merge ceremony: wake
-    // the role's own session directly (trivial cards; Yousef's opt-OUT call —
-    // fork stays the default).
-    if (live && !role.fork && live.claudeSessionId && !card.nofork) {
+    // the session directly (trivial cards; Yousef's opt-OUT call — fork
+    // stays the default).
+    if (!isFork && live.claudeSessionId && !card.nofork) {
       worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model)
       if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}${card.model ? ` (model ${card.model})` : ''}`) }
-    } else if (card.nofork && live) {
+    } else if (card.nofork) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
     // `#model/…` only pins the ticket-FORK's spawn — a direct wake would
-    // re-pin the durable role's whole session, leaking past the ticket.
+    // re-pin the session's whole model, leaking past the ticket.
     if (card.model && !forked) log(`[boards] ^${card.blockId} #model/${card.model} ignored — dispatch was a direct wake, not a fork`)
-    if (!worker) worker = live ?? reviveAgentRole(agentCtx, card.agentKey!)
+    if (!worker) worker = live
     if (!worker) return false
     // Card image attachments (markdown-image detail lines → sibling assets
     // dir) ride the wake as REAL session images, like any composer attachment.
@@ -832,21 +828,23 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // fall back to the fork-key convention (…-<blockId>-fork) before giving
       // up (^ssahjf hit this 2026-08-21: card said @astera-general, wind-down
       // silently no-oped).
-      let doneRole = t.agentKey ? agentRegistry.get(t.agentKey) : undefined
-      if (!doneRole?.fork) {
-        doneRole = agentRegistry.list().find((r) => r.fork && r.key.endsWith(`-${t.blockId}-fork`)) ?? doneRole
+      let worker = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
+      if (!worker?.parentClaudeSessionId) {
+        for (const s of sessions.values()) {
+          if (s.agentKey?.endsWith(`-${t.blockId}-fork`) && s.status !== 'ended') { worker = s; break }
+        }
       }
-      const worker = doneRole ? liveSessionForRole(agentCtx, doneRole.key) : undefined
-      if (!doneRole?.fork || !worker || worker.status === 'ended') {
-        // A durable role moved to Done just carries on — but say WHY nothing
+      if (!worker || !worker.parentClaudeSessionId || worker.status === 'ended') {
+        // A durable session moved to Done just carries on — but say WHY nothing
         // happened, so a missed wind-down is diagnosable from the log.
-        const why = !doneRole ? `no role for @${t.agentKey ?? '∅'}`
-          : !doneRole.fork ? `@${doneRole.key} is durable, not a fork`
+        const why = !worker ? `no live session for @${t.agentKey ?? '∅'}`
+          : !worker.parentClaudeSessionId ? `@${worker.agentKey} is not a fork`
           : 'fork has no live session'
         log(`[boards] ^${t.blockId} done — no wind-down (${why})`)
         return
       }
-      wakeSession(agentCtx, worker, buildWindDownEnvelope({
+      const w = worker
+      wakeSession(agentCtx, w, buildWindDownEnvelope({
         boardAbsPath: join(noteStore.vaultPath, t.boardPath),
         text: t.text, blockId: t.blockId, deployGate: t.deployGate,
       }))
@@ -860,22 +858,22 @@ const boardWatcher = new BoardWatcher(noteStore, {
       const armCap = () => {
         if (cap) clearTimeout(cap)
         cap = setTimeout(() => {
-          worker.off('hub_message', onMsg)
-          log(`[boards] ^${t.blockId} wind-down listener expired (30min inactivity) — merge fork ${worker.id} manually`)
+          w.off('hub_message', onMsg)
+          log(`[boards] ^${t.blockId} wind-down listener expired (30min inactivity) — merge fork ${w.id} manually`)
         }, 30 * 60_000)
         cap.unref?.()
       }
       const onMsg = (m: HubMessage) => {
         armCap()
         if (m.type !== 'result') return
-        worker.off('hub_message', onMsg)
+        w.off('hub_message', onMsg)
         if (cap) clearTimeout(cap)
         // Give the turn a beat to settle (status flips to idle after result).
         setTimeout(() => {
-          void mergeIntoParent(agentCtx, worker.id).then((r) => {
+          void mergeIntoParent(agentCtx, w.id).then((r) => {
             if (r.ok) {
-              broadcast({ type: 'session_merged', forkId: worker.id, parentId: r.parentId!, summary: r.summary! })
-              log(`[boards] ^${t.blockId} wound down: fork ${worker.id} merged into ${r.parentId}`)
+              broadcast({ type: 'session_merged', forkId: w.id, parentId: r.parentId!, summary: r.summary! })
+              log(`[boards] ^${t.blockId} wound down: fork ${w.id} merged into ${r.parentId}`)
             } else {
               log(`[boards] ^${t.blockId} wind-down merge failed: ${r.error} — fork left alive`)
             }
@@ -883,7 +881,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         }, 2_000)
       }
       armCap()
-      worker.on('hub_message', onMsg)
+      w.on('hub_message', onMsg)
       return
     }
     // Under Review does NOT wake anyone: Yousef is the reviewer and sees it
@@ -891,8 +889,13 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // an earlier "review the work" version walked managers into approving
     // their own forks' cards). Only #blocked is actionable by the org.
     if (t.review) return
-    const managerKey = (t.agentKey && agentRegistry.workingManager(t.agentKey)) || 'al'
-    const manager = liveSessionForRole(agentCtx, managerKey)
+    // Escalation without a manager tree: the assignee's fork PARENT if it is
+    // one, else Al (the always-on front door).
+    const assignee = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
+    const parentSession = assignee?.parentClaudeSessionId
+      ? [...sessions.values()].find((s) => s.claudeSessionId === assignee.parentClaudeSessionId && s.status !== 'ended')
+      : undefined
+    const manager = parentSession ?? liveSessionForRole(agentCtx, 'al')
     if (manager && manager.agentKey !== t.agentKey) {
       wakeSession(agentCtx, manager, [
         `[BOARD UPDATE] Card "${t.text}" (^${t.blockId}${t.agentKey ? `, @${t.agentKey}` : ''}) on ${join(noteStore.vaultPath, t.boardPath)} turned #blocked.`,
@@ -933,9 +936,11 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // make it explicit per project.
   resolveOwner: (project) => {
     if (!project) return null
-    const bound = agentRegistry.list().filter((r) => r.project === project)
+    const bound = [...sessions.values()]
+      .filter((s) => s.project === project && s.status !== 'ended' && s.agentKey)
+      .map((s) => ({ key: s.agentKey!, title: s.name ?? s.agentKey!, fork: !!s.parentClaudeSessionId }))
     const owner = resolveDefaultOwner(bound)
-    if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork && !r.folder).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
+    if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
     return owner
   },
 })
@@ -1163,6 +1168,52 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     return
   }
 
+  // Read-only conversation peek — look at a session's transcript WITHOUT
+  // forking, injecting, or otherwise touching it. Built so Al can introspect
+  // his own conversation-forks ("is there a convo I'm not aware of?") but
+  // works for any session. Resolves by hub session id, claudeSessionId, or
+  // unique name; live sessions read their JSONL off disk (the authoritative
+  // full record — messageLog is capped at 500 and replay-limited).
+  //   GET /agents/peek?id=<hubId|claudeSessionId|name>[&n=20]
+  if (path === '/agents/peek' && req.method === 'GET') {
+    const idParam = (url.searchParams.get('id') ?? '').trim()
+    const n = Math.min(Math.max(parseInt(url.searchParams.get('n') ?? '20', 10) || 20, 1), 200)
+    if (!idParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'missing id (hub session id, claudeSessionId, or unique name)' }))
+      return
+    }
+    const all = Array.from(sessions.values())
+    let target = all.find((s) => s.id === idParam)
+      ?? all.find((s) => s.claudeSessionId === idParam)
+    if (!target) {
+      const byName = all.filter((s) => s.status !== 'ended' && (s.name ?? '').toLowerCase() === idParam.toLowerCase())
+      if (byName.length > 1) {
+        res.writeHead(409, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `multiple sessions named "${idParam}" — use the id` }))
+        return
+      }
+      target = byName[0]
+    }
+    if (!target || !target.claudeSessionId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: target ? 'session has no claudeSessionId yet' : `no session matching "${idParam}"` }))
+      return
+    }
+    const history = loadSessionHistory(target.claudeSessionId, target.cwd)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      id: target.id,
+      claudeSessionId: target.claudeSessionId,
+      name: target.name,
+      status: target.status,
+      parentClaudeSessionId: target.parentClaudeSessionId,
+      totalMessages: history.length,
+      messages: history.slice(-n),
+    }))
+    return
+  }
+
   // Filesystem directory autocomplete for the agent prompt's "new session" picker.
   // Returns subdirectories matching `?q=<partial path>`. The prefix is split into
   // (parent dir, name fragment); we list parent and filter by case-insensitive prefix.
@@ -1245,37 +1296,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     return
   }
 
-  // Org-chart roles. GET inspects roles+tree; POST {agentKey, manager} reparents
-  // (surgical frontmatter stamp). The out-of-band lever for `con agent role`.
-  if (path === '/agents/roles') {
-    if (req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ roles: agentRegistry.list(), tree: agentRegistry.tree() }))
-      return
-    }
-    if (req.method === 'POST') {
-      let raw = ''
-      req.on('data', (c) => { raw += c })
-      req.on('end', () => {
-        try {
-          const { agentKey, manager } = JSON.parse(raw || '{}') as { agentKey?: string; manager?: string | null }
-          if (!agentKey?.trim() || !agentRegistry.has(agentKey)) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no such role' })); return }
-          if (manager === agentKey) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'a role cannot manage itself' })); return }
-          agentRegistry.setManager(agentKey, manager ?? null)
-          broadcastAgentsList(agentCtx)
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ roles: agentRegistry.list(), tree: agentRegistry.tree() }))
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: (e as Error).message }))
-        }
-      })
-      return
-    }
-    res.writeHead(405, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'method not allowed' }))
-    return
-  }
 
   // STT — transcribes audio via OpenAI Whisper API
   if (path === '/stt' && req.method === 'POST') {
@@ -1766,9 +1786,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // Send current agent-model + backend config so the pickers reflect reality on connect.
   sendTo(ws, { type: 'model_state', ...modelConfig.getState(), backend: detectActiveBackend() })
 
-  // Send the org-chart roles + tree (mirror model_state; also pushed on change).
-  sendTo(ws, { type: 'agents_list', roles: agentRegistry.list(), tree: agentRegistry.tree() })
-
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())
   if (alBridge.isConnected()) active.unshift(alBridge.getSessionInfo())
@@ -1925,119 +1942,6 @@ httpServer.listen(port, host, () => {
       return candidates && candidates.length === 1 ? candidates[0] : undefined
     }
 
-    // One-time, idempotent ROLE backfill: turn every pre-existing named session
-    // into a durable org-chart role. Two passes so a fork's manager can resolve
-    // to its parent's (possibly just-minted) key. create()/mintKey are file-aware,
-    // so re-running on later boots is a no-op once role files exist.
-    const csidToKey = new Map<string, string>()
-    for (const entry of manifest) {
-      if (entry.ended || !entry.claudeSessionId || !entry.name) continue
-      let key = entry.agentKey
-      if (!key) key = agentRegistry.mintKey(entry.name)
-      if (!agentRegistry.has(key)) {
-        agentRegistry.create(key, { title: entry.name, charter: entry.prompt, cwd: entry.cwd })
-      }
-      csidToKey.set(entry.claudeSessionId, key)
-    }
-    for (const entry of manifest) {
-      if (entry.ended || !entry.claudeSessionId) continue
-      const key = csidToKey.get(entry.claudeSessionId)
-      if (!key) continue
-      const role = agentRegistry.get(key)
-      const parentCsid = resolveParent(entry)
-      const mgrKey = parentCsid ? csidToKey.get(parentCsid) : undefined
-      // Only seed a manager for a role that doesn't already have one (don't
-      // override an edge the user/agent set).
-      if (role && role.manager === null && mgrKey && mgrKey !== key) {
-        agentRegistry.setManager(key, mgrKey)
-      }
-    }
-
-    // One-time org reorg: within a directory, the "<X> general" agent manages
-    // the other agents in that same cwd. Gated by a marker file so it runs once
-    // and never fights a manual reparent later. Forks keep their fork-parent
-    // edge (set above); only still-rootless same-dir peers are reparented.
-    const reorgMarker = join(feedsConfigDir, 'agents', '.general-reorg-v1')
-    if (!existsSync(reorgMarker)) {
-      const generalByCwd = new Map<string, string>()
-      for (const entry of manifest) {
-        if (entry.ended || !entry.claudeSessionId || !entry.name || !entry.cwd) continue
-        if (!/\bgeneral\b/i.test(entry.name)) continue
-        const key = csidToKey.get(entry.claudeSessionId)
-        if (key && !generalByCwd.has(entry.cwd)) generalByCwd.set(entry.cwd, key)
-      }
-      let reorged = 0
-      for (const entry of manifest) {
-        if (entry.ended || !entry.claudeSessionId || !entry.cwd) continue
-        const key = csidToKey.get(entry.claudeSessionId)
-        if (!key) continue
-        const gen = generalByCwd.get(entry.cwd)
-        const role = agentRegistry.get(key)
-        if (gen && gen !== key && role && role.manager === null) {
-          agentRegistry.setManager(key, gen)
-          reorged++
-        }
-      }
-      try { writeFileSync(reorgMarker, new Date().toISOString()) } catch { /* best effort */ }
-      log(`[agents] general-reorg: ${reorged} role(s) placed under their dir's general`)
-    }
-
-    // One-time: materialize the directory buckets as REAL folder nodes (so they
-    // can be renamed, created, and used as drop targets) and parent the still-
-    // rootless agents under them. Replaces the old client-side synthetic folders.
-    const dirFoldersMarker = join(feedsConfigDir, 'agents', '.dir-folders-v1')
-    if (!existsSync(dirFoldersMarker)) {
-      const parentDirOf = (p: string) => { const s = p.replace(/\/+$/, ''); const i = s.lastIndexOf('/'); return i > 0 ? s.slice(0, i) : s }
-      const baseNameOf = (p: string) => { const s = p.replace(/\/+$/, ''); const i = s.lastIndexOf('/'); const b = i >= 0 ? s.slice(i + 1) : s; return b ? b.charAt(0).toUpperCase() + b.slice(1) : b }
-      const roots = agentRegistry.list().filter((r) => !r.folder && r.key !== 'al' && !r.manager && r.cwd)
-      const byDir = new Map<string, typeof roots>()
-      for (const r of roots) { const d = parentDirOf(r.cwd!); const arr = byDir.get(d) ?? []; arr.push(r); byDir.set(d, arr) }
-      let folders = 0
-      for (const [dir, members] of byDir) {
-        if (members.length < 2) continue
-        const fkey = agentRegistry.mintKey(baseNameOf(dir))
-        agentRegistry.create(fkey, { title: baseNameOf(dir), folder: true, manager: 'al' })
-        for (const m of members) agentRegistry.setManager(m.key, fkey)
-        folders++
-      }
-      try { writeFileSync(dirFoldersMarker, new Date().toISOString()) } catch { /* best effort */ }
-      log(`[agents] dir-folders: created ${folders} folder node(s) from directory buckets`)
-    }
-
-    // One-time cleanup: purge the parked fork-role clutter that accumulated
-    // before forks were made disposable (kill_session now reaps a fork role on
-    // end). Deletes any '(fork)'-titled role that (a) isn't in the restore set
-    // and (b) has no live/restorable session behind it — i.e. truly dead forks.
-    // Also stamps `fork: true` on surviving fork roles so the new reap path
-    // recognizes them going forward. Marker-gated so it runs exactly once.
-    const forkCleanupMarker = join(feedsConfigDir, 'agents', '.fork-cleanup-v1')
-    if (!existsSync(forkCleanupMarker)) {
-      const restorableKeys = new Set<string>()
-      for (const entry of manifest) {
-        if (entry.ended || !entry.claudeSessionId) continue
-        const k = entry.agentKey ?? csidToKey.get(entry.claudeSessionId)
-        if (k) restorableKeys.add(k)
-      }
-      let purged = 0, stamped = 0
-      for (const role of agentRegistry.list()) {
-        if (role.folder || !/\(fork\)\s*$/i.test(role.title)) continue
-        if (restorableKeys.has(role.key)) {
-          // Alive/restorable fork — keep it, but mark it so it's reaped on its
-          // eventual end (legacy fork files have no `fork: true`).
-          if (!role.fork) { agentRegistry.setForkFlag(role.key); stamped++ }
-          continue
-        }
-        // Dead parked fork — reparent any children up, then delete.
-        for (const child of agentRegistry.list()) {
-          if (child.manager === role.key) agentRegistry.setManager(child.key, role.manager)
-        }
-        agentRegistry.delete(role.key)
-        purged++
-      }
-      try { writeFileSync(forkCleanupMarker, new Date().toISOString()) } catch { /* best effort */ }
-      log(`[agents] fork-cleanup: purged ${purged} dead parked fork role(s), stamped ${stamped} live one(s)`)
-    }
-
     // Re-instantiate only ONE Al — the official one per al-session.json (or the
     // first if none recorded). Stale Al entries (left by prior reloads/restarts)
     // are skipped so a second "Al" never appears on boot; the saveManifest()
@@ -2069,7 +1973,9 @@ httpServer.listen(port, host, () => {
           silent: true,
           name: entry.name,
           parentClaudeSessionId: resolveParent(entry),
-          agentKey: entry.agentKey ?? (entry.claudeSessionId ? csidToKey.get(entry.claudeSessionId) : undefined),
+          agentKey: entry.agentKey,
+          project: entry.project,
+          areas: entry.areas,
           needsAttention: entry.needsAttention,
           restoreMessageLogLength: entry.messageLogLength,
           modelOverride: entry.modelOverride,
@@ -2125,6 +2031,10 @@ httpServer.listen(port, host, () => {
       setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
       const alSession = await ensureAlSession(agentCtx)
       log(`Al session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+      // Conversation-fork router: restores the thread→fork table + starts the
+      // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound
+      // routes correctly.
+      startConversationForks(agentCtx)
 
       await alWa.startWhatsApp({
         onInbound: async (msg) => {
@@ -2132,7 +2042,12 @@ httpServer.listen(port, host, () => {
             await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
             const resolved = resolveUsername(msg.sender)
             const envelope = alWa.inboundEnvelope(msg, resolved)
-            injectToAl(envelope, broadcast)
+            // Non-owner threads route to a per-conversation fork of Al
+            // (conversation-forks.ts); owner (Yousef) + fallback paths go to
+            // the parent as before.
+            const senderLabel = resolved ?? msg.senderName ?? msg.sender
+            const handled = routeInbound(agentCtx, msg.jid, resolved, senderLabel, envelope)
+            if (!handled) injectToAl(envelope, broadcast)
           } catch (err) {
             console.error('[al/wa/inbound] handler failed:', (err as Error)?.message)
           }

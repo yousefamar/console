@@ -13,14 +13,13 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'interrupt': return agentInterrupt(args, flags)
     case 'approve': return agentApprove(args, flags)
     case 'deny': return agentDeny(args, flags)
+    case 'peek': return agentPeek(args, flags)
     case 'tail': return agentTail(args, flags)
     case 'wait': return agentWait(args, flags)
     case 'chat': return agentChat(args, flags)
     case 'merge': return agentMerge(args, flags)
     case 'model': return agentModel(args, flags)
     case 'backend': return agentBackend(args, flags)
-    case 'role': return agentRole(args, flags)
-    case 'revive': return agentRevive(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -163,6 +162,35 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
 
   const reply = (texts.join('\n').trim() || deltas.join('').trim())
   printConv(convId, reply, flags)
+}
+
+// con agent peek — READ-ONLY look at a session's conversation. No fork, no
+// injection, no state change; safe against any session including mid-turn.
+// Built so Al can introspect his conversation-forks ("is there a convo I'm
+// not aware of?") without disturbing them. Resolves by hub id, claudeSessionId
+// (conv id), or unique name.
+async function agentPeek(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const target = args.filter((a) => !a.startsWith('--') && a !== opts.n)[0]
+  if (!target) exitWithError('USAGE', 'Usage: con agent peek <session-id|conv-id|name> [--n <messages>]', flags)
+  const n = opts.n ? parseInt(opts.n, 10) : 20
+  const peek = await hubFetch<{
+    id: string; claudeSessionId: string; name?: string; status: string
+    parentClaudeSessionId?: string; totalMessages: number
+    messages: Array<{ type: string; content?: string; toolName?: string; input?: Record<string, unknown> }>
+  }>(`/agents/peek?id=${encodeURIComponent(target)}&n=${n}`)
+
+  if (flags.json || flags.agent) { output(peek, flags); return }
+  // Human/agent-readable transcript rendering
+  const head = `${peek.name ?? peek.id} — ${peek.status}${peek.parentClaudeSessionId ? ' (fork)' : ''} — showing last ${peek.messages.length}/${peek.totalMessages} messages`
+  const lines = [head, '─'.repeat(Math.min(head.length, 80))]
+  for (const m of peek.messages) {
+    if (m.type === 'user_prompt') lines.push(`\n[user] ${(m.content ?? '').slice(0, 500)}`)
+    else if (m.type === 'text') lines.push(`\n[assistant] ${(m.content ?? '').slice(0, 500)}`)
+    else if (m.type === 'tool_use') lines.push(`  [tool] ${m.toolName}: ${JSON.stringify(m.input ?? {}).slice(0, 120)}`)
+    // thinking + tool_result skipped in the human view — noise for a peek
+  }
+  process.stdout.write(lines.join('\n') + '\n')
 }
 
 function printConv(convId: string | null, reply: string, flags: GlobalFlags): void {
@@ -403,51 +431,9 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
   exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id> | chain <ids…> | pin <session> <model-id> | unpin <session>]`, flags)
 }
 
-interface RoleData { key: string; title: string; manager: string | null; goals: string[]; cwd: string | null; charter: string }
-
-/** `con agent role` — inspect/maintain the durable org-chart roles. Charter,
- *  goals and memory are AGENT-owned (edited in the role's .md file); the CLI only
- *  reads them and writes the `manager` edge. */
-async function agentRole(args: string[], flags: GlobalFlags): Promise<void> {
-  const sub = args[0]
-  if (!sub || sub === 'list' || sub === 'tree') {
-    const data = await hubFetch('/agents/roles')
-    output(data, flags)
-    return
-  }
-  if (sub === 'get') {
-    const key = args[1]
-    if (!key) exitWithError('USAGE', 'Usage: con agent role get <key>', flags)
-    const { roles } = await hubFetch<{ roles: RoleData[] }>('/agents/roles')
-    const role = roles.find((r) => r.key === key)
-    if (!role) exitWithError('NOT_FOUND', `No such role: ${key}`, flags)
-    output({ ...role, file: `~/.config/console/agents/${key}.md` }, flags)
-    return
-  }
-  if (sub === 'manager') {
-    const key = args[1]
-    const mgr = args[2]
-    if (!key || !mgr) exitWithError('USAGE', 'Usage: con agent role manager <key> <manager-key|--root>', flags)
-    const manager = (mgr === '--root' || mgr === 'root') ? null : mgr
-    const data = await hubFetch('/agents/roles', { method: 'POST', body: { agentKey: key, manager } })
-    output(data, flags)
-    return
-  }
-  if (sub === 'delete') {
-    const key = args[1]
-    if (!key) exitWithError('USAGE', 'Usage: con agent role delete <key>', flags)
-    const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
-    await sendAndReceive({ type: 'delete_role', agentKey: key }, NO_RESPONSE)
-    output({ deleted: key }, flags)
-    return
-  }
-  exitWithError('USAGE', `Unknown: con agent role ${sub}. Usage: con agent role [list | get <key> | manager <key> <mgr|--root> | delete <key>]`, flags)
-}
-
-/** `con agent merge <session-id|conv-id|name>` — fold a child back into its parent:
- *  the child self-summarises, the digest is injected into the parent, then the
- *  child is closed. Parent = fork lineage OR the org manager edge (an org child's
- *  role is also absorbed: its sub-reports reparent up, its role is deleted). */
+/** `con agent merge <session-id|conv-id|name>` — fold a fork back into its parent:
+ *  the fork self-summarises, the digest is injected into the parent, then the
+ *  fork is closed. Parent = fork lineage (parentClaudeSessionId). */
 async function agentMerge(args: string[], flags: GlobalFlags): Promise<void> {
   const idArg = args[0]
   if (!idArg) { exitWithError('USAGE', 'Usage: con agent merge <session-id|conv-id|name>', flags); return }
@@ -470,15 +456,6 @@ async function runMerge(hubId: string, flags: GlobalFlags): Promise<void> {
   )
   if (res.type === 'hub_error') { exitWithError('ERROR', res.message, flags); return }
   output({ merged: res.forkId, parentId: res.parentId, summary: res.summary }, flags)
-}
-
-/** `con agent revive <key>` — spawn a fresh session for a parked role (charter injected). */
-async function agentRevive(args: string[], flags: GlobalFlags): Promise<void> {
-  const key = args[0]
-  if (!key) exitWithError('USAGE', 'Usage: con agent revive <key>', flags)
-  const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
-  await sendAndReceive({ type: 'revive_agent', agentKey: key }, NO_RESPONSE)
-  output({ revived: key }, flags)
 }
 
 async function agentInterrupt(args: string[], flags: GlobalFlags): Promise<void> {

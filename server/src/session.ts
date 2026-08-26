@@ -83,10 +83,14 @@ export interface SessionOptions {
   reapplyPromptOnResume?: boolean
   /** Restore the `@amar` attention flag on hub-restart resume (from manifest). */
   needsAttention?: AttentionState | null
-  /** Durable org-chart role this session embodies (see agents/registry.ts). The
-   *  role's charter is resolved into `systemPrompt` at the createSession choke
-   *  point on fresh spawn. Persisted in the manifest; survives restarts. */
+  /** Stable slug for board `@key` addressing + CONSOLE_AGENT_KEY env (actor
+   *  attribution). Pure identifier — no file behind it. Persisted in the manifest. */
   agentKey?: string
+  /** Vault project slug this session is bound to (Spaces agent panel, board
+   *  default-owner resolution). Persisted in the manifest. */
+  project?: string
+  /** PARA area tags this session is bound to. Persisted in the manifest. */
+  areas?: string[]
   /** Absolute message-log high-water at the last manifest save. Restored into
    *  `logOffset` on a hub-restart resume so `messageLogLength` reports the true
    *  total (the in-memory log starts empty) — otherwise the unread marker
@@ -116,6 +120,8 @@ export class Session extends EventEmitter {
   readonly parentClaudeSessionId?: string
   /** Durable org-chart role key (agents/registry.ts), if this session embodies one. */
   readonly agentKey?: string
+  readonly project?: string
+  readonly areas?: string[]
   status: 'running' | 'idle' | 'ended' = 'running'
   readonly createdAt = Date.now()
   readonly initialPrompt: string
@@ -183,6 +189,8 @@ export class Session extends EventEmitter {
     this.name = options.name
     this.parentClaudeSessionId = options.parentClaudeSessionId
     this.agentKey = options.agentKey
+    this.project = options.project
+    this.areas = options.areas
     this.cwd = options.cwd || process.cwd()
     this.modelOverride = options.modelOverride
     // Restore the absolute message-log high-water (see SessionOptions). The
@@ -916,6 +924,8 @@ export class Session extends EventEmitter {
       name: this.name,
       parentClaudeSessionId: this.parentClaudeSessionId,
       agentKey: this.agentKey,
+      project: this.project,
+      areas: this.areas,
       status: this.status,
       createdAt: this.createdAt,
       prompt: this.initialPrompt,

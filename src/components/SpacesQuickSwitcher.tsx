@@ -16,7 +16,7 @@ interface Entry {
   title: string
   /** Secondary label (space slug / dir). */
   hint?: string
-  kind: 'area' | 'project' | 'session' | 'parked' | 'file' | 'create'
+  kind: 'area' | 'project' | 'session' | 'file' | 'create'
   recency: number
   isFork?: boolean
   running?: boolean
@@ -33,7 +33,6 @@ export function SpacesQuickSwitcher() {
   const selectSpace = useSpacesStore((s) => s.selectSpace)
   const setActiveView = useSpacesStore((s) => s.setActiveView)
   const sessions = useAgentStore((s) => s.sessions)
-  const roles = useAgentStore((s) => s.agentRoles)
   const files = useNotesStore((s) => s.files)
   const openedAt = useNotesStore((s) => s.openedAt)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -43,20 +42,15 @@ export function SpacesQuickSwitcher() {
 
   const entries = useMemo<Entry[]>(() => {
     const out: Entry[] = []
-    const spaceOf = (r: { project?: string | null; areas?: string[] }) => r.project ?? r.areas?.[0] ?? null
-    const roleByKey = new Map(roles.map((r) => [r.key, r]))
     const spaceRecency = new Map<string, number>()
     const bumpSpace = (slug: string | null, ts: number) => {
       if (slug && ts > (spaceRecency.get(slug) ?? 0)) spaceRecency.set(slug, ts)
     }
 
     // Agent sessions (live) — recency = createdAt (best available activity signal).
-    const liveKeys = new Set<string>()
     for (const s of sessions) {
       if (s.status === 'ended') continue
-      if (s.agentKey) liveKeys.add(s.agentKey)
-      const role = s.agentKey ? roleByKey.get(s.agentKey) : undefined
-      const slug = role ? spaceOf(role) : null
+      const slug = s.project ?? s.areas?.[0] ?? null
       bumpSpace(slug, s.createdAt)
       out.push({
         key: `s:${s.id}`,
@@ -64,29 +58,11 @@ export function SpacesQuickSwitcher() {
         hint: slug ?? undefined,
         kind: 'session',
         recency: s.createdAt,
-        isFork: !!role?.fork || /\s\(fork\)$/.test(s.name || ''),
+        isFork: !!s.parentClaudeSessionId || /\s\(fork\)$/.test(s.name || ''),
         running: s.status === 'running',
         pick: () => {
           if (slug) selectSpace(slug)
           useAgentStore.getState().selectSession(s.id)
-        },
-      })
-    }
-    // Parked roles.
-    for (const r of roles) {
-      if (r.folder || liveKeys.has(r.key)) continue
-      const slug = spaceOf(r)
-      out.push({
-        key: `p:${r.key}`,
-        title: r.title,
-        hint: slug ? `${slug} · parked` : 'parked',
-        kind: 'parked',
-        recency: 0,
-        isFork: r.fork,
-        pick: () => {
-          if (slug) selectSpace(slug)
-          useAgentStore.setState({ pendingSessionActivate: true })
-          useAgentStore.getState().reviveAgent(r.key)
         },
       })
     }
@@ -125,7 +101,7 @@ export function SpacesQuickSwitcher() {
       })
     }
     return out
-  }, [spaces, sessions, roles, files, openedAt, selectSpace, setActiveView])
+  }, [spaces, sessions, files, openedAt, selectSpace, setActiveView])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()

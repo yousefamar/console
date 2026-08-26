@@ -9,10 +9,9 @@ import { Session, type SessionOptions, type ImageAttachment } from '../session.j
 import type { ModelConfig } from '../model-config.js'
 import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
 import { smallFastModel } from '../bedrock-profiles.js'
-import type { AgentRegistry } from '../agents/registry.js'
-import { buildBoardProtocol, buildOrgPosition, renderOrgRoster, shortDescription } from '../agents/org-protocol.js'
+import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { isKanbanBoard } from '../kanban/board.js'
-import { buildMergeRequest, buildChildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
+import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -114,8 +113,6 @@ export interface AgentContext {
   clearAttentionPush?: (sessionId: string) => void
   /** Runtime agent-model config + fallback chain (model-config.ts). */
   modelConfig: ModelConfig
-  /** Durable agent roles / org chart (agents/registry.ts). */
-  agentRegistry: AgentRegistry
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
@@ -205,17 +202,11 @@ export function applyUserModelChange(ctx: AgentContext, model: string): void {
 }
 
 // --------------------------------------------------------------------------
-// Org-chart roles (agents/registry.ts). reviveAgentRole/reloadAgentRole live
-// here (not a separate file) to avoid a cycle with createSession.
+// Session addressing. agentKey is a plain slug on the session (board `@key`
+// assignment + CONSOLE_AGENT_KEY actor attribution) — no role file behind it.
 // --------------------------------------------------------------------------
 
-/** Broadcast the role list + derived org tree to all clients. */
-export function broadcastAgentsList(ctx: AgentContext): void {
-  broadcast(ctx.clients, { type: 'agents_list', roles: ctx.agentRegistry.list(), tree: ctx.agentRegistry.tree() })
-}
-
-/** The single live (non-ended) session embodying a role, if any. Enforces the
- *  ≤1-live-session-per-role invariant. */
+/** The single live (non-ended) session with this agentKey, if any. */
 export function liveSessionForRole(ctx: AgentContext, agentKey: string): Session | undefined {
   for (const s of ctx.sessions.values()) {
     if (s.agentKey === agentKey && s.status !== 'ended') return s
@@ -223,42 +214,18 @@ export function liveSessionForRole(ctx: AgentContext, agentKey: string): Session
   return undefined
 }
 
-/** When a session with a FORK role ends, delete its role instead of parking it
- *  — a parked fork is just org-chart clutter (nothing to revive it for). Durable
- *  roles still park (they're intentionally revivable). Any children of the fork
- *  (a fork-of-a-fork) reparent up to the fork's own manager so nothing is
- *  orphaned. No-op unless the session owns a `fork:true` role AND no OTHER live
- *  session still embodies it (dup-guard). Callers broadcast the agents list. */
-function reapForkRole(ctx: AgentContext, session: Session): void {
-  const key = session.agentKey
-  if (!key) return
-  const role = ctx.agentRegistry.get(key)
-  if (!role?.fork) return
-  // Don't delete a role another live session still embodies (dup during restart).
+/** Mint a unique agentKey slug from a display title (collision-suffixed against
+ *  live sessions). */
+export function mintAgentKey(ctx: AgentContext, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'agent'
+  const taken = new Set<string>()
   for (const s of ctx.sessions.values()) {
-    if (s !== session && s.agentKey === key && s.status !== 'ended') return
+    if (s.agentKey && s.status !== 'ended') taken.add(s.agentKey)
   }
-  for (const child of ctx.agentRegistry.list()) {
-    if (child.manager === key) ctx.agentRegistry.setManager(child.key, role.manager)
-  }
-  ctx.agentRegistry.delete(key)
-  broadcastAgentsList(ctx)
-  ctx.log(`[agents] reaped fork role ${key} (session ${session.id} ended)`)
-}
-
-/** Spawn a fresh session embodying a (parked) role, charter injected. Focuses an
- *  already-live session instead of duplicating. Returns null if the role is gone. */
-export function reviveAgentRole(ctx: AgentContext, agentKey: string): Session | null {
-  const role = ctx.agentRegistry.get(agentKey)
-  if (!role || role.folder) return null // folders group; they never hold sessions
-  const existing = liveSessionForRole(ctx, agentKey)
-  if (existing) return existing
-  return createSession(ctx, {
-    agentKey,
-    name: role.title,
-    cwd: role.cwd ?? ctx.cwd,
-    prompt: `You are (re)starting as the "${role.title}" agent. Your charter and memory are in your system prompt above — read them, then await instructions.`,
-  })
+  if (!taken.has(slug)) return slug
+  let n = 1
+  while (taken.has(`${slug}-${n}`)) n++
+  return `${slug}-${n}`
 }
 
 /** Absolute path of a project's kanban board, mirroring spaces.ts's board
@@ -280,28 +247,21 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
   return null
 }
 
-/** Fork a durable role's live session for ONE board ticket. The fork gets its
- *  own role (fork:true, inherits the source's project/areas so it stays in the
- *  same space and its @key is board-addressable) and is meant to work the
- *  ticket in its own worktree, then be merged/reaped. Returns null when the
- *  source has no claudeSessionId yet (pre-init) — caller falls back to waking
- *  the source directly. The ENVELOPE must be sent immediately after this
- *  returns: `claude --fork-session` emits no init until its first message. */
+/** Fork a live session for ONE board ticket. The fork gets its own agentKey
+ *  (parent-prefixed, board-addressable) and inherits the source's project/areas
+ *  binding so it stays in the same space. Returns null when the source has no
+ *  claudeSessionId yet (pre-init) — caller falls back to waking the source
+ *  directly. The ENVELOPE must be sent immediately after this returns:
+ *  `claude --fork-session` emits no init until its first message. */
 export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null): Session | null {
   if (!source.claudeSessionId) return null
-  const sourceRole = source.agentKey ? ctx.agentRegistry.get(source.agentKey) : undefined
-  const baseTitle = (sourceRole?.title ?? source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
+  const baseTitle = (source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
   // Title = just the readable ticket id ("Bold fox (fork)") — the parent is
   // already visible via indent/filter, so repeating its name is noise. The KEY
   // stays parent-prefixed (`console-general-bold-fox-fork`): the board's
-  // assignee filter groups orphaned fork keys under their root by that shape.
+  // assignee filter groups fork keys under their root by that shape.
   const title = `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
-  const forkKey = ctx.agentRegistry.mintKey(`${baseTitle} ${blockId} fork`)
-  ctx.agentRegistry.create(forkKey, {
-    title, manager: source.agentKey ?? null, cwd: source.cwd, fork: true,
-    project: sourceRole?.project ?? null, areas: sourceRole?.areas ?? [],
-  })
-  broadcastAgentsList(ctx)
+  const forkKey = mintAgentKey(ctx, `${baseTitle} ${blockId} fork`)
   const session = createSession(ctx, {
     prompt: '',
     cwd: source.cwd,
@@ -311,6 +271,8 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
     name: title,
     parentClaudeSessionId: source.claudeSessionId,
     agentKey: forkKey,
+    project: source.project,
+    areas: source.areas,
     // Card `#model/<alias-or-id>` → per-fork model pin (a fast fix on haiku,
     // a cheap one on sonnet). Same plumbing as the session-status-bar pin.
     ...(model ? { modelOverride: model } : {}),
@@ -318,42 +280,6 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
   session.logMessage(created)
   broadcast(ctx.clients, created)
-  return session
-}
-
-/** Re-derive a role from its (possibly-edited) file and fresh-spawn it. The only
- *  way to apply a changed charter, since --append-system-prompt is fresh-spawn
- *  only; the agent's ## Memory carries forward across the new conversation. */
-export function reloadAgentRole(ctx: AgentContext, agentKey: string, fromCsid?: string): Session | null {
-  ctx.agentRegistry.load()
-  const role = ctx.agentRegistry.get(agentKey)
-  if (!role) return null
-  const existing = liveSessionForRole(ctx, agentKey)
-  // fromCsid = restore-from-a-specific-transcript (e.g. re-point a role at its
-  // pre-incident conversation). Default: continue the live session's own.
-  const resumeCsid = fromCsid ?? existing?.claudeSessionId
-  const keepName = existing?.name
-  if (existing) {
-    existing.kill()
-    ctx.sessions.delete(existing.id)
-  }
-  // Re-derive the charter WITHOUT losing the conversation: resume the same
-  // claudeSessionId and re-apply the (new) prompt — --append-system-prompt is
-  // per-invocation, so the resume sees the fresh charter on top of the full
-  // history (verified; see session.ts spawn-args comment). Only a role with
-  // no prior claudeSessionId (never initialised) falls back to a fresh spawn.
-  const session = resumeCsid
-    ? createSession(ctx, {
-        agentKey,
-        name: keepName ?? role.title,
-        cwd: existing!.cwd ?? role.cwd ?? ctx.cwd,
-        resume: resumeCsid,
-        reapplyPromptOnResume: true,
-        prompt: `Your role charter/system prompt was just reloaded (your conversation history is intact). Re-read the new instructions above, then continue.`,
-      })
-    : reviveAgentRole(ctx, agentKey)
-  const remaining = Array.from(ctx.sessions.values()).map((s) => s.getInfo())
-  broadcast(ctx.clients, { type: 'sessions_list', sessions: remaining })
   return session
 }
 
@@ -421,38 +347,23 @@ export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
 }
 
 export function createSession(ctx: AgentContext, options: SessionOptions): Session {
-  // Resolve the durable role's charter into the system prompt — on a FRESH
-  // spawn, or on a charter-reload resume (reapplyPromptOnResume: the append is
-  // per-invocation, so the resume gets the new prompt + full history). Plain
-  // hub-restart resumes pass neither and keep their original prompt. Skipped
-  // when the caller supplied its own prompt (Al's buildAlSystemPrompt).
+  // Keyed sessions get the board protocol + their identity/board pointer on a
+  // FRESH spawn (or a reapplyPromptOnResume reload). Plain hub-restart resumes
+  // pass neither and keep their original prompt. Skipped when the caller
+  // supplied its own prompt (Al's buildAlSystemPrompt already includes it).
+  // Durable knowledge is NOT injected here: charters live in the project's
+  // CLAUDE.md (the cwd picks it up natively) and memory is Claude Code's own
+  // auto-memory dir — the hub injects only what it alone knows.
   if (options.agentKey && (!options.resume || options.reapplyPromptOnResume)) {
-    // Charter + delegation verbs only when the caller didn't supply a prompt
-    // (Al passes his own richer buildAlSystemPrompt, which already includes them).
     if (!options.systemPrompt) {
-      const charter = ctx.agentRegistry.resolveCharter(options.agentKey)
-      if (charter) options.systemPrompt = `${charter}\n\n${buildBoardProtocol()}`
+      options.systemPrompt = buildBoardProtocol()
     }
-    // Every role spawn — INCLUDING Al — gets its org position: the full roster
-    // (everyone's NAMES, to locate anyone) + short DESCRIPTIONS of just its
-    // immediate neighbours (manager above + direct reports below).
-    const role = ctx.agentRegistry.get(options.agentKey)
-    if (role) {
-      const manager = role.manager ? ctx.agentRegistry.get(role.manager) : null
-      const reports = ctx.agentRegistry.list().filter((r) => r.manager === options.agentKey)
-      const pos = buildOrgPosition({
-        self: { key: role.key, title: role.title },
-        roster: renderOrgRoster(ctx.agentRegistry.tree()),
-        manager: manager ? { key: manager.key, title: manager.title, desc: shortDescription(manager.charter) } : null,
-        reports: reports.map((r) => ({ key: r.key, title: r.title, desc: shortDescription(r.charter), folder: r.folder })),
-      })
-      options.systemPrompt = options.systemPrompt ? `${options.systemPrompt}\n\n${pos}` : pos
-      // Name the role's project board explicitly — no discovery step needed.
-      if (role.project && ctx.vaultPath) {
-        const boardAbs = findProjectBoard(ctx.vaultPath, role.project)
-        if (boardAbs) {
-          options.systemPrompt += `\n\n# Your project board\nYour project's kanban board is \`${boardAbs}\` — add cards there (\`@key\` to assign), and work cards tagged \`@${role.key}\`.`
-        }
+    options.systemPrompt += `\n\n# Your identity\nYour agentKey — the \`@key\` others assign board cards to, and the actor name your \`con\` CLI calls carry — is \`${options.agentKey}\`.`
+    // Name the session's project board explicitly — no discovery step needed.
+    if (options.project && ctx.vaultPath) {
+      const boardAbs = findProjectBoard(ctx.vaultPath, options.project)
+      if (boardAbs) {
+        options.systemPrompt += `\n\n# Your project board\nYour project's kanban board is \`${boardAbs}\` — add cards there (\`@key\` to assign), and work cards tagged \`@${options.agentKey}\`.`
       }
     }
   }
@@ -567,61 +478,25 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, in
   })
 }
 
-/** Merge a child back into its parent: ask the child to self-summarise, inject
- *  that digest into the parent, then close the child. The parent is resolved two
- *  ways — fork lineage (`parentClaudeSessionId`, same conversation ancestry) OR,
- *  for a general org child, the role's `manager` edge (reviving a parked manager
- *  so it can receive the digest). A SUMMARY — not the transcript — keeps the
- *  parent's context clean. For an org child the parent also absorbs the child's
- *  ROLE: its sub-reports reparent to the parent and the child's role is deleted. */
+/** Merge a fork back into its parent: ask the child to self-summarise, inject
+ *  that digest into the parent, then close the child. Parent = fork lineage
+ *  (`parentClaudeSessionId`, same conversation ancestry) — the only hierarchy.
+ *  A SUMMARY — not the transcript — keeps the parent's context clean. */
 export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
 
-  // Resolve the parent. Fork lineage wins (it's the same conversation ancestry);
-  // otherwise fall back to the org manager edge.
-  let parent: Session | undefined
-  let kind: 'fork' | 'agent' = 'fork'
-  let childRoleKey: string | undefined
-  if (child.parentClaudeSessionId) {
-    parent = [...ctx.sessions.values()].find((s) => s.claudeSessionId === child.parentClaudeSessionId && s.status !== 'ended')
-    if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
-  } else if (child.agentKey) {
-    childRoleKey = child.agentKey
-    // Skip folder managers: a folder never holds a session, so reviving it
-    // spawns a charterless husk that swallows the merge (the Sainsburys →
-    // "Life admin" loss). The digest must land on a real working ancestor.
-    const mgr = ctx.agentRegistry.workingManager(child.agentKey)
-    if (!mgr) return { ok: false, error: 'no parent to merge into — this agent has no non-folder manager above it' }
-    parent = liveSessionForRole(ctx, mgr) ?? reviveAgentRole(ctx, mgr) ?? undefined
-    if (!parent) return { ok: false, error: `manager "${mgr}" could not be brought up to receive the merge` }
-    kind = 'agent'
-  } else {
-    return { ok: false, error: 'no parent to merge into (not a fork and has no role)' }
-  }
+  if (!child.parentClaudeSessionId) return { ok: false, error: 'no parent to merge into (not a fork)' }
+  const parent = [...ctx.sessions.values()].find((s) => s.claudeSessionId === child.parentClaudeSessionId && s.status !== 'ended')
+  if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
   if (parent.id === child.id) return { ok: false, error: 'cannot merge a session into itself' }
 
-  const request = kind === 'fork'
-    ? buildMergeRequest(parent.name ?? 'your parent')
-    : buildChildMergeRequest(parent.name ?? 'your manager')
+  const request = buildMergeRequest(parent.name ?? 'your parent')
   const summary = await captureNextTurn(ctx, child, request, timeoutMs)
   if (!summary) return { ok: false, error: 'child produced no summary (timed out) — left alive so nothing is lost' }
 
-  wakeSession(ctx, parent, buildMergeEnvelope(child.name ?? kind, summary, kind))
-
-  // Org child: the parent absorbs the role — reparent the child's own reports to
-  // the parent, then delete the child's role file.
-  if (childRoleKey) {
-    const parentKey = parent.agentKey
-    if (parentKey) {
-      for (const r of ctx.agentRegistry.list()) {
-        if (r.manager === childRoleKey) ctx.agentRegistry.setManager(r.key, parentKey)
-      }
-    }
-    ctx.agentRegistry.delete(childRoleKey)
-    broadcastAgentsList(ctx)
-  }
+  wakeSession(ctx, parent, buildMergeEnvelope(child.name ?? 'fork', summary, 'fork'))
 
   // Absorb the child's live hub crons into the parent so they don't orphan
   // (and auto-disable after 10 "session not found" misses) when the child dies.
@@ -649,13 +524,10 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
   }
 
   try { child.kill() } catch { /* ignore */ }
-  // A merged-away FORK's role is clutter (nothing revives it) — reap it like
-  // kill_session/delete_session do; merges were leaving orphan rail entries.
-  reapForkRole(ctx, child)
   ctx.sessions.delete(child.id)
   saveManifest(ctx.sessions)
   broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
-  ctx.log(`[merge] ${kind} ${child.id} → parent ${parent.id} (${summary.length}-char summary)`)
+  ctx.log(`[merge] fork ${child.id} → parent ${parent.id} (${summary.length}-char summary)`)
   return { ok: true, summary, parentId: parent.id }
 }
 
@@ -667,13 +539,11 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
 
   switch (msg.type) {
     case 'create_session': {
-      // A user-designated agent (asAgent) gets a durable role minted up front so
-      // its charter is injected on this very spawn. Ad-hoc sessions stay role-less.
+      // A user-designated agent (asAgent) gets a stable agentKey minted up front
+      // (board addressing + actor attribution). Ad-hoc sessions stay key-less.
       let agentKey: string | undefined
       if (msg.asAgent && msg.name?.trim()) {
-        agentKey = ctx.agentRegistry.mintKey(msg.name)
-        ctx.agentRegistry.create(agentKey, { title: msg.name.trim(), charter: msg.prompt, cwd: msg.cwd, project: msg.project ?? null, areas: msg.areas ?? [] })
-        broadcastAgentsList(ctx)
+        agentKey = mintAgentKey(ctx, msg.name)
       }
       const session = createSession(ctx, {
         prompt: msg.prompt,
@@ -681,6 +551,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         cwd: msg.cwd,
         name: msg.name,
         agentKey,
+        project: msg.project,
+        areas: msg.areas,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt, ...(session.name ? { name: session.name } : {}) }
       session.logMessage(createdMsg)
@@ -837,7 +709,6 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
           if (s !== session && s.claudeSessionId === session.claudeSessionId) s.kill()
         }
       }
-      reapForkRole(ctx, session)
       // Persist endedByUser even when the subprocess was already dead (no
       // exit event will fire to trigger the usual manifest save).
       saveManifest(sessions)
@@ -867,7 +738,6 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
           }
         }
       }
-      reapForkRole(ctx, session)
       saveManifest(sessions)
       const remaining = Array.from(sessions.values()).map((s) => s.getInfo())
       broadcast(clients, { type: 'sessions_list', sessions: remaining })
@@ -881,16 +751,10 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
         return
       }
-      // Al is a role node but keeps its bespoke persona path (buildAlSystemPrompt),
-      // not the generic charter — route it to reloadAl.
+      // Al keeps its bespoke persona path (buildAlSystemPrompt) — route to reloadAl.
       if (session.agentKey === 'al' && ctx.reloadAl) {
         ctx.reloadAl()
-        log('Role reloaded: al (via reloadAl)')
-      } else if (session.agentKey) {
-        // A role-backed session re-derives its (possibly-edited) charter via a
-        // fresh spawn; a role-less session just resumes (history preserved).
-        reloadAgentRole(ctx, session.agentKey, msg.fromCsid)
-        log(`Role reloaded: ${session.agentKey}`)
+        log('Al reloaded (via reloadAl)')
       } else {
         session.reload()
         broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
@@ -963,63 +827,6 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       break
     }
 
-    case 'list_agents': {
-      sendTo(ws, { type: 'agents_list', roles: ctx.agentRegistry.list(), tree: ctx.agentRegistry.tree() })
-      break
-    }
-
-    case 'get_agent_role': {
-      const role = ctx.agentRegistry.get(msg.agentKey)
-      if (!role) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
-      sendTo(ws, { type: 'agent_role', role })
-      break
-    }
-
-    case 'set_manager': {
-      if (!ctx.agentRegistry.has(msg.agentKey)) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
-      // Guard against an obvious self-cycle; deeper cycles are broken at render.
-      if (msg.manager === msg.agentKey) { sendTo(ws, { type: 'hub_error', message: 'A role cannot manage itself' }); return }
-      ctx.agentRegistry.setManager(msg.agentKey, msg.manager)
-      broadcastAgentsList(ctx)
-      log(`[agents] ${msg.agentKey} manager → ${msg.manager ?? '(root)'}`)
-      break
-    }
-
-    case 'revive_agent': {
-      const session = reviveAgentRole(ctx, msg.agentKey)
-      if (!session) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
-      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
-      log(`[agents] revived ${msg.agentKey} → ${session.id}`)
-      break
-    }
-
-    case 'delete_role': {
-      const live = liveSessionForRole(ctx, msg.agentKey)
-      if (live) { try { live.kill() } catch {} sessions.delete(live.id) }
-      ctx.agentRegistry.delete(msg.agentKey)
-      saveManifest(sessions)
-      broadcastAgentsList(ctx)
-      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
-      log(`[agents] deleted role ${msg.agentKey}`)
-      break
-    }
-
-    case 'create_folder': {
-      const title = msg.title?.trim() || 'New folder'
-      const key = ctx.agentRegistry.mintKey(title)
-      ctx.agentRegistry.create(key, { title, folder: true, manager: msg.manager ?? null })
-      broadcastAgentsList(ctx)
-      log(`[agents] created folder ${key} (manager: ${msg.manager ?? 'root'})`)
-      break
-    }
-
-    case 'rename_role': {
-      if (!ctx.agentRegistry.has(msg.agentKey)) { sendTo(ws, { type: 'hub_error', message: `No such role: ${msg.agentKey}` }); return }
-      ctx.agentRegistry.setTitle(msg.agentKey, msg.title?.trim() || msg.agentKey)
-      broadcastAgentsList(ctx)
-      break
-    }
-
     case 'merge_session': {
       const id = msg.sessionId
       mergeIntoParent(ctx, id)
@@ -1088,15 +895,6 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       const renamedMsg = { type: 'session_renamed' as const, sessionId: session.id, name: msg.name }
       session.logMessage(renamedMsg)
       broadcast(clients, renamedMsg)
-      // Keep the durable role's title in sync — everything that labels agents
-      // by ROLE (board assign chips, org roster, parked rows) reads the role
-      // file, which otherwise froze at its mint-time name. Surgical stamp
-      // (setTitle), never a yaml round-trip; the registry's fs.watch
-      // re-broadcasts agents_list so all clients pick it up.
-      if (session.agentKey && ctx.agentRegistry.has(session.agentKey)) {
-        ctx.agentRegistry.setTitle(session.agentKey, msg.name.trim() || session.agentKey)
-        broadcastAgentsList(ctx)
-      }
       saveManifest(sessions)
       log(`Session renamed: ${session.id} → "${msg.name}"`)
       break
@@ -1127,22 +925,10 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       const forkCwd = msg.cwd || sourceSession.cwd
       const forkName = sourceSession.name ? `${sourceSession.name.replace(/(\s*\(fork\))+$/, '')} (fork)` : undefined
-      // A UI fork (seedRole) becomes its own org node reporting to the source's
-      // role; the charter applies on a future fresh revive (this spawn resumes,
-      // so it inherits the source's conversation + system prompt). `con agent
-      // chat` forks pass no seedRole → ephemeral, role-less.
-      let forkAgentKey: string | undefined
-      if (msg.seedRole) {
-        forkAgentKey = ctx.agentRegistry.mintKey(forkName ?? 'fork')
-        // Inherit the source role's space binding so the fork shows up in the
-        // same project/area panel (and its @key is assignable on that board).
-        const sourceRole = sourceSession.agentKey ? ctx.agentRegistry.get(sourceSession.agentKey) : undefined
-        ctx.agentRegistry.create(forkAgentKey, {
-          title: forkName ?? forkAgentKey, manager: sourceSession.agentKey ?? null, cwd: forkCwd, fork: true,
-          project: sourceRole?.project ?? null, areas: sourceRole?.areas ?? [],
-        })
-        broadcastAgentsList(ctx)
-      }
+      // A seeded UI fork gets its own agentKey (board-assignable) and inherits
+      // the source's space binding so it shows in the same project/area panel.
+      // `con agent chat` forks pass no seed → ephemeral, key-less.
+      const forkAgentKey = msg.seed ? mintAgentKey(ctx, forkName ?? 'fork') : undefined
       const session = createSession(ctx, {
         prompt: '',
         cwd: forkCwd,
@@ -1152,6 +938,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         name: forkName,
         parentClaudeSessionId: sourceSession.claudeSessionId,
         agentKey: forkAgentKey,
+        project: sourceSession.project,
+        areas: sourceSession.areas,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: forkName }
       session.logMessage(createdMsg)

@@ -1,15 +1,12 @@
 import { Fragment, memo, useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { useAgentStore } from '@/store/agent'
-import { useUiStore } from '@/store/ui'
 import { AgentSessionView } from './AgentSessionView'
 import { ContextMenu } from './ContextMenu'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import clsx from 'clsx'
-import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, ListTodo, Loader2, Mic, Moon, Network, List, Plus, Terminal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Circle, Clock, Folder, FolderOpen, GitBranch, ListFilter, ListTodo, Loader2, Mic, Moon, Plus, Terminal, X } from 'lucide-react'
 import { useMicStore } from '@/store/mic'
-import { AgentOrgChart } from './agent/AgentOrgChart'
-import { AgentProfilePanel } from './agent/AgentProfilePanel'
 import { AgentQuickSwitcher } from './agent/AgentQuickSwitcher'
 import { buildGroupTree, peelUniversalRoot, arrangeLineage, type GroupNode } from './agent/session-tree'
 import { useCronStore } from '@/store/cron'
@@ -61,21 +58,14 @@ export const AgentTab = memo(function AgentTab() {
   const setAgentModel = useAgentStore((s) => s.setAgentModel)
   const modelFallbackNotice = useAgentStore((s) => s.modelFallbackNotice)
   const dismissModelFallbackNotice = useAgentStore((s) => s.dismissModelFallbackNotice)
-  const agentViewMode = useAgentStore((s) => s.agentViewMode)
-  const setAgentViewMode = useAgentStore((s) => s.setAgentViewMode)
   const filterAlerted = useAgentStore((s) => s.filterAlerted)
   const toggleFilterAlerted = useAgentStore((s) => s.toggleFilterAlerted)
-  const roleInfoKey = useAgentStore((s) => s.roleInfoKey)
-  const closeRoleInfo = useAgentStore((s) => s.closeRoleInfo)
   const showAgentSwitcher = useAgentStore((s) => s.showAgentSwitcher)
-  const undoOrg = useAgentStore((s) => s.undoOrg)
-  const redoOrg = useAgentStore((s) => s.redoOrg)
   const pendingHandoff = useAgentStore((s) => s.pendingHandoff)
   const handoffReturnTo = useAgentStore((s) => s.handoffReturnTo)
   const acceptHandoff = useAgentStore((s) => s.acceptHandoff)
   const dismissHandoff = useAgentStore((s) => s.dismissHandoff)
   const returnFromHandoff = useAgentStore((s) => s.returnFromHandoff)
-  const agentRoles = useAgentStore((s) => s.agentRoles)
   const isMobile = useIsMobile()
 
   // Separate Al from regular sessions — always pinned at top.
@@ -131,21 +121,6 @@ export const AgentTab = memo(function AgentTab() {
   // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z = redo, for org-chart
   // edge/rename edits. Only while the Agents pane is active and focus isn't in a
   // text field (so the rename input / prompt box keep their native undo).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (useUiStore.getState().activePane !== 'agents') return
-      if (!(e.metaKey || e.ctrlKey)) return
-      const t = e.target as HTMLElement | null
-      const tag = t?.tagName.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) return
-      const k = e.key.toLowerCase()
-      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undoOrg() }
-      else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redoOrg() }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [undoOrg, redoOrg])
-
   const handleNewSession = useCallback(() => {
     selectSession(null)
     // Focus the prompt input
@@ -157,16 +132,6 @@ export const AgentTab = memo(function AgentTab() {
 
   const showList = isMobile ? (!activeSessionId && !creatingNewSession) : true
   const showDetail = isMobile ? (!!activeSessionId || creatingNewSession || !connected) : true
-
-  const viewToggle = (
-    <button
-      onClick={() => setAgentViewMode(agentViewMode === 'orgchart' ? 'list' : 'orgchart')}
-      className="text-text-tertiary hover:text-text-primary transition-colors duration-fast"
-      title={agentViewMode === 'orgchart' ? 'Switch to session list' : 'Switch to org chart'}
-    >
-      {agentViewMode === 'orgchart' ? <List size={12} /> : <Network size={12} />}
-    </button>
-  )
 
   // Shared "needs me" filter toggle — used by both the list and org-chart headers.
   const filterToggle = (
@@ -187,10 +152,9 @@ export const AgentTab = memo(function AgentTab() {
   const overlays = (
     <>
       {showAgentSwitcher && <AgentQuickSwitcher />}
-      <AgentInfoDialog roleKey={roleInfoKey} onClose={closeRoleInfo} />
       {pendingHandoff && (
         <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
-          <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{agentRoles.find((r) => r.key === pendingHandoff.targetAgentKey)?.title ?? pendingHandoff.targetAgentKey}</span></span>
+          <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{sessions.find((s2) => s2.agentKey === pendingHandoff.targetAgentKey)?.name ?? pendingHandoff.targetAgentKey}</span></span>
           <button onClick={() => acceptHandoff(pendingHandoff.targetAgentKey)} className="rounded bg-violet-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-violet-500">Talk →</button>
           <button onClick={dismissHandoff} className="text-text-tertiary hover:text-text-primary"><X size={13} /></button>
         </div>
@@ -203,52 +167,6 @@ export const AgentTab = memo(function AgentTab() {
     </>
   )
 
-  // Org-chart mode: the chart replaces the session LIST (left), the chat panel
-  // stays on the right (mirrors the Notes circles-view + editor layout). Mobile
-  // shows one at a time. Left-click on an agent opens its session; on a folder
-  // opens its info dialog. The rich profile is now a modal (right-click → Show
-  // info), not a space-hogging bottom card.
-  if (agentViewMode === 'orgchart') {
-    const handlePickRole = (roleKey: string) => {
-      const liveForRole = sessions.find((s) => s.agentKey === roleKey && s.status !== 'ended')
-      if (liveForRole) selectSession(liveForRole.id)
-      else useAgentStore.getState().openRoleInfo(roleKey) // folders / parked roles have no session → show info
-    }
-    const chartPanel = (
-      <div className="flex flex-1 min-h-0 flex-col">
-        <div className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-1.5">
-          <span className="text-xs font-medium text-text-primary">Org chart</span>
-          <div className="flex items-center gap-2">
-            {filterToggle}
-            {viewToggle}
-          </div>
-        </div>
-        <div className="relative flex-1 min-h-0">
-          <AgentOrgChart onPick={handlePickRole} />
-        </div>
-      </div>
-    )
-    if (isMobile) {
-      return (
-        <div className="flex flex-1 h-full min-w-0 flex-col">
-          {activeSessionId || creatingNewSession ? <AgentSessionView /> : chartPanel}
-          {overlays}
-        </div>
-      )
-    }
-    return (
-      <div className="flex flex-1 h-full min-w-0">
-        <div className="w-[42%] min-w-[340px] max-w-[640px] flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
-          {chartPanel}
-        </div>
-        <div className="flex-1 min-w-0 flex flex-col">
-          <AgentSessionView />
-        </div>
-        {overlays}
-      </div>
-    )
-  }
-
   return (
     <div className="flex flex-1 h-full min-w-0">
       {/* Session sidebar */}
@@ -257,7 +175,6 @@ export const AgentTab = memo(function AgentTab() {
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <span className="text-xs font-medium text-text-primary">Sessions</span>
             <div className="flex items-center gap-2">
-              {viewToggle}
               {filterToggle}
                 <button
                 onClick={handleNewSession}
@@ -388,36 +305,6 @@ export const AgentTab = memo(function AgentTab() {
 })
 
 // --------------------------------------------------------------------------
-// Agent info dialog — the role profile (charter / goals / memory / manager /
-// lifecycle actions) as a centered modal. Replaces the old bottom card so it
-// doesn't eat the chart's space; available in both views via "Show info".
-// --------------------------------------------------------------------------
-
-function AgentInfoDialog({ roleKey, onClose }: { roleKey: string | null; onClose: () => void }) {
-  useEffect(() => {
-    if (!roleKey) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [roleKey, onClose])
-
-  if (!roleKey) return null
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-h-[85vh] overflow-y-auto rounded-t-xl border border-border bg-surface-1 shadow-xl sm:max-w-md sm:rounded-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <AgentProfilePanel key={roleKey} agentKey={roleKey} onClose={onClose} />
-      </div>
-    </div>
-  )
-}
-
-// --------------------------------------------------------------------------
 // Session list item with context menu
 // --------------------------------------------------------------------------
 
@@ -437,12 +324,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
   const markSessionRead = useAgentStore((s) => s.markSessionRead)
   const markSessionUnread = useAgentStore((s) => s.markSessionUnread)
   const reloadSessionHistory = useAgentStore((s) => s.reloadSessionHistory)
-  // Mergeable up if it's a fork (shares a parent's conversation) OR an org child
-  // (its role has a manager to absorb it). Roots (Al) have no parent.
-  const canMergeUp = useAgentStore((s) =>
-    !!session.parentClaudeSessionId
-    || (!!session.agentKey && session.agentKey !== 'al' && !!s.agentRoles.find((r) => r.key === session.agentKey)?.manager))
-  const openRoleInfo = useAgentStore((s) => s.openRoleInfo)
+  // Mergeable up if it's a fork (shares a parent's conversation).
+  const canMergeUp = !!session.parentClaudeSessionId
   const isGenerating = useAgentStore((s) => s.generatingTitleFor.has(session.id))
   const isMobile = useIsMobile()
   // Latest text/prompt snippet — same pattern as Al, gives a glanceable activity preview
@@ -528,9 +411,6 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       { label: 'Reload history', onClick: () => reloadSessionHistory(session.id) },
       { label: 'Fork', onClick: () => forkSession(session.id) },
     ]
-    if (session.agentKey) {
-      items.unshift({ label: 'Show info', onClick: () => openRoleInfo(session.agentKey!) })
-    }
     // Mark read/unread (mobile-reachable equivalents of e / Shift+E / swipes).
     items.push({ label: 'Mark read', onClick: () => markSessionRead(session.id) })
     items.push({ label: 'Mark unread', onClick: () => markSessionUnread(session.id) })
@@ -538,8 +418,8 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
     items.push(isMicOwner
       ? { label: 'Release mic to Al', onClick: () => useMicStore.getState().setMic('al') }
       : { label: 'Give mic to this agent', onClick: () => useMicStore.getState().setMic(session.id) })
-    // A child folds into its parent (fork lineage) or its manager (org edge) so
-    // the parent absorbs its knowledge — instead of just killing it.
+    // A fork folds into its parent so the parent absorbs its knowledge —
+    // instead of just killing it.
     if (canMergeUp && session.status !== 'ended') {
       items.push({ label: 'Merge into parent', onClick: () => mergeSession(session.id) })
     }
@@ -551,7 +431,7 @@ const SessionListItem = memo(function SessionListItem({ session, isActive, inden
       })
     }
     return items
-  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, canMergeUp, isMicOwner, killSession, mergeSession, markSessionRead, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory, openRoleInfo])
+  }, [session.status, session.id, session.agentKey, session.parentClaudeSessionId, canMergeUp, isMicOwner, killSession, mergeSession, markSessionRead, markSessionUnread, startRename, generateTitleAction, forkSession, reloadSessionHistory])
 
   return (
     <ContextMenu items={menuItems}>
