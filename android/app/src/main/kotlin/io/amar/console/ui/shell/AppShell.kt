@@ -20,7 +20,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import io.amar.console.ConsoleApp
 import io.amar.console.core.AppLifecycle
-import io.amar.console.ui.agents.AgentSessionListScreen
 import io.amar.console.ui.agents.AgentSessionScreen
 import io.amar.console.ui.cal.CalendarScreen
 import io.amar.console.ui.chat.ChatRoomListScreen
@@ -165,13 +164,9 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         },
                     )
                 }
-                composable(Pane.Agents.route) {
-                    AgentSessionListScreen(
-                        app.graph.agents,
-                        onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
-                        onGrid = toGrid,
-                    )
-                }
+                // The Agents tile is gone (Spaces owns sessions) — but the
+                // session DETAIL route stays: Spaces, Home, Notes and agent
+                // push notifications all navigate into it.
                 composable("agents/{sessionId}") { entry ->
                     val sessionId = android.net.Uri.decode(entry.arguments?.getString("sessionId") ?: "")
                     AgentSessionScreen(
@@ -220,7 +215,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         onBack = { navController.popBackStack() },
                         agents = app.graph.agents,
                         onOpenAgentSession = { sessionId ->
-                            navController.openApp(Pane.Agents)
+                            navController.openApp(Pane.Spaces)
                             navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
                         },
                         mirror = app.graph.mirror,
@@ -244,8 +239,8 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         app.graph.home,
                         onOpenAgentSession = { sessionId ->
                             // Cross-app tap-through: build the real stack so
-                            // back walks agents-root → grid, not back to Home.
-                            navController.openApp(Pane.Agents)
+                            // back walks spaces-root → grid, not back to Home.
+                            navController.openApp(Pane.Spaces)
                             navController.navigate("agents/${android.net.Uri.encode(sessionId)}")
                         },
                         onOpenNote = { path ->

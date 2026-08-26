@@ -1,8 +1,8 @@
 // Fleet-wide agent controls for the Spaces pane — model picker, backend
 // switch, fallback notice. These are hub-level levers (not per-space), so
 // they live in a small gear popover in the rail header rather than a
-// persistent footer. Mirrors the AgentTab sidebar footer's semantics; the
-// model lists deliberately duplicate AgentTab's (same ids, same reasoning:
+// persistent footer. Mirrors the retired Agents-tab footer semantics; the
+// model lists are deliberately hardcoded here (same ids, same reasoning:
 // the same model needs a different id per backend and the wrong form 400s).
 
 import { useCallback, useEffect, useRef, useState } from 'react'

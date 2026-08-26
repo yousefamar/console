@@ -27,8 +27,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban } from 'lucide-react'
-import { AgentTab } from './AgentTab'
+import { RefreshCw, Mail, MessageCircle, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban } from 'lucide-react'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
@@ -189,16 +188,16 @@ export function Layout() {
   const gmailConnected = useGmailConnected()
   const matrixConnected = isMatrixConnected()
 
-  // Legacy Agents/Notes tabs — hidden once Spaces has absorbed them (flip in
-  // localStorage: console:ui:legacyTabs = 'true' to bring them back; keep the
-  // panes themselves mounted so deep links / fallbacks still work).
+  // Legacy Notes tab — hidden once Spaces absorbed it (flip in localStorage:
+  // console:ui:legacyTabs = 'true' to bring it back; the pane itself stays
+  // mounted so deep links / fallbacks still work). The Agents tab is GONE —
+  // Spaces is the only session surface.
   const showLegacyTabs = localStorage.getItem('console:ui:legacyTabs') !== 'false'
   const isHome = activePane === 'home'
   const isEmail = activePane === 'email'
   const isChat = activePane === 'chat'
   const isBookmarks = activePane === 'bookmarks'
   const isNotes = activePane === 'notes'
-  const isAgents = activePane === 'agents'
   const isFeeds = activePane === 'feeds'
   const isCalendar = activePane === 'calendar'
   const isMap = activePane === 'map'
@@ -326,7 +325,6 @@ export function Layout() {
                 </button>
               )}
               <PaneTab pane="spaces" icon={<FolderKanban size={11} />} label="Spaces" activePane={activePane} setActivePane={setActivePane} />
-              {showLegacyTabs && <PaneTab pane="agents" icon={<Bot size={11} />} label="Agents" activePane={activePane} setActivePane={setActivePane} />}
               <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
               {showLegacyTabs && <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />}
               <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
@@ -338,7 +336,7 @@ export function Layout() {
         <div className="flex items-center gap-3 md:gap-4">
           <HubOfflineIndicator />
           <SyncStatus />
-          {!isAgents && !isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces ? true : matrixConnected) && (
+          {!isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
@@ -425,11 +423,6 @@ export function Layout() {
         <div className={`flex flex-1 min-h-0 overflow-hidden ${isSpaces ? '' : 'hidden'}`}>
           {spacesMounted && <SpacesTab />}
         </div>
-
-        {/* Agents pane */}
-        <div className={`flex flex-1 min-h-0 overflow-hidden ${isAgents ? '' : 'hidden'}`}>
-          <AgentTab />
-        </div>
       </div>
 
       {/* YouTube PiP overlay */}
@@ -472,25 +465,23 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
 }) {
   const isActive = activePane === pane
 
-  // Tabs with counts: Mail (inbox), Chat (unread rooms), Feeds (unread items), Agents (unread sessions), Spaces (unread+unsaved)
+  // Tabs with counts: Mail (inbox), Chat (unread rooms), Feeds (unread items), Spaces (unread sessions + unsaved files)
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'chat'
       ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
       : pane === 'feeds'
         ? useFeedStore((s) => s.totalUnread)
-        : pane === 'agents'
-          ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
-          : pane === 'notes'
-            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : pane === 'spaces'
-              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-              : 0
-  // Red dot on a tab: Agents when a session emits @amar; Notes when the pen is
+        : pane === 'notes'
+          ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+          : pane === 'spaces'
+            ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : 0
+  // Red dot on a tab: Spaces when a session emits @amar; Notes when the pen is
   // streaming new strokes you haven't seen. Visible from any other pane.
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
   const penStreaming = useNotesStore((s) => s.penStreaming)
-  const attention = ((pane === 'agents' || pane === 'spaces') && agentsAttention) || (pane === 'notes' && penStreaming)
+  const attention = (pane === 'spaces' && agentsAttention) || (pane === 'notes' && penStreaming)
 
   return (
     <button
@@ -531,7 +522,6 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
     { pane: 'spaces', icon: <FolderKanban size={18} />, label: 'Spaces' },
-    ...(localStorage.getItem('console:ui:legacyTabs') !== 'false' ? [{ pane: 'agents' as ActivePane, icon: <Bot size={18} />, label: 'Agents' }] : []),
     { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
     ...(localStorage.getItem('console:ui:legacyTabs') !== 'false' ? [{ pane: 'notes' as ActivePane, icon: <FileText size={18} />, label: 'Notes' }] : []),
     { pane: 'bookmarks', icon: <Bookmark size={18} />, label: 'Marks' },
@@ -584,15 +574,13 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
       ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
       : pane === 'feeds'
         ? useFeedStore((s) => s.totalUnread)
-        : pane === 'agents'
-          ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length)
-          : pane === 'notes'
-            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : pane === 'spaces'
-              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-              : 0
+        : pane === 'notes'
+          ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+          : pane === 'spaces'
+            ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : 0
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
-  const attention = (pane === 'agents' || pane === 'spaces') && agentsAttention
+  const attention = pane === 'spaces' && agentsAttention
 
   return (
     <button
@@ -622,7 +610,7 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
 function Footer({ activePane }: { activePane: ActivePane }) {
   const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
   const isEmail = activePane === 'email'
-  const isAgents = activePane === 'agents'
+  const isSpaces = activePane === 'spaces'
   const isBookmarks = activePane === 'bookmarks'
   const isNotes = activePane === 'notes'
   const isFeeds = activePane === 'feeds'
@@ -639,7 +627,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
   return (
     <footer className="flex items-center justify-between border-t border-border px-4 py-1">
       <div className="flex items-center gap-4">
-        {isAgents || isBookmarks || isNotes || isCalendar || isMoney || isMap ? (
+        {isSpaces || isBookmarks || isNotes || isCalendar || isMoney || isMap ? (
           <></>
         ) : isFeeds ? (
           <>
@@ -664,7 +652,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
         )}
       </div>
       <div className="flex items-center gap-3 text-xs text-text-tertiary">
-        {isAgents ? (
+        {isSpaces ? (
           <>
             <span><kbd className="font-mono">e</kbd> read</span>
             <span><kbd className="font-mono">E</kbd> unread</span>
@@ -746,13 +734,6 @@ function mobileGoBack(pane: ActivePane) {
       break
     }
     case 'money': useMoneyStore.getState().selectTransaction(null); break
-    case 'agents': {
-      const ag = useAgentStore.getState()
-      if (ag.activeSessionId) ag.selectSession(null)
-      // selectSession(null) sets creatingNewSession: true, so always clear it on back
-      useAgentStore.setState({ creatingNewSession: false })
-      break
-    }
     case 'spaces': {
       const ag = useAgentStore.getState()
       const notes = useNotesStore.getState()
@@ -779,8 +760,6 @@ function useMobileHasSelection(pane: ActivePane): boolean {
   const feedId = useFeedStore((s) => s.selectedFeedId)
   const folderId = useFeedStore((s) => s.selectedFolderId)
   const txId = useMoneyStore((s) => s.selectedTransactionId)
-  const sessionId = useAgentStore((s) => s.activeSessionId)
-  const creatingNewSession = useAgentStore((s) => s.creatingNewSession)
 
   switch (pane) {
     case 'email': return !!threadId
@@ -789,7 +768,6 @@ function useMobileHasSelection(pane: ActivePane): boolean {
     case 'notes': return !!filePath
     case 'feeds': return !!(feedItemId || feedId || folderId)
     case 'money': return !!txId
-    case 'agents': return !!sessionId || creatingNewSession
     default: return false
   }
 }

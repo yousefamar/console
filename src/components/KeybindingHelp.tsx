@@ -59,7 +59,7 @@ const BINDINGS = [
     { key: 'n', action: 'Add note' },
     { key: 'c', action: 'Cycle category filter' },
   ]},
-  { section: 'Agents', items: [
+  { section: 'Spaces (agents)', items: [
     { key: 'e', action: 'Mark read' },
     { key: 'E', action: 'Mark unread' },
     { key: 'y', action: 'Allow tool' },

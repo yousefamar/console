@@ -1,4 +1,4 @@
-// Sidebar session ordering — pure, shared by the AgentTab list render AND the
+// Sidebar session ordering — pure, shared by the j/k cycling order AND the
 // j/k cycling in the store, so "next/prev session" matches what's on screen.
 //
 // Order = sessions clustered by cwd into a group tree (ordered within + across

@@ -22,6 +22,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Agents tile removed — Spaces owns sessions (^deft-ant, parity with the SPA
+  Agents-tab deletion): Pane.Agents gone (push pane "agents" maps to Spaces;
+  the `agents/{sessionId}` detail route survives for deep links + Spaces/Home/
+  Notes tap-throughs), AgentSessionListScreen/SessionTree/AgentOrgRoster/
+  NewSessionDialog/QuickSwitcher/RoleInfoDialog deleted (org-roster verbs died
+  hub-side 2026-08-26), grid badge/dot/urgent moved to the Spaces tile,
+  FleetModelSheet + model-fallback + handoff banners now mount on SpacesScreen,
+  Mic/Cron init moved there too. Spaces session↔space join now reads the
+  session's own `project`/`areas` (Room v12: AgentSessionRow.project+areasCsv;
+  fork glyph/depth from parentClaudeSessionId, not roles).
+
 - Drafts relocated to log/drafts/ + projects/<slug>/log/drafts/ (beside where
   they publish): `Frontmatter.isDraftPath` widened (scratch legacy kept),
   `permalinkForLogPath` tightened to direct log/ children so drafts never

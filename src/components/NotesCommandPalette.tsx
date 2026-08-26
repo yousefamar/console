@@ -142,8 +142,7 @@ export function NotesCommandPalette() {
           label: `Jump to agent: ${s.name || s.prompt?.slice(0, 50) || s.id}`,
           icon: <Bot size={12} />,
           action: () => {
-            useAgentStore.getState().selectSession(s.id)
-            useUiStore.getState().setActivePane('agents')
+            void import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(s.id))
             closeCommandPalette()
           },
         })
@@ -166,8 +165,9 @@ export function NotesCommandPalette() {
           })
           if (!prompt || !prompt.trim()) return
           const cwd = `${vaultPath}/projects/${enclosingSlug}`
-          useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, projectTitle)
-          useUiStore.getState().setActivePane('agents')
+          useAgentStore.getState().createSessionAsAgent(prompt.trim(), cwd, projectTitle, { project: enclosingSlug })
+          useUiStore.getState().setActivePane('spaces')
+          void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().selectSpace(enclosingSlug))
         },
       })
     }

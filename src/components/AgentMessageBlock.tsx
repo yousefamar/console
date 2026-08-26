@@ -462,7 +462,7 @@ function PlanResultBlock({ plan }: { plan?: string }) {
 // TodoWrite — legacy whole-list tool, kept so old transcripts still render as a
 // checklist rather than raw JSON. Current CLIs use incremental TaskCreate /
 // TaskUpdate instead; the live list lives in SessionInfo.todos and renders in
-// the pinned panel (AgentTab). Legacy items name the task `content`, the new
+// the pinned TodoPanel. Legacy items name the task `content`, the new
 // ones `subject` — normalized here onto the shared TodoItem shape.
 // --------------------------------------------------------------------------
 

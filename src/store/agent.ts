@@ -171,12 +171,6 @@ interface AgentState {
   pendingHandoff: { fromSessionId: string; targetAgentKey: string } | null
   /** When the user followed a hand-off, the session to return to ("Back to Al"). */
   handoffReturnTo: string | null
-  /** "Needs me" filter — shared by the list and the org chart. When on, the list
-   *  shows only alerted sessions and the chart prunes to the alerted subtree.
-   *  Device-local (localStorage). */
-  filterAlerted: boolean
-  /** "/" quick-switcher: fuzzy-find an agent by name and jump to it. */
-  showAgentSwitcher: boolean
   agentModel: string
   agentModelChain: string[]
   agentModelLockedByEnv: boolean
@@ -194,7 +188,7 @@ interface AgentState {
   generatingTitleFor: Set<string>
   /** Custom session ordering — IDs in display order. Sessions not listed fall to the end. */
   sessionOrder: string[]
-  /** Collapsed group cwds — used by AgentTab grouping UI. Synced via hub. */
+  /** Collapsed group cwds (legacy sidebar grouping; kept for hub sync + j/k order). */
   collapsedGroups: Set<string>
 
   // Past sessions (from Claude's own JSONL files)
@@ -282,11 +276,6 @@ interface AgentState {
    *  respawn fallback). null clears the pin — back to the hub-wide model. */
   setSessionModel: (sessionId: string, model: string | null) => void
   dismissModelFallbackNotice: () => void
-  /** Toggle the "needs me" filter. */
-  toggleFilterAlerted: () => void
-  /** Open / close the "/" agent quick-switcher. */
-  openAgentSwitcher: () => void
-  closeAgentSwitcher: () => void
   /** Reload a live session (respawn via --resume, history preserved). */
   reloadSession: (sessionId: string) => void
   /** Follow a hand-off: open the target agent's session, remember where to return. */
@@ -304,8 +293,6 @@ interface AgentState {
    *  or was truncated by the visible-window cap. */
   reloadSessionHistory: (sessionId: string) => void
   setTailing: (sessionId: string, tailing: boolean) => void
-  reorderSession: (fromId: string, toId: string) => void
-  toggleGroupCollapsed: (cwd: string) => void
   forkSession: (sessionId: string) => void
   /** Merge a fork back into its parent (summary folded in), then close the fork. */
   mergeSession: (sessionId: string) => void
@@ -345,8 +332,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   pendingHandoff: null,
   handoffReturnTo: null,
-  filterAlerted: typeof localStorage !== 'undefined' && localStorage.getItem('console:agents:filterAlerted') === '1',
-  showAgentSwitcher: false,
 
   agentModel: '',
   agentModelChain: [],
@@ -619,17 +604,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),
 
-  toggleFilterAlerted: () => {
-    set((s) => {
-      const next = !s.filterAlerted
-      if (typeof localStorage !== 'undefined') localStorage.setItem('console:agents:filterAlerted', next ? '1' : '0')
-      return { filterAlerted: next }
-    })
-  },
-
-  openAgentSwitcher: () => set({ showAgentSwitcher: true }),
-  closeAgentSwitcher: () => set({ showAgentSwitcher: false }),
-
   reloadSession: (sessionId) => {
     sendWs({ type: 'reload_session', sessionId })
   },
@@ -741,32 +715,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const current = get().isTailingBySession[sessionId]
     if (current === tailing) return
     set((s) => ({ isTailingBySession: { ...s.isTailingBySession, [sessionId]: tailing } }))
-  },
-
-  toggleGroupCollapsed: (cwd) => {
-    const next = new Set(get().collapsedGroups)
-    if (next.has(cwd)) next.delete(cwd)
-    else next.add(cwd)
-    set({ collapsedGroups: next })
-    sendWs({ type: 'set_collapsed_groups', collapsed: [...next] })
-  },
-
-  reorderSession: (fromId, toId) => {
-    const sessions = get().sessions.filter((s) => s.id !== 'al' && s.status !== 'ended')
-    const currentOrder = get().sessionOrder
-    // Build full order: start from currentOrder, add any missing sessions in default sort
-    const defaultSorted = [...sessions].sort((a, b) => b.createdAt - a.createdAt).map((s) => s.id)
-    const ordered = currentOrder.length > 0
-      ? [...currentOrder.filter((id) => defaultSorted.includes(id)), ...defaultSorted.filter((id) => !currentOrder.includes(id))]
-      : defaultSorted
-    // Move fromId to toId's position
-    const fromIdx = ordered.indexOf(fromId)
-    const toIdx = ordered.indexOf(toId)
-    if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return
-    ordered.splice(fromIdx, 1)
-    ordered.splice(toIdx, 0, fromId)
-    set({ sessionOrder: ordered })
-    sendWs({ type: 'reorder_sessions', order: ordered })
   },
 
   forkSession: (sessionId) => {
@@ -1751,19 +1699,16 @@ function flushPending(sessionId: string) {
   }
 }
 
-/** The flat session order exactly as the sidebar renders it (Al pinned first,
- *  then sessions clustered by cwd in `sessionOrder`, fork lineage, collapsed
- *  groups skipped, and the "needs me" filter applied) — so j/k cycling moves
- *  top-to-bottom through what the user actually sees. */
+/** The flat session order for j/k cycling (Al pinned first, then sessions
+ *  clustered by cwd in `sessionOrder`, fork lineage, collapsed groups
+ *  skipped) — top-to-bottom through what the user sees. */
 function visibleSidebarOrder(s: AgentState): SessionInfo[] {
-  const isAlerted = (x: SessionInfo) => !!(x.hasUnread || x.needsAttention || s.pendingApprovalsBySession[x.id] || x.status === 'running')
   const al = s.sessions.find((x) => x.id === 'al')
   const active = s.sessions.filter((x) =>
     x.id !== 'al'
-    && (x.status !== 'ended' || x.hasUnread)
-    && (!s.filterAlerted || isAlerted(x)))
+    && (x.status !== 'ended' || x.hasUnread))
   const ordered: SessionInfo[] = []
-  if (al && (!s.filterAlerted || isAlerted(al))) ordered.push(al)
+  if (al) ordered.push(al)
   ordered.push(...flattenSidebarOrder(active, s.sessionOrder, s.collapsedGroups))
   return ordered
 }

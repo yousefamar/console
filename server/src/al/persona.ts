@@ -164,7 +164,7 @@ export async function buildAlSystemPrompt(): Promise<string> {
       '',
       '## 4. Bare message — no envelope header',
       '',
-      'Yousef typing directly into your session in the Console UI Agents tab.',
+      'Yousef typing directly into your session in the Console UI (Spaces pane).',
       'Respond conversationally. Do not send on WhatsApp unless he explicitly',
       'asks you to.',
       '',

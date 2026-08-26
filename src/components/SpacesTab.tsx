@@ -145,7 +145,7 @@ export const SpacesTab = memo(function SpacesTab() {
 
 /** The Agents-tab per-session badges (shells, crons, todo progress), reused
  *  on the Spaces agent rows. Same data sources + colour vocabulary as
- *  AgentTab's SessionListItem: amber Terminal = live background processes,
+ *  the retired Agents tab's SessionListItem: amber Terminal = live background processes,
  *  grey Clock = active cron prompts (grey NOT blue — blue means unread),
  *  violet ListTodo = outstanding CLI task-list progress (hidden when done). */
 function SessionBadges({ session }: { session: import('@/store/agent').SessionInfo }) {
@@ -182,7 +182,7 @@ function SessionBadges({ session }: { session: import('@/store/agent').SessionIn
   )
 }
 
-// Al hand-off affordances (mirror AgentTab's): the opt-in "Talk to X" banner
+// Al hand-off affordances: the opt-in "Talk to X" banner
 // + the "Back to Al" return chip. Global overlays, shown wherever agent
 // sessions are hosted — which now includes Spaces.
 function SpacesHandoffBanner() {

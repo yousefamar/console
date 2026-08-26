@@ -57,7 +57,7 @@ import java.util.Locale
  *
  * Parity notes (FEATURES app-wide #16/#17/#21):
  *  - Feeds tile → total unread count; Notes tile → dirty (unsaved) open files.
- *  - Agents tile turns urgent (error tint) + shows a red attention dot when a
+ *  - Spaces tile turns urgent (error tint) + shows a red attention dot when a
  *    session raised @amar. Notes tile shows a red dot while the pen is
  *    live-streaming strokes.
  *  - A BellOff indicator in the header appears only while Do Not Disturb is on;
@@ -170,7 +170,7 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
                 val badge = when (pane) {
                     Pane.Chat -> chatUnread
                     Pane.Mail -> mailUnread
-                    Pane.Agents -> agentAlerts + approvals.size
+                    Pane.Spaces -> agentAlerts + approvals.size
                     Pane.Feeds -> feedUnread
                     Pane.Notes -> notesDirty
                     else -> 0
@@ -181,18 +181,18 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
                             SimpleDateFormat("HH:mm", Locale.UK).format(Date(it.startTime)) +
                                 " " + it.summary.take(14)
                         }
-                    Pane.Agents -> if (approvals.isNotEmpty()) "approval waiting" else null
+                    Pane.Spaces -> if (approvals.isNotEmpty()) "approval waiting" else null
                     else -> null
                 }
-                // Red attention dot: agents (@amar) or notes (pen streaming).
+                // Red attention dot: spaces (@amar sessions) or notes (pen streaming).
                 val dot = when (pane) {
-                    Pane.Agents -> agentAttention
+                    Pane.Spaces -> agentAttention
                     Pane.Notes -> penDot
                     else -> false
                 }
                 GridTile(
                     pane, badge, subtitle,
-                    urgent = pane == Pane.Agents && approvals.isNotEmpty(),
+                    urgent = pane == Pane.Spaces && approvals.isNotEmpty(),
                     attentionDot = dot,
                 ) {
                     onOpen(pane)

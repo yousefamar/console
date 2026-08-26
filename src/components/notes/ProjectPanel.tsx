@@ -106,13 +106,13 @@ export function ProjectPanel({ slug, onClose }: Props) {
     })
     if (!prompt || !prompt.trim()) return
     const cwd = `${vaultPath}/projects/${slug}`
-    useAgentStore.getState().createSession(prompt.trim(), cwd, undefined, title)
-    useUiStore.getState().setActivePane('agents')
+    useAgentStore.getState().createSessionAsAgent(prompt.trim(), cwd, title, { project: slug })
+    useUiStore.getState().setActivePane('spaces')
+    void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().selectSpace(slug))
   }
 
   const jumpToSession = (sessionId: string) => {
-    useAgentStore.getState().selectSession(sessionId)
-    useUiStore.getState().setActivePane('agents')
+    void import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(sessionId))
   }
 
   const refresh = async () => {

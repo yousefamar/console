@@ -168,7 +168,9 @@ class MainActivity : ComponentActivity() {
                 val detail = when {
                     !itemId.isNullOrEmpty() && pane == Pane.Chat -> "chat/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Mail -> "mail/${Uri.encode(itemId)}"
-                    !itemId.isNullOrEmpty() && pane == Pane.Agents -> "agents/${Uri.encode(itemId)}"
+                    // Agent pushes still say pane=agents; the session detail
+                    // route survives under Spaces.
+                    !itemId.isNullOrEmpty() && paneName == "agents" -> "agents/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Feeds -> "feeds/${Uri.encode(itemId)}"
                     !itemId.isNullOrEmpty() && pane == Pane.Notes -> "notes/${Uri.encode(itemId)}"
                     else -> null

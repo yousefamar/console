@@ -6,6 +6,9 @@ import { getHubUrl } from '@/hub'
 
 // Track active pane to suppress notifications for the pane user is viewing
 let activePane: ActivePane = 'email'
+// Agent notifications ride a legacy 'agents' pane value on the wire (hub push
+// + APK deep links) — they render in Spaces now.
+type NotifyPane = ActivePane | 'agents'
 // Track active agent session to allow notifications for other sessions
 let activeAgentSessionId: string | null = null
 // Do Not Disturb mode — suppress all notifications
@@ -26,7 +29,7 @@ export interface NotifyOptions {
   body: string
   icon?: string
   tag?: string
-  data?: { pane: ActivePane; itemId?: string }
+  data?: { pane: NotifyPane; itemId?: string }
 }
 
 /** Request notification permission. Returns true if granted. */
@@ -56,9 +59,8 @@ export function notify(opts: NotifyOptions): void {
 
   // Always notify if app doesn't have focus (different workspace, minimized, etc.)
   if (document.hasFocus() && opts.data?.pane) {
-    // App is focused on the same pane — suppress unless it's agents pane
-    // (agents pane has multiple sessions; only suppress for the active one).
-    // Spaces hosts agent sessions too, so it counts as the agents pane here.
+    // App is focused on the same pane — suppress, except agent notifications:
+    // Spaces hosts many sessions, so only suppress for the ACTIVE one.
     const paneMatches = activePane === opts.data.pane ||
       (opts.data.pane === 'agents' && activePane === 'spaces')
     if (paneMatches) {
@@ -95,10 +97,21 @@ export function notify(opts: NotifyOptions): void {
 }
 
 /** Navigate to the correct pane and select the item. */
-function handleNotificationClick(data: { pane: ActivePane; itemId?: string }): void {
+function handleNotificationClick(data: { pane: NotifyPane; itemId?: string }): void {
+  if (data.pane === 'agents') {
+    // Agents live in Spaces — land there with the owning space selected
+    // (Unassigned covers sessions with no binding).
+    if (data.itemId) {
+      import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(data.itemId!))
+    } else {
+      import('@/store/ui').then(({ useUiStore }) => useUiStore.getState().setActivePane('spaces'))
+    }
+    return
+  }
+
   // Dynamic imports to avoid circular dependencies
   import('@/store/ui').then(({ useUiStore }) => {
-    useUiStore.getState().setActivePane(data.pane)
+    useUiStore.getState().setActivePane(data.pane as ActivePane)
   })
 
   if (!data.itemId) return
@@ -118,22 +131,6 @@ function handleNotificationClick(data: { pane: ActivePane; itemId?: string }): v
       import('@/store/inbox').then(({ useInboxStore }) => {
         useInboxStore.getState().selectThread(data.itemId!)
       })
-      break
-    case 'agents':
-      // Agents live in Spaces now — land there with the owning space selected
-      // (Unassigned covers sessions with no binding).
-      Promise.all([import('@/store/agent'), import('@/store/spaces'), import('@/components/SpacesTab'), import('@/store/ui')]).then(
-        ([{ useAgentStore }, { useSpacesStore }, { UNASSIGNED_SLUG }, { useUiStore }]) => {
-          const agent = useAgentStore.getState()
-          const sess = agent.sessions.find((x) => x.id === data.itemId)
-          const slug = sess?.project ?? sess?.areas?.[0] ?? (sess && !sess.isAl ? UNASSIGNED_SLUG : null)
-          if (slug) {
-            useUiStore.getState().setActivePane('spaces')
-            useSpacesStore.getState().selectSpace(slug)
-          }
-          agent.selectSession(data.itemId!)
-        },
-      )
       break
   }
 }
@@ -155,7 +152,7 @@ if (typeof window !== 'undefined') {
     const detail = (event as CustomEvent).detail as { pane?: string; itemId?: string } | undefined
     if (!detail?.pane) return
     handleNotificationClick({
-      pane: detail.pane as ActivePane,
+      pane: detail.pane as NotifyPane,
       itemId: detail.itemId,
     })
   })

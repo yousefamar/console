@@ -3,7 +3,7 @@ import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
 import { getPref, setPref } from '@/prefs'
 
-export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'agents' | 'feeds' | 'calendar' | 'map' | 'money' | 'spaces'
+export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'feeds' | 'calendar' | 'map' | 'money' | 'spaces'
 
 const PANE_PATHS: Record<ActivePane, string> = {
   home: '/',
@@ -11,7 +11,6 @@ const PANE_PATHS: Record<ActivePane, string> = {
   chat: '/chat',
   bookmarks: '/bookmarks',
   notes: '/notes',
-  agents: '/agents',
   feeds: '/feeds',
   calendar: '/calendar',
   map: '/map',
@@ -25,7 +24,8 @@ const PATH_PANES: Record<string, ActivePane> = {
   '/chat': 'chat',
   '/bookmarks': 'bookmarks',
   '/notes': 'notes',
-  '/agents': 'agents',
+  // The Agents pane is gone (Spaces absorbed it) — old bookmarks land there.
+  '/agents': 'spaces',
   '/feeds': 'feeds',
   '/calendar': 'calendar',
   '/map': 'map',
@@ -173,7 +173,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ activePane: pane })
   },
   toggleActivePane: (reverse) => set((s) => {
-    const order: ActivePane[] = ['home', 'email', 'calendar', 'chat', 'spaces', 'agents', 'feeds', 'notes', 'bookmarks', 'map', 'money']
+    const order: ActivePane[] = ['home', 'email', 'calendar', 'chat', 'spaces', 'feeds', 'notes', 'bookmarks', 'map', 'money']
     const idx = order.indexOf(s.activePane)
     const next = order[(idx + (reverse ? order.length - 1 : 1)) % order.length]!
     history.replaceState(null, '', PANE_PATHS[next])

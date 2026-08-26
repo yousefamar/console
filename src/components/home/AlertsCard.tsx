@@ -1,7 +1,6 @@
 import { CalendarClock, ShieldQuestion, AlertTriangle } from 'lucide-react'
 import { useDashboardStore, type DashboardAlert } from '@/store/dashboard'
 import { useUiStore } from '@/store/ui'
-import { useAgentStore } from '@/store/agent'
 import { HomeScrollPane } from './HomeScrollPane'
 
 export function AlertsCard() {
@@ -31,8 +30,7 @@ function Item({ alert }: { alert: DashboardAlert }) {
     return (
       <li
         onClick={() => {
-          useUiStore.getState().setActivePane('agents')
-          useAgentStore.getState().selectSession(alert.sessionId)
+          void import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(alert.sessionId))
         }}
         className="flex items-start gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer"
         role="button"

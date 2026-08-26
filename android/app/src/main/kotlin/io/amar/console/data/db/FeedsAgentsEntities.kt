@@ -168,7 +168,15 @@ data class AgentSessionRow(
     @ColumnInfo(defaultValue = "0") val createdAt: Long = 0,
     @ColumnInfo(defaultValue = "0") val isAl: Boolean = false,
     @ColumnInfo(defaultValue = "0") val totalCostMicros: Long = 0,
+    // --- v12: space binding lives ON the session (durable roles removed) ---
+    /** Vault project slug this session is bound to (Spaces join). */
+    @ColumnInfo(defaultValue = "NULL") val project: String? = null,
+    /** Area slugs, comma-separated ("" = none). */
+    @ColumnInfo(defaultValue = "NULL") val areasCsv: String? = null,
 )
+
+fun AgentSessionRow.areaList(): List<String> =
+    areasCsv?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
 
 @Entity(
     tableName = "agent_messages",

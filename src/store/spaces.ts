@@ -117,6 +117,24 @@ async function selectDefaultAgent(slug: string): Promise<void> {
   agent.selectSession(pick.id)
 }
 
+/** Jump to an agent session, landing on Spaces with its owning space selected
+ *  (Spaces is the only pane hosting sessions — the Agents tab is gone).
+ *  Unbound sessions land in ~unassigned. Safe against selectDefaultAgent:
+ *  its keep-current-selection guard sees the session we select here. */
+export async function focusSessionInSpaces(sessionId: string): Promise<void> {
+  const [{ useAgentStore }, { UNASSIGNED_SLUG }, { useUiStore }] = await Promise.all([
+    import('@/store/agent'),
+    import('@/components/SpacesTab'),
+    import('@/store/ui'),
+  ])
+  const agent = useAgentStore.getState()
+  const sess = agent.sessions.find((x) => x.id === sessionId)
+  const slug = sess?.project ?? sess?.areas?.[0] ?? (sess && !sess.isAl ? UNASSIGNED_SLUG : null)
+  useUiStore.getState().setActivePane('spaces')
+  if (slug) useSpacesStore.getState().selectSpace(slug)
+  agent.selectSession(sessionId)
+}
+
 /** Address a card for the /board/* API: `^id` when stamped (unambiguous),
  *  else its exact text — BoardOps errors on ambiguity rather than guessing,
  *  which surfaces as boardError + a re-read. */

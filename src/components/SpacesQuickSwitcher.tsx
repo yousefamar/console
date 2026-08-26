@@ -1,6 +1,6 @@
 // "/" command bar for the Spaces pane — jump to ANYTHING: an area, a project,
 // an agent session (live or parked), or a vault file. Follows the
-// AgentQuickSwitcher modal conventions (fuzzy subsequence match, ↑↓/↵/esc);
+// classic quick-switcher modal conventions (fuzzy subsequence match, ↑↓/↵/esc);
 // empty query sorts by RECENCY (session activity ts / file mtime / space of
 // the most recent thing in it).
 

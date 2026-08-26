@@ -42,7 +42,6 @@ enum class Pane(
 ) {
     Chat("chat", "Chat", Icons.AutoMirrored.Outlined.Chat),
     Mail("mail", "Mail", Icons.Outlined.Email),
-    Agents("agents", "Agents", Icons.Outlined.SmartToy),
     Spaces("spaces", "Spaces", Icons.Outlined.Workspaces),
     Calendar("calendar", "Calendar", Icons.Outlined.CalendarMonth),
     Notes("notes", "Notes", Icons.Outlined.StickyNote2),
@@ -61,6 +60,7 @@ enum class Pane(
         fun fromPushPane(pane: String): Pane = when (pane) {
             "email" -> Mail
             "money" -> Home // Money pane is out of scope; land somewhere sane
+            "agents" -> Spaces // Agents tile is gone; sessions live in Spaces
             else -> fromRoute(pane) ?: Home
         }
     }

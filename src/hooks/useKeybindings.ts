@@ -34,8 +34,8 @@ export function useKeybindings() {
       const isBookmarks = activePane === 'bookmarks'
       const isNotes = activePane === 'notes'
       const isSpaces = activePane === 'spaces'
-      // Spaces hosts agent sessions too — it shares the agent bindings.
-      const isAgents = activePane === 'agents' || isSpaces
+      // Spaces hosts the agent sessions — it owns the old Agents-pane bindings.
+      const isAgents = isSpaces
       // ...and the vault editor, so it shares the notes chords (Ctrl+S/P/N/W…).
       const isNotesish = isNotes || isSpaces
       const isFeeds = activePane === 'feeds'
@@ -202,15 +202,10 @@ export function useKeybindings() {
 
       // Agent-specific keybindings
       if (isAgents) {
-        // "/" — fuzzy-jump. Spaces gets its own everything-switcher
-        // (spaces + agents + files); the Agents pane keeps the agent one.
+        // "/" — the Spaces everything-switcher (spaces + agents + files).
         if (e.key === '/') {
           e.preventDefault()
-          if (activePane === 'spaces') {
-            void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().openSwitcher())
-          } else {
-            agent.getState().openAgentSwitcher()
-          }
+          void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().openSwitcher())
           return
         }
         const approval = agent.getState().pendingApproval
@@ -718,7 +713,6 @@ export function useKeybindings() {
         notes: [() => notes.getState().prevTab(), () => notes.getState().nextTab()],
         email: [() => inbox.getState().selectPrevThread(), () => inbox.getState().selectNextThread()],
         chat: [() => chat.getState().selectPrevRoom(), () => chat.getState().selectNextRoom()],
-        agents: [() => agent.getState().selectPrevSession(), () => agent.getState().selectNextSession()],
         spaces: [() => spacesFocus(-1), () => spacesFocus(1)],
         feeds: [() => feeds.getState().selectPrevItem(), () => feeds.getState().selectNextItem()],
         bookmarks: [() => bm.getState().selectPrevBookmark(), () => bm.getState().selectNextBookmark()],

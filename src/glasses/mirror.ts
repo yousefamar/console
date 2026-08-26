@@ -72,7 +72,6 @@ const renderers: Record<ActivePane, PaneRenderer> = {
   home: renderHome,
   notes: renderNotes,
   chat: renderChat,
-  agents: renderAgents,
   email: renderMail,
   calendar: renderCalendar,
   feeds: renderFeeds,

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.db.AgentSessionRow
+import io.amar.console.data.db.areaList
 import io.amar.console.data.spaces.KanbanCodec
 import io.amar.console.data.spaces.SpacesRepository
 import kotlinx.coroutines.launch
@@ -84,13 +86,18 @@ fun SpacesScreen(
     onGrid: () -> Unit = {},
 ) {
     val spaces by spacesRepo.spaces.collectAsState()
-    val roles by agents.roles.collectAsState()
     val sessions by agents.observeSessions().collectAsState(initial = emptyList())
     val activity by agents.activity.collectAsState()
-    LaunchedEffect(Unit) { spacesRepo.refreshSpaces() }
+    // Fleet-level init lived on the retired Agents tab; Spaces is the session
+    // surface now. Poll cron cross-client mutations every 30s while mounted.
+    LaunchedEffect(Unit) {
+        spacesRepo.refreshSpaces()
+        io.amar.console.data.agents.Mic.init()
+        while (true) { io.amar.console.data.agents.Cron.refreshAll(); kotlinx.coroutines.delay(30_000) }
+    }
 
     fun spaceSessions(slug: String, kind: String): List<AgentSessionRow> =
-        sessionsForSpace(slug, kind, roles, sessions)
+        sessionsForSpace(slug, kind, sessions)
 
     // Unsaved (dirty) docs — offline edits awaiting a save/flush.
     val notesFiles by notes.observeFiles().collectAsState(initial = emptyList())
@@ -109,8 +116,8 @@ fun SpacesScreen(
             }
             items.add(SpaceAlertItem(
                 "session", s.id, s.name.removeSuffix(" (fork)"), level,
-                depth = roleDepth(s.agentKey, roles),
-                fork = roles.firstOrNull { it.key == s.agentKey }?.fork == true,
+                depth = forkDepth(s, sessions),
+                fork = s.parentClaudeSessionId != null,
             ))
         }
         if (kind == "project") {
@@ -131,8 +138,53 @@ fun SpacesScreen(
             .thenBy { it.status == "dormant" || it.status == "complete" }
             .thenBy { it.title.lowercase() })
 
+    var showFleet by remember { mutableStateOf(false) }
+    val fallback by agents.fallbackNotice.collectAsState()
+    val handoff by agents.handoff.collectAsState()
+
     Column(Modifier.fillMaxSize()) {
-        io.amar.console.ui.components.PaneTopBar(title = "Spaces", onGrid = onGrid, subtitle = "${projects.size} projects · ${areas.size} areas")
+        io.amar.console.ui.components.PaneTopBar(
+            title = "Spaces", onGrid = onGrid,
+            subtitle = "${projects.size} projects · ${areas.size} areas",
+            actions = {
+                IconButton(onClick = { showFleet = true }) {
+                    Icon(androidx.compose.material.icons.Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
+                }
+            },
+        )
+        // Model-fallback banner (fleet-level, was on the Agents tab).
+        fallback?.let { fb ->
+            Row(
+                Modifier.fillMaxWidth().background(AMBER.copy(alpha = 0.15f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "${fb.failedModel} was unavailable — agents fell back to ${fb.model}",
+                    style = MaterialTheme.typography.labelSmall, color = AMBER, modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { agents.dismissFallbackNotice() }) { Text("Dismiss", color = AMBER) }
+            }
+        }
+        // Al hand-off offer ("Talk to X") — target resolved by live agentKey.
+        handoff?.let { h ->
+            Row(
+                Modifier.fillMaxWidth().background(VIOLET.copy(alpha = 0.1f)).padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val target = sessions.firstOrNull { it.agentKey == h.targetAgentKey && it.status != "ended" }
+                Text(
+                    "Al suggests you talk to ${target?.name?.removeSuffix(" (fork)") ?: h.targetAgentKey}",
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = {
+                    target?.let { onOpenSession(it.id) }
+                    agents.clearHandoff()
+                }) { Text("Talk →") }
+                TextButton(onClick = { agents.dismissHandoff() }) { Text("✕") }
+            }
+        }
         LazyColumn(Modifier.fillMaxSize()) {
             fun renderSpace(scope: androidx.compose.foundation.lazy.LazyListScope, sp: SpacesRepository.SpaceSummary) {
                 val items = alertItems(sp.slug, sp.kind)
@@ -153,45 +205,43 @@ fun SpacesScreen(
             for (sp in projects) renderSpace(this, sp)
         }
     }
+    if (showFleet) io.amar.console.ui.agents.FleetModelSheet(agents, onDismiss = { showFleet = false })
 }
 
-/** Fork-lineage depth of a role (manager edges among non-folder roles, cap 6)
+/** Fork-lineage depth (parentClaudeSessionId chain within the live set, cap 6)
  *  — indents alert rows + the space Agents list like the SPA rails. */
-fun roleDepth(key: String?, roles: List<AgentsRepository.AgentRole>): Int {
-    if (key == null) return 0
-    val byKey = roles.filter { !it.folder }.associateBy { it.key }
+fun forkDepth(session: AgentSessionRow, all: List<AgentSessionRow>): Int {
+    val byCsid = all.filter { it.claudeSessionId != null }.associateBy { it.claudeSessionId!! }
     var d = 0
-    var cur = byKey[key]
-    while (cur?.manager != null && byKey.containsKey(cur.manager) && d < 6) {
-        d++; cur = byKey[cur.manager]
+    var cur: AgentSessionRow? = session
+    while (cur?.parentClaudeSessionId != null && d < 6) {
+        cur = byCsid[cur.parentClaudeSessionId!!] ?: break
+        d++
     }
     return d
 }
 
-/** Sessions bound to a space: role frontmatter project/areas join (SPA parity). */
+/** Sessions bound to a space: session project/areas fields (SPA parity —
+ *  the binding lives on the session since durable roles were removed). */
 fun sessionsForSpace(
     slug: String,
     kind: String,
-    roles: List<AgentsRepository.AgentRole>,
     sessions: List<AgentSessionRow>,
-): List<AgentSessionRow> {
-    val keys = roles.filter { r ->
-        if (kind == "project") r.project == slug else slug in r.areas
-    }.map { it.key }.toSet()
-    return sessions.filter { it.status != "ended" && it.agentKey in keys }
+): List<AgentSessionRow> = sessions.filter { s ->
+    s.status != "ended" && !s.isAl &&
+        (if (kind == "project") s.project == slug else slug in s.areaList())
 }
 
 /** Flattened fork-lineage order: roots first, each followed by its forks
- *  (DFS over manager edges restricted to the bound set), with depths. */
+ *  (DFS over parentClaudeSessionId restricted to the bound set), with depths. */
 fun lineageOrder(
     bound: List<AgentSessionRow>,
-    roles: List<AgentsRepository.AgentRole>,
 ): List<Pair<AgentSessionRow, Int>> {
-    val byKey = roles.filter { !it.folder }.associateBy { it.key }
-    val boundKeys = bound.mapNotNull { it.agentKey }.toSet()
+    val boundCsids = bound.mapNotNull { it.claudeSessionId }.toSet()
+    val csidToKey = bound.filter { it.claudeSessionId != null }.associate { it.claudeSessionId!! to it.agentKey }
     val childrenOf = bound.groupBy { s ->
-        val mgr = s.agentKey?.let { byKey[it]?.manager }
-        if (mgr != null && mgr in boundKeys) mgr else null
+        val parent = s.parentClaudeSessionId
+        if (parent != null && parent in boundCsids) csidToKey[parent] else null
     }
     val out = mutableListOf<Pair<AgentSessionRow, Int>>()
     fun walk(s: AgentSessionRow, depth: Int) {
@@ -314,9 +364,8 @@ fun SpaceDetailScreen(
 ) {
     val spaces by spacesRepo.spaces.collectAsState()
     val sp = spaces.firstOrNull { it.slug == slug && it.kind == kind }
-    val roles by agents.roles.collectAsState()
     val sessions by agents.observeSessions().collectAsState(initial = emptyList())
-    val bound = remember(roles, sessions) { sessionsForSpace(slug, kind, roles, sessions) }
+    val bound = remember(sessions) { sessionsForSpace(slug, kind, sessions) }
     val scope = rememberCoroutineScope()
 
     // Default tab priority: board above all else when it exists; otherwise
@@ -367,8 +416,8 @@ fun SpaceDetailScreen(
             }
         }
         when (tab) {
-            "board" -> BoardView(spacesRepo, roles, bound, kind, slug, onOpenSession)
-            "agents" -> SpaceAgentsList(agents, bound, kind, slug, onOpenSession)
+            "board" -> BoardView(spacesRepo, sessions, bound, kind, slug, onOpenSession)
+            "agents" -> SpaceAgentsList(agents, sessions, bound, kind, slug, onOpenSession)
             "docs" -> SpaceDocsList(notes, slug, onOpenNote)
         }
     }
@@ -381,7 +430,7 @@ fun SpaceDetailScreen(
 @Composable
 private fun BoardView(
     spacesRepo: SpacesRepository,
-    roles: List<AgentsRepository.AgentRole>,
+    allSessions: List<AgentSessionRow>,
     bound: List<AgentSessionRow>,
     kind: String,
     slug: String,
@@ -433,7 +482,7 @@ private fun BoardView(
                     }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                         items(col.cards.size) { i ->
-                            CardChip(col.cards[i], roles, bound) { sheetCard = col.cards[i] }
+                            CardChip(col.cards[i], allSessions) { sheetCard = col.cards[i] }
                         }
                         if (doneCount > 0 && col === visibleCols.last()) {
                             item {
@@ -454,7 +503,7 @@ private fun BoardView(
         CardSheet(
             spacesRepo = spacesRepo,
             card = card,
-            roles = roles,
+            allSessions = allSessions,
             bound = bound,
             kind = kind,
             slug = slug,
@@ -478,8 +527,7 @@ private fun BoardView(
 @Composable
 private fun CardChip(
     card: SpacesRepository.CardView,
-    roles: List<AgentsRepository.AgentRole>,
-    bound: List<AgentSessionRow>,
+    allSessions: List<AgentSessionRow>,
     onClick: () -> Unit,
 ) {
     Column(
@@ -513,8 +561,7 @@ private fun CardChip(
                     }
                 }
                 card.agentKey?.let { key ->
-                    val label = (bound.firstOrNull { it.agentKey == key }?.name
-                        ?: roles.firstOrNull { it.key == key }?.title ?: key).removeSuffix(" (fork)")
+                    val label = (allSessions.firstOrNull { it.agentKey == key }?.name ?: key).removeSuffix(" (fork)")
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         Icon(Icons.Filled.SmartToy, null, tint = VIOLET, modifier = Modifier.size(11.dp))
                         Text(label, style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -533,7 +580,7 @@ private fun CardChip(
 private fun CardSheet(
     spacesRepo: SpacesRepository,
     card: SpacesRepository.CardView,
-    roles: List<AgentsRepository.AgentRole>,
+    allSessions: List<AgentSessionRow>,
     bound: List<AgentSessionRow>,
     kind: String,
     slug: String,
@@ -557,8 +604,7 @@ private fun CardSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                 Text("in ${card.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 card.agentKey?.let { key ->
-                    val t = bound.firstOrNull { it.agentKey == key }?.name
-                        ?: roles.firstOrNull { it.key == key }?.title ?: key
+                    val t = allSessions.firstOrNull { it.agentKey == key }?.name ?: key
                     Text("→ ${t.removeSuffix(" (fork)")}", style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1)
                 }
                 if (card.blockId != null) Text("dispatched ^${card.blockId}", style = MaterialTheme.typography.labelSmall, color = GREEN)
@@ -579,35 +625,33 @@ private fun CardSheet(
             }
 
             // Assignment is the delegation trigger once in an In-Progress
-            // column (hub stamps + forks + wakes). Space-bound roles first,
-            // labelled by live name; the rest of the org dimmed after.
+            // column (hub stamps + forks + wakes). Space-bound sessions first,
+            // the rest of the live fleet dimmed after. Per-ticket forks are
+            // the DISPATCH result, not assign targets (SPA PillPicker parity).
             Text("Assign to", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
-            val inSpace = { r: AgentsRepository.AgentRole ->
-                if (kind == "project") r.project == slug else slug in r.areas
-            }
-            fun roleLabel(r: AgentsRepository.AgentRole): String =
-                (bound.firstOrNull { it.agentKey == r.key }?.name ?: r.title).removeSuffix(" (fork)")
-            // Per-ticket forks are the DISPATCH result, not assign targets
-            // (SPA PillPicker excludes them).
-            val assignable = roles.filter { !it.folder && !it.fork }
-                .sortedWith(compareBy({ !inSpace(it) }, { roleLabel(it).lowercase() }))
+            val boundKeys = bound.mapNotNull { it.agentKey }.toSet()
+            val assignable = allSessions
+                .filter { it.status != "ended" && !it.isAl && it.agentKey != null && it.parentClaudeSessionId == null }
+                .distinctBy { it.agentKey }
+                .sortedWith(compareBy({ it.agentKey !in boundKeys }, { it.name.lowercase() }))
                 .take(24)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (role in assignable) {
-                    val selected = card.agentKey == role.key
+                for (sess in assignable) {
+                    val selected = card.agentKey == sess.agentKey
+                    val inSpace = sess.agentKey in boundKeys
                     Surface(
-                        onClick = { run { spacesRepo.assignCard(slug, card, if (selected) null else role.key) } },
+                        onClick = { run { spacesRepo.assignCard(slug, card, if (selected) null else sess.agentKey) } },
                         shape = RoundedCornerShape(8.dp),
                         color = when {
                             selected -> MaterialTheme.colorScheme.secondaryContainer
-                            inSpace(role) -> MaterialTheme.colorScheme.surfaceVariant
+                            inSpace -> MaterialTheme.colorScheme.surfaceVariant
                             else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                         },
                     ) {
                         Text(
-                            roleLabel(role),
+                            sess.name.removeSuffix(" (fork)"),
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (inSpace(role) || selected) MaterialTheme.colorScheme.onSurface
+                            color = if (inSpace || selected) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -660,6 +704,7 @@ private fun AddCardSheet(column: String, onAdd: (String) -> Unit, onDismiss: () 
 @Composable
 private fun SpaceAgentsList(
     agents: AgentsRepository,
+    allSessions: List<AgentSessionRow>,
     bound: List<AgentSessionRow>,
     kind: String,
     slug: String,
@@ -668,9 +713,8 @@ private fun SpaceAgentsList(
     val activity by agents.activity.collectAsState()
     var creating by remember { mutableStateOf(false) }
     // Fork-lineage order: parents before their forks, indented by depth
-    // (manager edges — SPA SpaceRail tree parity, flattened).
-    val roles by agents.roles.collectAsState()
-    val ordered = remember(bound, roles) { lineageOrder(bound, roles) }
+    // (parentClaudeSessionId — SPA SpaceRail tree parity, flattened).
+    val ordered = remember(bound) { lineageOrder(bound) }
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
     val micOwner by io.amar.console.data.agents.Mic.owner.collectAsState()
     Column(Modifier.fillMaxSize()) {
@@ -690,7 +734,7 @@ private fun SpaceAgentsList(
                         s.hasUnread -> Dot(MaterialTheme.colorScheme.primary)
                         else -> Spacer(Modifier.size(8.dp))
                     }
-                    if (roles.firstOrNull { it.key == s.agentKey }?.fork == true) {
+                    if (s.parentClaudeSessionId != null) {
                         Icon(
                             Icons.AutoMirrored.Filled.CallSplit,
                             contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(12.dp),

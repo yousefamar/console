@@ -98,9 +98,7 @@ class AgentsRepository(
         _activity.value = _activity.value + (sessionId to fn(_activity.value[sessionId] ?: Activity()))
     }
 
-    // --- Org-chart roles + delegation tasks + fleet model state (transient) ---
-    private val _roles = MutableStateFlow<List<AgentRole>>(emptyList())
-    val roles: StateFlow<List<AgentRole>> = _roles
+    // --- Fleet model state (transient) ---
     private val _modelState = MutableStateFlow(ModelState())
     val modelState: StateFlow<ModelState> = _modelState
     private val _pastSessions = MutableStateFlow<List<PastSession>>(emptyList())
@@ -115,20 +113,6 @@ class AgentsRepository(
     val fallbackNotice: StateFlow<FallbackNotice?> = _fallbackNotice
     private val _generatingTitles = MutableStateFlow<Set<String>>(emptySet())
     val generatingTitles: StateFlow<Set<String>> = _generatingTitles
-
-    data class AgentRole(
-        val key: String,
-        val title: String,
-        val manager: String?,
-        val goals: List<String>,
-        val cwd: String?,
-        val charter: String,
-        val folder: Boolean,
-        val fork: Boolean,
-        /** Space binding (role frontmatter): project slug / area slugs. */
-        val project: String? = null,
-        val areas: List<String> = emptyList(),
-    )
 
     data class ModelState(
         val model: String = "",
@@ -391,15 +375,6 @@ class AgentsRepository(
                     )
                 }
             }
-            "agents_list" -> {
-                _roles.value = (msg["roles"] as? JsonArray)?.mapNotNull { runCatching { roleFrom(it.jsonObject) }.getOrNull() } ?: emptyList()
-            }
-            "agent_role" -> {
-                (msg["role"] as? JsonObject)?.let { r ->
-                    val role = runCatching { roleFrom(r) }.getOrNull() ?: return@let
-                    _roles.value = (_roles.value.filter { it.key != role.key } + role)
-                }
-            }
             "session_todos" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 val items = todosFrom(msg["todos"] as? JsonArray)
@@ -620,19 +595,6 @@ class AgentsRepository(
         _activity.value = _activity.value - oldId
     }
 
-    private fun roleFrom(o: JsonObject) = AgentRole(
-        key = o["key"]!!.jsonPrimitive.content,
-        title = o["title"]?.jsonPrimitive?.content ?: o["key"]!!.jsonPrimitive.content,
-        manager = o["manager"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-        goals = (o["goals"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList(),
-        cwd = o["cwd"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-        charter = o["charter"]?.jsonPrimitive?.content ?: "",
-        folder = o["folder"]?.jsonPrimitive?.booleanOrNull ?: false,
-        fork = o["fork"]?.jsonPrimitive?.booleanOrNull ?: false,
-        project = o["project"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-        areas = (o["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList(),
-    )
-
     /** Fixed index the current streaming turn's text row occupies. */
     private val pendingRowIndex = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -784,6 +746,8 @@ class AgentsRepository(
             createdAt = s["createdAt"]?.jsonPrimitive?.longOrNull ?: 0,
             isAl = id == "al",
             totalCostMicros = (cost * 1_000_000).toLong(),
+            project = s["project"]?.jsonPrimitive?.content,
+            areasCsv = (s["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content }?.joinToString(","),
         )
     }
 
@@ -1023,20 +987,6 @@ class AgentsRepository(
     }
 
     fun dismissFallbackNotice() { _fallbackNotice.value = null }
-
-    // --- Org chart / roles ---
-    fun setManager(agentKey: String, manager: String?) = sendWs(buildJsonObject {
-        put("type", "set_manager"); put("agentKey", agentKey)
-        if (manager == null) put("manager", JsonNull) else put("manager", manager)
-    })
-    fun renameRole(agentKey: String, title: String) = sendWs(buildJsonObject { put("type", "rename_role"); put("agentKey", agentKey); put("title", title) })
-    fun createFolder(title: String, manager: String? = null) = sendWs(buildJsonObject {
-        put("type", "create_folder"); put("title", title)
-        if (manager == null) put("manager", JsonNull) else put("manager", manager)
-    })
-    fun reviveAgent(agentKey: String) = sendWs(buildJsonObject { put("type", "revive_agent"); put("agentKey", agentKey) })
-    fun deleteRole(agentKey: String) = sendWs(buildJsonObject { put("type", "delete_role"); put("agentKey", agentKey) })
-
 
     // --- Handoff ---
     fun dismissHandoff() { _handoff.value = null }
