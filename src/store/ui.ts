@@ -137,6 +137,10 @@ interface UiState {
   pipVideo: { youtubeId: string; title: string } | null
   setPipVideo: (v: { youtubeId: string; title: string } | null) => void
 
+  // Global image lightbox (agent transcripts etc. — chat has its own gallery-aware one)
+  lightboxSrc: string | null
+  setLightboxSrc: (src: string | null) => void
+
   // Auth
   userEmail: string
   setUserEmail: (email: string) => void
@@ -149,6 +153,9 @@ interface UiState {
 // PiP is managed by user action (play/close) — tab switches don't affect it
 
 export const useUiStore = create<UiState>((set) => ({
+  lightboxSrc: null,
+  setLightboxSrc: (src) => set({ lightboxSrc: src }),
+
   darkMode: true,
   emailDarkMode: true,
   toggleDarkMode: () =>

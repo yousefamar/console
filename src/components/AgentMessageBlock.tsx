@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import type { AgentMessage, DiffHunk, TodoItem } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
 import { getHubUrl } from '@/hub'
+import { useUiStore } from '@/store/ui'
 import { TodoList, todoLabel, todoProgress } from './agent/TodoList'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
@@ -507,7 +508,7 @@ function UserPromptBlock({ content, images }: { content: string; images?: string
           {images && images.length > 0 && (
             <div className="flex gap-1.5 flex-wrap mb-1.5">
               {images.map((src, i) => (
-                <img key={i} src={src} alt={`Attached image ${i + 1}`} className="max-h-32 max-w-[200px] border border-border object-contain" />
+                <img key={i} src={src} alt={`Attached image ${i + 1}`} className="max-h-32 max-w-[200px] border border-border object-contain cursor-zoom-in" onClick={() => useUiStore.getState().setLightboxSrc(src)} />
               ))}
             </div>
           )}
@@ -889,14 +890,18 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
     if (match[1] !== undefined && match[2] !== undefined) {
       // Image — local absolute/`~` paths serve through the hub's media bridge
       // (a browser can't fetch /tmp/x.png; agents emit paths, not bytes).
-      parts.push(
-        <img
-          key={key++}
-          alt={match[1]}
-          src={localMediaSrc(match[2])}
-          className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain"
-        />,
-      )
+      {
+        const src = localMediaSrc(match[2])
+        parts.push(
+          <img
+            key={key++}
+            alt={match[1]}
+            src={src}
+            className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain cursor-zoom-in"
+            onClick={() => useUiStore.getState().setLightboxSrc(src)}
+          />,
+        )
+      }
     } else if (match[3] !== undefined && match[4] !== undefined) {
       // Markdown link [text](url) — fall back to literal text on an unsafe scheme.
       const href = safeHref(match[4])

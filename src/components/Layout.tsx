@@ -35,6 +35,13 @@ import { NotesTab } from './NotesTab'
 import { FeedTab } from './FeedTab'
 import { YouTubePiP } from './FeedItemView'
 import { PullIndicator } from './PullIndicator'
+import { ImageLightbox } from './ImageLightbox'
+
+function GlobalLightbox() {
+  const src = useUiStore((s) => s.lightboxSrc)
+  if (!src) return null
+  return <ImageLightbox src={src} onClose={() => useUiStore.getState().setLightboxSrc(null)} />
+}
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
 import { SpacesTab } from './SpacesTab'
@@ -432,6 +439,7 @@ export function Layout() {
       {musicOpen && <MusicDrawer onClose={() => useMusicStore.getState().setOpen(false)} />}
 
       {/* Pull-to-refresh indicator (mobile) */}
+      <GlobalLightbox />
       {isMobile && <PullIndicator />}
 
       {/* Bottom bar: mobile tab bar or desktop footer */}
