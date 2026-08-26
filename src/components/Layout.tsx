@@ -27,7 +27,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bot, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban, Inbox as InboxIcon } from 'lucide-react'
 import { AgentTab } from './AgentTab'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
@@ -45,6 +45,7 @@ function GlobalLightbox() {
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
 import { SpacesTab } from './SpacesTab'
+import { InboxTab } from './InboxTab'
 import { MusicDrawer } from './music/MusicDrawer'
 import { useMusicStore } from '@/store/music'
 // MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
@@ -204,6 +205,7 @@ export function Layout() {
   const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
   const isSpaces = activePane === 'spaces'
+  const isInbox = activePane === 'inbox'
 
   // MapLibre is heavy; only mount MapTab once the Map pane is first opened, then
   // keep it alive so later switches are instant (pre-render spirit, deferred cost).
@@ -300,6 +302,7 @@ export function Layout() {
           {!isMobile && (
             <div className="flex items-center gap-0.5">
               <PaneTab pane="home" icon={<LayoutDashboard size={11} />} label="Home" activePane={activePane} setActivePane={setActivePane} />
+              <PaneTab pane="inbox" icon={<InboxIcon size={11} />} label="Inbox" activePane={activePane} setActivePane={setActivePane} />
               {gmailConnected ? (
                 <PaneTab pane="email" icon={<Mail size={11} />} label="Mail" activePane={activePane} setActivePane={setActivePane} />
               ) : (
@@ -375,6 +378,13 @@ export function Layout() {
         {/* Home pane */}
         <div className={`flex flex-1 min-h-0 overflow-hidden ${isHome ? '' : 'hidden'}`}>
           <HomeTab />
+        </div>
+
+        {/* Unified Inbox pane (mounted only while active: it reuses
+            ThreadView/ChatRoomView, which pre-render heavy children — keeping
+            a second copy alive while hidden would double the DOM). */}
+        <div className={`flex flex-1 min-h-0 overflow-hidden ${isInbox ? '' : 'hidden'}`}>
+          {isInbox && <InboxTab />}
         </div>
 
         {/* Mail pane */}
@@ -527,6 +537,7 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
 }) {
   const tabs: { pane: ActivePane; icon: ReactNode; label: string }[] = [
     { pane: 'home', icon: <LayoutDashboard size={18} />, label: 'Home' },
+    { pane: 'inbox', icon: <InboxIcon size={18} />, label: 'Inbox' },
     { pane: 'email', icon: <Mail size={18} />, label: 'Mail' },
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
     { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },

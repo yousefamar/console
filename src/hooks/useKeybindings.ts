@@ -5,6 +5,7 @@ import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
 import { useFeedStore } from '@/store/feeds'
+import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useCalendarStore } from '@/store/calendar'
 import { useMoneyStore } from '@/store/money'
 import { useMapStore } from '@/store/map'
@@ -401,6 +402,39 @@ export function useKeybindings() {
         if (e.key === 'T') {
           e.preventDefault()
           ui.getState().toggleDarkMode()
+          return
+        }
+        return
+      }
+
+      // Unified Inbox keybindings: j/k walk the list containing the selection
+      // (defaulting to inbox), e/b delegate the handling verb to the owning
+      // source store — same muscle memory as the legacy panes.
+      if (activePane === 'inbox' && !isEditing) {
+        const uinbox = useUnifiedInboxStore.getState()
+        const selected = [...uinbox.feedList, ...uinbox.inboxList].find((i) => i.key === uinbox.selectedKey)
+        const list = selected && uinbox.feedList.some((i) => i.key === selected.key) ? 'feed' : 'inbox'
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          uinbox.selectAdjacent(list, 1)
+          return
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          uinbox.selectAdjacent(list, -1)
+          return
+        }
+        if (e.key === 'e' && selected) {
+          e.preventDefault()
+          if (selected.source === 'mail') inbox.getState().archiveThread(selected.sourceId)
+          else if (selected.source === 'chat') void chat.getState().markRoomRead(selected.sourceId)
+          else void feeds.getState().markRead(selected.sourceId)
+          return
+        }
+        if (e.key === 'b' && selected) {
+          e.preventDefault()
+          if (selected.source === 'mail') inbox.getState().snoozeThread('tomorrow', undefined, selected.sourceId)
+          else if (selected.source === 'chat') void chat.getState().snoozeRoom('tomorrow')
           return
         }
         return
