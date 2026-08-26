@@ -7,6 +7,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
+- Agent transcript inline media parity: SPA now renders `![x](/abs/path.png)`
+  via hub `GET /agents/local-file?path=` (rewrite local/`~/` img srcs) and
+  fenced ```html blocks as sandboxed WebView fragments. Android transcript
+  renderer needs the same img-src rewrite; html-fence can render as a
+  collapsed "view HTML" card if a sandboxed WebView is too heavy.
+
 - Notes editor: send `baseMtime` on save (conditional write) — the SPA gained
   optimistic-concurrency saves (f866974: reads carry disk mtime, hub 409s on
   conflict, Overwrite/Keep-editing dialog) after a stale writer clobbered a

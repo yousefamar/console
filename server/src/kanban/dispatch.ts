@@ -175,6 +175,10 @@ export function buildBoardEnvelope(opts: {
     `own card to Done. If stuck: \`con spaces board ${project ?? boardAbsPath} block "^${card.blockId}" --note "what you need"\``,
     '— the card keeps its place in the column. The board is the single source of',
     'truth; the CLI serializes concurrent edits (never hand-edit the file).',
+    'If Yousef comments on your work while the card is Under Review, move it',
+    `back to In Progress (\`con spaces board ${project ?? boardAbsPath} move "^${card.blockId}" "In Progress"\`)`,
+    'while you address the comment, then return it to Under Review — the board',
+    'is his attention queue; Under Review must always mean "ready for Yousef".',
     '',
     // GOTCHA: the gated/ungated stanzas share no text — an edit to the
     // worktree instructions must be made in BOTH branches or they drift.

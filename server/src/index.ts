@@ -11,7 +11,7 @@
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { readFileSync, writeFileSync, existsSync, unlinkSync, watch, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, watch, readdirSync, statSync, createReadStream } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { Session, setAgentModelResolver, type ImageAttachment } from './session.js'
 import { ModelConfig } from './model-config.js'
 import { AgentRegistry } from './agents/registry.js'
+import { MAX_LOCAL_FILE_BYTES, resolveLocalMedia } from './agents/local-file.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
 import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
@@ -1126,6 +1127,40 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
       }))
       return
     }
+  }
+
+  // Local-file media bridge: agents drop `![x](/abs/path.png)` in their output
+  // and the SPA rewrites the src here. Auth wall applies; whitelist + size cap
+  // + CSP sandbox in local-file.ts.
+  if (path === '/agents/local-file' && req.method === 'GET') {
+    const hit = resolveLocalMedia(url.searchParams.get('path'))
+    if ('error' in hit) {
+      res.writeHead(hit.status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: hit.error }))
+      return
+    }
+    try {
+      const st = statSync(hit.abs)
+      if (!st.isFile()) throw new Error('not a file')
+      if (st.size > MAX_LOCAL_FILE_BYTES) {
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'file too large' }))
+        return
+      }
+      res.writeHead(200, {
+        'Content-Type': hit.contentType,
+        'Content-Length': st.size,
+        // Neuter svg/pdf scripting against the hub origin.
+        'Content-Security-Policy': "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store',
+      })
+      createReadStream(hit.abs).pipe(res)
+    } catch {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'file not found' }))
+    }
+    return
   }
 
   // Filesystem directory autocomplete for the agent prompt's "new session" picker.

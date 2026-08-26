@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import type { AgentMessage, DiffHunk, TodoItem } from '@/store/agent'
 import { useAgentStore } from '@/store/agent'
+import { getHubUrl } from '@/hub'
 import { TodoList, todoLabel, todoProgress } from './agent/TodoList'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
@@ -538,6 +539,53 @@ function ErrorBlock({ message }: { message: string }) {
 // Code fence — fenced code block with optional language label + copy button
 // --------------------------------------------------------------------------
 
+/** Local absolute / `~/` image paths render via the hub's media bridge —
+ *  everything else (https:, data:, blob:) passes through untouched. */
+function localMediaSrc(src: string): string {
+  const s = src.trim()
+  if (s.startsWith('/') || s.startsWith('~/')) {
+    return `${getHubUrl()}/agents/local-file?path=${encodeURIComponent(s)}`
+  }
+  return s
+}
+
+// --------------------------------------------------------------------------
+// ```html fence — renders the fragment in a sandboxed iframe (allow-scripts
+// only: no same-origin, no cookies, no parent DOM — the canvas containment
+// model). Height-clamped with expand; "source" flips back to the code block.
+// --------------------------------------------------------------------------
+function HtmlFence({ code }: { code: string }) {
+  const [showSource, setShowSource] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  if (showSource) {
+    return (
+      <div>
+        <CodeFence lang="html" code={code} />
+        <button type="button" onClick={() => setShowSource(false)} className="text-[9px] text-text-tertiary hover:text-text-primary">render</button>
+      </div>
+    )
+  }
+  const srcdoc = `<!doctype html><html><head><style>body{margin:8px;background:#0a0a0a;color:#e5e5e5;font:13px/1.5 system-ui,sans-serif}</style></head><body>${code}</body></html>`
+  return (
+    <div className="my-1 rounded-sm border border-border overflow-hidden max-w-[calc(100vw-24px)]">
+      <div className="flex items-center justify-between px-2 py-0.5 border-b border-border/40 bg-surface-2">
+        <span className="text-[9px] text-text-tertiary uppercase tracking-wider">html</span>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setExpanded((e) => !e)} className="text-[9px] text-text-tertiary hover:text-text-primary">{expanded ? 'collapse' : 'expand'}</button>
+          <button type="button" onClick={() => setShowSource(true)} className="text-[9px] text-text-tertiary hover:text-text-primary">source</button>
+        </div>
+      </div>
+      <iframe
+        sandbox="allow-scripts"
+        srcDoc={srcdoc}
+        title="Agent HTML"
+        className="w-full border-0 bg-[#0a0a0a]"
+        style={{ height: expanded ? '640px' : '320px' }}
+      />
+    </div>
+  )
+}
+
 function CodeFence({ lang, code }: { lang?: string; code: string }) {
   const [copied, setCopied] = useState(false)
   const copy = useCallback(async () => {
@@ -705,7 +753,9 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
     parts.push(
       lang === 'mermaid'
         ? <MermaidBlock key={key++} source={code} />
-        : <CodeFence key={key++} lang={lang} code={code} />,
+        : lang === 'html'
+          ? <HtmlFence key={key++} code={code} />
+          : <CodeFence key={key++} lang={lang} code={code} />,
     )
     lastIndex = match.index + match[0].length
   }
@@ -833,12 +883,13 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
       parts.push(<span key={key++}>{text.slice(lastIndex, match.index)}</span>)
     }
     if (match[1] !== undefined && match[2] !== undefined) {
-      // Image
+      // Image — local absolute/`~` paths serve through the hub's media bridge
+      // (a browser can't fetch /tmp/x.png; agents emit paths, not bytes).
       parts.push(
         <img
           key={key++}
           alt={match[1]}
-          src={match[2]}
+          src={localMediaSrc(match[2])}
           className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain"
         />,
       )
