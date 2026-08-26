@@ -469,6 +469,34 @@ private fun CanvasSection(repo: HomeRepository) {
                     settings.domStorageEnabled = true
                     settings.allowFileAccess = false
                     setBackgroundColor(android.graphics.Color.parseColor("#0a0a0a"))
+                    // /hub/canvas/* is auth-gated now (unpublished canvas must not be
+                    // world-readable). This WebView has neither the session cookie nor
+                    // the SPA's canvas cookie, so attach the APK bearer to every canvas
+                    // resource load (index, tab shells, tab assets alike).
+                    webViewClient = object : android.webkit.WebViewClient() {
+                        private val client = okhttp3.OkHttpClient()
+                        override fun shouldInterceptRequest(
+                            view: WebView,
+                            request: android.webkit.WebResourceRequest,
+                        ): android.webkit.WebResourceResponse? {
+                            val url = request.url.toString()
+                            if (request.method != "GET" || !url.startsWith("${HubConfig.publicOrigin}/hub/canvas")) return null
+                            val bearer = io.amar.console.HubTokenStore.get() ?: return null
+                            return try {
+                                val resp = client.newCall(
+                                    okhttp3.Request.Builder().url(url)
+                                        .header("Authorization", "Bearer $bearer")
+                                        .build(),
+                                ).execute()
+                                val contentType = resp.header("Content-Type") ?: "text/html"
+                                val mime = contentType.substringBefore(';').trim()
+                                val charset = if (contentType.contains("charset=")) contentType.substringAfter("charset=").trim() else "utf-8"
+                                android.webkit.WebResourceResponse(mime, charset, resp.body?.byteStream())
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }
                     loadUrl(canvasUrl)
                     webView = this
                 }

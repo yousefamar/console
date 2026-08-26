@@ -11,6 +11,14 @@ import type { IncomingMessage } from 'node:http'
 import type { AuthStore, HubSession, HubToken } from './auth-store.js'
 
 const SESSION_COOKIE = 'console_session'
+// Read-only canvas cookie. The SPA renders the canvas inside a
+// `sandbox="allow-scripts"` iframe (opaque origin). A TAB canvas's outer shell
+// then nests further iframes whose relative-asset requests are initiated from
+// that opaque origin — i.e. cross-site — so the Lax `console_session` cookie is
+// withheld from them. This cookie is `SameSite=None` specifically to survive
+// that opaque-origin subresource case. It is consulted ONLY for GET /canvas/*
+// (never a mutation), so its cross-site reach carries no CSRF risk.
+const CANVAS_COOKIE = 'console_canvas'
 
 export type Principal =
   | { kind: 'session'; sessionId: string; email: string; session: HubSession }
@@ -87,13 +95,19 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   if (path === '/voice/delegate' || path.startsWith('/voice/delegate?')) return true
   if (path === '/voice/webhook') return true
   if (path === '/voice/health') return true
-  if (path === '/canvas/index.html' || path === '/canvas' || path.startsWith('/canvas/')) {
-    // Canvas iframe is loaded by the SPA inside a sandboxed frame; access is
-    // already gated by the SPA's own session. v1 keeps it open so the iframe
-    // can render before we've sorted same-origin embedding under /hub.
-    return true
-  }
   return false
+}
+
+/**
+ * True for canvas static reads (`GET /canvas/*`) — the SPA/APK canvas iframe.
+ * These are gated by the read-only CANVAS_COOKIE (see `decide()`), NOT left
+ * open: the unpublished canvas must require auth. Published canvases are served
+ * from the distinct always-open `/public/canvas/<token>/` path and never touch
+ * this branch.
+ */
+function isCanvasReadPath(path: string, method: string): boolean {
+  if (method !== 'GET') return false
+  return path === '/canvas' || path === '/canvas/' || path.startsWith('/canvas/')
 }
 
 /**
@@ -131,6 +145,26 @@ export function decide(req: IncomingMessage, store: AuthStore): AuthDecision {
   }
 
   const cookies = parseCookies(req)
+
+  // Canvas static reads: a valid canvas cookie is sufficient (this is the
+  // opaque-origin nested-subresource case where the Lax session cookie is
+  // withheld). If the canvas cookie is absent/invalid we fall through to the
+  // normal session/bearer/loopback checks below — the top-level SPA fetch and
+  // CLI tooling carry those instead. A scraper has none of these → 401.
+  if (isCanvasReadPath(path, method)) {
+    const canvasId = cookies[CANVAS_COOKIE]
+    if (canvasId) {
+      const session = store.findHubSession(canvasId)
+      if (session) {
+        return {
+          allow: true,
+          reason: 'canvas-cookie',
+          principal: { kind: 'session', sessionId: canvasId, email: session.email, session },
+        }
+      }
+    }
+  }
+
   const sessionId = cookies[SESSION_COOKIE]
   const bearer = parseBearer(req)
 
@@ -261,4 +295,37 @@ export function buildClearSessionCookie(secure: boolean): string {
   return parts.join('; ')
 }
 
+/**
+ * Read-only canvas cookie, minted alongside the session cookie at login.
+ * `SameSite=None` (so opaque-origin sandboxed subresources still send it) forces
+ * `Secure`; the value is the same hub-session id, validated against the session
+ * store. Path=/hub/canvas so it's scoped to the canvas surface only and never
+ * rides on any other /hub request. Set only when we can be Secure (HTTPS) —
+ * `SameSite=None` without `Secure` is rejected by browsers.
+ */
+export function buildCanvasCookie(sessionId: string, secure: boolean): string | null {
+  if (!secure) return null
+  return [
+    `${CANVAS_COOKIE}=${sessionId}`,
+    'HttpOnly',
+    'SameSite=None',
+    'Secure',
+    'Path=/hub/canvas',
+    `Max-Age=${30 * 24 * 60 * 60}`,
+  ].join('; ')
+}
+
+export function buildClearCanvasCookie(secure: boolean): string {
+  const parts = [
+    `${CANVAS_COOKIE}=`,
+    'HttpOnly',
+    'SameSite=None',
+    'Path=/hub/canvas',
+    'Max-Age=0',
+  ]
+  if (secure) parts.push('Secure')
+  return parts.join('; ')
+}
+
 export const SESSION_COOKIE_NAME = SESSION_COOKIE
+export const CANVAS_COOKIE_NAME = CANVAS_COOKIE

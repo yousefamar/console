@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import type { AuthStore } from '../auth-store.js'
-import { buildSessionCookie, buildClearSessionCookie, parseCookies, SESSION_COOKIE_NAME } from '../auth-middleware.js'
+import { buildSessionCookie, buildClearSessionCookie, buildCanvasCookie, buildClearCanvasCookie, parseCookies, SESSION_COOKIE_NAME } from '../auth-middleware.js'
 
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
@@ -260,16 +260,22 @@ export function handleAuthRoutes(
         // cookie ready is what lets us flip enforcement on later without locking
         // ourselves out.
         let setCookieHeader: string | null = null
+        const setCookies: string[] = []
         if (authStore.isHubAllowedEmail(email)) {
           const session = authStore.createHubSession(email, req.headers['user-agent'])
           setCookieHeader = buildSessionCookie(session.id, base.secure)
+          setCookies.push(setCookieHeader)
+          // Read-only canvas cookie (SameSite=None) so the sandboxed canvas
+          // iframe's opaque-origin subresources still authenticate.
+          const canvasCookie = buildCanvasCookie(session.id, base.secure)
+          if (canvasCookie) setCookies.push(canvasCookie)
           console.log(`[auth] hub session minted for ${email} (id-prefix=${session.id.slice(0, 8)})`)
         } else {
           console.log(`[auth] ${email} not in hub allow-list; no session cookie issued`)
         }
 
-        const headers: Record<string, string> = {}
-        if (setCookieHeader) headers['Set-Cookie'] = setCookieHeader
+        const headers: Record<string, string | string[]> = {}
+        if (setCookies.length) headers['Set-Cookie'] = setCookies
 
         if (returnToApp) {
           // Cross-jar handoff: the Custom Tab now holds the session cookie,
@@ -340,8 +346,10 @@ export function handleAuthRoutes(
       return true
     }
     const base = resolveBase(req, hubPort)
-    const setCookie = buildSessionCookie(sid, base.secure)
-    res.writeHead(302, { 'Set-Cookie': setCookie, Location: '/' })
+    const setCookies = [buildSessionCookie(sid, base.secure)]
+    const canvasCookie = buildCanvasCookie(sid, base.secure)
+    if (canvasCookie) setCookies.push(canvasCookie)
+    res.writeHead(302, { 'Set-Cookie': setCookies, Location: '/' })
     res.end()
     return true
   }
@@ -359,12 +367,18 @@ export function handleAuthRoutes(
       jsonResponse(res, 200, { authenticated: false })
       return true
     }
+    // Refresh the read-only canvas cookie on every session probe (GatedBoot
+    // calls this on each SPA load), so already-logged-in sessions gain it
+    // without a re-login and it stays fresh alongside the session cookie.
+    const base = resolveBase(req, hubPort)
+    const canvasCookie = buildCanvasCookie(sid, base.secure)
+    const extraHeaders = canvasCookie ? { 'Set-Cookie': canvasCookie } : undefined
     jsonResponse(res, 200, {
       authenticated: true,
       email: session.email,
       createdAt: session.createdAt,
       lastUsedAt: session.lastUsedAt,
-    })
+    }, extraHeaders)
     return true
   }
 
@@ -376,7 +390,7 @@ export function handleAuthRoutes(
     const base = resolveBase(req, hubPort)
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Set-Cookie': buildClearSessionCookie(base.secure),
+      'Set-Cookie': [buildClearSessionCookie(base.secure), buildClearCanvasCookie(base.secure)],
     })
     res.end(JSON.stringify({ ok: true }))
     return true

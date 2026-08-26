@@ -22,7 +22,10 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
-(empty — v88 shipped everything)
+- Home canvas WebView sends the APK bearer on `/hub/canvas/*` loads
+  (`shouldInterceptRequest` in HomeScreen.kt) — the hub now auth-gates the
+  unpublished canvas (^pink-tern leak fix), and this WebView has no session
+  cookie. Without the bearer the canvas card 401s after the next hub deploy.
 
 ## Shipped
 
