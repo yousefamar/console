@@ -14,6 +14,14 @@ Services:
   cal          Google Calendar — events, create, edit, delete, rsvp
   money        Monzo banking — balance, transactions, pots, spending
   agent        Claude Code sessions — create, send, tail, approve/deny
+  spaces       Spaces pane — kanban boards ('con spaces board', alias 'con board')
+  blog         Blog drafts + publishing
+  map          Map tab — geocaching, meetup, layers, property, gmaps, flights
+  music        Spotify remote — play, pause, search, playlists, volume
+  dashboard    Home pane — servers, canvas tabs/islands, costs
+  cron         Hub-side agent scheduler — list, add, remove, run
+  mic          System mic owner + push-to-talk routing
+  whatsapp     WhatsApp (via Al) — send, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
 
@@ -277,6 +285,37 @@ Examples:
   con pen research on              # also log heartbeats
   con pen offline notes            # enumerate stored notes
   con pen offline pull 0 27 1 1    # rescue note (0,27,1) page 1
+`.trim(),
+
+  spaces: `
+con spaces — Spaces pane (project-first UI)
+
+Board (kanban) commands — 'con board' is an alias for 'con spaces board':
+  board <project>                       Show the board (columns, cards, ^ids, assignees)
+  board <project> add "text"            Add a card [--to <column>] [--assign <key>] [--detail "a|b"] [--bottom]
+  board <project> move "<card>" <col>   Move a card to a column
+  board <project> assign "<card>" <key|none>
+  board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus)
+  board <project> nofork "<card>"       Dispatch wakes the assignee directly (no ticket-fork)
+  board <project> forkok "<card>"       Undo nofork
+  board <project> block "<card>"        Tag #blocked (keeps column position) [--note "why"]
+  board <project> unblock "<card>"
+  board <project> note "<card>" "text"  Append an indented note under a card
+  board <project> edit "<card>"         Rewrite text/detail [--text "new"] [--detail "a|b"]
+  board <project> remove "<card>"       Delete a card (human judgment — agents move, never delete)
+
+Notes:
+  <project> is a slug resolved like the Spaces UI (board.md/kanban.md by name,
+  else the first kanban-flagged file) or a vault-relative .md path.
+  "<card>" is a ^blockid or a UNIQUE text substring — ambiguity errors, never guesses.
+  --detail takes pipe-separated bullets. The hub is the single writer with a
+  per-board lock, so concurrent agents serialize cleanly.
+
+Examples:
+  con board console
+  con board console add "Fix the tree" --to Backlog --assign console-general
+  con spaces board console move "^ab12cd" "Under Review"
+  con spaces board console block "^ab12cd" --note "needs API key"
 `.trim(),
 
   agent: `

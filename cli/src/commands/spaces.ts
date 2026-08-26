@@ -32,7 +32,7 @@ interface CardView {
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [add|move|assign|model|block|unblock|note|edit|remove] …', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|model|nofork|forkok|block|unblock|note|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -121,6 +121,6 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, block, unblock, note, edit, remove.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, model, nofork, forkok, block, unblock, note, edit, remove — see \`con help spaces\`.`, flags)
   }
 }

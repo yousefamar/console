@@ -15,19 +15,21 @@ const VERSION = '0.1.0'
 const GLOBAL_FLAGS = new Set(['--json', '--plain', '--no-color', '--agent', '--dry-run', '--no-input', '--verbose', '-h', '--help', '-v', '--version'])
 const GLOBAL_FLAGS_WITH_VALUE = new Set(['--select', '--hub', '--timeout'])
 
-function parseGlobalFlags(): { flags: GlobalFlags; positionals: string[] } {
+function parseGlobalFlags(): { flags: GlobalFlags; positionals: string[]; wantHelp: boolean } {
   const argv = process.argv.slice(2)
   const flags: GlobalFlags = {
     json: false, plain: false, noColor: false, agent: false,
     dryRun: false, noInput: false, verbose: false, timeout: 30000,
   }
   const positionals: string[] = []
+  let wantHelp = false
 
   let i = 0
   while (i < argv.length) {
     const arg = argv[i]!
     if (GLOBAL_FLAGS.has(arg)) {
-      if (arg === '--json') flags.json = true
+      if (arg === '--help' || arg === '-h') wantHelp = true
+      else if (arg === '--json') flags.json = true
       else if (arg === '--plain') flags.plain = true
       else if (arg === '--no-color') flags.noColor = true
       else if (arg === '--agent') { flags.agent = true; flags.json = true; flags.noInput = true }
@@ -47,7 +49,7 @@ function parseGlobalFlags(): { flags: GlobalFlags; positionals: string[] } {
     }
   }
 
-  return { flags, positionals }
+  return { flags, positionals, wantHelp }
 }
 
 // --------------------------------------------------------------------------
@@ -55,7 +57,7 @@ function parseGlobalFlags(): { flags: GlobalFlags; positionals: string[] } {
 // --------------------------------------------------------------------------
 
 async function main() {
-  const { flags, positionals } = parseGlobalFlags()
+  const { flags, positionals, wantHelp } = parseGlobalFlags()
 
   // Set hub URL from flag or env
   if (flags.hub) {
@@ -69,16 +71,20 @@ async function main() {
     return
   }
 
-  // Handle --help or no args
-  if (positionals.length === 0 || positionals[0] === 'help') {
+  // Handle help: no args, `con help [service]`, or `--help`/`-h` anywhere
+  // (`con spaces --help` → the spaces service help, not a USAGE error).
+  if (positionals.length === 0 || positionals[0] === 'help' || wantHelp) {
     const { help } = await import('./commands/help.js')
-    help(positionals.slice(1), flags)
+    const topic = positionals[0] === 'help' ? positionals.slice(1) : positionals.slice(0, 1)
+    help(topic.map((t) => ALIASES[t] ?? (t === 'board' ? 'spaces' : t)), flags)
     return
   }
 
   // Resolve aliases
   let noun = positionals[0]!
   if (ALIASES[noun]) noun = ALIASES[noun]!
+  // `con board …` = `con spaces board …` (the name everyone reaches for first)
+  if (noun === 'board') { positionals.splice(0, 1, 'spaces', 'board'); noun = 'spaces' }
 
   const verb = positionals[1]
   const rest = positionals.slice(2)
