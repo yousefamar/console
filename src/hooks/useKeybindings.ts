@@ -426,15 +426,12 @@ export function useKeybindings() {
         }
         if (e.key === 'e' && selected) {
           e.preventDefault()
-          if (selected.source === 'mail') inbox.getState().archiveThread(selected.sourceId)
-          else if (selected.source === 'chat') void chat.getState().markRoomRead(selected.sourceId)
-          else void feeds.getState().markRead(selected.sourceId)
+          uinbox.handleSelected('done')
           return
         }
         if (e.key === 'b' && selected) {
           e.preventDefault()
-          if (selected.source === 'mail') inbox.getState().snoozeThread('tomorrow', undefined, selected.sourceId)
-          else if (selected.source === 'chat') void chat.getState().snoozeRoom('tomorrow')
+          uinbox.handleSelected('snooze')
           return
         }
         return

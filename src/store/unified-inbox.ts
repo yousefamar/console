@@ -14,8 +14,8 @@ import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxItem, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, normalizeRules, roomIsLive, roomToItem, sortFeed, sortInbox,
-  threadIsLive, threadToItem,
+  feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  sortFeed, sortInbox, threadIsLive, threadToItem,
 } from '@/inbox/route'
 
 interface UnifiedInboxState {
@@ -31,6 +31,9 @@ interface UnifiedInboxState {
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
+  /** Handle the selected item (e = archive/mark-read, b = snooze) and advance
+   *  to the next one in its list — same flow as the legacy panes. */
+  handleSelected: (verb: 'done' | 'snooze') => void
 }
 
 export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
@@ -108,5 +111,32 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const idx = items.findIndex((i) => i.key === get().selectedKey)
     const next = idx < 0 ? (dir === 1 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, idx + dir))
     get().select(items[next]!)
+  },
+
+  handleSelected: (verb) => {
+    const { feedList, inboxList, selectedKey } = get()
+    if (!selectedKey) return
+    const inFeed = feedList.some((i) => i.key === selectedKey)
+    const list = inFeed ? feedList : inboxList
+    const item = list.find((i) => i.key === selectedKey)
+    if (!item) return
+
+    // Compute the landing spot BEFORE the verb fires — the handled item drops
+    // from the list on the next rebuild, so "next" must come from the current
+    // snapshot (the legacy mail pane does the same inside archiveThread).
+    const next = nextAfterHandle(list, selectedKey)
+
+    if (verb === 'done') {
+      if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId)
+      else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
+      else void useFeedStore.getState().markRead(item.sourceId)
+    } else {
+      if (item.source === 'mail') useInboxStore.getState().snoozeThread('tomorrow', undefined, item.sourceId)
+      else if (item.source === 'chat') void useChatStore.getState().snoozeRoom('tomorrow')
+      else return // feed items have no snooze (yet — Phase 2+)
+    }
+
+    if (next) get().select(next)
+    else set({ selectedKey: null })
   },
 }))

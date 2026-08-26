@@ -108,3 +108,12 @@ export function sortInbox(items: InboxItem[]): InboxItem[] {
 export function sortFeed(items: InboxItem[]): InboxItem[] {
   return [...items].sort((a, b) => b.ts - a.ts)
 }
+
+/** The item to land on after handling `key` (archive/read/snooze): the next
+ *  one down, else the previous (end of list), else nothing — mirrors the mail
+ *  pane's archive-advance. */
+export function nextAfterHandle(items: InboxItem[], key: string): InboxItem | null {
+  const idx = items.findIndex((i) => i.key === key)
+  if (idx < 0) return null
+  return items[idx + 1] ?? items[idx - 1] ?? null
+}

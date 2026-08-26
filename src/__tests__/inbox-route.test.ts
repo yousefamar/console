@@ -4,8 +4,8 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, normalizeRules, roomIsLive, roomToItem, sortFeed, sortInbox,
-  threadIsLive, threadToItem,
+  feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  sortFeed, sortInbox, threadIsLive, threadToItem,
 } from '@/inbox/route'
 
 const NOW = 1_700_000_000_000
@@ -103,5 +103,24 @@ describe('ordering', () => {
       feedItemToItem(feedItem({ id: 'b', publishedAt: new Date(NOW).toISOString() }), undefined, DEFAULT_RULES),
     ]
     expect(sortFeed(items).map((i) => i.sourceId)).toEqual(['b', 'a'])
+  })
+})
+
+describe('nextAfterHandle', () => {
+  const items = ['a', 'b', 'c'].map((id) =>
+    feedItemToItem(feedItem({ id }), undefined, DEFAULT_RULES))
+
+  it('advances to the next item', () => {
+    expect(nextAfterHandle(items, 'feed:a')?.sourceId).toBe('b')
+    expect(nextAfterHandle(items, 'feed:b')?.sourceId).toBe('c')
+  })
+
+  it('falls back to the previous item at the end of the list', () => {
+    expect(nextAfterHandle(items, 'feed:c')?.sourceId).toBe('b')
+  })
+
+  it('returns null for a single-item list or unknown key', () => {
+    expect(nextAfterHandle([items[0]!], 'feed:a')).toBeNull()
+    expect(nextAfterHandle(items, 'feed:zzz')).toBeNull()
   })
 })
