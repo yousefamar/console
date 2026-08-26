@@ -410,6 +410,7 @@ function SpaceListRail() {
         if (name?.trim()) agent.renameSession(sessionId, name.trim())
       } },
       { label: 'Generate title', onClick: () => agent.generateTitle(sessionId) },
+      { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sessionId) },
       { label: useMicStore.getState().owner === sessionId ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
       { label: 'Fork', onClick: () => agent.forkSession(sessionId) },
       ...((role?.fork || role?.manager || sess?.parentClaudeSessionId) ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
@@ -681,6 +682,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                   if (name?.trim()) agent.renameSession(live.id, name.trim())
                 } },
                 { label: 'Generate title', onClick: () => agent.generateTitle(live.id) },
+                { label: 'Reload history', onClick: () => agent.reloadSessionHistory(live.id) },
                 { label: useMicStore.getState().owner === live.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === live.id ? 'al' : live.id) },
                 { label: 'Fork', onClick: () => agent.forkSession(live.id) },
                 ...(r.fork || r.manager ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(live.id) }] : []),
@@ -722,6 +724,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             const menuItems: ContextMenuItem[] = [
               { label: 'Mark read', onClick: () => agent.markSessionRead(sess.id) },
               { label: 'Mark unread', onClick: () => agent.markSessionUnread(sess.id) },
+              { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sess.id) },
               { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
             ]
             return (
