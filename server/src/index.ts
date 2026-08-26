@@ -61,6 +61,7 @@ import { FinanceStore } from './finance/store.js'
 import { handleFinanceRoutes } from './routes/finance.js'
 import { PrefsStore } from './prefs-store.js'
 import { handleConfigRoutes } from './routes/config.js'
+import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -179,6 +180,7 @@ const meetupClient = new MeetupClient(feedsConfigDir)
 const outdoorLadsStore = new OutdoorLadsStore()
 const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
+const inboxRulesStore = new InboxRulesStore(feedsConfigDir)
 // Runtime agent-model config + fallback chain. Inject the resolver into Session
 // NOW, before any session is spawned (restore loop, Al, fresh) so every spawn
 // resolves the configured model rather than a hardcoded const.
@@ -1511,6 +1513,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/pen') && handlePenRoutes(req, res, path, penHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
+  if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
   }, readBody)) return

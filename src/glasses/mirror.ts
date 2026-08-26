@@ -82,6 +82,9 @@ const renderers: Record<ActivePane, PaneRenderer> = {
   // is the likely focus — the editor when a file is open in Docs view, else
   // the active agent session.
   spaces: renderSpaces,
+  // Unified Inbox composes mail/chat/feeds; the mail renderer is the closest
+  // single-pane proxy until it gets a dedicated one.
+  inbox: renderMail,
 }
 
 function renderSpaces(): MirrorFrame | null {
