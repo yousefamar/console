@@ -22,6 +22,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+(empty — v88 shipped everything)
+
+## Shipped
+
+### v88 (2026-08-27)
 - Agents tile removed — Spaces owns sessions (^deft-ant, parity with the SPA
   Agents-tab deletion): Pane.Agents gone (push pane "agents" maps to Spaces;
   the `agents/{sessionId}` detail route survives for deep links + Spaces/Home/
@@ -46,8 +51,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   socket duplication). SyncBusClient also gained the agents-WS stop()
   hardening (orphan callbacks via generation bump; openSocket cancels any
   prior socket).
-
-## Shipped
 
 ### v87 (2026-08-20)
 - Board card ^240ofe (Spaces parity M1+M2 core, per
