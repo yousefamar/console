@@ -90,8 +90,8 @@ describe('canvas auth gate (decide)', () => {
     expect(d.allow).toBe(false)
   })
 
-  it('leaves /public/canvas/<token>/ shares always-open (published path untouched)', () => {
-    const d = decide(fakeReq({ url: '/public/canvas/abc123/' }), fakeStore())
+  it('leaves /public/canvas/<kind>/<slug>/ shares always-open (published path untouched)', () => {
+    const d = decide(fakeReq({ url: '/public/canvas/tab/property-criteria/' }), fakeStore())
     expect(d.allow).toBe(true)
     expect(d.reason).toBe('public-namespace')
   })

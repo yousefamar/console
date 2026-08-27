@@ -9,7 +9,7 @@ import { hubFetch } from '@/hub'
 
 interface Tab { slug: string; meta: { title?: string; agent?: string } }
 interface Island { slug: string; meta: { title?: string; agent?: string } }
-interface Publish { kind: 'tab' | 'island'; slug: string; token: string; url: string; createdAt: number }
+interface Publish { kind: 'tab' | 'island'; slug: string; url: string; createdAt: number }
 
 interface Row {
   kind: 'tab' | 'island'

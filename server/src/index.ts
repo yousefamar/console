@@ -92,7 +92,7 @@ import { startDeprecationShim } from './al/shim-18789.js'
 import { routeInbound, startConversationForks } from './al/conversation-forks.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
-import { CanvasPublicTokens } from './canvas-public-tokens.js'
+import { CanvasPublicRegistry } from './canvas-public.js'
 import { AwsCostStore } from './aws-costs.js'
 import { handlePublicCanvas } from './routes/public.js'
 import { MicState } from './mic.js'
@@ -197,7 +197,7 @@ void refreshBedrockProfiles()
 // injection (createSession) can resolve a restored session's role.
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
-const publicCanvasTokens = new CanvasPublicTokens()
+const canvasPublicRegistry = new CanvasPublicRegistry()
 // Bedrock spend analytics for the Home pane. Cost Explorer bills per request,
 // so this caches on disk with a TTL and only refetches on demand.
 const awsCosts = new AwsCostStore(
@@ -1464,7 +1464,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   // /public/apk/<name>      → aliases to /apk/<name> (immutable assets)
   // No auth applies to /public/*; auth middleware already let it through.
   if (path === '/public/canvas' || path.startsWith('/public/canvas/')) {
-    if (handlePublicCanvas(req, res, path, { canvas: canvasDir, publicTokens: publicCanvasTokens })) return
+    if (handlePublicCanvas(req, res, path, { canvas: canvasDir, publicRegistry: canvasPublicRegistry })) return
   }
   if (path === '/public/cron.ics' || path.startsWith('/public/cron.ics?')) {
     if (handleCronRoutes(req, res, '/cron.ics', url, {
@@ -1515,16 +1515,16 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/dashboard/canvas/tabs') && handleCanvasTabRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
-    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicTokens: publicCanvasTokens, costs: awsCosts,
+    servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   })) return
   if ((path === '/cron' || path === '/cron.ics' || path.startsWith('/cron/')) && handleCronRoutes(req, res, path, url, {
     scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,

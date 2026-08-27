@@ -11,7 +11,7 @@ import {
 import type { Session } from '../session.js'
 import type { CalendarSync } from '../cal/sync.js'
 import type { DebugLog } from '../debug-log.js'
-import type { CanvasPublicTokens } from '../canvas-public-tokens.js'
+import type { CanvasPublicRegistry, PublicKind } from '../canvas-public.js'
 import type { AwsCostStore } from '../aws-costs.js'
 
 export interface DashboardCtx {
@@ -20,12 +20,12 @@ export interface DashboardCtx {
   sessions: Map<string, Session>
   cal: CalendarSync
   debugLog: DebugLog
-  publicTokens: CanvasPublicTokens
+  publicRegistry: CanvasPublicRegistry
   costs: AwsCostStore
 }
 
-function publicShareUrl(publicOrigin: string, token: string): string {
-  return `${publicOrigin.replace(/\/$/, '')}/public/canvas/${encodeURIComponent(token)}/`
+function publicShareUrl(publicOrigin: string, kind: PublicKind, slug: string): string {
+  return `${publicOrigin.replace(/\/$/, '')}/public/canvas/${kind}/${encodeURIComponent(slug)}/`
 }
 
 /**
@@ -219,18 +219,18 @@ export function handleCanvasIslandRoutes(
     const slug = decodeURIComponent(publishMatch[1]!)
     const origin = resolvePublicOrigin()
     if (req.method === 'POST') {
-      const entry = ctx.publicTokens.publish('island', slug)
-      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      const entry = ctx.publicRegistry.publish('island', slug)
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'GET') {
-      const entry = ctx.publicTokens.getBySlug('island', slug)
+      const entry = ctx.publicRegistry.getBySlug('island', slug)
       if (!entry) { json({ error: 'not published' }, 404); return true }
-      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'DELETE') {
-      const ok = ctx.publicTokens.unpublish('island', slug)
+      const ok = ctx.publicRegistry.unpublish('island', slug)
       json({ ok })
       return true
     }
@@ -299,18 +299,18 @@ export function handleCanvasTabRoutes(
     const slug = decodeURIComponent(publishMatch[1]!)
     const origin = resolvePublicOrigin()
     if (req.method === 'POST') {
-      const entry = ctx.publicTokens.publish('tab', slug)
-      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      const entry = ctx.publicRegistry.publish('tab', slug)
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'GET') {
-      const entry = ctx.publicTokens.getBySlug('tab', slug)
+      const entry = ctx.publicRegistry.getBySlug('tab', slug)
       if (!entry) { json({ error: 'not published' }, 404); return true }
-      json({ kind: entry.kind, slug: entry.slug, token: entry.token, url: publicShareUrl(origin, entry.token), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'DELETE') {
-      const ok = ctx.publicTokens.unpublish('tab', slug)
+      const ok = ctx.publicRegistry.unpublish('tab', slug)
       json({ ok })
       return true
     }
