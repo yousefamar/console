@@ -407,7 +407,7 @@ export function useKeybindings() {
       // source store — same muscle memory as the legacy panes.
       if (activePane === 'inbox' && !isEditing) {
         const uinbox = useUnifiedInboxStore.getState()
-        const selected = [...uinbox.feedList, ...uinbox.inboxList].find((i) => i.key === uinbox.selectedKey)
+        const selected = uinbox.selected
         const list = selected && uinbox.feedList.some((i) => i.key === selected.key) ? 'feed' : 'inbox'
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault()
