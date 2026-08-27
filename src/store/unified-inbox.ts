@@ -23,8 +23,11 @@ interface UnifiedInboxState {
   rulesLoaded: boolean
   feedList: InboxItem[]
   inboxList: InboxItem[]
-  /** Selected item key (`source:id`) — the viewer column keys off its source. */
-  selectedKey: string | null
+  /** The selected item — held as the ITEM, not a key into the lists: handling
+   *  it (reply marks a chat read, archive drops a thread) removes it from the
+   *  lists on rebuild, but the viewer must keep showing it until the user
+   *  moves on — same semantics as the chat pane's selected room. */
+  selected: InboxItem | null
 
   loadRules: () => Promise<void>
   saveRules: (rules: InboxRules) => Promise<void>
@@ -41,7 +44,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   rulesLoaded: false,
   feedList: [],
   inboxList: [],
-  selectedKey: null,
+  selected: null,
 
   loadRules: async () => {
     try {
@@ -96,7 +99,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   select: (item) => {
-    set({ selectedKey: item?.key ?? null })
+    set({ selected: item })
     if (!item) return
     // Delegate to the owning source store so the reused viewer renders it
     // (and the source's own read-marking side effects run).
@@ -108,23 +111,22 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   selectAdjacent: (list, dir) => {
     const items = list === 'feed' ? get().feedList : get().inboxList
     if (items.length === 0) return
-    const idx = items.findIndex((i) => i.key === get().selectedKey)
+    const idx = items.findIndex((i) => i.key === get().selected?.key)
     const next = idx < 0 ? (dir === 1 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, idx + dir))
     get().select(items[next]!)
   },
 
   handleSelected: (verb) => {
-    const { feedList, inboxList, selectedKey } = get()
-    if (!selectedKey) return
-    const inFeed = feedList.some((i) => i.key === selectedKey)
+    const { feedList, inboxList, selected } = get()
+    if (!selected) return
+    const inFeed = feedList.some((i) => i.key === selected.key)
     const list = inFeed ? feedList : inboxList
-    const item = list.find((i) => i.key === selectedKey)
-    if (!item) return
+    const item = list.find((i) => i.key === selected.key) ?? selected
 
     // Compute the landing spot BEFORE the verb fires — the handled item drops
     // from the list on the next rebuild, so "next" must come from the current
     // snapshot (the legacy mail pane does the same inside archiveThread).
-    const next = nextAfterHandle(list, selectedKey)
+    const next = nextAfterHandle(list, selected.key)
 
     if (verb === 'done') {
       if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId)
@@ -136,7 +138,8 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
       else return // feed items have no snooze (yet — Phase 2+)
     }
 
+    // Advance if there's somewhere to go; otherwise STAY on the handled item
+    // (the viewer keeps it — an emptied list must not blank the viewer).
     if (next) get().select(next)
-    else set({ selectedKey: null })
   },
 }))

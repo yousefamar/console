@@ -9,44 +9,25 @@
 // mark-read); the lists rebuild from source state, so an item handled here
 // OR in its legacy pane drops out identically.
 
-import { memo, useEffect } from 'react'
+import { memo } from 'react'
 import { Mail, MessageCircle, Rss } from 'lucide-react'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
-import { useInboxStore } from '@/store/inbox'
-import { useChatStore } from '@/store/chat'
-import { useFeedStore } from '@/store/feeds'
 import { ThreadView } from './ThreadView'
 import { ChatRoomView } from './ChatRoomView'
 import { FeedItemView } from './FeedItemView'
 import { relativeTime } from '@/utils/date'
 import type { InboxItem } from '@/inbox/types'
 
-const REBUILD_DEBOUNCE_MS = 300
+// Composition wiring (source-store subscriptions → rebuild) lives in
+// src/inbox/subscribe.ts, wired at boot from GatedBoot — the tab badge needs
+// the lists before this pane ever mounts.
 
 export const InboxTab = memo(function InboxTab() {
   const feedList = useUnifiedInboxStore((s) => s.feedList)
   const inboxList = useUnifiedInboxStore((s) => s.inboxList)
-  const selectedKey = useUnifiedInboxStore((s) => s.selectedKey)
+  const selected = useUnifiedInboxStore((s) => s.selected)
   const select = useUnifiedInboxStore((s) => s.select)
-
-  // Rebuild whenever any source's live set changes. Debounced — a sync burst
-  // (mail archive cascade, chat resume) shouldn't thrash the composition.
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const schedule = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => { void useUnifiedInboxStore.getState().rebuild() }, REBUILD_DEBOUNCE_MS)
-    }
-    void useUnifiedInboxStore.getState().rebuild()
-    const unsubs = [
-      useInboxStore.subscribe((s, prev) => { if (s.threads !== prev.threads) schedule() }),
-      useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() }),
-      useFeedStore.subscribe((s, prev) => { if (s.unreadCounts !== prev.unreadCounts || s.feeds !== prev.feeds) schedule() }),
-    ]
-    return () => { if (timer) clearTimeout(timer); unsubs.forEach((u) => u()) }
-  }, [])
-
-  const selected = [...feedList, ...inboxList].find((i) => i.key === selectedKey) ?? null
+  const selectedKey = selected?.key ?? null
 
   return (
     <>

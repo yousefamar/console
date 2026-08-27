@@ -104,6 +104,11 @@ const LazyApp = lazy(async () => {
   const { wireBoardSubscription } = await import('./kanban/board-subscribe')
   wireBoardSubscription()
 
+  // Unified Inbox composition — boot-wired so the tab badge counts without
+  // the pane ever having been opened.
+  const { wireUnifiedInbox } = await import('./inbox/subscribe')
+  wireUnifiedInbox()
+
   // Agents WS + mic + cron + session-list refresh — this lived in the
   // always-mounted AgentTab; with that tab gone (Spaces mounts lazily) the
   // fleet connection must be a boot concern or the sidebar counts, pushes,

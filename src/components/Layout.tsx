@@ -45,6 +45,7 @@ import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
 import { SpacesTab } from './SpacesTab'
 import { InboxTab } from './InboxTab'
+import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { MusicDrawer } from './music/MusicDrawer'
 import { useMusicStore } from '@/store/music'
 // MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
@@ -475,18 +476,20 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
 }) {
   const isActive = activePane === pane
 
-  // Tabs with counts: Mail (inbox), Chat (unread rooms), Feeds (unread items), Spaces (unread sessions + unsaved files)
+  // Tabs with counts: Inbox (must-handle items), Mail (inbox), Chat (unread rooms), Feeds (unread items), Spaces (unread sessions + unsaved files)
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
-    : pane === 'chat'
-      ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
-      : pane === 'feeds'
-        ? useFeedStore((s) => s.totalUnread)
-        : pane === 'notes'
-          ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-          : pane === 'spaces'
-            ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : 0
+    : pane === 'inbox'
+      ? useUnifiedInboxStore((s) => s.inboxList.length)
+      : pane === 'chat'
+        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
+        : pane === 'feeds'
+          ? useFeedStore((s) => s.totalUnread)
+          : pane === 'notes'
+            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : pane === 'spaces'
+              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+              : 0
   // Red dot on a tab: Spaces when a session emits @amar; Notes when the pen is
   // streaming new strokes you haven't seen. Visible from any other pane.
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
@@ -581,15 +584,17 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
 }) {
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
-    : pane === 'chat'
-      ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
-      : pane === 'feeds'
-        ? useFeedStore((s) => s.totalUnread)
-        : pane === 'notes'
-          ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-          : pane === 'spaces'
-            ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-            : 0
+    : pane === 'inbox'
+      ? useUnifiedInboxStore((s) => s.inboxList.length)
+      : pane === 'chat'
+        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
+        : pane === 'feeds'
+          ? useFeedStore((s) => s.totalUnread)
+          : pane === 'notes'
+            ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+            : pane === 'spaces'
+              ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
+              : 0
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
   const attention = pane === 'spaces' && agentsAttention
 
