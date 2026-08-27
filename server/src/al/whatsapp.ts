@@ -36,8 +36,9 @@ import makeWASocket, {
 import QRCode from 'qrcode'
 import pino from 'pino'
 import { rm, mkdir, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 import { transcribeAudio } from './transcribe.js'
 
@@ -385,19 +386,35 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
 // those can be ignored or worked around; this can't. Matching strips all
 // non-alphanumeric characters from both the haystack and each term before
 // comparing, so punctuation/whitespace/casing variants (line breaks, extra
-// spaces, "[REDACTED]" vs "[REDACTED]") can't evade it. Keep terms specific — do NOT
-// add bare words like 'reading' or 'road' that would false-positive on normal
-// chat.
-const BLOCKED_TERMS = ['[REDACTED]', '[REDACTED]', '[REDACTED]', '[REDACTED]']
+// spaces) can't evade it. THE TERMS LIVE ONLY IN ~/.config/console/
+// wa-blocklist.json ({"terms": [...]}) — the repo must never contain them
+// (they sat here hardcoded, world-readable, 2026-07/08). Keep terms specific —
+// no bare words like 'reading' or 'road' that false-positive on normal chat.
+const BLOCKLIST_FILE = join(homedir(), '.config', 'console', 'wa-blocklist.json')
+
+function loadBlockedTerms(): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(BLOCKLIST_FILE, 'utf8'))
+    if (Array.isArray(parsed?.terms)) return parsed.terms.filter((t: unknown): t is string => typeof t === 'string' && t.length > 0)
+  } catch {
+    // Missing/malformed file → empty blocklist. Nothing to protect is the
+    // only state in which not blocking is correct; a warning marks the gap.
+    console.warn(`[al/wa] censor blocklist unavailable (${BLOCKLIST_FILE}) — outbound address censor is INACTIVE`)
+  }
+  return []
+}
+
+const BLOCKED_TERMS = loadBlockedTerms()
 
 function normalizeForMatch(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-/** Returns the matched blocklist term if `text` contains censored content, else null. */
-export function findBlockedTerm(text: string): string | null {
+/** Returns the matched term if `text` contains censored content, else null.
+ *  `terms` is injectable for tests — real terms never appear in the repo. */
+export function findBlockedTerm(text: string, terms: string[] = BLOCKED_TERMS): string | null {
   const haystack = normalizeForMatch(text)
-  for (const term of BLOCKED_TERMS) {
+  for (const term of terms) {
     if (haystack.includes(normalizeForMatch(term))) return term
   }
   return null
