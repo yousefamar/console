@@ -22,6 +22,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+(empty — v89 shipped everything)
+
+## Shipped
+
+### v89 (2026-08-27)
 - Spaces mobile parity round (post-v88 feedback): CardSheet scrolls as a whole
   (long agent report notes pushed Move/Assign/Open-agent off-screen) with the
   detail clamped to 8 lines + tap-to-expand; space rows gain the SPA rail-1
@@ -35,8 +40,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   (`shouldInterceptRequest` in HomeScreen.kt) — the hub now auth-gates the
   unpublished canvas (^pink-tern leak fix), and this WebView has no session
   cookie. Without the bearer the canvas card 401s after the next hub deploy.
-
-## Shipped
 
 ### v88 (2026-08-27)
 - Agents tile removed — Spaces owns sessions (^deft-ant, parity with the SPA
