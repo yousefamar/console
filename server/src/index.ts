@@ -94,7 +94,7 @@ import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { CanvasPublicRegistry } from './canvas-public.js'
 import { AwsCostStore } from './aws-costs.js'
-import { handlePublicCanvas } from './routes/public.js'
+import { handlePublicCanvas, handlePublicSlug } from './routes/public.js'
 import { MicState } from './mic.js'
 import { handleMicRoutes } from './routes/mic.js'
 import { GlassesResearchLog } from './glasses/research-log.js'
@@ -1474,6 +1474,11 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path === '/public/apk' || path.startsWith('/public/apk/')) {
     const apkPath = path.replace(/^\/public\/apk/, '/apk')
     if (handleApkRoutes(req, res, apkPath)) return
+  }
+  // /public/<slug>/ — canonical short form for published canvases (tab first,
+  // then island). Must dispatch AFTER the reserved names above.
+  if (path.startsWith('/public/')) {
+    if (handlePublicSlug(req, res, path, { canvas: canvasDir, publicRegistry: canvasPublicRegistry })) return
   }
 
   if (path.startsWith('/mic') && handleMicRoutes(req, res, path, {

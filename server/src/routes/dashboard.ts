@@ -24,8 +24,17 @@ export interface DashboardCtx {
   costs: AwsCostStore
 }
 
-function publicShareUrl(publicOrigin: string, kind: PublicKind, slug: string): string {
-  return `${publicOrigin.replace(/\/$/, '')}/public/canvas/${kind}/${encodeURIComponent(slug)}/`
+/**
+ * Canonical short URL /public/<slug>/ — except an island whose slug is also a
+ * published tab (the short form resolves tab-first), which gets the explicit
+ * /public/canvas/island/<slug>/ form.
+ */
+function publicShareUrl(publicOrigin: string, kind: PublicKind, slug: string, registry: CanvasPublicRegistry): string {
+  const base = publicOrigin.replace(/\/$/, '')
+  if (kind === 'island' && registry.isPublished('tab', slug)) {
+    return `${base}/public/canvas/island/${encodeURIComponent(slug)}/`
+  }
+  return `${base}/public/${encodeURIComponent(slug)}/`
 }
 
 /**
@@ -220,13 +229,13 @@ export function handleCanvasIslandRoutes(
     const origin = resolvePublicOrigin()
     if (req.method === 'POST') {
       const entry = ctx.publicRegistry.publish('island', slug)
-      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug, ctx.publicRegistry), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'GET') {
       const entry = ctx.publicRegistry.getBySlug('island', slug)
       if (!entry) { json({ error: 'not published' }, 404); return true }
-      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'island', slug, ctx.publicRegistry), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'DELETE') {
@@ -300,13 +309,13 @@ export function handleCanvasTabRoutes(
     const origin = resolvePublicOrigin()
     if (req.method === 'POST') {
       const entry = ctx.publicRegistry.publish('tab', slug)
-      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug, ctx.publicRegistry), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'GET') {
       const entry = ctx.publicRegistry.getBySlug('tab', slug)
       if (!entry) { json({ error: 'not published' }, 404); return true }
-      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug), createdAt: entry.createdAt })
+      json({ kind: entry.kind, slug: entry.slug, url: publicShareUrl(origin, 'tab', slug, ctx.publicRegistry), createdAt: entry.createdAt })
       return true
     }
     if (req.method === 'DELETE') {

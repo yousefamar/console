@@ -1,18 +1,18 @@
 // `/public/*` canvas surface. The auth middleware lets `/public/*` through;
-// this module is the only thing handling `/public/canvas/...` paths.
+// this module handles published-canvas paths.
 //
 // NO tokens: publish = the plain slug URL is public. Unpublished slugs 404.
 //
-// `/public/cron.ics?token=…` and `/public/apk/*` are handled by aliasing the
-// path in the request dispatcher (server/src/index.ts) and letting the
-// existing cron/apk handlers run.
+// Canonical short form:
+//   GET /public/<slug>/                      → published tab, else island, else 404
+//   GET /public/<slug>/<asset>               → tab asset (islands have none)
+// Explicit form (disambiguates a slug published as BOTH kinds):
+//   GET /public/canvas/<tab|island>/<slug>/  → that specific kind
+// Legacy /public/canvas/<token>/ URLs 404 (token era retired).
 //
-// Routes:
-//   GET /public/canvas/tab/<slug>            → 301 → .../<slug>/
-//   GET /public/canvas/tab/<slug>/           → standalone tab page
-//   GET /public/canvas/tab/<slug>/<asset>    → static asset under tabs/<slug>/
-//   GET /public/canvas/island/<slug>/        → standalone island page
-//   GET /public/canvas/<legacy-token>/...    → 404 (token era retired)
+// `/public/cron.ics?token=…` and `/public/apk/*` are dispatched BEFORE the
+// short form in index.ts, so those names are effectively reserved; the short
+// handler also skips them defensively.
 //
 // Path-traversal: asset resolution uses path.resolve and rejects anything
 // outside tabsDir/<slug>/.
@@ -28,6 +28,8 @@ export interface PublicContext {
   canvas: CanvasDir
   publicRegistry: CanvasPublicRegistry
 }
+
+const RESERVED_SLUGS = new Set(['canvas', 'apk', 'cron.ics'])
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -83,6 +85,62 @@ function safeReadTabAsset(canvas: CanvasDir, slug: string, asset: string): Buffe
   }
 }
 
+/** Serve a published canvas page/asset. Assumes (kind, slug) is published. */
+function serveCanvas(
+  res: ServerResponse,
+  ctx: PublicContext,
+  kind: PublicKind,
+  slug: string,
+  remainder: string, // '' for the page root
+): void {
+  if (remainder === '' || remainder === 'index.html') {
+    if (kind === 'island') {
+      const island = ctx.canvas.listIslands().find((i) => i.slug === slug)
+      if (!island) { notFoundHtml(res); return }
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+      })
+      res.end(composePublicIsland(island))
+      return
+    }
+    const tab = ctx.canvas.listTabs().find((t) => t.slug === slug)
+    if (!tab) { notFoundHtml(res); return }
+    if (!tab.hasContent) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+      res.end(composePublicTabPlaceholder(tab))
+      return
+    }
+    const buf = safeReadTabAsset(ctx.canvas, slug, 'index.html')
+    if (!buf) { notFoundHtml(res); return }
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    })
+    res.end(buf)
+    return
+  }
+
+  // Assets: islands are inline-HTML and don't have a filesystem footprint.
+  if (kind !== 'tab') {
+    notFoundHtml(res)
+    return
+  }
+  const buf = safeReadTabAsset(ctx.canvas, slug, remainder)
+  if (!buf) { notFoundHtml(res); return }
+  res.writeHead(200, {
+    'Content-Type': contentTypeFor(remainder),
+    'Cache-Control': 'public, max-age=60',
+    'X-Content-Type-Options': 'nosniff',
+  })
+  res.end(buf)
+}
+
+/** Explicit form: /public/canvas/<tab|island>/<slug>/... */
 export function handlePublicCanvas(
   req: IncomingMessage,
   res: ServerResponse,
@@ -108,8 +166,7 @@ export function handlePublicCanvas(
     return true
   }
 
-  // `/public/canvas/<kind>/<slug>` (no trailing slash) → 301 so relative
-  // asset URLs in the tab's HTML resolve against the right base.
+  // No trailing slash → 301 so relative asset URLs resolve against the base.
   const slugSlash = afterKind.indexOf('/')
   if (slugSlash === -1) {
     res.writeHead(301, { Location: `/public/canvas/${kind}/${encodeURIComponent(afterKind)}/` })
@@ -118,59 +175,54 @@ export function handlePublicCanvas(
   }
 
   const slug = decodeURIComponent(afterKind.slice(0, slugSlash))
-  const remainder = afterKind.slice(slugSlash + 1) // may be '' for trailing slash
-
+  const remainder = afterKind.slice(slugSlash + 1)
   if (!ctx.publicRegistry.isPublished(kind, slug)) {
     notFoundHtml(res)
     return true
   }
+  serveCanvas(res, ctx, kind, slug, remainder)
+  return true
+}
 
-  // Slug URL root or explicit index.html — compose the standalone page.
-  if (remainder === '' || remainder === 'index.html') {
-    if (kind === 'island') {
-      const island = ctx.canvas.listIslands().find((i) => i.slug === slug)
-      if (!island) { notFoundHtml(res); return true }
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'X-Content-Type-Options': 'nosniff',
-        'Referrer-Policy': 'no-referrer',
-      })
-      res.end(composePublicIsland(island))
-      return true
-    }
-    const tab = ctx.canvas.listTabs().find((t) => t.slug === slug)
-    if (!tab) { notFoundHtml(res); return true }
-    if (!tab.hasContent) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
-      res.end(composePublicTabPlaceholder(tab))
-      return true
-    }
-    const buf = safeReadTabAsset(ctx.canvas, slug, 'index.html')
-    if (!buf) { notFoundHtml(res); return true }
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer',
-    })
-    res.end(buf)
-    return true
-  }
+/**
+ * Canonical short form: /public/<slug>/... — resolves tab first, then island.
+ * A slug published as BOTH kinds serves the tab here; the island stays
+ * reachable via the explicit /public/canvas/island/<slug>/ form.
+ * Dispatched AFTER /public/{canvas,cron.ics,apk} in index.ts.
+ */
+export function handlePublicSlug(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  ctx: PublicContext,
+): boolean {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false
+  if (!path.startsWith('/public/')) return false
 
-  // Tab assets: islands are inline-HTML and don't have a filesystem footprint
-  // to serve relative paths from.
-  if (kind !== 'tab') {
+  const rest = path.slice('/public/'.length)
+  if (rest === '') return false
+
+  const firstSlash = rest.indexOf('/')
+  const rawSlug = firstSlash === -1 ? rest : rest.slice(0, firstSlash)
+  const slug = decodeURIComponent(rawSlug)
+  if (RESERVED_SLUGS.has(slug)) return false
+
+  const kind: PublicKind | null =
+    ctx.publicRegistry.isPublished('tab', slug) ? 'tab'
+    : ctx.publicRegistry.isPublished('island', slug) ? 'island'
+    : null
+  if (!kind) {
     notFoundHtml(res)
     return true
   }
-  const buf = safeReadTabAsset(ctx.canvas, slug, remainder)
-  if (!buf) { notFoundHtml(res); return true }
-  res.writeHead(200, {
-    'Content-Type': contentTypeFor(remainder),
-    'Cache-Control': 'public, max-age=60',
-    'X-Content-Type-Options': 'nosniff',
-  })
-  res.end(buf)
+
+  // No trailing slash → 301 so relative asset URLs resolve against the base.
+  if (firstSlash === -1) {
+    res.writeHead(301, { Location: `/public/${encodeURIComponent(slug)}/` })
+    res.end()
+    return true
+  }
+
+  serveCanvas(res, ctx, kind, slug, rest.slice(firstSlash + 1))
   return true
 }
