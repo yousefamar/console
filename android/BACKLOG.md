@@ -22,6 +22,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Spaces mobile parity round (post-v88 feedback): CardSheet scrolls as a whole
+  (long agent report notes pushed Move/Assign/Open-agent off-screen) with the
+  detail clamped to 8 lines + tap-to-expand; space rows gain the SPA rail-1
+  indicators (Bot+count tinted by hottest alert, ViewKanban glyph when a board
+  exists — dropped the "board" meta word); space Agents list ordered by
+  creation (general agent first, ticket-forks trail nested) instead of
+  alphabetical, rows gain SPA SessionBadges parity (amber Terminal+count,
+  violet todo done/total hidden when complete, mic owner, Bedtime dormant).
+
 - Home canvas WebView sends the APK bearer on `/hub/canvas/*` loads
   (`shouldInterceptRequest` in HomeScreen.kt) — the hub now auth-gates the
   unpublished canvas (^pink-tern leak fix), and this WebView has no session

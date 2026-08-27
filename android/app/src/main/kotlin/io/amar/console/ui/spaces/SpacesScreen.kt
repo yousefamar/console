@@ -19,17 +19,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ViewKanban
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -189,7 +194,14 @@ fun SpacesScreen(
             fun renderSpace(scope: androidx.compose.foundation.lazy.LazyListScope, sp: SpacesRepository.SpaceSummary) {
                 val items = alertItems(sp.slug, sp.kind)
                 scope.item(key = "${sp.kind}:${sp.slug}") {
-                    SpaceRow(sp, hasAlerts = items.isNotEmpty(), onClick = { onOpenSpace("${sp.kind}/${sp.slug}") })
+                    val boundHere = spaceSessions(sp.slug, sp.kind)
+                    SpaceRow(
+                        sp, hasAlerts = items.isNotEmpty(),
+                        boundCount = boundHere.size,
+                        boundAttention = boundHere.any { it.needsAttention },
+                        boundUnread = boundHere.any { it.hasUnread },
+                        onClick = { onOpenSpace("${sp.kind}/${sp.slug}") },
+                    )
                 }
                 scope.items(items, key = { "${sp.kind}:${sp.slug}:${it.kind}:${it.id}" }) { a ->
                     AlertRow(a, onClick = {
@@ -244,13 +256,16 @@ fun lineageOrder(
         if (parent != null && parent in boundCsids) csidToKey[parent] else null
     }
     val out = mutableListOf<Pair<AgentSessionRow, Int>>()
+    // Creation order, not alphabetical — the SPA rail preserves the hub's
+    // list order (manifest = creation), so the space's long-lived general
+    // agent leads and recent ticket-forks trail, nested under their parent.
     fun walk(s: AgentSessionRow, depth: Int) {
         out.add(s to depth)
-        for (child in (childrenOf[s.agentKey] ?: emptyList()).sortedBy { it.name.lowercase() }) {
+        for (child in (childrenOf[s.agentKey] ?: emptyList()).sortedBy { it.createdAt }) {
             if (child.id != s.id) walk(child, depth + 1)
         }
     }
-    for (root in (childrenOf[null] ?: emptyList()).sortedBy { it.name.lowercase() }) walk(root, 0)
+    for (root in (childrenOf[null] ?: emptyList()).sortedBy { it.createdAt }) walk(root, 0)
     // Anything unreached (cycle/self-manager edge) still renders, flat.
     val seen = out.map { it.first.id }.toSet()
     for (s in bound) if (s.id !in seen) out.add(s to 0)
@@ -279,6 +294,9 @@ data class SpaceAlertItem(
 private fun SpaceRow(
     sp: SpacesRepository.SpaceSummary,
     hasAlerts: Boolean,
+    boundCount: Int = 0,
+    boundAttention: Boolean = false,
+    boundUnread: Boolean = false,
     onClick: () -> Unit,
 ) {
     val dim = sp.status == "dormant" || sp.status == "complete"
@@ -302,12 +320,29 @@ private fun SpaceRow(
             )
             val meta = listOfNotNull(
                 sp.status,
-                if (sp.boardPath != null) "board" else null,
                 if (sp.fileCount > 0) "${sp.fileCount} files" else null,
             ).joinToString(" · ")
             if (meta.isNotEmpty()) {
                 Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        // SPA rail-1 parity: Bot+count coloured by the space's hottest alert
+        // (red attention > blue unread > grey), Kanban glyph when a board exists.
+        if (boundCount > 0) {
+            val botTint = when {
+                boundAttention -> MaterialTheme.colorScheme.error
+                boundUnread -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Icon(Icons.Filled.SmartToy, "$boundCount agents", tint = botTint, modifier = Modifier.size(13.dp))
+            Text("$boundCount", style = MaterialTheme.typography.labelSmall, color = botTint)
+        }
+        if (sp.boardPath != null) {
+            Icon(
+                Icons.Filled.ViewKanban, contentDescription = "Has a board",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                modifier = Modifier.size(14.dp),
+            )
         }
     }
 }
@@ -591,15 +626,27 @@ private fun CardSheet(
     val scope = rememberCoroutineScope()
     fun run(block: suspend () -> Unit) { scope.launch { block(); onDismiss() } }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(horizontal = 20.dp)) {
+        // The whole sheet scrolls — a long card detail (agent report notes)
+        // must never push Move/Assign/Open-agent out of reach.
+        Column(Modifier.padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
             Text(card.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
             if (card.detail.isNotEmpty()) {
+                var detailExpanded by remember { mutableStateOf(false) }
                 Text(
                     card.detail.joinToString("\n"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp),
+                    maxLines = if (detailExpanded) Int.MAX_VALUE else 8,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp).clickable { detailExpanded = !detailExpanded },
                 )
+                if (!detailExpanded && card.detail.joinToString("\n").lines().size > 8) {
+                    Text(
+                        "… show all", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { detailExpanded = true }.padding(vertical = 2.dp),
+                    )
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                 Text("in ${card.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -711,6 +758,7 @@ private fun SpaceAgentsList(
     onOpenSession: (String) -> Unit,
 ) {
     val activity by agents.activity.collectAsState()
+    val todosMap by agents.todos.collectAsState()
     var creating by remember { mutableStateOf(false) }
     // Fork-lineage order: parents before their forks, indented by depth
     // (parentClaudeSessionId — SPA SpaceRail tree parity, flattened).
@@ -743,6 +791,24 @@ private fun SpaceAgentsList(
                     Column(Modifier.weight(1f)) {
                         Text(s.name.removeSuffix(" (fork)"), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(s.status + if (s.hibernated) " · hibernated" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    // SPA SessionBadges parity: amber shell count, violet todo
+                    // progress (hidden once complete), mic owner, dormant moon.
+                    if (s.backgroundProcessCount > 0) {
+                        Icon(Icons.Filled.Terminal, "Background processes", tint = AMBER, modifier = Modifier.size(13.dp))
+                        Text("${s.backgroundProcessCount}", style = MaterialTheme.typography.labelSmall, color = AMBER)
+                    }
+                    todosMap[s.id]?.let { ts ->
+                        val done = ts.count { it.status == "completed" }
+                        if (ts.isNotEmpty() && done < ts.size) {
+                            Text("$done/${ts.size}", style = MaterialTheme.typography.labelSmall, color = VIOLET)
+                        }
+                    }
+                    if (micOwner == s.id) {
+                        Icon(Icons.Filled.Mic, "Owns the mic", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(13.dp))
+                    }
+                    if (s.hibernated) {
+                        Icon(Icons.Filled.Bedtime, "Dormant", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
                     }
                     Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
                 }
