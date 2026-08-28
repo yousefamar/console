@@ -35,7 +35,7 @@ const NETWORK_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   imessage: SiImessage,
 }
 
-function NetworkIcon({ network }: { network: string }) {
+export function NetworkIcon({ network }: { network: string }) {
   // X (formerly Twitter) uses Simple Icons
   if (network === 'twitter') {
     const Icon = SiX

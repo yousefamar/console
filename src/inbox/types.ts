@@ -11,6 +11,9 @@
 
 export type InboxSource = 'mail' | 'chat' | 'feed'
 export type Route = 'feed' | 'inbox'
+/** Feeds get a third option: hidden from this pane entirely (the legacy
+ *  Feeds tab still shows them — a display filter, not read state). */
+export type FeedRoute = Route | 'hidden'
 
 export interface InboxItem {
   /** `${source}:${sourceId}` — unique across sources. */
@@ -18,10 +21,14 @@ export interface InboxItem {
   source: InboxSource
   /** Thread id / room id / feed-item id in the source store. */
   sourceId: string
-  title: string
-  preview: string
-  /** Sender, room network, or feed title. */
-  origin: string
+  /** Row header: the person (DM/mail sender), group name, or feed title. */
+  header: string
+  /** Row body: message text, mail subject, or feed-item title. For group
+   *  chats the sender prefixes here (`Sender: text`), since the header
+   *  carries the group name. */
+  body: string
+  /** Chat bridge network (whatsapp/slack/…) — drives the channel icon. */
+  network?: string
   ts: number
   route: Route
   /** Chat only: DM vs group — drives inbox ordering. */
@@ -34,7 +41,7 @@ export interface InboxItem {
 export interface InboxRules {
   chat: { default: Route; rooms: Record<string, Route> }
   mail: { default: Route; senders: Record<string, Route> }
-  feeds: { default: Route; feeds: Record<string, Route> }
+  feeds: { default: Route; feeds: Record<string, FeedRoute> }
 }
 
 /** Conservative defaults: nothing silently drops out of "must handle".

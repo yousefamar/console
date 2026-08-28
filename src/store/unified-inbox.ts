@@ -12,7 +12,7 @@ import { hubFetchRaw as hubFetch } from '@/hub'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
-import { DEFAULT_RULES, type InboxItem, type InboxRules } from '@/inbox/types'
+import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules } from '@/inbox/types'
 import {
   feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sortFeed, sortInbox, threadIsLive, threadToItem,
@@ -31,6 +31,8 @@ interface UnifiedInboxState {
 
   loadRules: () => Promise<void>
   saveRules: (rules: InboxRules) => Promise<void>
+  /** Set one feed's route (feed | inbox | hidden) — the filter UI's verb. */
+  setFeedRoute: (feedId: string, route: FeedRoute) => Promise<void>
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
@@ -65,6 +67,14 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     void get().rebuild()
   },
 
+  setFeedRoute: async (feedId, route) => {
+    const r = get().rules
+    const feeds = { ...r.feeds.feeds }
+    if (route === r.feeds.default) delete feeds[feedId]
+    else feeds[feedId] = route
+    await get().saveRules({ ...r, feeds: { ...r.feeds, feeds } })
+  },
+
   rebuild: async () => {
     const { rules, rulesLoaded } = get()
     if (!rulesLoaded) await get().loadRules()
@@ -90,6 +100,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const feedItems = (await db.feedItems.orderBy('publishedAt').reverse().limit(500).toArray())
       .filter((i) => !readSet.has(i.id))
       .map((i) => feedItemToItem(i, feedById.get(i.feedId), effective))
+      .filter((i): i is InboxItem => i !== null)
 
     const all = [...threads, ...rooms, ...feedItems]
     set({

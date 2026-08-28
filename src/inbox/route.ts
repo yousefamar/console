@@ -3,7 +3,7 @@
 import type { DbThread } from '@/gmail/types'
 import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem, FeedSubscription } from '@/store/feeds'
-import { DEFAULT_RULES, type InboxItem, type InboxRules, type Route } from './types'
+import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from './types'
 
 export function routeForRoom(room: DbChatRoom, rules: InboxRules): Route {
   return rules.chat.rooms[room.id] ?? rules.chat.default
@@ -13,13 +13,17 @@ export function routeForThread(thread: DbThread, rules: InboxRules): Route {
   return rules.mail.senders[thread.fromEmail?.toLowerCase() ?? ''] ?? rules.mail.default
 }
 
-export function routeForFeed(feedId: string, rules: InboxRules): Route {
+export function routeForFeed(feedId: string, rules: InboxRules): FeedRoute {
   return rules.feeds.feeds[feedId] ?? rules.feeds.default
 }
 
 /** Fill any missing branches of a partially-persisted rules file. */
 export function normalizeRules(raw: unknown): InboxRules {
-  const r = (raw ?? {}) as Partial<Record<keyof InboxRules, { default?: Route; rooms?: Record<string, Route>; senders?: Record<string, Route>; feeds?: Record<string, Route> }>>
+  const r = (raw ?? {}) as Partial<{
+    chat: { default?: Route; rooms?: Record<string, Route> }
+    mail: { default?: Route; senders?: Record<string, Route> }
+    feeds: { default?: Route; feeds?: Record<string, FeedRoute> }
+  }>
   return {
     chat: { default: r.chat?.default ?? DEFAULT_RULES.chat.default, rooms: r.chat?.rooms ?? {} },
     mail: { default: r.mail?.default ?? DEFAULT_RULES.mail.default, senders: r.mail?.senders ?? {} },
@@ -30,6 +34,9 @@ export function normalizeRules(raw: unknown): InboxRules {
 // ---------------------------------------------------------------------------
 // Adapters: source rows → InboxItem. Membership is derived — callers pass
 // only rows that are currently "live" per the source's own semantics.
+// Row shape: header = who/where (person, group, feed), body = what (message,
+// subject, item title). A DM's body drops the redundant sender prefix — the
+// header already names them.
 // ---------------------------------------------------------------------------
 
 export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
@@ -37,38 +44,44 @@ export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
     key: `mail:${t.id}`,
     source: 'mail',
     sourceId: t.id,
-    title: t.subject || '(no subject)',
-    preview: t.snippet,
-    origin: t.from,
+    header: t.from,
+    body: t.subject || '(no subject)',
     ts: t.date,
     route: routeForThread(t, rules),
   }
 }
 
 export function roomToItem(r: DbChatRoom, rules: InboxRules): InboxItem {
+  const sender = r.lastMessageSender
+  const text = r.lastMessageBody ?? ''
+  // Group rooms keep the sender prefix (the header names the GROUP); DMs
+  // drop it when the sender IS the room's namesake — their name is already
+  // the header, repeating it in the body is noise.
+  const body = !sender || (r.isDirect && sender === r.name) ? text : `${sender}: ${text}`
   return {
     key: `chat:${r.id}`,
     source: 'chat',
     sourceId: r.id,
-    title: r.name,
-    preview: r.lastMessageSender ? `${r.lastMessageSender}: ${r.lastMessageBody ?? ''}` : (r.lastMessageBody ?? ''),
-    origin: r.networkIcon ?? 'matrix',
+    header: r.name,
+    body,
+    network: r.networkIcon,
     ts: r.lastMessageTime,
     route: routeForRoom(r, rules),
     isDirect: r.isDirect,
   }
 }
 
-export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, rules: InboxRules): InboxItem {
+export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, rules: InboxRules): InboxItem | null {
+  const route = routeForFeed(i.feedId, rules)
+  if (route === 'hidden') return null
   return {
     key: `feed:${i.id}`,
     source: 'feed',
     sourceId: i.id,
-    title: i.title,
-    preview: i.contentSnippet,
-    origin: feed?.title ?? '',
+    header: feed?.title ?? '',
+    body: i.title,
     ts: Date.parse(i.publishedAt) || 0,
-    route: routeForFeed(i.feedId, rules),
+    route,
   }
 }
 

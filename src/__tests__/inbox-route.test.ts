@@ -40,7 +40,7 @@ describe('routing', () => {
   it('defaults: mail+chat → inbox, feeds → feed', () => {
     expect(threadToItem(thread(), DEFAULT_RULES).route).toBe('inbox')
     expect(roomToItem(room(), DEFAULT_RULES).route).toBe('inbox')
-    expect(feedItemToItem(feedItem(), undefined, DEFAULT_RULES).route).toBe('feed')
+    expect(feedItemToItem(feedItem(), undefined, DEFAULT_RULES)?.route).toBe('feed')
   })
 
   it('per-source overrides win over defaults', () => {
@@ -51,7 +51,13 @@ describe('routing', () => {
     }
     expect(roomToItem(room(), rules).route).toBe('feed')
     expect(threadToItem(thread(), rules).route).toBe('feed')
-    expect(feedItemToItem(feedItem(), undefined, rules).route).toBe('inbox')
+    expect(feedItemToItem(feedItem(), undefined, rules)?.route).toBe('inbox')
+  })
+
+  it('a hidden-routed feed adapts to null (dropped from the pane)', () => {
+    const rules = normalizeRules({ feeds: { feeds: { 'feed-a': 'hidden' } } })
+    expect(feedItemToItem(feedItem(), undefined, rules)).toBeNull()
+    expect(feedItemToItem(feedItem({ feedId: 'feed-b' }), undefined, rules)).not.toBeNull()
   })
 
   it('mail sender override matches case-insensitively', () => {
@@ -64,6 +70,32 @@ describe('routing', () => {
     expect(r.feeds.default).toBe('inbox')
     expect(r.chat.default).toBe('inbox')
     expect(r.mail.senders).toEqual({})
+  })
+})
+
+describe('row shape', () => {
+  it('DM: header = person, body drops the redundant sender prefix', () => {
+    const i = roomToItem(room({ lastMessageSender: 'Bob', lastMessageBody: 'hey' }), DEFAULT_RULES)
+    expect(i.header).toBe('Bob')
+    expect(i.body).toBe('hey')
+  })
+
+  it('group: header = group name, body keeps the sender prefix', () => {
+    const i = roomToItem(room({ name: 'The Gang', isDirect: false, lastMessageSender: 'Bob', lastMessageBody: 'hey' }), DEFAULT_RULES)
+    expect(i.header).toBe('The Gang')
+    expect(i.body).toBe('Bob: hey')
+  })
+
+  it('mail: header = sender, body = subject', () => {
+    const i = threadToItem(thread(), DEFAULT_RULES)
+    expect(i.header).toBe('Alice')
+    expect(i.body).toBe('Subject')
+  })
+
+  it('feed: header = feed title, body = item title', () => {
+    const i = feedItemToItem(feedItem(), { id: 'feed-a', title: 'HN', xmlUrl: '', folder: null, addedAt: '' }, DEFAULT_RULES)
+    expect(i?.header).toBe('HN')
+    expect(i?.body).toBe('Post')
   })
 })
 
@@ -87,7 +119,7 @@ describe('membership', () => {
 describe('ordering', () => {
   it('inbox bands: chat DMs, chat groups, mail, feed reading — recency within', () => {
     const items = [
-      feedItemToItem(feedItem({ id: 'f-new', publishedAt: new Date(NOW).toISOString() }), undefined, normalizeRules({ feeds: { default: 'inbox' } })),
+      feedItemToItem(feedItem({ id: 'f-new', publishedAt: new Date(NOW).toISOString() }), undefined, normalizeRules({ feeds: { default: 'inbox' } }))!,
       threadToItem(thread({ id: 't-old', date: NOW - 9000 }), DEFAULT_RULES),
       roomToItem(room({ id: '!group:hs', isDirect: false, lastMessageTime: NOW }), DEFAULT_RULES),
       roomToItem(room({ id: '!dm-old:hs', lastMessageTime: NOW - 5000 }), DEFAULT_RULES),
@@ -99,8 +131,8 @@ describe('ordering', () => {
 
   it('feed list is pure reverse-chron', () => {
     const items = [
-      feedItemToItem(feedItem({ id: 'a', publishedAt: new Date(NOW - 100).toISOString() }), undefined, DEFAULT_RULES),
-      feedItemToItem(feedItem({ id: 'b', publishedAt: new Date(NOW).toISOString() }), undefined, DEFAULT_RULES),
+      feedItemToItem(feedItem({ id: 'a', publishedAt: new Date(NOW - 100).toISOString() }), undefined, DEFAULT_RULES)!,
+      feedItemToItem(feedItem({ id: 'b', publishedAt: new Date(NOW).toISOString() }), undefined, DEFAULT_RULES)!,
     ]
     expect(sortFeed(items).map((i) => i.sourceId)).toEqual(['b', 'a'])
   })
@@ -108,7 +140,7 @@ describe('ordering', () => {
 
 describe('nextAfterHandle', () => {
   const items = ['a', 'b', 'c'].map((id) =>
-    feedItemToItem(feedItem({ id }), undefined, DEFAULT_RULES))
+    feedItemToItem(feedItem({ id }), undefined, DEFAULT_RULES)!)
 
   it('advances to the next item', () => {
     expect(nextAfterHandle(items, 'feed:a')?.sourceId).toBe('b')
