@@ -17,18 +17,32 @@ export function wireBoardSubscription(): void {
   if (wired) return
   wired = true
 
+  // Rail review-count badges (SpaceSummary.reviewCount) come from the spaces
+  // list, so ANY board edit refreshes it — debounced, a dispatch stamps then
+  // reassigns in quick succession.
+  let spacesTimer: ReturnType<typeof setTimeout> | null = null
+  const refreshSpacesSoon = () => {
+    if (spacesTimer) clearTimeout(spacesTimer)
+    spacesTimer = setTimeout(() => {
+      spacesTimer = null
+      void useSpacesStore.getState().refreshSpaces()
+    }, 1_000)
+  }
+
   hubBus.on('boards', 'changed', (data) => {
     const { boardPath } = data as { boardPath: string }
+    refreshSpacesSoon()
     const st = useSpacesStore.getState()
     if (!st.boardPath || st.boardPath !== boardPath) return
     if (st.saving) return // our own write — already current
     void st.loadBoard()
   })
 
-  // Transitions can arrive for boards that are NOT open (rail badges etc.
-  // derive from sessions, not boards, so nothing else to update here yet).
+  // Transitions can arrive for boards that are NOT open (review-count badges
+  // update via refreshSpacesSoon).
   hubBus.on('boards', 'transition', (data) => {
     const { boardPath } = data as { boardPath: string }
+    refreshSpacesSoon()
     const st = useSpacesStore.getState()
     if (st.boardPath === boardPath && !st.saving) void st.loadBoard()
   })

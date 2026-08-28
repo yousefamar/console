@@ -248,16 +248,28 @@ function SpaceListRail() {
   const openFiles = useNotesStore((s) => s.openFiles)
   const blogDrafts = useBlogStore((s) => s.drafts)
   const { agentBadges, alertsBySlug, unassignedCount } = useMemo(() => {
-    const badges = new Map<string, { count: number; unread: boolean; attention: boolean }>()
+    const badges = new Map<string, { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }>()
     const alerts = new Map<string, SpaceAlert[]>()
+    // Review-card owners per space: an UNREAD session whose @key owns an
+    // Under-Review card is a review hand-back, not a conversation — its blue
+    // moves from the Bot badge to the kanban badge (Yousef's review queue).
+    const reviewOwners = new Map<string, Set<string>>()
+    for (const sp of spaces) {
+      if (sp.reviewAgentKeys?.length) reviewOwners.set(sp.slug, new Set(sp.reviewAgentKeys))
+    }
     const push = (slug: string, a: SpaceAlert) => {
       const arr = alerts.get(slug) ?? []
       arr.push(a)
       alerts.set(slug, arr)
     }
-    const bump = (slug: string, unread: boolean, attention: boolean) => {
-      const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false }
-      badges.set(slug, { count: cur.count + 1, unread: cur.unread || unread, attention: cur.attention || attention })
+    const bump = (slug: string, unread: boolean, attention: boolean, reviewHandback = false) => {
+      const cur = badges.get(slug) ?? { count: 0, unread: false, attention: false, reviewUnread: false }
+      badges.set(slug, {
+        count: cur.count + (reviewHandback ? 0 : 1),
+        unread: cur.unread || (unread && !reviewHandback),
+        attention: cur.attention || attention,
+        reviewUnread: cur.reviewUnread || reviewHandback,
+      })
     }
     const live = sessions.filter((s) => s.status !== 'ended')
     const byCsid = new Map(live.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
@@ -267,7 +279,9 @@ function SpaceListRail() {
       const working = s.status === 'running'
       const slugs = [...(s.project ? [s.project] : []), ...(s.areas ?? [])]
       for (const slug of slugs) {
-        bump(slug, unread, attention)
+        // Attention (red) never moves — only plain unread reclassifies.
+        const handback = unread && !attention && !!s.agentKey && (reviewOwners.get(slug)?.has(s.agentKey) ?? false)
+        bump(slug, unread, attention, handback)
         if (unread || attention || working) {
           push(slug, {
             kind: 'session', id: s.id,
@@ -371,7 +385,7 @@ function SpaceListRail() {
       alerts.set(slug, [...ordered, ...fileRows])
     }
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
-  }, [sessions, openFiles, blogDrafts])
+  }, [sessions, openFiles, blogDrafts, spaces])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
     const ad = alertsBySlug.has(a.slug) ? 0 : 1
@@ -474,8 +488,10 @@ function RailSection({ label, action, extra, children }: { label: string; action
   )
 }
 
-function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean }; active: boolean; onClick: () => void }) {
+function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }; active: boolean; onClick: () => void }) {
   const botColor = badge?.attention ? 'text-red-500' : badge?.unread ? 'text-blue-500' : 'text-text-tertiary opacity-60'
+  const reviewCount = space.reviewCount ?? 0
+  const kanbanColor = badge?.reviewUnread ? 'text-blue-500' : 'text-text-tertiary opacity-40'
   return (
     <button
       onClick={onClick}
@@ -496,7 +512,14 @@ function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary;
             <Bot size={9} />{badge.count}
           </span>
         )}
-        {space.boardPath && <Kanban size={9} className="flex-shrink-0 opacity-40" />}
+        {space.boardPath && (
+          <span
+            className={clsx('flex flex-shrink-0 items-center gap-0.5 text-[9px]', kanbanColor)}
+            title={reviewCount > 0 ? `${reviewCount} card${reviewCount > 1 ? 's' : ''} under review` : 'Has a board'}
+          >
+            <Kanban size={9} />{reviewCount > 0 && reviewCount}
+          </span>
+        )}
       </span>
     </button>
   )

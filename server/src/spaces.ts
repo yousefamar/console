@@ -10,7 +10,8 @@
 import type { NoteStore } from './notes.js'
 import { parseFrontmatter } from './blog.js'
 import { loadAreaRegistry } from './areas.js'
-import { isKanbanBoard } from './kanban/board.js'
+import { isKanbanBoard, parseBoard } from './kanban/board.js'
+import { REVIEW_COLUMN_RE } from './kanban/dispatch.js'
 
 const PROJECTS_DIR = 'projects'
 
@@ -25,6 +26,13 @@ export interface SpaceSummary {
   status: 'active' | 'dormant' | 'complete' | null
   /** File count under the project folder (0 for flat/areas). */
   fileCount: number
+  /** Cards sitting in an Under-Review-like column on the board (0 = none /
+   *  no board). Rail shows it on the kanban glyph — the review queue count. */
+  reviewCount: number
+  /** agentKeys of the review cards' assignees — lets the client move a
+   *  session's "unread" from the Bot badge to the kanban badge when the
+   *  unread is really a review hand-back the agent owns. */
+  reviewAgentKeys: string[]
 }
 
 export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
@@ -63,15 +71,32 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
     let boardPath =
       files.find((f) => f.path === `${PROJECTS_DIR}/${slug}/board.md`)?.path ??
       files.find((f) => f.path === `${PROJECTS_DIR}/${slug}/kanban.md`)?.path ?? null
-    if (!boardPath) {
+    let boardContent: string | null = null
+    if (boardPath) {
+      try { boardContent = await store.read(boardPath) } catch { /* unreadable */ }
+    } else {
       for (const f of files) {
         if (!f.path.endsWith('.md') || f.path === notePath) continue
         try {
-          if (isKanbanBoard(await store.read(f.path))) { boardPath = f.path; break }
+          const content = await store.read(f.path)
+          if (isKanbanBoard(content)) { boardPath = f.path; boardContent = content; break }
         } catch { /* skip */ }
       }
     }
-    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length })
+    let reviewCount = 0
+    const reviewAgentKeys: string[] = []
+    if (boardContent) {
+      try {
+        for (const col of parseBoard(boardContent).columns) {
+          if (!REVIEW_COLUMN_RE.test(col.title)) continue
+          for (const card of col.cards) {
+            reviewCount++
+            if (card.agentKey) reviewAgentKeys.push(card.agentKey)
+          }
+        }
+      } catch { /* unparseable board — counts stay 0 */ }
+    }
+    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys })
   }
 
   const registry = await loadAreaRegistry(store)
@@ -84,6 +109,8 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       boardPath: null,
       status: null,
       fileCount: 0,
+      reviewCount: 0,
+      reviewAgentKeys: [],
     })
   }
 

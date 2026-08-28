@@ -46,6 +46,10 @@ class SpacesRepository(
         val boardPath: String?,
         val status: String?, // active | dormant | complete | null
         val fileCount: Int,
+        /** Under-Review card count on the board (0 = none / older hub). */
+        val reviewCount: Int = 0,
+        /** agentKeys assigned to those review cards. */
+        val reviewAgentKeys: List<String> = emptyList(),
     )
 
     /** Hub CardView (board-ops.ts): detail = trimmed continuation lines. */
@@ -96,6 +100,9 @@ class SpacesRepository(
                     boardPath = o["boardPath"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
                     status = o["status"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
                     fileCount = o["fileCount"]?.jsonPrimitive?.intOrNull ?: 0,
+                    reviewCount = o["reviewCount"]?.jsonPrimitive?.intOrNull ?: 0,
+                    reviewAgentKeys = (o["reviewAgentKeys"] as? JsonArray)
+                        ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
                 )
             } ?: emptyList()
         }

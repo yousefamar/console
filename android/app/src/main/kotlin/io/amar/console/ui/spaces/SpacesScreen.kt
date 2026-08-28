@@ -195,11 +195,17 @@ fun SpacesScreen(
                 val items = alertItems(sp.slug, sp.kind)
                 scope.item(key = "${sp.kind}:${sp.slug}") {
                     val boundHere = spaceSessions(sp.slug, sp.kind)
+                    // A plain-unread session whose @key owns an Under-Review card
+                    // is a review hand-back: its blue moves Bot → kanban badge.
+                    val reviewOwners = sp.reviewAgentKeys.toSet()
+                    fun isHandback(s: AgentSessionRow) =
+                        s.hasUnread && !s.needsAttention && s.agentKey != null && s.agentKey in reviewOwners
                     SpaceRow(
                         sp, hasAlerts = items.isNotEmpty(),
-                        boundCount = boundHere.size,
+                        boundCount = boundHere.count { !isHandback(it) },
                         boundAttention = boundHere.any { it.needsAttention },
-                        boundUnread = boundHere.any { it.hasUnread },
+                        boundUnread = boundHere.any { it.hasUnread && !isHandback(it) },
+                        reviewUnread = boundHere.any { isHandback(it) },
                         onClick = { onOpenSpace("${sp.kind}/${sp.slug}") },
                     )
                 }
@@ -297,6 +303,9 @@ private fun SpaceRow(
     boundCount: Int = 0,
     boundAttention: Boolean = false,
     boundUnread: Boolean = false,
+    /** An unread bot's unread is really a review hand-back it owns — the blue
+     *  belongs on the kanban badge, not the Bot badge (SPA parity). */
+    reviewUnread: Boolean = false,
     onClick: () -> Unit,
 ) {
     val dim = sp.status == "dormant" || sp.status == "complete"
@@ -338,11 +347,18 @@ private fun SpaceRow(
             Text("$boundCount", style = MaterialTheme.typography.labelSmall, color = botTint)
         }
         if (sp.boardPath != null) {
+            val kanbanTint =
+                if (reviewUnread) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
             Icon(
-                Icons.Filled.ViewKanban, contentDescription = "Has a board",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                Icons.Filled.ViewKanban,
+                contentDescription = if (sp.reviewCount > 0) "${sp.reviewCount} under review" else "Has a board",
+                tint = kanbanTint,
                 modifier = Modifier.size(14.dp),
             )
+            if (sp.reviewCount > 0) {
+                Text("${sp.reviewCount}", style = MaterialTheme.typography.labelSmall, color = kanbanTint)
+            }
         }
     }
 }

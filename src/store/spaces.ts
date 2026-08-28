@@ -18,6 +18,11 @@ export interface SpaceSummary {
   boardPath: string | null
   status: 'active' | 'dormant' | 'complete' | null
   fileCount: number
+  /** Under-Review card count on the project board (optional: an older hub
+   *  payload omits it — always read with ?? fallbacks). */
+  reviewCount?: number
+  /** agentKeys assigned to those review cards. */
+  reviewAgentKeys?: string[]
 }
 
 interface SpacesState {
