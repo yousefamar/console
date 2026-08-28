@@ -7,6 +7,7 @@ import { useUiStore } from './ui'
 import { getSnoozeTime } from '@/utils/date'
 import * as matrixApi from '@/matrix/api'
 import { buildMessageFromContent } from '@/matrix/sync'
+import { redactionTargetId } from '@/matrix/redaction'
 import { notify } from '@/notifications'
 
 const INITIAL_PAGE_SIZE = 20
@@ -141,14 +142,23 @@ async function eventsToMessages(
       }
     }
 
-    // Redactions → mark as deleted (keep message for diff view)
+    // Redactions → mark as deleted (keep message for diff view). Patch the
+    // in-flight row first — pagination batches carry target + redaction
+    // together, and db.update no-ops on a not-yet-persisted row (the trailing
+    // bulkPut would then store the pre-redaction state).
     if (event.type === 'm.room.redaction') {
-      const targetId = (event.content.redacts as string) || (event as unknown as Record<string, unknown>).redacts as string
+      const targetId = redactionTargetId(event)
       if (targetId) {
-        await db.chatMessages.update(targetId, {
-          isDeleted: true,
-          deletedBy: event.sender ?? undefined,
-        })
+        const inFlight = messages.find((m) => m.id === targetId)
+        if (inFlight) {
+          inFlight.isDeleted = true
+          inFlight.deletedBy = event.sender ?? undefined
+        } else {
+          await db.chatMessages.update(targetId, {
+            isDeleted: true,
+            deletedBy: event.sender ?? undefined,
+          })
+        }
       }
     }
 

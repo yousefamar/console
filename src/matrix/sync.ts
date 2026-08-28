@@ -1,6 +1,7 @@
 import { db, getMeta, setMeta } from '@/db'
 import { getMatrixUserId, isMatrixConnected } from './auth'
 import { mxcToThumbnail } from './api'
+import { redactionTargetId } from './redaction'
 import type {
   MatrixJoinedRoom,
   MatrixEvent,
@@ -493,14 +494,23 @@ async function processJoinedRoom(
         }
       }
     }
-    // Handle redactions — mark as deleted (keep message for diff view)
+    // Handle redactions — mark as deleted (keep message for diff view).
+    // Same-batch trap (e2466c6 class): a resume delta can carry the target
+    // AND its redaction in one pass — patch the in-flight row first, else the
+    // db.update no-ops and the trailing bulkPut stores it undeleted.
     if (event.type === 'm.room.redaction') {
-      const targetId = (event.content.redacts as string) || (event as unknown as Record<string, unknown>).redacts as string
+      const targetId = redactionTargetId(event)
       if (targetId) {
-        await db.chatMessages.update(targetId, {
-          isDeleted: true,
-          deletedBy: event.sender ?? undefined,
-        })
+        const inFlight = messages.find((m) => m.id === targetId)
+        if (inFlight) {
+          inFlight.isDeleted = true
+          inFlight.deletedBy = event.sender ?? undefined
+        } else {
+          await db.chatMessages.update(targetId, {
+            isDeleted: true,
+            deletedBy: event.sender ?? undefined,
+          })
+        }
       }
     }
     // Beeper bridge surfaces per-message delivery results via

@@ -40,6 +40,11 @@ export type MatrixEventLike = {
   origin_server_ts?: number
   state_key?: string
   unsigned?: Record<string, unknown>
+  /** m.room.redaction target. Pre-v11 rooms (all of Beeper) carry it at the
+   *  TOP level, not in content — a re-shape that drops it silently breaks
+   *  every client's delete handling (the ^cosy-bass Slack bug: the archive
+   *  reads the raw event and worked, the browser got no target). */
+  redacts?: string
   _decryptFailed?: boolean
 }
 
@@ -1092,6 +1097,7 @@ export class MatrixSync {
             unsigned: ev.unsigned,
             type: ev.type,
             content: ev.content,
+            ...(ev.redacts ? { redacts: ev.redacts } : {}),
           })
         }
       }
