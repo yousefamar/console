@@ -255,26 +255,28 @@ fun sessionsForSpace(
 fun lineageOrder(
     bound: List<AgentSessionRow>,
 ): List<Pair<AgentSessionRow, Int>> {
-    val boundCsids = bound.mapNotNull { it.claudeSessionId }.toSet()
-    val csidToKey = bound.filter { it.claudeSessionId != null }.associate { it.claudeSessionId!! to it.agentKey }
+    // Children keyed by the PARENT's session id (SPA parity) — NEVER by
+    // agentKey: a chat fork has agentKey null, so a null-key child's walk
+    // looked up childrenOf[null] = the ROOTS bucket → root → fork → root …
+    // infinite recursion → StackOverflowError (the "Agents tab crashes the
+    // app" bug, ^tall-bear). Duplicate agentKeys had the same failure shape.
+    val byCsid = bound.filter { it.claudeSessionId != null }.associateBy { it.claudeSessionId!! }
     val childrenOf = bound.groupBy { s ->
-        val parent = s.parentClaudeSessionId
-        if (parent != null && parent in boundCsids) csidToKey[parent] else null
+        s.parentClaudeSessionId?.let { byCsid[it]?.id }
     }
     val out = mutableListOf<Pair<AgentSessionRow, Int>>()
+    val seen = mutableSetOf<String>()
     // Creation order, not alphabetical — the SPA rail preserves the hub's
     // list order (manifest = creation), so the space's long-lived general
     // agent leads and recent ticket-forks trail, nested under their parent.
     fun walk(s: AgentSessionRow, depth: Int) {
+        if (!seen.add(s.id)) return
         out.add(s to depth)
-        for (child in (childrenOf[s.agentKey] ?: emptyList()).sortedBy { it.createdAt }) {
-            if (child.id != s.id) walk(child, depth + 1)
-        }
+        for (child in (childrenOf[s.id] ?: emptyList()).sortedBy { it.createdAt }) walk(child, depth + 1)
     }
     for (root in (childrenOf[null] ?: emptyList()).sortedBy { it.createdAt }) walk(root, 0)
-    // Anything unreached (cycle/self-manager edge) still renders, flat.
-    val seen = out.map { it.first.id }.toSet()
-    for (s in bound) if (s.id !in seen) out.add(s to 0)
+    // Anything unreached (cycle edge) still renders, flat.
+    for (s in bound) if (seen.add(s.id)) out.add(s to 0)
     return out
 }
 
