@@ -9,8 +9,10 @@
 // so "everything near here" = query "*" + paginate. A real keyword just filters.
 
 import { join } from 'node:path'
+import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { RateLimiter } from '../geocaching/rate-limit.js'
 import { MeetupEventStore } from './store.js'
+import { specFromOpts, type MeetupRefreshSpec } from './sync.js'
 import { eventFromNode, type MeetupEvent, type MeetupEventDetail, type MeetupEventType } from './types.js'
 
 // Both confirmed to answer anonymously; gql2 is the site's own endpoint, the
@@ -82,6 +84,10 @@ export class MeetupClient {
   readonly store: MeetupEventStore
   onChange?: (changed: MeetupEvent[]) => void
   private lastFetch = 0
+  /** Last MANUAL fetch-area, persisted so the daily refresher survives hub
+   *  restarts. Refresh re-runs update `at` but never overwrite the spec. */
+  private refreshFile: string
+  private refresh: { spec: MeetupRefreshSpec; at: number } | null = null
 
   constructor(configDir: string) {
     this.limiter = new RateLimiter({
@@ -92,6 +98,31 @@ export class MeetupClient {
       label: 'Meetup request',
     })
     this.store = new MeetupEventStore(join(configDir, 'meetup-events.json'))
+    this.refreshFile = join(configDir, 'meetup-refresh.json')
+    try {
+      const raw = JSON.parse(readFileSync(this.refreshFile, 'utf8')) as { spec?: MeetupRefreshSpec; at?: number }
+      if (raw.spec && typeof raw.spec.lat === 'number' && typeof raw.spec.lon === 'number') {
+        this.refresh = { spec: raw.spec, at: raw.at ?? 0 }
+        this.lastFetch = raw.at ?? 0
+      }
+    } catch {
+      // never fetched / unreadable — refresher stays dormant
+    }
+  }
+
+  refreshState(): { spec: MeetupRefreshSpec; at: number } | null {
+    return this.refresh
+  }
+
+  private saveRefresh(): void {
+    if (!this.refresh) return
+    try {
+      const tmp = `${this.refreshFile}.tmp`
+      writeFileSync(tmp, JSON.stringify(this.refresh))
+      renameSync(tmp, this.refreshFile)
+    } catch {
+      // non-fatal: the refresher just won't survive a restart
+    }
   }
 
   getStatus() {
@@ -178,6 +209,11 @@ export class MeetupClient {
     }
 
     this.lastFetch = Date.now()
+    // Remember this area so the daily refresher can re-run it (a date WINDOW
+    // becomes a duration, so refreshes re-anchor at "now"). The refresher's
+    // own re-runs round-trip to the same spec, so this is stable.
+    this.refresh = { spec: specFromOpts(opts, this.lastFetch), at: this.lastFetch }
+    this.saveRefresh()
     this.store.prune(Date.now())
     const changed = this.store.upsert(collected)
     if (changed.length && this.onChange) this.onChange(changed)

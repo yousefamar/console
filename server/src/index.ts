@@ -70,6 +70,7 @@ import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
 import { handleMeetupRoutes } from './routes/meetup.js'
 import { MeetupClient } from './meetup/client.js'
+import { MeetupSync } from './meetup/sync.js'
 import { handleOutdoorLadsRoutes } from './routes/outdoorlads.js'
 import { OutdoorLadsStore } from './outdoorlads.js'
 import { handleSpotifyRoutes } from './routes/spotify.js'
@@ -177,6 +178,8 @@ const monzoStore = new MonzoStore(
 const financeStore = new FinanceStore(feedsConfigDir)
 const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
 const meetupClient = new MeetupClient(feedsConfigDir)
+const meetupSync = new MeetupSync(meetupClient, (msg: string) => { log(msg) })
+meetupSync.start()
 const outdoorLadsStore = new OutdoorLadsStore()
 const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))

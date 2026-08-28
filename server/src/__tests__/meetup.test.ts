@@ -124,3 +124,55 @@ describe('MeetupEventStore', () => {
     }
   })
 })
+
+describe('meetup refresh spec (sync.ts)', () => {
+  const NOW = Date.parse('2026-08-28T12:00:00Z')
+
+  it('round-trips a fetch with a date window as a duration re-anchored at now', async () => {
+    const { specFromOpts, optsFromSpec } = await import('../meetup/sync.js')
+    const spec = specFromOpts({
+      lat: 51.45, lon: -0.98, radiusMiles: 25, query: '*', maxPages: 2,
+      startDate: new Date(NOW).toISOString(),
+      endDate: new Date(NOW + 30 * 86_400_000).toISOString(),
+    }, NOW)
+    expect(spec.days).toBe(30)
+
+    const LATER = NOW + 5 * 86_400_000
+    const opts = optsFromSpec(spec, LATER)
+    expect(opts.lat).toBe(51.45)
+    expect(opts.radiusMiles).toBe(25)
+    expect(opts.startDate).toBe(new Date(LATER).toISOString())
+    expect(opts.endDate).toBe(new Date(LATER + 30 * 86_400_000).toISOString())
+  })
+
+  it('omits days when the original fetch had no end date (open-ended stays open-ended)', async () => {
+    const { specFromOpts, optsFromSpec } = await import('../meetup/sync.js')
+    const spec = specFromOpts({ lat: 1, lon: 2 }, NOW)
+    expect(spec.days).toBeUndefined()
+    expect(optsFromSpec(spec, NOW).endDate).toBeUndefined()
+  })
+
+  it('refresher re-runs only after REFRESH_MS and never without a saved spec', async () => {
+    const { MeetupSync, REFRESH_MS } = await import('../meetup/sync.js')
+    const calls: unknown[] = []
+    const mkClient = (state: { spec: { lat: number; lon: number }; at: number } | null) => ({
+      refreshState: () => state,
+      fetchArea: async (o: unknown) => { calls.push(o); return { added: 0, total: 0, budget: { used: 0, cap: 800, remaining: 800 } } },
+    })
+
+    // no saved spec → no fetch
+    const idle = new MeetupSync(mkClient(null) as never, () => {})
+    await idle.tick()
+    expect(calls).toHaveLength(0)
+
+    // fresh spec (fetched just now) → no fetch
+    const fresh = new MeetupSync(mkClient({ spec: { lat: 1, lon: 2 }, at: Date.now() }) as never, () => {})
+    await fresh.tick()
+    expect(calls).toHaveLength(0)
+
+    // stale spec → fetch
+    const stale = new MeetupSync(mkClient({ spec: { lat: 1, lon: 2 }, at: Date.now() - REFRESH_MS - 1 }) as never, () => {})
+    await stale.tick()
+    expect(calls).toHaveLength(1)
+  })
+})
