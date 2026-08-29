@@ -643,6 +643,9 @@ export const COMMANDS: CommandDef[] = [
     flags: { text: { type: 'string', description: 'New card text' }, detail: { type: 'string', description: 'Replacement detail lines, |-separated' } } },
   { name: 'spaces board remove', description: 'Delete a card outright (human judgment — agents move, never delete)', safety: 'destructive',
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'card', required: true, description: '^id or unique text' }] },
+  { name: 'spaces board redispatch', description: 'Re-fire dispatch for a stamped card: wakes the live assignee, or re-forks the source role when the assignee session is gone (a moved-back card normally does this automatically — this is the manual escape hatch)', safety: 'write',
+    args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'card', required: true, description: '^id or unique text' }],
+    examples: ['con board console redispatch "^ab12cd"'] },
 
   // map (Map pane — geocaching.com scraper + offline basemap)
   { name: 'map geocaching status', description: 'Login state, daily request budget, and cached-cache count', safety: 'read' },

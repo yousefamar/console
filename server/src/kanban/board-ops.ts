@@ -142,6 +142,17 @@ export class BoardOps {
     return { path, ...view(board) }
   }
 
+  /** Read-only card lookup (same ^id/unique-substring addressing as the
+   *  mutations) — vault-relative board path + the card's stamp, if any. */
+  async resolveCard(project: string, query: string): Promise<{ path: string; blockId: string | null; text: string }> {
+    const path = await resolveBoardPath(this.store, project)
+    if (!path) throw new Error(`no kanban board found for "${project}"`)
+    const board = parseBoard(await this.store.read(path))
+    const hit = findCardByQuery(board, query)
+    if ('error' in hit) throw new Error(hit.error)
+    return { path, blockId: hit.card.blockId, text: hit.card.text }
+  }
+
   add(project: string, text: string, opts: { column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<CardView> {
     return this.mutate(project, (board, path) => {
       const column = opts.column ?? board.columns[0]?.title
