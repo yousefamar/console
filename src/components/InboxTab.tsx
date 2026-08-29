@@ -18,9 +18,11 @@ import { memo, useRef, useState } from 'react'
 import { Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 import { ThreadView } from './ThreadView'
 import { ChatRoomView } from './ChatRoomView'
 import { FeedItemView } from './FeedItemView'
+import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
 import { routeForFeed } from '@/inbox/route'
@@ -37,6 +39,7 @@ export const InboxTab = memo(function InboxTab() {
   const select = useUnifiedInboxStore((s) => s.select)
   const selectedKey = selected?.key ?? null
   const [showFilter, setShowFilter] = useState(false)
+  const isMobile = useIsMobile()
 
   return (
     <>
@@ -86,6 +89,9 @@ export const InboxTab = memo(function InboxTab() {
           </div>
         )}
       </div>
+
+      {/* Day rail — create events without leaving triage. Desktop only. */}
+      {!isMobile && <InboxDayRail />}
     </>
   )
 })

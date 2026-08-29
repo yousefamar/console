@@ -113,7 +113,7 @@ function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): 
   }
 }
 
-function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
+export function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
   return {
     id: d.id,
     calendarId: d.calendarId,
