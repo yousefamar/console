@@ -135,6 +135,17 @@ export const InboxDayRail = memo(function InboxDayRail() {
         <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
           <ChevronLeft size={12} />
         </button>
+        {/* Today chip sits beside the left arrow, outside the centering span,
+            so its appearance never moves the date. */}
+        {!isToday && (
+          <button
+            onClick={() => setDate(startOfDay(new Date()))}
+            className="ml-1 px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
+            title="Jump to today"
+          >
+            Today
+          </button>
+        )}
         <span className="relative flex-1 flex items-center justify-center min-w-0">
           <span className="relative">
             <button
@@ -158,17 +169,6 @@ export const InboxDayRail = memo(function InboxDayRail() {
               className="absolute inset-0 opacity-0 pointer-events-none"
               tabIndex={-1}
             />
-            {/* Chip floats off the label's right edge — absolute, so the
-                date's centering is identical with and without it. */}
-            {!isToday && (
-              <button
-                onClick={() => setDate(startOfDay(new Date()))}
-                className="absolute left-full top-1/2 -translate-y-1/2 ml-1.5 px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
-                title="Jump to today"
-              >
-                Today
-              </button>
-            )}
           </span>
         </span>
         <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
