@@ -535,7 +535,7 @@ export function CalendarGrid({ daysOverride, eventsOverride, hideHeader, onEvent
 
       {/* Day headers — pr-1.5 matches scrollbar width (6px) in time grid */}
       <div className="flex border-b border-border flex-shrink-0 pr-1.5">
-        <div className="w-12 flex-shrink-0" />
+        <div className="w-9 flex-shrink-0" />
         {days.map((day, i) => {
           const isToday = isSameDay(day, today)
           return (
@@ -550,7 +550,7 @@ export function CalendarGrid({ daysOverride, eventsOverride, hideHeader, onEvent
       {/* Working location row */}
       {locationEvents.length > 0 && (
         <div className="flex border-b border-border flex-shrink-0 pr-1.5">
-          <div className="w-12 flex-shrink-0 flex items-center justify-end pr-1">
+          <div className="w-9 flex-shrink-0 flex items-center justify-end pr-1">
             <MapPin size={10} className="text-text-tertiary" />
           </div>
           {days.map((day, dayIdx) => {
@@ -590,7 +590,7 @@ export function CalendarGrid({ daysOverride, eventsOverride, hideHeader, onEvent
       <div className="flex-1 overflow-y-auto overflow-x-hidden relative" ref={gridRef}>
         <div className="flex" style={{ minHeight: 24 * HOUR_HEIGHT }}>
           {/* Time labels */}
-          <div className="w-12 flex-shrink-0 relative">
+          <div className="w-9 flex-shrink-0 relative">
             {HOURS.map((h) => (
               <div key={h} className="absolute right-1 text-[10px] text-text-tertiary" style={{ top: h * HOUR_HEIGHT - 6 }}>
                 {h === 0 ? '' : `${h}:00`}
@@ -888,7 +888,7 @@ function AllDayBar({ events, days, calColorMap, selectedEventId, selectEvent }: 
 
   return (
     <div className="flex border-b border-border flex-shrink-0 pr-1.5" style={{ height: totalHeight }}>
-      <div className="w-12 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
+      <div className="w-9 flex-shrink-0 text-[9px] text-text-tertiary text-right pr-1 pt-0.5">all-day</div>
       <div className="flex-1 relative">
         {/* Column borders */}
         {days.map((_, i) => (
