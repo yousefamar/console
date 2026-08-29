@@ -125,18 +125,17 @@ export const InboxDayRail = memo(function InboxDayRail() {
   return (
     <div className="w-64 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
       {/* Date nav header — replaces the grid's week-oriented header.
-          Symmetric: collapse+‹ hug the left edge, › hugs the right, the
-          date + Today chip sit dead-center regardless of chip visibility. */}
-      <div className="relative flex items-center justify-between border-b border-border px-1.5 py-1 flex-shrink-0">
-        <span className="flex items-center">
-          <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
-            <PanelRightClose size={12} />
-          </button>
-          <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
-            <ChevronLeft size={12} />
-          </button>
-        </span>
-        <span className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5">
+          [collapse] [‹] ——— date ——— [›]: the date centers in the span
+          BETWEEN the arrows (not the header, whose left side is wider),
+          and the Today chip floats beside it without pushing it. */}
+      <div className="flex items-center border-b border-border px-1.5 py-1 flex-shrink-0">
+        <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
+          <PanelRightClose size={12} />
+        </button>
+        <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
+          <ChevronLeft size={12} />
+        </button>
+        <span className="relative flex-1 flex items-center justify-center min-w-0">
           <span className="relative">
             <button
               onClick={() => dateInputRef.current?.showPicker()}
@@ -159,16 +158,18 @@ export const InboxDayRail = memo(function InboxDayRail() {
               className="absolute inset-0 opacity-0 pointer-events-none"
               tabIndex={-1}
             />
+            {/* Chip floats off the label's right edge — absolute, so the
+                date's centering is identical with and without it. */}
+            {!isToday && (
+              <button
+                onClick={() => setDate(startOfDay(new Date()))}
+                className="absolute left-full top-1/2 -translate-y-1/2 ml-1.5 px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
+                title="Jump to today"
+              >
+                Today
+              </button>
+            )}
           </span>
-          {!isToday && (
-            <button
-              onClick={() => setDate(startOfDay(new Date()))}
-              className="px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
-              title="Jump to today"
-            >
-              Today
-            </button>
-          )}
         </span>
         <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
           <ChevronRight size={12} />
