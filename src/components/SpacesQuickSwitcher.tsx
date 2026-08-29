@@ -7,7 +7,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Bot, GitBranch, FileText, FolderKanban, Tag, Circle, Plus } from 'lucide-react'
 import { useSpacesStore } from '@/store/spaces'
-import { VAULT_SLUG, UNASSIGNED_SLUG } from './SpacesTab'
+import { VAULT_SLUG, UNASSIGNED_SLUG } from '@/spaces/scope'
 import { useAgentStore } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 

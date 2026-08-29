@@ -37,6 +37,7 @@ import { NotesCommandPalette } from './NotesCommandPalette'
 import { splitTrailingTags, cardUrls } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
+import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, spaceScopePrefixes } from '@/spaces/scope'
 
 export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
@@ -560,41 +561,9 @@ function SpaceListItem({ space, badge, draftCount = 0, active, onClick }: { spac
 // Rail, drilled in: ONE space's files + agents in a single glance
 // ---------------------------------------------------------------------------
 
-// Pseudo-spaces — client-side constructs (the hub's listSpaces knows nothing
-// of them). "Vault" = the WHOLE tree, no board/agents: everything that lives
-// outside projects/ (scratch/, log/, notes/, people/…) stays reachable, which
-// is what lets the Notes tab retire. "Unassigned" = sessions whose role has
-// no project/areas binding (chat forks, one-off creates) — also a prompt to
-// stamp them.
-export const VAULT_SLUG = '~vault'
-export const UNASSIGNED_SLUG = '~unassigned'
-
-export const VAULT_SPACE: SpaceSummary = {
-  kind: 'project', slug: VAULT_SLUG, title: 'Vault', notePath: null, boardPath: null, status: null, fileCount: 0,
-}
-export const UNASSIGNED_SPACE: SpaceSummary = {
-  kind: 'project', slug: UNASSIGNED_SLUG, title: 'Unassigned', notePath: null, boardPath: null, status: null, fileCount: 0,
-}
-
-export function spaceScopePrefixes(space: SpaceSummary): string[] {
-  // Projects own projects/<slug>/** plus the flat projects/<slug>.md — AND
-  // their writing, which lives OUTSIDE the folder: drafts are named
-  // the project's log/drafts/ dir (in-folder, covered by the project prefix),
-  // legacy scratch/blog-drafts/<slug>-… files, and published
-  // posts sit in log/<ts>.md (matched per-path via useSpaceScope below).
-  // The Vault pseudo-space scopes to nothing = everything.
-  if (space.slug === VAULT_SLUG) return ['']
-  if (space.slug === UNASSIGNED_SLUG) return []
-  if (space.kind === 'project') {
-    return [`projects/${space.slug}/`, `projects/${space.slug}.md`, `scratch/blog-drafts/${space.slug}-`]  // legacy prefix kept
-  }
-  // Areas: writing IS the content (AreaDevlog fills the rail), so the writing
-  // dirs are the scope — without this, a draft opened from the rail rendered
-  // the "No file open" placeholder and the old code bounced to the Notes pane.
-  // Project-homed posts tagged with the area are appended per-path by
-  // ScopedNotesEditor (they live under projects/<slug>/log/).
-  return ['log/', 'scratch/blog-drafts/']  // log/ covers log/drafts/ too; scratch = legacy
-}
+// Pseudo-space constants + scope helpers live in src/spaces/scope.ts (pure,
+// store-importable — ^dry-fawn moved them out so the spaces store can pick a
+// landing view without dynamically importing this component).
 
 /** The space's Docs editor: static scope prefixes + the project's published
  *  posts (log/<ts>.md carries no slug in its path, so membership comes from

@@ -9,6 +9,9 @@
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
 import { parseBoard, boardDefaultOwner, moveCard, addCard, refreshCardLine, findCard, type KanbanBoard, type CardRef } from '@/kanban/board'
+import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, spaceScopePrefixes, pathInScope, pickSpaceView } from '@/spaces/scope'
+import { useNotesStore } from '@/store/notes'
+import { useBlogStore } from '@/store/blog'
 
 export interface SpaceSummary {
   kind: 'project' | 'area'
@@ -95,6 +98,32 @@ kanban-plugin: board
 `
 
 const ACTIVE_SLUG_KEY = 'console:spaces:active'
+// Last centre view the user was on, per space (^dry-fawn): only consulted
+// when a space has BOTH a board and open docs — one-sided spaces land on
+// whichever side has content (pickSpaceView).
+const VIEW_KEY_PREFIX = 'console:spaces:view:'
+
+function rememberedViewFor(slug: string): 'board' | 'docs' | null {
+  const v = localStorage.getItem(VIEW_KEY_PREFIX + slug)
+  return v === 'board' || v === 'docs' ? v : null
+}
+
+/** Does this space have an open doc? Mirrors ScopedNotesEditor's scope:
+ *  static prefixes + published posts / frontmatter-claimed drafts, which
+ *  carry no slug in their path. */
+function hasOpenDocFor(space: SpaceSummary): boolean {
+  const open = Object.keys(useNotesStore.getState().openFiles)
+  if (open.length === 0) return false
+  const prefixes = spaceScopePrefixes(space)
+  const blog = useBlogStore.getState()
+  const extra = space.kind === 'project'
+    ? [
+        ...(blog.postsByProject[space.slug] ?? []).map((p) => p.path),
+        ...blog.drafts.filter((d) => d.project === space.slug).map((d) => d.path),
+      ]
+    : (blog.postsByArea[space.slug] ?? []).map((p) => p.path)
+  return open.some((p) => pathInScope(p, prefixes) || extra.includes(p))
+}
 
 /** Opening a project focuses its default agent (the "general purpose" one)
  *  in the agent panel — same picking order as the server's unassigned-card
@@ -131,9 +160,8 @@ async function selectDefaultAgent(slug: string): Promise<void> {
  *  Unbound sessions land in ~unassigned. Safe against selectDefaultAgent:
  *  its keep-current-selection guard sees the session we select here. */
 export async function focusSessionInSpaces(sessionId: string): Promise<void> {
-  const [{ useAgentStore }, { UNASSIGNED_SLUG }, { useUiStore }] = await Promise.all([
+  const [{ useAgentStore }, { useUiStore }] = await Promise.all([
     import('@/store/agent'),
-    import('@/components/SpacesTab'),
     import('@/store/ui'),
   ])
   const agent = useAgentStore.getState()
@@ -182,13 +210,32 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     else localStorage.removeItem(ACTIVE_SLUG_KEY)
     set({ activeSlug: slug, board: null, boardPath: null, boardMtime: null, boardError: null })
     if (slug) {
+      // Land on the side that has content: board-only → board, docs-only →
+      // docs, both → the remembered view for this space (^dry-fawn).
+      const space = get().spaces.find((s) => s.slug === slug)
+        ?? (slug === VAULT_SLUG ? VAULT_SPACE : slug === UNASSIGNED_SLUG ? UNASSIGNED_SPACE : null)
+      if (space) {
+        set({
+          activeView: pickSpaceView({
+            hasBoard: !!space.boardPath,
+            hasOpenDoc: hasOpenDocFor(space),
+            remembered: rememberedViewFor(slug),
+          }),
+        })
+      }
       // Default-agent pick runs AFTER the board loads so frontmatter
       // `default_owner:` is actually readable at pick time.
       void get().loadBoard().then(() => selectDefaultAgent(slug))
     }
   },
 
-  setActiveView: (v) => set({ activeView: v }),
+  setActiveView: (v) => {
+    const slug = get().activeSlug
+    // Only an explicit choice on a two-sided space is worth remembering —
+    // a forced landing (no board / no docs) says nothing about preference.
+    if (slug) localStorage.setItem(VIEW_KEY_PREFIX + slug, v)
+    set({ activeView: v })
+  },
 
   loadBoard: async () => {
     const { spaces, activeSlug } = get()
