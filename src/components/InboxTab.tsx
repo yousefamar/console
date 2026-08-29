@@ -146,7 +146,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
         <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
         <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
       </div>
-      {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5 pl-[22px]">{item.body}</div>}
+      {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5">{item.body}</div>}
     </button>
   )
 })
