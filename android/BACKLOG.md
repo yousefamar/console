@@ -13,6 +13,13 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   renderer needs the same img-src rewrite; html-fence can render as a
   collapsed "view HTML" card if a sandboxed WebView is too heavy.
 
+- Spaces rail: suppress card-owned forks from badges/alerts (SPA 57776ca,
+  ^lean-ibis) — a session that is both a fork AND whose `@key` is in the
+  space's `cardAgentKeys` (new `/blog/spaces` field, guard `?? []`) skips the
+  badge/alert loop; attention red never suppressed, review hand-back still
+  tints the kanban badge. SpacesScreen.kt `alertItems` has the same fork-badge
+  logic and needs the same suppression.
+
 - Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
   push under every AREA their `tags` name (dedup'd against the project slug);
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.
