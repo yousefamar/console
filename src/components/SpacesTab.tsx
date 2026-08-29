@@ -300,13 +300,17 @@ function SpaceListRail() {
       push(m[1]!, { kind: 'file', id: path, label: path.split('/').pop()!, level: 'dirty' })
     }
     // Unpublished drafts (path- or frontmatter-claimed) — skip ones already
-    // shown as a dirty row for the same file.
+    // shown as a dirty row for the same file. A draft also surfaces under
+    // every AREA its tags name (^tidy-swan).
+    const areaSlugs = new Set(spaces.filter((sp) => sp.kind === 'area').map((sp) => sp.slug))
     for (const d of blogDrafts) {
-      const slug = d.project ?? d.path.match(/^projects\/([^/.]+)/)?.[1]
-      if (!slug) continue
       const dirty = openFiles[d.path] && openFiles[d.path]!.content !== openFiles[d.path]!.savedContent
-      if (dirty) continue
-      push(slug, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
+      const proj = d.project ?? d.path.match(/^projects\/([^/.]+)/)?.[1]
+      // A dirty project draft already has an amber row from the openFiles loop.
+      if (proj && !dirty) push(proj, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
+      for (const t of d.tags ?? []) {
+        if (t !== proj && areaSlugs.has(t)) push(t, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
+      }
     }
     // Unassigned pseudo-space: live sessions with no space binding
     // (chat forks, one-off creates).
@@ -429,7 +433,13 @@ function SpaceListRail() {
 
   const renderSpace = (s: SpaceSummary) => (
     <div key={s.slug}>
-      <SpaceListItem space={s} badge={agentBadges.get(s.slug)} active={s.slug === activeSlug} onClick={() => selectSpace(s.slug)} />
+      <SpaceListItem
+        space={s}
+        badge={agentBadges.get(s.slug)}
+        draftCount={(alertsBySlug.get(s.slug) ?? []).filter((a) => a.level === 'draft').length}
+        active={s.slug === activeSlug}
+        onClick={() => selectSpace(s.slug)}
+      />
       {(alertsBySlug.get(s.slug) ?? []).map((a) => {
         const row = (
           <button
@@ -488,7 +498,7 @@ function RailSection({ label, action, extra, children }: { label: string; action
   )
 }
 
-function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }; active: boolean; onClick: () => void }) {
+function SpaceListItem({ space, badge, draftCount = 0, active, onClick }: { space: SpaceSummary; badge?: { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }; draftCount?: number; active: boolean; onClick: () => void }) {
   const botColor = badge?.attention ? 'text-red-500' : badge?.unread ? 'text-blue-500' : 'text-text-tertiary opacity-60'
   const reviewCount = space.reviewCount ?? 0
   const kanbanColor = badge?.reviewUnread ? 'text-blue-500' : 'text-text-tertiary opacity-40'
@@ -504,6 +514,14 @@ function SpaceListItem({ space, badge, active, onClick }: { space: SpaceSummary;
       <span className="truncate">{space.title}</span>
       {space.status === 'dormant' && <span className="ml-auto text-[9px] text-text-tertiary">zzz</span>}
       <span className={clsx('flex items-center gap-1', space.status !== 'dormant' && 'ml-auto')}>
+        {draftCount > 0 && (
+          <span
+            className="flex items-center gap-0.5 text-[9px] text-blue-500"
+            title={`${draftCount} unpublished draft${draftCount > 1 ? 's' : ''}`}
+          >
+            <FileText size={9} />{draftCount}
+          </span>
+        )}
         {badge && badge.count > 0 && (
           <span
             className={clsx('flex items-center gap-0.5 text-[9px]', botColor)}
