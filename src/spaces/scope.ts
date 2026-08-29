@@ -11,6 +11,10 @@ import type { SpaceSummary } from '@/store/spaces'
 // stamp them.
 export const VAULT_SLUG = '~vault'
 export const UNASSIGNED_SLUG = '~unassigned'
+/** The vault-wide writing companion (^tame-hare): one shared session bound to
+ *  every area, hoisted to its own row above the Areas section instead of
+ *  replicating (and badging) across all of them. */
+export const CURATOR_AGENT_KEY = 'curator'
 
 export const VAULT_SPACE: SpaceSummary = {
   kind: 'project', slug: VAULT_SLUG, title: 'Vault', notePath: null, boardPath: null, status: null, fileCount: 0,

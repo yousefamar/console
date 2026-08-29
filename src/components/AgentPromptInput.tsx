@@ -2,8 +2,6 @@ import { memo, useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/store/agent'
 import { useGlassesStore } from '@/glasses/store'
 import { useMicStore } from '@/store/mic'
-import { useUiStore } from '@/store/ui'
-import { useNotesStore } from '@/store/notes'
 import { getHubUrl } from '@/hub'
 import { useDictation } from '@/hooks/useDictation'
 import { dictationSeparator } from '@/utils/dictation-text'
@@ -260,25 +258,8 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
   const handleSend = useCallback(() => {
     if (sendingRef.current) return
     if (dictation.recording) dictation.stop()
-    let body = textRef.current.trim()
+    const body = textRef.current.trim()
     if (!body && !imagePayload) return
-
-    // Writing-assistant seam (^tame-hare): a send from the Spaces pane while a
-    // dirty buffer sits in the Docs editor gets ONE context line — not the
-    // draft itself (the agent pulls that via `con notes live` when it wants
-    // it, so long drafts never bloat the transcript).
-    if (body && useUiStore.getState().activePane === 'spaces') {
-      const notes = useNotesStore.getState()
-      const file = notes.activeFilePath ? notes.openFiles[notes.activeFilePath] : undefined
-      if (file && file.content !== file.savedContent) {
-        let cursor = ''
-        try {
-          const view = notes.editorViewPath === notes.activeFilePath ? notes.editorView : null
-          if (view) cursor = `, cursor line ${view.state.doc.lineAt(view.state.selection.main.head).number}`
-        } catch {}
-        body = `[WRITING CONTEXT] I'm editing ${notes.activeFilePath}${cursor} — run \`con notes live\` to see the buffer.\n\n${body}`
-      }
-    }
 
     sendingRef.current = true
     clearInput()

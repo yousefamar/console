@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
@@ -37,7 +37,7 @@ import { NotesCommandPalette } from './NotesCommandPalette'
 import { splitTrailingTags, cardUrls } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
-import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, spaceScopePrefixes } from '@/spaces/scope'
+import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
 
 export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
@@ -279,6 +279,10 @@ function SpaceListRail() {
     const live = sessions.filter((s) => s.status !== 'ended')
     const byCsid = new Map(live.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
     for (const s of live) {
+      // The Curator (vault-wide writing companion, bound to every area) gets
+      // its own hoisted rail row instead of replicating across all areas —
+      // no per-area Bot badges or alert rows (Yousef's call, ^tame-hare).
+      if (s.agentKey === CURATOR_AGENT_KEY) continue
       const unread = !!s.hasUnread
       const attention = !!s.needsAttention
       const working = s.status === 'running'
@@ -445,6 +449,19 @@ function SpaceListRail() {
     ]
   }
 
+  // Hoisted Curator row — the vault-wide writing companion sits ON TOP of the
+  // Areas section as a single session row rather than badging every area it's
+  // bound to. Clicking it selects the session (switching to one of its areas
+  // first when the active space isn't one, or the panel would stay empty).
+  const curator = sessions.find((s) => s.agentKey === CURATOR_AGENT_KEY && s.status !== 'ended')
+  const openCurator = () => {
+    if (!curator) return
+    const cur = useSpacesStore.getState().activeSlug
+    const areas = curator.areas ?? []
+    if (!cur || !areas.includes(cur)) selectSpace(areas[0] ?? VAULT_SLUG)
+    useAgentStore.getState().selectSession(curator.id)
+  }
+
   const renderSpace = (s: SpaceSummary) => (
     <div key={s.slug}>
       <SpaceListItem
@@ -482,7 +499,22 @@ function SpaceListRail() {
       {/* No header at all: "Spaces" is the pane tab, refresh is the global
           Layout button (pane-aware), the fleet gear lives in rail 2's Agents row. */}
       <div className="flex-1 overflow-y-auto py-1">
-        <RailSection label="Areas">{areas.map(renderSpace)}</RailSection>
+        <RailSection label="Areas">
+          {curator && (
+            <ContextMenu items={sessionMenuItems(curator.id)}>
+              <button
+                onClick={openCurator}
+                className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+                title="Curator — vault-wide writing companion"
+              >
+                <Feather size={10} className={clsx('flex-shrink-0', curator.needsAttention ? 'text-red-500' : curator.hasUnread ? 'text-blue-500' : curator.status === 'running' ? 'text-amber-500' : 'opacity-60')} />
+                <span className="truncate">{(curator.name || 'Curator').replace(/\s\(fork\)$/, '')}</span>
+                {curator.hibernated && <Moon size={9} className="ml-auto flex-shrink-0 text-text-tertiary" />}
+              </button>
+            </ContextMenu>
+          )}
+          {areas.map(renderSpace)}
+        </RailSection>
         <RailSection label="Projects">{projects.map(renderSpace)}</RailSection>
         <RailSection label="Everything else">
           {renderSpace(VAULT_SPACE)}
