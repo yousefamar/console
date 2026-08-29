@@ -124,52 +124,55 @@ export const InboxDayRail = memo(function InboxDayRail() {
 
   return (
     <div className="w-64 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
-      {/* Date nav header — replaces the grid's week-oriented header */}
-      <div className="relative flex items-center justify-between border-b border-border px-2 py-1 flex-shrink-0">
-        <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
-          <PanelRightClose size={12} />
-        </button>
-        <span className="flex items-center gap-0.5 min-w-0">
+      {/* Date nav header — replaces the grid's week-oriented header.
+          Symmetric: collapse+‹ hug the left edge, › hugs the right, the
+          date + Today chip sit dead-center regardless of chip visibility. */}
+      <div className="relative flex items-center justify-between border-b border-border px-1.5 py-1 flex-shrink-0">
+        <span className="flex items-center">
+          <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
+            <PanelRightClose size={12} />
+          </button>
           <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
             <ChevronLeft size={12} />
           </button>
-          <button
-            onClick={() => dateInputRef.current?.showPicker()}
-            className={`truncate text-[11px] ${isToday ? 'text-text-primary font-medium' : 'text-text-secondary'} hover:text-text-primary`}
-            title="Pick a date"
-          >
-            {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
-          </button>
-          <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
-            <ChevronRight size={12} />
-          </button>
         </span>
-        {/* Today chip mirrors the Calendar header's Event-button styling;
-            invisible (not absent) when already on today so the nav cluster
-            stays centered. */}
-        <button
-          onClick={() => setDate(startOfDay(new Date()))}
-          className={`px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors ${isToday ? 'invisible' : ''}`}
-          title="Jump to today"
-        >
-          Today
+        <span className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5">
+          <span className="relative">
+            <button
+              onClick={() => dateInputRef.current?.showPicker()}
+              className={`whitespace-nowrap text-[11px] ${isToday ? 'text-text-primary font-medium' : 'text-text-secondary'} hover:text-text-primary`}
+              title="Pick a date"
+            >
+              {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+            </button>
+            {/* The picker input invisibly overlays the date label at its real
+                size — Chrome anchors the popup to the input's box, and a
+                zero-size or offscreen box makes it fall back to screen-left. */}
+            <input
+              ref={dateInputRef}
+              type="date"
+              value={dateKey}
+              onChange={(e) => {
+                const [y, m, d] = e.target.value.split('-').map(Number)
+                if (y && m && d) setDate(new Date(y, m - 1, d))
+              }}
+              className="absolute inset-0 opacity-0 pointer-events-none"
+              tabIndex={-1}
+            />
+          </span>
+          {!isToday && (
+            <button
+              onClick={() => setDate(startOfDay(new Date()))}
+              className="px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
+              title="Jump to today"
+            >
+              Today
+            </button>
+          )}
+        </span>
+        <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
+          <ChevronRight size={12} />
         </button>
-        {/* Hidden input anchors the native date picker. It spans the full
-            rail width so the popup's left edge aligns with the rail's left
-            edge — the one placement that keeps a ~250px popup on-screen for
-            a right-edge rail (label-anchored clipped right; a 0×0 input
-            anchored left of the label made Chrome fall back to screen-left). */}
-        <input
-          ref={dateInputRef}
-          type="date"
-          value={dateKey}
-          onChange={(e) => {
-            const [y, m, d] = e.target.value.split('-').map(Number)
-            if (y && m && d) setDate(new Date(y, m - 1, d))
-          }}
-          className="absolute left-0 right-0 top-full h-0 opacity-0 pointer-events-none"
-          tabIndex={-1}
-        />
       </div>
 
       {/* The Calendar tab's own grid, pinned to one day */}
