@@ -4,6 +4,24 @@ import { useIsMobile } from '@/hooks/useMediaQuery'
 import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { ChevronLeft, ChevronRight, Plus, MapPin, Square, Bell } from 'lucide-react'
 import { CalendarMobileControls } from './CalendarMobileControls'
+import type { CalendarEvent } from '@/calendar/types'
+
+// Host-mode props (all optional — the Calendar pane renders <CalendarGrid />
+// bare). The Inbox day rail reuses the grid verbatim by pinning the day set
+// and event source; everything else (drag-create/move/resize, merge, lanes,
+// now-line, all-day bar) is identical by construction.
+export interface CalendarGridProps {
+  /** Render exactly these days instead of the store's currentDate/view. */
+  daysOverride?: Date[]
+  /** Events to render instead of the store's pane-scoped array. */
+  eventsOverride?: CalendarEvent[]
+  /** Drop the built-in header (host renders its own nav). */
+  hideHeader?: boolean
+  /** Event click handler; default selects for the CalendarEventPopover. */
+  onEventClick?: (eventId: string) => void
+  /** Scroll the time grid to this hour (fractional ok) on mount/day change. */
+  scrollToHour?: number
+}
 
 // --------------------------------------------------------------------------
 // Constants
@@ -128,8 +146,9 @@ interface PendingRecurringEdit {
 // CalendarGrid
 // --------------------------------------------------------------------------
 
-export function CalendarGrid() {
-  const events = useCalendarStore((s) => s.events)
+export function CalendarGrid({ daysOverride, eventsOverride, hideHeader, onEventClick, scrollToHour }: CalendarGridProps = {}) {
+  const storeEvents = useCalendarStore((s) => s.events)
+  const events = eventsOverride ?? storeEvents
   const calendars = useCalendarStore((s) => s.calendars)
   const currentDate = useCalendarStore((s) => s.currentDate)
   const view = useCalendarStore((s) => s.view)
@@ -153,6 +172,15 @@ export function CalendarGrid() {
 
   usePullToRefresh(gridRef, () => useCalendarStore.getState().refreshAll(), isMobile)
 
+  // Host-driven initial scroll (the rail lands the viewport near the action).
+  const scrollKey = daysOverride?.map((d) => d.toDateString()).join('|')
+  useEffect(() => {
+    if (scrollToHour === undefined) return
+    const el = gridRef.current
+    if (el) el.scrollTop = scrollToHour * HOUR_HEIGHT
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollToHour, scrollKey])
+
   const calColorMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const c of calendars) map.set(c.id, c.backgroundColor)
@@ -174,10 +202,11 @@ export function CalendarGrid() {
   }, [calendars])
 
   const days = useMemo(() => {
+    if (daysOverride) return daysOverride
     if (view === 'day') return [currentDate]
     const start = weekStart(currentDate)
     return Array.from({ length: 7 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i))
-  }, [currentDate, view])
+  }, [currentDate, view, daysOverride])
 
   const today = new Date()
 
@@ -305,8 +334,9 @@ export function CalendarGrid() {
   }, [timedEvents, days, calColorMap, ownCalendarIds])
 
   const headerLabel = useMemo(() => {
-    if (view === 'day') {
-      return currentDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+    // Host mode / day view: single-day label (days may not have 7 entries).
+    if (view === 'day' || days.length < 7) {
+      return (days[0] ?? currentDate).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
     }
     const start = days[0]!
     const end = days[6]!
@@ -482,6 +512,7 @@ export function CalendarGrid() {
   return (
     <div className="flex flex-col flex-1 min-h-0 select-none">
       {/* Header bar */}
+      {!hideHeader && (
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border flex-shrink-0">
         <button onClick={() => navigateWeek(-1)} className="text-text-tertiary hover:text-text-secondary transition-colors p-0.5">
           <ChevronLeft size={14} />
@@ -500,6 +531,7 @@ export function CalendarGrid() {
           {!isMobile && 'Event'}
         </button>
       </div>
+      )}
 
       {/* Day headers — pr-1.5 matches scrollbar width (6px) in time grid */}
       <div className="flex border-b border-border flex-shrink-0 pr-1.5">
@@ -626,7 +658,7 @@ export function CalendarGrid() {
                     <div
                       key={ev.id}
                       onMouseDown={(e) => handleEventMouseDown(e, ev)}
-                      onClick={(e) => { e.stopPropagation(); if (!drag && !didDragRef.current) selectEvent(ev.id); didDragRef.current = false }}
+                      onClick={(e) => { e.stopPropagation(); if (!drag && !didDragRef.current) (onEventClick ?? selectEvent)(ev.id); didDragRef.current = false }}
                       className={`absolute z-10 rounded-sm overflow-hidden text-left ${isWritable ? 'cursor-grab' : 'cursor-pointer'} ${
                         unaccepted ? 'border border-dashed' : hasMultipleColors ? 'border border-black/30' : 'border-l-2 border border-black/30'
                       } ${
@@ -783,8 +815,6 @@ function RecurringEditDialog({ pending, onThisEvent, onAllEvents, onDiscard }: {
 // --------------------------------------------------------------------------
 // AllDayBar — renders multi-day events as spanning rectangles
 // --------------------------------------------------------------------------
-
-import type { CalendarEvent } from '@/calendar/types'
 
 function AllDayBar({ events, days, calColorMap, selectedEventId, selectEvent }: {
   events: CalendarEvent[]

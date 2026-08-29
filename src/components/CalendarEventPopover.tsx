@@ -10,8 +10,9 @@ import {
   Bell, BellOff,
 } from 'lucide-react'
 
-export function CalendarEventPopover() {
-  const events = useCalendarStore((s) => s.events)
+export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: CalendarEvent[] } = {}) {
+  const storeEvents = useCalendarStore((s) => s.events)
+  const events = eventsOverride ?? storeEvents
   const calendars = useCalendarStore((s) => s.calendars)
   const selectedEventId = useCalendarStore((s) => s.selectedEventId)
   const selectEvent = useCalendarStore((s) => s.selectEvent)

@@ -1,11 +1,13 @@
 // InboxDayRail — thin single-day calendar on the right of the Inbox pane, so
-// events can be created without leaving triage (click a slot → the standard
-// CalendarEventForm; click an event → edit).
+// events can be created without leaving triage. Rendering is the REAL
+// CalendarGrid in host mode (daysOverride/eventsOverride) — drag-to-create,
+// drag-move/resize, the event popover, and the event form are all the
+// Calendar tab's own components, so the two panes can't drift.
 //
-// Deliberately NOT CalendarGrid: it keeps its OWN date (paging here must not
-// navigate the Calendar pane, whose currentDate is global store state) and
-// reads Dexie via liveQuery so optimistic creates/deletes appear instantly
-// without touching the calendar store's pane-scoped `events` array.
+// What stays local: the date (paging here must not navigate the Calendar
+// pane, whose currentDate is global store state) and the event source — a
+// Dexie liveQuery so optimistic creates/deletes appear instantly without
+// touching the calendar store's pane-scoped `events` array.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { liveQuery } from 'dexie'
@@ -14,11 +16,11 @@ import { db } from '@/db'
 import { useCalendarStore, fromDbEvent } from '@/store/calendar'
 import { optimisticallyDeleted } from '@/calendar/sync'
 import { getPref, setPref } from '@/prefs'
+import { CalendarGrid } from './CalendarGrid'
 import { CalendarEventForm } from './CalendarEventForm'
-import type { DbCalendarEvent } from '@/calendar/types'
+import { CalendarEventPopover } from './CalendarEventPopover'
+import type { CalendarEvent, DbCalendarEvent } from '@/calendar/types'
 
-const HOUR_H = 40 // px per hour — denser than the main grid's 48
-const SNAP_MIN = 30
 const COLLAPSED_PREF = 'inboxDayRailCollapsed'
 
 function startOfDay(d: Date): Date {
@@ -34,59 +36,14 @@ function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-interface RailEvent {
-  key: string
-  summary: string
-  start: Date
-  end: Date
-  color: string
-  /** Dexie row — absent for overlay (synthetic, read-only) events. */
-  row?: DbCalendarEvent
-}
-
-/** Greedy lane layout per overlap-cluster: side-by-side events share the
- *  column width equally within their cluster. */
-function layoutLanes(events: RailEvent[]): Array<RailEvent & { lane: number; lanes: number }> {
-  const sorted = [...events].sort((a, b) => a.start.getTime() - b.start.getTime())
-  const out: Array<RailEvent & { lane: number; lanes: number }> = []
-  let cluster: Array<RailEvent & { lane: number; lanes: number }> = []
-  let laneEnds: number[] = []
-  let clusterEnd = -1
-  const flush = () => {
-    for (const e of cluster) e.lanes = laneEnds.length
-    out.push(...cluster)
-    cluster = []
-    laneEnds = []
-  }
-  for (const ev of sorted) {
-    const t = ev.start.getTime()
-    if (cluster.length && t >= clusterEnd) flush()
-    let lane = laneEnds.findIndex((end) => end <= t)
-    if (lane === -1) {
-      lane = laneEnds.length
-      laneEnds.push(ev.end.getTime())
-    } else {
-      laneEnds[lane] = ev.end.getTime()
-    }
-    clusterEnd = Math.max(clusterEnd, ev.end.getTime())
-    cluster.push({ ...ev, lane, lanes: 1 })
-  }
-  flush()
-  return out
-}
-
 export const InboxDayRail = memo(function InboxDayRail() {
   const [date, setDate] = useState(() => startOfDay(new Date()))
   const [collapsed, setCollapsed] = useState(() => getPref<boolean>(COLLAPSED_PREF, false))
   const [rows, setRows] = useState<DbCalendarEvent[]>([])
-  const [now, setNow] = useState(() => new Date())
-  const calendars = useCalendarStore((s) => s.calendars)
   const visibleCalendarIds = useCalendarStore((s) => s.visibleCalendarIds)
   const overlaySources = useCalendarStore((s) => s.overlaySources)
   const showEventForm = useCalendarStore((s) => s.showEventForm)
-  const openCreateForm = useCalendarStore((s) => s.openCreateForm)
-  const openEditForm = useCalendarStore((s) => s.openEditForm)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const selectedEventId = useCalendarStore((s) => s.selectedEventId)
   const dateInputRef = useRef<HTMLInputElement>(null)
   const dateKey = localDateStr(date)
 
@@ -119,79 +76,36 @@ export const InboxDayRail = memo(function InboxDayRail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateKey])
 
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 60_000)
-    return () => clearInterval(t)
-  }, [])
-
-  const calColorMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of calendars) m.set(c.id, c.backgroundColor)
-    return m
-  }, [calendars])
-
-  const { timed, allDay } = useMemo(() => {
-    const seen = new Set<string>()
-    const timedEvents: RailEvent[] = []
-    const allDayEvents: RailEvent[] = []
+  // Same shape loadEventsFromDb produces: visible, non-deleted Dexie rows
+  // mapped via fromDbEvent, then in-memory overlay events (Meetup etc.).
+  const events = useMemo<CalendarEvent[]>(() => {
+    const out: CalendarEvent[] = []
     for (const r of rows) {
       if (!visibleCalendarIds.has(r.calendarId)) continue
       if (optimisticallyDeleted.has(r.compoundKey)) continue
-      const color = calColorMap.get(r.calendarId) || '#3b82f6'
-      if (r.allDay) {
-        allDayEvents.push({ key: r.compoundKey, summary: r.summary, start: date, end: date, color, row: r })
-        continue
-      }
-      const start = new Date(r.startTime)
-      const end = new Date(r.endTime || r.startTime)
-      if (!isSameDay(start, date)) continue
-      // Merge duplicates shared across calendars (same key as CalendarGrid).
-      const mergeKey = `${start.getTime()}_${end.getTime()}_${r.summary}`
-      if (seen.has(mergeKey)) continue
-      seen.add(mergeKey)
-      timedEvents.push({ key: r.compoundKey, summary: r.summary, start, end, color, row: r })
+      out.push(fromDbEvent(r))
     }
-    // Read-only overlay events (Meetup/OutdoorLads) — in-memory only.
-    for (const { events } of Object.values(overlaySources)) {
-      for (const ev of events) {
+    const dayStart = startOfDay(date).getTime()
+    const dayEnd = addDays(date, 1).getTime()
+    for (const { events: overlayEvents } of Object.values(overlaySources)) {
+      for (const ev of overlayEvents) {
         if (!visibleCalendarIds.has(ev.calendarId) || !ev.start.dateTime) continue
-        const start = new Date(ev.start.dateTime)
-        if (!isSameDay(start, date)) continue
-        const end = ev.end.dateTime ? new Date(ev.end.dateTime) : new Date(start.getTime() + 3600_000)
-        timedEvents.push({
-          key: `${ev.calendarId}:${ev.id}`,
-          summary: ev.summary,
-          start, end,
-          color: calColorMap.get(ev.calendarId) || '#8b5cf6',
-        })
+        const t = new Date(ev.start.dateTime).getTime()
+        if (t >= dayStart && t < dayEnd) out.push(ev)
       }
     }
-    return { timed: layoutLanes(timedEvents), allDay: allDayEvents }
-  }, [rows, visibleCalendarIds, calColorMap, overlaySources, date, dateKey])
-
-  const isToday = isSameDay(now, date)
-
-  // Land the viewport near the action: today → just above now; other days → 8am.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const anchorHour = isToday ? Math.max(now.getHours() - 1.5, 0) : 8
-    el.scrollTop = anchorHour * HOUR_H
+    return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateKey, collapsed])
+  }, [rows, visibleCalendarIds, overlaySources, dateKey])
+
+  const days = useMemo(() => [date], [dateKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const isToday = isSameDay(new Date(), date)
 
   const toggleCollapsed = () => {
     setCollapsed((v) => {
       setPref(COLLAPSED_PREF, !v)
       return !v
     })
-  }
-
-  const onSlotClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const minutes = Math.floor(((e.clientY - rect.top) / HOUR_H) * 60 / SNAP_MIN) * SNAP_MIN
-    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, minutes)
-    openCreateForm(start, new Date(start.getTime() + 3600_000))
   }
 
   if (collapsed) {
@@ -204,15 +118,14 @@ export const InboxDayRail = memo(function InboxDayRail() {
         >
           <CalendarDays size={14} />
         </button>
-        {showEventForm && <CalendarEventForm />}
       </div>
     )
   }
 
   return (
-    <div className="w-56 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
-      {/* Header: matches the pane's ColumnHeader family */}
-      <div className="flex items-center justify-between border-b border-border px-2 py-1">
+    <div className="w-64 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
+      {/* Date nav header — replaces the grid's week-oriented header */}
+      <div className="flex items-center justify-between border-b border-border px-2 py-1 flex-shrink-0">
         <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
           <ChevronLeft size={12} />
         </button>
@@ -224,6 +137,9 @@ export const InboxDayRail = memo(function InboxDayRail() {
           >
             {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
           </button>
+          {/* Hidden input anchors the native picker; pinned to the label's
+              left so the popup opens inward instead of clipping off-screen
+              at the rail's right edge. */}
           <input
             ref={dateInputRef}
             type="date"
@@ -232,7 +148,8 @@ export const InboxDayRail = memo(function InboxDayRail() {
               const [y, m, d] = e.target.value.split('-').map(Number)
               if (y && m && d) setDate(new Date(y, m - 1, d))
             }}
-            className="absolute inset-0 opacity-0 pointer-events-none"
+            className="absolute top-full h-0 w-0 opacity-0 pointer-events-none"
+            style={{ right: '100%' }}
             tabIndex={-1}
           />
           {!isToday && (
@@ -255,65 +172,17 @@ export const InboxDayRail = memo(function InboxDayRail() {
         </span>
       </div>
 
-      {/* All-day chips */}
-      {allDay.length > 0 && (
-        <div className="border-b border-border px-1.5 py-1 flex flex-col gap-0.5 max-h-20 overflow-y-auto">
-          {allDay.map((ev) => (
-            <button
-              key={ev.key}
-              onClick={() => ev.row && openEditForm(fromDbEvent(ev.row))}
-              className="truncate rounded-sm px-1.5 py-0.5 text-left text-[10px] text-white"
-              style={{ backgroundColor: ev.color }}
-              title={ev.summary}
-            >
-              {ev.summary || '(untitled)'}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* The Calendar tab's own grid, pinned to one day */}
+      <CalendarGrid
+        daysOverride={days}
+        eventsOverride={events}
+        hideHeader
+        scrollToHour={isToday ? Math.max(new Date().getHours() - 1.5, 0) : 8}
+      />
 
-      {/* 24h column */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="relative cursor-crosshair" style={{ height: 24 * HOUR_H }} onClick={onSlotClick} title="Click to create an event">
-          {Array.from({ length: 24 }, (_, h) => (
-            <div key={h} className="absolute left-0 right-0 border-t border-border/40" style={{ top: h * HOUR_H }}>
-              <span className="pl-1 text-[9px] text-text-tertiary/70 select-none">{String(h).padStart(2, '0')}</span>
-            </div>
-          ))}
-          {isToday && (
-            <div
-              className="absolute left-0 right-0 border-t border-red-500 z-10 pointer-events-none"
-              style={{ top: ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_H }}
-            />
-          )}
-          {timed.map((ev) => {
-            const startMin = ev.start.getHours() * 60 + ev.start.getMinutes()
-            const durMin = Math.max((ev.end.getTime() - ev.start.getTime()) / 60_000, 20)
-            return (
-              <button
-                key={ev.key}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (ev.row) openEditForm(fromDbEvent(ev.row))
-                }}
-                className={`absolute overflow-hidden rounded-sm px-1 text-left text-[10px] leading-tight text-white ${ev.row ? '' : 'cursor-default opacity-80'}`}
-                style={{
-                  top: (startMin / 60) * HOUR_H,
-                  height: Math.max((durMin / 60) * HOUR_H - 1, 12),
-                  // 16px gutter for the hour labels; lanes split the rest.
-                  left: `calc(16px + (100% - 18px) * ${ev.lane / ev.lanes})`,
-                  width: `calc((100% - 18px) * ${1 / ev.lanes} - 1px)`,
-                  backgroundColor: ev.color,
-                }}
-                title={`${ev.summary} · ${ev.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
-              >
-                {ev.summary || '(untitled)'}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
+      {/* Same popover/form the Calendar tab mounts — with the rail's event
+          source so a click resolves against what's actually rendered. */}
+      {selectedEventId && <CalendarEventPopover eventsOverride={events} />}
       {showEventForm && <CalendarEventForm />}
     </div>
   )
