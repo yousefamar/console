@@ -13,6 +13,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   renderer needs the same img-src rewrite; html-fence can render as a
   collapsed "view HTML" card if a sandboxed WebView is too heavy.
 
+- Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
+  push under every AREA their `tags` name (dedup'd against the project slug);
+  SpaceRow needs a FileText+count badge and draft rows beneath area entries.
+  Drafts come from `GET /blog/drafts` (bare array).
+
 - Notes editor: send `baseMtime` on save (conditional write) — the SPA gained
   optimistic-concurrency saves (f866974: reads carry disk mtime, hub 409s on
   conflict, Overwrite/Keep-editing dialog) after a stale writer clobbered a
