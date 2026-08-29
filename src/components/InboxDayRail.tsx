@@ -125,11 +125,14 @@ export const InboxDayRail = memo(function InboxDayRail() {
   return (
     <div className="w-64 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
       {/* Date nav header — replaces the grid's week-oriented header */}
-      <div className="flex items-center justify-between border-b border-border px-2 py-1 flex-shrink-0">
-        <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
-          <ChevronLeft size={12} />
+      <div className="relative flex items-center justify-between border-b border-border px-2 py-1 flex-shrink-0">
+        <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
+          <PanelRightClose size={12} />
         </button>
-        <span className="relative flex items-center gap-1 min-w-0">
+        <span className="flex items-center gap-0.5 min-w-0">
+          <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
+            <ChevronLeft size={12} />
+          </button>
           <button
             onClick={() => dateInputRef.current?.showPicker()}
             className={`truncate text-[11px] ${isToday ? 'text-text-primary font-medium' : 'text-text-secondary'} hover:text-text-primary`}
@@ -137,39 +140,36 @@ export const InboxDayRail = memo(function InboxDayRail() {
           >
             {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
           </button>
-          {/* Hidden input anchors the native picker; pinned to the label's
-              left so the popup opens inward instead of clipping off-screen
-              at the rail's right edge. */}
-          <input
-            ref={dateInputRef}
-            type="date"
-            value={dateKey}
-            onChange={(e) => {
-              const [y, m, d] = e.target.value.split('-').map(Number)
-              if (y && m && d) setDate(new Date(y, m - 1, d))
-            }}
-            className="absolute top-full h-0 w-0 opacity-0 pointer-events-none"
-            style={{ right: '100%' }}
-            tabIndex={-1}
-          />
-          {!isToday && (
-            <button
-              onClick={() => setDate(startOfDay(new Date()))}
-              className="text-[10px] text-accent hover:underline flex-shrink-0"
-              title="Jump to today"
-            >
-              today
-            </button>
-          )}
-        </span>
-        <span className="flex items-center gap-1">
           <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
             <ChevronRight size={12} />
           </button>
-          <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
-            <PanelRightClose size={12} />
-          </button>
         </span>
+        {/* Today chip mirrors the Calendar header's Event-button styling;
+            invisible (not absent) when already on today so the nav cluster
+            stays centered. */}
+        <button
+          onClick={() => setDate(startOfDay(new Date()))}
+          className={`px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors ${isToday ? 'invisible' : ''}`}
+          title="Jump to today"
+        >
+          Today
+        </button>
+        {/* Hidden input anchors the native date picker. It spans the full
+            rail width so the popup's left edge aligns with the rail's left
+            edge — the one placement that keeps a ~250px popup on-screen for
+            a right-edge rail (label-anchored clipped right; a 0×0 input
+            anchored left of the label made Chrome fall back to screen-left). */}
+        <input
+          ref={dateInputRef}
+          type="date"
+          value={dateKey}
+          onChange={(e) => {
+            const [y, m, d] = e.target.value.split('-').map(Number)
+            if (y && m && d) setDate(new Date(y, m - 1, d))
+          }}
+          className="absolute left-0 right-0 top-full h-0 opacity-0 pointer-events-none"
+          tabIndex={-1}
+        />
       </div>
 
       {/* The Calendar tab's own grid, pinned to one day */}
