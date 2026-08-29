@@ -508,7 +508,7 @@ function UserPromptBlock({ content, images }: { content: string; images?: string
           {images && images.length > 0 && (
             <div className="flex gap-1.5 flex-wrap mb-1.5">
               {images.map((src, i) => (
-                <img key={i} src={src} alt={`Attached image ${i + 1}`} className="max-h-32 max-w-[200px] border border-border object-contain cursor-zoom-in" onClick={() => useUiStore.getState().setLightboxSrc(src)} />
+                <img key={i} src={src} alt={`Attached image ${i + 1}`} data-agent-image className="max-h-32 max-w-[200px] border border-border object-contain cursor-zoom-in" onClick={() => useUiStore.getState().setLightboxSrc(src)} />
               ))}
             </div>
           )}
@@ -897,6 +897,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             key={key++}
             alt={match[1]}
             src={src}
+            data-agent-image
             className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain cursor-zoom-in"
             onClick={() => useUiStore.getState().setLightboxSrc(src)}
           />,

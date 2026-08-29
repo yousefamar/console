@@ -39,7 +39,35 @@ import { ImageLightbox } from './ImageLightbox'
 function GlobalLightbox() {
   const src = useUiStore((s) => s.lightboxSrc)
   if (!src) return null
-  return <ImageLightbox src={src} onClose={() => useUiStore.getState().setLightboxSrc(null)} />
+  // Gallery order for ←/→ paging: every visible transcript image, in DOM
+  // (chronological) order — the chat lightbox's pattern (ChatRoomView).
+  // Queried live at navigation time; offsetParent filters out images in
+  // display:none pre-rendered panes.
+  const galleryImages = (): string[] =>
+    Array.from(document.querySelectorAll<HTMLImageElement>('img[data-agent-image]'))
+      .filter((i) => i.offsetParent !== null)
+      .map((i) => i.src)
+  const step = (dir: 1 | -1) => {
+    const cur = useUiStore.getState().lightboxSrc
+    if (!cur) return
+    const imgs = galleryImages()
+    if (imgs.length === 0) return
+    const idx = imgs.indexOf(cur)
+    const next = idx === -1 ? 0 : (idx + dir + imgs.length) % imgs.length
+    useUiStore.getState().setLightboxSrc(imgs[next]!)
+  }
+  const imgs = galleryImages()
+  const idx = imgs.indexOf(src)
+  const multi = imgs.length > 1 && idx >= 0
+  return (
+    <ImageLightbox
+      src={src}
+      onClose={() => useUiStore.getState().setLightboxSrc(null)}
+      onPrev={multi ? () => step(-1) : undefined}
+      onNext={multi ? () => step(1) : undefined}
+      position={idx >= 0 ? { index: idx + 1, total: imgs.length } : undefined}
+    />
+  )
 }
 import { CalendarTab } from './CalendarTab'
 import { MoneyTab } from './MoneyTab'
