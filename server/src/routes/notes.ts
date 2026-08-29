@@ -31,6 +31,40 @@ export interface NoteOpenBridge {
   clientCount: () => number
 }
 
+// ---------------------------------------------------------------------------
+// Live buffer (^tame-hare) — the writing-assistant seam. The SPA mirrors the
+// ACTIVE dirty editor buffer here (single slot, in-memory, deliberately not
+// persisted: it's "what Yousef is typing right now", not vault state — the
+// vault copy + the SPA's localStorage draft mirror are the durable layers).
+// Agents pull it via GET /notes/live (`con notes live`) when asked to help,
+// so nothing burns tokens between asks.
+// ---------------------------------------------------------------------------
+
+export interface LiveBuffer {
+  path: string
+  content: string
+  cursorLine?: number
+  selection?: string
+  ts: number
+}
+
+const LIVE_STALE_MS = 15 * 60_000
+
+let liveBuffer: LiveBuffer | null = null
+
+/** Read the mirrored buffer; a slot older than 15 min is stale — the editor
+ *  mirrors every few hundred ms while a dirty buffer is open, so silence
+ *  means Yousef stopped writing (or closed/saved the file). */
+export function getLiveBuffer(now = Date.now()): LiveBuffer | null {
+  if (!liveBuffer) return null
+  if (now - liveBuffer.ts > LIVE_STALE_MS) return null
+  return liveBuffer
+}
+
+export function setLiveBuffer(b: LiveBuffer | null): void {
+  liveBuffer = b
+}
+
 export function handleNoteRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -86,6 +120,38 @@ export function handleNoteRoutes(
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
     })
+    return true
+  }
+
+  // Live buffer mirror (see LiveBuffer above). POST body {} or {path:null}
+  // clears the slot (buffer went clean / tab closed).
+  if (path === '/notes/live' && req.method === 'POST') {
+    readBody(req).then((body) => {
+      const parsed = JSON.parse(body || '{}') as Partial<LiveBuffer> & { path?: string | null }
+      if (!parsed.path || typeof parsed.content !== 'string') {
+        setLiveBuffer(null)
+      } else {
+        setLiveBuffer({
+          path: parsed.path,
+          content: parsed.content,
+          ...(typeof parsed.cursorLine === 'number' ? { cursorLine: parsed.cursorLine } : {}),
+          ...(parsed.selection ? { selection: String(parsed.selection).slice(0, 2000) } : {}),
+          ts: Date.now(),
+        })
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    }).catch((err) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error).message }))
+    })
+    return true
+  }
+
+  if (path === '/notes/live' && req.method === 'GET') {
+    const buf = getLiveBuffer()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(buf ? { active: true, ...buf, ageMs: Date.now() - buf.ts } : { active: false }))
     return true
   }
 

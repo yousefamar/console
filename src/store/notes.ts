@@ -320,6 +320,40 @@ function writeDraft(path: string, file: OpenFile): void {
 const pendingDraftPaths = new Set<string>()
 let draftTimer: ReturnType<typeof setTimeout> | null = null
 
+// Live-buffer mirror (^tame-hare): the ACTIVE dirty buffer also mirrors to the
+// hub (POST /notes/live) on the same debounce, so an agent asked to help with
+// a draft can pull exactly what's on screen (`con notes live`) — unsaved
+// keystrokes included. Single slot; clean/closed buffer clears it. Fire-and-
+// forget: a failed POST costs nothing (the agent just sees a staler copy).
+let lastLiveMirrorPath: string | null = null
+
+function mirrorLiveBuffer(): void {
+  const { openFiles, activeFilePath, editorView, editorViewPath } = useNotesStore.getState()
+  const file = activeFilePath ? openFiles[activeFilePath] : undefined
+  const dirty = !!file && file.content !== file.savedContent
+  if (!dirty || !activeFilePath) {
+    if (lastLiveMirrorPath) {
+      lastLiveMirrorPath = null
+      hubFetch('/notes/live', { method: 'POST', body: JSON.stringify({}) }).catch(() => {})
+    }
+    return
+  }
+  let cursorLine: number | undefined
+  let selection: string | undefined
+  if (editorView && editorViewPath === activeFilePath) {
+    try {
+      const sel = editorView.state.selection.main
+      cursorLine = editorView.state.doc.lineAt(sel.head).number
+      if (!sel.empty) selection = editorView.state.sliceDoc(sel.from, sel.to)
+    } catch {}
+  }
+  lastLiveMirrorPath = activeFilePath
+  hubFetch('/notes/live', {
+    method: 'POST',
+    body: JSON.stringify({ path: activeFilePath, content: file.content, cursorLine, selection }),
+  }).catch(() => {})
+}
+
 /** Write all pending dirty buffers NOW (pagehide, tests). */
 export function flushDraftsNow(): void {
   if (draftTimer) { clearTimeout(draftTimer); draftTimer = null }
@@ -329,6 +363,7 @@ export function flushDraftsNow(): void {
     if (file && file.content !== file.savedContent) writeDraft(path, file)
   }
   pendingDraftPaths.clear()
+  mirrorLiveBuffer()
 }
 
 function persistTabs(openFiles: Record<string, OpenFile>, activeFilePath: string | null) {
@@ -985,9 +1020,19 @@ if (typeof window !== 'undefined') {
 // ---------------------------------------------------------------------------
 
 let prevOpenFilesForDrafts: Record<string, OpenFile> = {}
+let prevActivePathForDrafts: string | null = null
 useNotesStore.subscribe((state) => {
   const { openFiles } = state
-  if (openFiles === prevOpenFilesForDrafts) return
+  // Tab switches don't touch openFiles but do move the live-buffer mirror
+  // onto a different file — arm the flush for those too.
+  if (openFiles === prevOpenFilesForDrafts) {
+    if (state.activeFilePath !== prevActivePathForDrafts) {
+      prevActivePathForDrafts = state.activeFilePath
+      if (!draftTimer) draftTimer = setTimeout(() => { draftTimer = null; flushDraftsNow() }, DRAFT_FLUSH_MS)
+    }
+    return
+  }
+  prevActivePathForDrafts = state.activeFilePath
   const prev = prevOpenFilesForDrafts
   prevOpenFilesForDrafts = openFiles
   // A closed tab's draft dies with it — closing a dirty tab is forced
@@ -1002,13 +1047,15 @@ useNotesStore.subscribe((state) => {
     if (file === prev[path]) continue
     if (file.content !== file.savedContent) {
       pendingDraftPaths.add(path)
-      if (!draftTimer) draftTimer = setTimeout(() => { draftTimer = null; flushDraftsNow() }, DRAFT_FLUSH_MS)
     } else {
       // Clean again (saved, :e!-reloaded, or reverted by hand) — drop the draft.
       pendingDraftPaths.delete(path)
       removeDraft(path)
     }
   }
+  // Any buffer change arms the flush: it writes dirty drafts AND maintains the
+  // hub live-buffer mirror, which must also update on clean/close (to clear).
+  if (!draftTimer) draftTimer = setTimeout(() => { draftTimer = null; flushDraftsNow() }, DRAFT_FLUSH_MS)
 })
 
 // The debounce window must never be where the only copy of typed text lives:
