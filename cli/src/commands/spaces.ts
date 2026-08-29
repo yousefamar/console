@@ -120,7 +120,13 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/remove`, { method: 'POST', body: { card } }), flags)
       return
     }
+    case 'redispatch': {
+      const card = pos[0]
+      if (!card) { exitWithError('USAGE', 'Usage: con spaces board <project> redispatch "<card>"   (re-wake the assignee, or re-fork if its session is gone)', flags); return }
+      output(await hubFetch(`/board/${enc}/redispatch`, { method: 'POST', body: { card } }), flags)
+      return
+    }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, model, nofork, forkok, block, unblock, note, edit, remove — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, model, nofork, forkok, block, unblock, note, edit, remove, redispatch — see \`con help spaces\`.`, flags)
   }
 }

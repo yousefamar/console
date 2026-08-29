@@ -57,6 +57,13 @@ export interface InFlightCard {
   review: boolean
   done: boolean
   blocked: boolean
+  /** Carried so a REOPEN re-dispatch honours the same fork/model choices the
+   *  original dispatch would have made. */
+  nofork: boolean
+  model: string | null
+  /** Original card lines (text + indented notes) — a reopen re-dispatch sends
+   *  the full envelope, and the accumulated notes ARE the handover. */
+  lines: string[]
 }
 
 /** Every stamped card and where it currently sits — the whole dispatch state,
@@ -76,6 +83,9 @@ export function inFlightCards(board: KanbanBoard): InFlightCard[] {
         review: REVIEW_COLUMN_RE.test(col.title),
         done: DONE_COLUMN_RE.test(col.title) || card.checked,
         blocked: card.blocked || BLOCKED_COLUMN_RE.test(col.title),
+        nofork: card.nofork,
+        model: card.model,
+        lines: card.lines,
       })
     }
   }
@@ -235,6 +245,16 @@ export function buildWindDownEnvelope(opts: {
     ...steps.map((s, i) => `${i + 1}. ${s}`),
     '',
     'When this turn ends, the hub automatically merges your summary into your parent session and closes you — do not do that yourself, and do not start new work.',
+  ].join('\n')
+}
+
+/** A card the assignee finished (or parked) is back in a dispatch column and
+ *  the assignee is still alive — tell it to pick the card back up. The dead-
+ *  assignee case gets a full re-dispatch envelope instead. */
+export function buildReopenNudge(opts: { boardAbsPath: string; text: string; blockId: string; column: string }): string {
+  return [
+    `[BOARD TASK — reopened] Your card "${opts.text}" (^${opts.blockId}) on ${opts.boardAbsPath} is back in "${opts.column}".`,
+    'Re-read the card — notes/comments on it explain why. Address them, then move it back to Under Review as usual.',
   ].join('\n')
 }
 

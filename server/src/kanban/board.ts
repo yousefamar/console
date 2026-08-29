@@ -285,7 +285,7 @@ export function cardUrls(card: BoardCard): Array<{ url: string; label: string }>
   return out
 }
 
-export function cardImagePaths(card: BoardCard): string[] {
+export function cardImagePaths(card: Pick<BoardCard, 'lines'>): string[] {
   const out: string[] = []
   for (const line of card.lines.slice(1)) {
     const m = line.trim().match(/^!\[[^\]]*\]\(([^)]+)\)$/)

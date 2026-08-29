@@ -32,9 +32,9 @@ import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
-import { BoardWatcher } from './kanban/watcher.js'
+import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { cardImagePaths } from './kanban/board.js'
-import { buildBoardEnvelope, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
@@ -908,6 +908,61 @@ const boardWatcher = new BoardWatcher(noteStore, {
       ].join('\n'))
     }
   },
+  // A stamped card came BACK to a dispatch column (Yousef bouncing a review,
+  // un-#blocking in place, or rescuing a card whose fork died). findDispatchable
+  // skips stamped cards, so this is the only re-activation path (astera
+  // ^dry-wolf: fork dead after hub restart, human moved the card back,
+  // stranded forever). Live assignee → reopen nudge; dead assignee → full
+  // re-dispatch: fork the SOURCE role (fork-key convention → source key, else
+  // board default owner) with the original envelope + accumulated notes, and
+  // reassign the line to the fresh fork (string return, like onDispatch).
+  onReopen: (t) => {
+    const live = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
+    const boardAbsPath = join(noteStore.vaultPath, t.boardPath)
+    if (live) {
+      wakeSession(agentCtx, live, buildReopenNudge({ boardAbsPath, text: t.text, blockId: t.blockId, column: t.column }))
+      return true
+    }
+    // Assignee gone. Peel the fork-key convention (`<source>-<blockId>-fork`)
+    // back to the source role; fall back to the board's default owner.
+    const sourceKey = t.agentKey?.endsWith(`-${t.blockId}-fork`)
+      ? t.agentKey.slice(0, -`-${t.blockId}-fork`.length)
+      : t.agentKey
+    const source = (sourceKey && liveSessionForRole(agentCtx, sourceKey))
+      || (t.defaultOwner && liveSessionForRole(agentCtx, t.defaultOwner))
+      || undefined
+    if (!source) {
+      log(`[boards] ^${t.blockId} reopened but assignee @${t.agentKey ?? '∅'} is gone and no source/default owner is live — card stays, assign someone`)
+      return false
+    }
+    let worker: Session | null = null
+    let forked = false
+    if (!source.parentClaudeSessionId && source.claudeSessionId && !t.nofork) {
+      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model)
+      if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey}`) }
+    }
+    if (!worker) worker = source
+    const images: ImageAttachment[] = []
+    for (const path of cardImagePaths({ lines: t.lines })) {
+      try {
+        const buf = readFileSync(join(noteStore.assetsPath, path))
+        const ext = path.split('.').pop()?.toLowerCase() ?? 'png'
+        images.push({ media_type: ext === 'jpg' ? 'image/jpeg' : `image/${ext}`, data: buf.toString('base64') })
+      } catch (e) {
+        log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
+      }
+    }
+    wakeSession(agentCtx, worker, buildBoardEnvelope({
+      boardAbsPath,
+      card: { text: t.text, blockId: t.blockId, lines: t.lines },
+      column: t.column,
+      project: projectForBoardPath(t.boardPath),
+      deployGate: t.deployGate,
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null } : null,
+    }), images)
+    if (worker.agentKey && worker.agentKey !== t.agentKey) return worker.agentKey
+    return true
+  },
   // An OPEN in-flight card's content changed (instructions added after
   // dispatch) → tell the ASSIGNEE to re-read; working sessions don't re-read
   // their card unprompted. Self-echo suppressed via BoardOps' actor record —
@@ -1506,7 +1561,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     clientCount: () => syncBus.subscriberCount('notes'),
   })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
-  if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody)) return
+  if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return

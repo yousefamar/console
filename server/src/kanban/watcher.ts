@@ -15,8 +15,8 @@
 // dispatched", so nothing double-fires).
 
 import type { NoteStore } from '../notes.js'
-import { isKanbanBoard, boardDeployGate, boardDefaultOwner, parseBoard, serializeBoard, refreshCardLine, type BoardCard } from './board.js'
-import { findDispatchable, inFlightCards, mintBlockId, type InFlightCard } from './dispatch.js'
+import { isKanbanBoard, boardDeployGate, boardDefaultOwner, parseBoard, serializeBoard, refreshCardLine, findCardByBlockId, getCard, type BoardCard, type KanbanBoard } from './board.js'
+import { findDispatchable, inFlightCards, mintBlockId, DISPATCH_COLUMN_RE, type InFlightCard } from './dispatch.js'
 
 export interface BoardDispatch {
   /** Vault-relative board path. */
@@ -34,6 +34,9 @@ export interface BoardTransition extends InFlightCard {
   /** Board frontmatter `deploy_gate: review` — Done approval means "merge the
    *  branch now" on gated boards (merging deploys). */
   deployGate: 'review' | null
+  /** Board frontmatter `default_owner:` — the reopen re-dispatch fallback
+   *  when the card's assignee is dead and no source role is derivable. */
+  defaultOwner: string | null
 }
 
 export interface BoardWatcherOpts {
@@ -45,6 +48,13 @@ export interface BoardWatcherOpts {
   onDispatch: (d: BoardDispatch) => boolean | string
   /** A stamped card landed in review/done or turned #blocked. */
   onTransition?: (t: BoardTransition) => void
+  /** A stamped card moved BACK to a dispatch column from review/done/blocked
+   *  (Yousef bouncing work, or a human rescuing a card whose fork died) — the
+   *  ^id stamp means findDispatchable never re-fires, so without this the
+   *  move does nothing (astera ^dry-wolf, stranded forever). Wake the
+   *  assignee if live; if its session is gone, re-dispatch (return a string
+   *  to reassign the card to the new worker's key, exactly like onDispatch). */
+  onReopen?: (t: BoardTransition) => boolean | string
   /** A stamped card has sat in a dispatch column past staleMs. */
   onStale?: (t: BoardTransition, nudgeCount: number) => void
   /** An OPEN in-flight card's CONTENT changed (text/detail edits, not column
@@ -230,8 +240,10 @@ export class BoardWatcher {
 
     // Diff in-flight state for transitions.
     const gate = boardDeployGate(content)
+    const fmOwner2 = boardDefaultOwner(content)
+    const reopened: BoardTransition[] = []
     for (const card of inFlightCards(board)) {
-      const t: BoardTransition = { ...card, boardPath: path, deployGate: gate }
+      const t: BoardTransition = { ...card, boardPath: path, deployGate: gate, defaultOwner: fmOwner2 }
       const prev = this.inFlight.get(card.blockId)
       this.inFlight.set(card.blockId, t)
       if (card.review || card.done || card.blocked) {
@@ -247,6 +259,15 @@ export class BoardWatcher {
       } else if (!prev && boot) {
         // Restored in-flight card after a restart — watchdog resumes from now.
         this.staleTrack.set(card.blockId, { since: this.now(), nudges: 0 })
+      } else if (!boot && prev && DISPATCH_COLUMN_RE.test(card.column)
+          && (prev.review || prev.done || prev.blocked || !DISPATCH_COLUMN_RE.test(prev.column))) {
+        // REOPEN: a stamped card ENTERED a dispatch column — from review/done
+        // (Yousef bouncing work), from #blocked (unblocked in place), or from
+        // a non-dispatch column like Backlog. The ^id stamp blocks
+        // findDispatchable, so this is the only path that acts. Re-arm the
+        // watchdog fresh either way.
+        this.staleTrack.set(card.blockId, { since: this.now(), nudges: 0 })
+        if (this.opts.onReopen) reopened.push(t)
       } else if (!boot && prev && !prev.review && !prev.done && !prev.blocked
           && prev.content !== card.content) {
         // Content edit on a still-OPEN card (instructions added after
@@ -254,10 +275,64 @@ export class BoardWatcher {
         this.opts.onCardEdited?.(t)
       }
     }
+    // Reopens fire after the in-flight ledger is current; a string result
+    // reassigns the card (fresh ticket-fork owns it now, same as onDispatch).
+    if (reopened.length) await this.applyReopens(board, path, reopened)
 
     // Tell live clients the board changed (post-stamp, so a re-read is final).
     // Boot is skipped — nothing is connected-and-stale at boot.
     if (!boot && this.opts.onBoardChanged) this.opts.onBoardChanged(path)
+  }
+
+  /** Run the onReopen handler for each reopened card; a string result
+   *  reassigns the board line to that key (the fresh ticket-fork), mirroring
+   *  onDispatch's reassign-and-rewrite. */
+  private async applyReopens(board: KanbanBoard, path: string, reopened: BoardTransition[]): Promise<void> {
+    let rewrite = false
+    for (const t of reopened) {
+      const res = this.opts.onReopen!(t)
+      if (typeof res === 'string' && res !== t.agentKey) {
+        const ref = findCardByBlockId(board, t.blockId)
+        const card = ref ? getCard(board, ref) : null
+        if (card) {
+          card.agentKey = res
+          refreshCardLine(card)
+          rewrite = true
+        }
+        this.inFlight.set(t.blockId, { ...t, agentKey: res })
+      }
+      this.opts.log(`[boards] reopen ${path} ^${t.blockId} → @${typeof res === 'string' ? res : t.agentKey}${res === false ? ' (wake FAILED)' : ''}`)
+    }
+    if (rewrite) {
+      try {
+        await this.store.write(path, serializeBoard(board))
+      } catch (e) {
+        this.opts.log(`[boards] reopen reassign write failed for ${path}: ${(e as Error).message}`)
+      }
+    }
+  }
+
+  /** Manual re-dispatch (`con board <p> redispatch <card>`): treat a stamped
+   *  card as freshly reopened regardless of column diffing — the escape hatch
+   *  when a wake was missed or a fork died without any column move. */
+  async redispatch(boardPath: string, blockId: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.opts.onReopen) return { ok: false, error: 'no reopen handler wired' }
+    let content: string
+    try {
+      content = await this.store.read(boardPath)
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+    if (!isKanbanBoard(content)) return { ok: false, error: `${boardPath} is not a kanban board` }
+    const board = parseBoard(content)
+    const flight = inFlightCards(board).find((c) => c.blockId === blockId)
+    if (!flight) return { ok: false, error: `no stamped card ^${blockId} on ${boardPath}` }
+    if (flight.done) return { ok: false, error: `^${blockId} is Done — move it to a dispatch column first` }
+    const t: BoardTransition = { ...flight, boardPath, deployGate: boardDeployGate(content), defaultOwner: boardDefaultOwner(content) }
+    this.staleTrack.set(blockId, { since: this.now(), nudges: 0 })
+    this.inFlight.set(blockId, t)
+    await this.applyReopens(board, boardPath, [t])
+    return { ok: true }
   }
 
   private checkStale(): void {

@@ -11,9 +11,16 @@
 //   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
 //   POST /board/:project/edit               {card, text?, detail?}
 //   POST /board/:project/remove             {card}
+//   POST /board/:project/redispatch         {card}   re-wake/re-fork a stamped card
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { BoardOps } from '../kanban/board-ops.js'
+
+export interface BoardRedispatch {
+  /** Resolve the card and re-fire dispatch for it (BoardWatcher.redispatch).
+   *  boardPath is vault-relative. */
+  (boardPath: string, blockId: string): Promise<{ ok: boolean; error?: string }>
+}
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -26,6 +33,7 @@ export function handleBoardRoutes(
   path: string,
   ops: BoardOps,
   readBody: (req: IncomingMessage) => Promise<string>,
+  redispatch?: BoardRedispatch,
 ): boolean {
   const m = path.match(/^\/board\/([^/]+)(?:\/([a-z]+))?$/)
   if (!m) return false
@@ -86,6 +94,16 @@ export function handleBoardRoutes(
       return true
     case 'remove':
       run((b) => ops.remove(project, String(b.card ?? '')))
+      return true
+    case 'redispatch':
+      if (!redispatch) return false
+      run(async (b) => {
+        const hit = await ops.resolveCard(project, String(b.card ?? ''))
+        if (!hit.blockId) throw new Error(`card "${b.card}" has no ^id stamp — it was never dispatched (assign it and move it to In Progress instead)`)
+        const r = await redispatch(hit.path, hit.blockId)
+        if (!r.ok) throw new Error(r.error ?? 'redispatch failed')
+        return { redispatched: hit.blockId, path: hit.path }
+      })
       return true
   }
   return false

@@ -448,3 +448,132 @@ describe('boardDeployGate + envelope', () => {
     expect(ungated).not.toContain('do NOT merge to main')
   })
 })
+
+describe('BoardWatcher onReopen', () => {
+  const b = (inprog: string, review = '\n', backlog = '\n') =>
+    `---\nkanban-plugin: board\n---\n\n## Backlog\n${backlog}\n## In Progress\n${inprog}\n## Under Review\n${review}\n## Done\n`
+
+  async function setup(initial: string, onReopen: (t: BoardTransition) => boolean | string) {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, initial)
+    let clock = 1_000_000
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true, onReopen, pollMs: 999_999, now: () => (clock += 1000),
+    })
+    return { dir, boardAbs, watcher }
+  }
+
+  it('review → In Progress fires onReopen with the card state; boot does not', async () => {
+    const reopens: BoardTransition[] = []
+    const { dir, boardAbs, watcher } = await setup(b('\n', '\n- [ ] Work @eng-ro1-fork ^ro1\n'), (t) => { reopens.push(t); return true })
+    try {
+      await watcher.start()
+      expect(reopens).toHaveLength(0) // boot never fires
+      writeFileSync(boardAbs, b('\n- [ ] Work @eng-ro1-fork ^ro1\n'))
+      await watcher.poll()
+      expect(reopens).toHaveLength(1)
+      expect(reopens[0]!.blockId).toBe('ro1')
+      expect(reopens[0]!.agentKey).toBe('eng-ro1-fork')
+      expect(reopens[0]!.column).toBe('In Progress')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('string result reassigns the board line to the new worker key', async () => {
+    const { dir, boardAbs, watcher } = await setup(b('\n', '\n- [ ] Work @dead-key ^ro2\n'), () => 'eng-ro2-fork')
+    try {
+      await watcher.start()
+      writeFileSync(boardAbs, b('\n- [ ] Work @dead-key ^ro2\n'))
+      await watcher.poll()
+      expect(readFileSync(boardAbs, 'utf-8')).toContain('- [ ] Work @eng-ro2-fork ^ro2')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stamped Backlog → In Progress reopens (findDispatchable skips stamped cards)', async () => {
+    const reopens: BoardTransition[] = []
+    const { dir, boardAbs, watcher } = await setup(b('\n', '\n', '\n- [ ] Later @eng ^ro3\n'), (t) => { reopens.push(t); return true })
+    try {
+      await watcher.start()
+      writeFileSync(boardAbs, b('\n- [ ] Later @eng ^ro3\n'))
+      await watcher.poll()
+      expect(reopens.map((t) => t.blockId)).toEqual(['ro3'])
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('un-#blocking in place reopens; content edits on open cards still fire onCardEdited not onReopen', async () => {
+    const reopens: string[] = []
+    const { dir, boardAbs, watcher } = await setup(b('\n- [ ] Stuck @eng ^ro4 #blocked\n'), (t) => { reopens.push(t.blockId); return true })
+    try {
+      await watcher.start()
+      writeFileSync(boardAbs, b('\n- [ ] Stuck @eng ^ro4\n'))
+      await watcher.poll()
+      expect(reopens).toEqual(['ro4'])
+      // A later content edit is an edit, not another reopen.
+      writeFileSync(boardAbs, b('\n- [ ] Stuck @eng ^ro4\n\tmore detail\n'))
+      await watcher.poll()
+      expect(reopens).toEqual(['ro4'])
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reopen re-arms the stale watchdog', async () => {
+    const reopens: string[] = []
+    const stales: string[] = []
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, b('\n', '\n- [ ] Work @eng ^ro5\n'))
+    let clock = 1_000_000
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true,
+      onReopen: (t) => { reopens.push(t.blockId); return true },
+      onStale: (t) => stales.push(t.blockId),
+      pollMs: 999_999, staleMs: 60_000, now: () => clock,
+    })
+    try {
+      await watcher.start()
+      clock += 5000
+      writeFileSync(boardAbs, b('\n- [ ] Work @eng ^ro5\n'))
+      await watcher.poll()
+      expect(reopens).toEqual(['ro5'])
+      clock += 61_000
+      await watcher.poll() // checkStale runs on poll
+      expect(stales).toEqual(['ro5'])
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('redispatch(): manual re-fire for a stamped open card; refuses Done cards and unknown ids', async () => {
+    const reopens: string[] = []
+    const { dir, boardAbs, watcher } = await setup(b('\n- [ ] Work @eng ^ro6\n'), (t) => { reopens.push(t.blockId); return true })
+    try {
+      await watcher.start()
+      const r = await watcher.redispatch('projects/demo/board.md', 'ro6')
+      expect(r.ok).toBe(true)
+      expect(reopens).toEqual(['ro6'])
+      expect((await watcher.redispatch('projects/demo/board.md', 'nope')).ok).toBe(false)
+      writeFileSync(boardAbs, `---\nkanban-plugin: board\n---\n\n## In Progress\n\n## Done\n\n- [x] Work @eng ^ro6\n`)
+      await watcher.poll()
+      const done = await watcher.redispatch('projects/demo/board.md', 'ro6')
+      expect(done.ok).toBe(false)
+      expect(done.error).toContain('Done')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
