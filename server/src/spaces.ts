@@ -33,6 +33,10 @@ export interface SpaceSummary {
    *  session's "unread" from the Bot badge to the kanban badge when the
    *  unread is really a review hand-back the agent owns. */
   reviewAgentKeys: string[]
+  /** agentKeys assigned to ANY card on the board (all columns, dedup'd).
+   *  A fork whose key owns a card is reachable via the card, so the rail
+   *  suppresses its badge/alert rows (^lean-ibis) — attention excepted. */
+  cardAgentKeys: string[]
 }
 
 export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
@@ -85,18 +89,21 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
     }
     let reviewCount = 0
     const reviewAgentKeys: string[] = []
+    const cardAgentKeys = new Set<string>()
     if (boardContent) {
       try {
         for (const col of parseBoard(boardContent).columns) {
-          if (!REVIEW_COLUMN_RE.test(col.title)) continue
+          const isReview = REVIEW_COLUMN_RE.test(col.title)
           for (const card of col.cards) {
+            if (card.agentKey) cardAgentKeys.add(card.agentKey)
+            if (!isReview) continue
             reviewCount++
             if (card.agentKey) reviewAgentKeys.push(card.agentKey)
           }
         }
       } catch { /* unparseable board — counts stay 0 */ }
     }
-    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys })
+    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, cardAgentKeys: [...cardAgentKeys] })
   }
 
   const registry = await loadAreaRegistry(store)
@@ -111,6 +118,7 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       fileCount: 0,
       reviewCount: 0,
       reviewAgentKeys: [],
+      cardAgentKeys: [],
     })
   }
 

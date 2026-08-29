@@ -23,6 +23,10 @@ export interface SpaceSummary {
   reviewCount?: number
   /** agentKeys assigned to those review cards. */
   reviewAgentKeys?: string[]
+  /** agentKeys assigned to ANY card on the board — card-owned forks are
+   *  reachable via their card, so the rail suppresses their badge/rows
+   *  (^lean-ibis). Optional: older hub payloads omit it. */
+  cardAgentKeys?: string[]
 }
 
 interface SpacesState {

@@ -254,8 +254,12 @@ function SpaceListRail() {
     // Under-Review card is a review hand-back, not a conversation — its blue
     // moves from the Bot badge to the kanban badge (Yousef's review queue).
     const reviewOwners = new Map<string, Set<string>>()
+    // Card owners per space: a FORK whose @key owns any board card is
+    // reachable via that card, so it doesn't badge the rail (^lean-ibis).
+    const cardOwners = new Map<string, Set<string>>()
     for (const sp of spaces) {
       if (sp.reviewAgentKeys?.length) reviewOwners.set(sp.slug, new Set(sp.reviewAgentKeys))
+      if (sp.cardAgentKeys?.length) cardOwners.set(sp.slug, new Set(sp.cardAgentKeys))
     }
     const push = (slug: string, a: SpaceAlert) => {
       const arr = alerts.get(slug) ?? []
@@ -281,6 +285,15 @@ function SpaceListRail() {
       for (const slug of slugs) {
         // Attention (red) never moves — only plain unread reclassifies.
         const handback = unread && !attention && !!s.agentKey && (reviewOwners.get(slug)?.has(s.agentKey) ?? false)
+        // A card-owned FORK is reachable via its card (^lean-ibis): it stays
+        // in the Agents panel but doesn't badge rail 1 or add alert rows.
+        // Attention (red) still surfaces; a review hand-back still tints the
+        // kanban badge (that IS the card affordance).
+        const cardOwned = !!s.parentClaudeSessionId && !!s.agentKey && (cardOwners.get(slug)?.has(s.agentKey) ?? false)
+        if (cardOwned && !attention) {
+          if (handback) bump(slug, unread, attention, true)
+          continue
+        }
         bump(slug, unread, attention, handback)
         if (unread || attention || working) {
           push(slug, {
