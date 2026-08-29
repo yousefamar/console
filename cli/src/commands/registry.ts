@@ -128,6 +128,8 @@ export const COMMANDS: CommandDef[] = [
       anchor: { type: 'string', description: 'Heading to scroll to (alternative to path#Heading)' },
     },
     examples: ['con notes open projects/astera/index.md', 'con notes open "log/foo.md#Notes"', 'con notes open scratch/new.md --create'] },
+  { name: 'notes live', description: 'Read the buffer being edited RIGHT NOW in the Console editor (unsaved keystrokes included) — the writing-assistant primitive', safety: 'read',
+    examples: ['con notes live'] },
 
   // feeds
   { name: 'feeds list', description: 'List feed subscriptions', safety: 'read',
@@ -247,7 +249,13 @@ export const COMMANDS: CommandDef[] = [
     flags: { past: { type: 'boolean', description: 'Include past sessions' }, cwd: { type: 'string', description: 'Working directory' } } },
   { name: 'agent create', description: 'Create a new agent session', safety: 'write',
     args: [{ name: 'prompt', required: true, description: 'Initial prompt' }],
-    flags: { cwd: { type: 'string', description: 'Working directory' }, wait: { type: 'boolean', description: 'Block until complete' } } },
+    flags: {
+      cwd: { type: 'string', description: 'Working directory' },
+      wait: { type: 'boolean', description: 'Block until complete' },
+      name: { type: 'string', description: 'Session title; mints a stable agentKey (asAgent)' },
+      project: { type: 'string', description: 'Bind to a Spaces project slug' },
+      areas: { type: 'string', description: 'Bind to area slugs (comma-separated)' },
+    } },
   { name: 'agent send', description: 'Send a message to a session', safety: 'write',
     args: [{ name: 'session-id', required: true, description: 'Session ID' }, { name: 'message', required: true, description: 'Message text' }] },
   { name: 'agent resume', description: 'Resume a past session', safety: 'write',

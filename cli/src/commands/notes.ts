@@ -15,6 +15,7 @@ export async function notes(verb: string | undefined, args: string[], flags: Glo
     case 'search': return notesSearch(args, flags)
     case 'daily': return notesDaily(args, flags)
     case 'open': return notesOpen(args, flags)
+    case 'live': return notesLive(flags)
     default:
       exitWithError('USAGE', `Unknown notes command: ${verb}. Run 'con help notes'.`, flags)
   }
@@ -30,6 +31,26 @@ async function notesList(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   output(items, flags)
+}
+
+// The buffer Yousef is editing RIGHT NOW (unsaved keystrokes included) —
+// mirrored from the SPA editor while a dirty buffer is active. The writing-
+// assistant primitive: pull this when asked to help with a draft, instead of
+// reading the (stale) vault copy.
+async function notesLive(flags: GlobalFlags): Promise<void> {
+  const data = await hubFetch<{ active: boolean; path?: string; content?: string; cursorLine?: number; selection?: string; ageMs?: number }>('/notes/live')
+  if (flags.json || flags.agent || !process.stdout.isTTY) {
+    output(data, flags)
+    return
+  }
+  if (!data.active) {
+    info('No live buffer — nothing is being edited (or the buffer is saved/clean).')
+    return
+  }
+  info(`# ${data.path}${data.cursorLine ? ` (cursor line ${data.cursorLine})` : ''} — ${Math.round((data.ageMs ?? 0) / 1000)}s ago`)
+  if (data.selection) info(`# selection: ${data.selection}`)
+  process.stdout.write(data.content ?? '')
+  process.stdout.write('\n')
 }
 
 async function notesRead(args: string[], flags: GlobalFlags): Promise<void> {

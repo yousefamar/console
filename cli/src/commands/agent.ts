@@ -229,7 +229,7 @@ async function agentList(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function agentCreate(args: string[], flags: GlobalFlags): Promise<void> {
   const prompt = args[0]
-  if (!prompt) exitWithError('USAGE', 'Usage: con agent create <prompt> [--cwd <path>] [--wait]', flags)
+  if (!prompt) exitWithError('USAGE', 'Usage: con agent create <prompt> [--cwd <path>] [--name <title>] [--project <slug>] [--areas <a,b>] [--wait]', flags)
   const opts = parseFlags(args.slice(1))
 
   // Get existing session IDs so we can distinguish replayed session_created from new ones
@@ -238,9 +238,19 @@ async function agentCreate(args: string[], flags: GlobalFlags): Promise<void> {
 
   const { sendAndReceive, connectAndStream } = await import('../ws-client.js')
 
+  // --name mints a stable agentKey (asAgent) and --project/--areas bind the
+  // session into Spaces — the CLI path to a durable, space-visible agent
+  // (e.g. the vault Curator: --name Curator --cwd ~/sync/brain --areas all).
+  const areas = opts.areas ? opts.areas.split(',').map((s) => s.trim()).filter(Boolean) : undefined
+
   // Create session — only match session_created with a NEW ID (not replayed)
   const result = await sendAndReceive(
-    { type: 'create_session', prompt, cwd: opts.cwd || process.cwd() },
+    {
+      type: 'create_session', prompt, cwd: opts.cwd || process.cwd(),
+      ...(opts.name ? { name: opts.name, asAgent: true } : {}),
+      ...(opts.project ? { project: opts.project } : {}),
+      ...(areas?.length ? { areas } : {}),
+    },
     (msg: any) => msg.type === 'session_created' && !existingIds.has(msg.sessionId),
   )
 
