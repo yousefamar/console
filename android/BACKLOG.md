@@ -27,6 +27,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Board card content richness (^prim-elk): image detail lines (`![img](…)`)
+  render as thumbs — 48dp on the chip, 96dp scrollable in the sheet — via
+  GET /notes/asset/<path> (Coil's global loader injects the bearer), and are
+  stripped from the visible detail text; URLs (markdown label wins, bare URLs
+  label by hostname, trailing punctuation stripped, deduped) render as
+  tappable chips opening the browser; trailing `#tag` runs split off the
+  title as badges. data/spaces/CardContent.kt = verbatim port of the SPA's
+  cardUrls/cardImagePaths/splitTrailingTags (+5 unit tests). GOTCHA hit:
+  Kotlin block comments NEST — `/*` inside a KDoc (e.g. "#model/*") opens an
+  unclosed comment.
+
 - Spaces L1 alert rows as a lineage TREE + card-fork suppression + live review
   badges (^deft-mole): alerted sessions pull their ancestor chain in as
   neutral "context" rows so forks nest under parents (SPA ^of1op4); a fork
