@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Terminal
@@ -496,6 +497,7 @@ fun SpaceDetailScreen(
         ) {
             val tabs = buildList {
                 if (sp?.boardPath != null) add("board" to "Board")
+                else if (kind == "project") add("newboard" to "+ Board")
                 add("agents" to "Agents")
                 if (kind == "project") add("docs" to "Docs")
             }
@@ -510,6 +512,13 @@ fun SpaceDetailScreen(
             }
         }
         when (tab) {
+            "newboard" -> {
+                val nbScope = rememberCoroutineScope()
+                TextButton(
+                    onClick = { nbScope.launch { if (spacesRepo.createBoard(slug)) tab = "board" } },
+                    modifier = Modifier.padding(16.dp),
+                ) { Text("Create a kanban board for this project") }
+            }
             "board" -> BoardView(spacesRepo, sessions, bound, kind, slug, onOpenSession)
             "agents" -> SpaceAgentsList(agents, sessions, bound, kind, slug, onOpenSession)
             "docs" -> SpaceDocsList(notes, slug, onOpenNote)
@@ -732,7 +741,7 @@ private fun CardChip(
                     }
                 }
                 card.agentKey?.let { key ->
-                    val label = (allSessions.firstOrNull { it.agentKey == key }?.name ?: key).removeSuffix(" (fork)")
+                    val label = io.amar.console.data.spaces.agentLabel(key, allSessions)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         Icon(Icons.Filled.SmartToy, null, tint = VIOLET, modifier = Modifier.size(11.dp))
                         Text(label, style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -830,8 +839,7 @@ private fun CardSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                 Text("in ${card.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 card.agentKey?.let { key ->
-                    val t = allSessions.firstOrNull { it.agentKey == key }?.name ?: key
-                    Text("→ ${t.removeSuffix(" (fork)")}", style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1)
+                    Text("→ ${io.amar.console.data.spaces.agentLabel(key, allSessions)}", style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1)
                 }
                 if (card.blockId != null) Text("dispatched ^${card.blockId}", style = MaterialTheme.typography.labelSmall, color = GREEN)
                 if (card.blocked) Text("#blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
@@ -886,7 +894,27 @@ private fun CardSheet(
                 }
             }
 
+            var editing by remember { mutableStateOf(false) }
+            if (editing) {
+                // Line 1 = card text, rest = detail (SPA card editor shape).
+                var editText by remember { mutableStateOf((listOf(card.text) + card.detail).joinToString("\n")) }
+                DictatedTextField(
+                    value = editText, onValueChange = { editText = it },
+                    placeholder = "Card text\ndetail lines…",
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TextButton(onClick = {
+                        val lines = editText.trim().lines()
+                        if (lines.isNotEmpty() && lines[0].isNotBlank()) {
+                            run { spacesRepo.editCard(slug, card, lines[0].trim(), lines.drop(1)) }
+                        }
+                    }) { Text("Save") }
+                    TextButton(onClick = { editing = false }) { Text("Cancel") }
+                }
+            }
             Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (!editing) TextButton(onClick = { editing = true }) { Text("Edit") }
                 TextButton(onClick = { run { spacesRepo.setBlocked(slug, card, !card.blocked) } }) {
                     Text(if (card.blocked) "Unblock" else "Mark #blocked")
                 }
@@ -904,6 +932,61 @@ private fun CardSheet(
     }
 }
 
+/** OutlinedTextField + mic trailing icon (icon-only, no hint text — SPA card
+ *  editor parity). Live transcript renders appended while dictating; stop
+ *  folds the committed text into the value. */
+@Composable
+private fun DictatedTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val dictation by io.amar.console.core.Dictation.state.collectAsState()
+    val display = if (dictation.active && dictation.transcript.isNotEmpty())
+        (value.trimEnd() + " " + dictation.transcript).trim() else value
+    val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) io.amar.console.core.Dictation.start() }
+    androidx.compose.material3.OutlinedTextField(
+        value = display,
+        onValueChange = {
+            if (dictation.active) io.amar.console.core.Dictation.cancel()
+            onValueChange(it)
+        },
+        placeholder = { Text(placeholder) },
+        enabled = enabled,
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+            capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+        ),
+        trailingIcon = {
+            IconButton(onClick = {
+                if (dictation.active) {
+                    io.amar.console.core.Dictation.stop { committed ->
+                        if (committed.isNotBlank()) onValueChange((value.trimEnd() + " " + committed).trim())
+                    }
+                } else {
+                    val granted = ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (granted) io.amar.console.core.Dictation.start()
+                    else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                }
+            }) {
+                Icon(
+                    if (dictation.active) Icons.Filled.Stop
+                    else Icons.Filled.Mic,
+                    contentDescription = if (dictation.active) "Stop dictation" else "Dictate",
+                    tint = if (dictation.active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        },
+        modifier = modifier,
+    )
+}
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun AddCardSheet(column: String, onAdd: (String, (Boolean) -> Unit) -> Unit, onDismiss: () -> Unit) {
@@ -913,9 +996,9 @@ private fun AddCardSheet(column: String, onAdd: (String, (Boolean) -> Unit) -> U
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text("New card in $column", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-            androidx.compose.material3.OutlinedTextField(
+            DictatedTextField(
                 value = text, onValueChange = { text = it; failed = false },
-                placeholder = { Text("Card text") },
+                placeholder = "Card text",
                 enabled = !busy,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             )

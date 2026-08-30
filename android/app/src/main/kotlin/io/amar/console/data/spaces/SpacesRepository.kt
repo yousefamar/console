@@ -217,4 +217,30 @@ class SpacesRepository(
 
     suspend fun removeCard(project: String, card: CardView): Boolean =
         post(project, "remove", buildJsonObject { put("card", cardAddress(card)) })
+
+    /** Create a fresh board for a board-less project (SPA createBoard parity:
+     *  writing a NEW file via /notes/file is the sanctioned path — BoardOps
+     *  only mutates existing boards). Refreshes spaces so boardPath appears. */
+    suspend fun createBoard(slug: String): Boolean {
+        val path = "projects/$slug/board.md"
+        val ok = runCatching {
+            hub.put(
+                "/notes/file/" + java.net.URLEncoder.encode(path, "UTF-8"),
+                buildJsonObject { put("content", BOARD_TEMPLATE) }.toString(),
+            )
+        }.onFailure { _boardError.value = it.message }.isSuccess
+        if (ok) { refreshSpaces(); loadBoard(slug) }
+        return ok
+    }
+
+    companion object {
+        /** Byte-identical to the SPA's BOARD_TEMPLATE (store/spaces.ts). */
+        val BOARD_TEMPLATE = listOf(
+            "---", "", "kanban-plugin: board", "", "---", "",
+            "## Backlog", "", "",
+            "## In Progress", "", "",
+            "## Under Review", "", "",
+            "## Done", "", "",
+        ).joinToString("\n") + "\n"
+    }
 }

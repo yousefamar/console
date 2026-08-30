@@ -581,7 +581,15 @@ class AgentsRepository(
             "collapsed_groups" -> {
                 _collapsedGroups.value = ((msg["collapsed"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()).toSet()
             }
-            "session_merged" -> { /* sessions_list drops the fork; nothing local to do */ }
+            "session_merged" -> {
+                // Wound-down fork: remove it NOW rather than waiting for the
+                // next sessions_list push — a merged fork lingering in Spaces
+                // lists reads as "still alive". Messages cascade via FK.
+                val forkId = msg["forkId"]?.jsonPrimitive?.content ?: return
+                db.agents().deleteSession(forkId)
+                _todos.value = _todos.value - forkId
+                _activity.value = _activity.value - forkId
+            }
         }
     }
 
