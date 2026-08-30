@@ -8,6 +8,7 @@
 // POST   /property/searches/:id/run       — poll now
 // POST   /property/searches/:id/backfill  — one-off deeper pull, merges silently
 // POST   /property/searches/:id/dismiss   — hide (or restore) one listing's pin
+// POST   /property/searches/:id/reseed    — force re-seed after a map-layer content fix
 // POST   /property/count                  — ad-hoc count, nothing saved
 // GET    /property/listings               — merged newest listings across searches
 
@@ -91,7 +92,7 @@ export function handlePropertyRoutes(
     return true
   }
 
-  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss))?$/)
+  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|reseed))?$/)
   if (match) {
     const id = decodeURIComponent(match[1]!)
     const verb = match[3]
@@ -117,6 +118,14 @@ export function handlePropertyRoutes(
         const body = JSON.parse((await readBody(req)) || '{}') as { listingId?: string; dismissed?: boolean }
         if (!body.listingId) return error(400, 'listingId required')
         const updated = sync.dismiss(id, body.listingId, body.dismissed ?? true)
+        if (!updated) return error(404, 'search not found')
+        json(updated)
+      })
+    }
+
+    if (verb === 'reseed' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const updated = sync.reseed(id)
         if (!updated) return error(404, 'search not found')
         json(updated)
       })

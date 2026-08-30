@@ -17,12 +17,13 @@ export async function mapProperty(verb: string | undefined, args: string[], flag
     case 'run': return run(args, flags)
     case 'backfill': return backfill(args, flags)
     case 'dismiss': return dismiss(args, flags)
+    case 'reseed': return reseed(args, flags)
     case 'count': return count(args, flags)
     case 'listings': return listings(args, flags)
     default:
       exitWithError(
         'USAGE',
-        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | count | listings.`,
+        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | reseed | count | listings.`,
         flags,
       )
   }
@@ -96,6 +97,12 @@ async function dismiss(args: string[], flags: GlobalFlags): Promise<void> {
   const o = parseFlags(args.slice(2))
   const body = { listingId, dismissed: !o.undo }
   output(await hubFetch(`/property/searches/${encodeURIComponent(id)}/dismiss`, { method: 'POST', body }), flags)
+}
+
+async function reseed(args: string[], flags: GlobalFlags): Promise<void> {
+  const id = args[0]
+  if (!id) return exitWithError('USAGE', 'con map property reseed <id>', flags)
+  output(await hubFetch(`/property/searches/${encodeURIComponent(id)}/reseed`, { method: 'POST' }), flags)
 }
 
 async function count(args: string[], flags: GlobalFlags): Promise<void> {

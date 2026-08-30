@@ -115,6 +115,20 @@ export class PropertySync {
     return s
   }
 
+  /**
+   * Force a re-seed without a criteria/layer/country change — use after
+   * correcting the *content* of a map layer a search already points at (the
+   * slug is unchanged, so `store.update()`'s requeried check never fires on
+   * its own). Next poll records the newly-in-scope listings silently instead
+   * of notifying on all of them as if they'd just appeared.
+   */
+  reseed(id: string): PropertySearch | undefined {
+    const s = this.searches.reseed(id)
+    if (!s) return undefined
+    this.bus.broadcast('property', 'updated', s)
+    return s
+  }
+
   /** Ad-hoc count for a candidate criteria set, without saving anything. */
   async count(country: keyof typeof PORTAL_BY_COUNTRY, layer: string, criteria: Criteria, maxRings?: number): Promise<number> {
     const rings = this.rings(layer, country, maxRings)

@@ -138,6 +138,25 @@ export class PropertySearchStore {
     return next
   }
 
+  /**
+   * Force a re-seed without changing criteria/layer/country — for when the
+   * *content* of the referenced map layer changed underneath an unchanged
+   * slug (e.g. the polygon it points at was corrected/redrawn), which
+   * `update()`'s requeried check can't detect since the layer field itself
+   * didn't change. Without this, every listing newly in-scope after such a
+   * fix reads as "genuinely new" against the stale seenIds and can trigger a
+   * real notification burst instead of silently re-seeding.
+   */
+  reseed(id: string): PropertySearch | undefined {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s) return undefined
+    s.seeded = false
+    s.seenIds = []
+    this.save()
+    return s
+  }
+
   /** Hide a listing from this search's map layer, permanently (until undismiss). */
   dismiss(id: string, listingId: string, dismissed = true): PropertySearch | undefined {
     this.load()

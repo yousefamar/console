@@ -737,6 +737,8 @@ export const COMMANDS: CommandDef[] = [
     args: [{ name: 'id', required: true, description: 'Search id' }, { name: 'listingId', required: true, description: 'Portal-local listing id, e.g. from the pin\'s url' }],
     flags: { undo: { type: 'boolean', description: 'Restore a previously dismissed listing' } },
     examples: ['con map property dismiss ps_50ec5f2687 89608899'] },
+  { name: 'map property reseed', description: 'Force a re-seed without a criteria/layer/country change — use after correcting the *content* of a map layer a search already points at (the slug stays the same, so nothing else notices). Next poll records newly-in-scope listings silently instead of alerting on all of them as if they just appeared.', safety: 'write',
+    args: [{ name: 'id', required: true, description: 'Search id' }] },
   { name: 'map property count', description: 'Ad-hoc result count for a candidate criteria set — nothing saved. Use this to tune criteria before creating a search.', safety: 'read',
     flags: { country: { type: 'string', description: 'UK | DE | IT' }, layer: { type: 'string', description: 'Map-layer slug' } },
     examples: ['con map property count --country IT --layer where-to-move/livable-zone --max-price 400000 --type house'] },

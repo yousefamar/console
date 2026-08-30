@@ -204,6 +204,32 @@ describe('PropertySearchStore.dismiss', () => {
   })
 })
 
+describe('PropertySearchStore.reseed', () => {
+  it('clears seenIds/seeded without touching criteria/layer/country', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l', criteria: { maxPrice: 500000 } })
+    store.recordPoll(s.id, { listings: [listing('a'), listing('b')] })
+    expect(store.get(s.id)?.seenIds?.sort()).toEqual(['a', 'b'])
+
+    const reseeded = store.reseed(s.id)
+    expect(reseeded?.seeded).toBe(false)
+    expect(reseeded?.seenIds).toEqual([])
+    expect(reseeded?.layer).toBe('l')
+    expect(reseeded?.criteria).toEqual({ maxPrice: 500000 })
+
+    // The next poll must report itself as seeding again — sync.ts's caller
+    // uses this flag to skip notifying, even though `fresh` itself still
+    // lists every id not in the (now-empty) seenIds.
+    const next = store.recordPoll(s.id, { listings: [listing('a'), listing('b')] })
+    expect(next?.seeding).toBe(true)
+  })
+
+  it('returns undefined for an unknown search', () => {
+    const store = tmpStore()
+    expect(store.reseed('ps_nope')).toBeUndefined()
+  })
+})
+
 describe('PropertySearchStore.recordBackfill', () => {
   it('merges into lastResults and marks every id seen, without reporting fresh', () => {
     const store = tmpStore()
