@@ -1067,4 +1067,11 @@ if (typeof window !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushDraftsNow()
   })
+  // The hub's live-buffer slot is in-memory — a hub restart empties it, and
+  // the mirror only fires on store CHANGES, so a dirty buffer sitting still
+  // would stay invisible until the next keystroke. Re-mirror on reconnect
+  // (also covers the route 404ing while an older hub was still running).
+  import('@/sync-bus').then(({ hubBus }) => {
+    hubBus.onConnect(() => mirrorLiveBuffer())
+  }).catch(() => {})
 }
