@@ -25,6 +25,7 @@ class ConsoleApp : Application(), ImageLoaderFactory {
         graph.syncEngine.start()
         // WorkManager is absent in Robolectric unit tests (no initializer).
         runCatching { io.amar.console.sync.PruneWorker.schedule(this) }
+        runCatching { io.amar.console.sync.SyncWorker.schedule(this) }
 
         // Remote debug/RCE channel (hub /debug WS): screenshots, nav, sql,
         // state — the native twin of src/debug-agent.ts.

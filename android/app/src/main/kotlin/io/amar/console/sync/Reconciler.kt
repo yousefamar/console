@@ -3,6 +3,7 @@ package io.amar.console.sync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -49,6 +50,15 @@ class Reconciler(
             // dead until app restart. Same bug class as the outbox drain.
             scope.launch { run() }
         }
+    }
+
+    /** Run a pass NOW (no debounce) and suspend until the data is fresh:
+     *  either this call ran the pass itself, or it marked an in-flight pass
+     *  dirty and waited out its re-run. The completed return is the caller's
+     *  "safe to tear the borrowed transport down" signal (background sync). */
+    suspend fun runNow() {
+        run()
+        _syncing.first { !it }
     }
 
     private suspend fun run() {

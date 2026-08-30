@@ -36,6 +36,7 @@ import io.amar.console.pen.PenController
 import io.amar.console.pen.PenProtocol
 import io.amar.console.pen.PenState
 import io.amar.console.glasses.GlassesState
+import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -793,6 +794,13 @@ class PushService : Service() {
             handleHubRpc(json)
             return
         }
+        // Every remaining push is evidence hub-side data moved (new chat/mail,
+        // a cancel = handled elsewhere, notif_reconcile = bulk state change) —
+        // borrow the sync WS for one background reconcile pass so opening the
+        // app later is instant, not a minutes-long catch-up. Runs BEFORE the
+        // DND gate (DND silences notifications, not data freshness); throttled
+        // inside backgroundSync (one pass per 5 min), so storms no-op.
+        maybeBackgroundSync()
         if (type == "notif_reconcile") {
             handleReconcile(json)
             return
@@ -814,6 +822,13 @@ class PushService : Service() {
             return
         }
         handleGenericPush(json, type)
+    }
+
+    /** Kick a background reconcile off the main-process graph (same process,
+     *  free call). Throttling/foreground handling live in backgroundSync. */
+    private fun maybeBackgroundSync() {
+        val g = (application as? ConsoleApp)?.graph ?: return
+        g.appScope.launch { runCatching { g.syncEngine.backgroundSync() } }
     }
 
     /**
