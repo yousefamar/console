@@ -38,6 +38,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   Kotlin block comments NEST — `/*` inside a KDoc (e.g. "#model/*") opens an
   unclosed comment.
 
+- Spaces P2 polish (^green-kite): DictatedTextField — mic (icon-only) in the
+  add-card and new edit-card sheets via the shared Dictation infra, live
+  transcript appended while speaking (merged with ^loud-duck's retry/busy
+  state); card Edit in the sheet (line 1 = text, rest = detail, BoardOps
+  edit verb); "Create board" for board-less projects (byte-identical SPA
+  template via /notes/file PUT — the sanctioned new-file path); session_merged
+  now reaps the fork's Room rows + todos/activity immediately instead of
+  waiting for the next sessions_list; agentLabel/rootAgentKey helpers
+  (data/spaces/AgentLabels.kt) — dead fork keys resolve to the root key's
+  live session label on card chips + sheets (SPA labelFor parity).
+
 - Spaces L1 alert rows as a lineage TREE + card-fork suppression + live review
   badges (^deft-mole): alerted sessions pull their ancestor chain in as
   neutral "context" rows so forks nest under parents (SPA ^of1op4); a fork
