@@ -13,13 +13,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   renderer needs the same img-src rewrite; html-fence can render as a
   collapsed "view HTML" card if a sandboxed WebView is too heavy.
 
-- Spaces rail: suppress card-owned forks from badges/alerts (SPA 57776ca,
-  ^lean-ibis) — a session that is both a fork AND whose `@key` is in the
-  space's `cardAgentKeys` (new `/blog/spaces` field, guard `?? []`) skips the
-  badge/alert loop; attention red never suppressed, review hand-back still
-  tints the kanban badge. SpacesScreen.kt `alertItems` has the same fork-badge
-  logic and needs the same suppression.
-
 - Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
   push under every AREA their `tags` name (dedup'd against the project slug);
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.
@@ -33,6 +26,16 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   `baseMtime` and 409s — client-side only.
 
 ## Built, awaiting release
+
+- Spaces L1 alert rows as a lineage TREE + card-fork suppression + live review
+  badges (^deft-mole): alerted sessions pull their ancestor chain in as
+  neutral "context" rows so forks nest under parents (SPA ^of1op4); a fork
+  whose @key is in the space's cardAgentKeys (new /blog/spaces field, safe
+  default) is suppressed from alert rows unless needs-attention (SPA
+  ^lean-ibis — its card is the affordance; the review hand-back kanban tint
+  from ^teal-finch still applies); ANY boards SyncBus event refreshes the
+  spaces list (1s debounce) and a WS reconnect re-reads spaces + the open
+  board, so review badges track live instead of going stale.
 
 - Board QoL (^loud-duck): swipe-right on a card = mark Done (mobile analogue
   of the SPA's drag-to-Done mini track; green check reveals, fires once past
