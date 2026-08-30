@@ -125,6 +125,9 @@ class SpacesRepository(
 
     fun clearBoard() { _board.value = null; _boardError.value = null }
 
+    /** Dismiss the sticky mutation-error banner. */
+    fun clearError() { _boardError.value = null }
+
     private fun cardFrom(o: JsonObject?): CardView? {
         if (o == null) return null
         return CardView(
@@ -169,12 +172,18 @@ class SpacesRepository(
             note?.let { put("note", it) }
         })
 
-    suspend fun addCard(project: String, text: String, column: String?, detail: List<String> = emptyList()): Boolean =
-        post(project, "cards", buildJsonObject {
+    /** Add a card (hub top-inserts by default). Retries ONCE on failure —
+     *  transient hub hiccups shouldn't eat a typed card (SPA parity,
+     *  store/spaces.ts add-retry); the caller keeps the text on false. */
+    suspend fun addCard(project: String, text: String, column: String?, detail: List<String> = emptyList()): Boolean {
+        val body = buildJsonObject {
             put("text", text)
             column?.let { put("column", it) }
             if (detail.isNotEmpty()) putJsonArray("detail") { detail.forEach { add(it) } }
-        })
+        }
+        if (post(project, "cards", body)) return true
+        return post(project, "cards", body)
+    }
 
     suspend fun editCard(project: String, card: CardView, text: String?, detail: List<String>?): Boolean =
         post(project, "edit", buildJsonObject {

@@ -3,6 +3,7 @@ package io.amar.console.ui.spaces
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,6 +31,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
@@ -52,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -510,9 +515,29 @@ private fun BoardView(
     val doneCount = board.columns.filter { KanbanCodec.DONE_COLUMN_RE.matches(it.title) }.sumOf { it.cards.size }
 
     Column(Modifier.fillMaxSize()) {
-        error?.let {
-            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+        // Sticky dismissible mutation-error banner — never a board takeover
+        // (the board itself stays interactive underneath).
+        error?.let { err ->
+            Row(
+                Modifier.fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 3.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    err, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    Icons.Filled.Close, contentDescription = "Dismiss",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(14.dp).clickable { spacesRepo.clearError() },
+                )
+            }
         }
         LazyRow(
             Modifier.fillMaxSize().padding(top = 4.dp),
@@ -535,7 +560,10 @@ private fun BoardView(
                     }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                         items(col.cards.size) { i ->
-                            CardChip(col.cards[i], allSessions) { sheetCard = col.cards[i] }
+                            val card = col.cards[i]
+                            SwipeToDone(
+                                onDone = { scope.launch { spacesRepo.moveCard(slug, card, "Done") } },
+                            ) { CardChip(card, allSessions) { sheetCard = card } }
                         }
                         if (doneCount > 0 && col === visibleCols.last()) {
                             item {
@@ -568,9 +596,15 @@ private fun BoardView(
     addToColumn?.let { colTitle ->
         AddCardSheet(
             column = colTitle,
-            onAdd = { text ->
-                addToColumn = null
-                scope.launch { spacesRepo.addCard(slug, text, colTitle) }
+            onAdd = { text, done ->
+                scope.launch {
+                    // addCard already retries once; on final failure the
+                    // sheet STAYS OPEN with the typed text intact — a
+                    // transient hub error must not eat a dictated card.
+                    val ok = spacesRepo.addCard(slug, text, colTitle)
+                    if (ok) addToColumn = null
+                    done(ok)
+                }
             },
             onDismiss = { addToColumn = null },
         )
@@ -745,19 +779,80 @@ private fun CardSheet(
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun AddCardSheet(column: String, onAdd: (String) -> Unit, onDismiss: () -> Unit) {
+private fun AddCardSheet(column: String, onAdd: (String, (Boolean) -> Unit) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text("New card in $column", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
             androidx.compose.material3.OutlinedTextField(
-                value = text, onValueChange = { text = it },
+                value = text, onValueChange = { text = it; failed = false },
                 placeholder = { Text("Card text") },
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             )
-            TextButton(onClick = { if (text.isNotBlank()) onAdd(text.trim()) }, enabled = text.isNotBlank()) { Text("Add") }
+            if (failed) {
+                // Add failed twice — the typed text is preserved above; a
+                // transient hub error must never eat a dictated card.
+                Text(
+                    "Couldn't add the card — your text is kept, try again.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            TextButton(
+                onClick = {
+                    if (text.isNotBlank() && !busy) {
+                        busy = true; failed = false
+                        onAdd(text.trim()) { ok -> busy = false; failed = !ok }
+                    }
+                },
+                enabled = text.isNotBlank() && !busy,
+            ) { Text(if (busy) "Adding…" else if (failed) "Retry" else "Add") }
             Spacer(Modifier.size(24.dp))
         }
+    }
+}
+
+/** Swipe-right = mark Done — the mobile analogue of the SPA's drag-to-Done
+ *  mini track (^aka55s): the Done column is hidden from the pager, so this is
+ *  the quick approval gesture. Drag past the threshold fires ONCE; a green
+ *  check reveals behind the card as it slides. */
+@Composable
+private fun SwipeToDone(onDone: () -> Unit, content: @Composable () -> Unit) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val maxDragPx = with(density) { 96.dp.toPx() }
+    val triggerPx = with(density) { 72.dp.toPx() }
+    val offsetX = remember { androidx.compose.animation.core.Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    var fired by remember { mutableStateOf(false) }
+    Box {
+        if (offsetX.value > 8f) {
+            Icon(
+                Icons.Filled.Check, contentDescription = "Mark Done",
+                tint = GREEN.copy(alpha = (offsetX.value / triggerPx).coerceIn(0f, 1f)),
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 14.dp).size(18.dp),
+            )
+        }
+        Box(
+            Modifier
+                .offset { androidx.compose.ui.unit.IntOffset(offsetX.value.toInt(), 0) }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (offsetX.value >= triggerPx && !fired) { fired = true; onDone() }
+                            scope.launch {
+                                offsetX.animateTo(0f, androidx.compose.animation.core.tween(180))
+                                fired = false
+                            }
+                        },
+                    ) { _, dragAmount ->
+                        val next = (offsetX.value + dragAmount).coerceIn(0f, maxDragPx)
+                        scope.launch { offsetX.snapTo(next) }
+                    }
+                },
+        ) { content() }
     }
 }
 

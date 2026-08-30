@@ -34,6 +34,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Board QoL (^loud-duck): swipe-right on a card = mark Done (mobile analogue
+  of the SPA's drag-to-Done mini track; green check reveals, fires once past
+  threshold — the Done column stays hidden from the pager). Add-card: the
+  hub top-inserts (no local append assumption existed); addCard retries once
+  on failure and on a double failure the sheet STAYS OPEN with the typed
+  text intact ("Retry" button) — a transient hub error never eats a dictated
+  card. Board mutation errors are now a dismissible sticky errorContainer
+  banner above the board, never a takeover.
+
 - **Background sync: the app stays fresh while closed** (^brisk-moth): sync
   was strictly foreground-only (WhatsApp model), so hours away = a huge
   matrix.resume gap = minutes of "Syncing…" on open. Two additions, same
