@@ -67,6 +67,10 @@ export interface CardView {
   blockId: string | null
   blocked: boolean
   checked: boolean
+  /** `#nofork` — dispatch wakes the role directly, no per-ticket fork. */
+  nofork: boolean
+  /** `#model/<alias>` — ticket-fork model pin (haiku/sonnet/opus or id). */
+  model: string | null
   detail: string[]
 }
 
@@ -79,7 +83,7 @@ function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array
       title: col.title,
       cards: col.cards.map((c) => ({
         text: c.text, column: col.title, agentKey: c.agentKey, blockId: c.blockId,
-        blocked: c.blocked, checked: c.checked,
+        blocked: c.blocked, checked: c.checked, nofork: c.nofork, model: c.model,
         detail: c.lines.slice(1).map((l) => l.trim()).filter(Boolean),
       })),
     })),
@@ -166,7 +170,7 @@ export class BoardOps {
       })
       if (!card) throw new Error(`no column "${column}" on this board`)
       if (opts.detail?.length) card.lines.push(...opts.detail.map((l) => `  ${l.trim()}`))
-      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, detail: opts.detail ?? [] }
+      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, model: card.model, detail: opts.detail ?? [] }
     })
   }
 
@@ -180,7 +184,7 @@ export class BoardOps {
       if (!moveCard(board, hit.ref, target.title)) throw new Error('move failed')
       const card = target.cards[target.cards.length - 1]!
       this.recordActor(path, card.blockId, actor)
-      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, model: card.model, detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -191,7 +195,7 @@ export class BoardOps {
       hit.card.agentKey = agentKey
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor)
-      return { text: hit.card.text, column: hit.ref.column, agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -203,7 +207,7 @@ export class BoardOps {
       refreshCardLine(hit.card)
       if (blocked && note?.trim()) hit.card.lines.push(`  ${note.trim()}`)
       this.recordActor(path, hit.card.blockId, actor)
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -214,7 +218,7 @@ export class BoardOps {
       hit.card.model = model
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor)
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -225,7 +229,7 @@ export class BoardOps {
       hit.card.nofork = nofork
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor)
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -235,7 +239,7 @@ export class BoardOps {
       if ('error' in hit) throw new Error(hit.error)
       hit.card.lines.push(`  ${note.trim()}`)
       this.recordActor(path, hit.card.blockId, actor)
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 
@@ -250,7 +254,7 @@ export class BoardOps {
       if (updates.detail) {
         hit.card.lines = [hit.card.lines[0]!, ...updates.detail.map((l) => l.trim()).filter(Boolean).map((l) => `  ${l}`)]
       }
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
     })
   }
 

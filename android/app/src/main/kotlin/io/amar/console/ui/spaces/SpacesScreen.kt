@@ -920,10 +920,59 @@ private fun CardSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
                 Text("in ${card.column}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 card.agentKey?.let { key ->
-                    Text("→ ${io.amar.console.data.spaces.agentLabel(key, allSessions)}", style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1)
+                    val live = allSessions.firstOrNull { it.agentKey == key && it.status != "ended" }
+                    // Tap the assignee → open their session (SPA parity:
+                    // seeing the work matters more than reassigning). Label
+                    // via the sibling's rename-aware agentLabel helper.
+                    Text(
+                        "→ ${io.amar.console.data.spaces.agentLabel(key, allSessions)}" + if (live != null) " ↗" else "",
+                        style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1,
+                        modifier = if (live != null) Modifier.clickable { onDismiss(); onOpenSession(live.id) } else Modifier,
+                    )
                 }
                 if (card.blockId != null) Text("dispatched ^${card.blockId}", style = MaterialTheme.typography.labelSmall, color = GREEN)
                 if (card.blocked) Text("#blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                if (card.nofork) Text("#nofork", style = MaterialTheme.typography.labelSmall, color = VIOLET)
+                card.model?.let { Text("#model/$it", style = MaterialTheme.typography.labelSmall, color = AMBER) }
+            }
+
+            // Dispatch controls: nofork (wake the role directly, no fork),
+            // model pin (ticket-fork spawns on this model), redispatch
+            // (stamped cards only — re-fire a lost/dead dispatch).
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Surface(
+                    onClick = { run { spacesRepo.setNofork(slug, card, !card.nofork) } },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (card.nofork) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Text(
+                        if (card.nofork) "nofork ✓" else "nofork",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+                for (alias in listOf("haiku", "sonnet", "opus")) {
+                    val selected = card.model == alias
+                    Surface(
+                        onClick = { run { spacesRepo.setModel(slug, card, if (selected) null else alias) } },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(alias, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+                    }
+                }
+                if (card.blockId != null) {
+                    Surface(
+                        onClick = { run { spacesRepo.redispatch(slug, card) } },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text("↻ redispatch", style = MaterialTheme.typography.labelMedium, color = GREEN, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+                    }
+                }
             }
 
             Text("Move to", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))

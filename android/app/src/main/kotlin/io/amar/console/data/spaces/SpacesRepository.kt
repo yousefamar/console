@@ -64,6 +64,10 @@ class SpacesRepository(
         val blockId: String?,
         val blocked: Boolean,
         val checked: Boolean,
+        /** #nofork — dispatch wakes the role directly (no per-ticket fork). */
+        val nofork: Boolean = false,
+        /** #model/<alias> — ticket-fork model pin (haiku/sonnet/opus). */
+        val model: String? = null,
         val detail: List<String>,
     )
 
@@ -169,6 +173,8 @@ class SpacesRepository(
             blockId = o["blockId"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             blocked = o["blocked"]?.jsonPrimitive?.content == "true",
             checked = o["checked"]?.jsonPrimitive?.content == "true",
+            nofork = o["nofork"]?.jsonPrimitive?.content == "true",
+            model = o["model"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
         )
     }
@@ -188,6 +194,19 @@ class SpacesRepository(
         loadBoard(project) // truth after every attempt, success or not
         return ok
     }
+
+    suspend fun setNofork(project: String, card: CardView, nofork: Boolean): Boolean =
+        post(project, "nofork", buildJsonObject { put("card", cardAddress(card)); put("nofork", nofork) })
+
+    suspend fun setModel(project: String, card: CardView, model: String?): Boolean =
+        post(project, "model", buildJsonObject {
+            put("card", cardAddress(card))
+            if (model == null) put("model", "") else put("model", model)
+        })
+
+    /** Re-fire dispatch for a STAMPED card (assignee dead / envelope lost). */
+    suspend fun redispatch(project: String, card: CardView): Boolean =
+        post(project, "redispatch", buildJsonObject { put("card", cardAddress(card)) })
 
     suspend fun moveCard(project: String, card: CardView, to: String): Boolean =
         post(project, "move", buildJsonObject { put("card", cardAddress(card)); put("to", to) })
