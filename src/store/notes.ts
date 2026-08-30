@@ -320,18 +320,18 @@ function writeDraft(path: string, file: OpenFile): void {
 const pendingDraftPaths = new Set<string>()
 let draftTimer: ReturnType<typeof setTimeout> | null = null
 
-// Live-buffer mirror (^tame-hare): the ACTIVE dirty buffer also mirrors to the
-// hub (POST /notes/live) on the same debounce, so an agent asked to help with
-// a draft can pull exactly what's on screen (`con notes live`) — unsaved
-// keystrokes included. Single slot; clean/closed buffer clears it. Fire-and-
-// forget: a failed POST costs nothing (the agent just sees a staler copy).
+// Live-buffer mirror (^tame-hare): the ACTIVE buffer also mirrors to the hub
+// (POST /notes/live) on the same debounce, so an agent asked to help with a
+// draft can pull exactly what's on screen (`con notes live`) — unsaved
+// keystrokes included, but a clean open file mirrors too ("what am I looking
+// at" is the context, dirty or not). Single slot; no open file clears it.
+// Fire-and-forget: a failed POST costs nothing (agent sees a staler copy).
 let lastLiveMirrorPath: string | null = null
 
 function mirrorLiveBuffer(): void {
   const { openFiles, activeFilePath, editorView, editorViewPath } = useNotesStore.getState()
   const file = activeFilePath ? openFiles[activeFilePath] : undefined
-  const dirty = !!file && file.content !== file.savedContent
-  if (!dirty || !activeFilePath) {
+  if (!file || !activeFilePath) {
     if (lastLiveMirrorPath) {
       lastLiveMirrorPath = null
       hubFetch('/notes/live', { method: 'POST', body: JSON.stringify({}) }).catch(() => {})
