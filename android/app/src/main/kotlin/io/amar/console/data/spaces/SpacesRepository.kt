@@ -68,7 +68,13 @@ class SpacesRepository(
     )
 
     data class BoardColumnView(val title: String, val cards: List<CardView>)
-    data class BoardView(val project: String, val path: String, val columns: List<BoardColumnView>)
+    data class BoardView(
+        val project: String,
+        val path: String,
+        val columns: List<BoardColumnView>,
+        /** Board frontmatter default_owner (agentKey), if any. */
+        val defaultOwner: String? = null,
+    )
 
     private val _spaces = MutableStateFlow<List<SpaceSummary>>(emptyList())
     val spaces: StateFlow<List<SpaceSummary>> = _spaces
@@ -141,7 +147,10 @@ class SpacesRepository(
                     cards = (o["cards"] as? JsonArray)?.mapNotNull { cardFrom(it as? JsonObject) } ?: emptyList(),
                 )
             } ?: emptyList()
-            _board.value = BoardView(project, resp["path"]?.jsonPrimitive?.content ?: "", cols)
+            _board.value = BoardView(
+                project, resp["path"]?.jsonPrimitive?.content ?: "", cols,
+                defaultOwner = resp["defaultOwner"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            )
             _boardError.value = null
         }.onFailure { _boardError.value = it.message }
     }

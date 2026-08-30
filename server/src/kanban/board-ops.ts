@@ -10,7 +10,7 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import type { NoteStore } from '../notes.js'
-import {
+import { boardDefaultOwner,
   isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
   type KanbanBoard, type BoardCard, type CardRef,
 } from './board.js'
@@ -70,8 +70,11 @@ export interface CardView {
   detail: string[]
 }
 
-function view(board: KanbanBoard): { columns: Array<{ title: string; cards: CardView[] }> } {
+function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array<{ title: string; cards: CardView[] }> } {
   return {
+    // Frontmatter default_owner — clients preselect this agent on open.
+    // boardDefaultOwner takes raw content; the header holds the fence.
+    defaultOwner: boardDefaultOwner(board.header.join('\n')),
     columns: board.columns.map((col) => ({
       title: col.title,
       cards: col.cards.map((c) => ({

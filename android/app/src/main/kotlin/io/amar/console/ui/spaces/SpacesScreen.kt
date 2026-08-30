@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
@@ -279,6 +280,24 @@ fun forkDepth(session: AgentSessionRow, all: List<AgentSessionRow>): Int {
     return d
 }
 
+/** Default agent for a space (SPA selectDefaultAgent, store/spaces.ts:134):
+ *  board frontmatter default_owner → single bound non-fork live session →
+ *  key/name ending "general" → first by agentKey. */
+fun defaultAgent(
+    bound: List<AgentSessionRow>,
+    boardDefaultOwner: String?,
+): AgentSessionRow? {
+    boardDefaultOwner?.let { owner ->
+        bound.firstOrNull { it.agentKey == owner }?.let { return it }
+    }
+    val nonForks = bound.filter { it.parentClaudeSessionId == null }
+    if (nonForks.size == 1) return nonForks[0]
+    nonForks.firstOrNull {
+        it.agentKey?.endsWith("general") == true || it.name.lowercase().endsWith("general")
+    }?.let { return it }
+    return nonForks.sortedBy { it.agentKey ?: "~" }.firstOrNull() ?: bound.firstOrNull()
+}
+
 /** Sessions bound to a space: session project/areas fields (SPA parity —
  *  the binding lives on the session since durable roles were removed). */
 fun sessionsForSpace(
@@ -288,6 +307,35 @@ fun sessionsForSpace(
 ): List<AgentSessionRow> = sessions.filter { s ->
     s.status != "ended" && !s.isAl &&
         (if (kind == "project") s.project == slug else slug in s.areaList())
+}
+
+/** Root agent of an assignee key: walk the LIVE session's
+ *  parentClaudeSessionId lineage to the first non-fork session; for DEAD fork
+ *  keys strip `-fork(-\d+)?$` then drop trailing `-`-segments until a live
+ *  agentKey matches (SPA rootOf, SpacesTab.tsx:1051). Falls back to the key
+ *  itself so an unresolvable assignee still groups stably. */
+fun rootOf(agentKey: String?, sessions: List<AgentSessionRow>): String? {
+    if (agentKey == null) return null
+    val live = sessions.filter { it.status != "ended" }
+    val byCsid = live.filter { it.claudeSessionId != null }.associateBy { it.claudeSessionId!! }
+    var cur = live.firstOrNull { it.agentKey == agentKey }
+    if (cur != null) {
+        var hops = 0
+        while (cur!!.parentClaudeSessionId != null && hops < 6) {
+            cur = byCsid[cur.parentClaudeSessionId!!] ?: break
+            hops++
+        }
+        return cur.agentKey ?: agentKey
+    }
+    // Dead fork key: peel back to the source role key.
+    var k = agentKey.replace(Regex("-fork(-\\d+)?$"), "")
+    while (k.isNotEmpty()) {
+        if (live.any { it.agentKey == k }) return k
+        val cut = k.lastIndexOf('-')
+        if (cut <= 0) break
+        k = k.substring(0, cut)
+    }
+    return agentKey
 }
 
 /** Flattened fork-lineage order: roots first, each followed by its forks
@@ -520,7 +568,7 @@ fun SpaceDetailScreen(
                 ) { Text("Create a kanban board for this project") }
             }
             "board" -> BoardView(spacesRepo, sessions, bound, kind, slug, onOpenSession)
-            "agents" -> SpaceAgentsList(agents, sessions, bound, kind, slug, onOpenSession)
+            "agents" -> SpaceAgentsList(agents, spacesRepo, sessions, bound, kind, slug, onOpenSession)
             "docs" -> SpaceDocsList(notes, slug, onOpenNote)
         }
     }
@@ -559,6 +607,17 @@ private fun BoardView(
     val visibleCols = board.columns.filter { !KanbanCodec.DONE_COLUMN_RE.matches(it.title) }
     val doneCount = board.columns.filter { KanbanCodec.DONE_COLUMN_RE.matches(it.title) }.sumOf { it.cards.size }
 
+    // Assignee filter, grouped by ROOT agent (SPA ^buzw4l): per-ticket forks
+    // collapse under their source, so chips stay few and meaningful. Cards
+    // stay addressed by ^id/text, so filtering can't corrupt refs.
+    var rootFilter by remember(board.path) { mutableStateOf<String?>(null) }
+    val filterRoots = remember(board, allSessions) {
+        visibleCols.flatMap { it.cards }.mapNotNull { rootOf(it.agentKey, allSessions) }
+            .distinct().sorted()
+    }
+    fun cardVisible(c: SpacesRepository.CardView): Boolean =
+        rootFilter == null || rootOf(c.agentKey, allSessions) == rootFilter
+
     Column(Modifier.fillMaxSize()) {
         // Sticky dismissible mutation-error banner — never a board takeover
         // (the board itself stays interactive underneath).
@@ -583,6 +642,27 @@ private fun BoardView(
                     modifier = Modifier.size(14.dp).clickable { spacesRepo.clearError() },
                 )
             }
+        if (filterRoots.size > 1) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (root in filterRoots) {
+                    val selected = rootFilter == root
+                    val label = allSessions.firstOrNull { it.agentKey == root && it.status != "ended" }
+                        ?.name?.removeSuffix(" (fork)") ?: root
+                    Surface(
+                        onClick = { rootFilter = if (selected) null else root },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                    }
+                }
+            }
+        }
         }
         LazyRow(
             Modifier.fillMaxSize().padding(top = 4.dp),
@@ -603,9 +683,10 @@ private fun BoardView(
                             Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
                         }
                     }
+                    val shown = col.cards.filter { cardVisible(it) }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-                        items(col.cards.size) { i ->
-                            val card = col.cards[i]
+                        items(shown.size) { i ->
+                            val card = shown[i]
                             SwipeToDone(
                                 onDone = { scope.launch { spacesRepo.moveCard(slug, card, "Done") } },
                             ) { CardChip(card, allSessions) { sheetCard = card } }
@@ -1074,6 +1155,7 @@ private fun SwipeToDone(onDone: () -> Unit, content: @Composable () -> Unit) {
 @Composable
 private fun SpaceAgentsList(
     agents: AgentsRepository,
+    spacesRepo: SpacesRepository,
     allSessions: List<AgentSessionRow>,
     bound: List<AgentSessionRow>,
     kind: String,
@@ -1081,11 +1163,14 @@ private fun SpaceAgentsList(
     onOpenSession: (String) -> Unit,
 ) {
     val activity by agents.activity.collectAsState()
+    val boardState by spacesRepo.board.collectAsState()
+    val default = remember(bound, boardState) { defaultAgent(bound, boardState?.defaultOwner) }
     val todosMap by agents.todos.collectAsState()
     var creating by remember { mutableStateOf(false) }
     // Fork-lineage order: parents before their forks, indented by depth
     // (parentClaudeSessionId — SPA SpaceRail tree parity, flattened).
     val ordered = remember(bound) { lineageOrder(bound) }
+    LaunchedEffect(Unit) { io.amar.console.data.agents.Cron.refreshAll() }
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
     val micOwner by io.amar.console.data.agents.Mic.owner.collectAsState()
     Column(Modifier.fillMaxSize()) {
@@ -1112,11 +1197,24 @@ private fun SpaceAgentsList(
                         )
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(s.name.removeSuffix(" (fork)"), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            (if (s.id == default?.id) "★ " else "") + s.name.removeSuffix(" (fork)"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (s.id == default?.id) FontWeight.Medium else null,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
                         Text(s.status + if (s.hibernated) " · hibernated" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    // SPA SessionBadges parity: amber shell count, violet todo
-                    // progress (hidden once complete), mic owner, dormant moon.
+                    // SPA SessionBadges parity: amber shell count, grey cron
+                    // count, violet todo progress (hidden once complete),
+                    // mic owner, dormant moon.
+                    val cronTasks by io.amar.console.data.agents.Cron.tasksFor(s.claudeSessionId)
+                        .collectAsState(initial = emptyList())
+                    val activeCrons = cronTasks.count { it.disabledAt == null }
+                    if (activeCrons > 0) {
+                        Icon(Icons.Filled.Schedule, "Cron tasks", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+                        Text("$activeCrons", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (s.backgroundProcessCount > 0) {
                         Icon(Icons.Filled.Terminal, "Background processes", tint = AMBER, modifier = Modifier.size(13.dp))
                         Text("${s.backgroundProcessCount}", style = MaterialTheme.typography.labelSmall, color = AMBER)
