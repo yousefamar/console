@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
@@ -658,20 +659,68 @@ private fun CardChip(
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
+        val tagSplit = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
+        val images = remember(card.detail) { io.amar.console.data.spaces.CardContent.imagePaths(card.detail) }
+        val textDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
+        val urls = remember(card.text, card.detail) { io.amar.console.data.spaces.CardContent.cardUrls(card.text, card.detail) }
         Text(
-            card.text,
+            tagSplit.text,
             style = MaterialTheme.typography.bodySmall,
             color = if (card.checked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
         )
-        // Detail preview, newline-preserved, clamped (SPA 6-line clamp).
-        if (card.detail.isNotEmpty()) {
+        // Detail preview (image lines stripped), newline-preserved, clamped.
+        if (textDetail.isNotEmpty()) {
             Text(
-                card.detail.joinToString("\n"),
+                textDetail.joinToString("\n"),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 4, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp),
             )
+        }
+        // Image thumbs (48dp) via GET /notes/asset/<path> (bearer via Coil).
+        if (images.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
+                for (path in images.take(4)) {
+                    coil.compose.AsyncImage(
+                        model = io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8"),
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                }
+            }
+        }
+        // URL chips — tappable, open browser.
+        if (urls.isNotEmpty()) {
+            val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                for (u in urls.take(6)) {
+                    Surface(
+                        onClick = { runCatching { uriHandler.openUri(u.url) } },
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Row(Modifier.padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Icon(Icons.Filled.Link, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(10.dp))
+                            Text(u.label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA), maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
+        // Generic tag badges (blocked/nofork/model have dedicated ones below).
+        if (tagSplit.tags.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
+                for (tag in tagSplit.tags.take(5)) {
+                    Surface(shape = RoundedCornerShape(5.dp), color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)) {
+                        Text(tag, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
+                    }
+                }
+            }
         }
         val hasMeta = card.blocked || card.agentKey != null || card.blockId != null
         if (hasMeta) {
@@ -716,23 +765,66 @@ private fun CardSheet(
         // The whole sheet scrolls — a long card detail (agent report notes)
         // must never push Move/Assign/Open-agent out of reach.
         Column(Modifier.padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
-            Text(card.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-            if (card.detail.isNotEmpty()) {
+            val sheetTags = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
+            val sheetImages = remember(card.detail) { io.amar.console.data.spaces.CardContent.imagePaths(card.detail) }
+            val sheetTextDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
+            val sheetUrls = remember(card.text, card.detail) { io.amar.console.data.spaces.CardContent.cardUrls(card.text, card.detail) }
+            Text(sheetTags.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+            if (sheetTags.tags.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 2.dp)) {
+                    for (tag in sheetTags.tags) {
+                        Surface(shape = RoundedCornerShape(5.dp), color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)) {
+                            Text(tag, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
+                        }
+                    }
+                }
+            }
+            if (sheetTextDetail.isNotEmpty()) {
                 var detailExpanded by remember { mutableStateOf(false) }
                 Text(
-                    card.detail.joinToString("\n"),
+                    sheetTextDetail.joinToString("\n"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = if (detailExpanded) Int.MAX_VALUE else 8,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp).clickable { detailExpanded = !detailExpanded },
                 )
-                if (!detailExpanded && card.detail.joinToString("\n").lines().size > 8) {
+                if (!detailExpanded && sheetTextDetail.size > 8) {
                     Text(
                         "… show all", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable { detailExpanded = true }.padding(vertical = 2.dp),
                     )
+                }
+            }
+            if (sheetImages.isNotEmpty()) {
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (path in sheetImages) {
+                        coil.compose.AsyncImage(
+                            model = io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8"),
+                            contentDescription = path,
+                            modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                    }
+                }
+            }
+            if (sheetUrls.isNotEmpty()) {
+                val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    for (u in sheetUrls) {
+                        Row(
+                            Modifier.clickable { runCatching { uriHandler.openUri(u.url) } },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(Icons.Filled.Link, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(12.dp))
+                            Text(u.label, style = MaterialTheme.typography.labelMedium, color = Color(0xFF60A5FA), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 6.dp)) {
