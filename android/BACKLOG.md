@@ -27,6 +27,26 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- Board assignee filter groups by ROOT agent (^ripe-heron): filter chips per
+  distinct root (SPA rootOf — live parentClaudeSessionId lineage walk; dead
+  fork keys peel -fork suffix then trailing segments), labelled by live
+  session name; per-ticket forks collapse under their source so chips stay
+  meaningful. Cards stay ^id/text-addressed (filtering can't corrupt refs).
+  Space Agents rows gain the grey cron badge (active tasks via GET
+  /cron?session=). Default agent per space (SPA selectDefaultAgent): board
+  default_owner → single bound non-fork → 'general' suffix → first-by-key,
+  starred+bold in the Agents tab; hub BoardOps view() now exposes
+  defaultOwner. +RootOfTest (lineage, dead-key peel, resolution order).
+
+- Card sheet dispatch controls (^glad-hare): assignee meta chip is tappable —
+  opens the assignee's live session (SPA openAssigneeSession; assign stays a
+  separate section). New pills: nofork toggle (POST /board/:p/nofork — wake
+  the role directly, no per-ticket fork), model pin haiku/sonnet/opus (POST
+  /board/:p/model), and ↻ redispatch for stamped cards (POST /board/:p/
+  redispatch — re-fire a dead/lost dispatch). Hub-side: BoardOps CardView/
+  view() now serve nofork+model (they were parse-only — the SPA benefits
+  too); all 6 inline CardView literals patched, 37 kanban tests green.
+
 - Board card content richness (^prim-elk): image detail lines (`![img](…)`)
   render as thumbs — 48dp on the chip, 96dp scrollable in the sheet — via
   GET /notes/asset/<path> (Coil's global loader injects the bearer), and are
