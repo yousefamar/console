@@ -115,21 +115,54 @@ fun SpacesScreen(
     // Concrete alert ITEMS per space (SPA SpaceAlert parity): the actual
     // unread/alerted sessions + dirty files render as tappable rows inline
     // under the space name, so everything is one tap from the top level.
-    fun alertItems(slug: String, kind: String): List<SpaceAlertItem> {
-        val items = mutableListOf<SpaceAlertItem>()
-        for (s in spaceSessions(slug, kind)) {
-            val level = when {
-                s.needsAttention -> "attention"
-                activity[s.id]?.running == true -> "working"
-                s.hasUnread -> "unread"
-                else -> continue
+    fun alertItems(slug: String, kind: String, cardOwned: Set<String>): List<SpaceAlertItem> {
+        val bound = spaceSessions(slug, kind)
+        fun levelOf(s: AgentSessionRow): String? = when {
+            s.needsAttention -> "attention"
+            activity[s.id]?.running == true -> "working"
+            s.hasUnread -> "unread"
+            else -> null
+        }
+        // Card-owned forks are reachable via their card — suppress from alert
+        // rows UNLESS they need you (attention-red always surfaces). SPA
+        // ^lean-ibis parity.
+        fun suppressed(s: AgentSessionRow): Boolean =
+            s.parentClaudeSessionId != null && s.agentKey != null &&
+                s.agentKey in cardOwned && !s.needsAttention
+        val alerted = bound.filter { levelOf(it) != null && !suppressed(it) }
+        // Lineage TREE (SPA ^of1op4): each alerted session pulls its ancestor
+        // chain in as context rows (level=null renders neutral), forks nest.
+        val byCsid = bound.filter { it.claudeSessionId != null }.associateBy { it.claudeSessionId!! }
+        val include = LinkedHashMap<String, AgentSessionRow>() // id → session
+        for (s in alerted) {
+            val chain = mutableListOf(s)
+            var cur = s
+            var guard = 0
+            while (cur.parentClaudeSessionId != null && guard++ < 6) {
+                cur = byCsid[cur.parentClaudeSessionId!!] ?: break
+                chain.add(cur)
             }
+            for (node in chain.reversed()) include.putIfAbsent(node.id, node)
+        }
+        // DFS in include-set order, roots first, children under parents.
+        val childrenOf = include.values.groupBy { s ->
+            s.parentClaudeSessionId?.takeIf { p -> include.values.any { it.claudeSessionId == p } }
+        }
+        val rank = mapOf("attention" to 0, "working" to 1, "unread" to 2)
+        fun sortKey(s: AgentSessionRow) = rank[levelOf(s) ?: ""] ?: 3
+        val items = mutableListOf<SpaceAlertItem>()
+        fun walk(s: AgentSessionRow, depth: Int) {
             items.add(SpaceAlertItem(
-                "session", s.id, s.name.removeSuffix(" (fork)"), level,
-                depth = forkDepth(s, sessions),
+                "session", s.id, s.name.removeSuffix(" (fork)"),
+                levelOf(s)?.takeIf { !suppressed(s) } ?: "context",
+                depth = depth,
                 fork = s.parentClaudeSessionId != null,
             ))
+            for (c in (childrenOf[s.claudeSessionId] ?: emptyList()).sortedBy { sortKey(it) }) {
+                if (c.id != s.id) walk(c, depth + 1)
+            }
         }
+        for (root in (childrenOf[null] ?: emptyList()).sortedBy { sortKey(it) }) walk(root, 0)
         if (kind == "project") {
             for (f in notesFiles) {
                 if (!f.dirty) continue
@@ -137,14 +170,14 @@ fun SpacesScreen(
                 if (inSpace) items.add(SpaceAlertItem("file", f.path, f.path.substringAfterLast('/'), "dirty"))
             }
         }
-        val rank = mapOf("attention" to 0, "working" to 1, "unread" to 2, "dirty" to 3)
-        return items.sortedBy { rank[it.level] ?: 4 }
+        return items
     }
 
+    fun itemsFor(sp: SpacesRepository.SpaceSummary) = alertItems(sp.slug, sp.kind, sp.cardAgentKeys.toSet())
     val areas = spaces.filter { it.kind == "area" }
-        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { alertItems(it.slug, it.kind).isEmpty() }.thenBy { it.title.lowercase() })
+        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { itemsFor(it).none { a -> a.level != "context" } }.thenBy { it.title.lowercase() })
     val projects = spaces.filter { it.kind == "project" }
-        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { alertItems(it.slug, it.kind).isEmpty() }
+        .sortedWith(compareBy<SpacesRepository.SpaceSummary> { itemsFor(it).none { a -> a.level != "context" } }
             .thenBy { it.status == "dormant" || it.status == "complete" }
             .thenBy { it.title.lowercase() })
 
@@ -197,7 +230,7 @@ fun SpacesScreen(
         }
         LazyColumn(Modifier.fillMaxSize()) {
             fun renderSpace(scope: androidx.compose.foundation.lazy.LazyListScope, sp: SpacesRepository.SpaceSummary) {
-                val items = alertItems(sp.slug, sp.kind)
+                val items = itemsFor(sp)
                 scope.item(key = "${sp.kind}:${sp.slug}") {
                     val boundHere = spaceSessions(sp.slug, sp.kind)
                     // A plain-unread session whose @key owns an Under-Review card
@@ -389,6 +422,8 @@ private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
             "attention" -> Dot(MaterialTheme.colorScheme.error)
             "working" -> androidx.compose.material3.CircularProgressIndicator(Modifier.size(9.dp), strokeWidth = 1.5.dp, color = AMBER)
             "unread" -> Dot(MaterialTheme.colorScheme.primary)
+            // Non-alerted ancestor pulled in for tree shape — neutral marker.
+            "context" -> Dot(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
             else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (a.fork) {

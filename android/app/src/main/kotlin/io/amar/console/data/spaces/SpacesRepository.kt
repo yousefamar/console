@@ -50,6 +50,10 @@ class SpacesRepository(
         val reviewCount: Int = 0,
         /** agentKeys assigned to those review cards. */
         val reviewAgentKeys: List<String> = emptyList(),
+        /** EVERY assignee on the board (all columns, dedup'd) — a fork whose
+         *  key is here is card-owned: the card is its affordance, so it's
+         *  suppressed from L1 alert rows unless it needs attention. */
+        val cardAgentKeys: List<String> = emptyList(),
     )
 
     /** Hub CardView (board-ops.ts): detail = trimmed continuation lines. */
@@ -75,7 +79,16 @@ class SpacesRepository(
 
     /** Wire the boards live-refresh subscription once (AppGraph). */
     fun wireLive(scope: CoroutineScope) {
+        var spacesRefresh: kotlinx.coroutines.Job? = null
         syncBus.on("boards", "*") { data ->
+            // ANY board event can change review/card assignee sets → refresh
+            // the spaces LIST too (1s debounce — transitions arrive in bursts)
+            // so L1 review badges + fork suppression track live (SPA parity).
+            spacesRefresh?.cancel()
+            spacesRefresh = scope.launch {
+                kotlinx.coroutines.delay(1_000)
+                runCatching { refreshSpaces() }
+            }
             val path = runCatching {
                 data.jsonObject["boardPath"]?.jsonPrimitive?.content
             }.getOrNull()
@@ -83,6 +96,14 @@ class SpacesRepository(
             // transition events carry boardPath; changed too. No path → refresh anyway.
             if (path == null || path == open.path) {
                 scope.launch { runCatching { loadBoard(open.project) } }
+            }
+        }
+        // Broadcasts missed while the WS was down are unrecoverable — re-read
+        // the open board + spaces list on every reconnect.
+        syncBus.onConnect {
+            scope.launch {
+                runCatching { refreshSpaces() }
+                _board.value?.let { runCatching { loadBoard(it.project) } }
             }
         }
     }
@@ -102,6 +123,8 @@ class SpacesRepository(
                     fileCount = o["fileCount"]?.jsonPrimitive?.intOrNull ?: 0,
                     reviewCount = o["reviewCount"]?.jsonPrimitive?.intOrNull ?: 0,
                     reviewAgentKeys = (o["reviewAgentKeys"] as? JsonArray)
+                        ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+                    cardAgentKeys = (o["cardAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
                 )
             } ?: emptyList()
