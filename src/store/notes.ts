@@ -240,6 +240,13 @@ interface NotesState {
   isFileDirty: (path: string) => boolean
   resolveImageUrl: (imagePath: string, fromFile: string) => Promise<string | null>
   pasteImage: (blob: Blob, filename: string) => Promise<string | null>
+
+  /** AI-edit review: path → the PRE-EDIT text (what the user last had).
+   *  Present = the editor renders that file in inline review mode
+   *  (word-level diff, per-chunk accept/reject) until all chunks resolve. */
+  reviewBase: Record<string, string>
+  beginReview: (path: string, original: string) => void
+  endReview: (path: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +260,10 @@ interface NotesState {
 // `initPrefs()` resolves yields the empty default, and the first subsequent
 // persistTabs() would then write that empty set back over the real one.
 // ---------------------------------------------------------------------------
+
+/** AI-edit review base mirror — survives a reload mid-review (the base can
+ *  hold unsaved user text that ✗-restore is the only copy of). */
+const REVIEW_KEY_PREFIX = 'console:notes:review:'
 
 const TABS_STORAGE_KEY = 'notesOpenTabs'
 const TABS_PREF = 'notesOpenTabs'
@@ -577,6 +588,13 @@ export const useNotesStore = create<NotesState>((set, get) => ({
         openedAt: { ...s.openedAt, [path]: Date.now() },
       }))
       persistTabs(get().openFiles, path)
+      // A reload mid-review: the mirrored base survives in localStorage —
+      // re-arm review so the pending accept/reject isn't silently lost.
+      try {
+        const reviewBase = localStorage.getItem(REVIEW_KEY_PREFIX + path)
+        if (reviewBase !== null && reviewBase !== content) get().beginReview(path, reviewBase)
+        else if (reviewBase !== null) localStorage.removeItem(REVIEW_KEY_PREFIX + path)
+      } catch { /* ignore */ }
     } catch (err) {
       console.error('Failed to open file:', err)
     }
@@ -613,6 +631,9 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     const closed = [path, ...get().recentlyClosedPaths].slice(0, 20)
     set({ openFiles: newOpenFiles, activeFilePath: newActive, recentlyClosedPaths: closed })
     persistTabs(newOpenFiles, newActive)
+    // Closing a tab mid-review is an explicit walk-away — the agent's disk
+    // copy stands (same contract as closing a dirty tab = discard).
+    get().endReview(path)
     return true
   },
 
@@ -853,6 +874,28 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     const file = get().openFiles[path]
     if (!file) return false
     return file.content !== file.savedContent
+  },
+
+  reviewBase: {},
+  beginReview: (path, original) => {
+    // A review already in flight keeps ITS base — later agent edits to the
+    // same file fold into the one open review rather than resetting it.
+    if (get().reviewBase[path] !== undefined) return
+    // The base may hold UNSAVED user edits (it's the buffer at edit time) and
+    // ✗-restore is the only copy — mirror it like drafts so a reload
+    // mid-review can't eat it. Same 1 MB quota-safety cap as the draft mirror.
+    try {
+      if (original.length <= 1_000_000) localStorage.setItem(REVIEW_KEY_PREFIX + path, original)
+    } catch { /* quota — in-memory review still works */ }
+    set((s) => ({ reviewBase: { ...s.reviewBase, [path]: original } }))
+  },
+  endReview: (path) => {
+    try { localStorage.removeItem(REVIEW_KEY_PREFIX + path) } catch { /* ignore */ }
+    set((s) => {
+      if (s.reviewBase[path] === undefined) return s
+      const { [path]: _, ...rest } = s.reviewBase
+      return { reviewBase: rest }
+    })
   },
 
   resolveImageUrl: async (imagePath, fromFile) => {

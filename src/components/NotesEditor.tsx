@@ -8,6 +8,7 @@ import { ProjectPanel } from './notes/ProjectPanel'
 import { WriteMetaBar } from './notes/WriteMetaBar'
 import { WriteActionBar } from './notes/WriteActionBar'
 import { LiveStatusChip } from './notes/LiveStatusChip'
+import { ReviewBanner } from './notes/ReviewBanner'
 import { X, ChevronLeft, ExternalLink, Send } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { showConfirm } from '@/dialog'
@@ -269,6 +270,9 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
 
       {/* Post metadata bar — drafts and published posts only */}
       {isWritingFile && <WriteMetaBar path={activeFilePath!} />}
+
+      {/* AI-edit review strip (agent edited this file while open) */}
+      <ReviewBanner path={activeFilePath!} />
 
       {/* Editor + side panel overlay */}
       <div className="relative flex flex-col flex-1 min-h-0">

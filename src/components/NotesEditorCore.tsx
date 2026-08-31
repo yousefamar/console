@@ -14,6 +14,7 @@ import { consoleEditorTheme } from '@/notes/editor-theme'
 import { insertFootnote } from '@/notes/editor-actions'
 import { livePreview } from '@/notes/live-preview'
 import { tablePreview } from '@/notes/table-preview'
+import { reviewCompartment, setReviewMode, remainingChunks } from '@/notes/review'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
@@ -343,10 +344,28 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
           },
         },
       ]),
+      // AI-edit review: configured empty here; the [reviewing] effect below
+      // reconfigures it with unifiedMergeView(base) when a review opens.
+      reviewCompartment.of([]),
       EditorView.updateListener.of((() => {
         let pendingContent: string | null = null
         let flushTimer: ReturnType<typeof setTimeout> | null = null
         return (update: any) => {
+          // Review auto-exit: the last chunk was accepted/rejected (or edited
+          // away — typing inside a chunk resolves it too). null = the merge
+          // view isn't active, which must NOT end the review (compartment
+          // reconfigure hasn't landed yet).
+          if (update.docChanged && remainingChunks(update.state) === 0) {
+            const path = filePathRef.current
+            if (useNotesStore.getState().reviewBase[path] !== undefined) {
+              // Dispatching inside an update listener is illegal — defer.
+              setTimeout(() => {
+                useNotesStore.getState().endReview(path)
+                const v = viewRef.current
+                if (v) setReviewMode(v, null)
+              }, 0)
+            }
+          }
           if (update.docChanged) {
             pendingContent = update.state.doc.toString()
             if (!flushTimer) {
@@ -562,6 +581,11 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
       })
       viewRef.current = view
       useNotesStore.getState().setEditorView(view, filePath)
+      // A review already open for this file (restored draft / remount
+      // mid-review): the [reviewBase] effect ran before the deferred mount
+      // and hit a null view — apply it now.
+      const base = useNotesStore.getState().reviewBase[filePath]
+      if (base !== undefined) setReviewMode(view, base)
       // If the glasses mirror is already on, push the initial window so the
       // user sees the opening context without waiting for a keystroke.
       if (isMirrorEnabled()) pushMirrorNow()
@@ -582,6 +606,16 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
   useEffect(() => {
     filePathRef.current = filePath
   }, [filePath])
+
+  // AI-edit review mode: reconfigure the merge compartment whenever this
+  // file's review base appears/disappears. Subscribed (not just read at
+  // mount) because the agent edit lands while the editor is already up.
+  const reviewBase = useNotesStore((s) => s.reviewBase[filePath])
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    setReviewMode(view, reviewBase ?? null)
+  }, [reviewBase, filePath])
 
   return (
     <div

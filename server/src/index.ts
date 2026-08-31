@@ -33,6 +33,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
+import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
@@ -676,6 +677,12 @@ const agentCtx: AgentContext = {
   // On merge, re-key the child's live crons onto the parent's session. Refers to
   // cronScheduler (declared below) — only ever invoked at runtime, well after boot.
   reassignCron: (from, to) => cronScheduler.reassignSession(from, to).length,
+  // Agent Edit/Write inside the vault → tell any open doc editor so it can
+  // flip into inline review mode (SPA re-reads disk and diffs locally).
+  onToolDiff: (sessionId, filePath) => {
+    const rel = vaultRelative(notesVault, filePath)
+    if (rel) syncBus.broadcast('notes', 'agent_edit', { path: rel, sessionId })
+  },
 }
 
 // --------------------------------------------------------------------------

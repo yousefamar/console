@@ -123,6 +123,10 @@ export interface AgentContext {
   /** Absolute vault root (index.ts wires noteStore.vaultPath) — lets a role
    *  spawn name its project's kanban board in the system prompt. */
   vaultPath?: string
+  /** An agent Edit/Write landed (tool_diff observed). index.ts broadcasts
+   *  `notes.agent_edit` for vault files so an open doc editor can flip into
+   *  inline review mode. */
+  onToolDiff?: (sessionId: string, filePath: string) => void
 }
 
 /** Restart every live session onto the currently-resolved model. Used after a
@@ -381,6 +385,7 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
       return
     }
     broadcast(ctx.clients, msg)
+    if (msg.type === 'tool_diff') ctx.onToolDiff?.(msg.sessionId, msg.filePath)
     // Save manifest on any session state change (debounced)
     if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result'
       || msg.type === 'session_queued') {
