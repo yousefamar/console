@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -49,6 +49,7 @@ describe('routing', () => {
       chat: { default: 'inbox', rooms: { '!r1:hs': 'feed' } },
       mail: { default: 'inbox', senders: { 'alice@example.com': 'feed' } },
       feeds: { default: 'feed', feeds: { 'feed-a': 'inbox' } },
+      sla: { dmHours: 24, rooms: {} },
     }
     expect(roomToItem(room(), rules).route).toBe('feed')
     expect(threadToItem(thread(), rules).route).toBe('feed')
@@ -150,6 +151,41 @@ describe('agent sessions', () => {
       sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW })),
     ]
     expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-attn', '!dm:hs', 't1', 's-plain'])
+  })
+})
+
+describe('SLA / overdue', () => {
+  const H = 3_600_000
+  const overdueDm = () => room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 30 * H, isUnread: false })
+
+  it('DM unanswered >24h is overdue; replying clears it', () => {
+    expect(isOverdue(overdueDm(), DEFAULT_RULES, NOW)).toBe(true)
+    expect(isOverdue(room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 1 * H }), DEFAULT_RULES, NOW)).toBe(false)
+    expect(isOverdue(room({ lastInboundTs: NOW - 2 * H, lastOutboundTs: NOW - 30 * H }), DEFAULT_RULES, NOW)).toBe(false)
+  })
+
+  it('groups have no default SLA; per-room override adds one (0 disables)', () => {
+    const g = room({ isDirect: false, lastInboundTs: NOW - 48 * H, lastOutboundTs: NOW - 96 * H })
+    expect(isOverdue(g, DEFAULT_RULES, NOW)).toBe(false)
+    const withRule = normalizeRules({ sla: { rooms: { '!r1:hs': 24 } } })
+    expect(isOverdue(g, withRule, NOW)).toBe(true)
+    const disabled = normalizeRules({ sla: { rooms: { '!r1:hs': 0 } } })
+    expect(isOverdue(overdueDm(), disabled, NOW)).toBe(false)
+  })
+
+  it('no inbound recorded (pre-restart rooms) → never overdue', () => {
+    expect(isOverdue(room({ isUnread: false }), DEFAULT_RULES, NOW)).toBe(false)
+  })
+
+  it('an overdue READ DM re-enters membership; marking it overdue tops the sort', () => {
+    expect(roomIsLive(overdueDm(), NOW, DEFAULT_RULES)).toBe(true)
+    expect(roomIsLive(room({ isUnread: false }), NOW, DEFAULT_RULES)).toBe(false)
+    const items = [
+      sessionToItem({ id: 's-attn', name: 'A', prompt: '', status: 'idle', createdAt: NOW, needsAttention: { ts: NOW, snippet: 'x' } }),
+      roomToItem(overdueDm(), DEFAULT_RULES, NOW),
+      roomToItem(room({ id: '!fresh:hs', lastMessageTime: NOW }), DEFAULT_RULES, NOW),
+    ]
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['!r1:hs', 's-attn', '!fresh:hs'])
   })
 })
 

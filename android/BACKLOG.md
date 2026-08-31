@@ -7,6 +7,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
+- Unified Inbox pane parity (^rosy-finch, SPA-complete 2026-08-28): a native
+  Inbox screen composing mail threads + unread chat rooms + unread feed items
+  + unread agent sessions into Feed/Inbox lists. Routing rules come from hub
+  `GET/POST /inbox/rules` (per-room/sender/feed overrides + `sla.dmHours`);
+  overdue DMs read `lastInboundTs`/`lastOutboundTs` off the chat-rooms
+  snapshot (already in the Room mirror once synced). Membership is derived —
+  no new read state. Handle verbs delegate to existing repos (archive /
+  mark-read / snooze).
+
 - Agent transcript inline media parity: SPA now renders `![x](/abs/path.png)`
   via hub `GET /agents/local-file?path=` (rewrite local/`~/` img srcs) and
   fenced ```html blocks as sandboxed WebView fragments. Android transcript

@@ -19,6 +19,12 @@ export interface DbFeedRead {
   itemId: string
 }
 
+/** Per-item feed snooze (unified Inbox `b`) — hides the item until due. */
+export interface DbFeedSnooze {
+  itemId: string
+  snoozedUntil: number
+}
+
 /** Cached GeoJSON for an agent-authored map layer (offline rendering). */
 export interface DbMapLayer {
   slug: string
@@ -74,6 +80,7 @@ class ConsoleDatabase extends Dexie {
   meta!: Table<{ key: string; value: string }, string>
   feedItems!: Table<DbFeedItem, string>
   feedRead!: Table<DbFeedRead, string>
+  feedSnooze!: Table<DbFeedSnooze, string>
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
   geocaches!: Table<DbGeocache, string>
@@ -199,6 +206,11 @@ class ConsoleDatabase extends Dexie {
     // v11: Map pane — Meetup events mirror (summaries; detail fetched on tap)
     this.version(11).stores({
       meetupEvents: '&id, [lat+lon], dateTime',
+    })
+
+    // v12: unified Inbox — per-item feed snooze (b on a feed item)
+    this.version(12).stores({
+      feedSnooze: '&itemId, snoozedUntil',
     })
   }
 }

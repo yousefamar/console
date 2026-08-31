@@ -47,6 +47,11 @@ export interface RoomState {
   /** Pagination cursor — preserved per room for client `loadOlder`. */
   prevBatch?: string
   readReceipts?: Record<string, ReadReceipt>
+  /** Newest message ts from someone OTHER than me / from me — the unified
+   *  Inbox's SLA input ("DM unanswered > N hours" = lastInboundTs newer than
+   *  lastOutboundTs by more than the window). Monotone: only advance. */
+  lastInboundTs?: number
+  lastOutboundTs?: number
 }
 
 // --- bridge bot / ghost detection ---------------------------------------
@@ -282,9 +287,16 @@ export function computeRoomState(
   // Latest message preview from timeline
   type PreviewMsg = { senderId?: string; senderName?: string; body?: string; timestamp: number }
   let lastMsg: PreviewMsg | undefined
+  // Inbound-vs-outbound reply tracking (SLA input). Monotone maxima so
+  // out-of-order resume batches can't roll them back. Bridge ghosts with my
+  // own number would misclassify, but my sends arrive as ctx.myUserId.
+  let lastInboundTs = existing?.lastInboundTs ?? 0
+  let lastOutboundTs = existing?.lastOutboundTs ?? 0
   for (const ev of timelineEvents) {
     if (ev.type !== 'm.room.message') continue
     const ts = ev.origin_server_ts ?? 0
+    if (ev.sender === ctx.myUserId) lastOutboundTs = Math.max(lastOutboundTs, ts)
+    else if (ev.sender && !isBridgeBotUser(ev.sender)) lastInboundTs = Math.max(lastInboundTs, ts)
     if (!lastMsg || ts > lastMsg.timestamp) {
       const content = ev.content as Record<string, unknown>
       const body = typeof content.body === 'string' ? content.body : ''
@@ -402,5 +414,7 @@ export function computeRoomState(
     snoozedUntil: existing?.snoozedUntil,
     prevBatch: delta.timeline?.prev_batch ?? existing?.prevBatch,
     readReceipts: updatedReceipts,
+    lastInboundTs: lastInboundTs || undefined,
+    lastOutboundTs: lastOutboundTs || undefined,
   }
 }

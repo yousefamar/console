@@ -12,8 +12,9 @@ import { hubFetchRaw as hubFetch } from '@/hub'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
-import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules } from '@/inbox/types'
+import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
+import { getSnoozeTime } from '@/utils/date'
 import {
   feedItemToItem, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
@@ -38,6 +39,10 @@ interface UnifiedInboxState {
   saveRules: (rules: InboxRules) => Promise<void>
   /** Set one feed's route (feed | inbox | hidden) — the filter UI's verb. */
   setFeedRoute: (feedId: string, route: FeedRoute) => Promise<void>
+  /** Move an item's SOURCE to the other list, persisted as a rules override
+   *  keyed by routeKey (room id / sender email / feed id) — a judgment about
+   *  the source, not the one item. */
+  toggleRoute: (item: InboxItem) => Promise<void>
   setFeedMode: (mode: FeedMode) => void
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
@@ -87,6 +92,26 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     await get().saveRules({ ...r, feeds: { ...r.feeds, feeds } })
   },
 
+  toggleRoute: async (item) => {
+    const key = item.routeKey
+    if (!key) return // agents don't route
+    const r = get().rules
+    const target: Route = item.route === 'inbox' ? 'feed' : 'inbox'
+    if (item.source === 'chat') {
+      const rooms = { ...r.chat.rooms }
+      if (target === r.chat.default) delete rooms[key]; else rooms[key] = target
+      await get().saveRules({ ...r, chat: { ...r.chat, rooms } })
+    } else if (item.source === 'mail') {
+      const senders = { ...r.mail.senders }
+      if (target === r.mail.default) delete senders[key]; else senders[key] = target
+      await get().saveRules({ ...r, mail: { ...r.mail, senders } })
+    } else {
+      const feeds = { ...r.feeds.feeds }
+      if (target === r.feeds.default) delete feeds[key]; else feeds[key] = target
+      await get().saveRules({ ...r, feeds: { ...r.feeds, feeds } })
+    }
+  },
+
   rebuild: async () => {
     const { rules, rulesLoaded } = get()
     if (!rulesLoaded) await get().loadRules()
@@ -101,16 +126,19 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // Chat: unread/manual-unread rooms, straight from Dexie (the chat store's
     // rooms array drops read rooms lazily; Dexie is the durable mirror).
     const rooms = (await db.chatRooms.toArray())
-      .filter((r) => roomIsLive(r, now))
-      .map((r) => roomToItem(r, effective))
+      .filter((r) => roomIsLive(r, now, effective))
+      .map((r) => roomToItem(r, effective, now))
 
     // Feeds: unread items. Reads Dexie directly (the feeds store's items
     // array follows its own pane's feed/folder selection).
     const readSet = new Set((await db.feedRead.toArray()).map((r) => r.itemId))
+    const snoozedSet = new Set(
+      (await db.feedSnooze.where('snoozedUntil').above(now).toArray()).map((r) => r.itemId),
+    )
     const feeds = useFeedStore.getState().feeds
     const feedById = new Map(feeds.map((f) => [f.id, f]))
     const feedItems = (await db.feedItems.orderBy('publishedAt').reverse().limit(500).toArray())
-      .filter((i) => !readSet.has(i.id))
+      .filter((i) => !readSet.has(i.id) && !snoozedSet.has(i.id))
       .map((i) => feedItemToItem(i, feedById.get(i.feedId), effective))
       .filter((i): i is InboxItem => i !== null)
 
@@ -166,7 +194,11 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     } else {
       if (item.source === 'mail') useInboxStore.getState().snoozeThread('tomorrow', undefined, item.sourceId)
       else if (item.source === 'chat') void useChatStore.getState().snoozeRoom('tomorrow')
-      else return // feed items and agent sessions have no snooze (Phase 2+)
+      else if (item.source === 'feed') {
+        // Local-only, like mail snooze pre-hub: hide until tomorrow 8am.
+        void db.feedSnooze.put({ itemId: item.sourceId, snoozedUntil: getSnoozeTime('tomorrow') })
+          .then(() => get().rebuild())
+      } else return // agent sessions have no snooze
     }
 
     // Advance if there's somewhere to go; otherwise STAY on the handled item

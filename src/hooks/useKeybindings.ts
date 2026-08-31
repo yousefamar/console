@@ -429,6 +429,11 @@ export function useKeybindings() {
           uinbox.handleSelected('snooze')
           return
         }
+        if (e.key === 'p' && selected) {
+          e.preventDefault()
+          void uinbox.toggleRoute(selected)
+          return
+        }
         return
       }
 

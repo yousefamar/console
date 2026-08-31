@@ -331,7 +331,7 @@ export function Layout() {
             <div className="flex items-center gap-0.5">
               <PaneTab pane="home" icon={<LayoutDashboard size={11} />} label="Home" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="inbox" icon={<InboxIcon size={11} />} label="Inbox" activePane={activePane} setActivePane={setActivePane} />
-              {gmailConnected ? (
+              {showLegacyTabs && (gmailConnected ? (
                 <PaneTab pane="email" icon={<Mail size={11} />} label="Mail" activePane={activePane} setActivePane={setActivePane} />
               ) : (
                 <button
@@ -343,9 +343,9 @@ export function Layout() {
                   <Mail size={11} />
                   <span>+Mail</span>
                 </button>
-              )}
+              ))}
               <PaneTab pane="calendar" icon={<CalendarDays size={11} />} label="Calendar" activePane={activePane} setActivePane={setActivePane} />
-              {matrixConnected ? (
+              {showLegacyTabs && (matrixConnected ? (
                 <PaneTab pane="chat" icon={<MessageCircle size={11} />} label="Chat" activePane={activePane} setActivePane={setActivePane} />
               ) : (
                 <button
@@ -355,9 +355,9 @@ export function Layout() {
                   <MessageCircle size={11} />
                   <span>+Chat</span>
                 </button>
-              )}
+              ))}
               <PaneTab pane="spaces" icon={<FolderKanban size={11} />} label="Spaces" activePane={activePane} setActivePane={setActivePane} />
-              <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />
+              {showLegacyTabs && <PaneTab pane="feeds" icon={<Rss size={11} />} label="Feeds" activePane={activePane} setActivePane={setActivePane} />}
               {showLegacyTabs && <PaneTab pane="notes" icon={<FileText size={11} />} label="Notes" activePane={activePane} setActivePane={setActivePane} />}
               <PaneTab pane="bookmarks" icon={<Bookmark size={11} />} label="Bookmarks" activePane={activePane} setActivePane={setActivePane} />
               <PaneTab pane="map" icon={<MapPin size={11} />} label="Map" activePane={activePane} setActivePane={setActivePane} />
@@ -557,15 +557,18 @@ function MobileTabBar({ activePane, setActivePane, gmailConnected, matrixConnect
   matrixConnected: boolean
   setShowMatrixLogin: (v: boolean) => void
 }) {
+  const showLegacy = localStorage.getItem('console:ui:legacyTabs') !== 'false'
   const tabs: { pane: ActivePane; icon: ReactNode; label: string }[] = [
     { pane: 'home', icon: <LayoutDashboard size={18} />, label: 'Home' },
     { pane: 'inbox', icon: <InboxIcon size={18} />, label: 'Inbox' },
-    { pane: 'email', icon: <Mail size={18} />, label: 'Mail' },
+    ...(showLegacy ? [{ pane: 'email' as ActivePane, icon: <Mail size={18} />, label: 'Mail' }] : []),
     { pane: 'calendar', icon: <CalendarDays size={18} />, label: 'Cal' },
-    { pane: 'chat', icon: <MessageCircle size={18} />, label: 'Chat' },
+    ...(showLegacy ? [{ pane: 'chat' as ActivePane, icon: <MessageCircle size={18} />, label: 'Chat' }] : []),
     { pane: 'spaces', icon: <FolderKanban size={18} />, label: 'Spaces' },
-    { pane: 'feeds', icon: <Rss size={18} />, label: 'Feeds' },
-    ...(localStorage.getItem('console:ui:legacyTabs') !== 'false' ? [{ pane: 'notes' as ActivePane, icon: <FileText size={18} />, label: 'Notes' }] : []),
+    ...(showLegacy ? [
+      { pane: 'feeds' as ActivePane, icon: <Rss size={18} />, label: 'Feeds' },
+      { pane: 'notes' as ActivePane, icon: <FileText size={18} />, label: 'Notes' },
+    ] : []),
     { pane: 'bookmarks', icon: <Bookmark size={18} />, label: 'Marks' },
     { pane: 'map', icon: <MapPin size={18} />, label: 'Map' },
     { pane: 'money', icon: <PoundSterling size={18} />, label: 'Money' },
@@ -778,6 +781,7 @@ function mobileGoBack(pane: ActivePane) {
       break
     }
     case 'money': useMoneyStore.getState().selectTransaction(null); break
+    case 'inbox': useUnifiedInboxStore.getState().select(null); break
     case 'spaces': {
       const ag = useAgentStore.getState()
       const notes = useNotesStore.getState()
@@ -804,6 +808,7 @@ function useMobileHasSelection(pane: ActivePane): boolean {
   const feedId = useFeedStore((s) => s.selectedFeedId)
   const folderId = useFeedStore((s) => s.selectedFolderId)
   const txId = useMoneyStore((s) => s.selectedTransactionId)
+  const inboxItem = useUnifiedInboxStore((s) => s.selected)
 
   switch (pane) {
     case 'email': return !!threadId
@@ -812,6 +817,7 @@ function useMobileHasSelection(pane: ActivePane): boolean {
     case 'notes': return !!filePath
     case 'feeds': return !!(feedItemId || feedId || folderId)
     case 'money': return !!txId
+    case 'inbox': return !!inboxItem
     default: return false
   }
 }

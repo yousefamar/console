@@ -147,6 +147,8 @@ export interface DbChatRoom {
   snoozedUntil?: number        // Timestamp ms (same pattern as email snooze)
   prevBatch?: string           // Pagination token for loading older messages
   readReceipts?: Record<string, { eventId: string; ts: number; displayName?: string; avatar?: string }>
+  lastInboundTs?: number       // Newest message ts from someone else (SLA input)
+  lastOutboundTs?: number      // Newest message ts from me (SLA input)
 }
 
 export interface DbChatMessage {

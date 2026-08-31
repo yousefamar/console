@@ -24,12 +24,26 @@ export function normalizeRules(raw: unknown): InboxRules {
     chat: { default?: Route; rooms?: Record<string, Route> }
     mail: { default?: Route; senders?: Record<string, Route> }
     feeds: { default?: Route; feeds?: Record<string, FeedRoute> }
+    sla: { dmHours?: number; rooms?: Record<string, number> }
   }>
   return {
     chat: { default: r.chat?.default ?? DEFAULT_RULES.chat.default, rooms: r.chat?.rooms ?? {} },
     mail: { default: r.mail?.default ?? DEFAULT_RULES.mail.default, senders: r.mail?.senders ?? {} },
     feeds: { default: r.feeds?.default ?? DEFAULT_RULES.feeds.default, feeds: r.feeds?.feeds ?? {} },
+    sla: { dmHours: r.sla?.dmHours ?? DEFAULT_RULES.sla.dmHours, rooms: r.sla?.rooms ?? {} },
   }
+}
+
+/** DM unanswered past its SLA window: the other side spoke after my last
+ *  reply, and that inbound has aged past the window. Groups have no default
+ *  SLA (per-room override can add one); window 0 disables. */
+export function isOverdue(r: DbChatRoom, rules: InboxRules, now: number): boolean {
+  const hours = rules.sla.rooms[r.id] ?? (r.isDirect ? rules.sla.dmHours : 0)
+  if (!hours) return false
+  const inbound = r.lastInboundTs ?? 0
+  if (!inbound) return false
+  if ((r.lastOutboundTs ?? 0) >= inbound) return false
+  return now - inbound > hours * 3_600_000
 }
 
 // ---------------------------------------------------------------------------
@@ -49,10 +63,11 @@ export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
     body: t.subject || '(no subject)',
     ts: t.date,
     route: routeForThread(t, rules),
+    routeKey: t.fromEmail?.toLowerCase() ?? '',
   }
 }
 
-export function roomToItem(r: DbChatRoom, rules: InboxRules): InboxItem {
+export function roomToItem(r: DbChatRoom, rules: InboxRules, now?: number): InboxItem {
   const sender = r.lastMessageSender
   const text = r.lastMessageBody ?? ''
   // Group rooms keep the sender prefix (the header names the GROUP); DMs
@@ -68,7 +83,9 @@ export function roomToItem(r: DbChatRoom, rules: InboxRules): InboxItem {
     network: r.networkIcon,
     ts: r.lastMessageTime,
     route: routeForRoom(r, rules),
+    routeKey: r.id,
     isDirect: r.isDirect,
+    ...(now !== undefined && isOverdue(r, rules, now) ? { overdue: true } : {}),
   }
 }
 
@@ -115,6 +132,7 @@ export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, 
     body: i.title,
     ts: Date.parse(i.publishedAt) || 0,
     route,
+    routeKey: i.feedId,
     ...(isHiddenFolder(feed?.folder) ? { hiddenFolder: true } : {}),
   }
 }
@@ -130,9 +148,13 @@ export function threadIsLive(t: DbThread, now: number): boolean {
   return !t.snoozedUntil || t.snoozedUntil <= now
 }
 
-export function roomIsLive(r: DbChatRoom, now: number): boolean {
+export function roomIsLive(r: DbChatRoom, now: number, rules?: InboxRules): boolean {
   if (r.snoozedUntil && r.snoozedUntil > now) return false
   if (r.isLowPriority || r.isMuted) return false
+  // An overdue DM is typically READ but unanswered — "I haven't responded in
+  // over a day" is the core SLA ask, so it re-enters the inbox despite being
+  // read. Replying clears it (lastOutboundTs advances).
+  if (rules && isOverdue(r, rules, now)) return true
   return r.isUnread || !!r.manualUnread
 }
 
@@ -144,10 +166,11 @@ export function roomIsLive(r: DbChatRoom, now: number): boolean {
 // ---------------------------------------------------------------------------
 
 function band(i: InboxItem): number {
-  if (i.source === 'agent') return i.attention ? 0 : 4
-  if (i.source === 'chat') return i.isDirect ? 1 : 2
-  if (i.source === 'mail') return 3
-  return 5
+  if (i.overdue) return 0
+  if (i.source === 'agent') return i.attention ? 1 : 5
+  if (i.source === 'chat') return i.isDirect ? 2 : 3
+  if (i.source === 'mail') return 4
+  return 6
 }
 
 export function sortInbox(items: InboxItem[]): InboxItem[] {

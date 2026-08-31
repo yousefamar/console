@@ -35,6 +35,12 @@ export interface InboxItem {
   isDirect?: boolean
   /** Agent only: session flagged @amar / pending question — tops the inbox. */
   attention?: boolean
+  /** Chat only: DM unanswered past its SLA window — tops the inbox. */
+  overdue?: boolean
+  /** The rules-override key this item's SOURCE routes by (room id / sender
+   *  email / feed id) — what promote/demote writes. Absent for agents (they
+   *  don't route). */
+  routeKey?: string
   /** Feed only: the feed lives in a hidden FOLDER (store/feeds HIDDEN_FOLDERS,
    *  e.g. X) — suppressed from the Feed column by default, shown exclusively
    *  in its opt-in mode. Distinct from the 'hidden' FeedRoute (dropped from
@@ -49,6 +55,10 @@ export interface InboxRules {
   chat: { default: Route; rooms: Record<string, Route> }
   mail: { default: Route; senders: Record<string, Route> }
   feeds: { default: Route; feeds: Record<string, FeedRoute> }
+  /** SLA windows (hours). A DM whose last inbound outdates my last reply by
+   *  more than dmHours is OVERDUE — banded to the very top. Per-room
+   *  overrides in `rooms` (0 = no SLA for that room). */
+  sla: { dmHours: number; rooms: Record<string, number> }
 }
 
 /** Conservative defaults: nothing silently drops out of "must handle".
@@ -58,4 +68,5 @@ export const DEFAULT_RULES: InboxRules = {
   chat: { default: 'inbox', rooms: {} },
   mail: { default: 'inbox', senders: {} },
   feeds: { default: 'feed', feeds: {} },
+  sla: { dmHours: 24, rooms: {} },
 }

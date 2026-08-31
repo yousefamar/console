@@ -15,10 +15,11 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { Bot, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Bot, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
+import { useChatStore } from '@/store/chat'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { ThreadView } from './ThreadView'
 import { ChatRoomView } from './ChatRoomView'
@@ -44,23 +45,50 @@ export const InboxTab = memo(function InboxTab() {
   const [showFilter, setShowFilter] = useState(false)
   const isMobile = useIsMobile()
 
+  // Mobile: one screen at a time — an Inbox|Feed segmented toggle picks the
+  // visible list; selecting swaps to the viewer; the header back button
+  // (mobileGoBack) clears the selection back to the list.
+  const [mobileList, setMobileList] = useState<'inbox' | 'feed'>('inbox')
+  const showViewer = !isMobile || !!selected
+  const showFeedCol = isMobile ? (!selected && mobileList === 'feed') : true
+  const showInboxCol = isMobile ? (!selected && mobileList === 'inbox') : true
+  const colClass = isMobile ? 'w-full' : 'w-80 flex-shrink-0 border-r border-border'
+  const mobileToggle = isMobile ? (
+    <span className="flex gap-0.5">
+      {(['inbox', 'feed'] as const).map((l) => (
+        <button
+          key={l}
+          onClick={() => setMobileList(l)}
+          className={`px-1.5 text-[10px] uppercase tracking-wide rounded-sm ${
+            mobileList === l ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary'
+          }`}
+        >
+          {l}
+        </button>
+      ))}
+    </span>
+  ) : undefined
+
   return (
     <>
       {/* Feed column */}
-      <div className="w-80 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+      <div className={`${colClass} ${showFeedCol ? 'flex' : 'hidden'} flex-col overflow-hidden`}>
         <ColumnHeader
           label={feedMode === 'x' ? 'Feed · X only' : 'Feed'}
           count={feedList.length}
           extra={
-            <button
-              onClick={() => setFeedMode(feedMode === 'x' ? 'default' : 'x')}
-              className={`px-1 text-[10px] font-semibold rounded-sm transition-colors duration-fast ${
-                feedMode === 'x' ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-primary'
-              }`}
-              title={feedMode === 'x' ? 'Back to the normal feed' : 'Show only X posts'}
-            >
-              𝕏
-            </button>
+            <>
+              {mobileToggle}
+              <button
+                onClick={() => setFeedMode(feedMode === 'x' ? 'default' : 'x')}
+                className={`px-1 text-[10px] font-semibold rounded-sm transition-colors duration-fast ${
+                  feedMode === 'x' ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-primary'
+                }`}
+                title={feedMode === 'x' ? 'Back to the normal feed' : 'Show only X posts'}
+              >
+                𝕏
+              </button>
+            </>
           }
           action={{
             icon: <SlidersHorizontal size={11} />,
@@ -78,8 +106,8 @@ export const InboxTab = memo(function InboxTab() {
       </div>
 
       {/* Inbox column */}
-      <div className="w-80 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
-        <ColumnHeader label="Inbox" count={inboxList.length} />
+      <div className={`${colClass} ${showInboxCol ? 'flex' : 'hidden'} flex-col overflow-hidden`}>
+        <ColumnHeader label="Inbox" count={inboxList.length} extra={mobileToggle} />
         <div className="flex-1 overflow-y-auto">
           {inboxList.map((item) => (
             <ItemRow key={item.key} item={item} selected={item.key === selectedKey} onClick={() => select(item)} />
@@ -93,7 +121,7 @@ export const InboxTab = memo(function InboxTab() {
           mounting all three at once here would double-mount EmailFrames and
           RoomMessages against the legacy panes (both stay mounted in Layout),
           so the display:none trick is deliberately NOT used at this level. */}
-      <div className="flex-1 min-w-0 flex flex-col relative overflow-hidden">
+      <div className={`flex-1 min-w-0 ${showViewer ? 'flex' : 'hidden'} flex-col relative overflow-hidden`}>
         {selected?.source === 'mail' && <ThreadView />}
         {selected?.source === 'chat' && <ChatRoomView />}
         {selected?.source === 'feed' && <FeedItemView />}
@@ -152,20 +180,31 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
   selected: boolean
   onClick: () => void
 }) {
+  const promote = item.route === 'feed'
   return (
-    <button
+    <div
       onClick={onClick}
-      className={`w-full text-left px-3 py-1.5 border-b border-border/50 transition-colors duration-fast ${
+      className={`group w-full text-left px-3 py-1.5 border-b border-border/50 transition-colors duration-fast cursor-pointer ${
         selected ? 'bg-surface-2' : 'hover:bg-surface-1'
       }`}
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="text-text-tertiary flex-shrink-0" title={item.network ?? item.source}><ChannelIcon item={item} /></span>
         <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
+        {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
+        {item.routeKey && (
+          <button
+            onClick={(e) => { e.stopPropagation(); void useUnifiedInboxStore.getState().toggleRoute(item) }}
+            className="hidden group-hover:inline text-text-tertiary hover:text-text-primary flex-shrink-0"
+            title={promote ? 'Promote this source to Inbox' : 'Demote this source to Feed'}
+          >
+            {promote ? <ArrowRightToLine size={11} /> : <ArrowLeftToLine size={11} />}
+          </button>
+        )}
         <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
       </div>
       {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5">{item.body}</div>}
-    </button>
+    </div>
   )
 })
 
@@ -212,6 +251,49 @@ function FeedFilterPanel({ onClose }: { onClose: () => void }) {
         )
       })}
       {sorted.length === 0 && <EmptyHint text="No feeds" />}
+      <RouteOverrides />
     </div>
+  )
+}
+
+// Chat-room + mail-sender routing overrides (written by the per-item
+// promote/demote gesture) — listed here so they're inspectable and clearable.
+function RouteOverrides() {
+  const rules = useUnifiedInboxStore((s) => s.rules)
+  const saveRules = useUnifiedInboxStore((s) => s.saveRules)
+  const rooms = useChatStore((s) => s.rooms)
+  const chatEntries = Object.entries(rules.chat.rooms)
+  const mailEntries = Object.entries(rules.mail.senders)
+  if (chatEntries.length === 0 && mailEntries.length === 0) return null
+
+  const clearChat = (id: string) => {
+    const { [id]: _, ...rest } = rules.chat.rooms
+    void saveRules({ ...rules, chat: { ...rules.chat, rooms: rest } })
+  }
+  const clearMail = (email: string) => {
+    const { [email]: _, ...rest } = rules.mail.senders
+    void saveRules({ ...rules, mail: { ...rules.mail, senders: rest } })
+  }
+
+  return (
+    <>
+      <div className="px-3 py-1 sticky top-0 bg-surface-1">
+        <span className="text-[10px] uppercase tracking-wide text-text-tertiary">Chat & mail overrides</span>
+      </div>
+      {chatEntries.map(([id, route]) => (
+        <div key={id} className="flex items-center gap-2 px-3 py-1">
+          <span className="truncate text-xs text-text-secondary flex-1" title={id}>{rooms.find((r) => r.id === id)?.name ?? id}</span>
+          <span className="text-[10px] text-text-tertiary">→ {route}</span>
+          <button onClick={() => clearChat(id)} className="text-[10px] text-text-tertiary hover:text-text-primary">clear</button>
+        </div>
+      ))}
+      {mailEntries.map(([email, route]) => (
+        <div key={email} className="flex items-center gap-2 px-3 py-1">
+          <span className="truncate text-xs text-text-secondary flex-1">{email}</span>
+          <span className="text-[10px] text-text-tertiary">→ {route}</span>
+          <button onClick={() => clearMail(email)} className="text-[10px] text-text-tertiary hover:text-text-primary">clear</button>
+        </div>
+      ))}
+    </>
   )
 }

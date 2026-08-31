@@ -53,3 +53,37 @@ describe('computeRoomState — manual unread durability', () => {
     expect(next.isUnread).toBe(true)
   })
 })
+
+describe('computeRoomState — inbound/outbound reply tracking (SLA input)', () => {
+  const msg = (sender: string, ts: number) => ({
+    type: 'm.room.message', sender, origin_server_ts: ts, content: { body: 'x', msgtype: 'm.text' },
+  })
+
+  it('classifies my sends as outbound, others as inbound', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [msg('@other:hs', 2000), msg('@me:hs', 3000)] } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.lastInboundTs).toBe(2000)
+    expect(next.lastOutboundTs).toBe(3000)
+  })
+
+  it('is monotone — an out-of-order resume batch cannot roll them back', () => {
+    const existing = baseRoom({ lastInboundTs: 5000, lastOutboundTs: 6000 })
+    const delta: SyncRoomDelta = { timeline: { events: [msg('@other:hs', 2000), msg('@me:hs', 3000)] } }
+    const next = computeRoomState('!r:hs', existing, delta, ctx)
+    expect(next.lastInboundTs).toBe(5000)
+    expect(next.lastOutboundTs).toBe(6000)
+  })
+
+  it('bridge bots do not count as inbound', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [msg('@whatsappbot:hs', 9000)] } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.lastInboundTs).toBeUndefined()
+  })
+
+  it('preserves prior values across deltas with no messages', () => {
+    const existing = baseRoom({ lastInboundTs: 5000, lastOutboundTs: 6000 })
+    const next = computeRoomState('!r:hs', existing, { unread_notifications: { notification_count: 0 } }, ctx)
+    expect(next.lastInboundTs).toBe(5000)
+    expect(next.lastOutboundTs).toBe(6000)
+  })
+})

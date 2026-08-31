@@ -23,4 +23,7 @@ export function wireUnifiedInbox(): void {
   useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() })
   useFeedStore.subscribe((s, prev) => { if (s.unreadCounts !== prev.unreadCounts || s.feeds !== prev.feeds) schedule() })
   useAgentStore.subscribe((s, prev) => { if (s.sessions !== prev.sessions) schedule() })
+  // Overdue-ness (SLA) is a function of wall clock, not store events — a DM
+  // crosses its 24h line with no delta firing. Coarse re-sweep.
+  setInterval(schedule, 5 * 60_000)
 }
