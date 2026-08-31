@@ -91,9 +91,15 @@ class FrontmatterTest {
             "https://yousefamar.com/memo/log/2026-07-20-hello/",
             FrontmatterParser.permalinkForLogPath("log/2026-07-20-hello.md"),
         )
+        assertEquals(
+            "https://yousefamar.com/memo/log/2026-07-20-hello/",
+            FrontmatterParser.permalinkForLogPath("projects/console/log/2026-07-20-hello.md"),
+        )
         assertNull(FrontmatterParser.permalinkForLogPath("scratch/foo.md"))
         assertTrue(FrontmatterParser.isDraftPath("scratch/blog-drafts/idea.md"))
         assertTrue(FrontmatterParser.isPublishedPath("log/x.md"))
+        assertTrue(FrontmatterParser.isPublishedPath("projects/console/log/x.md"))
+        assertFalse(FrontmatterParser.isPublishedPath("projects/console/log/drafts/x.md"))
         assertFalse(FrontmatterParser.isPublishedPath("log/sub/x.md"))
         assertTrue(FrontmatterParser.isWritingFile("log/x.md"))
     }

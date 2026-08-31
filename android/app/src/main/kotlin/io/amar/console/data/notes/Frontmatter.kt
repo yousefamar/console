@@ -202,16 +202,16 @@ object FrontmatterParser {
         return 0 until m.value.length
     }
 
-    /** log/<name>.md → https://yousefamar.com/memo/log/<name>/ ; else null. */
+    /** log/<name>.md or projects/<slug>/log/<name>.md → https://yousefamar.com/memo/log/<name>/ ; else null. */
     fun permalinkForLogPath(path: String): String? {
-        val m = Regex("^log/([^/]+)\\.md$").find(path) ?: return null
+        val m = Regex("^(?:projects/[^/]+/)?log/([^/]+)\\.md$").find(path) ?: return null
         return "https://yousefamar.com/memo/log/${m.groupValues[1]}/"
     }
 
     fun isDraftPath(path: String?): Boolean = path != null && (path.startsWith("$DRAFTS_DIR/") || path.startsWith("$LEGACY_DRAFTS_DIR/") || Regex("^projects/[^/]+/log/drafts/[^/]+\\.md$").matches(path))
 
     fun isPublishedPath(path: String?): Boolean =
-        path != null && Regex("^log/[^/]+\\.md$").matches(path)
+        path != null && Regex("^(?:projects/[^/]+/)?log/[^/]+\\.md$").matches(path)
 
     /** Slug of a project index page (projects/<slug>.md or projects/<slug>/index.md). */
     fun projectSlugFromPath(path: String?): String? {
