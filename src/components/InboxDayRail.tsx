@@ -125,55 +125,58 @@ export const InboxDayRail = memo(function InboxDayRail() {
   return (
     <div className="w-64 flex-shrink-0 border-l border-border flex flex-col overflow-hidden">
       {/* Date nav header — replaces the grid's week-oriented header.
-          [collapse] [‹] ——— date ——— [›]: the date centers in the span
-          BETWEEN the arrows (not the header, whose left side is wider),
-          and the Today chip floats beside it without pushing it. */}
-      <div className="flex items-center border-b border-border px-1.5 py-1 flex-shrink-0">
-        <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
-          <PanelRightClose size={12} />
-        </button>
-        <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
-          <ChevronLeft size={12} />
-        </button>
-        {/* Today chip sits beside the left arrow, outside the centering span,
-            so its appearance never moves the date. */}
-        {!isToday && (
-          <button
-            onClick={() => setDate(startOfDay(new Date()))}
-            className="ml-1 px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
-            title="Jump to today"
-          >
-            Today
+          Flex children are ONLY [collapse ‹][flex-1 date][›]: the flex-1
+          span runs exactly from ‹ to ›, so justify-center puts the date at
+          the true midpoint between the arrows. The Today chip and the
+          picker input are both position:absolute — zero layout impact. */}
+      <div className="relative flex items-center border-b border-border px-1.5 py-1 flex-shrink-0">
+        <span className="relative flex items-center">
+          <button onClick={toggleCollapsed} className="text-text-tertiary hover:text-text-primary p-0.5" title="Collapse">
+            <PanelRightClose size={12} />
           </button>
-        )}
-        <span className="relative flex-1 flex items-center justify-center min-w-0">
-          <span className="relative">
+          <button onClick={() => setDate((d) => addDays(d, -1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Previous day">
+            <ChevronLeft size={12} />
+          </button>
+          {/* Chip floats right of the arrow, out of flex flow. */}
+          {!isToday && (
             <button
-              onClick={() => dateInputRef.current?.showPicker()}
-              className={`whitespace-nowrap text-[11px] ${isToday ? 'text-text-primary font-medium' : 'text-text-secondary'} hover:text-text-primary`}
-              title="Pick a date"
+              onClick={() => setDate(startOfDay(new Date()))}
+              className="absolute left-full top-1/2 -translate-y-1/2 ml-1 px-1.5 py-px text-[10px] text-text-secondary hover:text-text-primary bg-surface-2 border border-border rounded-sm transition-colors"
+              title="Jump to today"
             >
-              {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+              Today
             </button>
-            {/* The picker input invisibly overlays the date label at its real
-                size — Chrome anchors the popup to the input's box, and a
-                zero-size or offscreen box makes it fall back to screen-left. */}
-            <input
-              ref={dateInputRef}
-              type="date"
-              value={dateKey}
-              onChange={(e) => {
-                const [y, m, d] = e.target.value.split('-').map(Number)
-                if (y && m && d) setDate(new Date(y, m - 1, d))
-              }}
-              className="absolute inset-0 opacity-0 pointer-events-none"
-              tabIndex={-1}
-            />
-          </span>
+          )}
+        </span>
+        <span className="flex-1 flex items-center justify-center min-w-0">
+          <button
+            onClick={() => dateInputRef.current?.showPicker()}
+            className={`whitespace-nowrap text-[11px] ${isToday ? 'text-text-primary font-medium' : 'text-text-secondary'} hover:text-text-primary`}
+            title="Pick a date"
+          >
+            {date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}
+          </button>
         </span>
         <button onClick={() => setDate((d) => addDays(d, 1))} className="text-text-tertiary hover:text-text-primary p-0.5" title="Next day">
           <ChevronRight size={12} />
         </button>
+        {/* Chrome opens the date-picker popup LEFT-ALIGNED to the input's
+            border box (~270px wide, no viewport flip) — anchored at the date
+            label it ran off the right screen edge. This invisible box pins
+            its left edge 300px in from the rail's right (≈ the screen edge),
+            so the popup always fits. Full header height = real box; a 0-h
+            box makes Chrome fall back to screen-left. */}
+        <input
+          ref={dateInputRef}
+          type="date"
+          value={dateKey}
+          onChange={(e) => {
+            const [y, m, d] = e.target.value.split('-').map(Number)
+            if (y && m && d) setDate(new Date(y, m - 1, d))
+          }}
+          className="absolute top-0 bottom-0 right-0 w-[300px] opacity-0 pointer-events-none"
+          tabIndex={-1}
+        />
       </div>
 
       {/* The Calendar tab's own grid, pinned to one day */}
