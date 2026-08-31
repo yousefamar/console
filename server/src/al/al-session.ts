@@ -93,6 +93,9 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
         cwd: WORKSPACE_DIR,
         name: 'Al',
         agentKey: 'al',
+        // Space binding — without it the Spaces rail files Al under
+        // ~unassigned (the "where is Al??" incident after a reload).
+        project: 'al',
       })
       currentAlSession = session
       saveAlSession({ version: 1, claudeSessionId: existing.claudeSessionId, hubSessionId: session.id, createdAt: existing.createdAt })
@@ -139,6 +142,9 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
     name: 'Al',
     systemPrompt,
     agentKey: 'al',
+    // Space binding — the Spaces rail places sessions by project/areas; Al
+    // belongs under the `al` project, not ~unassigned.
+    project: 'al',
   })
   currentAlSession = session
 
