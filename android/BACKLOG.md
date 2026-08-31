@@ -18,6 +18,13 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.
   Drafts come from `GET /blog/drafts` (bare array).
 
+- Notes: inline AI-edit review parity (SPA 7bd0fb1, ^wavy-yak) — SPA flips an
+  open vault file into word-diff review (per-chunk accept/reject) when an
+  agent edits it, via SyncBus `notes.agent_edit {path, sessionId}`. Android's
+  notes editor has no review mode; at minimum surface a "changed on disk by
+  agent" banner with reload/keep choice. Related to the baseMtime entry below
+  (same conflict-surface plumbing).
+
 - Notes editor: send `baseMtime` on save (conditional write) — the SPA gained
   optimistic-concurrency saves (f866974: reads carry disk mtime, hub 409s on
   conflict, Overwrite/Keep-editing dialog) after a stale writer clobbered a
