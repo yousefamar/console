@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -71,6 +71,27 @@ describe('routing', () => {
     expect(r.feeds.default).toBe('inbox')
     expect(r.chat.default).toBe('inbox')
     expect(r.mail.senders).toEqual({})
+  })
+
+  it('hidden-FOLDER feeds flag the item (case-insensitive), others do not', () => {
+    const xFeed = { id: 'feed-a', title: 'Someone on X', xmlUrl: 'u', folder: 'X', addedAt: '' }
+    const other = { id: 'feed-a', title: 'Blog', xmlUrl: 'u', folder: 'tech', addedAt: '' }
+    expect(feedItemToItem(feedItem(), xFeed, DEFAULT_RULES)?.hiddenFolder).toBe(true)
+    expect(feedItemToItem(feedItem(), other, DEFAULT_RULES)?.hiddenFolder).toBeUndefined()
+    expect(feedItemToItem(feedItem(), undefined, DEFAULT_RULES)?.hiddenFolder).toBeUndefined()
+  })
+})
+
+describe('feed mode', () => {
+  const xItem = feedItemToItem(feedItem(), { id: 'feed-a', title: 'X acct', xmlUrl: 'u', folder: 'x', addedAt: '' }, DEFAULT_RULES)!
+  const normal = feedItemToItem(feedItem({ id: 'f2', feedId: 'feed-b' }), { id: 'feed-b', title: 'Blog', xmlUrl: 'u', folder: null, addedAt: '' }, DEFAULT_RULES)!
+
+  it('default mode hides hidden-folder items completely', () => {
+    expect(filterByFeedMode([xItem, normal], 'default')).toEqual([normal])
+  })
+
+  it('x mode shows ONLY hidden-folder items', () => {
+    expect(filterByFeedMode([xItem, normal], 'x')).toEqual([xItem])
   })
 })
 

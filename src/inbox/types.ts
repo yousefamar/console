@@ -35,6 +35,11 @@ export interface InboxItem {
   isDirect?: boolean
   /** Agent only: session flagged @amar / pending question — tops the inbox. */
   attention?: boolean
+  /** Feed only: the feed lives in a hidden FOLDER (store/feeds HIDDEN_FOLDERS,
+   *  e.g. X) — suppressed from the Feed column by default, shown exclusively
+   *  in its opt-in mode. Distinct from the 'hidden' FeedRoute (dropped from
+   *  the pane entirely). */
+  hiddenFolder?: boolean
 }
 
 /** Per-source routing rules, persisted hub-side (inbox-rules.json).

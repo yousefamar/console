@@ -3,6 +3,7 @@
 import type { DbThread } from '@/gmail/types'
 import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem, FeedSubscription } from '@/store/feeds'
+import { isHiddenFolder } from '@/feeds/hidden-folders'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from './types'
 
 export function routeForRoom(room: DbChatRoom, rules: InboxRules): Route {
@@ -114,6 +115,7 @@ export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, 
     body: i.title,
     ts: Date.parse(i.publishedAt) || 0,
     route,
+    ...(isHiddenFolder(feed?.folder) ? { hiddenFolder: true } : {}),
   }
 }
 
@@ -154,6 +156,15 @@ export function sortInbox(items: InboxItem[]): InboxItem[] {
 
 export function sortFeed(items: InboxItem[]): InboxItem[] {
   return [...items].sort((a, b) => b.ts - a.ts)
+}
+
+/** Feed-column display mode: hidden-folder items (X posts) are suppressed by
+ *  default and shown EXCLUSIVELY in 'x' mode. Applies to the feed column
+ *  only — an item explicitly routed to inbox was a deliberate override. */
+export type FeedMode = 'default' | 'x'
+
+export function filterByFeedMode(items: InboxItem[], mode: FeedMode): InboxItem[] {
+  return items.filter((i) => (mode === 'x' ? !!i.hiddenFolder : !i.hiddenFolder))
 }
 
 /** The item to land on after handling `key` (archive/read/snooze): the next

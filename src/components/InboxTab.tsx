@@ -38,6 +38,8 @@ export const InboxTab = memo(function InboxTab() {
   const inboxList = useUnifiedInboxStore((s) => s.inboxList)
   const selected = useUnifiedInboxStore((s) => s.selected)
   const select = useUnifiedInboxStore((s) => s.select)
+  const feedMode = useUnifiedInboxStore((s) => s.feedMode)
+  const setFeedMode = useUnifiedInboxStore((s) => s.setFeedMode)
   const selectedKey = selected?.key ?? null
   const [showFilter, setShowFilter] = useState(false)
   const isMobile = useIsMobile()
@@ -47,8 +49,19 @@ export const InboxTab = memo(function InboxTab() {
       {/* Feed column */}
       <div className="w-80 flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
         <ColumnHeader
-          label="Feed"
+          label={feedMode === 'x' ? 'Feed · X only' : 'Feed'}
           count={feedList.length}
+          extra={
+            <button
+              onClick={() => setFeedMode(feedMode === 'x' ? 'default' : 'x')}
+              className={`px-1 text-[10px] font-semibold rounded-sm transition-colors duration-fast ${
+                feedMode === 'x' ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-primary'
+              }`}
+              title={feedMode === 'x' ? 'Back to the normal feed' : 'Show only X posts'}
+            >
+              𝕏
+            </button>
+          }
           action={{
             icon: <SlidersHorizontal size={11} />,
             title: 'Filter feeds',
@@ -100,9 +113,10 @@ export const InboxTab = memo(function InboxTab() {
 
 // Matches SpacesTab's RailSection header (text-[10px] uppercase tracking-wide
 // text-text-tertiary) so the two unified panes read as one family.
-function ColumnHeader({ label, count, action }: {
+function ColumnHeader({ label, count, extra, action }: {
   label: string
   count: number
+  extra?: React.ReactNode
   action?: { icon: React.ReactNode; title: string; onClick: () => void }
 }) {
   return (
@@ -110,6 +124,7 @@ function ColumnHeader({ label, count, action }: {
       <span className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</span>
       <span className="flex items-center gap-2">
         <span className="text-[10px] text-text-tertiary">{count}</span>
+        {extra}
         {action && (
           <button onClick={action.onClick} className="text-text-tertiary hover:text-text-primary" title={action.title}>
             {action.icon}

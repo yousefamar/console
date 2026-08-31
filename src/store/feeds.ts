@@ -3,6 +3,7 @@ import { db } from '@/db'
 import type { DbFeedItem, DbFeedRead } from '@/db'
 import { useUiStore } from '@/store/ui'
 import { extractYoutubeId } from '@/utils/youtube'
+import { isHiddenFolder } from '@/feeds/hidden-folders'
 
 // --------------------------------------------------------------------------
 // Types
@@ -19,16 +20,6 @@ export interface FeedSubscription {
   maxItems?: number
   addedAt: string
   viaProxy?: boolean
-}
-
-// Folders whose contents never appear in the aggregated "All" view or its
-// unread badge — they only surface when the folder or one of its feeds is
-// opened directly. For high-volume/low-signal sources that would otherwise
-// drown the main list. Case-insensitive.
-const HIDDEN_FOLDERS = new Set(['x'])
-
-function isHiddenFolder(folder: string | null): boolean {
-  return !!folder && HIDDEN_FOLDERS.has(folder.toLowerCase())
 }
 
 export interface FeedItem {

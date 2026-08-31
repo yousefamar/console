@@ -15,8 +15,9 @@ import { useFeedStore } from '@/store/feeds'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
 import {
-  feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
+  type FeedMode,
 } from '@/inbox/route'
 
 interface UnifiedInboxState {
@@ -24,6 +25,9 @@ interface UnifiedInboxState {
   rulesLoaded: boolean
   feedList: InboxItem[]
   inboxList: InboxItem[]
+  /** Feed-column mode: 'default' hides hidden-folder feeds (X); 'x' shows
+   *  ONLY those. Session-only — always lands on default. */
+  feedMode: FeedMode
   /** The selected item — held as the ITEM, not a key into the lists: handling
    *  it (reply marks a chat read, archive drops a thread) removes it from the
    *  lists on rebuild, but the viewer must keep showing it until the user
@@ -34,6 +38,7 @@ interface UnifiedInboxState {
   saveRules: (rules: InboxRules) => Promise<void>
   /** Set one feed's route (feed | inbox | hidden) — the filter UI's verb. */
   setFeedRoute: (feedId: string, route: FeedRoute) => Promise<void>
+  setFeedMode: (mode: FeedMode) => void
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
@@ -47,7 +52,13 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   rulesLoaded: false,
   feedList: [],
   inboxList: [],
+  feedMode: 'default',
   selected: null,
+
+  setFeedMode: (mode) => {
+    set({ feedMode: mode })
+    void get().rebuild()
+  },
 
   loadRules: async () => {
     try {
@@ -111,7 +122,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
 
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
     set({
-      feedList: sortFeed(all.filter((i) => i.route === 'feed')),
+      feedList: sortFeed(filterByFeedMode(all.filter((i) => i.route === 'feed'), get().feedMode)),
       inboxList: sortInbox(all.filter((i) => i.route === 'inbox')),
     })
   },
