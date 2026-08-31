@@ -27,6 +27,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+_(empty)_
+
+## Shipped
+
+### v90 (2026-08-31)
 - Board assignee filter groups by ROOT agent (^ripe-heron): filter chips per
   distinct root (SPA rootOf — live parentClaudeSessionId lineage walk; dead
   fork keys peel -fork suffix then trailing segments), labelled by live
@@ -108,7 +113,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 - **Spaces rail: review-count on the kanban badge + review-hand-back reclassification** (ba742c0, ^teal-finch): SpaceRow shows `reviewCount` beside the ViewKanban glyph; an unread session whose agentKey owns an Under-Review card moves its blue from the Bot badge to the kanban badge (attention red never moves). SpacesRepository parses `reviewCount`/`reviewAgentKeys` from `/blog/spaces` (older hub → 0/empty, safe defaults).
 
-## Shipped
 
 ### v89 (2026-08-27)
 - Spaces mobile parity round (post-v88 feedback): CardSheet scrolls as a whole
