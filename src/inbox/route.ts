@@ -71,6 +71,38 @@ export function roomToItem(r: DbChatRoom, rules: InboxRules): InboxItem {
   }
 }
 
+/** Minimal session shape the adapter needs (mirrors SessionInfo fields). */
+export interface AgentSessionLike {
+  id: string
+  name?: string
+  prompt: string
+  status: 'running' | 'idle' | 'ended'
+  createdAt: number
+  lastActivityAt?: number
+  hasUnread?: boolean
+  needsAttention?: { ts: number; snippet: string } | null
+  isAl?: boolean
+}
+
+/** Unread agent sessions demand handling (mark read / reply / review), so
+ *  they're inbox-shaped by definition — no routing rules apply. */
+export function sessionIsLive(s: AgentSessionLike): boolean {
+  return !s.isAl && (!!s.hasUnread || !!s.needsAttention)
+}
+
+export function sessionToItem(s: AgentSessionLike): InboxItem {
+  return {
+    key: `agent:${s.id}`,
+    source: 'agent',
+    sourceId: s.id,
+    header: (s.name || s.prompt.slice(0, 40)).replace(/\s\(fork\)$/, ''),
+    body: s.needsAttention?.snippet ?? '',
+    ts: s.lastActivityAt ?? s.createdAt,
+    route: 'inbox',
+    attention: !!s.needsAttention,
+  }
+}
+
 export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, rules: InboxRules): InboxItem | null {
   const route = routeForFeed(i.feedId, rules)
   if (route === 'hidden') return null
@@ -104,14 +136,16 @@ export function roomIsLive(r: DbChatRoom, now: number): boolean {
 
 // ---------------------------------------------------------------------------
 // Inbox ordering (Phase 1: simple, deterministic — SLA engine is Phase 3).
-// Chat DMs first, then group chats, then mail, then promoted/inbox-routed
-// feed reading; recency within each band.
+// Attention-flagged agents first (they're blocked on Yousef), then chat DMs,
+// groups, mail, other unread agents, then promoted/inbox-routed feed
+// reading; recency within each band.
 // ---------------------------------------------------------------------------
 
 function band(i: InboxItem): number {
-  if (i.source === 'chat') return i.isDirect ? 0 : 1
-  if (i.source === 'mail') return 2
-  return 3
+  if (i.source === 'agent') return i.attention ? 0 : 4
+  if (i.source === 'chat') return i.isDirect ? 1 : 2
+  if (i.source === 'mail') return 3
+  return 5
 }
 
 export function sortInbox(items: InboxItem[]): InboxItem[] {

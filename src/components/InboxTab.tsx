@@ -15,7 +15,8 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { Bot, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -83,6 +84,7 @@ export const InboxTab = memo(function InboxTab() {
         {selected?.source === 'mail' && <ThreadView />}
         {selected?.source === 'chat' && <ChatRoomView />}
         {selected?.source === 'feed' && <FeedItemView />}
+        {selected?.source === 'agent' && <AgentSessionView />}
         {!selected && (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-text-tertiary">Select an item</p>
@@ -125,6 +127,7 @@ function EmptyHint({ text }: { text: string }) {
 function ChannelIcon({ item }: { item: InboxItem }) {
   if (item.source === 'mail') return <Mail size={12} />
   if (item.source === 'feed') return <Rss size={12} />
+  if (item.source === 'agent') return <Bot size={12} className={item.attention ? 'text-red-500' : undefined} />
   if (item.network) return <NetworkIcon network={item.network} />
   return <MessageCircle size={12} />
 }

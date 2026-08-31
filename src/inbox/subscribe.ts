@@ -7,6 +7,7 @@
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
+import { useAgentStore } from '@/store/agent'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 
 const REBUILD_DEBOUNCE_MS = 300
@@ -21,4 +22,5 @@ export function wireUnifiedInbox(): void {
   useInboxStore.subscribe((s, prev) => { if (s.threads !== prev.threads) schedule() })
   useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() })
   useFeedStore.subscribe((s, prev) => { if (s.unreadCounts !== prev.unreadCounts || s.feeds !== prev.feeds) schedule() })
+  useAgentStore.subscribe((s, prev) => { if (s.sessions !== prev.sessions) schedule() })
 }

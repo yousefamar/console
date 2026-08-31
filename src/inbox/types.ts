@@ -9,7 +9,7 @@
 //   feeds → unread items
 // Routing decides WHICH list a source's items land in.
 
-export type InboxSource = 'mail' | 'chat' | 'feed'
+export type InboxSource = 'mail' | 'chat' | 'feed' | 'agent'
 export type Route = 'feed' | 'inbox'
 /** Feeds get a third option: hidden from this pane entirely (the legacy
  *  Feeds tab still shows them — a display filter, not read state). */
@@ -33,6 +33,8 @@ export interface InboxItem {
   route: Route
   /** Chat only: DM vs group — drives inbox ordering. */
   isDirect?: boolean
+  /** Agent only: session flagged @amar / pending question — tops the inbox. */
+  attention?: boolean
 }
 
 /** Per-source routing rules, persisted hub-side (inbox-rules.json).

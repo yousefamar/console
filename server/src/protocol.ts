@@ -201,6 +201,8 @@ export interface SessionInfo {
   areas?: string[]
   status: 'running' | 'idle' | 'ended'
   createdAt: number
+  /** Last send/receive on this session — recency for the unified Inbox. */
+  lastActivityAt?: number
   prompt: string
   cwd?: string
   totalCost: number
