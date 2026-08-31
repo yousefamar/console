@@ -34,6 +34,16 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Frontmatter: YAML-escape stamped values** (^gold-swan): `Frontmatter.kt`
+  gained `yamlScalar()` / `unquote()` — a title with a colon (`Foo: bar`) was
+  written as a plain scalar, which is a hard YAML parse error and fails the
+  Eleventy build for that post; also fixes silent coercion (`2026` → number,
+  `true` → bool, `a #b` → truncated, ` padded ` → trimmed). `unquote()` only
+  strips a MATCHED quote pair, so `Bruteforcing tailnet "fun names"` keeps its
+  trailing quote (the old `trim('"','\'')` ate it). Parse no longer bool-coerces
+  a *quoted* value, and a quoted `tags:` scalar is one tag. Kept in sync with
+  `server/src/blog.ts` + `src/utils/frontmatter.ts`. 5 new unit tests.
+
 - **Basemap: CARTO → OpenFreeMap** (^zany-koi): CARTO's raster CDN now
   requires an API key (watermarked without) — `cartoStyleJson()` replaced by
   `basemapStyleUrl(dark)` returning OFM style URLs

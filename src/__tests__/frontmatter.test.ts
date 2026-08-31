@@ -6,6 +6,8 @@ import {
   permalinkForLogPath,
   isDraftPath,
   isPublishedPath,
+  yamlScalar,
+  unquoteYamlScalar,
 } from '@/utils/frontmatter'
 
 const SAMPLE = `---
@@ -55,6 +57,91 @@ describe('parseFrontmatter', () => {
   it('strips quotes from values', () => {
     const { fm } = parseFrontmatter('---\ntitle: "Quoted"\n---\n')
     expect(fm.title).toBe('Quoted')
+  })
+
+  it('keeps an unmatched trailing quote as content', () => {
+    const { fm } = parseFrontmatter('---\ntitle: Bruteforcing tailnet "fun names"\n---\n')
+    expect(fm.title).toBe('Bruteforcing tailnet "fun names"')
+  })
+
+  it('unescapes a double-quoted scalar', () => {
+    const { fm } = parseFrontmatter('---\ntitle: "He said \\"hi\\": really"\n---\n')
+    expect(fm.title).toBe('He said "hi": really')
+  })
+
+  it('unescapes a single-quoted scalar', () => {
+    const { fm } = parseFrontmatter(`---\ntitle: 'Blast: "Cult II" it''s'\n---\n`)
+    expect(fm.title).toBe(`Blast: "Cult II" it's`)
+  })
+
+  it('does not bool-coerce a quoted value', () => {
+    expect(parseFrontmatter('---\ntitle: "true"\n---\n').fm.title).toBe('true')
+    expect(parseFrontmatter('---\npublic: true\n---\n').fm.public).toBe(true)
+  })
+
+  it('treats a quoted tags scalar as one tag', () => {
+    const { fm } = parseFrontmatter('---\ntags: "a, b"\n---\n')
+    expect(fm.tags).toEqual(['a, b'])
+  })
+})
+
+describe('yamlScalar', () => {
+  it('quotes a title containing a colon', () => {
+    expect(yamlScalar('Foo: bar')).toBe('"Foo: bar"')
+  })
+
+  it('quotes a trailing colon', () => {
+    expect(yamlScalar('Wait for it:')).toBe('"Wait for it:"')
+  })
+
+  it('leaves an apostrophe unquoted', () => {
+    expect(yamlScalar("Sainsbury's CLI")).toBe("Sainsbury's CLI")
+  })
+
+  it("leaves a colon-before-digit unquoted (existing date shape)", () => {
+    expect(yamlScalar('2026-06-08 10:00:00')).toBe('2026-06-08 10:00:00')
+  })
+
+  it('quotes values that would parse as non-strings', () => {
+    expect(yamlScalar('true')).toBe('"true"')
+    expect(yamlScalar('2026')).toBe('"2026"')
+    expect(yamlScalar('0x10')).toBe('"0x10"')
+    expect(yamlScalar('~')).toBe('"~"')
+  })
+
+  it('quotes leading indicator chars, comments and padding', () => {
+    expect(yamlScalar('- dashed')).toBe('"- dashed"')
+    expect(yamlScalar('#hash')).toBe('"#hash"')
+    expect(yamlScalar('a #b')).toBe('"a #b"')
+    expect(yamlScalar(' padded ')).toBe('" padded "')
+    expect(yamlScalar('')).toBe('""')
+  })
+
+  it('escapes quotes, backslashes and newlines', () => {
+    expect(yamlScalar('He said "hi": ok')).toBe('"He said \\"hi\\": ok"')
+    expect(yamlScalar('back\\slash: x')).toBe('"back\\\\slash: x"')
+    expect(yamlScalar('two: lines\nhere')).toBe('"two: lines\\nhere"')
+  })
+
+  it('passes non-strings through', () => {
+    expect(yamlScalar(true)).toBe('true')
+    expect(yamlScalar(7)).toBe('7')
+  })
+
+  it('round-trips through unquoteYamlScalar', () => {
+    for (const s of [
+      'Foo: bar',
+      'plain',
+      "Sainsbury's CLI",
+      'He said "hi": really',
+      'Bruteforcing tailnet "fun names"',
+      'true',
+      'back\\slash: x',
+      'tab:\there',
+      ' padded ',
+    ]) {
+      expect(unquoteYamlScalar(yamlScalar(s))).toBe(s)
+    }
   })
 })
 

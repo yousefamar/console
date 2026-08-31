@@ -68,6 +68,59 @@ export interface Frontmatter {
   tags?: string[]
 }
 
+// A plain (unquoted) YAML scalar can't hold everything a title can. The
+// classic break: `title: Foo: bar` is a hard parse error ("incomplete explicit
+// mapping pair"), which fails the Eleventy build for that post — so EVERY
+// write path must go through yamlScalar(). Double-quoted style matches the
+// convention already in the vault.
+export function yamlScalar(value: string | boolean | number): string {
+  if (typeof value !== 'string') return String(value)
+  if (!needsYamlQuoting(value)) return value
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+  return `"${escaped}"`
+}
+
+function needsYamlQuoting(s: string): boolean {
+  if (s === '') return true
+  if (s !== s.trim()) return true                        // leading/trailing space is dropped
+  if (/^[-?:,[\]{}#&*!|>'"%@`]/.test(s)) return true     // YAML indicator char
+  if (/:\s/.test(s) || s.endsWith(':')) return true      // reads as a nested mapping
+  if (/\s#/.test(s)) return true                         // reads as a trailing comment
+  if (/[\n\r\t]/.test(s)) return true
+  // Would come back as a non-string
+  if (/^(?:true|false|yes|no|on|off|null|~)$/i.test(s)) return true
+  if (/^[+-]?(?:\d[\d_]*)?(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(s)) return true
+  if (/^0[xob]/i.test(s)) return true
+  return false
+}
+
+/**
+ * Inverse of yamlScalar. Only strips a MATCHED quote pair — a bare trailing
+ * quote (`Bruteforcing tailnet "fun names"`) is content, not a delimiter, and
+ * the old `/^["']|["']$/g` strip silently ate it.
+ */
+export function unquoteYamlScalar(v: string): string {
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    return v.slice(1, -1).replace(/\\(["\\/nrt])/g, (_, c: string) => (
+      c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c
+    ))
+  }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1).replace(/''/g, "'")
+  }
+  return v
+}
+
+function isQuoted(v: string): boolean {
+  return v.length >= 2
+    && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+}
+
 export function parseFrontmatter(content: string): { fm: Frontmatter; body: string; raw: string } {
   const m = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/)
   if (!m) return { fm: {}, body: content, raw: '' }
@@ -87,28 +140,34 @@ export function parseFrontmatter(content: string): { fm: Frontmatter; body: stri
       //   tags: [foo, bar]     (inline array)
       //   tags:\n  - foo\n     (block list)
       if (val.startsWith('[') && val.endsWith(']')) {
-        fm.tags = val.slice(1, -1).split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+        fm.tags = val.slice(1, -1).split(',').map((s) => unquoteYamlScalar(s.trim())).filter(Boolean)
       } else if (val === '' || val === '[]') {
         const tags: string[] = []
         for (let j = i + 1; j < lines.length; j++) {
           const item = lines[j]!.match(/^\s*-\s+(.+?)\s*$/)
           if (!item) break
-          tags.push(item[1]!.replace(/^["']|["']$/g, ''))
+          tags.push(unquoteYamlScalar(item[1]!))
         }
         if (tags.length) fm.tags = tags
+      } else if (isQuoted(val)) {
+        // A quoted scalar is ONE tag, commas and all.
+        const only = unquoteYamlScalar(val)
+        if (only) fm.tags = [only]
       } else {
         // Scalar — tolerate comma- or whitespace-separated lists too
         const parts = (val.includes(',') ? val.split(',') : val.split(/\s+/))
-          .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+          .map((s) => s.trim())
           .filter(Boolean)
         if (parts.length) fm.tags = parts
       }
       continue
     }
     if (val === '') continue
-    if (val === 'true') (fm as any)[key!] = true
+    // Bool coercion only for UNQUOTED values — `title: "true"` is the string.
+    if (isQuoted(val)) (fm as any)[key!] = unquoteYamlScalar(val)
+    else if (val === 'true') (fm as any)[key!] = true
     else if (val === 'false') (fm as any)[key!] = false
-    else (fm as any)[key!] = val.replace(/^["']|["']$/g, '')
+    else (fm as any)[key!] = val
   }
   return { fm, body, raw }
 }
@@ -121,7 +180,7 @@ export function stampFrontmatter(content: string, updates: Record<string, string
   const lines = raw.length ? raw.split('\n') : []
 
   for (const [k, v] of Object.entries(updates)) {
-    const newLine = `${k}: ${v}`
+    const newLine = `${k}: ${yamlScalar(v)}`
     const idx = lines.findIndex((l) => l.match(new RegExp(`^${k}:`)))
     if (idx >= 0) {
       lines[idx] = newLine
@@ -174,12 +233,12 @@ export async function createDraft(
   // A draft-time date would be misleading and could leak stale if the draft is
   // ever published by a path that doesn't re-stamp (e.g. manual move).
   const fm: string[] = [
-    `title: ${cleanTitle}`,
+    `title: ${yamlScalar(cleanTitle)}`,
     'public: false',
     'post: true',
   ]
   if (project) {
-    fm.push(`project: ${project}`)
+    fm.push(`project: ${yamlScalar(project)}`)
     // Seed tags from the project's most recent post — the best predictor of
     // how this project gets tagged (e.g. garden posts carry [projects, life]).
     // `projects` is always included: it feeds Eleventy's collections.projects,
@@ -192,10 +251,10 @@ export async function createDraft(
         tags = [...new Set(['projects', ...latest.tags])]
       }
     } catch {}
-    fm.push('tags:', ...tags.map((t) => `  - ${t}`))
+    fm.push('tags:', ...tags.map((t) => `  - ${yamlScalar(t)}`))
   } else if (area) {
     // Area post: the tag IS the area membership — how listAreaPosts finds it.
-    fm.push('tags:', `  - ${area}`)
+    fm.push('tags:', `  - ${yamlScalar(area)}`)
   } else {
     fm.push('tags: ')
   }
@@ -540,7 +599,7 @@ export async function createProject(
   // sub-notes, etc. alongside its index without a separate top-level file.
   // public+listed match templates/project.md in the vault — without them the
   // project page never builds and published posts' "Parent project" links 404.
-  const body = `---\ntitle: ${cleanTitle}\npublic: true\nlisted: true\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
+  const body = `---\ntitle: ${yamlScalar(cleanTitle)}\npublic: true\nlisted: true\nlog: true\nstatus: active\n---\n\n# ${cleanTitle}\n\n`
   try {
     await store.write(indexPath, body)
     return { ok: true, path: indexPath, slug: finalSlug }

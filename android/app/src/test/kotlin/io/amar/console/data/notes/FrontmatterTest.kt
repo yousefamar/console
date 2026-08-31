@@ -99,6 +99,72 @@ class FrontmatterTest {
     }
 
     @Test
+    fun `yamlScalar quotes what a plain scalar cannot hold`() {
+        assertEquals("\"Foo: bar\"", FrontmatterParser.yamlScalar("Foo: bar"))
+        assertEquals("\"Wait for it:\"", FrontmatterParser.yamlScalar("Wait for it:"))
+        assertEquals("\"- dashed\"", FrontmatterParser.yamlScalar("- dashed"))
+        assertEquals("\"#hash\"", FrontmatterParser.yamlScalar("#hash"))
+        assertEquals("\"a #b\"", FrontmatterParser.yamlScalar("a #b"))
+        assertEquals("\" padded \"", FrontmatterParser.yamlScalar(" padded "))
+        assertEquals("\"\"", FrontmatterParser.yamlScalar(""))
+        // Would come back as a non-string
+        assertEquals("\"true\"", FrontmatterParser.yamlScalar("true"))
+        assertEquals("\"2026\"", FrontmatterParser.yamlScalar("2026"))
+        assertEquals("\"0x10\"", FrontmatterParser.yamlScalar("0x10"))
+        assertEquals("\"~\"", FrontmatterParser.yamlScalar("~"))
+        // Escapes
+        assertEquals("\"He said \\\"hi\\\": ok\"", FrontmatterParser.yamlScalar("He said \"hi\": ok"))
+        assertEquals("\"two: lines\\nhere\"", FrontmatterParser.yamlScalar("two: lines\nhere"))
+        // Already safe — no churn
+        assertEquals("plain title", FrontmatterParser.yamlScalar("plain title"))
+        assertEquals("Sainsbury's CLI", FrontmatterParser.yamlScalar("Sainsbury's CLI"))
+        assertEquals("2026-06-08 10:00:00", FrontmatterParser.yamlScalar("2026-06-08 10:00:00"))
+        // Non-strings pass through
+        assertEquals("true", FrontmatterParser.yamlScalar(true))
+        assertEquals("7", FrontmatterParser.yamlScalar(7))
+    }
+
+    @Test
+    fun `yamlScalar round-trips through unquote`() {
+        val hostile = listOf(
+            "Foo: bar", "Wait for it:", "plain", "Sainsbury's CLI",
+            "He said \"hi\": really", "Bruteforcing tailnet \"fun names\"",
+            "true", "2026", "back\\slash: x", "tab:\there", " padded ", "",
+        )
+        for (s in hostile) assertEquals(s, FrontmatterParser.unquote(FrontmatterParser.yamlScalar(s)))
+    }
+
+    @Test
+    fun `unquote only strips a matched pair`() {
+        assertEquals(
+            "Bruteforcing tailnet \"fun names\"",
+            FrontmatterParser.parse("---\ntitle: Bruteforcing tailnet \"fun names\"\n---\n").title,
+        )
+        assertEquals(
+            "Blast: \"Cult II\" it's",
+            FrontmatterParser.parse("---\ntitle: 'Blast: \"Cult II\" it''s'\n---\n").title,
+        )
+    }
+
+    @Test
+    fun `a quoted tags scalar is one tag`() {
+        assertEquals(listOf("a, b"), FrontmatterParser.parse("---\ntags: \"a, b\"\n---\n").tags)
+    }
+
+    @Test
+    fun `stamp escapes a title with a colon and tags with hazards`() {
+        val out = FrontmatterParser.stamp(
+            "---\ntitle: Old\n---\nbody",
+            listOf("title" to "Foo: bar", "tags" to listOf("a: b", "plain")),
+        )
+        assertTrue(out.contains("title: \"Foo: bar\""))
+        assertTrue(out.contains("  - \"a: b\""))
+        val fm = FrontmatterParser.parse(out)
+        assertEquals("Foo: bar", fm.title)
+        assertEquals(listOf("a: b", "plain"), fm.tags)
+    }
+
+    @Test
     fun `project slug helpers`() {
         assertEquals("console", FrontmatterParser.projectSlugFromPath("projects/console.md"))
         assertEquals("console", FrontmatterParser.projectSlugFromPath("projects/console/index.md"))
