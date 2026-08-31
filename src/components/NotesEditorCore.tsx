@@ -14,7 +14,7 @@ import { consoleEditorTheme } from '@/notes/editor-theme'
 import { insertFootnote } from '@/notes/editor-actions'
 import { livePreview } from '@/notes/live-preview'
 import { tablePreview } from '@/notes/table-preview'
-import { reviewCompartment, setReviewMode, remainingChunks } from '@/notes/review'
+import { reviewCompartment, setReviewMode, remainingChunks, mayResolveChunks } from '@/notes/review'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
@@ -354,8 +354,9 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
           // Review auto-exit: the last chunk was accepted/rejected (or edited
           // away — typing inside a chunk resolves it too). null = the merge
           // view isn't active, which must NOT end the review (compartment
-          // reconfigure hasn't landed yet).
-          if (update.docChanged && remainingChunks(update.state) === 0) {
+          // reconfigure hasn't landed yet). Accepts don't change the buffer
+          // (only the merge original), hence mayResolveChunks, not docChanged.
+          if (mayResolveChunks(update) && remainingChunks(update.state) === 0) {
             const path = filePathRef.current
             if (useNotesStore.getState().reviewBase[path] !== undefined) {
               // Dispatching inside an update listener is illegal — defer.

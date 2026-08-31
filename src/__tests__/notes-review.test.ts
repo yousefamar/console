@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { EditorState } from '@codemirror/state'
-import { reviewCompartment, reviewExtension, remainingChunks } from '@/notes/review'
+import { reviewCompartment, reviewExtension, remainingChunks, mayResolveChunks } from '@/notes/review'
 
 const mkState = (doc: string, original?: string) =>
   EditorState.create({
@@ -28,5 +28,24 @@ describe('review mode chunks', () => {
     const original = 'the quick brown fox\n'
     const edited = 'the slow brown wolf\n'
     expect(remainingChunks(mkState(edited, original))).toBe(1)
+  })
+})
+
+describe('mayResolveChunks', () => {
+  const tx = (events: string[]) => ({ isUserEvent: (e: string) => events.includes(e) })
+
+  it('true on buffer edits (reject/typing)', () => {
+    expect(mayResolveChunks({ docChanged: true, transactions: [tx([])] })).toBe(true)
+  })
+
+  it('true on accept transactions even though the buffer is unchanged', () => {
+    // acceptChunk rewrites only the merge view's ORIGINAL doc — docChanged
+    // stays false. This is the "0 pending changes but banner stuck" bug.
+    expect(mayResolveChunks({ docChanged: false, transactions: [tx(['accept'])] })).toBe(true)
+  })
+
+  it('false on unrelated non-doc transactions (selection, focus)', () => {
+    expect(mayResolveChunks({ docChanged: false, transactions: [tx([])] })).toBe(false)
+    expect(mayResolveChunks({ docChanged: false, transactions: [] })).toBe(false)
   })
 })

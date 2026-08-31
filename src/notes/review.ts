@@ -55,6 +55,18 @@ export function remainingChunks(state: EditorState): number | null {
   return c ? c.chunks.length : null
 }
 
+/** Could this view update have resolved review chunks? Rejecting/typing
+ *  edits the buffer (`docChanged`); ACCEPTING rewrites only the merge view's
+ *  original doc (`userEvent: "accept"`, docChanged false) — gating the
+ *  auto-exit on docChanged alone left a fully-accepted review stuck at
+ *  "0 pending changes". */
+export function mayResolveChunks(update: {
+  docChanged: boolean
+  transactions: readonly { isUserEvent(event: string): boolean }[]
+}): boolean {
+  return update.docChanged || update.transactions.some((t) => t.isUserEvent('accept'))
+}
+
 /** Accept every remaining chunk (keep the agent's text). */
 export function acceptAll(view: EditorView): void {
   // Chunk positions shift as chunks resolve — always act on the first.
