@@ -322,12 +322,14 @@ function SpaceListRail() {
     // every AREA its tags name (^tidy-swan).
     const areaSlugs = new Set(spaces.filter((sp) => sp.kind === 'area').map((sp) => sp.slug))
     for (const d of blogDrafts) {
-      const dirty = openFiles[d.path] && openFiles[d.path]!.content !== openFiles[d.path]!.savedContent
+      const dirty = !!openFiles[d.path] && openFiles[d.path]!.content !== openFiles[d.path]!.savedContent
       const proj = d.project ?? d.path.match(/^projects\/([^/.]+)/)?.[1]
       // A dirty project draft already has an amber row from the openFiles loop.
       if (proj && !dirty) push(proj, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
       for (const t of d.tags ?? []) {
-        if (t !== proj && areaSlugs.has(t)) push(t, { kind: 'file', id: d.path, label: d.title, level: 'draft' })
+        // Unsaved beats unpublished (^sly-deer): a dirty draft rows amber
+        // ('dirty', like project rows), not draft blue.
+        if (t !== proj && areaSlugs.has(t)) push(t, { kind: 'file', id: d.path, label: d.title, level: dirty ? 'dirty' : 'draft' })
       }
     }
     // Unassigned pseudo-space: live sessions with no space binding
@@ -796,6 +798,8 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
   const loading = useBlogStore((s) => s.areaPostsLoading)
   // `?? []` — a pre-restart hub serves drafts without `tags`; crashing here darkened the whole app.
   const drafts = useBlogStore((s) => s.drafts).filter((d) => (d.tags ?? []).includes(slug))
+  const openFiles = useNotesStore((s) => s.openFiles)
+  const isDirty = (path: string) => !!openFiles[path] && openFiles[path]!.content !== openFiles[path]!.savedContent
   useEffect(() => {
     void useBlogStore.getState().refreshAreaPosts(slug)
     void useBlogStore.getState().refreshDrafts()
@@ -829,7 +833,9 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
           >
             <FileText size={9} className="flex-shrink-0 opacity-50" />
             <span className="truncate">{d.title}</span>
-            <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>
+            {isDirty(d.path)
+              ? <span className="ml-auto flex-shrink-0 text-[9px] text-amber-500" title="Unsaved changes">unsaved</span>
+              : <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>}
           </button>
         ))}
         {(posts ?? []).map((p) => (
@@ -861,6 +867,8 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
 function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
   const posts = useBlogStore((s) => s.postsByProject[slug])
   const drafts = useBlogStore((s) => s.drafts).filter((d) => d.project === slug)
+  const openFiles = useNotesStore((s) => s.openFiles)
+  const isDirty = (path: string) => !!openFiles[path] && openFiles[path]!.content !== openFiles[path]!.savedContent
   const [expanded, setExpanded] = useState(false)
   useEffect(() => {
     void useBlogStore.getState().refreshProjectPosts(slug)
@@ -893,7 +901,9 @@ function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void 
         >
           <FileText size={9} className="flex-shrink-0 opacity-50" />
           <span className="truncate">{d.title}</span>
-          <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>
+          {isDirty(d.path)
+            ? <span className="ml-auto flex-shrink-0 text-[9px] text-amber-500" title="Unsaved changes">unsaved</span>
+            : <span className="ml-auto flex-shrink-0 text-[9px] text-blue-500">draft</span>}
         </button>
       ))}
       {expanded && (posts ?? []).map((p) => (
