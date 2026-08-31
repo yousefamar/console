@@ -108,7 +108,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
         mapPrefs.edit().putBoolean("darkMap", dark).apply()
         styleReady = false
         mapView.getMapAsync { map ->
-            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoStyleJson(dark))) { style ->
+            map.setStyle(org.maplibre.android.maps.Style.Builder().fromUri(basemapStyleUrl(dark))) { style ->
                 // setStyle wipes all sources/layers/images — full re-attach.
                 renderer.detach()
                 renderer.attach(map, style)
@@ -135,10 +135,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
         mapView.getMapAsync { map ->
             map.cameraPosition = CameraPosition.Builder().target(LatLng(54.0, -2.0)).zoom(5.0).build()
             map.uiSettings.isCompassEnabled = false
-            // setStyle(String) treats the arg as a style URI — raw JSON must go
-            // through Style.Builder.fromJson or the style silently never loads
-            // (beige void, styleReady never fires).
-            map.setStyle(org.maplibre.android.maps.Style.Builder().fromJson(cartoStyleJson(darkMap))) { style ->
+            map.setStyle(org.maplibre.android.maps.Style.Builder().fromUri(basemapStyleUrl(darkMap))) { style ->
                 renderer.attach(map, style)
                 renderer.apply(repo.state.value)
                 styleReady = true
@@ -1038,35 +1035,12 @@ fun formatEventTime(iso: String): String {
     }.getOrDefault(iso)
 }
 
-/** Minimal MapLibre style JSON over CARTO's free raster tiles + demotiles
- *  glyphs (so agent-layer text labels render). Mirrors darkRasterStyle().
- *  [dark] picks dark_all vs light_all — outdoors in sunlight the dark tiles
- *  are unreadable, so the toolbar exposes a persisted light/dark toggle. */
-fun cartoStyleJson(dark: Boolean): String {
-    val flavor = if (dark) "dark_all" else "light_all"
-    val bg = if (dark) "#0a0a0a" else "#f5f5f3"
-    return """
-{
-  "version": 8,
-  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
-  "sources": {
-    "carto": {
-      "type": "raster",
-      "tiles": [
-        "https://a.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/$flavor/{z}/{x}/{y}@2x.png"
-      ],
-      "tileSize": 256,
-      "attribution": "© OpenStreetMap contributors © CARTO"
-    }
-  },
-  "layers": [
-    { "id": "bg", "type": "background", "paint": { "background-color": "$bg" } },
-    { "id": "carto", "type": "raster", "source": "carto" }
-  ]
-}
-""".trimIndent()
-}
-
-fun cartoDarkStyleJson(): String = cartoStyleJson(dark = true)
+/** OpenFreeMap vector style URL (keyless, no-limits) — mirrors the SPA's
+ *  basemapStyleUrl(). CARTO's raster CDN was dropped (^zany-koi): it now
+ *  requires an API key. [dark] picks OFM dark vs Positron — outdoors in
+ *  sunlight the dark tiles are unreadable, so the toolbar exposes a
+ *  persisted light/dark toggle. The style ships its own glyphs (Noto Sans
+ *  Regular), so agent-layer text labels keep rendering. */
+fun basemapStyleUrl(dark: Boolean): String =
+    if (dark) "https://tiles.openfreemap.org/styles/dark"
+    else "https://tiles.openfreemap.org/styles/positron"

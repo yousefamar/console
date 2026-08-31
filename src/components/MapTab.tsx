@@ -6,8 +6,9 @@ import type { FeatureCollection } from 'geojson'
 import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Search, Navigation, ExternalLink, Car, Footprints, Bike, Train, Locate } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type LayerFeatureSel, type MeetupEvent, type BuiltinLayerId, type GPlace, type GRoute, type GTravelMode } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
-import { darkRasterStyle } from '@/map/basemap-style'
+import { basemapStyleUrl } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
+import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { hubFetch } from '@/hub'
 
@@ -171,6 +172,7 @@ export function MapTab() {
   } = useMapStore()
 
   const isMobile = useIsMobile()
+  const darkMode = useUiStore((s) => s.darkMode)
   const [showCreds, setShowCreds] = useState(false)
   const [showLayers, setShowLayers] = useState(false)
   const [showGmaps, setShowGmaps] = useState(false)
@@ -194,10 +196,11 @@ export function MapTab() {
     try {
       map = new maplibregl.Map({
         container: containerRef.current,
-        style: darkRasterStyle(),
+        style: basemapStyleUrl(useUiStore.getState().darkMode),
         center: [-2, 54],
         zoom: 5,
-        attributionControl: false,
+        // OpenFreeMap asks for OSM attribution; compact keeps it out of the way.
+        attributionControl: { compact: true },
       })
     } catch (err) {
       setGlError((err as Error)?.message || 'Failed to initialize WebGL')
@@ -208,7 +211,9 @@ export function MapTab() {
     map.on('error', () => {/* tolerate the odd tile 404 — non-fatal */})
     registerEmojiImages(map)
 
-    // Add overlay layers once the style is ready (fires on initial load).
+    // Add overlay layers once the style is ready. Fires on the initial load
+    // AND after every map.setStyle (theme swap) — a style swap wipes all
+    // sources/layers/filters, so everything is re-derived from the store here.
     map.on('style.load', () => {
       const m = mapRef.current
       if (!m) return
@@ -221,6 +226,9 @@ export function MapTab() {
       pushSource(m, 'ot-current', currentToFC(st.current))
       pushSource(m, 'gmaps-pins', placesToFC(st.gmapsResults))
       pushSource(m, 'gmaps-routes', routesToFC(st.gmapsRoutes, st.gmapsSelectedRoute))
+      m.setFilter('gc-selected', ['==', ['get', 'code'], st.selectedCode ?? ''])
+      m.setFilter('meetup-selected', ['==', ['get', 'id'], st.selectedEventId ?? ''])
+      m.setFilter('gmaps-selected', ['==', ['get', 'id'], st.gmapsSelectedPlaceId ?? ''])
       applyBuiltinVisibility(m, st.builtinVisible)
       reconcileAgentLayers(m, st.layers, st.layerData, st.layerVisible)
     })
@@ -283,6 +291,18 @@ export function MapTab() {
       readyRef.current = false
     }
   }, [selectCache])
+
+  // Theme change → swap the basemap style. setStyle wipes all sources/layers;
+  // the style.load handler above re-attaches everything from the store. Gate
+  // on readyRef so the initial load (style passed to the constructor) isn't
+  // double-fetched.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current) return
+    readyRef.current = false
+    map.setStyle(basemapStyleUrl(darkMode))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [darkMode])
 
   // initial data load
   useEffect(() => {

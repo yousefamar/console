@@ -27,7 +27,13 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
-_(empty)_
+- **Basemap: CARTO → OpenFreeMap** (^zany-koi): CARTO's raster CDN now
+  requires an API key (watermarked without) — `cartoStyleJson()` replaced by
+  `basemapStyleUrl(dark)` returning OFM style URLs
+  (`tiles.openfreemap.org/styles/{dark,positron}`, keyless, no-limits),
+  loaded via `Style.Builder().fromUri(...)`. Existing light/dark toggle and
+  renderer re-attach flow unchanged; OFM styles ship their own Noto Sans
+  glyphs so agent-layer labels keep rendering.
 
 ## Shipped
 
