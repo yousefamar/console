@@ -160,6 +160,11 @@ export function routeInbound(
       silent: true,
       name: `Al ↔ ${senderLabel}`,
       parentClaudeSessionId: parent.claudeSessionId,
+      // Inherit Al's space binding (fork_session does the same) — without it
+      // the fork has no project/areas and the Spaces rail buries it in
+      // ~unassigned instead of showing it beside Al ("I don't see any forks").
+      project: parent.project,
+      areas: parent.areas,
     })
     state.forks[threadJid] = {
       threadJid,
