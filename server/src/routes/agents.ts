@@ -482,7 +482,7 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, in
  *  that digest into the parent, then close the child. Parent = fork lineage
  *  (`parentClaudeSessionId`, same conversation ancestry) — the only hierarchy.
  *  A SUMMARY — not the transcript — keeps the parent's context clean. */
-export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts?: { keepChild?: boolean }): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
@@ -523,11 +523,20 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
     }
   }
 
-  try { child.kill() } catch { /* ignore */ }
-  ctx.sessions.delete(child.id)
+  if (opts?.keepChild) {
+    // Keep the merged fork listed + browsable — Al's conversation forks use
+    // this so wound-down conversations stay visible and peek-able instead of
+    // vanishing. HIBERNATE, don't kill: an ended session gets pruned from the
+    // manifest at the next hub restart, a hibernated one is restored (idle,
+    // zero subprocess) and can even be woken to continue the conversation.
+    if (!child.hibernate()) { try { child.kill() } catch { /* ignore */ } }
+  } else {
+    try { child.kill() } catch { /* ignore */ }
+    ctx.sessions.delete(child.id)
+  }
   saveManifest(ctx.sessions)
   broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
-  ctx.log(`[merge] fork ${child.id} → parent ${parent.id} (${summary.length}-char summary)`)
+  ctx.log(`[merge] fork ${child.id} → parent ${parent.id} (${summary.length}-char summary${opts?.keepChild ? ', child kept listed' : ''})`)
   return { ok: true, summary, parentId: parent.id }
 }
 

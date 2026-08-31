@@ -40,6 +40,8 @@ import * as alSession from '../al/al-session.js'
 
 class TestSession extends EventEmitter {
   killed = false
+  hibernated = false
+  needsAttention: { ts: number; snippet: string } | null = null
   status: 'running' | 'idle' | 'ended' = 'idle'
   claudeSessionId?: string
   name?: string
@@ -47,6 +49,7 @@ class TestSession extends EventEmitter {
   parentClaudeSessionId?: string
   constructor(public id: string, init: Partial<TestSession> = {}) { super(); Object.assign(this, init) }
   kill() { this.killed = true; this.status = 'ended' }
+  hibernate() { if (this.status !== 'idle') return false; this.hibernated = true; return true }
 }
 
 function ctxOf(sessions: Map<string, TestSession>) {
@@ -157,7 +160,7 @@ describe('routeInbound', () => {
 })
 
 describe('idle wind-down', () => {
-  it('trivial conversation → reap without merge; substantive → digest-merge', async () => {
+  it('trivial conversation → hibernate without merge; substantive → digest-merge', async () => {
     const ctx = ctxOf(new Map<string, TestSession>([['s-al', parent]]))
     startConversationForks(ctx)
 
@@ -179,9 +182,25 @@ describe('idle wind-down', () => {
     // advance past IDLE_MS + one sweep tick
     await vi.advanceTimersByTimeAsync(61 * 60 * 1000)
 
-    expect(trivialFork.killed).toBe(true)
+    // trivial → hibernated (kept in list, browsable), NOT killed/pruned
+    expect(trivialFork.hibernated).toBe(true)
+    expect(trivialFork.killed).toBe(false)
     expect(merged).toEqual([bigFork.id])
     expect(activeForks().length).toBe(0)
+  })
+
+  it('a fork with a pending @amar marker is NEVER wound down', async () => {
+    const ctx = ctxOf(new Map<string, TestSession>([['s-al', parent]]))
+    startConversationForks(ctx)
+    routeInbound(ctx, '333@s.whatsapp.net', 'rowan', 'Rowan', '[needs yousef]')
+    const fork = created[0]!
+    fork.needsAttention = { ts: Date.now(), snippet: 'Rowan wants a Bedrock key' }
+    ctx.sessions.set(fork.id, fork)
+    await vi.advanceTimersByTimeAsync(61 * 60 * 1000)
+    expect(fork.killed).toBe(false)
+    expect(fork.hibernated).toBe(false)
+    expect(merged.length).toBe(0)
+    expect(activeForks().length).toBe(1) // still tracked + routed
   })
 
   it('a running fork gets its deadline pushed, not interrupted', async () => {

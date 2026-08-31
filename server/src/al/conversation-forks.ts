@@ -228,18 +228,37 @@ async function windDown(ctx: AgentContext, rec: ForkRecord): Promise<void> {
     saveForks(state)
     return
   }
+  // A pending @amar marker means the fork asked Yousef something that hasn't
+  // been acknowledged — NEVER reap it (the Rowan fork was reaped as "trivial"
+  // while carrying an unanswered Bedrock-key request; the marker died with
+  // it). Leave it alive + routed; it stays visible until Yousef responds.
+  if (fork.needsAttention) {
+    state.forks[rec.threadJid] = { ...rec, lastInboundAt: Date.now() }
+    saveForks(state)
+    console.log(`[al/forks] idle ${rec.threadJid} — has a pending @amar marker, keeping alive`)
+    return
+  }
   const substantive = rec.substantive || rec.inboundCount > TRIVIAL_MAX_INBOUND
   if (substantive) {
-    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent`)
-    const res = await mergeIntoParent(ctx, fork.id)
+    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent (fork kept listed)`)
+    const res = await mergeIntoParent(ctx, fork.id, undefined, { keepChild: true })
     if (!res.ok) {
-      console.warn(`[al/forks] merge failed (${res.error}) — reaping without digest`)
-      try { fork.kill() } catch { /* ignore */ }
+      console.warn(`[al/forks] merge failed (${res.error}) — keeping alive (nothing lost)`)
+      state.forks[rec.threadJid] = { ...rec, lastInboundAt: Date.now() }
+      saveForks(state)
     }
   } else {
-    // Trivial — not worth 2 turns of digest. Transcript survives on disk.
-    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg), reaping without merge`)
-    try { fork.kill() } catch { /* ignore */ }
+    // Trivial — not worth 2 turns of digest. HIBERNATE rather than kill: the
+    // fork stays in the list (idle, moon glyph, zero subprocess) and survives
+    // hub restarts, so every past conversation remains browsable via
+    // `con agent list` / `con agent peek`. (Its routing record is gone — a
+    // future message on the thread starts a FRESH fork; the hibernated one is
+    // an archive.) kill() would mark it ended → pruned from the manifest at
+    // the next restart (how the Rowan fork vanished).
+    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg), hibernating without merge (kept in list)`)
+    // The global 30-min hibernation sweep usually beats our 1-h timer — an
+    // already-hibernated fork is exactly the end state we want; leave it.
+    if (!fork.hibernated && !fork.hibernate()) { try { fork.kill() } catch { /* ignore */ } }
   }
 }
 
