@@ -1,3 +1,23 @@
+/* Dark-themed MapLibre zoom controls (default is a white pill with black icons). */
+.maplibregl-ctrl-group {
+  background: #161616;
+  border: 1px solid #2b2b2b;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid #2b2b2b;
+}
+/* The +/− glyphs are dark SVG background-images — invert them light. */
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+  filter: invert(0.85);
+}
+.maplibregl-ctrl-group button:hover {
+  background-color: #242424;
+}
+.maplibregl-ctrl-group button:disabled .maplibregl-ctrl-icon {
+  filter: invert(0.4);
+}
+
 /* Dark-themed MapLibre popups for the Map pane (override the default white box). */
 .maplibregl-popup.console-map-popup .maplibregl-popup-content {
   background: #161616;

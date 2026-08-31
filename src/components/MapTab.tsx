@@ -199,8 +199,7 @@ export function MapTab() {
         style: basemapStyleUrl(useUiStore.getState().darkMode),
         center: [-2, 54],
         zoom: 5,
-        // OpenFreeMap asks for OSM attribution; compact keeps it out of the way.
-        attributionControl: { compact: true },
+        attributionControl: false,
       })
     } catch (err) {
       setGlError((err as Error)?.message || 'Failed to initialize WebGL')
