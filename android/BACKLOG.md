@@ -34,6 +34,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Fix: project-homed posts not recognised as published** (9ed3e6c):
+  `isPublishedPath`/`permalinkForLogPath` in Frontmatter.kt only matched
+  `log/<name>.md`, missing `projects/<slug>/log/<name>.md` (a divergence from
+  the TS port) — project posts got no writing chrome and no permalink.
+
 - **Frontmatter: YAML-escape stamped values** (^gold-swan): `Frontmatter.kt`
   gained `yamlScalar()` / `unquote()` — a title with a colon (`Foo: bar`) was
   written as a plain scalar, which is a hard YAML parse error and fails the
