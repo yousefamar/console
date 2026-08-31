@@ -163,12 +163,17 @@ export class AuthStore {
     }
     // Ensure webhook secret exists
     this.getWebhookSecret()
-    // Seed the known OwnTracks server if unconfigured
+    // Seed the known OwnTracks endpoint if unconfigured. The password is
+    // deliberately blank: this repo is public, so a real default here ships a
+    // live credential to every clone (a previous seed leaked the basic-auth
+    // password for the location-history server — rotated 2026-08-31). Set it
+    // out-of-band via POST /owntracks/credentials; a blank password reads as
+    // "not configured" and the proxy 503s rather than sending half a credential.
     if (!this.config.owntracks) {
       this.config.owntracks = {
         url: 'https://maps.amar.io/recorder',
         username: 'amar',
-        password: '[REDACTED-ROTATED]',
+        password: '',
       }
       this.save()
     }
@@ -854,8 +859,14 @@ export class AuthStore {
     return this.config.owntracks
   }
 
-  setOwntracksConfig(cfg: NonNullable<AuthConfig['owntracks']>): void {
-    this.config.owntracks = cfg
+  setOwntracksConfig(cfg: Partial<NonNullable<AuthConfig['owntracks']>>): void {
+    // Merge, so rotating the password doesn't require re-sending url + username.
+    const prev = this.config.owntracks
+    this.config.owntracks = {
+      url: cfg.url ?? prev?.url ?? '',
+      username: cfg.username ?? prev?.username ?? '',
+      password: cfg.password ?? prev?.password ?? '',
+    }
     this.save()
   }
 

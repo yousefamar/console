@@ -7,12 +7,20 @@
 // proxies the read-only Recorder endpoints, injecting the basic-auth header from
 // the auth store.
 //
-//   GET /owntracks/version            → Recorder /api/0/version
-//   GET /owntracks/list               → users / devices
-//   GET /owntracks/last[?user&device] → latest fix per device
-//   GET /owntracks/locations?user&device&from&to&format=geojson → history
+//   GET  /owntracks/version            → Recorder /api/0/version
+//   GET  /owntracks/list               → users / devices
+//   GET  /owntracks/last[?user&device] → latest fix per device
+//   GET  /owntracks/locations?user&device&from&to&format=geojson → history
+//   GET  /owntracks/status             → { configured, url, username } (never the password)
+//   POST /owntracks/credentials        → { url?, username?, password? } (merged)
 //
 // Query params are forwarded verbatim to the Recorder.
+//
+// The credentials route exists because the seed in auth-store.ts deliberately
+// ships a BLANK password (this repo is public — a real default there leaked the
+// basic-auth password for the location server once). This is the supported way
+// to set or rotate it without hand-editing auth.json, which the running hub's
+// whole-file save() would revert.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AuthStore } from '../auth-store.js'
@@ -25,15 +33,58 @@ export function handleOwntracksRoutes(
   path: string,
   url: URL,
   authStore: AuthStore,
+  readBody?: (req: IncomingMessage) => Promise<string>,
 ): boolean {
   if (!path.startsWith('/owntracks/')) return false
+
+  if (path === '/owntracks/status' && req.method === 'GET') {
+    const cfg = authStore.getOwntracksConfig()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        configured: Boolean(cfg?.url && cfg.password),
+        url: cfg?.url ?? null,
+        username: cfg?.username ?? null,
+      }),
+    )
+    return true
+  }
+
+  if (path === '/owntracks/credentials' && req.method === 'POST' && readBody) {
+    void readBody(req)
+      .then((raw) => {
+        const body = JSON.parse(raw || '{}') as { url?: string; username?: string; password?: string }
+        if (body.url === undefined && body.username === undefined && body.password === undefined) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Provide at least one of url, username, password' }))
+          return
+        }
+        authStore.setOwntracksConfig(body)
+        const cfg = authStore.getOwntracksConfig()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            configured: Boolean(cfg?.url && cfg.password),
+            url: cfg?.url ?? null,
+            username: cfg?.username ?? null,
+          }),
+        )
+      })
+      .catch((err: unknown) => {
+        if (res.headersSent) return
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error).message }))
+      })
+    return true
+  }
+
   if (req.method !== 'GET') return false
 
   const sub = path.slice('/owntracks/'.length)
   if (!ALLOWED.has(sub)) return false
 
   const cfg = authStore.getOwntracksConfig()
-  if (!cfg?.url) {
+  if (!cfg?.url || !cfg.password) {
     res.writeHead(503, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'OwnTracks not configured' }))
     return true

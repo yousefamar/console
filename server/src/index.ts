@@ -1564,7 +1564,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
-  if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore)) return
+  if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore, readBody)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
   if (path.startsWith('/outdoorlads') && handleOutdoorLadsRoutes(req, res, path, outdoorLadsStore)) return
