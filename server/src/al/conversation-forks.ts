@@ -34,6 +34,7 @@ import { homedir } from 'node:os'
 import type { Session } from '../session.js'
 import type { AgentContext } from '../routes/agents.js'
 import { createSession, wakeSession, mergeIntoParent } from '../routes/agents.js'
+import { saveManifest } from '../manifest.js'
 import { getAlSession } from './al-session.js'
 
 // Resolved per call (not captured at module load) so tests can point it at a
@@ -238,27 +239,30 @@ async function windDown(ctx: AgentContext, rec: ForkRecord): Promise<void> {
     console.log(`[al/forks] idle ${rec.threadJid} — has a pending @amar marker, keeping alive`)
     return
   }
+  // Wound-down forks GO AWAY (Yousef's call — keeping them listed clogs the
+  // rail). The list shows live conversations only; history lives in the
+  // transcripts on disk + the chat archive, and anything important reaches
+  // the parent as a digest first. The @amar guard above is what prevents a
+  // fork that's waiting on Yousef from being removed.
   const substantive = rec.substantive || rec.inboundCount > TRIVIAL_MAX_INBOUND
   if (substantive) {
-    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent (fork kept listed)`)
-    const res = await mergeIntoParent(ctx, fork.id, undefined, { keepChild: true })
+    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent, then removing`)
+    const res = await mergeIntoParent(ctx, fork.id)
     if (!res.ok) {
       console.warn(`[al/forks] merge failed (${res.error}) — keeping alive (nothing lost)`)
       state.forks[rec.threadJid] = { ...rec, lastInboundAt: Date.now() }
       saveForks(state)
     }
   } else {
-    // Trivial — not worth 2 turns of digest. HIBERNATE rather than kill: the
-    // fork stays in the list (idle, moon glyph, zero subprocess) and survives
-    // hub restarts, so every past conversation remains browsable via
-    // `con agent list` / `con agent peek`. (Its routing record is gone — a
-    // future message on the thread starts a FRESH fork; the hibernated one is
-    // an archive.) kill() would mark it ended → pruned from the manifest at
-    // the next restart (how the Rowan fork vanished).
-    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg), hibernating without merge (kept in list)`)
-    // The global 30-min hibernation sweep usually beats our 1-h timer — an
-    // already-hibernated fork is exactly the end state we want; leave it.
-    if (!fork.hibernated && !fork.hibernate()) { try { fork.kill() } catch { /* ignore */ } }
+    // Trivial — not worth 2 turns of digest. Remove from the list entirely
+    // (kill + delete + persist + broadcast, mirroring mergeIntoParent);
+    // transcript survives on disk if forensics are ever needed.
+    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg), removing without merge`)
+    try { fork.kill() } catch { /* ignore */ }
+    ctx.sessions.delete(fork.id)
+    saveManifest(ctx.sessions)
+    const list = JSON.stringify({ type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+    for (const ws of ctx.clients) { if (ws.readyState === 1) ws.send(list) }
   }
 }
 

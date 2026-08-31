@@ -160,7 +160,7 @@ describe('routeInbound', () => {
 })
 
 describe('idle wind-down', () => {
-  it('trivial conversation → hibernate without merge; substantive → digest-merge', async () => {
+  it('trivial conversation → removed without merge; substantive → digest-merge', async () => {
     const ctx = ctxOf(new Map<string, TestSession>([['s-al', parent]]))
     startConversationForks(ctx)
 
@@ -182,9 +182,10 @@ describe('idle wind-down', () => {
     // advance past IDLE_MS + one sweep tick
     await vi.advanceTimersByTimeAsync(61 * 60 * 1000)
 
-    // trivial → hibernated (kept in list, browsable), NOT killed/pruned
-    expect(trivialFork.hibernated).toBe(true)
-    expect(trivialFork.killed).toBe(false)
+    // trivial → killed and removed from the sessions map (wound-down forks
+    // go away — Yousef's call; transcripts on disk are the history)
+    expect(trivialFork.killed).toBe(true)
+    expect(ctx.sessions.has(trivialFork.id)).toBe(false)
     expect(merged).toEqual([bigFork.id])
     expect(activeForks().length).toBe(0)
   })
