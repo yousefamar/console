@@ -928,6 +928,7 @@ export class Session extends EventEmitter {
       areas: this.areas,
       status: this.status,
       createdAt: this.createdAt,
+      lastActivityAt: this.lastActivityAt,
       prompt: this.initialPrompt,
       cwd: this.cwd,
       totalCost: this.totalCost,

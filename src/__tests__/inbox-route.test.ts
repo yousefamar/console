@@ -5,7 +5,8 @@ import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
   feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
-  sortFeed, sortInbox, threadIsLive, threadToItem,
+  sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
+  type AgentSessionLike,
 } from '@/inbox/route'
 
 const NOW = 1_700_000_000_000
@@ -96,6 +97,38 @@ describe('row shape', () => {
     const i = feedItemToItem(feedItem(), { id: 'feed-a', title: 'HN', xmlUrl: '', folder: null, addedAt: '' }, DEFAULT_RULES)
     expect(i?.header).toBe('HN')
     expect(i?.body).toBe('Post')
+  })
+})
+
+describe('agent sessions', () => {
+  function session(over: Partial<AgentSessionLike> = {}): AgentSessionLike {
+    return { id: 's1', name: 'Console general', prompt: 'do things', status: 'idle', createdAt: NOW - 5000, ...over }
+  }
+
+  it('live = unread or attention, Al excluded', () => {
+    expect(sessionIsLive(session())).toBe(false)
+    expect(sessionIsLive(session({ hasUnread: true }))).toBe(true)
+    expect(sessionIsLive(session({ needsAttention: { ts: NOW, snippet: 'help' } }))).toBe(true)
+    expect(sessionIsLive(session({ hasUnread: true, isAl: true }))).toBe(false)
+  })
+
+  it('adapts: header = name sans (fork), body = attention snippet, always inbox', () => {
+    const i = sessionToItem(session({ name: 'Rosy finch (fork)', needsAttention: { ts: NOW, snippet: 'need a review' }, lastActivityAt: NOW - 100 }))
+    expect(i.header).toBe('Rosy finch')
+    expect(i.body).toBe('need a review')
+    expect(i.route).toBe('inbox')
+    expect(i.attention).toBe(true)
+    expect(i.ts).toBe(NOW - 100)
+  })
+
+  it('attention sessions band above chat DMs; plain unread below mail', () => {
+    const items = [
+      threadToItem(thread({ date: NOW }), DEFAULT_RULES),
+      roomToItem(room({ id: '!dm:hs', lastMessageTime: NOW }), DEFAULT_RULES),
+      sessionToItem(session({ id: 's-plain', hasUnread: true, lastActivityAt: NOW })),
+      sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW })),
+    ]
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-attn', '!dm:hs', 't1', 's-plain'])
   })
 })
 

@@ -13,9 +13,10 @@ import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules } from '@/inbox/types'
+import { useAgentStore } from '@/store/agent'
 import {
   feedItemToItem, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
-  sortFeed, sortInbox, threadIsLive, threadToItem,
+  sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
 } from '@/inbox/route'
 
 interface UnifiedInboxState {
@@ -102,7 +103,13 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
       .map((i) => feedItemToItem(i, feedById.get(i.feedId), effective))
       .filter((i): i is InboxItem => i !== null)
 
-    const all = [...threads, ...rooms, ...feedItems]
+    // Agents: unread / attention-flagged sessions (Al excluded — he's a
+    // standing conversation, not an item to clear).
+    const sessions = useAgentStore.getState().sessions
+      .filter(sessionIsLive)
+      .map(sessionToItem)
+
+    const all = [...threads, ...rooms, ...feedItems, ...sessions]
     set({
       feedList: sortFeed(all.filter((i) => i.route === 'feed')),
       inboxList: sortInbox(all.filter((i) => i.route === 'inbox')),
@@ -116,6 +123,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // (and the source's own read-marking side effects run).
     if (item.source === 'mail') void useInboxStore.getState().selectThread(item.sourceId)
     else if (item.source === 'chat') void useChatStore.getState().selectRoom(item.sourceId)
+    else if (item.source === 'agent') useAgentStore.getState().selectSession(item.sourceId)
     else useFeedStore.getState().selectItem(item.sourceId)
   },
 
@@ -142,11 +150,12 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     if (verb === 'done') {
       if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId)
       else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
+      else if (item.source === 'agent') useAgentStore.getState().markSessionRead(item.sourceId)
       else void useFeedStore.getState().markRead(item.sourceId)
     } else {
       if (item.source === 'mail') useInboxStore.getState().snoozeThread('tomorrow', undefined, item.sourceId)
       else if (item.source === 'chat') void useChatStore.getState().snoozeRoom('tomorrow')
-      else return // feed items have no snooze (yet — Phase 2+)
+      else return // feed items and agent sessions have no snooze (Phase 2+)
     }
 
     // Advance if there's somewhere to go; otherwise STAY on the handled item
