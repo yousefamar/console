@@ -70,6 +70,15 @@ function TextBlock({ content }: { content: string }) {
   // "Talk to X" banner (see store `session_handoff`), it's not message text.
   const rendered = useMemo(() => renderMarkdownLite(content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').replace(/[ \t]{2,}/g, ' ').trimEnd()), [content])
   const [speaking, setSpeaking] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const copyMarkdown = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').trimEnd())
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* ignore — clipboard may be blocked */ }
+  }, [content])
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -131,7 +140,14 @@ function TextBlock({ content }: { content: string }) {
         {rendered}
       </div>
       {/* Hover action — floating, no extra vertical space */}
-      <div className={`absolute -top-2 right-2 z-10 ${speaking ? 'flex' : 'hidden group-hover:flex'} items-center bg-surface-1 border border-border rounded-sm shadow-sm px-0.5 py-0.5`}>
+      <div className={`absolute -top-2 right-2 z-10 ${speaking || copied ? 'flex' : 'hidden group-hover:flex'} items-center bg-surface-1 border border-border rounded-sm shadow-sm px-0.5 py-0.5`}>
+        <button
+          onClick={copyMarkdown}
+          className={`p-1 cursor-pointer ${copied ? 'text-success' : 'text-text-tertiary hover:text-text-primary'}`}
+          title="Copy markdown"
+        >
+          {copied ? <Check size={11} /> : <Copy size={11} />}
+        </button>
         <button
           onClick={toggleSpeak}
           className={`p-1 cursor-pointer ${speaking ? 'text-warning' : 'text-text-tertiary hover:text-text-primary'}`}
