@@ -104,8 +104,16 @@ const reviewTheme = EditorView.theme({
     borderRadius: '2px',
     textDecoration: 'line-through',
   },
-  '& .cm-chunkButtons': {
+  // The merge base theme absolutely positions the buttons at the chunk's
+  // top-right INSIDE a widget that is zero-height for inline diffs — they
+  // overlay (and hide) the first line's text. Static flow gives the widget
+  // real height: the buttons get their own row ABOVE the text block.
+  '& .cm-deletedChunk .cm-chunkButtons': {
     fontFamily: 'inherit',
+    position: 'static',
+    display: 'flex',
+    justifyContent: 'flex-end',
+    padding: '1px 0',
   },
   '& .cm-chunkButtons button': {
     cursor: 'pointer',
