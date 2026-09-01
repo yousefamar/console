@@ -585,20 +585,20 @@ function SpaceListItem({ space, badge, draftCount = 0, active, onClick }: { spac
             <FileText size={9} />{draftCount}
           </span>
         )}
-        {badge && badge.count > 0 && (
-          <span
-            className={clsx('flex items-center gap-0.5 text-[9px]', botColor)}
-            title={`${badge.count} agent${badge.count > 1 ? 's' : ''}${badge.attention ? ' · needs you' : badge.unread ? ' · unread' : ''}`}
-          >
-            <Bot size={9} />{badge.count}
-          </span>
-        )}
         {space.boardPath && (
           <span
             className={clsx('flex flex-shrink-0 items-center gap-0.5 text-[9px]', kanbanColor)}
             title={reviewCount > 0 ? `${reviewCount} card${reviewCount > 1 ? 's' : ''} under review` : 'Has a board'}
           >
             <Kanban size={9} />{reviewCount > 0 && reviewCount}
+          </span>
+        )}
+        {badge && badge.count > 0 && (
+          <span
+            className={clsx('flex items-center gap-0.5 text-[9px]', botColor)}
+            title={`${badge.count} agent${badge.count > 1 ? 's' : ''}${badge.attention ? ' · needs you' : badge.unread ? ' · unread' : ''}`}
+          >
+            <Bot size={9} />{badge.count}
           </span>
         )}
       </span>
