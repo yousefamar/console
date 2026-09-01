@@ -20,7 +20,7 @@ import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
 import { useCronStore } from '@/store/cron'
 import { todoLabel, todoProgress } from './agent/TodoList'
-import { showPrompt, showConfirm } from '@/dialog'
+import { showPrompt, showConfirm, showAlert } from '@/dialog'
 import { useDictation } from '@/hooks/useDictation'
 import { dictationSeparator } from '@/utils/dictation-text'
 import { AgentSessionView } from './AgentSessionView'
@@ -517,7 +517,22 @@ function SpaceListRail() {
           )}
           {areas.map(renderSpace)}
         </RailSection>
-        <RailSection label="Projects">{projects.map(renderSpace)}</RailSection>
+        <RailSection
+          label="Projects"
+          action={{
+            icon: <Plus size={10} />,
+            title: 'New project',
+            onClick: async () => {
+              const title = await showPrompt('Project title:', { title: 'New project', placeholder: 'e.g. Cura', confirmLabel: 'Create' })
+              if (!title?.trim()) return
+              const r = await useBlogStore.getState().createProject({ title: title.trim() })
+              if (!r.ok) { await showAlert(`Failed to create project: ${r.error}`, { title: 'Error' }); return }
+              // Land in the new space with its index open in Docs.
+              await useSpacesStore.getState().refreshSpaces()
+              if (r.slug) useSpacesStore.getState().selectSpace(r.slug)
+            },
+          }}
+        >{projects.map(renderSpace)}</RailSection>
         <RailSection label="Everything else">
           {renderSpace(VAULT_SPACE)}
           {unassignedCount > 0 && renderSpace(UNASSIGNED_SPACE)}

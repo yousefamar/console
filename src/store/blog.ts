@@ -367,7 +367,9 @@ export const useBlogStore = create<BlogState>((set) => ({
       if (result.ok && result.path) {
         const { useNotesStore } = await import('./notes')
         const { useUiStore } = await import('./ui')
-        useUiStore.getState().setActivePane('notes')
+        // Spaces has its own Docs editor — a project created there opens in
+        // place; everywhere else jumps to the Notes pane as before.
+        if (useUiStore.getState().activePane !== 'spaces') useUiStore.getState().setActivePane('notes')
         // Refresh notes file list so the new project shows in the tree
         await useNotesStore.getState().loadVaultFiles()
         await useNotesStore.getState().openFile(result.path)
