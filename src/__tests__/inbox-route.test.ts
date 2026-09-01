@@ -143,9 +143,9 @@ describe('agent sessions', () => {
     expect(i.ts).toBe(NOW - 100)
   })
 
-  it('attention sessions band above chat DMs; plain unread below mail', () => {
+  it('attention sessions band above chat+mail; plain unread below them', () => {
     const items = [
-      threadToItem(thread({ date: NOW }), DEFAULT_RULES),
+      threadToItem(thread({ date: NOW - 1000 }), DEFAULT_RULES),
       roomToItem(room({ id: '!dm:hs', lastMessageTime: NOW }), DEFAULT_RULES),
       sessionToItem(session({ id: 's-plain', hasUnread: true, lastActivityAt: NOW })),
       sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW })),
@@ -207,16 +207,16 @@ describe('membership', () => {
 })
 
 describe('ordering', () => {
-  it('inbox bands: chat DMs, chat groups, mail, feed reading — recency within', () => {
+  it('inbox: chat+mail share one recency band — fresh mail beats stale chats', () => {
     const items = [
       feedItemToItem(feedItem({ id: 'f-new', publishedAt: new Date(NOW).toISOString() }), undefined, normalizeRules({ feeds: { default: 'inbox' } }))!,
-      threadToItem(thread({ id: 't-old', date: NOW - 9000 }), DEFAULT_RULES),
-      roomToItem(room({ id: '!group:hs', isDirect: false, lastMessageTime: NOW }), DEFAULT_RULES),
+      threadToItem(thread({ id: 't-new', date: NOW - 1000 }), DEFAULT_RULES),
+      roomToItem(room({ id: '!group-old:hs', isDirect: false, lastMessageTime: NOW - 8000 }), DEFAULT_RULES),
       roomToItem(room({ id: '!dm-old:hs', lastMessageTime: NOW - 5000 }), DEFAULT_RULES),
       roomToItem(room({ id: '!dm-new:hs', lastMessageTime: NOW }), DEFAULT_RULES),
     ]
     const sorted = sortInbox(items).map((i) => i.sourceId)
-    expect(sorted).toEqual(['!dm-new:hs', '!dm-old:hs', '!group:hs', 't-old', 'f-new'])
+    expect(sorted).toEqual(['!dm-new:hs', 't-new', '!dm-old:hs', '!group-old:hs', 'f-new'])
   })
 
   it('feed list is pure reverse-chron', () => {

@@ -168,10 +168,12 @@ export function roomIsLive(r: DbChatRoom, now: number, rules?: InboxRules): bool
 
 function band(i: InboxItem): number {
   if (i.overdue) return 0
-  if (i.source === 'agent') return i.attention ? 1 : 5
-  if (i.source === 'chat') return i.isDirect ? 2 : 3
-  if (i.source === 'mail') return 4
-  return 6
+  if (i.source === 'agent') return i.attention ? 1 : 3
+  // Chat and mail share ONE recency band — fresh mail beats stale chats
+  // (a strict chat-above-mail split buried today's mail under week-old
+  // group unreads; Yousef's call 2026-08-29).
+  if (i.source === 'chat' || i.source === 'mail') return 2
+  return 4
 }
 
 export function sortInbox(items: InboxItem[]): InboxItem[] {
