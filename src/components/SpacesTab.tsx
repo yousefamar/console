@@ -248,7 +248,7 @@ function SpaceListRail() {
   const sessions = useAgentStore((s) => s.sessions)
   const openFiles = useNotesStore((s) => s.openFiles)
   const blogDrafts = useBlogStore((s) => s.drafts)
-  const { agentBadges, alertsBySlug, unassignedCount } = useMemo(() => {
+  const { agentBadges, alertsBySlug, unassignedCount, curatorForks } = useMemo(() => {
     const badges = new Map<string, { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }>()
     const alerts = new Map<string, SpaceAlert[]>()
     // Review-card owners per space: an UNREAD session whose @key owns an
@@ -278,11 +278,34 @@ function SpaceListRail() {
     }
     const live = sessions.filter((s) => s.status !== 'ended')
     const byCsid = new Map(live.filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
+    // Curator LINEAGE (the session itself + its forks, which inherit the
+    // all-areas binding): none of it badges or rows the areas — the hoisted
+    // Curator row owns the whole subtree (^tame-hare, forks ^zany-kiwi).
+    // Lineage, not agentKey: chat-forks of the Curator carry their own key.
+    const isCuratorLineage = (s: (typeof live)[number]): boolean => {
+      let cur = s
+      const seen = new Set<string>()
+      while (cur.parentClaudeSessionId && !seen.has(cur.id)) {
+        seen.add(cur.id)
+        const p = byCsid.get(cur.parentClaudeSessionId)
+        if (!p) break
+        cur = p
+      }
+      return cur.agentKey === CURATOR_AGENT_KEY
+    }
+    const curatorForkRows: SpaceAlert[] = []
     for (const s of live) {
-      // The Curator (vault-wide writing companion, bound to every area) gets
-      // its own hoisted rail row instead of replicating across all areas —
-      // no per-area Bot badges or alert rows (Yousef's call, ^tame-hare).
-      if (s.agentKey === CURATOR_AGENT_KEY) continue
+      if (isCuratorLineage(s)) {
+        if (s.agentKey !== CURATOR_AGENT_KEY && (s.hasUnread || s.needsAttention || s.status === 'running')) {
+          curatorForkRows.push({
+            kind: 'session', id: s.id,
+            label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
+            level: s.needsAttention ? 'attention' : s.status === 'running' ? 'working' : 'unread',
+            fork: true, sessionId: s.id,
+          })
+        }
+        continue
+      }
       const unread = !!s.hasUnread
       const attention = !!s.needsAttention
       const working = s.status === 'running'
@@ -408,7 +431,8 @@ function SpaceListRail() {
       for (const r of roots.sort(byRank)) emit(r, 0)
       alerts.set(slug, [...ordered, ...fileRows])
     }
-    return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned }
+    curatorForkRows.sort((x, y) => rank[x.level] - rank[y.level] || x.label.localeCompare(y.label))
+    return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned, curatorForks: curatorForkRows }
   }, [sessions, openFiles, blogDrafts, spaces])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
@@ -456,12 +480,12 @@ function SpaceListRail() {
   // bound to. Clicking it selects the session (switching to one of its areas
   // first when the active space isn't one, or the panel would stay empty).
   const curator = sessions.find((s) => s.agentKey === CURATOR_AGENT_KEY && s.status !== 'ended')
-  const openCurator = () => {
+  const openCurator = (sessionId?: string) => {
     if (!curator) return
     const cur = useSpacesStore.getState().activeSlug
     const areas = curator.areas ?? []
     if (!cur || !areas.includes(cur)) selectSpace(areas[0] ?? VAULT_SLUG)
-    useAgentStore.getState().selectSession(curator.id)
+    useAgentStore.getState().selectSession(sessionId ?? curator.id)
   }
 
   const renderSpace = (s: SpaceSummary) => (
@@ -505,7 +529,7 @@ function SpaceListRail() {
           {curator && (
             <ContextMenu items={sessionMenuItems(curator.id)}>
               <button
-                onClick={openCurator}
+                onClick={() => openCurator()}
                 className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
                 title="Curator — vault-wide writing companion"
               >
@@ -515,6 +539,19 @@ function SpaceListRail() {
               </button>
             </ContextMenu>
           )}
+          {/* Curator forks nest here, not under the areas they inherited (^zany-kiwi). */}
+          {curator && curatorForks.map((a) => (
+            <ContextMenu key={`session:${a.id}`} items={sessionMenuItems(a.id)}>
+              <button
+                onClick={() => openCurator(a.id)}
+                className="flex w-full items-center gap-2 py-0.5 pr-3 pl-8 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
+                title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : 'Unread'}
+              >
+                <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : 'text-blue-500')} />
+                <span className="truncate">{a.label}</span>
+              </button>
+            </ContextMenu>
+          ))}
           {areas.map(renderSpace)}
         </RailSection>
         <RailSection
