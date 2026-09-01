@@ -434,6 +434,30 @@ export function useKeybindings() {
           void uinbox.toggleRoute(selected)
           return
         }
+        // Mail replies work here too — the viewer IS ThreadView.
+        if (selected?.source === 'mail') {
+          if (e.key === 'r' && !e.shiftKey) {
+            e.preventDefault()
+            inbox.getState().setReplyMode('reply')
+            return
+          }
+          if (e.key === 'R' || (e.key === 'r' && e.shiftKey)) {
+            e.preventDefault()
+            inbox.getState().setReplyMode('replyAll')
+            return
+          }
+          if (e.key === 'f') {
+            e.preventDefault()
+            inbox.getState().setReplyMode('forward')
+            return
+          }
+        }
+        // Jump to the agent's Spaces view (o = open in its home surface).
+        if (e.key === 'o' && selected?.source === 'agent') {
+          e.preventDefault()
+          void import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(selected.sourceId))
+          return
+        }
         return
       }
 

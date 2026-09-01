@@ -15,7 +15,7 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { ArrowLeftToLine, ArrowRightToLine, Bot, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Bot, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
@@ -150,7 +150,21 @@ export const InboxTab = memo(function InboxTab() {
         {selected?.source === 'mail' && <ThreadView />}
         {selected?.source === 'chat' && <ChatRoomView />}
         {selected?.source === 'feed' && <FeedItemView />}
-        {selected?.source === 'agent' && <AgentSessionView />}
+        {selected?.source === 'agent' && (
+          <>
+            <div className="flex items-center justify-end border-b border-border px-3 py-0.5">
+              <button
+                onClick={() => void import('@/store/spaces').then(({ focusSessionInSpaces }) => focusSessionInSpaces(selected.sourceId))}
+                className="flex items-center gap-1 text-[10px] text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+                title="Open this session in Spaces (o)"
+              >
+                <FolderKanban size={11} />
+                <span>Open in Spaces</span>
+              </button>
+            </div>
+            <AgentSessionView />
+          </>
+        )}
         {!selected && (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-text-tertiary">Select an item</p>
@@ -181,9 +195,12 @@ function ColumnHeader({ label, count, extra, action }: {
 }) {
   return (
     <div className="flex items-center justify-between border-b border-border px-3 py-1">
-      <span className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</span>
-      <span className="flex items-center gap-2">
+      {/* Count rides with the label on the LEFT — the right side is controls. */}
+      <span className="flex items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-text-tertiary">{label}</span>
         <span className="text-[10px] text-text-tertiary">{count}</span>
+      </span>
+      <span className="flex items-center gap-2">
         {extra}
         {action && (
           <button onClick={action.onClick} className="text-text-tertiary hover:text-text-primary" title={action.title}>
