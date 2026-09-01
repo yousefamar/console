@@ -42,7 +42,13 @@ export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: Cale
       // The delete-scope dialog renders outside `ref` — don't let a click in it
       // (or its backdrop) tear down the popover underneath it.
       if (scopeDialogOpen.current) return
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      // Two instances can be mounted at once (the Inbox day rail's + the
+      // pre-rendered-but-hidden Calendar pane's). A HIDDEN instance must not
+      // treat clicks inside the visible one as "outside" and kill the shared
+      // selection. checkVisibility() sees through display:none ancestors —
+      // offsetParent can't be used here (null for position:fixed).
+      if (!ref.current || !ref.current.checkVisibility()) return
+      if (!ref.current.contains(e.target as Node)) {
         selectEvent(null)
       }
     }
