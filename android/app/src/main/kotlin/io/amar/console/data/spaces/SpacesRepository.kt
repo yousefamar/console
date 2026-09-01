@@ -204,6 +204,11 @@ class SpacesRepository(
             if (model == null) put("model", "") else put("model", model)
         })
 
+    /** Board-level frontmatter `default_owner:` — the agent unassigned cards
+     *  dragged into In Progress auto-assign to. Null clears it. */
+    suspend fun setDefaultOwner(project: String, agent: String?): Boolean =
+        post(project, "owner", buildJsonObject { if (agent == null) put("agent", "") else put("agent", agent) })
+
     /** Re-fire dispatch for a STAMPED card (assignee dead / envelope lost). */
     suspend fun redispatch(project: String, card: CardView): Boolean =
         post(project, "redispatch", buildJsonObject { put("card", cardAddress(card)) })

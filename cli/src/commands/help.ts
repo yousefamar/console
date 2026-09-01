@@ -295,6 +295,7 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> add "text"            Add a card [--to <column>] [--assign <key>] [--detail "a|b"] [--bottom]
   board <project> move "<card>" <col>   Move a card to a column
   board <project> assign "<card>" <key|none>
+  board <project> owner <agentKey|none>          Board default owner (unassigned → In Progress auto-assigns to it)
   board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus)
   board <project> nofork "<card>"       Dispatch wakes the assignee directly (no ticket-fork)
   board <project> forkok "<card>"       Undo nofork

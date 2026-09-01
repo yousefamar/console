@@ -1222,6 +1222,7 @@ private fun SpaceAgentsList(
     LaunchedEffect(Unit) { io.amar.console.data.agents.Cron.refreshAll() }
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
     val micOwner by io.amar.console.data.agents.Mic.owner.collectAsState()
+    val ownerScope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.weight(1f)) {
             items(ordered, key = { it.first.id }) { (s, depth) ->
@@ -1312,6 +1313,12 @@ private fun SpaceAgentsList(
             onMerge = { agents.mergeSession(target.id) },
             onMic = { io.amar.console.data.agents.Mic.setMic(if (micOwner == target.id) "al" else target.id) },
             onShowInfo = null,
+            // Board frontmatter default_owner — projects only (areas have no
+            // board), keyed sessions only (the key is what the board names).
+            ownerToggle = target.agentKey?.takeIf { kind == "project" }?.let { key ->
+                val isOwner = boardState?.defaultOwner == key
+                Pair(isOwner) { ownerScope.launch { spacesRepo.setDefaultOwner(slug, if (isOwner) null else key) } }
+            },
         )
     }
     if (creating) {

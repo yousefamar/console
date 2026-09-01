@@ -30,6 +30,9 @@ export interface SpaceSummary {
    *  reachable via their card, so the rail suppresses their badge/rows
    *  (^lean-ibis). Optional: older hub payloads omit it. */
   cardAgentKeys?: string[]
+  /** Board frontmatter `default_owner:` — unassigned cards dragged into In
+   *  Progress auto-assign to this agent. Optional: older hub payloads omit it. */
+  defaultOwner?: string | null
 }
 
 interface SpacesState {
@@ -64,6 +67,10 @@ interface SpacesState {
   /** Flip the `#nofork` tag — dispatch wakes the role directly, no fork. */
   toggleNofork: (ref: CardRef) => Promise<void>
   setCardModel: (ref: CardRef, model: string | null) => Promise<void>
+  /** Set/clear a PROJECT board's `default_owner:` frontmatter (the agent that
+   *  unassigned In-Progress cards auto-assign to). Takes a slug, not the active
+   *  space — the session context menu reaches sessions from any rail. */
+  setDefaultOwner: (slug: string, agentKey: string | null) => Promise<void>
   /** Rewrite a card's text and detail (indented continuation lines). Tokens
    *  (@key/^id/#blocked) survive — only the human-readable content changes. */
   editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
@@ -390,6 +397,22 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     refreshCardLine(card)
     set({ board: { ...board } })
     if (q) await get().boardApi('nofork', { card: q, nofork: now })
+  },
+
+  setDefaultOwner: async (slug, agentKey) => {
+    if (slug.startsWith('~')) return
+    try {
+      await hubFetch(`/board/${encodeURIComponent(slug)}/owner`, {
+        method: 'POST',
+        body: JSON.stringify({ agent: agentKey }),
+        timeoutMs: 10000,
+      })
+    } catch (e) {
+      set({ boardError: (e as Error).message })
+      return
+    }
+    await get().refreshSpaces()
+    if (get().activeSlug === slug) await get().loadBoard().catch(() => {})
   },
 
   setCardModel: async (ref, model) => {

@@ -34,6 +34,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Session sheet: "Set/Unset as project owner"** (^lime-dove): long-press a
+  session in a PROJECT space's Agents list → toggles the board's frontmatter
+  `default_owner:` via `POST /board/:project/owner` (`SpacesRepository.
+  setDefaultOwner`); the existing ★ default-agent marker flips on the board
+  reload. Hidden for area spaces and keyless sessions (SPA parity).
+
 - **Fleet model picker: add Fable 5.1** (^rosy-deer): `AgentDialogs.kt`
   `FIRST_PARTY`/`BEDROCK` picker lists gained `claude-fable-5-1` /
   `us.anthropic.claude-fable-5-1` (after opus-5, before fable-5), matching the

@@ -3,6 +3,7 @@ import {
   cardUrls,
   isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
+  boardDefaultOwner, setBoardDefaultOwner,
 } from '../kanban/board.js'
 
 // Mirrors a real Obsidian-Kanban file: blank line inside the frontmatter
@@ -231,5 +232,35 @@ describe('cardUrls', () => {
 
   it('image lines are excluded (thumbnails own those)', () => {
     expect(cardUrls(card(['- [ ] card', '  ![img](https://cdn.example.com/a.png)']))).toEqual([])
+  })
+})
+
+describe('setBoardDefaultOwner (frontmatter default_owner)', () => {
+  const owner = (b: ReturnType<typeof parseBoard>) => boardDefaultOwner(serializeBoard(b))
+
+  it('inserts inside an existing fence, replaces, clears — columns untouched', () => {
+    const board = parseBoard(REAL_BOARD)
+    expect(owner(board)).toBeNull()
+    setBoardDefaultOwner(board, 'demo-general')
+    expect(owner(board)).toBe('demo-general')
+    // Inserted before the closing fence, not after it.
+    const close = board.header.indexOf('---', 1)
+    expect(board.header.indexOf('default_owner: demo-general')).toBeLessThan(close)
+    setBoardDefaultOwner(board, 'other')
+    expect(owner(board)).toBe('other')
+    expect(board.header.filter((l) => l.startsWith('default_owner:'))).toHaveLength(1)
+    setBoardDefaultOwner(board, null)
+    expect(owner(board)).toBeNull()
+    // Everything else round-trips byte-identically.
+    expect(serializeBoard(board)).toBe(serializeBoard(parseBoard(REAL_BOARD)))
+  })
+
+  it('prepends a fence on a board without frontmatter; clearing a missing owner is a no-op', () => {
+    const board = parseBoard('## Backlog\n\n- [ ] x\n')
+    setBoardDefaultOwner(board, null)
+    expect(serializeBoard(board)).toBe('## Backlog\n\n- [ ] x\n')
+    setBoardDefaultOwner(board, 'k')
+    expect(serializeBoard(board).startsWith('---\ndefault_owner: k\n---\n')).toBe(true)
+    expect(owner(board)).toBe('k')
   })
 })

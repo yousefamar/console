@@ -32,7 +32,7 @@ interface CardView {
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|model|nofork|forkok|block|unblock|note|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|block|unblock|note|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -88,6 +88,12 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/model`, { method: 'POST', body: { card, model: model === 'none' ? null : model } }), flags)
       return
     }
+    case 'owner': {
+      const agent = pos[0]
+      if (!agent) { exitWithError('USAGE', 'Usage: con spaces board <project> owner <agentKey|none>   (board frontmatter default_owner — unassigned cards dragged into In Progress auto-assign to it)', flags); return }
+      output(await hubFetch(`/board/${enc}/owner`, { method: 'POST', body: { agent: agent === 'none' ? null : agent } }), flags)
+      return
+    }
     case 'nofork':
     case 'forkok': {
       const card = pos[0]
@@ -127,6 +133,6 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, model, nofork, forkok, block, unblock, note, edit, remove, redispatch — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, block, unblock, note, edit, remove, redispatch — see \`con help spaces\`.`, flags)
   }
 }

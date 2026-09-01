@@ -10,7 +10,7 @@
 import type { NoteStore } from './notes.js'
 import { parseFrontmatter } from './blog.js'
 import { loadAreaRegistry } from './areas.js'
-import { isKanbanBoard, parseBoard } from './kanban/board.js'
+import { isKanbanBoard, parseBoard, boardDefaultOwner } from './kanban/board.js'
 import { REVIEW_COLUMN_RE } from './kanban/dispatch.js'
 
 const PROJECTS_DIR = 'projects'
@@ -37,6 +37,9 @@ export interface SpaceSummary {
    *  A fork whose key owns a card is reachable via the card, so the rail
    *  suppresses its badge/alert rows (^lean-ibis) — attention excepted. */
   cardAgentKeys: string[]
+  /** Board frontmatter `default_owner:` — the agent unassigned cards auto-
+   *  assign to (null = none set; the "-general" convention applies). */
+  defaultOwner: string | null
 }
 
 export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
@@ -90,7 +93,9 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
     let reviewCount = 0
     const reviewAgentKeys: string[] = []
     const cardAgentKeys = new Set<string>()
+    let defaultOwner: string | null = null
     if (boardContent) {
+      defaultOwner = boardDefaultOwner(boardContent)
       try {
         for (const col of parseBoard(boardContent).columns) {
           const isReview = REVIEW_COLUMN_RE.test(col.title)
@@ -103,7 +108,7 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
         }
       } catch { /* unparseable board — counts stay 0 */ }
     }
-    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, cardAgentKeys: [...cardAgentKeys] })
+    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, cardAgentKeys: [...cardAgentKeys], defaultOwner })
   }
 
   const registry = await loadAreaRegistry(store)
@@ -119,6 +124,7 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       reviewCount: 0,
       reviewAgentKeys: [],
       cardAgentKeys: [],
+      defaultOwner: null,
     })
   }
 

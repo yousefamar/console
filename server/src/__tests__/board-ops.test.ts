@@ -117,6 +117,17 @@ describe('BoardOps mutations', () => {
   })
 })
 
+describe('default owner', () => {
+  it('setDefaultOwner writes/clears frontmatter and show() reflects it', async () => {
+    expect((await ops.show('demo')).defaultOwner).toBeNull()
+    expect(await ops.setDefaultOwner('demo', 'demo-general')).toMatchObject({ defaultOwner: 'demo-general' })
+    expect(onDisk()).toMatch(/^---\nkanban-plugin: board\ndefault_owner: demo-general\n---\n/)
+    expect((await ops.show('demo')).defaultOwner).toBe('demo-general')
+    expect(await ops.setDefaultOwner('demo', null)).toMatchObject({ defaultOwner: null })
+    expect(onDisk()).toBe(BOARD)
+  })
+})
+
 describe('actor ledger', () => {
   it('records the acting agent per card and prunes', async () => {
     const { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } = await import('node:fs')

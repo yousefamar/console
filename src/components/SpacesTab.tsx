@@ -10,10 +10,10 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, Crown, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
-import { useAgentStore } from '@/store/agent'
+import { useAgentStore, type SessionInfo } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -38,6 +38,23 @@ import { splitTrailingTags, cardUrls } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
+
+/** "Set/Unset as project owner" — board frontmatter `default_owner:` (the
+ *  agent unassigned In-Progress cards auto-assign to). Only for a keyed
+ *  session bound to a PROJECT (areas have no board); toggles off when the
+ *  session already owns it. Owner comes off the hub's listSpaces payload, so
+ *  no board load is needed from any rail. */
+function ownerMenuItem(sess: SessionInfo | undefined): ContextMenuItem[] {
+  if (!sess?.agentKey || !sess.project) return []
+  const { spaces, setDefaultOwner } = useSpacesStore.getState()
+  const space = spaces.find((s) => s.kind === 'project' && s.slug === sess.project)
+  if (!space) return []
+  const isOwner = (space.defaultOwner ?? null) === sess.agentKey
+  return [{
+    label: isOwner ? 'Unset as project owner' : 'Set as project owner',
+    onClick: () => void setDefaultOwner(sess.project!, isOwner ? null : sess.agentKey!),
+  }]
+}
 
 export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
@@ -471,8 +488,10 @@ function SpaceListRail() {
       { label: useMicStore.getState().owner === sessionId ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
       { label: 'Fork', onClick: () => agent.forkSession(sessionId) },
       ...(sess?.parentClaudeSessionId ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
+      ...ownerMenuItem(sess),
       { label: 'End session', onClick: () => agent.killSession(sessionId), destructive: true },
     ]
+
   }
 
   // Hoisted Curator row — the vault-wide writing companion sits ON TOP of the
@@ -777,8 +796,10 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               { label: useMicStore.getState().owner === sess.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sess.id ? 'al' : sess.id) },
               { label: 'Fork', onClick: () => agent.forkSession(sess.id) },
               ...(isFork ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sess.id) }] : []),
+              ...ownerMenuItem(sess),
               { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
             ]
+            const isOwner = !!sess.agentKey && (space.defaultOwner ?? null) === sess.agentKey
             return (
               <ContextMenu key={sess.id} items={menuItems}>
                 <button
@@ -794,6 +815,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                     ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
                     : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
                   <span className="truncate">{displayName}</span>
+                  {isOwner && <span title="Project owner — unassigned cards dragged into In Progress go here"><Crown size={9} className="flex-shrink-0 text-amber-500" /></span>}
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
                     <SessionBadges session={sess} />
                     {micOwnerId === sess.id && <Mic size={9} className="text-text-primary" />}

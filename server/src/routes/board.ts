@@ -8,6 +8,7 @@
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
 //   POST /board/:project/note               {card, note}
+//   POST /board/:project/owner              {agent|null}       board frontmatter default_owner
 //   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
 //   POST /board/:project/edit               {card, text?, detail?}
 //   POST /board/:project/remove             {card}
@@ -88,6 +89,9 @@ export function handleBoardRoutes(
       return true
     case 'note':
       run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? ''), actor))
+      return true
+    case 'owner':
+      run((b) => ops.setDefaultOwner(project, typeof b.agent === 'string' && b.agent.trim() ? b.agent.trim() : null))
       return true
     case 'edit':
       run((b) => ops.edit(project, String(b.card ?? ''), { text: b.text as string | undefined, detail: b.detail as string[] | undefined }))

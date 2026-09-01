@@ -10,7 +10,7 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import type { NoteStore } from '../notes.js'
-import { boardDefaultOwner,
+import { boardDefaultOwner, setBoardDefaultOwner,
   isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
   type KanbanBoard, type BoardCard, type CardRef,
 } from './board.js'
@@ -142,7 +142,7 @@ export class BoardOps {
     return run
   }
 
-  async show(project: string): Promise<{ path: string; columns: Array<{ title: string; cards: CardView[] }> }> {
+  async show(project: string): Promise<{ path: string } & ReturnType<typeof view>> {
     const path = await resolveBoardPath(this.store, project)
     if (!path) throw new Error(`no kanban board found for "${project}"`)
     const board = parseBoard(await this.store.read(path))
@@ -230,6 +230,15 @@ export class BoardOps {
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor)
       return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+    })
+  }
+
+  /** Board-level: set/clear the frontmatter `default_owner:` — the agent that
+   *  unassigned cards dragged into In Progress auto-assign to. */
+  setDefaultOwner(project: string, agentKey: string | null): Promise<{ path: string; defaultOwner: string | null }> {
+    return this.mutate(project, (board, path) => {
+      setBoardDefaultOwner(board, agentKey)
+      return { path, defaultOwner: boardDefaultOwner(board.header.join('\n')) }
     })
   }
 

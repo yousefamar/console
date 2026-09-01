@@ -95,6 +95,9 @@ fun SessionActionsSheet(
     onMerge: () -> Unit,
     onMic: () -> Unit,
     onShowInfo: (() -> Unit)?,
+    /** Project-owner toggle (board frontmatter default_owner) — null hides it
+     *  (sessions outside a project space). Pair: (isCurrentOwner, toggle). */
+    ownerToggle: Pair<Boolean, () -> Unit>? = null,
 ) {
     var renaming by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf(session.name) }
@@ -116,6 +119,7 @@ fun SessionActionsSheet(
                 SheetItem("● Mark unread") { onMarkUnread(); onDismiss() }
                 SheetItem(if (micOwner) "🎙 Release mic to Al" else "🎙 Give mic to this agent") { onMic(); onDismiss() }
                 if (canMerge) SheetItem("⤵ Merge into parent") { onMerge(); onDismiss() }
+                if (ownerToggle != null) SheetItem(if (ownerToggle.first) "☆ Unset as project owner" else "★ Set as project owner") { ownerToggle.second(); onDismiss() }
                 if (session.status != "ended") {
                     androidx.compose.material3.TextButton(onClick = { onKill(); onDismiss() }) {
                         Text("■ End session", color = MaterialTheme.colorScheme.error)

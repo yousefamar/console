@@ -84,6 +84,25 @@ export function boardDefaultOwner(content: string): string | null {
   return m ? m[1]! : null
 }
 
+/** Set (or clear, with null) the board's `default_owner:` frontmatter line in
+ *  place. Replaces an existing line; otherwise inserts before the closing
+ *  fence; a board with no frontmatter gets a fresh fence prepended. Only the
+ *  header changes — columns/footer are untouched. */
+export function setBoardDefaultOwner(board: KanbanBoard, agentKey: string | null): void {
+  const h = board.header
+  const open = h[0] === '---' ? 0 : -1
+  const close = open === 0 ? h.indexOf('---', 1) : -1
+  const existing = close > 0 ? h.findIndex((l, i) => i > open && i < close && /^default_owner:\s*/.test(l)) : -1
+  if (agentKey === null) {
+    if (existing >= 0) h.splice(existing, 1)
+    return
+  }
+  const line = `default_owner: ${agentKey}`
+  if (existing >= 0) { h[existing] = line; return }
+  if (close > 0) { h.splice(close, 0, line); return }
+  board.header = ['---', line, '---', '', ...h]
+}
+
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
 export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; model: string | null } {
   let text = rawText.trimEnd()
