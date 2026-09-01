@@ -81,6 +81,7 @@ import { SpotifyPlayerSync } from './spotify/sync.js'
 import { handleMapLayerRoutes } from './routes/map-layers.js'
 import { MapLayerStore } from './map-layers/store.js'
 import { PushServer } from './push.js'
+import { bindHealthNotify } from './health.js'
 import { handlePushRoutes } from './routes/push.js'
 import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
@@ -213,6 +214,10 @@ const awsCosts = new AwsCostStore(
   join(feedsConfigDir, 'cost-owners.json'),
 )
 const pushServer = new PushServer((msg: string) => { log(msg) })
+// Loop-health alerts (mail/cal/matrix/flights sync failures) ride the same
+// push channel. Bound here, after which any alerts queued during early boot
+// flush through.
+bindHealthNotify((msg) => pushServer.broadcast(msg), (m) => log(m))
 const glassesResearchLog = new GlassesResearchLog(
   join(feedsConfigDir, 'glasses-research.log'),
 )
@@ -753,6 +758,7 @@ const cronScheduler = new HubCronScheduler(
   () => sessions,
   (msg) => broadcast(msg),
   (m) => log(m),
+  (msg) => pushServer.broadcast(msg),
 )
 cronScheduler.start()
 

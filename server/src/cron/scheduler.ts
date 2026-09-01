@@ -21,6 +21,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Session } from '../session.js'
 import type { HubMessage } from '../protocol.js'
+import type { PushMessage } from '../push.js'
 
 const execFileP = promisify(execFile)
 
@@ -59,6 +60,8 @@ interface State {
 }
 
 const MAX_SKIPS_BEFORE_DISABLE = 10
+/** Warn well before auto-disable so a dead session can be revived in time. */
+const SKIPS_BEFORE_WARN = 3
 const SAVE_DEBOUNCE_MS = 500
 /** Wall-clock cap for a guard script. A hung guard must not wedge the fire. */
 const GUARD_TIMEOUT_MS = 60_000
@@ -82,6 +85,7 @@ export class HubCronScheduler {
     private getSessions: () => Map<string, Session>,
     private broadcast: (msg: HubMessage) => void,
     private log: (m: string) => void = () => {},
+    private notify: (msg: PushMessage) => void = () => {},
   ) {
     this.load()
   }
@@ -257,26 +261,8 @@ export class HubCronScheduler {
     }
 
     const session = [...this.getSessions().values()].find((s) => s.claudeSessionId === task.claudeSessionId)
-    if (!session) {
-      task.consecutiveSkips++
-      task.lastSkipReason = 'session not found'
-      if (task.consecutiveSkips >= MAX_SKIPS_BEFORE_DISABLE) {
-        task.disabledAt = Date.now()
-        this.unscheduleJob(task.id)
-      }
-      this.persist()
-      return { ok: false, reason: 'session not found' }
-    }
-    if (session.status === 'ended') {
-      task.consecutiveSkips++
-      task.lastSkipReason = 'session ended'
-      if (task.consecutiveSkips >= MAX_SKIPS_BEFORE_DISABLE) {
-        task.disabledAt = Date.now()
-        this.unscheduleJob(task.id)
-      }
-      this.persist()
-      return { ok: false, reason: 'session ended' }
-    }
+    if (!session) return this.recordSkip(task, 'session not found')
+    if (session.status === 'ended') return this.recordSkip(task, 'session ended')
 
     // Compose the wake prompt: the task prompt, plus the guard's stdout as
     // context when present (so the agent sees WHAT the guard detected).
@@ -328,6 +314,47 @@ export class HubCronScheduler {
       // skips the fire — never wakes the agent on a broken guard).
       if (typeof err.code === 'number' && !err.killed) return { proceed: false }
       return { proceed: false, error: err.killed ? `timed out after ${GUARD_TIMEOUT_MS}ms` : (err.message ?? 'guard failed to run') }
+    }
+  }
+
+  /** A skip = the target session is gone (guard no-changes deliberately do NOT
+   *  come through here — they never count toward auto-disable). Warns once at
+   *  SKIPS_BEFORE_WARN so a dead session can be revived before the task
+   *  auto-disables, and alerts on the disable itself. */
+  private recordSkip(task: HubCronTask, reason: string): { ok: false; reason: string } {
+    task.consecutiveSkips++
+    task.lastSkipReason = reason
+    const promptHint = task.prompt.length > 60 ? `${task.prompt.slice(0, 60)}…` : task.prompt
+    if (task.consecutiveSkips === SKIPS_BEFORE_WARN) {
+      this.notifySafe({
+        type: 'agent',
+        id: `cron:${task.id}`,
+        title: `Cron task skipping (${task.consecutiveSkips}×)`,
+        body: `"${promptHint}" — ${reason}. Auto-disables after ${MAX_SKIPS_BEFORE_DISABLE} skips.`,
+        pane: 'agents',
+      })
+    }
+    if (task.consecutiveSkips >= MAX_SKIPS_BEFORE_DISABLE) {
+      task.disabledAt = Date.now()
+      this.unscheduleJob(task.id)
+      this.notifySafe({
+        type: 'agent',
+        id: `cron:${task.id}`,
+        title: 'Cron task auto-disabled',
+        body: `"${promptHint}" disabled after ${task.consecutiveSkips} skips (${reason}). Re-add with \`con cron add\`.`,
+        pane: 'agents',
+      })
+      this.log(`[cron] auto-disabled ${task.id} after ${task.consecutiveSkips} skips (${reason})`)
+    }
+    this.persist()
+    return { ok: false, reason }
+  }
+
+  private notifySafe(msg: PushMessage): void {
+    try {
+      this.notify(msg)
+    } catch (e) {
+      this.log(`[cron] notify failed: ${(e as Error).message}`)
     }
   }
 

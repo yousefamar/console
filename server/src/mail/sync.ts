@@ -19,6 +19,7 @@ import type { GmailClient } from '../gmail-client.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
+import { health } from '../health.js'
 
 type MailAccountState = {
   historyId?: string
@@ -66,10 +67,18 @@ export class MailSync {
     if (this.timer) return
     this.log('[mail-sync] starting')
     // Run a first sync shortly after boot so we don't block startup.
-    setTimeout(() => { this.tick().catch((e) => this.log(`[mail-sync] initial tick failed: ${e}`)) }, 5_000)
-    this.timer = setInterval(() => {
-      this.tick().catch((e) => this.log(`[mail-sync] tick failed: ${e}`))
-    }, this.INTERVAL_MS)
+    setTimeout(() => { this.healthTick('initial tick') }, 5_000)
+    this.timer = setInterval(() => { this.healthTick('tick') }, this.INTERVAL_MS)
+  }
+
+  /** Tick with loop-health reporting — consecutive failures escalate to a push. */
+  private healthTick(label: string): void {
+    this.tick()
+      .then(() => health.reportSuccess('mail-sync'))
+      .catch((e) => {
+        this.log(`[mail-sync] ${label} failed: ${e}`)
+        health.reportFailure('mail-sync', String(e))
+      })
   }
 
   stop(): void {

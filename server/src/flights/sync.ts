@@ -14,6 +14,7 @@ import type { MapLayerStore } from '../map-layers/store.js'
 import type { SerpApiClient } from './serpapi.js'
 import type { Watchlist, WatchlistResult, WatchlistStore } from './store.js'
 import { legsToGeoJSON, type FlightLeg } from './arcs.js'
+import { health } from '../health.js'
 
 // Sci-fi cyan for the live-offers arcs on the Map tab.
 const OFFERS_COLOR = '#22d3ee'
@@ -44,12 +45,18 @@ export class FlightSync {
     if (this.timer) return
     this.log('[flight-sync] starting (24h interval)')
     // Defer first tick so boot stays snappy.
-    setTimeout(() => {
-      this.tick().catch((e) => this.log(`[flight-sync] initial tick failed: ${e}`))
-    }, 10_000)
-    this.timer = setInterval(() => {
-      this.tick().catch((e) => this.log(`[flight-sync] tick failed: ${e}`))
-    }, this.INTERVAL_MS)
+    setTimeout(() => { this.healthTick('initial tick') }, 10_000)
+    this.timer = setInterval(() => { this.healthTick('tick') }, this.INTERVAL_MS)
+  }
+
+  /** Tick with loop-health reporting — consecutive failures escalate to a push. */
+  private healthTick(label: string): void {
+    this.tick()
+      .then(() => health.reportSuccess('flight-sync'))
+      .catch((e) => {
+        this.log(`[flight-sync] ${label} failed: ${e}`)
+        health.reportFailure('flight-sync', String(e))
+      })
   }
 
   stop(): void {

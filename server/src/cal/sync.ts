@@ -22,6 +22,7 @@ import type { CalendarClient } from '../calendar-client.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
+import { health } from '../health.js'
 
 type EventFingerprint = string // hash of `updated` timestamp + status
 
@@ -98,10 +99,8 @@ export class CalendarSync {
   start(): void {
     if (this.timer) return
     this.log('[cal-sync] starting')
-    setTimeout(() => { this.tick().catch((e) => this.log(`[cal-sync] initial tick failed: ${e}`)) }, 8_000)
-    this.timer = setInterval(() => {
-      this.tick().catch((e) => this.log(`[cal-sync] tick failed: ${e}`))
-    }, this.INTERVAL_MS)
+    setTimeout(() => { this.healthTick('initial tick') }, 8_000)
+    this.timer = setInterval(() => { this.healthTick('tick') }, this.INTERVAL_MS)
     // Reminder ticker runs independently so a 5-min override actually fires
     // close to on time regardless of the sync cadence.
     this.reminderTimer = setInterval(() => {
@@ -114,6 +113,16 @@ export class CalendarSync {
     this.timer = null
     if (this.reminderTimer) clearInterval(this.reminderTimer)
     this.reminderTimer = null
+  }
+
+  /** Tick with loop-health reporting — consecutive failures escalate to a push. */
+  private healthTick(label: string): void {
+    this.tick()
+      .then(() => health.reportSuccess('cal-sync'))
+      .catch((e) => {
+        this.log(`[cal-sync] ${label} failed: ${e}`)
+        health.reportFailure('cal-sync', String(e))
+      })
   }
 
   async syncNow(): Promise<{ ok: true }> {

@@ -24,6 +24,7 @@ import type { PushServer } from '../push.js'
 import type { ChatRoomsStore } from './chat-rooms-store.js'
 import type { MessageArchive } from './message-archive.js'
 import type { SyncRoomDelta } from './room-state.js'
+import { health } from '../health.js'
 
 type MatrixSyncState = { nextBatch?: string; lastSyncMs?: number }
 
@@ -726,10 +727,12 @@ export class MatrixSync {
     while (!this.stopped) {
       try {
         await this.tick()
+        health.reportSuccess('matrix-sync')
       } catch (e) {
         const err = e as Error & { cause?: unknown }
         const cause = err.cause ? ` (cause: ${(err.cause as Error)?.message ?? String(err.cause)})` : ''
         this.log(`[matrix-sync] tick failed: ${err.message}${cause}`)
+        health.reportFailure('matrix-sync', `${err.message}${cause}`)
         await this.sleep(5_000)
         continue
       }
