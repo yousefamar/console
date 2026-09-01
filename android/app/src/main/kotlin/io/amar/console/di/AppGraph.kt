@@ -45,6 +45,7 @@ class AppGraph(context: Context) {
     val feeds = FeedsRepository(db, hub, outbox)
     val agents = AgentsRepository(appScope, db, hub, outbox)
     val spaces = io.amar.console.data.spaces.SpacesRepository(hub, syncBus)
+    val inbox = io.amar.console.data.inbox.InboxRepository(appScope, db, hub, agents.observeSessions())
     val bookmarks = BookmarksRepository(db, hub, outbox)
     val map = MapRepository(db, hub)
     val music = MusicRepository(hub)

@@ -38,6 +38,7 @@ import io.amar.console.ui.notes.NoteEditorScreen
 import io.amar.console.ui.notes.NotesBrowserScreen
 import io.amar.console.ui.settings.HardwareSettingsScreen
 import io.amar.console.ui.settings.SettingsScreen
+import kotlinx.coroutines.launch
 
 /**
  * The app shell — app-grid navigation architecture (see ui/nav/AppNav.kt for
@@ -130,6 +131,36 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
 
                 // L1 roots + L2 details, one pair per app.
+                composable(Pane.Inbox.route) {
+                    io.amar.console.ui.inbox.InboxScreen(
+                        app.graph.inbox,
+                        onOpenChat = { roomId -> navController.navigate("chat/${android.net.Uri.encode(roomId)}") },
+                        onOpenMail = { threadId -> navController.navigate("mail/${android.net.Uri.encode(threadId)}") },
+                        onOpenFeedItem = { itemId -> navController.navigate("feeds/${android.net.Uri.encode(itemId)}") },
+                        onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
+                        onDone = { entry ->
+                            shellScope.launch {
+                                when (entry.source) {
+                                    io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.archive(entry.sourceId)
+                                    io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.markRead(entry.sourceId)
+                                    io.amar.console.data.inbox.InboxSource.FEED -> app.graph.feeds.markRead(entry.sourceId)
+                                    io.amar.console.data.inbox.InboxSource.AGENT -> app.graph.agents.markRead(entry.sourceId)
+                                }
+                            }
+                        },
+                        onSnooze = { entry ->
+                            shellScope.launch {
+                                val until = io.amar.console.data.chat.SnoozeTimes.tomorrowMorning()
+                                when (entry.source) {
+                                    io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.snooze(entry.sourceId, until)
+                                    io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.snooze(entry.sourceId, until)
+                                    else -> {}
+                                }
+                            }
+                        },
+                        onGrid = toGrid,
+                    )
+                }
                 composable(Pane.Chat.route) {
                     ChatRoomListScreen(
                         app.graph.chat,

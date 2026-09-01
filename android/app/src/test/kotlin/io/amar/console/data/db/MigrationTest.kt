@@ -109,6 +109,17 @@ class MigrationTest {
     fun `migrate 10 to latest`() = migrateFrom(10)
 
     @Test
+    fun `migrate 12 to latest with agent session data`() = migrateFrom(12) { db ->
+        // v13 adds agent_sessions.lastActivityAt/lastTextSnippet + feed_snooze.
+        db.execSQL(
+            "INSERT INTO agent_sessions (id, name, status, hasUnread, needsAttention, " +
+                "attentionSnippet, agentKey, modelLabel, hibernated, cwd, lastCachedIndex, " +
+                "messageLogLength, isAl) " +
+                "VALUES ('s1', 'S', 'idle', 1, 0, NULL, 'k', NULL, 0, NULL, 0, 5, 0)"
+        )
+    }
+
+    @Test
     fun `migrate 10 to latest with bookmark and feed data`() = migrateFrom(10) { db ->
         db.execSQL(
             "INSERT INTO bookmarks (file, title, url, tagsJson, addedAt) " +

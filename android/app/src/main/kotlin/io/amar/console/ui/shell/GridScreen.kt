@@ -67,6 +67,9 @@ import java.util.Locale
 fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
     val chatUnread by app.graph.db.chatRooms()
         .observeUnreadCount(System.currentTimeMillis()).collectAsState(initial = 0)
+    // Inbox tile = the unified inbox list size (SPA tab-badge parity).
+    val inboxLists by app.graph.inbox.lists.collectAsState()
+    val inboxCount = inboxLists.inbox.size
     // SPA parity: the Mail badge counts INBOX THREADS (triage left), not unread.
     val mailUnread by app.graph.db.mailThreads().observeInboxCount(System.currentTimeMillis()).collectAsState(initial = 0)
     val sessions by app.graph.agents.observeSessions().collectAsState(initial = emptyList())
@@ -168,6 +171,7 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
         ) {
             items(visiblePanes, key = { it.route }) { pane ->
                 val badge = when (pane) {
+                    Pane.Inbox -> inboxCount
                     Pane.Chat -> chatUnread
                     Pane.Mail -> mailUnread
                     Pane.Spaces -> agentAlerts + approvals.size

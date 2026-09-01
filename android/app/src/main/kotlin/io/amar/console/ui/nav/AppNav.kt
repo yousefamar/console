@@ -6,6 +6,7 @@ import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.RssFeed
@@ -40,6 +41,7 @@ enum class Pane(
     val label: String,
     val icon: ImageVector,
 ) {
+    Inbox("inbox", "Inbox", Icons.Outlined.Inbox),
     Chat("chat", "Chat", Icons.AutoMirrored.Outlined.Chat),
     Mail("mail", "Mail", Icons.Outlined.Email),
     Spaces("spaces", "Spaces", Icons.Outlined.Workspaces),

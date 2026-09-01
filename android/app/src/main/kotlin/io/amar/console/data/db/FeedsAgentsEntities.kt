@@ -52,6 +52,14 @@ data class FeedReadRow(
     val pendingSync: Boolean,
 )
 
+/** v13: Inbox feed-item snooze — local-only, like the SPA's Dexie feedSnooze
+ *  (hides the item from the Inbox pane until due; the Feeds app ignores it). */
+@Entity(tableName = "feed_snooze")
+data class FeedSnoozeRow(
+    @PrimaryKey val itemId: String,
+    val snoozedUntil: Long,
+)
+
 @Dao
 interface FeedsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -129,6 +137,16 @@ interface FeedsDao {
 
     @Query("SELECT COUNT(*) FROM feed_read WHERE itemId = :id")
     suspend fun readCount(id: String): Int
+
+    // Inbox feed-item snooze (v13, local-only)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSnooze(row: FeedSnoozeRow)
+
+    /** ALL snooze rows — expiry is filtered at compose time against a live
+     *  clock (a `WHERE snoozedUntil > :now` here would freeze `now` at
+     *  construction and hide expired snoozes until app restart). */
+    @Query("SELECT * FROM feed_snooze")
+    fun observeSnoozes(): Flow<List<FeedSnoozeRow>>
 }
 
 // ---------------------------------------------------------------------- //
@@ -173,6 +191,11 @@ data class AgentSessionRow(
     @ColumnInfo(defaultValue = "NULL") val project: String? = null,
     /** Area slugs, comma-separated ("" = none). */
     @ColumnInfo(defaultValue = "NULL") val areasCsv: String? = null,
+    // --- v13: Inbox row previews (hub SessionInfo fields, ^rosy-finch) ---
+    /** Last turn/message activity — Inbox recency ordering. */
+    @ColumnInfo(defaultValue = "0") val lastActivityAt: Long = 0,
+    /** First line of the last assistant text — Inbox row preview. */
+    @ColumnInfo(defaultValue = "NULL") val lastTextSnippet: String? = null,
 )
 
 fun AgentSessionRow.areaList(): List<String> =

@@ -43,6 +43,20 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Unified Inbox app** (^cool-tern): native twin of the SPA's Inbox pane in
+  its mobile mode — new grid tile (badge = inbox count, SPA tab-badge parity),
+  Inbox|Feed segmented lists, tap opens the source's existing detail screen
+  (chat/mail/feeds/agents — viewers reused, not rebuilt), swipe right = done,
+  swipe left = snooze-until-tomorrow (agents excluded), per-row promote/demote
+  writing hub `/inbox/rules` (shared with the SPA), X-only feed mode, SLA
+  overdue chip (timestamps parsed from the room rawJson — no chat migration).
+  Pure logic in `data/inbox/InboxLogic.kt` (port of src/inbox/route.ts, 10
+  unit tests); composition over existing Room tables in `InboxRepository`
+  (WhileSubscribed — an eager Room collector breaks Robolectric test
+  isolation). Room v13: agent_sessions gains lastActivityAt/lastTextSnippet
+  (hub SessionInfo fields), new feed_snooze table (local-only, SPA Dexie
+  parity); v12-replay migration test added.
+
 - **Fix: project-homed posts not recognised as published** (9ed3e6c):
   `isPublishedPath`/`permalinkForLogPath` in Frontmatter.kt only matched
   `log/<name>.md`, missing `projects/<slug>/log/<name>.md` (a divergence from

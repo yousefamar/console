@@ -24,13 +24,14 @@ import androidx.room.RoomDatabase
         FeedRow::class,
         FeedItemRow::class,
         FeedReadRow::class,
+        FeedSnoozeRow::class,
         AgentSessionRow::class,
         AgentMessageRow::class,
         BookmarkRow::class,
         GeocacheRow::class,
         MeetupEventRow::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
@@ -44,6 +45,7 @@ import androidx.room.RoomDatabase
         AutoMigration(from = 9, to = 10),
         AutoMigration(from = 10, to = 11),
         AutoMigration(from = 11, to = 12),
+        AutoMigration(from = 12, to = 13),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {

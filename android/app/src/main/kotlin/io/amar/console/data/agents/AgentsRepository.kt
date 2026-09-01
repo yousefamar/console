@@ -756,6 +756,8 @@ class AgentsRepository(
             totalCostMicros = (cost * 1_000_000).toLong(),
             project = s["project"]?.jsonPrimitive?.content,
             areasCsv = (s["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content }?.joinToString(","),
+            lastActivityAt = s["lastActivityAt"]?.jsonPrimitive?.longOrNull ?: 0,
+            lastTextSnippet = s["lastTextSnippet"]?.jsonPrimitive?.content,
         )
     }
 
