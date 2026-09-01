@@ -97,6 +97,7 @@ export interface AgentSessionLike {
   status: 'running' | 'idle' | 'ended'
   createdAt: number
   lastActivityAt?: number
+  lastTextSnippet?: string
   hasUnread?: boolean
   needsAttention?: { ts: number; snippet: string } | null
   isAl?: boolean
@@ -114,7 +115,7 @@ export function sessionToItem(s: AgentSessionLike): InboxItem {
     source: 'agent',
     sourceId: s.id,
     header: (s.name || s.prompt.slice(0, 40)).replace(/\s\(fork\)$/, ''),
-    body: s.needsAttention?.snippet ?? '',
+    body: s.needsAttention?.snippet ?? s.lastTextSnippet ?? '',
     ts: s.lastActivityAt ?? s.createdAt,
     route: 'inbox',
     attention: !!s.needsAttention,

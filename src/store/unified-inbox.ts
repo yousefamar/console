@@ -12,7 +12,7 @@ import { hubFetchRaw as hubFetch } from '@/hub'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
-import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from '@/inbox/types'
+import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type InboxSource, type Route } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
 import { getSnoozeTime } from '@/utils/date'
 import {
@@ -29,6 +29,9 @@ interface UnifiedInboxState {
   /** Feed-column mode: 'default' hides hidden-folder feeds (X); 'x' shows
    *  ONLY those. Session-only — always lands on default. */
   feedMode: FeedMode
+  /** Inbox-column source filter (mail | chat | agent), session-only —
+   *  a getting-used-to-the-pane affordance, null = everything. */
+  inboxFilter: InboxSource | null
   /** The selected item — held as the ITEM, not a key into the lists: handling
    *  it (reply marks a chat read, archive drops a thread) removes it from the
    *  lists on rebuild, but the viewer must keep showing it until the user
@@ -44,6 +47,7 @@ interface UnifiedInboxState {
    *  the source, not the one item. */
   toggleRoute: (item: InboxItem) => Promise<void>
   setFeedMode: (mode: FeedMode) => void
+  setInboxFilter: (source: InboxSource | null) => void
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
@@ -58,12 +62,15 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   feedList: [],
   inboxList: [],
   feedMode: 'default',
+  inboxFilter: null,
   selected: null,
 
   setFeedMode: (mode) => {
     set({ feedMode: mode })
     void get().rebuild()
   },
+
+  setInboxFilter: (source) => set({ inboxFilter: source }),
 
   loadRules: async () => {
     try {
@@ -167,7 +174,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   selectAdjacent: (list, dir) => {
-    const items = list === 'feed' ? get().feedList : get().inboxList
+    const items = list === 'feed' ? get().feedList : visibleInbox(get())
     if (items.length === 0) return
     const idx = items.findIndex((i) => i.key === get().selected?.key)
     const next = idx < 0 ? (dir === 1 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, idx + dir))
@@ -175,10 +182,10 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   handleSelected: (verb) => {
-    const { feedList, inboxList, selected } = get()
+    const { feedList, selected } = get()
     if (!selected) return
     const inFeed = feedList.some((i) => i.key === selected.key)
-    const list = inFeed ? feedList : inboxList
+    const list = inFeed ? feedList : visibleInbox(get())
     const item = list.find((i) => i.key === selected.key) ?? selected
 
     // Compute the landing spot BEFORE the verb fires — the handled item drops
@@ -206,3 +213,10 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     if (next) get().select(next)
   },
 }))
+
+/** The inbox list as displayed — source-filtered. Nav/handle walk THIS so
+ *  j/k and advance-after-handle stay inside the filtered view; the tab badge
+ *  deliberately keeps counting the full list. */
+export function visibleInbox(s: Pick<UnifiedInboxState, 'inboxList' | 'inboxFilter'>): InboxItem[] {
+  return s.inboxFilter ? s.inboxList.filter((i) => i.source === s.inboxFilter) : s.inboxList
+}

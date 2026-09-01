@@ -939,6 +939,7 @@ export class Session extends EventEmitter {
       hibernated: this.hibernated || undefined,
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
+      lastTextSnippet: this.lastTextSnippet,
       queuedMessage: this.queuedMessage,
       todos: this.todos.length ? this.todos : undefined,
       gitBranch: this.gitBranch,
@@ -1486,9 +1487,17 @@ export class Session extends EventEmitter {
       // chunks, so per-delta scanning would miss it.
       this.scanForAttention(this.pendingText)
       this.scanForHandoff(this.pendingText)
+      this.noteTextSnippet(this.pendingText)
       this.logMessage({ type: 'text', sessionId: this.id, content: this.pendingText })
       this.pendingText = ''
     }
+  }
+
+  /** Last assistant-text opener — the unified Inbox row preview. */
+  lastTextSnippet?: string
+  private noteTextSnippet(content: string) {
+    const line = content.trim().split('\n')[0] ?? ''
+    if (line) this.lastTextSnippet = line.length > 140 ? `${line.slice(0, 139)}…` : line
   }
 
   private emitHub(msg: HubMessage) {
@@ -1505,7 +1514,7 @@ export class Session extends EventEmitter {
       }
       // Directly-emitted text (e.g. synthetic slash-command output) bypasses the
       // delta buffer — scan it too.
-      if (msg.type === 'text') { this.scanForAttention(msg.content); this.scanForHandoff(msg.content) }
+      if (msg.type === 'text') { this.scanForAttention(msg.content); this.scanForHandoff(msg.content); this.noteTextSnippet(msg.content) }
       // Log non-ephemeral messages (skip status + all delta streams — including
       // tool_input_delta, which fires per-chunk while tool args stream in and
       // would flood the rolling log)

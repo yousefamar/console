@@ -28,7 +28,7 @@ import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
 import { routeForFeed } from '@/inbox/route'
-import type { FeedRoute, InboxItem } from '@/inbox/types'
+import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 
 // Composition wiring (source-store subscriptions → rebuild) lives in
 // src/inbox/subscribe.ts, wired at boot from GatedBoot — the tab badge needs
@@ -36,7 +36,10 @@ import type { FeedRoute, InboxItem } from '@/inbox/types'
 
 export const InboxTab = memo(function InboxTab() {
   const feedList = useUnifiedInboxStore((s) => s.feedList)
-  const inboxList = useUnifiedInboxStore((s) => s.inboxList)
+  const fullInboxList = useUnifiedInboxStore((s) => s.inboxList)
+  const inboxFilter = useUnifiedInboxStore((s) => s.inboxFilter)
+  const setInboxFilter = useUnifiedInboxStore((s) => s.setInboxFilter)
+  const inboxList = inboxFilter ? fullInboxList.filter((i) => i.source === inboxFilter) : fullInboxList
   const selected = useUnifiedInboxStore((s) => s.selected)
   const select = useUnifiedInboxStore((s) => s.select)
   const feedMode = useUnifiedInboxStore((s) => s.feedMode)
@@ -107,7 +110,29 @@ export const InboxTab = memo(function InboxTab() {
 
       {/* Inbox column */}
       <div className={`${colClass} ${showInboxCol ? 'flex' : 'hidden'} flex-col overflow-hidden`}>
-        <ColumnHeader label="Inbox" count={inboxList.length} extra={mobileToggle} />
+        <ColumnHeader
+          label="Inbox"
+          count={inboxList.length}
+          extra={
+            <>
+              {mobileToggle}
+              <span className="flex gap-1">
+                {SOURCE_FILTERS.map(({ source, icon, title }) => (
+                  <button
+                    key={source}
+                    onClick={() => setInboxFilter(inboxFilter === source ? null : source)}
+                    className={`transition-colors duration-fast ${
+                      inboxFilter === source ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                    }`}
+                    title={inboxFilter === source ? 'Show everything' : title}
+                  >
+                    {icon}
+                  </button>
+                ))}
+              </span>
+            </>
+          }
+        />
         <div className="flex-1 overflow-y-auto">
           {inboxList.map((item) => (
             <ItemRow key={item.key} item={item} selected={item.key === selectedKey} onClick={() => select(item)} />
@@ -138,6 +163,13 @@ export const InboxTab = memo(function InboxTab() {
     </>
   )
 })
+
+// Inbox-column source filter chips (while getting used to the unified pane).
+const SOURCE_FILTERS: Array<{ source: InboxSource; icon: React.ReactNode; title: string }> = [
+  { source: 'mail', icon: <Mail size={11} />, title: 'Mail only' },
+  { source: 'chat', icon: <MessageCircle size={11} />, title: 'Chat only' },
+  { source: 'agent', icon: <Bot size={11} />, title: 'Agents only' },
+]
 
 // Matches SpacesTab's RailSection header (text-[10px] uppercase tracking-wide
 // text-text-tertiary) so the two unified panes read as one family.
