@@ -34,6 +34,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+(empty)
+
+## Shipped
+
+### v91 (2026-09-01)
 - **Unified Inbox app** (^cool-tern): native twin of the SPA's Inbox pane in
   its mobile mode — new grid tile (badge = inbox count, SPA tab-badge parity),
   Inbox|Feed segmented lists, tap opens the source's existing detail screen
@@ -70,8 +75,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   loaded via `Style.Builder().fromUri(...)`. Existing light/dark toggle and
   renderer re-attach flow unchanged; OFM styles ship their own Noto Sans
   glyphs so agent-layer labels keep rendering.
-
-## Shipped
 
 ### v90 (2026-08-31)
 - Board assignee filter groups by ROOT agent (^ripe-heron): filter chips per
