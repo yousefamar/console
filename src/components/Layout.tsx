@@ -315,17 +315,46 @@ export function Layout() {
       await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
     } else if (isInbox) {
       // Unified pane: kick every composed source, then rebuild the lists.
-      // No Ctrl-hard-reset here — do that from the owning legacy pane.
+      // Ctrl+click = the hard reset of every source (the legacy panes are on
+      // their way out, so their reset semantics live here too) — mirrors each
+      // pane's own branch above incl. its preservation guards (snoozed
+      // threads; optimistic rows don't apply to mail/feeds/chat).
       const [{ useFeedStore }, { hubBus }, { useUnifiedInboxStore }] = await Promise.all([
         import('@/store/feeds'),
         import('@/sync-bus'),
         import('@/store/unified-inbox'),
       ])
-      await Promise.all([
-        gmailConnected ? incrementalSync().catch(() => {}) : Promise.resolve(),
-        useFeedStore.getState().refreshItems().catch(() => {}),
-        matrixConnected ? hubBus.rpc('matrix', 'syncNow', {}).catch(() => {}) : Promise.resolve(),
-      ])
+      if (e.ctrlKey || e.metaKey) {
+        const mailReset = async () => {
+          if (!gmailConnected) return
+          const snoozed = await db.threads.filter((t) => !!t.snoozedUntil).toArray()
+          await db.threads.clear()
+          await db.messages.clear()
+          await db.attachmentData.clear()
+          await db.meta.delete('historyId')
+          if (snoozed.length > 0) await db.threads.bulkPut(snoozed)
+          evictAll()
+          await fullSync()
+        }
+        const feedReset = async () => {
+          await db.feedItems.clear()
+          useFeedStore.setState({ lastSync: null })
+          await useFeedStore.getState().refreshItems()
+        }
+        const chatReset = async () => {
+          if (!matrixConnected) return
+          await db.chatMessages.clear()
+          await db.meta.delete('matrixSyncToken')
+          await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
+        }
+        await Promise.all([mailReset().catch(() => {}), feedReset().catch(() => {}), chatReset()])
+      } else {
+        await Promise.all([
+          gmailConnected ? incrementalSync().catch(() => {}) : Promise.resolve(),
+          useFeedStore.getState().refreshItems().catch(() => {}),
+          matrixConnected ? hubBus.rpc('matrix', 'syncNow', {}).catch(() => {}) : Promise.resolve(),
+        ])
+      }
       await useUnifiedInboxStore.getState().rebuild()
     }
   }
