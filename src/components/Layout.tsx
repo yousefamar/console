@@ -313,6 +313,20 @@ export function Layout() {
       }
       const { hubBus } = await import('@/sync-bus')
       await hubBus.rpc('matrix', 'syncNow', {}).catch(() => {})
+    } else if (isInbox) {
+      // Unified pane: kick every composed source, then rebuild the lists.
+      // No Ctrl-hard-reset here — do that from the owning legacy pane.
+      const [{ useFeedStore }, { hubBus }, { useUnifiedInboxStore }] = await Promise.all([
+        import('@/store/feeds'),
+        import('@/sync-bus'),
+        import('@/store/unified-inbox'),
+      ])
+      await Promise.all([
+        gmailConnected ? incrementalSync().catch(() => {}) : Promise.resolve(),
+        useFeedStore.getState().refreshItems().catch(() => {}),
+        matrixConnected ? hubBus.rpc('matrix', 'syncNow', {}).catch(() => {}) : Promise.resolve(),
+      ])
+      await useUnifiedInboxStore.getState().rebuild()
     }
   }
 
@@ -368,7 +382,7 @@ export function Layout() {
         <div className="flex items-center gap-3 md:gap-4">
           <HubOfflineIndicator />
           <SyncStatus />
-          {!isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces ? true : matrixConnected) && (
+          {!isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces || isInbox ? true : matrixConnected) && (
             <button
               onClick={handleRefresh}
               className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
