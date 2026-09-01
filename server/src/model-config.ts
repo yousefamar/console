@@ -30,6 +30,7 @@ import { dirname } from 'node:path'
  *  `-20251001-v1:0` on Bedrock; sonnet-4-6 isn't on the Bedrock deployment).
  *  Current values = first-party (Max subscription), verified 2026-07-09. */
 export const DEFAULT_MODEL_CHAIN = [
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-sonnet-5',

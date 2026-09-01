@@ -63,7 +63,7 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // as every other model here) — not spawn-verified (couldn't test without
     // switching the live backend off Bedrock); if it 400s the chain auto-falls
     // back to fable-5. Verify with a one-shot spawn once on the Max sub.
-    chain: ['claude-opus-5', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    chain: ['claude-opus-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',
@@ -93,6 +93,7 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // Bedrock, not on the Max sub).
     chain: [
       'us.anthropic.claude-opus-5',
+      'us.anthropic.claude-fable-5-1',
       'us.anthropic.claude-fable-5',
       'us.anthropic.claude-opus-4-8',
       'us.anthropic.claude-opus-4-7',

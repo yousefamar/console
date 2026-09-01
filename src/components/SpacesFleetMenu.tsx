@@ -13,6 +13,7 @@ import { displayModel } from '@/utils/model-label'
 
 const FIRST_PARTY_MODELS = [
   'claude-opus-5',
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-sonnet-5',
@@ -21,6 +22,7 @@ const FIRST_PARTY_MODELS = [
 
 const BEDROCK_MODELS = [
   'us.anthropic.claude-opus-5',
+  'us.anthropic.claude-fable-5-1',
   'us.anthropic.claude-fable-5',
   'us.anthropic.claude-opus-4-8',
   'us.anthropic.claude-opus-4-7',

@@ -58,6 +58,7 @@ function arn(id: string): string {
  *  one from the console alone. Merged with `refreshFromAws()` at boot. */
 const STATIC_PROFILES: Record<string, string> = {
   'us.anthropic.claude-opus-5': arn('oifqcw3zbemz'),
+  'us.anthropic.claude-fable-5-1': arn('6cviuiy5tkry'),
   'us.anthropic.claude-fable-5': arn('3xne2d3e2z7v'),
   'us.anthropic.claude-opus-4-8': arn('m4smvy01am5l'),
   'us.anthropic.claude-opus-4-7': arn('4f0js9qp9ro0'),
@@ -137,7 +138,7 @@ export function aliasProfileEnv(): Record<string, string> {
   const map: Array<[string, string]> = [
     ['ANTHROPIC_MODEL', 'us.anthropic.claude-opus-5'],
     ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'us.anthropic.claude-opus-5'],
-    ['ANTHROPIC_DEFAULT_FABLE_MODEL', 'us.anthropic.claude-fable-5'],
+    ['ANTHROPIC_DEFAULT_FABLE_MODEL', 'us.anthropic.claude-fable-5-1'],
     ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'us.anthropic.claude-sonnet-5'],
     ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'us.anthropic.claude-haiku-4-5-20251001-v1:0'],
     ['ANTHROPIC_SMALL_FAST_MODEL', 'us.anthropic.claude-haiku-4-5-20251001-v1:0'],

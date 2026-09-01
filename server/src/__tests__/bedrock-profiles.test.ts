@@ -44,6 +44,7 @@ describe('taggedModelId', () => {
     // exact regression this module exists to prevent.
     for (const id of [
       'us.anthropic.claude-opus-5',
+      'us.anthropic.claude-fable-5-1',
       'us.anthropic.claude-fable-5',
       'us.anthropic.claude-opus-4-8',
       'us.anthropic.claude-opus-4-7',

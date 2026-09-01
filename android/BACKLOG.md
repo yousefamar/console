@@ -34,7 +34,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
-(empty)
+- **Fleet model picker: add Fable 5.1** (^rosy-deer): `AgentDialogs.kt`
+  `FIRST_PARTY`/`BEDROCK` picker lists gained `claude-fable-5-1` /
+  `us.anthropic.claude-fable-5-1` (after opus-5, before fable-5), matching the
+  SPA `SpacesFleetMenu.tsx` lists and the hub chains. `shortModel` needs no
+  change (strips ARN/`us.anthropic.` prefixes only; the bare id renders fine).
 
 ## Shipped
 

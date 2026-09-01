@@ -54,9 +54,9 @@ private val AMBER = Color(0xFFF59E0B)
 private val VIOLET = Color(0xFFA78BFA)
 
 // Known model ids for the fleet picker optgroups (model-config.ts).
-private val FIRST_PARTY = listOf("claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001")
+private val FIRST_PARTY = listOf("claude-fable-5-1", "claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001")
 private val BEDROCK = listOf(
-    "us.anthropic.claude-fable-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-7",
+    "us.anthropic.claude-fable-5-1", "us.anthropic.claude-fable-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-opus-4-7",
     "us.anthropic.claude-sonnet-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 )
 
