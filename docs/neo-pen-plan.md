@@ -92,8 +92,10 @@ correct 1.8.18 APK.
 - **Support saga, latest:** Moleskine's replacement app (Notebooks 3.0.15, beta) did NOT fix
   the empty-offline-index bug; Moleskine now prescribes **firmware 3.03** (Moleskine-channel
   only — NeoLAB's server tops out at 3.02) but the in-app update fails with "Firmware Update
-  Error", as it always has. Yousef replied 2026-09-01 saying so; awaiting Sandra
-  (team@moleskinejourney.com, thread `19ff4de81707479f`). The concrete gate is now "get 3.03
+  Error", as it always has. Yousef replied 2026-09-01 saying so; Sandra
+  (team@moleskinejourney.com, thread `19ff4de81707479f`) answered 2026-09-02 asking for an
+  **in-app ticket (Notebooks → Settings → Contact Us)** so they get the diagnostic bundle —
+  Yousef's move next. The concrete gate is still "get 3.03
   onto the pen"; the FW_FILE flash route (`0x31`/`0x32`) is viable only if the image is
   obtained. Full chronology: `memory/project_neo_pen_re.md`.
 - **Phase 0 ✅** protocol extracted. **Phase 1 ✅** live stroke capture works on the real
