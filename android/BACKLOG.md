@@ -13,6 +13,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   renderer needs the same img-src rewrite; html-fence can render as a
   collapsed "view HTML" card if a sandboxed WebView is too heavy.
 
+- Inbox: Feed platform chips + row glyphs/thumbnails (SPA fcd93fbf,
+  ^mild-toad) — port `src/feeds/feed-kind.ts` (`feedKind()` by host:
+  youtube/reddit/hn/substack/x/rss, incl. proxied `url=` params) into
+  `InboxLogic.kt`; items carry `feedKind`/`icon` (feed favicon)/`image`
+  (item thumbnail). Feed list header offers one chip per kind present
+  (hidden when only one), filtering the list; rows show the platform mark
+  instead of a generic RSS glyph, the feed favicon for plain RSS, and a
+  row-height 16:9 thumbnail when the item has an image.
+
 - Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
   push under every AREA their `tags` name (dedup'd against the project slug);
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.
