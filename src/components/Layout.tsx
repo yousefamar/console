@@ -561,11 +561,13 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
             : pane === 'spaces'
               ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
               : 0
-  // Red dot on a tab: Spaces when a session emits @amar; Notes when the pen is
-  // streaming new strokes you haven't seen. Visible from any other pane.
+  // Red dot on a tab: Spaces when a session emits @amar; Inbox when such a
+  // session sits in its list; Notes when the pen is streaming new strokes
+  // you haven't seen. Visible from any other pane.
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
+  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention))
   const penStreaming = useNotesStore((s) => s.penStreaming)
-  const attention = (pane === 'spaces' && agentsAttention) || (pane === 'notes' && penStreaming)
+  const attention = (pane === 'spaces' && agentsAttention) || (pane === 'inbox' && inboxAttention) || (pane === 'notes' && penStreaming)
 
   return (
     <button
@@ -670,7 +672,8 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
               ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
               : 0
   const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
-  const attention = pane === 'spaces' && agentsAttention
+  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention))
+  const attention = (pane === 'spaces' && agentsAttention) || (pane === 'inbox' && inboxAttention)
 
   return (
     <button
@@ -681,8 +684,10 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
     >
       <div className="relative">
         {icon}
+        {/* The count pill occupies the dot's corner, so attention recolours it
+            red — an attention item always makes the Inbox count ≥ 1. */}
         {count > 0 && (
-          <span className="absolute -top-1 -right-2 min-w-[14px] h-3.5 flex items-center justify-center px-0.5 text-[9px] font-medium bg-blue-500 text-white rounded-full">
+          <span className={`absolute -top-1 -right-2 min-w-[14px] h-3.5 flex items-center justify-center px-0.5 text-[9px] font-medium text-white rounded-full ${attention ? 'bg-red-500' : 'bg-blue-500'}`}>
             {count > 99 ? '99+' : count}
           </span>
         )}

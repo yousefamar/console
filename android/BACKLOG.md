@@ -34,6 +34,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Inbox grid tile: red attention dot** (^blue-wren): the Inbox tile now
+  shows the same red dot as Spaces when an attention-flagged agent session
+  sits in the inbox list (`inboxLists.inbox.any { it.attention }`); the tile
+  only had the count pill before.
+
 - **Session sheet: "Set/Unset as project owner"** (^lime-dove): long-press a
   session in a PROJECT space's Agents list → toggles the board's frontmatter
   `default_owner:` via `POST /board/:project/owner` (`SpacesRepository.
