@@ -36,6 +36,7 @@ import type { AgentContext } from '../routes/agents.js'
 import { createSession, wakeSession, mergeIntoParent } from '../routes/agents.js'
 import { saveManifest } from '../manifest.js'
 import { getAlSession } from './al-session.js'
+import { identifiersFor, normalize } from './users.js'
 
 // Resolved per call (not captured at module load) so tests can point it at a
 // tmp dir via CONSOLE_AL_FORKS_FILE — the todo-store tasksRoot() precedent.
@@ -107,9 +108,15 @@ function liveFork(ctx: AgentContext, rec: ForkRecord): Session | null {
   return null
 }
 
-function forkSeed(threadJid: string, senderLabel: string): string {
+/** Exported for tests. `otherIds` = the contact's OTHER identifiers (phone vs
+ *  @lid) — without naming them the fork reads Al's recent sends to the other
+ *  JID as a different conversation and answers a stale antecedent. */
+export function forkSeed(threadJid: string, senderLabel: string, otherIds: string[] = []): string {
   return [
     `[CONVERSATION FORK] You are a fork of Al dedicated to ONE WhatsApp conversation: ${senderLabel} (thread ${threadJid}).`,
+    ...(otherIds.length ? [
+      `This is the SAME PERSON as ${otherIds.join(', ')} — one conversation across all their identities; anything you (Al) recently sent to any of them is part of this thread.`,
+    ] : []),
     `All messages from this thread now come to you, not your parent. Handle them exactly per your persona — identity rules, allow/deny walls, reply via \`con whatsapp send ${threadJid} --body "..."\`.`,
     `You know everything parent-Al knew up to this branch point, but you are ONLY this conversation's handler — do not act on other threads.`,
     `When the conversation goes quiet you will be wound down automatically (merged back or closed). No action needed from you.`,
@@ -176,7 +183,8 @@ export function routeInbound(
     }
     // CRITICAL: a --fork-session emits no init until it gets input — send the
     // seed + envelope immediately (same rule as fork_session/con agent chat).
-    wakeSession(ctx, fork, `${forkSeed(threadJid, senderLabel)}\n\n${envelope}`)
+    const otherIds = identifiersFor(resolvedUser).filter((id) => id !== normalize(threadJid))
+    wakeSession(ctx, fork, `${forkSeed(threadJid, senderLabel, otherIds)}\n\n${envelope}`)
     // Capture the fork's own claudeSessionId when it lands, then flush any
     // messages that arrived during the spawn gap.
     const onInit = (msg: { type: string; claudeSessionId?: string }) => {

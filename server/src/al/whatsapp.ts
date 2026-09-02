@@ -41,6 +41,8 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 import { transcribeAudio } from './transcribe.js'
+import { contactKey } from './users.js'
+import { recordOutbound, formatRecentOutbound, type OutboundEntry } from './outbound-ledger.js'
 
 const logger = pino({ level: 'silent' })
 
@@ -427,6 +429,7 @@ export async function sendText(to: string, text: string): Promise<{ id: string; 
   const result = await sock.sendMessage(jid, { text })
   const id = result?.key?.id
   if (!id) throw new Error('send returned no message id')
+  recordOutbound(contactKey(jid), { text, ts: Date.now(), jid })
   return { id, jid }
 }
 
@@ -446,7 +449,12 @@ export async function deleteForEveryone(to: string, messageId: string): Promise<
  * Plain text with a recognisable header line; Al's prompt training will parse
  * it (sibling agents reading the messageLog do the same).
  */
-export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | null): string {
+export function inboundEnvelope(
+  msg: WhatsAppInbound,
+  resolvedUser: string | null,
+  recentOut: OutboundEntry[] = [],
+  now = Date.now(),
+): string {
   const user = resolvedUser ?? 'unknown'
   const senderTag = msg.senderName ? `${msg.senderName} (${msg.sender})` : msg.sender
   // Envelope is framed as a TASK with a required ACTION (Bash call), not as a
@@ -473,6 +481,16 @@ export function inboundEnvelope(msg: WhatsAppInbound, resolvedUser: string | nul
   for (const file of msg.files) {
     lines.push(``, `[INBOUND WhatsApp] Attached file (${file.kind}, ${file.mimeType}): ${file.path}`)
     if (file.transcript) lines.push(`Voice note transcript: "${file.transcript}"`)
+  }
+  // The antecedent anchor: a contact's reply may arrive from a DIFFERENT JID
+  // than the one we sent to (phone vs @lid), so the thread alone can't show
+  // what they're answering. See outbound-ledger.ts.
+  if (recentOut.length > 0) {
+    lines.push(
+      ``,
+      `Your most recent messages to this contact (any of their WhatsApp identities, newest first) — a short reply like "thanks" almost certainly answers the top one:`,
+      ...formatRecentOutbound(recentOut, now),
+    )
   }
   lines.push(
     ``,

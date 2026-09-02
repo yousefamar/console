@@ -95,7 +95,8 @@ import { PenHub } from './pen-hub.js'
 import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
-import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername } from './al/users.js'
+import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, contactKey } from './al/users.js'
+import { recentOutbound } from './al/outbound-ledger.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
 import { routeInbound, startConversationForks } from './al/conversation-forks.js'
@@ -2178,7 +2179,7 @@ httpServer.listen(port, host, () => {
           try {
             await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
             const resolved = resolveUsername(msg.sender)
-            const envelope = alWa.inboundEnvelope(msg, resolved)
+            const envelope = alWa.inboundEnvelope(msg, resolved, recentOutbound(contactKey(msg.jid)))
             // Non-owner threads route to a per-conversation fork of Al
             // (conversation-forks.ts); owner (Yousef) + fallback paths go to
             // the parent as before.
