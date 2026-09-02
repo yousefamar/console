@@ -31,7 +31,7 @@ import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
-import { BACKEND_PRESETS, detectActiveBackend, type AuthBackend } from './auth-backend.js'
+import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
@@ -203,9 +203,12 @@ setAgentModelResolver(() => modelConfig.getModel())
 // immediately; this async refresh only ADDS profiles created since (and logs a
 // warning for any chain model that has none — i.e. untagged spend).
 setBedrockProfileLogger((m) => log(m))
-void refreshBedrockProfiles()
-// Durable agent roles / org chart. Loaded before any session spawn so charter
-// injection (createSession) can resolve a restored session's role.
+// After discovery, re-bake the managed env in settings.json so the alias ARNs
+// (+ `[1m]` hints) track the code — they used to refresh only on a backend switch.
+void refreshBedrockProfiles().then(() => {
+  const changed = syncBackendSettings()
+  if (changed.length) log(`[backend] settings.json env re-synced: ${changed.join(', ')}`)
+})
 const dashboardServers = new ServersConfig(join(feedsConfigDir, 'dashboard-servers.json'))
 const canvasDir = new CanvasDir(join(feedsConfigDir, 'canvas'))
 const canvasPublicRegistry = new CanvasPublicRegistry()

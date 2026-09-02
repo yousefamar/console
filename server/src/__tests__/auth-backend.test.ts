@@ -94,6 +94,17 @@ describe('presetEnv', () => {
     expect(presetEnv('bedrock').ANTHROPIC_MODEL).toMatch(/^arn:aws:bedrock:/)
   })
 
+  it('re-baking the same backend only rewrites managed keys and is idempotent', () => {
+    // syncBackendSettings() runs this at every boot — a user-set key must survive
+    // and a second pass must produce byte-identical env.
+    const current = { env: { MY_KEY: 'keep', ANTHROPIC_DEFAULT_FABLE_MODEL: 'us.anthropic.claude-fable-5' }, model: 'x' }
+    const once = computeSettingsWithBackend(current, 'bedrock')
+    const twice = computeSettingsWithBackend(once, 'bedrock')
+    expect((once.env as Record<string, string>).MY_KEY).toBe('keep')
+    expect((once.env as Record<string, string>).ANTHROPIC_DEFAULT_FABLE_MODEL).toMatch(/^arn:aws:bedrock:.*\[1m\]$/)
+    expect(twice).toEqual(once)
+  })
+
   it('adds no ARNs first-party (a profile ARN is invalid there)', () => {
     expect(presetEnv('first_party')).toEqual({})
   })

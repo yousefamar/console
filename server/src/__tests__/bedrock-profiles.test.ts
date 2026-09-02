@@ -21,7 +21,9 @@ const {
   knownProfiles, resetProfilesForTest, setBedrockProfileLogger, PROFILE_OWNER,
 } = await import('../bedrock-profiles.js')
 
-const ARN_RE = /^arn:aws:bedrock:us-east-1:\d{12}:application-inference-profile\/[a-z0-9]+$/
+const ARN_RE = /^arn:aws:bedrock:us-east-1:\d{12}:application-inference-profile\/[a-z0-9]+(\[1m\])?$/
+/** Strip the CLI's 1M context-hint suffix. */
+const bare = (id: string) => id.replace(/\[1m\]$/, '')
 
 beforeEach(() => {
   resetProfilesForTest()
@@ -35,8 +37,28 @@ describe('taggedModelId', () => {
     expect(Object.keys(table).length).toBeGreaterThanOrEqual(6)
     for (const [id, arn] of Object.entries(table)) {
       expect(arn, id).toMatch(ARN_RE)
-      expect(taggedModelId(id)).toBe(arn)
+      expect(bare(taggedModelId(id))).toBe(arn)
     }
+  })
+
+  it('appends the CLI [1m] hint for 1M-window models only', () => {
+    // On Bedrock the CLI downgrades Fable/Opus to a 200k belief (no
+    // `native_1m_3p.bedrock` in its catalog) unless the model string carries
+    // `[1m]` — without the suffix the context meter read 200k for sessions
+    // genuinely holding 600k+. Haiku is a real 200k model: no hint.
+    for (const id of [
+      'us.anthropic.claude-opus-5',
+      'us.anthropic.claude-fable-5-1',
+      'us.anthropic.claude-fable-5',
+      'us.anthropic.claude-opus-4-8',
+      'us.anthropic.claude-opus-4-7',
+      'us.anthropic.claude-sonnet-5',
+    ]) {
+      expect(taggedModelId(id), id).toMatch(/\[1m\]$/)
+    }
+    expect(taggedModelId('us.anthropic.claude-haiku-4-5-20251001-v1:0')).not.toMatch(/\[1m\]$/)
+    // The stale first-party pin form inherits the hint from its model too.
+    expect(taggedModelId('claude-opus-4-8')).toMatch(/\[1m\]$/)
   })
 
   it('translates the models the default Bedrock chain actually uses', () => {
@@ -130,6 +152,12 @@ describe('aliasProfileEnv', () => {
     ]) {
       expect(env[key], key).toMatch(ARN_RE)
     }
+    // 1M aliases carry the CLI hint so subagents/compaction see the real window;
+    // the Haiku-backed ones must not.
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toMatch(/\[1m\]$/)
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toMatch(/\[1m\]$/)
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).not.toMatch(/\[1m\]$/)
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).not.toMatch(/\[1m\]$/)
   })
 
   it('omits keys whose model has no profile rather than emitting a bad id', () => {

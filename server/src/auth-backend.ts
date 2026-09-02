@@ -153,3 +153,22 @@ export function writeBackendSettings(backend: AuthBackend): void {
   writeFileSync(tmp, JSON.stringify(next, null, 2))
   renameSync(tmp, path)
 }
+
+/** Re-bake the ACTIVE backend's managed env at boot so settings.json tracks the
+ *  code between switches — the alias ARNs (and their `[1m]` hints) otherwise only
+ *  refresh on the next `con agent backend set`, and the file had drifted to a
+ *  bare untagged `ANTHROPIC_DEFAULT_FABLE_MODEL`. Touches only MANAGED_ENV_KEYS;
+ *  no-op (no write) when nothing differs. Returns the keys that changed. */
+export function syncBackendSettings(): string[] {
+  const path = settingsPath()
+  let current: Record<string, unknown> = {}
+  try { current = JSON.parse(readFileSync(path, 'utf-8')) } catch { return [] }
+  const backend = detectActiveBackend()
+  const before = (current.env as Record<string, string> | undefined) ?? {}
+  const after = computeSettingsWithBackend(current, backend).env as Record<string, string>
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((k) => before[k] !== after[k])
+  if (changed.length === 0) return []
+  writeBackendSettings(backend)
+  return changed
+}

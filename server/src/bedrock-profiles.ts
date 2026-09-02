@@ -36,6 +36,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { detectActiveBackend } from './auth-backend.js'
+import { nativeContextWindow } from './utils.js'
 
 const execFileP = promisify(execFile)
 
@@ -81,6 +82,21 @@ function isArn(id: string): boolean {
 }
 
 /**
+ * The CLI's own 1M opt-in suffix, appended to the profile ARN for models whose
+ * native window is 1M. On Bedrock the CLI only BELIEVES a model is 1M when its
+ * catalog flags `native_1m_3p.bedrock` (Sonnet 5 alone, as of 2.1.257) — Fable
+ * and Opus ≥ 4.7 are catalogued 1M but downgraded to a 200k belief here, so
+ * `get_context_usage` reported `maxTokens: 200000` for sessions genuinely
+ * holding 600k+ (live-verified 2026-09-02: the deployment serves 1M, and the
+ * CLI's autocompact fired at ~990k). `[1m]` short-circuits that gate
+ * (`PL(e)`: `if (Xc(e)) return 1e6`); the CLI strips it before the request.
+ * Spawn-verified against every 1M profile in the table.
+ */
+function withContextHint(profileArn: string, model: string): string {
+  return nativeContextWindow(model) === 1_000_000 ? `${profileArn}[1m]` : profileArn
+}
+
+/**
  * Translate a model id into this owner's tagged inference-profile ARN so the
  * resulting spend carries the `owner` cost-allocation tag.
  *
@@ -96,13 +112,13 @@ export function taggedModelId(model: string): string {
   if (isArn(model)) return model
   if (detectActiveBackend() !== 'bedrock') return model
   const hit = profiles[model]
-  if (hit) return hit
+  if (hit) return withContextHint(hit, model)
   // A first-party-shaped id (`claude-opus-4-8`) from a per-session pin that
   // predates the backend switch. Bedrock names the same model
   // `us.anthropic.claude-opus-4-8`, and without this it would fall through the
   // alias branch below and bill untagged forever.
   const bedrockForm = profiles[`us.anthropic.${model}`]
-  if (bedrockForm) return bedrockForm
+  if (bedrockForm) return withContextHint(bedrockForm, model)
   // Aliases are resolved by the CLI from env, which already points at ARNs.
   if (!model.includes('.')) return model
   if (!warned.has(model)) {
@@ -133,7 +149,7 @@ export function smallFastModel(): string {
  *  session-title generator all resolve through these — `--model` only overrides
  *  `ANTHROPIC_MODEL`). Absent entries are simply omitted. */
 export function aliasProfileEnv(): Record<string, string> {
-  const pick = (id: string) => profiles[id]
+  const pick = (id: string) => { const a = profiles[id]; return a ? withContextHint(a, id) : undefined }
   const env: Record<string, string> = {}
   const map: Array<[string, string]> = [
     ['ANTHROPIC_MODEL', 'us.anthropic.claude-opus-5'],
