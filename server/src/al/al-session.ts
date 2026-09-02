@@ -179,6 +179,10 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
  */
 export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
   const existing = currentAlSession
+  // The fresh spawn mints a NEW claudeSessionId; Al's hub crons are keyed by
+  // the old one and would orphan (fired into "session not found" until
+  // auto-disabled — lost the al-mail watch + a reply on 2026-09-02).
+  const oldCsid = existing?.claudeSessionId ?? loadAlSession()?.claudeSessionId ?? null
   if (existing) {
     try { existing.kill() } catch { /* ignore */ }
     ctx.sessions.delete(existing.id)
@@ -186,7 +190,17 @@ export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
   currentAlSession = null
   try { if (existsSync(AL_SESSION_FILE)) unlinkSync(AL_SESSION_FILE) } catch { /* ignore */ }
   console.log('[al/session] reloading Al — fresh persona spawn')
-  return ensureAlSession(ctx)
+  const session = await ensureAlSession(ctx)
+  if (oldCsid) {
+    const onInit = (msg: { type: string; claudeSessionId?: string }) => {
+      if (msg.type !== 'session_init' || !msg.claudeSessionId) return
+      session.off('hub_message', onInit as any)
+      const moved = ctx.reassignCron?.(oldCsid, msg.claudeSessionId) ?? 0
+      if (moved) console.log(`[al/session] ${moved} cron task(s) followed Al ${oldCsid.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}`)
+    }
+    session.on('hub_message', onInit as any)
+  }
+  return session
 }
 
 /**

@@ -386,6 +386,13 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
     }
     broadcast(ctx.clients, msg)
     if (msg.type === 'tool_diff') ctx.onToolDiff?.(msg.sessionId, msg.filePath)
+    // The live session was re-keyed (pruned-transcript fresh respawn) — its
+    // hub crons are keyed by claudeSessionId and would otherwise fire into
+    // "session not found" until auto-disabled.
+    if (msg.type === 'session_init' && msg.rekeyedFrom) {
+      const moved = ctx.reassignCron?.(msg.rekeyedFrom, msg.claudeSessionId) ?? 0
+      if (moved) console.log(`[agents] ${session.name ?? session.id} re-keyed ${msg.rekeyedFrom.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}: ${moved} cron task(s) followed`)
+    }
     // Save manifest on any session state change (debounced)
     if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result'
       || msg.type === 'session_queued') {

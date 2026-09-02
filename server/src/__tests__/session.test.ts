@@ -562,6 +562,33 @@ describe('Session rich protocol', () => {
     expect(session.claudeSessionId).toBe('claude_abc')
   })
 
+  it('flags session_init.rekeyedFrom only when a pre-set (resume) csid changes at init', async () => {
+    // Resume whose init mints a DIFFERENT csid = re-keyed (the pruned-transcript
+    // fresh respawn) — hub crons keyed by the old csid must follow.
+    const resumed = new Session({ prompt: 'x', resume: 'old_csid' })
+    const resumedMsgs = collectHubMessages(resumed)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'new_csid', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    const rekeyed = resumedMsgs.find((m) => m.type === 'session_init') as any
+    expect(rekeyed.rekeyedFrom).toBe('old_csid')
+    expect(resumed.claudeSessionId).toBe('new_csid')
+
+    // Same csid back = a normal resume, no flag.
+    const same = new Session({ prompt: 'x', resume: 'keep_csid' })
+    const sameMsgs = collectHubMessages(same)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'keep_csid', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect((sameMsgs.find((m) => m.type === 'session_init') as any).rekeyedFrom).toBeUndefined()
+
+    // Forks never pre-set a csid, so a fork's new id is not a re-key (forks
+    // deliberately inherit zero crons).
+    const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
+    const forkMsgs = collectHubMessages(fork)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'fork_csid', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect((forkMsgs.find((m) => m.type === 'session_init') as any).rekeyedFrom).toBeUndefined()
+  })
+
   it('re-emits an accurate context_update from get_context_usage after result', async () => {
     const session = new Session({ prompt: 'test' })
     const messages = collectHubMessages(session)

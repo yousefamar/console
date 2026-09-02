@@ -57,7 +57,10 @@ export type ClientMessage =
 
 export type HubMessage =
   | { type: 'session_created'; sessionId: string; cwd: string; prompt: string; name?: string }
-  | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number; permissionMode?: string }
+  /** `rekeyedFrom` = the claudeSessionId this live session USED to have when a
+   *  respawn minted a new one (pruned-transcript fresh spawn). Anything keyed
+   *  by claudeSessionId (hub crons) must follow, or it orphans. */
+  | { type: 'session_init'; sessionId: string; claudeSessionId: string; model: string; slashCommands: string[]; contextWindow: number; permissionMode?: string; rekeyedFrom?: string }
   | { type: 'context_update'; sessionId: string; used: number; total: number; breakdown?: ContextBreakdownEntry[] }
   | { type: 'sessions_list'; sessions: SessionInfo[] }
   | { type: 'project_dirs'; dirs: string[] }

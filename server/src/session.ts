@@ -961,6 +961,11 @@ export class Session extends EventEmitter {
           this.handleSystemLifecycle(msg)
           break
         }
+        // A pre-set csid (resume) that differs from what the CLI minted means
+        // this live session was re-keyed (pruned-transcript fresh respawn) —
+        // forks/fresh spawns never pre-set, so they can't trip this.
+        const prevCsid = this.claudeSessionId
+        const rekeyedFrom = prevCsid && prevCsid !== msg.session_id ? prevCsid : undefined
         this.claudeSessionId = msg.session_id
         // A fork's csid only arrives here, so this is where the todo watcher
         // gets its dir (idempotent for a resume that pre-set the same csid).
@@ -980,6 +985,7 @@ export class Session extends EventEmitter {
           slashCommands: msg.slash_commands ?? [],
           contextWindow,
           permissionMode: msg.permissionMode,
+          ...(rekeyedFrom ? { rekeyedFrom } : {}),
         })
         break
       }
