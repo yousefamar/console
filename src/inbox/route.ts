@@ -4,6 +4,7 @@ import type { DbThread } from '@/gmail/types'
 import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem, FeedSubscription } from '@/store/feeds'
 import { isHiddenFolder } from '@/feeds/hidden-folders'
+import { FEED_KINDS, feedKind, type FeedKind } from '@/feeds/feed-kind'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from './types'
 
 export function routeForRoom(room: DbChatRoom, rules: InboxRules): Route {
@@ -135,6 +136,9 @@ export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, 
     route,
     routeKey: i.feedId,
     ...(isHiddenFolder(feed?.folder) ? { hiddenFolder: true } : {}),
+    feedKind: feedKind(feed),
+    ...(feed?.imageUrl ? { icon: feed.imageUrl } : {}),
+    ...(i.imageUrl ? { image: i.imageUrl } : {}),
   }
 }
 
@@ -191,6 +195,22 @@ export type FeedMode = 'default' | 'x'
 
 export function filterByFeedMode(items: InboxItem[], mode: FeedMode): InboxItem[] {
   return items.filter((i) => (mode === 'x' ? !!i.hiddenFolder : !i.hiddenFolder))
+}
+
+/** Feed-column platform filter (the Feed twin of the Inbox source chips):
+ *  null = everything, else only items whose feed is of that kind. Non-feed
+ *  items (a chat/mail source demoted to Feed) carry no kind and are kept
+ *  only when unfiltered. */
+export function filterByFeedKind(items: InboxItem[], kind: FeedKind | null): InboxItem[] {
+  return kind ? items.filter((i) => i.feedKind === kind) : items
+}
+
+/** Which platform chips to offer: kinds present in the list, in FEED_KINDS
+ *  order, with per-kind counts (chip tooltips). */
+export function feedKindsPresent(items: InboxItem[]): Array<{ kind: FeedKind; count: number }> {
+  const counts = new Map<FeedKind, number>()
+  for (const i of items) if (i.feedKind) counts.set(i.feedKind, (counts.get(i.feedKind) ?? 0) + 1)
+  return FEED_KINDS.filter((k) => counts.has(k)).map((k) => ({ kind: k, count: counts.get(k)! }))
 }
 
 /** The item to land on after handling `key` (archive/read/snooze): the next

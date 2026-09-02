@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -93,6 +93,38 @@ describe('feed mode', () => {
 
   it('x mode shows ONLY hidden-folder items', () => {
     expect(filterByFeedMode([xItem, normal], 'x')).toEqual([xItem])
+  })
+})
+
+describe('feed kind', () => {
+  const yt = { id: 'feed-a', title: 'Chan', xmlUrl: 'https://www.youtube.com/feeds/videos.xml?channel_id=c', folder: 'YouTube', addedAt: '' }
+  const blog = { id: 'feed-b', title: 'Blog', xmlUrl: 'https://yaz.in/feed.xml', folder: null, addedAt: '', imageUrl: 'https://yaz.in/icon.png' }
+  const ytItem = feedItemToItem(feedItem({ imageUrl: 'https://i.ytimg.com/vi/x/hq.jpg' }), yt, DEFAULT_RULES)!
+  const blogItem = feedItemToItem(feedItem({ id: 'f2', feedId: 'feed-b' }), blog, DEFAULT_RULES)!
+
+  it('items carry their feed kind, source icon and item thumbnail', () => {
+    expect(ytItem.feedKind).toBe('youtube')
+    expect(ytItem.image).toBe('https://i.ytimg.com/vi/x/hq.jpg')
+    expect(ytItem.icon).toBeUndefined()
+    expect(blogItem.feedKind).toBe('rss')
+    expect(blogItem.icon).toBe('https://yaz.in/icon.png')
+    expect(blogItem.image).toBeUndefined()
+    expect(feedItemToItem(feedItem(), undefined, DEFAULT_RULES)?.feedKind).toBe('rss')
+  })
+
+  it('filterByFeedKind narrows to one platform, null = everything', () => {
+    const demotedMail = threadToItem(thread(), DEFAULT_RULES)
+    expect(filterByFeedKind([ytItem, blogItem, demotedMail], 'youtube')).toEqual([ytItem])
+    expect(filterByFeedKind([ytItem, blogItem, demotedMail], 'rss')).toEqual([blogItem])
+    expect(filterByFeedKind([ytItem, blogItem, demotedMail], null)).toHaveLength(3)
+  })
+
+  it('feedKindsPresent lists kinds in chip order with counts', () => {
+    expect(feedKindsPresent([blogItem, ytItem, ytItem])).toEqual([
+      { kind: 'youtube', count: 2 },
+      { kind: 'rss', count: 1 },
+    ])
+    expect(feedKindsPresent([threadToItem(thread(), DEFAULT_RULES)])).toEqual([])
   })
 })
 

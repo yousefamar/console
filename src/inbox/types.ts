@@ -9,6 +9,8 @@
 //   feeds → unread items
 // Routing decides WHICH list a source's items land in.
 
+import type { FeedKind } from '@/feeds/feed-kind'
+
 export type InboxSource = 'mail' | 'chat' | 'feed' | 'agent'
 export type Route = 'feed' | 'inbox'
 /** Feeds get a third option: hidden from this pane entirely (the legacy
@@ -46,6 +48,14 @@ export interface InboxItem {
    *  in its opt-in mode. Distinct from the 'hidden' FeedRoute (dropped from
    *  the pane entirely). */
   hiddenFolder?: boolean
+  /** Feed only: platform the feed comes from (youtube/reddit/hn/…) — drives
+   *  the Feed column's source-filter chips and the row glyph. */
+  feedKind?: FeedKind
+  /** Feed only: the SOURCE's favicon/logo (feed.imageUrl) — the row glyph
+   *  for plain-RSS feeds that have one. */
+  icon?: string
+  /** Feed only: the ITEM's thumbnail (video still, post image). */
+  image?: string
 }
 
 /** Per-source routing rules, persisted hub-side (inbox-rules.json).

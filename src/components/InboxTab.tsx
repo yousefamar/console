@@ -16,6 +16,7 @@
 
 import { memo, useRef, useState } from 'react'
 import { ArrowLeftToLine, ArrowRightToLine, Bot, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
@@ -27,7 +28,8 @@ import { FeedItemView } from './FeedItemView'
 import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
-import { routeForFeed } from '@/inbox/route'
+import { feedKindsPresent, routeForFeed } from '@/inbox/route'
+import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 
 // Composition wiring (source-store subscriptions → rebuild) lives in
@@ -35,7 +37,13 @@ import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 // the lists before this pane ever mounts.
 
 export const InboxTab = memo(function InboxTab() {
-  const feedList = useUnifiedInboxStore((s) => s.feedList)
+  const fullFeedList = useUnifiedInboxStore((s) => s.feedList)
+  const feedFilter = useUnifiedInboxStore((s) => s.feedFilter)
+  const setFeedFilter = useUnifiedInboxStore((s) => s.setFeedFilter)
+  const feedList = feedFilter ? fullFeedList.filter((i) => i.feedKind === feedFilter) : fullFeedList
+  // Chips derive from the UNFILTERED (mode-filtered) list so the active
+  // chip stays visible to toggle off; a single-platform list offers none.
+  const feedKinds = feedKindsPresent(fullFeedList)
   const fullInboxList = useUnifiedInboxStore((s) => s.inboxList)
   const inboxFilter = useUnifiedInboxStore((s) => s.inboxFilter)
   const setInboxFilter = useUnifiedInboxStore((s) => s.setInboxFilter)
@@ -82,6 +90,22 @@ export const InboxTab = memo(function InboxTab() {
           extra={
             <>
               {mobileToggle}
+              {feedKinds.length > 1 && (
+                <span className="flex gap-1">
+                  {feedKinds.map(({ kind, count }) => (
+                    <button
+                      key={kind}
+                      onClick={() => setFeedFilter(feedFilter === kind ? null : kind)}
+                      className={`transition-colors duration-fast ${
+                        feedFilter === kind ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                      }`}
+                      title={feedFilter === kind ? 'Show everything' : `${FEED_KIND_LABEL[kind]} only (${count})`}
+                    >
+                      <FeedKindGlyph kind={kind} size={11} />
+                    </button>
+                  ))}
+                </span>
+              )}
               <button
                 onClick={() => setFeedMode(feedMode === 'x' ? 'default' : 'x')}
                 className={`px-1 text-[10px] font-semibold rounded-sm transition-colors duration-fast ${
@@ -216,9 +240,39 @@ function EmptyHint({ text }: { text: string }) {
   return <div className="px-3 py-8 text-center text-sm text-text-tertiary">{text}</div>
 }
 
+// Platform glyph per feed kind — brand marks from react-icons (the chat
+// column's NetworkIcon precedent), generic RSS for the long tail.
+function FeedKindGlyph({ kind, size }: { kind: FeedKind; size: number }) {
+  if (kind === 'youtube') return <SiYoutube size={size} />
+  if (kind === 'reddit') return <SiReddit size={size} />
+  if (kind === 'hn') return <SiYcombinator size={size} />
+  if (kind === 'substack') return <SiSubstack size={size} />
+  if (kind === 'x') return <SiX size={size} />
+  return <Rss size={size} />
+}
+
+// A plain-RSS feed with a favicon shows THAT (blogs are recognisable by
+// their mark, not by a generic glyph); a broken favicon falls back to Rss.
+function FeedSourceIcon({ item }: { item: InboxItem }) {
+  const [broken, setBroken] = useState(false)
+  const kind = item.feedKind ?? 'rss'
+  if (kind === 'rss' && item.icon && !broken) {
+    return (
+      <img
+        src={item.icon}
+        alt=""
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="h-3 w-3 rounded-[2px] object-contain"
+      />
+    )
+  }
+  return <FeedKindGlyph kind={kind} size={12} />
+}
+
 function ChannelIcon({ item }: { item: InboxItem }) {
   if (item.source === 'mail') return <Mail size={12} />
-  if (item.source === 'feed') return <Rss size={12} />
+  if (item.source === 'feed') return <FeedSourceIcon item={item} />
   if (item.source === 'agent') return <Bot size={12} className={item.attention ? 'text-red-500' : undefined} />
   if (item.network) return <NetworkIcon network={item.network} />
   return <MessageCircle size={12} />
@@ -237,25 +291,46 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
         selected ? 'bg-surface-2' : 'hover:bg-surface-1'
       }`}
     >
-      <div className="flex items-center gap-1.5 min-w-0">
-        <span className="text-text-tertiary flex-shrink-0" title={item.network ?? item.source}><ChannelIcon item={item} /></span>
-        <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
-        {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
-        {item.routeKey && (
-          <button
-            onClick={(e) => { e.stopPropagation(); void useUnifiedInboxStore.getState().toggleRoute(item) }}
-            className="hidden group-hover:inline text-text-tertiary hover:text-text-primary flex-shrink-0"
-            title={promote ? 'Promote this source to Inbox' : 'Demote this source to Feed'}
-          >
-            {promote ? <ArrowRightToLine size={11} /> : <ArrowLeftToLine size={11} />}
-          </button>
-        )}
-        <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-text-tertiary flex-shrink-0" title={item.feedKind ? FEED_KIND_LABEL[item.feedKind] : item.network ?? item.source}><ChannelIcon item={item} /></span>
+            <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
+            {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
+            {item.routeKey && (
+              <button
+                onClick={(e) => { e.stopPropagation(); void useUnifiedInboxStore.getState().toggleRoute(item) }}
+                className="hidden group-hover:inline text-text-tertiary hover:text-text-primary flex-shrink-0"
+                title={promote ? 'Promote this source to Inbox' : 'Demote this source to Feed'}
+              >
+                {promote ? <ArrowRightToLine size={11} /> : <ArrowLeftToLine size={11} />}
+              </button>
+            )}
+            <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
+          </div>
+          {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5">{item.body}</div>}
+        </div>
+        {item.image && <ItemThumb src={item.image} />}
       </div>
-      {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5">{item.body}</div>}
     </div>
   )
 })
+
+// Item thumbnail (video still / post image), sized to the two-line row so
+// it never grows the row; a dead URL just disappears.
+function ItemThumb({ src }: { src: string }) {
+  const [broken, setBroken] = useState(false)
+  if (broken) return null
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+      className="h-9 aspect-video object-cover rounded-sm bg-surface-2 flex-shrink-0"
+    />
+  )
+}
 
 // Per-feed route filter: feed (browse) | inbox (must-handle) | hidden (not in
 // this pane at all). Writes rules overrides via the store → hub-persisted.

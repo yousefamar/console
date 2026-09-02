@@ -16,10 +16,11 @@ import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type In
 import { useAgentStore } from '@/store/agent'
 import { getSnoozeTime } from '@/utils/date'
 import {
-  feedItemToItem, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type FeedMode,
 } from '@/inbox/route'
+import type { FeedKind } from '@/feeds/feed-kind'
 
 interface UnifiedInboxState {
   rules: InboxRules
@@ -32,6 +33,9 @@ interface UnifiedInboxState {
   /** Inbox-column source filter (mail | chat | agent), session-only —
    *  a getting-used-to-the-pane affordance, null = everything. */
   inboxFilter: InboxSource | null
+  /** Feed-column platform filter (youtube | reddit | …), session-only —
+   *  the Feed twin of inboxFilter, null = everything. */
+  feedFilter: FeedKind | null
   /** The selected item — held as the ITEM, not a key into the lists: handling
    *  it (reply marks a chat read, archive drops a thread) removes it from the
    *  lists on rebuild, but the viewer must keep showing it until the user
@@ -48,6 +52,7 @@ interface UnifiedInboxState {
   toggleRoute: (item: InboxItem) => Promise<void>
   setFeedMode: (mode: FeedMode) => void
   setInboxFilter: (source: InboxSource | null) => void
+  setFeedFilter: (kind: FeedKind | null) => void
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
@@ -63,6 +68,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   inboxList: [],
   feedMode: 'default',
   inboxFilter: null,
+  feedFilter: null,
   selected: null,
 
   setFeedMode: (mode) => {
@@ -71,6 +77,8 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   setInboxFilter: (source) => set({ inboxFilter: source }),
+
+  setFeedFilter: (kind) => set({ feedFilter: kind }),
 
   loadRules: async () => {
     try {
@@ -174,7 +182,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   selectAdjacent: (list, dir) => {
-    const items = list === 'feed' ? get().feedList : visibleInbox(get())
+    const items = list === 'feed' ? visibleFeed(get()) : visibleInbox(get())
     if (items.length === 0) return
     const idx = items.findIndex((i) => i.key === get().selected?.key)
     const next = idx < 0 ? (dir === 1 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, idx + dir))
@@ -185,7 +193,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const { feedList, selected } = get()
     if (!selected) return
     const inFeed = feedList.some((i) => i.key === selected.key)
-    const list = inFeed ? feedList : visibleInbox(get())
+    const list = inFeed ? visibleFeed(get()) : visibleInbox(get())
     const item = list.find((i) => i.key === selected.key) ?? selected
 
     // Compute the landing spot BEFORE the verb fires — the handled item drops
@@ -219,4 +227,10 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
  *  deliberately keeps counting the full list. */
 export function visibleInbox(s: Pick<UnifiedInboxState, 'inboxList' | 'inboxFilter'>): InboxItem[] {
   return s.inboxFilter ? s.inboxList.filter((i) => i.source === s.inboxFilter) : s.inboxList
+}
+
+/** The feed list as displayed — platform-filtered. Same contract as
+ *  visibleInbox: nav/handle walk this; the header count shows it too. */
+export function visibleFeed(s: Pick<UnifiedInboxState, 'feedList' | 'feedFilter'>): InboxItem[] {
+  return filterByFeedKind(s.feedList, s.feedFilter)
 }
