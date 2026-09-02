@@ -24,11 +24,10 @@ export function wireUnifiedInbox(): void {
   useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() })
   useFeedStore.subscribe((s, prev) => { if (s.unreadCounts !== prev.unreadCounts || s.feeds !== prev.feeds) schedule() })
   useAgentStore.subscribe((s, prev) => { if (s.sessions !== prev.sessions) schedule() })
-  // Review hand-backs rank off SpaceSummary.reviewAgentKeys. The spaces list
-  // otherwise loads only when the Spaces pane mounts (or a board broadcast
-  // lands), so fetch it here at boot — the Inbox may be the landing pane.
+  // Review hand-backs rank off SpaceSummary.reviewAgentKeys / reviewCards.
+  // The spaces list itself is fetched at boot + on every (re)connect by
+  // wireBoardSubscription — the Inbox may be the landing pane.
   useSpacesStore.subscribe((s, prev) => { if (s.spaces !== prev.spaces) schedule() })
-  if (useSpacesStore.getState().spaces.length === 0) void useSpacesStore.getState().refreshSpaces()
   // Overdue-ness (SLA) is a function of wall clock, not store events — a DM
   // crosses its 24h line with no delta firing. Coarse re-sweep.
   setInterval(schedule, 5 * 60_000)

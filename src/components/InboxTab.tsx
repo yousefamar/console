@@ -15,12 +15,14 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { ArrowLeftToLine, ArrowRightToLine, Bot, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Bot, Check, ClipboardCheck, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useFeedStore } from '@/store/feeds'
 import { useChatStore } from '@/store/chat'
+import { useSpacesStore } from '@/store/spaces'
+import { showAlert } from '@/dialog'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { ThreadView } from './ThreadView'
 import { ChatRoomView } from './ChatRoomView'
@@ -28,7 +30,7 @@ import { FeedItemView } from './FeedItemView'
 import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
-import { feedKindsPresent, routeForFeed } from '@/inbox/route'
+import { feedKindsPresent, reviewHandbacksFor, routeForFeed, type ReviewHandback } from '@/inbox/route'
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 
@@ -186,6 +188,7 @@ export const InboxTab = memo(function InboxTab() {
                 <span>Open in Spaces</span>
               </button>
             </div>
+            <ReviewHandbackStrip agentKey={selected.agentKey} />
             <AgentSessionView />
           </>
         )}
@@ -201,6 +204,77 @@ export const InboxTab = memo(function InboxTab() {
     </>
   )
 })
+
+// Hand-back approval: when the selected agent owns a card sitting in Under
+// Review, one strip per card with an Approve button that moves it to the
+// board's Done column. Yousef is the sole reviewer, so this is where a
+// review verdict lands mid-triage — the Done transition then fires the
+// fork's wind-down hub-side, exactly as a drag on the Spaces board would.
+function ReviewHandbackStrip({ agentKey }: { agentKey?: string }) {
+  const spaces = useSpacesStore((s) => s.spaces)
+  const handbacks = reviewHandbacksFor(agentKey, spaces)
+  if (handbacks.length === 0) return null
+  return (
+    <div className="border-b border-border bg-surface-1">
+      {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} />)}
+    </div>
+  )
+}
+
+/** Row marker: this agent has a card waiting for review — the same blue the
+ *  Spaces rail's kanban badge turns for a hand-back. */
+function HandbackGlyph({ agentKey }: { agentKey?: string }) {
+  const count = useSpacesStore((s) => reviewHandbacksFor(agentKey, s.spaces).length)
+  if (count === 0) return null
+  return (
+    <span className="flex items-center gap-0.5 text-blue-400 flex-shrink-0" title={`${count} card${count === 1 ? '' : 's'} under review — open to approve`}>
+      <ClipboardCheck size={11} />
+      {count > 1 && <span className="text-[10px]">{count}</span>}
+    </span>
+  )
+}
+
+/** HubError.message is the raw response body — `{"error":"…"}` for board
+ *  routes. Unwrap it for the dialog (pen.ts still parses the raw form). */
+function hubErrorText(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e)
+  try {
+    const j = JSON.parse(m) as { error?: unknown }
+    if (typeof j?.error === 'string') return j.error
+  } catch { /* not JSON */ }
+  return m
+}
+
+function ReviewHandbackRow({ handback: h }: { handback: ReviewHandback }) {
+  const [busy, setBusy] = useState(false)
+  const approve = async () => {
+    if (!h.doneColumn || busy) return
+    setBusy(true)
+    try {
+      await useSpacesStore.getState().moveCardOnBoard(h.project, h.query, h.doneColumn)
+    } catch (e) {
+      void showAlert(`Couldn't move the card to ${h.doneColumn}: ${hubErrorText(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex items-center gap-2 px-3 py-1 text-xs">
+      <ClipboardCheck size={12} className="flex-shrink-0 text-blue-400" />
+      <span className="text-text-tertiary flex-shrink-0">Under review · {h.project}</span>
+      <span className="truncate text-text-primary flex-1" title={h.text}>{h.text}</span>
+      <button
+        onClick={() => void approve()}
+        disabled={!h.doneColumn || busy}
+        className="flex items-center gap-1 rounded-sm border border-border bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-green-500/60 hover:text-green-500 disabled:cursor-not-allowed disabled:opacity-50 transition-colors duration-fast"
+        title={h.doneColumn ? `Move this card to ${h.doneColumn} — approves the hand-back and winds the fork down` : 'This board has no Done column'}
+      >
+        <Check size={11} />
+        <span>{busy ? 'Moving…' : `Approve → ${h.doneColumn ?? 'Done'}`}</span>
+      </button>
+    </div>
+  )
+}
 
 // Inbox-column source filter chips (while getting used to the unified pane).
 const SOURCE_FILTERS: Array<{ source: InboxSource; icon: React.ReactNode; title: string }> = [
@@ -297,6 +371,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
             <span className="text-text-tertiary flex-shrink-0" title={item.feedKind ? FEED_KIND_LABEL[item.feedKind] : item.network ?? item.source}><ChannelIcon item={item} /></span>
             <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
+            {item.source === 'agent' && <HandbackGlyph agentKey={item.agentKey} />}
             {item.routeKey && (
               <button
                 onClick={(e) => { e.stopPropagation(); void useUnifiedInboxStore.getState().toggleRoute(item) }}

@@ -11,9 +11,18 @@ import type { NoteStore } from './notes.js'
 import { parseFrontmatter } from './blog.js'
 import { loadAreaRegistry } from './areas.js'
 import { isKanbanBoard, parseBoard, boardDefaultOwner } from './kanban/board.js'
-import { REVIEW_COLUMN_RE } from './kanban/dispatch.js'
+import { DONE_COLUMN_RE, REVIEW_COLUMN_RE } from './kanban/dispatch.js'
 
 const PROJECTS_DIR = 'projects'
+
+/** One card sitting in an Under-Review column — enough for a client to
+ *  address it on the /board/:project API without loading the board. */
+export interface ReviewCard {
+  /** Dispatch stamp; null for a never-dispatched card (address by text). */
+  blockId: string | null
+  text: string
+  agentKey: string | null
+}
 
 export interface SpaceSummary {
   kind: 'project' | 'area'
@@ -33,6 +42,12 @@ export interface SpaceSummary {
    *  session's "unread" from the Bot badge to the kanban badge when the
    *  unread is really a review hand-back the agent owns. */
   reviewAgentKeys: string[]
+  /** The review cards themselves — so an approve affordance outside the
+   *  Spaces pane (the Inbox's agent rows) can move one to Done by ^id. */
+  reviewCards: ReviewCard[]
+  /** Title of the board's Done-like column (first match), null when the
+   *  board has none — the approve target for `POST /board/:project/move`. */
+  doneColumn: string | null
   /** agentKeys assigned to ANY card on the board (all columns, dedup'd).
    *  A fork whose key owns a card is reachable via the card, so the rail
    *  suppresses its badge/alert rows (^lean-ibis) — attention excepted. */
@@ -92,23 +107,27 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
     }
     let reviewCount = 0
     const reviewAgentKeys: string[] = []
+    const reviewCards: ReviewCard[] = []
+    let doneColumn: string | null = null
     const cardAgentKeys = new Set<string>()
     let defaultOwner: string | null = null
     if (boardContent) {
       defaultOwner = boardDefaultOwner(boardContent)
       try {
         for (const col of parseBoard(boardContent).columns) {
+          if (doneColumn === null && DONE_COLUMN_RE.test(col.title)) doneColumn = col.title
           const isReview = REVIEW_COLUMN_RE.test(col.title)
           for (const card of col.cards) {
             if (card.agentKey) cardAgentKeys.add(card.agentKey)
             if (!isReview) continue
             reviewCount++
             if (card.agentKey) reviewAgentKeys.push(card.agentKey)
+            reviewCards.push({ blockId: card.blockId ?? null, text: card.text, agentKey: card.agentKey ?? null })
           }
         }
       } catch { /* unparseable board — counts stay 0 */ }
     }
-    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, cardAgentKeys: [...cardAgentKeys], defaultOwner })
+    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, reviewCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner })
   }
 
   const registry = await loadAreaRegistry(store)
@@ -123,6 +142,8 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       fileCount: 0,
       reviewCount: 0,
       reviewAgentKeys: [],
+      reviewCards: [],
+      doneColumn: null,
       cardAgentKeys: [],
       defaultOwner: null,
     })

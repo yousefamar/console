@@ -29,6 +29,14 @@ export function wireBoardSubscription(): void {
     }, 1_000)
   }
 
+  // The spaces list used to load only on SpacesTab mount, but the Inbox
+  // pane joins agent rows to review cards from it (^pale-tern) — fetch at
+  // boot, and again on every (re)connect since a WS gap may have hidden
+  // board broadcasts. onConnect alone isn't enough: it doesn't re-fire if
+  // the bus was already up when this wires.
+  refreshSpacesSoon()
+  hubBus.onConnect(refreshSpacesSoon)
+
   hubBus.on('boards', 'changed', (data) => {
     const { boardPath } = data as { boardPath: string }
     refreshSpacesSoon()

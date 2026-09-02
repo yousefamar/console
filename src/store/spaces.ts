@@ -26,6 +26,11 @@ export interface SpaceSummary {
   reviewCount?: number
   /** agentKeys assigned to those review cards. */
   reviewAgentKeys?: string[]
+  /** The review cards themselves — the Inbox approve button addresses one
+   *  by ^id without loading the board (^pale-tern). Optional: older hub. */
+  reviewCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+  /** Title of the board's Done-like column; null = none. Optional: older hub. */
+  doneColumn?: string | null
   /** agentKeys assigned to ANY card on the board — card-owned forks are
    *  reachable via their card, so the rail suppresses their badge/rows
    *  (^lean-ibis). Optional: older hub payloads omit it. */
@@ -71,6 +76,10 @@ interface SpacesState {
    *  unassigned In-Progress cards auto-assign to). Takes a slug, not the active
    *  space — the session context menu reaches sessions from any rail. */
   setDefaultOwner: (slug: string, agentKey: string | null) => Promise<void>
+  /** Move a card on a NAMED project's board (not the active space) — the
+   *  Inbox's approve button moves a hand-back to Done from outside Spaces.
+   *  Throws on failure so the caller can surface it where the user is. */
+  moveCardOnBoard: (slug: string, query: string, toColumn: string) => Promise<void>
   /** Rewrite a card's text and detail (indented continuation lines). Tokens
    *  (@key/^id/#blocked) survive — only the human-readable content changes. */
   editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
@@ -411,6 +420,17 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
       set({ boardError: (e as Error).message })
       return
     }
+    await get().refreshSpaces()
+    if (get().activeSlug === slug) await get().loadBoard().catch(() => {})
+  },
+
+  moveCardOnBoard: async (slug, query, toColumn) => {
+    if (slug.startsWith('~')) throw new Error('not a project board')
+    await hubFetch(`/board/${encodeURIComponent(slug)}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ card: query, to: toColumn }),
+      timeoutMs: 10000,
+    })
     await get().refreshSpaces()
     if (get().activeSlug === slug) await get().loadBoard().catch(() => {})
   },

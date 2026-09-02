@@ -127,7 +127,43 @@ export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<stri
     attention: !!s.needsAttention,
     ...(idle ? { idle: true } : {}),
     ...(idle && s.agentKey && reviewKeys?.has(s.agentKey) ? { review: true } : {}),
+    ...(s.agentKey ? { agentKey: s.agentKey } : {}),
   }
+}
+
+/** A card this agent owns that is sitting in Under Review, with what the
+ *  approve button needs to move it: which project's board, how to address
+ *  the card on `/board/:project/move`, and the target column. */
+export interface ReviewHandback {
+  project: string
+  /** `^id` when stamped, else the card text (BoardOps resolves either). */
+  query: string
+  text: string
+  /** Null when the board has no Done-like column — approve is impossible. */
+  doneColumn: string | null
+}
+
+/** Minimal SpaceSummary shape — the hub fields are optional-guarded because
+ *  the SPA reader ships before the hub writer (HMR vs restart). */
+export interface SpaceReviewLike {
+  kind: 'project' | 'area'
+  slug: string
+  reviewCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+  doneColumn?: string | null
+}
+
+/** Under-Review cards owned by `agentKey` across every project board. */
+export function reviewHandbacksFor(agentKey: string | null | undefined, spaces: ReadonlyArray<SpaceReviewLike>): ReviewHandback[] {
+  if (!agentKey) return []
+  const out: ReviewHandback[] = []
+  for (const s of spaces) {
+    if (s.kind !== 'project') continue
+    for (const c of s.reviewCards ?? []) {
+      if (c.agentKey !== agentKey) continue
+      out.push({ project: s.slug, query: c.blockId ? `^${c.blockId}` : c.text, text: c.text, doneColumn: s.doneColumn ?? null })
+    }
+  }
+  return out
 }
 
 export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, rules: InboxRules): InboxItem | null {

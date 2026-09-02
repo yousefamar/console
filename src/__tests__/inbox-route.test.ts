@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -222,6 +222,42 @@ describe('agent sessions', () => {
       sessionToItem(session({ id: 'attn-review', agentKey: 'a', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW - 99999 }), review),
     ]
     expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['attn-review', 'new-review', 'old-review'])
+  })
+
+  it('carries the agentKey only when the session has one', () => {
+    expect(sessionToItem(session({ agentKey: 'console-general-fork' })).agentKey).toBe('console-general-fork')
+    expect(sessionToItem(session())).not.toHaveProperty('agentKey')
+  })
+})
+
+describe('review hand-backs (^pale-tern)', () => {
+  const spaces = [
+    {
+      kind: 'project' as const, slug: 'console', doneColumn: 'Done',
+      reviewCards: [
+        { blockId: 'bold-fox', text: 'Ship it', agentKey: 'cg-bold-fox-fork' },
+        { blockId: null, text: 'Hand-made card', agentKey: 'cg-bold-fox-fork' },
+        { blockId: 'dry-owl', text: 'Someone else', agentKey: 'other' },
+      ],
+    },
+    { kind: 'project' as const, slug: 'astera', doneColumn: null, reviewCards: [{ blockId: 'teal-crab', text: 'Astera thing', agentKey: 'cg-bold-fox-fork' }] },
+    { kind: 'area' as const, slug: 'dev', reviewCards: [{ blockId: 'x', text: 'never', agentKey: 'cg-bold-fox-fork' }] },
+    { kind: 'project' as const, slug: 'old-hub' },
+  ]
+
+  it('joins the agentKey to its review cards across projects, ^id first else text', () => {
+    expect(reviewHandbacksFor('cg-bold-fox-fork', spaces)).toEqual([
+      { project: 'console', query: '^bold-fox', text: 'Ship it', doneColumn: 'Done' },
+      { project: 'console', query: 'Hand-made card', text: 'Hand-made card', doneColumn: 'Done' },
+      { project: 'astera', query: '^teal-crab', text: 'Astera thing', doneColumn: null },
+    ])
+  })
+
+  it('no key, unknown key, or an older hub payload → nothing', () => {
+    expect(reviewHandbacksFor(undefined, spaces)).toEqual([])
+    expect(reviewHandbacksFor(null, spaces)).toEqual([])
+    expect(reviewHandbacksFor('nobody', spaces)).toEqual([])
+    expect(reviewHandbacksFor('cg-bold-fox-fork', [{ kind: 'project', slug: 'old-hub' }])).toEqual([])
   })
 })
 

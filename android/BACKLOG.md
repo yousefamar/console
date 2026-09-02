@@ -22,6 +22,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   instead of a generic RSS glyph, the feed favicon for plain RSS, and a
   row-height 16:9 thumbnail when the item has an image.
 
+- Inbox: approve a review hand-back from the agent row (SPA ^pale-tern) —
+  `/blog/spaces` now ships `reviewCards[{blockId,text,agentKey}]` +
+  `doneColumn` per project; join an agent item's `agentKey` to its cards
+  (SPA `reviewHandbacksFor` in route.ts → port into `InboxLogic.kt`), show a
+  ClipboardCheck glyph on the row and, in the agent detail screen, one strip
+  per card with "Approve → <Done>" → `POST /board/:project/move
+  {card:"^id"|text, to:doneColumn}` (`SpacesRepository`). Disabled when
+  `doneColumn` is null. Not gated on idle (unlike the ordering tier).
+
 - Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
   push under every AREA their `tags` name (dedup'd against the project slug);
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.
