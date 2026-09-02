@@ -998,7 +998,10 @@ function handleHubMessage(msg: Record<string, unknown>) {
       // hasUnread is now derived from hub-supplied messageLogLength + lastReadIndex
       // (no longer preserved from local — hub is source of truth).
       const merged = hubSessions.map((s) => {
-        const isAl = s.id === 'al'
+        // `'al'` was the pre-absorption pinned id; Al is now an ordinary hub
+        // session identified by agentKey. Without the key test isAl was
+        // always false and Al leaked into the Inbox as a clearable item.
+        const isAl = s.id === 'al' || s.agentKey === 'al'
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
         const hasUnread = (s.messageLogLength ?? 0) > (s.lastReadIndex ?? 0)
         return local
@@ -1707,9 +1710,9 @@ function flushPending(sessionId: string) {
  *  clustered by cwd in `sessionOrder`, fork lineage, collapsed groups
  *  skipped) — top-to-bottom through what the user sees. */
 function visibleSidebarOrder(s: AgentState): SessionInfo[] {
-  const al = s.sessions.find((x) => x.id === 'al')
+  const al = s.sessions.find((x) => x.isAl)
   const active = s.sessions.filter((x) =>
-    x.id !== 'al'
+    !x.isAl
     && (x.status !== 'ended' || x.hasUnread))
   const ordered: SessionInfo[] = []
   if (al) ordered.push(al)
