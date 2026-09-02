@@ -125,6 +125,12 @@ data class InboxEntry(
     val inInbox: Boolean,
     /** Agent only: session flagged @amar / pending question — tops the inbox. */
     val attention: Boolean = false,
+    /** Agent only: the turn has ended (not mid-stream) — a finished agent
+     *  outranks one still typing. */
+    val idle: Boolean = false,
+    /** Agent only: its `@key` owns an Under Review card — a hand-back waiting
+     *  on Yousef, banded beside attention. */
+    val review: Boolean = false,
     /** Chat only: DM unanswered past its SLA window — tops the inbox. */
     val overdue: Boolean = false,
     /** The rules-override key this item's SOURCE routes by (room id / sender
@@ -227,17 +233,25 @@ fun roomToEntry(r: ChatRoomRow, rules: InboxRules, now: Long): InboxEntry {
     )
 }
 
-/** Agents are inbox-shaped by definition — no routing rules apply. */
-fun sessionToEntry(s: AgentSessionRow): InboxEntry = InboxEntry(
-    key = "agent:${s.id}",
-    source = InboxSource.AGENT,
-    sourceId = s.id,
-    header = s.name.removeSuffix(" (fork)"),
-    body = s.attentionSnippet ?: s.lastTextSnippet ?: "",
-    ts = if (s.lastActivityAt > 0) s.lastActivityAt else s.createdAt,
-    inInbox = true,
-    attention = s.needsAttention,
-)
+/** Agents are inbox-shaped by definition — no routing rules apply.
+ *  `reviewKeys` = every `@key` owning an Under Review card across all boards
+ *  (SpaceSummary.reviewAgentKeys, flattened) — the session's card being in
+ *  review is what makes it a hand-back. */
+fun sessionToEntry(s: AgentSessionRow, reviewKeys: Set<String> = emptySet()): InboxEntry {
+    val idle = s.status != "running"
+    return InboxEntry(
+        key = "agent:${s.id}",
+        source = InboxSource.AGENT,
+        sourceId = s.id,
+        header = s.name.removeSuffix(" (fork)"),
+        body = s.attentionSnippet ?: s.lastTextSnippet ?: "",
+        ts = if (s.lastActivityAt > 0) s.lastActivityAt else s.createdAt,
+        inInbox = true,
+        attention = s.needsAttention,
+        idle = idle,
+        review = idle && s.agentKey != null && s.agentKey in reviewKeys,
+    )
+}
 
 /** Null when the feed is routed 'hidden' — dropped from the pane entirely. */
 fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEntry? {
@@ -257,16 +271,23 @@ fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEnt
 }
 
 // --------------------------------------------------------------------------
-// Ordering — the SPA's bands: overdue → attention-agents → chat+mail merged
-// by recency (fresh mail must not sink under stale group unreads) →
-// plain-unread agents → inbox-routed feed items. Recency within each band.
+// Ordering — the SPA's bands (src/inbox/route.ts `band`, keep in sync):
+// overdue → attention-agents → review hand-backs (turn ended + card Under
+// Review) → chat+mail merged by recency (fresh mail must not sink under
+// stale group unreads) → finished (idle) unread agents → still-running
+// unread agents → inbox-routed feed items. Recency within each band.
 // --------------------------------------------------------------------------
 
 private fun band(e: InboxEntry): Int = when {
     e.overdue -> 0
-    e.source == InboxSource.AGENT -> if (e.attention) 1 else 3
-    e.source == InboxSource.CHAT || e.source == InboxSource.MAIL -> 2
-    else -> 4
+    e.source == InboxSource.AGENT -> when {
+        e.attention -> 1
+        e.review -> 2
+        e.idle -> 4
+        else -> 5
+    }
+    e.source == InboxSource.CHAT || e.source == InboxSource.MAIL -> 3
+    else -> 6
 }
 
 fun sortInbox(entries: List<InboxEntry>): List<InboxEntry> =
@@ -298,6 +319,7 @@ fun composeInbox(
     rules: InboxRules,
     now: Long,
     xOnly: Boolean = false,
+    reviewKeys: Set<String> = emptySet(),
 ): InboxLists {
     val all = buildList {
         threads.filter { threadIsLive(it, now) }.forEach { add(threadToEntry(it, rules)) }
@@ -306,7 +328,7 @@ fun composeInbox(
             .filter { it.id !in readIds && it.id !in snoozedFeedIds }
             .mapNotNull { feedItemToEntry(it, feedsById[it.feedId], rules) }
             .forEach { add(it) }
-        sessions.filter { sessionIsLive(it) }.forEach { add(sessionToEntry(it)) }
+        sessions.filter { sessionIsLive(it) }.forEach { add(sessionToEntry(it, reviewKeys)) }
     }
     return InboxLists(
         feed = sortFeed(filterByFeedMode(all.filter { !it.inInbox }, xOnly)),

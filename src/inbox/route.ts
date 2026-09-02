@@ -102,6 +102,7 @@ export interface AgentSessionLike {
   hasUnread?: boolean
   needsAttention?: { ts: number; snippet: string } | null
   isAl?: boolean
+  agentKey?: string
 }
 
 /** Unread agent sessions demand handling (mark read / reply / review), so
@@ -110,7 +111,11 @@ export function sessionIsLive(s: AgentSessionLike): boolean {
   return !s.isAl && (!!s.hasUnread || !!s.needsAttention)
 }
 
-export function sessionToItem(s: AgentSessionLike): InboxItem {
+/** `reviewKeys` = every `@key` owning an Under Review card across all
+ *  boards (SpaceSummary.reviewAgentKeys, flattened) — the session's card
+ *  being in review is what makes it a hand-back. */
+export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>): InboxItem {
+  const idle = s.status !== 'running'
   return {
     key: `agent:${s.id}`,
     source: 'agent',
@@ -120,6 +125,8 @@ export function sessionToItem(s: AgentSessionLike): InboxItem {
     ts: s.lastActivityAt ?? s.createdAt,
     route: 'inbox',
     attention: !!s.needsAttention,
+    ...(idle ? { idle: true } : {}),
+    ...(idle && s.agentKey && reviewKeys?.has(s.agentKey) ? { review: true } : {}),
   }
 }
 
@@ -164,20 +171,26 @@ export function roomIsLive(r: DbChatRoom, now: number, rules?: InboxRules): bool
 }
 
 // ---------------------------------------------------------------------------
-// Inbox ordering (Phase 1: simple, deterministic — SLA engine is Phase 3).
-// Attention-flagged agents first (they're blocked on Yousef), then chat DMs,
-// groups, mail, other unread agents, then promoted/inbox-routed feed
-// reading; recency within each band.
+// Inbox ordering. "Blocked on Yousef" bands first — overdue DMs, agents
+// asking for him, review hand-backs (turn ended + card Under Review) — then
+// chat+mail by recency, then the remaining unread agents split finished
+// (idle) above still-running, then promoted/inbox-routed feed reading;
+// recency within each band. Agent tiers per Yousef (^lean-deer): a
+// hand-back beats a merely-finished agent, which beats one still typing.
 // ---------------------------------------------------------------------------
 
 function band(i: InboxItem): number {
   if (i.overdue) return 0
-  if (i.source === 'agent') return i.attention ? 1 : 3
+  if (i.source === 'agent') {
+    if (i.attention) return 1
+    if (i.review) return 2
+    return i.idle ? 4 : 5
+  }
   // Chat and mail share ONE recency band — fresh mail beats stale chats
   // (a strict chat-above-mail split buried today's mail under week-old
   // group unreads; Yousef's call 2026-08-29).
-  if (i.source === 'chat' || i.source === 'mail') return 2
-  return 4
+  if (i.source === 'chat' || i.source === 'mail') return 3
+  return 6
 }
 
 export function sortInbox(items: InboxItem[]): InboxItem[] {

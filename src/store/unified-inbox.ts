@@ -14,6 +14,7 @@ import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type InboxSource, type Route } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
+import { useSpacesStore } from '@/store/spaces'
 import { getSnoozeTime } from '@/utils/date'
 import {
   feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
@@ -158,10 +159,14 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
       .filter((i): i is InboxItem => i !== null)
 
     // Agents: unread / attention-flagged sessions (Al excluded — he's a
-    // standing conversation, not an item to clear).
+    // standing conversation, not an item to clear). A session whose @key
+    // owns an Under Review card is a hand-back — banded beside attention.
+    const reviewKeys = new Set(
+      useSpacesStore.getState().spaces.flatMap((sp) => sp.reviewAgentKeys ?? []),
+    )
     const sessions = useAgentStore.getState().sessions
       .filter(sessionIsLive)
-      .map(sessionToItem)
+      .map((s) => sessionToItem(s, reviewKeys))
 
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
     set({

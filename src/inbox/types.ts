@@ -37,6 +37,12 @@ export interface InboxItem {
   isDirect?: boolean
   /** Agent only: session flagged @amar / pending question — tops the inbox. */
   attention?: boolean
+  /** Agent only: the turn has ended (not mid-stream) — a finished agent
+   *  outranks one still typing. */
+  idle?: boolean
+  /** Agent only: its `@key` owns an Under Review card — a hand-back waiting
+   *  on Yousef, banded beside attention. */
+  review?: boolean
   /** Chat only: DM unanswered past its SLA window — tops the inbox. */
   overdue?: boolean
   /** The rules-override key this item's SOURCE routes by (room id / sender

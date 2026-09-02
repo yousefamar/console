@@ -8,6 +8,7 @@ import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
 import { useAgentStore } from '@/store/agent'
+import { useSpacesStore } from '@/store/spaces'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 
 const REBUILD_DEBOUNCE_MS = 300
@@ -23,6 +24,11 @@ export function wireUnifiedInbox(): void {
   useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() })
   useFeedStore.subscribe((s, prev) => { if (s.unreadCounts !== prev.unreadCounts || s.feeds !== prev.feeds) schedule() })
   useAgentStore.subscribe((s, prev) => { if (s.sessions !== prev.sessions) schedule() })
+  // Review hand-backs rank off SpaceSummary.reviewAgentKeys. The spaces list
+  // otherwise loads only when the Spaces pane mounts (or a board broadcast
+  // lands), so fetch it here at boot — the Inbox may be the landing pane.
+  useSpacesStore.subscribe((s, prev) => { if (s.spaces !== prev.spaces) schedule() })
+  if (useSpacesStore.getState().spaces.length === 0) void useSpacesStore.getState().refreshSpaces()
   // Overdue-ness (SLA) is a function of wall clock, not store events — a DM
   // crosses its 24h line with no delta firing. Coarse re-sweep.
   setInterval(schedule, 5 * 60_000)

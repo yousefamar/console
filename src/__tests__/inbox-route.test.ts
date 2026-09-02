@@ -184,6 +184,45 @@ describe('agent sessions', () => {
     ]
     expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-attn', '!dm:hs', 't1', 's-plain'])
   })
+
+  it('flags idle + review: turn ended, and @key owns an Under Review card', () => {
+    const review = new Set(['console-general-lean-deer-fork'])
+    const handback = sessionToItem(session({ hasUnread: true, agentKey: 'console-general-lean-deer-fork' }), review)
+    expect(handback.idle).toBe(true)
+    expect(handback.review).toBe(true)
+    // Still running → not a hand-back yet even if its card sits in review.
+    const running = sessionToItem(session({ hasUnread: true, status: 'running', agentKey: 'console-general-lean-deer-fork' }), review)
+    expect(running.idle).toBeUndefined()
+    expect(running.review).toBeUndefined()
+    // Idle but its key owns no review card → plain finished agent.
+    const finished = sessionToItem(session({ hasUnread: true, agentKey: 'other' }), review)
+    expect(finished.idle).toBe(true)
+    expect(finished.review).toBeUndefined()
+    // No review set at all (spaces not loaded) → never a hand-back.
+    expect(sessionToItem(session({ hasUnread: true, agentKey: 'console-general-lean-deer-fork' })).review).toBeUndefined()
+  })
+
+  it('agent tiers: attention → review hand-back → chat+mail → finished → still running', () => {
+    const review = new Set(['reviewer'])
+    const items = [
+      sessionToItem(session({ id: 's-running', hasUnread: true, status: 'running', lastActivityAt: NOW }), review),
+      sessionToItem(session({ id: 's-idle', hasUnread: true, lastActivityAt: NOW }), review),
+      threadToItem(thread({ date: NOW - 1000 }), DEFAULT_RULES),
+      sessionToItem(session({ id: 's-review', hasUnread: true, agentKey: 'reviewer', lastActivityAt: NOW - 9000 }), review),
+      sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW - 9000 }), review),
+    ]
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-attn', 's-review', 't1', 's-idle', 's-running'])
+  })
+
+  it('attention outranks a review hand-back, and recency orders within a tier', () => {
+    const review = new Set(['a', 'b'])
+    const items = [
+      sessionToItem(session({ id: 'old-review', hasUnread: true, agentKey: 'a', lastActivityAt: NOW - 5000 }), review),
+      sessionToItem(session({ id: 'new-review', hasUnread: true, agentKey: 'b', lastActivityAt: NOW }), review),
+      sessionToItem(session({ id: 'attn-review', agentKey: 'a', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW - 99999 }), review),
+    ]
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['attn-review', 'new-review', 'old-review'])
+  })
 })
 
 describe('SLA / overdue', () => {

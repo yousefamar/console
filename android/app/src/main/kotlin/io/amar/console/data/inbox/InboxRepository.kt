@@ -40,6 +40,9 @@ class InboxRepository(
     /** Agent sessions ride the agents WS — injected so composition
      *  recomputes on session changes. */
     sessionsFlow: Flow<List<AgentSessionRow>>,
+    /** Every `@key` owning an Under Review card (SpacesRepository's
+     *  reviewAgentKeys, flattened) — ranks review hand-backs. */
+    reviewKeysFlow: Flow<Set<String>> = MutableStateFlow(emptySet()),
 ) {
     private val rules = MutableStateFlow(InboxRules.DEFAULT)
     private val xOnly = MutableStateFlow(false)
@@ -69,11 +72,11 @@ class InboxRepository(
 
     val lists: StateFlow<InboxLists> = combine(
         sources,
-        sessionsFlow,
+        combine(sessionsFlow, reviewKeysFlow) { s, k -> s to k },
         db.feeds().observeSnoozes(),
         rules,
         combine(xOnly, nowTick) { x, _ -> x },
-    ) { src, sessions, snoozes, r, x ->
+    ) { src, (sessions, reviewKeys), snoozes, r, x ->
         val now = System.currentTimeMillis()
         composeInbox(
             threads = src.threads,
@@ -86,6 +89,7 @@ class InboxRepository(
             rules = r,
             now = now,
             xOnly = x,
+            reviewKeys = reviewKeys,
         )
     // WhileSubscribed(0) + catch, NOT Eagerly: an eager (or lingering) collector
     // observes Room past the screen's lifetime — under Robolectric (which boots

@@ -61,10 +61,12 @@ private fun session(
     attention: Boolean = false,
     isAl: Boolean = false,
     lastActivityAt: Long = NOW - 3 * HOUR,
+    status: String = "idle",
+    agentKey: String? = "worker",
 ) = AgentSessionRow(
-    id = id, name = "Worker (fork)", status = "idle", hasUnread = hasUnread,
+    id = id, name = "Worker (fork)", status = status, hasUnread = hasUnread,
     needsAttention = attention, attentionSnippet = if (attention) "help" else null,
-    agentKey = "worker", modelLabel = null, hibernated = false, cwd = null,
+    agentKey = agentKey, modelLabel = null, hibernated = false, cwd = null,
     lastCachedIndex = 0, messageLogLength = 5, isAl = isAl, lastActivityAt = lastActivityAt,
 )
 
@@ -181,6 +183,49 @@ class InboxLogicTest {
         )
         // Fresh mail beats stale chat WITHIN the shared band (the merged-band rule).
         assertTrue(sorted.indexOfFirst { it.key == "mail:t1" } < sorted.indexOfFirst { it.key == "chat:!c" })
+    }
+
+    @Test
+    fun `session flags idle and review hand-back`() {
+        val review = setOf("reviewer")
+        val handback = sessionToEntry(session(agentKey = "reviewer"), review)
+        assertTrue(handback.idle)
+        assertTrue(handback.review)
+        // Still running → not a hand-back yet even if its card sits in review.
+        val running = sessionToEntry(session(status = "running", agentKey = "reviewer"), review)
+        assertFalse(running.idle)
+        assertFalse(running.review)
+        // Idle but its key owns no review card → plain finished agent.
+        val finished = sessionToEntry(session(agentKey = "other"), review)
+        assertTrue(finished.idle)
+        assertFalse(finished.review)
+        // Null key / no review set → never a hand-back.
+        assertFalse(sessionToEntry(session(agentKey = null), review).review)
+        assertFalse(sessionToEntry(session(agentKey = "reviewer")).review)
+    }
+
+    @Test
+    fun `agent tiers attention, review hand-back, chat+mail, finished, running`() {
+        val review = setOf("reviewer")
+        val running = sessionToEntry(session(id = "run", status = "running", lastActivityAt = NOW), review)
+        val idle = sessionToEntry(session(id = "idle", lastActivityAt = NOW), review)
+        val mail = threadToEntry(thread(date = NOW - HOUR), InboxRules.DEFAULT)
+        val handback = sessionToEntry(session(id = "rev", agentKey = "reviewer", lastActivityAt = NOW - 9 * HOUR), review)
+        val attention = sessionToEntry(session(id = "attn", attention = true, lastActivityAt = NOW - 9 * HOUR), review)
+        val sorted = sortInbox(listOf(running, idle, mail, handback, attention))
+        assertEquals(
+            listOf("agent:attn", "agent:rev", "mail:t1", "agent:idle", "agent:run"),
+            sorted.map { it.key },
+        )
+        // composeInbox threads reviewKeys through to the adapter.
+        val lists = composeInbox(
+            threads = emptyList(), rooms = emptyList(), feedItems = emptyList(), feedsById = emptyMap(),
+            readIds = emptySet(), snoozedFeedIds = emptySet(),
+            sessions = listOf(session(id = "rev", agentKey = "reviewer"), session(id = "idle")),
+            rules = InboxRules.DEFAULT, now = NOW, reviewKeys = review,
+        )
+        assertEquals(listOf("agent:rev", "agent:idle"), lists.inbox.map { it.key })
+        assertTrue(lists.inbox[0].review)
     }
 
     @Test

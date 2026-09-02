@@ -43,6 +43,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Inbox: agent ordering tiers** (^lean-deer, SPA parity): `InboxLogic.kt`
+  bands agents attention → review hand-back (turn ended + `agentKey` owns an
+  Under Review card) → chat+mail → finished-unread → still-running-unread.
+  `InboxRepository` gains a `reviewKeysFlow` (AppGraph maps
+  `SpacesRepository.spaces` → union of `reviewAgentKeys`).
+
 - **Inbox grid tile: red attention dot** (^blue-wren): the Inbox tile now
   shows the same red dot as Spaces when an attention-flagged agent session
   sits in the inbox list (`inboxLists.inbox.any { it.attention }`); the tile
