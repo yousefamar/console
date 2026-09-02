@@ -9,13 +9,16 @@
 //   con spaces board <project> move "<card>" <column>         # card = ^id or unique text
 //   con spaces board <project> assign "<card>" <agentKey|none>
 //   con spaces board <project> block "<card>" [--note "why"] / unblock "<card>"
-//   con spaces board <project> note "<card>" "text"
+//   con spaces board <project> note "<card>" "text"           # multi-line OK: one detail line per line
+//   con spaces board <project> attach "<card>" <image.png> [--caption "what it shows"]
 //   con spaces board <project> edit "<card>" [--text "new"] [--detail "a|b"]
 //   con spaces board <project> remove "<card>"
 //
 // <project> is a slug (board resolved like the Spaces UI: board.md/kanban.md
 // by name, else first kanban-flagged file) or a vault-relative .md path.
 
+import { readFile } from 'node:fs/promises'
+import { extname, basename } from 'node:path'
 import { hubFetch } from '../client.js'
 import { output, exitWithError, type GlobalFlags } from '../output.js'
 import { parseFlags } from './util.js'
@@ -32,7 +35,7 @@ interface CardView {
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|block|unblock|note|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -110,8 +113,18 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
     }
     case 'note': {
       const [card, note] = [pos[0], pos[1]]
-      if (!card || !note) { exitWithError('USAGE', 'Usage: con spaces board <project> note "<card>" "text"', flags); return }
+      if (!card || !note) { exitWithError('USAGE', 'Usage: con spaces board <project> note "<card>" "text"   (newlines split into one detail line each — bulleted summaries welcome)', flags); return }
       output(await hubFetch(`/board/${enc}/note`, { method: 'POST', body: { card, note } }), flags)
+      return
+    }
+    case 'attach': {
+      const [card, file] = [pos[0], pos[1]]
+      if (!card || !file) { exitWithError('USAGE', 'Usage: con spaces board <project> attach "<card>" <image.png|jpg|gif|webp> [--caption "what it shows"]', flags); return }
+      let data: Buffer
+      try { data = await readFile(file) } catch (e) { exitWithError('NOT_FOUND', `cannot read ${file}: ${(e as Error).message}`, flags); return }
+      const ext = extname(file).slice(1) || 'png'
+      const caption = opts.caption ?? basename(file, extname(file))
+      output(await hubFetch(`/board/${enc}/attach`, { method: 'POST', body: { card, image: data.toString('base64'), ext, caption } }), flags)
       return
     }
     case 'edit': {

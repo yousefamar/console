@@ -146,6 +146,10 @@ describe('actor ledger', () => {
       const rec = ledger['projects/demo/board.md#ab12cd']
       expect(rec.actor).toBe('eng')
       expect(typeof rec.ts).toBe('number')
+      // A move records WHAT was done, so a reopen guard can tell "assignee
+      // moved it back to In Progress" from "assignee moved it to review".
+      expect(rec.op).toBe('move')
+      expect(rec.column).toBe('Under Review')
       // No actor header → no record change.
       await ops.note('demo', '^ab12cd', 'anonymous note')
       const after = JSON.parse(readFileSync(actorFile, 'utf-8'))
@@ -153,5 +157,56 @@ describe('actor ledger', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('hand-back (^shy-boar)', () => {
+  it('a multi-line note becomes one indented detail line per line, never a raw newline in a card line', async () => {
+    await ops.note('demo', '^cc22dd', '- changed X\n- verified Y\n\n- decided Z')
+    const disk = onDisk()
+    expect(disk).toContain('- [ ] Going @eng ^cc22dd\n  - changed X\n  - verified Y\n  - decided Z')
+    // Round-trips as ONE card with three detail lines — the tail is not read as new cards.
+    const board = parseBoard(disk)
+    const inProg = board.columns.find((c) => c.title === 'In Progress')!
+    expect(inProg.cards).toHaveLength(1)
+    expect(inProg.cards[0]!.lines.slice(1).map((l) => l.trim())).toEqual(['- changed X', '- verified Y', '- decided Z'])
+  })
+
+  it('block --note and edit --detail split multi-line text the same way', async () => {
+    await ops.setBlocked('demo', '^cc22dd', true, 'need A\nneed B')
+    let card = parseBoard(onDisk()).columns.find((c) => c.title === 'In Progress')!.cards[0]!
+    expect(card.lines.slice(1).map((l) => l.trim())).toEqual(['need A', 'need B'])
+    await ops.edit('demo', '^cc22dd', { detail: ['one\ntwo', 'three'] })
+    card = parseBoard(onDisk()).columns.find((c) => c.title === 'In Progress')!.cards[0]!
+    expect(card.lines.slice(1).map((l) => l.trim())).toEqual(['one', 'two', 'three'])
+  })
+
+  it('moving into Under Review without `- ` summary bullets returns a warning; with them it does not', async () => {
+    writeFileSync(join(dir, 'projects', 'demo', 'board.md'), BOARD.replace('## Done', '## Under Review\n\n## Done'))
+    const bare = await ops.move('demo', '^cc22dd', 'Under Review')
+    expect(bare.warning).toMatch(/no hand-back summary/)
+    expect(bare.warning).toContain('con spaces board demo note "^cc22dd"')
+    expect(bare.warning).toContain('attach "^cc22dd"')
+    await ops.move('demo', '^cc22dd', 'In Progress')
+    await ops.note('demo', '^cc22dd', '- did the thing\n- tests green')
+    const summarised = await ops.move('demo', '^cc22dd', 'Under Review')
+    expect(summarised.warning).toBeUndefined()
+    // Non-review moves never warn, even without bullets.
+    const back = await ops.move('demo', '^aa11bb', 'In Progress')
+    expect(back.warning).toBeUndefined()
+  })
+
+  it('attach writes the image to the assets dir and appends an image detail line', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const r = await ops.attach('demo', '^cc22dd', { data: png, ext: '.PNG', caption: 'after [fix]' })
+    expect(r.asset).toMatch(/^images\/card-\d+-cc22dd\.png$/)
+    expect(readFileSync(join(store.assetsPath, r.asset))).toEqual(png)
+    expect(r.detail).toContain(`![after fix](${r.asset})`)
+    expect(onDisk()).toContain(`  ![after fix](${r.asset})`)
+    await expect(ops.attach('demo', '^cc22dd', { data: png, ext: 'svg' })).rejects.toThrow(/unsupported image type/)
+    // A bad card query leaves no orphan asset behind.
+    const before = readFileSync(join(store.assetsPath, r.asset)).length
+    await expect(ops.attach('demo', '^nope', { data: png, ext: 'png' })).rejects.toThrow(/no card with id/)
+    expect(readFileSync(join(store.assetsPath, r.asset)).length).toBe(before)
   })
 })

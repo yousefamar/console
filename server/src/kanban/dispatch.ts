@@ -143,6 +143,63 @@ export function mintBlockId(opts: { taken?: ReadonlySet<string>; random?: () => 
   }
 }
 
+// ─── Hand-back: what Yousef actually reads ───────────────────────────────
+// He reviews from the CARD (Spaces board / Inbox hand-back strip), not the
+// transcript, and often days later — so the card must carry a concise
+// bulleted record of what was done, plus screenshots when the work is hard
+// to check by hand (worktree builds he never ran, UI he hasn't seen). All
+// the wording lives here so the envelope, the protocol stanza, the CLI
+// warning and the review-feedback reminder can't drift.
+
+/** The hand-back summary convention: `- ` bullet detail lines on the card. */
+export function hasSummaryBullets(detail: string[]): boolean {
+  return detail.some((l) => /^- /.test(l))
+}
+
+/** `con spaces board <ref>` — a project slug when known, else the board path
+ *  (the CLI accepts a vault-relative .md path too). */
+function boardRef(project: string | null | undefined, boardPath: string): string {
+  return project ?? boardPath
+}
+
+export function handbackStanza(ref: string, blockId: string): string[] {
+  return [
+    'HAND-BACK (Yousef reads the CARD, not your transcript — often days later):',
+    `1. \`con spaces board ${ref} note "^${blockId}" "- …"\` — a concise bulleted summary of EXACTLY what you did: what changed (files/commands/commits), how you verified it, anything he must know or decide. One \`- \` bullet per line; newlines are fine.`,
+    `2. \`con spaces board ${ref} attach "^${blockId}" <screenshot.png> [--caption "…"]\` — screenshots wherever a visual check helps. REQUIRED when you worked in a worktree or touched UI: he can't easily run your worktree, so show him (capture your own dev server via Playwright/grim — never his live tab).`,
+    `3. Only THEN \`con spaces board ${ref} move "^${blockId}" "Under Review"\`. Finish your turn with the same bullets as your final message.`,
+  ]
+}
+
+/** Returned by BoardOps.move when a card enters Under Review with no summary. */
+export function handbackWarning(ref: string, blockId: string | null): string {
+  const id = blockId ?? 'id'
+  return `no hand-back summary on this card — add one now: \`con spaces board ${ref} note "^${id}" "- what changed …"\` (one \`- \` bullet per line, newlines OK), plus \`con spaces board ${ref} attach "^${id}" <screenshot.png>\` if you worked in a worktree or touched UI. Yousef reads the card, not your transcript.`
+}
+
+export interface ReviewCardRef {
+  blockId: string
+  text: string
+  boardPath: string
+  project: string | null
+}
+
+/** Appended (stdin-only) to a human message reaching a session that owns
+ *  Under-Review cards: agents routinely forgot that feedback = the card goes
+ *  BACK to In Progress, so the rule is restated at the exact moment it
+ *  applies rather than only in the long-scrolled-away dispatch envelope. */
+export function buildReviewReminder(cards: ReviewCardRef[]): string {
+  if (cards.length === 0) return ''
+  const list = cards.map((c) => `  • "${c.text}" (^${c.blockId}) — \`con spaces board ${boardRef(c.project, c.boardPath)} move "^${c.blockId}" "In Progress"\``)
+  return [
+    '',
+    '---',
+    `[BOARD — you own ${cards.length === 1 ? 'a card' : `${cards.length} cards`} in Under Review]`,
+    ...list,
+    'If the message above is Yousef\'s feedback on that card, it is MORE WORK and the card is no longer ready: FIRST move it back to In Progress (command above), do the work, then `note` a fresh `- ` bulleted summary (+ `attach` screenshots if visual) and move it to "Under Review" again. Under Review must only ever mean "ready for Yousef". If the message is unrelated to the card, ignore this note.',
+  ].join('\n')
+}
+
 /** The wake envelope injected into the assignee's session. Self-instructing:
  *  the board FILE is the reporting surface, no RPC to learn. */
 export function buildBoardEnvelope(opts: {
@@ -180,15 +237,17 @@ export function buildBoardEnvelope(opts: {
     ...(detail.length ? ['', ...detail] : []),
     '',
     'This card was assigned to you on the kanban board above. Do the work, then',
-    `report via CLI: \`con spaces board ${project ?? boardAbsPath} move "^${card.blockId}" "Under Review"\` —`,
-    'Yousef reviews it and moves it to Done; NEVER move your',
+    'hand it back via the CLI — Yousef reviews the card and moves it to Done; NEVER move your',
     `own card to Done. If stuck: \`con spaces board ${project ?? boardAbsPath} block "^${card.blockId}" --note "what you need"\``,
     '— the card keeps its place in the column. The board is the single source of',
     'truth; the CLI serializes concurrent edits (never hand-edit the file).',
-    'If Yousef comments on your work while the card is Under Review, move it',
-    `back to In Progress (\`con spaces board ${project ?? boardAbsPath} move "^${card.blockId}" "In Progress"\`)`,
-    'while you address the comment, then return it to Under Review — the board',
-    'is his attention queue; Under Review must always mean "ready for Yousef".',
+    '',
+    ...handbackStanza(project ?? boardAbsPath, card.blockId),
+    '',
+    'FEEDBACK RE-OPENS THE CARD: any comment Yousef sends you while the card sits in',
+    `Under Review means more work — FIRST \`con spaces board ${project ?? boardAbsPath} move "^${card.blockId}" "In Progress"\`,`,
+    'then address it, then note a fresh summary and return it to Under Review. The board',
+    'is his attention queue; Under Review must only ever mean "ready for Yousef".',
     '',
     // GOTCHA: the gated/ungated stanzas share no text — an edit to the
     // worktree instructions must be made in BOTH branches or they drift.
@@ -254,7 +313,7 @@ export function buildWindDownEnvelope(opts: {
 export function buildReopenNudge(opts: { boardAbsPath: string; text: string; blockId: string; column: string }): string {
   return [
     `[BOARD TASK — reopened] Your card "${opts.text}" (^${opts.blockId}) on ${opts.boardAbsPath} is back in "${opts.column}".`,
-    'Re-read the card — notes/comments on it explain why. Address them, then move it back to Under Review as usual.',
+    'Re-read the card — notes/comments on it explain why. Address them, then hand back as usual: `note` a fresh `- ` bulleted summary of what changed this round (+ `attach` screenshots if visual), then move it to Under Review.',
   ].join('\n')
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { parseBoard } from '../kanban/board.js'
-import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope, resolveDefaultOwner } from '../kanban/dispatch.js'
+import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope, buildReopenNudge, buildReviewReminder, handbackWarning, hasSummaryBullets, resolveDefaultOwner } from '../kanban/dispatch.js'
 import { BoardWatcher, projectForBoardPath, type BoardDispatch, type BoardTransition } from '../kanban/watcher.js'
 import { NoteStore } from '../notes.js'
 
@@ -121,6 +121,83 @@ describe('buildBoardEnvelope', () => {
     expect(env).toContain('Under Review')
     expect(env).toContain('con spaces board astera block')
     expect(env).toContain('NEVER move your')
+  })
+
+  it('carries the hand-back contract: summary note + screenshots BEFORE the move, feedback re-opens (^shy-boar)', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/vault/projects/astera/board.md',
+      card: { text: 'Fix the parser', blockId: 'abc123', lines: ['- [ ] Fix the parser @eng ^abc123'] },
+      column: 'In Progress',
+      project: 'astera',
+    })
+    expect(env).toContain('HAND-BACK')
+    expect(env).toContain('con spaces board astera note "^abc123" "- …"')
+    expect(env).toContain('con spaces board astera attach "^abc123" <screenshot.png>')
+    expect(env).toMatch(/REQUIRED when you worked in a worktree/)
+    // Order: note (1) → attach (2) → move (3).
+    expect(env.indexOf('note "^abc123"')).toBeLessThan(env.indexOf('attach "^abc123"'))
+    expect(env.indexOf('attach "^abc123"')).toBeLessThan(env.indexOf('move "^abc123" "Under Review"'))
+    expect(env).toContain('FEEDBACK RE-OPENS THE CARD')
+    expect(env).toContain('move "^abc123" "In Progress"')
+    // No project slug → the CLI ref falls back to the board path.
+    const noProj = buildBoardEnvelope({ boardAbsPath: '/vault/notes/side.md', card: { text: 'x', blockId: 'zz', lines: ['- [ ] x ^zz'] }, column: 'In Progress' })
+    expect(noProj).toContain('con spaces board /vault/notes/side.md note "^zz"')
+  })
+})
+
+describe('hand-back helpers (^shy-boar)', () => {
+  it('hasSummaryBullets keys on `- ` detail lines only', () => {
+    expect(hasSummaryBullets([])).toBe(false)
+    expect(hasSummaryBullets(['see notes/x.md', '![img](images/a.png)'])).toBe(false)
+    expect(hasSummaryBullets(['see notes/x.md', '- changed the parser'])).toBe(true)
+    expect(hasSummaryBullets(['-not a bullet'])).toBe(false)
+  })
+
+  it('handbackWarning names the exact note + attach commands', () => {
+    const w = handbackWarning('astera', 'abc123')
+    expect(w).toContain('con spaces board astera note "^abc123"')
+    expect(w).toContain('con spaces board astera attach "^abc123"')
+    expect(handbackWarning('astera', null)).toContain('"^id"')
+  })
+
+  it('buildReviewReminder lists every Under-Review card with its move-back command; empty for none', () => {
+    expect(buildReviewReminder([])).toBe('')
+    const r = buildReviewReminder([
+      { blockId: 'a1', text: 'First', boardPath: 'projects/astera/board.md', project: 'astera' },
+      { blockId: 'b2', text: 'Second', boardPath: 'notes/side.md', project: null },
+    ])
+    expect(r.startsWith('\n---\n')).toBe(true) // appended AFTER the human text
+    expect(r).toContain('[BOARD — you own 2 cards in Under Review]')
+    expect(r).toContain('"First" (^a1) — `con spaces board astera move "^a1" "In Progress"`')
+    expect(r).toContain('con spaces board notes/side.md move "^b2" "In Progress"')
+    expect(r).toContain('FIRST move it back to In Progress')
+    expect(r).toContain('If the message is unrelated to the card, ignore this note.')
+    expect(buildReviewReminder([{ blockId: 'a1', text: 'First', boardPath: 'p', project: 'p' }])).toContain('you own a card in Under Review')
+  })
+
+  it('the reopen nudge asks for a fresh summary on the way back', () => {
+    const n = buildReopenNudge({ boardAbsPath: '/v/board.md', text: 'Work', blockId: 'w1', column: 'In Progress' })
+    expect(n).toContain('[BOARD TASK — reopened]')
+    expect(n).toMatch(/fresh `- ` bulleted summary/)
+  })
+})
+
+describe('BoardWatcher reviewCardsFor', () => {
+  it('returns the agent\'s Under-Review cards only — not open, done, or other agents\' cards', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    writeFileSync(join(dir, 'projects', 'demo', 'board.md'),
+      '---\nkanban-plugin: board\n---\n\n## In Progress\n\n- [ ] Open @eng ^o1\n\n## Under Review\n\n- [ ] Mine @eng ^r1\n- [ ] Theirs @ops ^r2\n\n## Done\n\n- [x] Finished @eng ^d1\n')
+    const watcher = new BoardWatcher(new NoteStore(dir), { log: () => {}, onDispatch: () => true, pollMs: 999_999 })
+    try {
+      await watcher.start()
+      expect(watcher.reviewCardsFor('eng')).toEqual([{ blockId: 'r1', text: 'Mine', boardPath: 'projects/demo/board.md', project: 'demo' }])
+      expect(watcher.reviewCardsFor('ops').map((c) => c.blockId)).toEqual(['r2'])
+      expect(watcher.reviewCardsFor('nobody')).toEqual([])
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

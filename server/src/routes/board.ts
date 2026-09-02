@@ -7,7 +7,8 @@
 //   POST /board/:project/move               {card, to}         card = "^id" | text (unique substring)
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
-//   POST /board/:project/note               {card, note}
+//   POST /board/:project/note               {card, note}       multi-line OK — one detail line per line
+//   POST /board/:project/attach             {card, image: base64, ext?, caption?}   screenshot → asset + image detail line
 //   POST /board/:project/owner              {agent|null}       board frontmatter default_owner
 //   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
 //   POST /board/:project/edit               {card, text?, detail?}
@@ -89,6 +90,17 @@ export function handleBoardRoutes(
       return true
     case 'note':
       run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? ''), actor))
+      return true
+    case 'attach':
+      run((b) => {
+        const image = typeof b.image === 'string' ? Buffer.from(b.image, 'base64') : null
+        if (!image?.length) throw new Error('attach needs {image: <base64>}')
+        return ops.attach(project, String(b.card ?? ''), {
+          data: image,
+          ext: typeof b.ext === 'string' ? b.ext : 'png',
+          caption: typeof b.caption === 'string' ? b.caption : undefined,
+        }, actor)
+      })
       return true
     case 'owner':
       run((b) => ops.setDefaultOwner(project, typeof b.agent === 'string' && b.agent.trim() ? b.agent.trim() : null))

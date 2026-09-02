@@ -30,7 +30,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
@@ -698,6 +698,9 @@ const agentCtx: AgentContext = {
     const rel = vaultRelative(notesVault, filePath)
     if (rel) syncBus.broadcast('notes', 'agent_edit', { path: rel, sessionId })
   },
+  // Under-Review cards per agentKey, from the watcher's in-flight ledger
+  // (declared below; only ever called at message time, long after boot).
+  reviewCardsFor: (agentKey) => boardWatcher.reviewCardsFor(agentKey),
 }
 
 // --------------------------------------------------------------------------
@@ -737,7 +740,8 @@ function injectToSession(sessionId: string, content: string): boolean {
   try {
     broadcast(msg)
     s.logMessage(msg)
-    s.sendMessage(content)
+    // Yousef's voice (PTT/ring) is feedback too — same review reminder as a typed message.
+    s.sendMessage(withReviewReminder(agentCtx, s, content))
     return true
   } catch (err) {
     log(`[mic] inject failed: ${(err as Error).message}`)
@@ -781,6 +785,11 @@ cronScheduler.start()
 // Software mutation layer over boards — the CLI/agents edit via /board/*
 // instead of hand-editing markdown (single writer, per-board lock).
 const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json'))
+// How long an assignee's own /board/* write masks the watcher's echo of it
+// (onCardEdited / onReopen). The watcher polls every 10 s, so its own edit is
+// observed within ~20 s; anything longer risks swallowing a genuine human
+// follow-up made through the SPA (which leaves no actor record).
+const SELF_ECHO_WINDOW_MS = 60_000
 
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
@@ -943,6 +952,19 @@ const boardWatcher = new BoardWatcher(noteStore, {
     const live = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
     const boardAbsPath = join(noteStore.vaultPath, t.boardPath)
     if (live) {
+      // Self-echo: the assignee moved its OWN card back (the feedback rule —
+      // "first move it to In Progress") — nudging it to "re-read the card,
+      // notes explain why" is confusing noise. Same actor-ledger guard as
+      // onCardEdited.
+      // The SPA's whole-file writes record NO actor, so a stale entry from
+      // the assignee's earlier `move … "Under Review"` must not mask
+      // Yousef's bounce: only a recorded move INTO this column counts.
+      const rec = boardOps.lastActor(t.boardPath, t.blockId)
+      if (rec && rec.actor === t.agentKey && rec.op === 'move' && rec.column?.toLowerCase() === t.column.toLowerCase()
+          && Date.now() - rec.ts < SELF_ECHO_WINDOW_MS) {
+        log(`[boards] ^${t.blockId} reopened by its own assignee @${t.agentKey} — no nudge`)
+        return true
+      }
       wakeSession(agentCtx, live, buildReopenNudge({ boardAbsPath, text: t.text, blockId: t.blockId, column: t.column }))
       return true
     }
@@ -994,7 +1016,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   onCardEdited: (t) => {
     if (!t.agentKey) return
     const rec = boardOps.lastActor(t.boardPath, t.blockId)
-    if (rec && rec.actor === t.agentKey && Date.now() - rec.ts < 10 * 60_000) return
+    if (rec && rec.actor === t.agentKey && Date.now() - rec.ts < SELF_ECHO_WINDOW_MS) return
     const worker = liveSessionForRole(agentCtx, t.agentKey)
     if (!worker) return
     wakeSession(agentCtx, worker, `[BOARD NOTE] Your card ^${t.blockId} ("${t.text.slice(0, 60)}") on ${join(noteStore.vaultPath, t.boardPath)} was edited — re-read it before continuing; instructions may have changed.`)

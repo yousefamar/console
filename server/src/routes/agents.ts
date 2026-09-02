@@ -11,6 +11,7 @@ import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBa
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { isKanbanBoard } from '../kanban/board.js'
+import { buildReviewReminder, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
@@ -127,6 +128,20 @@ export interface AgentContext {
    *  `notes.agent_edit` for vault files so an open doc editor can flip into
    *  inline review mode. */
   onToolDiff?: (sessionId: string, filePath: string) => void
+  /** Under-Review cards owned by an agentKey (BoardWatcher.reviewCardsFor).
+   *  A human message to such a session gets a stdin-only reminder that
+   *  feedback re-opens the card — see withReviewReminder. */
+  reviewCardsFor?: (agentKey: string) => ReviewCardRef[]
+}
+
+/** What the MODEL receives for a human message: the text plus, when the
+ *  session owns cards sitting in Under Review, the "feedback = move it back
+ *  to In Progress first" reminder. Appended to stdin only — the transcript
+ *  keeps Yousef's own words. `/clear` is a command, never decorated. */
+export function withReviewReminder(ctx: AgentContext, session: Session, content: string): string {
+  if (!ctx.reviewCardsFor || !session.agentKey || content.trim() === '/clear') return content
+  const reminder = buildReviewReminder(ctx.reviewCardsFor(session.agentKey))
+  return reminder ? content + reminder : content
 }
 
 /** Restart every live session onto the currently-resolved model. Used after a
@@ -610,7 +625,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         broadcast(clients, deniedMsg) // incl. sender — clears its approval card
         session.denyTool(planReq.requestId, msg.content)
       } else {
-        session.sendMessage(msg.content, msg.images)
+        session.sendMessage(withReviewReminder(ctx, session, msg.content), msg.images)
       }
       // Sending a message implicitly marks the session read (chat parity).
       markSessionRead(ctx, session)

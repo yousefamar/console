@@ -328,7 +328,8 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> forkok "<card>"       Undo nofork
   board <project> block "<card>"        Tag #blocked (keeps column position) [--note "why"]
   board <project> unblock "<card>"
-  board <project> note "<card>" "text"  Append an indented note under a card
+  board <project> note "<card>" "text"  Append note lines under a card (newlines → one line each)
+  board <project> attach "<card>" <img>  Attach a screenshot (png/jpg/gif/webp) [--caption "what"]
   board <project> edit "<card>"         Rewrite text/detail [--text "new"] [--detail "a|b"]
   board <project> remove "<card>"       Delete a card (human judgment — agents move, never delete)
   board <project> redispatch "<card>"   Re-wake a stamped card's assignee (re-forks if its session is gone)
@@ -339,6 +340,10 @@ Notes:
   "<card>" is a ^blockid or a UNIQUE text substring — ambiguity errors, never guesses.
   --detail takes pipe-separated bullets. The hub is the single writer with a
   per-board lock, so concurrent agents serialize cleanly.
+  Hand-back: before moving a card to Under Review, "note" a concise "- " bulleted
+  summary of exactly what you did and "attach" screenshots where a visual check
+  helps (always when you worked in a worktree). A move into Under Review with no
+  summary bullets returns a warning.
 
 Examples:
   con board console

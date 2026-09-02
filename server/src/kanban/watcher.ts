@@ -16,7 +16,7 @@
 
 import type { NoteStore } from '../notes.js'
 import { isKanbanBoard, boardDeployGate, boardDefaultOwner, parseBoard, serializeBoard, refreshCardLine, findCardByBlockId, getCard, type BoardCard, type KanbanBoard } from './board.js'
-import { findDispatchable, inFlightCards, mintBlockId, DISPATCH_COLUMN_RE, type InFlightCard } from './dispatch.js'
+import { findDispatchable, inFlightCards, mintBlockId, DISPATCH_COLUMN_RE, type InFlightCard, type ReviewCardRef } from './dispatch.js'
 
 export interface BoardDispatch {
   /** Vault-relative board path. */
@@ -115,6 +115,18 @@ export class BoardWatcher {
 
   boardPaths(): string[] {
     return [...this.boards].sort()
+  }
+
+  /** Cards this agent owns that sit in Under Review (not Done) — the set a
+   *  human message should carry a "feedback re-opens the card" reminder for. */
+  reviewCardsFor(agentKey: string): ReviewCardRef[] {
+    const out: ReviewCardRef[] = []
+    for (const t of this.inFlight.values()) {
+      if (t.agentKey === agentKey && t.review && !t.done) {
+        out.push({ blockId: t.blockId, text: t.text, boardPath: t.boardPath, project: projectForBoardPath(t.boardPath) })
+      }
+    }
+    return out
   }
 
   private now(): number {
