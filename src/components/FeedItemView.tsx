@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useRef, useCallback, useState } from 'react'
 import { useFeedStore } from '@/store/feeds'
+import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getHubUrl } from '@/hub'
@@ -212,6 +213,7 @@ export function YouTubePiP() {
   const activePane = useUiStore((s) => s.activePane)
   const selectedItemId = useFeedStore((s) => s.selectedItemId)
   const items = useFeedStore((s) => s.items)
+  const inboxSelected = useUnifiedInboxStore((s) => s.selected)
   const isMobile = useIsMobile()
   const pipRef = useRef<HTMLDivElement>(null)
   const [resized, setResized] = useState(false)
@@ -221,7 +223,12 @@ export function YouTubePiP() {
   // Determine if we should overlay the placeholder (inline mode)
   const selectedItem = items.find((i) => i.id === selectedItemId)
   const selectedYoutubeId = selectedItem ? extractYoutubeId(selectedItem.link) : null
-  const isInline = activePane === 'feeds' && pipVideo?.youtubeId === selectedYoutubeId
+  // The Inbox pane reuses FeedItemView (and its placeholder) but only mounts it
+  // while a FEED item is selected there — a mail/chat selection leaves the
+  // feed store's selectedItemId stale, so require the inbox selection to agree.
+  const viewingFeedItem = activePane === 'feeds'
+    || (activePane === 'inbox' && inboxSelected?.source === 'feed' && inboxSelected.sourceId === selectedItemId)
+  const isInline = viewingFeedItem && pipVideo?.youtubeId === selectedYoutubeId
 
   // Track placeholder position when inline via rAF
   useEffect(() => {
@@ -230,7 +237,10 @@ export function YouTubePiP() {
 
     let rafId: number
     const track = () => {
-      const placeholder = document.querySelector('[data-pip-placeholder]')
+      // Two FeedItemViews can hold a placeholder at once (the hidden legacy
+      // Feeds pane + the Inbox viewer) — follow the one that's actually shown.
+      const placeholder = Array.from(document.querySelectorAll<HTMLElement>('[data-pip-placeholder]'))
+        .find((el) => el.checkVisibility())
       if (placeholder && pip) {
         const rect = placeholder.getBoundingClientRect()
         pip.style.left = `${rect.left}px`
