@@ -1110,6 +1110,14 @@ function BoardView() {
       live: true,
     }))
     .sort((a, b) => Number(b.bound) - Number(a.bound) || a.label.localeCompare(b.label))
+  const stateFor = (key: string): AssigneeState => {
+    const s = liveByKey.get(key)
+    if (!s) return 'idle'
+    if (s.needsAttention) return 'attention'
+    if (s.status === 'running') return 'working'
+    if (s.hasUnread) return 'unread'
+    return 'idle'
+  }
   const labelFor = (key: string): string => {
     const hit = assignable.find((a) => a.key === key)
     if (hit) return hit.label
@@ -1239,6 +1247,7 @@ function BoardView() {
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
                   assigneeLabel={card.agentKey ? labelFor(card.agentKey) : undefined}
+                  assigneeState={card.agentKey ? stateFor(card.agentKey) : undefined}
                   onAssign={() => {
                     if (card.agentKey) openAssigneeSession(card.agentKey)
                     else setAssignTarget({ ref: { column: col.title, index }, card })
@@ -1735,11 +1744,23 @@ function CardImageThumb({ path, size }: { path: string; size: number }) {
   return <img src={url} alt="" style={{ maxWidth: size, maxHeight: size }} className="rounded-sm border border-border object-cover" />
 }
 
-function CardTile({ card, assigneeLabel, onAssign, onOpen, onDragStart, onDragEnd }: {
+/** Assignee chip colour = the assignee session's state, same vocabulary as
+ *  the rail (red attention > amber working > blue unread > violet idle). */
+type AssigneeState = 'attention' | 'working' | 'unread' | 'idle'
+
+const ASSIGNEE_CHIP: Record<AssigneeState, string> = {
+  attention: 'bg-red-500/15 text-red-500 hover:bg-red-500/25',
+  working: 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25',
+  unread: 'bg-blue-500/15 text-blue-400 hover:bg-blue-500/25',
+  idle: 'bg-violet-500/15 text-violet-400 hover:bg-violet-500/25',
+}
+
+function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpen, onDragStart, onDragEnd }: {
   card: BoardCard
   /** Human label for the assignee badge (live session name / role title —
    *  fork keys like `console-general-bold-fox-fork` are unreadable raw). */
   assigneeLabel?: string
+  assigneeState?: AssigneeState
   onAssign: () => void
   /** Open the detail modal (single click on the card body). */
   onOpen: () => void
@@ -1800,9 +1821,11 @@ function CardTile({ card, assigneeLabel, onAssign, onOpen, onDragStart, onDragEn
           onClick={onAssign}
           className={clsx(
             'flex items-center gap-0.5 rounded-sm px-1 py-px text-[9px]',
-            card.agentKey ? 'bg-violet-500/15 text-violet-400 hover:bg-violet-500/25' : 'text-text-tertiary opacity-0 group-hover:opacity-100 hover:text-text-primary',
+            card.agentKey ? ASSIGNEE_CHIP[assigneeState] : 'text-text-tertiary opacity-0 group-hover:opacity-100 hover:text-text-primary',
           )}
-          title={card.agentKey ? `@${card.agentKey} — open session (reassign in the card)` : 'Assign to agent'}
+          title={card.agentKey
+            ? `@${card.agentKey}${assigneeState === 'attention' ? ' — needs you' : assigneeState === 'working' ? ' — working' : assigneeState === 'unread' ? ' — unread' : ''} — open session (reassign in the card)`
+            : 'Assign to agent'}
         >
           {card.agentKey ? <><Bot size={8} />{assigneeLabel ?? card.agentKey}</> : <UserPlus size={10} />}
         </button>
