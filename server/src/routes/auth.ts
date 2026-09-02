@@ -2,7 +2,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
-import type { AuthStore } from '../auth-store.js'
+import type { AuthStore, HubTokenScope } from '../auth-store.js'
 import { buildSessionCookie, buildClearSessionCookie, buildCanvasCookie, buildClearCanvasCookie, parseCookies, SESSION_COOKIE_NAME } from '../auth-middleware.js'
 
 const GOOGLE_SCOPES = [
@@ -416,12 +416,12 @@ export function handleAuthRoutes(
         jsonResponse(res, 400, { error: 'name and scope are required' })
         return
       }
-      const allowedScopes = ['cli', 'al', 'apk', 'other']
+      const allowedScopes = ['cli', 'al', 'apk', 'ring', 'other']
       if (!allowedScopes.includes(scope)) {
         jsonResponse(res, 400, { error: `scope must be one of ${allowedScopes.join(', ')}` })
         return
       }
-      const { token, plaintext } = authStore.createHubToken(name, scope as 'cli' | 'al' | 'apk' | 'other')
+      const { token, plaintext } = authStore.createHubToken(name, scope as HubTokenScope)
       jsonResponse(res, 200, {
         id: token.id,
         name: token.name,

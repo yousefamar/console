@@ -141,6 +141,11 @@ async function main() {
         await pen(verb, rest, flags)
         break
       }
+      case 'ring': {
+        const { ring } = await import('./commands/ring.js')
+        await ring(verb, rest, flags)
+        break
+      }
       case 'whatsapp': {
         const { whatsapp } = await import('./commands/whatsapp.js')
         await whatsapp(verb, rest, flags)

@@ -451,6 +451,23 @@ export const COMMANDS: CommandDef[] = [
     },
     examples: ['con glasses config', 'con glasses config --notify off', 'con glasses config --channel money off', 'con glasses config --angle 35'] },
 
+  // ring (Pebble Index 01 — webhook archive + command router)
+  { name: 'ring status', description: 'Webhook URL, recording count, router config, agent roster', safety: 'read',
+    examples: ['con ring status'] },
+  { name: 'ring setup', description: 'Mint a ring-scoped bearer and print the Pebble webhook settings (plaintext shown once)', safety: 'write',
+    flags: { name: { type: 'string', description: 'Token name (default pebble-ring-<date>)' } } },
+  { name: 'ring list', description: 'Recent ring recordings with transcript + routing outcome', safety: 'read',
+    flags: { limit: { type: 'string', description: 'Max rows (default 20)' } } },
+  { name: 'ring show', description: 'Full metadata for one recording', safety: 'read',
+    args: [{ name: 'id', required: true, description: 'Recording id' }] },
+  { name: 'ring audio', description: 'Download a recording as M4A', safety: 'read',
+    args: [{ name: 'id', required: true, description: 'Recording id' }],
+    flags: { out: { type: 'string', description: 'Output path (default <id>.m4a)' } } },
+  { name: 'ring say', description: 'Simulate a ring transcript through the command router', safety: 'write',
+    args: [{ name: 'text', required: true, description: 'Transcript text' }],
+    examples: ['con ring say "tell al to buy milk"'] },
+  { name: 'ring config', description: 'Show/set router config: fallback agent, LLM classifier', safety: 'write',
+    flags: { fallback: { type: 'string', description: 'agentKey to receive unmatched commands, or "none"' }, llm: { type: 'string', description: 'on|off — consult the LLM classifier when rules miss' } } },
   // pen (Neo smartpen — routed through the phone's APK, like glasses)
   { name: 'pen status', description: 'Show pen connection, battery, storage, lock state', safety: 'read',
     examples: ['con pen status'] },

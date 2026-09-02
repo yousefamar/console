@@ -38,7 +38,7 @@ import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { handleBoardRoutes } from './routes/board.js'
-import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles } from './bedrock-profiles.js'
+import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
@@ -63,6 +63,12 @@ import { handleFinanceRoutes } from './routes/finance.js'
 import { PrefsStore } from './prefs-store.js'
 import { handleConfigRoutes } from './routes/config.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
+import { handleRingRoutes } from './routes/ring.js'
+import { RingStore } from './ring/store.js'
+import { classifyWithLlm } from './ring/llm-fallback.js'
+import { transcribeAudio } from './al/transcribe.js'
+import type { RingCtx } from './ring/pipeline.js'
+import type { RingAgent } from './ring/router.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -1104,6 +1110,54 @@ wireHud(glassesHub, glassesConfig, {
 // transport stays consistent. Without a cert pair we fall back to plain
 // HTTP and Caddy uses `transport http` without `tls_insecure_skip_verify`.
 const configDir = join(homedir(), '.config', 'console')
+
+// --------------------------------------------------------------------------
+// Pebble Index 01 ring — webhook archive + command router (ring/pipeline.ts)
+// --------------------------------------------------------------------------
+const ringStore = new RingStore(configDir)
+const ringAgents = (): RingAgent[] => {
+  const out: RingAgent[] = []
+  for (const s of sessions.values()) {
+    if (s.status === 'ended') continue
+    const info = s.getInfo()
+    out.push({ id: s.id, name: info.name ?? s.id, agentKey: info.agentKey ?? null, fork: !!info.parentClaudeSessionId })
+  }
+  return out
+}
+const ringCtx: RingCtx = {
+  store: ringStore,
+  agents: ringAgents,
+  sessionForKey: (key) => {
+    const k = key.toLowerCase()
+    if (k === 'al') {
+      const al = getAlSession()
+      return al && al.status !== 'ended' ? { id: al.id, name: 'Al', agentKey: 'al' } : null
+    }
+    return ringAgents().find((a) => a.agentKey?.toLowerCase() === k) ?? null
+  },
+  inject: injectToSession,
+  music: {
+    play: async (query) => {
+      if (!query) { await spotifyClient.play(); spotifySync.pokeSoon(); return 'resumed' }
+      const found = await spotifyClient.search(query, 1)
+      const track = found.tracks[0]
+      if (!track) throw new Error(`no track for "${query}"`)
+      await spotifyClient.play({ uris: [track.uri] })
+      spotifySync.pokeSoon()
+      return `playing ${track.name} — ${track.artists}`
+    },
+    pause: async () => { await spotifyClient.pause(); spotifySync.pokeSoon(); return 'paused' },
+    next: async () => { await spotifyClient.next(); spotifySync.pokeSoon(); return 'skipped' },
+    previous: async () => { await spotifyClient.previous(); spotifySync.pokeSoon(); return 'previous track' },
+  },
+  transcribe: transcribeAudio,
+  classify: (text, agents) => classifyWithLlm(text, agents, smallFastModel()),
+  notify: ({ title, body, sessionId, id }) => {
+    pushServer.broadcast({ type: sessionId ? 'agent' : 'generic', title, body, ...(sessionId ? { pane: 'agents' } : {}), id: `ring:${id}` })
+  },
+  log,
+}
+const ringWebhookUrl = `${(process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')}/hub/ring/webhook`
 const certCandidates = (() => {
   try {
     return readdirSync(configDir)
@@ -1590,6 +1644,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
+  if (path.startsWith('/ring') && handleRingRoutes(req, res, path, url, ringCtx, readBody, ringWebhookUrl)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return

@@ -24,6 +24,7 @@ Services:
   whatsapp     WhatsApp (via Al) — send, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
+  ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), config
 
 System:
   auth         Manage accounts — login, logout, status
@@ -250,6 +251,32 @@ Examples:
   con glasses research on          # also log heartbeats
 `.trim(),
 
+  ring: `
+con ring — Pebble Index 01 smart ring
+
+Commands:
+  status       Webhook URL, recording count, router config, agent roster
+  setup        Mint a ring-scoped bearer + print the Pebble app webhook settings
+  list         Recent recordings (--limit N): transcript, source, routing outcome
+  show <id>    Full recording metadata (sidecar JSON)
+  audio <id>   Download the M4A (--out <path>)
+  say "<text>" Simulate a ring transcript through the router (no audio)
+  config       Show or set: --fallback <agentKey|none>, --llm on|off
+
+The ring's app POSTs multipart (audio/mp4 + transcription + recordedAt) to
+https://con.amar.io/hub/ring/webhook with the bearer from 'setup'. The hub
+archives everything under ~/.config/console/ring/recordings/ (never pruned),
+falls back to hub STT when the ring's transcript is missing, then routes the
+text: deterministic rules first (server/src/ring/router.ts — "tell <agent> …",
+"<agent>, …", music play/pause/next/previous), the LLM classifier only when
+rules miss, then the fallback agent (default Al). The ring ignores the HTTP
+response, so the outcome arrives as a push notification.
+
+Examples:
+  con ring setup
+  con ring say "tell al to buy milk"
+  con ring list --limit 5
+`,
   pen: `
 con pen — Neo smartpen
 
