@@ -263,12 +263,21 @@ describe('review hand-backs (^pale-tern)', () => {
 
 describe('SLA / overdue', () => {
   const H = 3_600_000
-  const overdueDm = () => room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 30 * H, isUnread: false })
+  const overdueDm = () => room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 30 * H })
 
-  it('DM unanswered >24h is overdue; replying clears it', () => {
+  it('unread DM unanswered >24h is overdue; replying clears it', () => {
     expect(isOverdue(overdueDm(), DEFAULT_RULES, NOW)).toBe(true)
     expect(isOverdue(room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 1 * H }), DEFAULT_RULES, NOW)).toBe(false)
     expect(isOverdue(room({ lastInboundTs: NOW - 2 * H, lastOutboundTs: NOW - 30 * H }), DEFAULT_RULES, NOW)).toBe(false)
+  })
+
+  it('a READ thread is never overdue — read means "seen, chose not to reply" (^neat-bass)', () => {
+    const read = room({ lastInboundTs: NOW - 25 * H, lastOutboundTs: NOW - 30 * H, isUnread: false })
+    expect(isOverdue(read, DEFAULT_RULES, NOW)).toBe(false)
+    expect(roomIsLive(read, NOW)).toBe(false)
+    expect(roomToItem(read, DEFAULT_RULES, NOW).overdue).toBeUndefined()
+    // Manual unread counts as unread.
+    expect(isOverdue({ ...read, manualUnread: true }, DEFAULT_RULES, NOW)).toBe(true)
   })
 
   it('groups have no default SLA; per-room override adds one (0 disables)', () => {
@@ -284,9 +293,8 @@ describe('SLA / overdue', () => {
     expect(isOverdue(room({ isUnread: false }), DEFAULT_RULES, NOW)).toBe(false)
   })
 
-  it('an overdue READ DM re-enters membership; marking it overdue tops the sort', () => {
-    expect(roomIsLive(overdueDm(), NOW, DEFAULT_RULES)).toBe(true)
-    expect(roomIsLive(room({ isUnread: false }), NOW, DEFAULT_RULES)).toBe(false)
+  it('an overdue unread DM tops the sort', () => {
+    expect(roomIsLive(overdueDm(), NOW)).toBe(true)
     const items = [
       sessionToItem({ id: 's-attn', name: 'A', prompt: '', status: 'idle', createdAt: NOW, needsAttention: { ts: NOW, snippet: 'x' } }),
       roomToItem(overdueDm(), DEFAULT_RULES, NOW),

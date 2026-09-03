@@ -142,7 +142,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // Chat: unread/manual-unread rooms, straight from Dexie (the chat store's
     // rooms array drops read rooms lazily; Dexie is the durable mirror).
     const rooms = (await db.chatRooms.toArray())
-      .filter((r) => roomIsLive(r, now, effective))
+      .filter((r) => roomIsLive(r, now))
       .map((r) => roomToItem(r, effective, now))
 
     // Feeds: unread items. Reads Dexie directly (the feeds store's items

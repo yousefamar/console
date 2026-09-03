@@ -165,10 +165,13 @@ fun slaTimestamps(rawJson: String?): SlaTimestamps {
     )
 }
 
-/** DM unanswered past its SLA window: the other side spoke after my last
- *  reply, and that inbound has aged past the window. Groups have no default
- *  SLA (a per-room override can add one); window 0 disables. */
+/** UNREAD DM unanswered past its SLA window: the other side spoke after my
+ *  last reply, and that inbound has aged past the window. Overdue is an
+ *  escalation of an unread thread, never a re-admission of a read one —
+ *  read means "seen, decided not to reply" (Yousef, ^neat-bass). Groups have
+ *  no default SLA (a per-room override can add one); window 0 disables. */
 fun isOverdue(room: ChatRoomRow, rules: InboxRules, now: Long): Boolean {
+    if (!room.isUnread && !room.manualUnread) return false
     val hours = rules.slaRooms[room.id] ?: (if (room.isDirect) rules.slaDmHours else 0.0)
     if (hours <= 0.0) return false
     val (inbound, outbound) = slaTimestamps(room.rawJson)
@@ -184,12 +187,9 @@ fun isOverdue(room: ChatRoomRow, rules: InboxRules, now: Long): Boolean {
 fun threadIsLive(t: MailThreadRow, now: Long): Boolean =
     t.isInbox && (t.snoozedUntil == null || t.snoozedUntil <= now)
 
-fun roomIsLive(r: ChatRoomRow, rules: InboxRules, now: Long): Boolean {
+fun roomIsLive(r: ChatRoomRow, now: Long): Boolean {
     if (r.snoozedUntil != null && r.snoozedUntil > now) return false
     if (r.isLowPriority || r.isMuted) return false
-    // An overdue DM is typically READ but unanswered — it re-enters the inbox
-    // despite being read. Replying clears it (lastOutboundTs advances).
-    if (isOverdue(r, rules, now)) return true
     return r.isUnread || r.manualUnread
 }
 
@@ -323,7 +323,7 @@ fun composeInbox(
 ): InboxLists {
     val all = buildList {
         threads.filter { threadIsLive(it, now) }.forEach { add(threadToEntry(it, rules)) }
-        rooms.filter { roomIsLive(it, rules, now) }.forEach { add(roomToEntry(it, rules, now)) }
+        rooms.filter { roomIsLive(it, now) }.forEach { add(roomToEntry(it, rules, now)) }
         feedItems.asSequence()
             .filter { it.id !in readIds && it.id !in snoozedFeedIds }
             .mapNotNull { feedItemToEntry(it, feedsById[it.feedId], rules) }

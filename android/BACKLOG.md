@@ -52,6 +52,19 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Inbox: a swipe whose action doesn't drop the row snaps back** (5805b3f1,
+  ^quick-ram): rows swiped "done" froze on the Done hint — they were READ
+  overdue DMs, so mark-read was a no-op and the entry never left the derived
+  list while `SwipeToDismissBox` sat dismissed. `InboxScreen` now resets the
+  swipe state if the row is still composed 1.5 s after a confirmed swipe (a
+  no-op action reads as a bounce). The semantic half is ^neat-bass below.
+
+- **Inbox: overdue only escalates UNREAD chats** (^neat-bass): `isOverdue` in
+  `InboxLogic.kt` now requires `isUnread || manualUnread`, and `roomIsLive`
+  lost its overdue re-admission — a READ-but-unanswered DM no longer
+  reappears in the Inbox as overdue (Yousef: read = "seen, chose not to
+  reply"). SPA parity in the same commit.
+
 - **AL rename** (^green-seal): user-facing strings say "AL" (Release mic to
   AL, Message AL…, AL suggests you talk to…). The `isAl`/`id == "al"`
   identity checks are slug-based and unchanged; the hub now names the session

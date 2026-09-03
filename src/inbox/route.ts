@@ -35,10 +35,14 @@ export function normalizeRules(raw: unknown): InboxRules {
   }
 }
 
-/** DM unanswered past its SLA window: the other side spoke after my last
- *  reply, and that inbound has aged past the window. Groups have no default
- *  SLA (per-room override can add one); window 0 disables. */
+/** UNREAD DM unanswered past its SLA window: the other side spoke after my
+ *  last reply, and that inbound has aged past the window. Overdue is an
+ *  escalation of an unread thread, never a re-admission of a read one —
+ *  marking a thread read means "seen, decided not to reply" (Yousef,
+ *  ^neat-bass). Groups have no default SLA (per-room override can add one);
+ *  window 0 disables. */
 export function isOverdue(r: DbChatRoom, rules: InboxRules, now: number): boolean {
+  if (!r.isUnread && !r.manualUnread) return false
   const hours = rules.sla.rooms[r.id] ?? (r.isDirect ? rules.sla.dmHours : 0)
   if (!hours) return false
   const inbound = r.lastInboundTs ?? 0
@@ -196,13 +200,9 @@ export function threadIsLive(t: DbThread, now: number): boolean {
   return !t.snoozedUntil || t.snoozedUntil <= now
 }
 
-export function roomIsLive(r: DbChatRoom, now: number, rules?: InboxRules): boolean {
+export function roomIsLive(r: DbChatRoom, now: number): boolean {
   if (r.snoozedUntil && r.snoozedUntil > now) return false
   if (r.isLowPriority || r.isMuted) return false
-  // An overdue DM is typically READ but unanswered — "I haven't responded in
-  // over a day" is the core SLA ask, so it re-enters the inbox despite being
-  // read. Replying clears it (lastOutboundTs advances).
-  if (rules && isOverdue(r, rules, now)) return true
   return r.isUnread || !!r.manualUnread
 }
 

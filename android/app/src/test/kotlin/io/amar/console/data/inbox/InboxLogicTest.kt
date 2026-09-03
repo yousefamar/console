@@ -101,13 +101,12 @@ class InboxLogicTest {
         assertFalse(threadIsLive(thread(snoozedUntil = NOW + HOUR), NOW))
         assertTrue(threadIsLive(thread(snoozedUntil = NOW - 1), NOW))
 
-        val r = InboxRules.DEFAULT
-        assertTrue(roomIsLive(room(), r, NOW))
-        assertTrue(roomIsLive(room(isUnread = false, manualUnread = true), r, NOW))
-        assertFalse(roomIsLive(room(muted = true), r, NOW))
-        assertFalse(roomIsLive(room(lowPriority = true), r, NOW))
-        assertFalse(roomIsLive(room(snoozedUntil = NOW + HOUR), r, NOW))
-        assertFalse(roomIsLive(room(isUnread = false), r, NOW))
+        assertTrue(roomIsLive(room(), NOW))
+        assertTrue(roomIsLive(room(isUnread = false, manualUnread = true), NOW))
+        assertFalse(roomIsLive(room(muted = true), NOW))
+        assertFalse(roomIsLive(room(lowPriority = true), NOW))
+        assertFalse(roomIsLive(room(snoozedUntil = NOW + HOUR), NOW))
+        assertFalse(roomIsLive(room(isUnread = false), NOW))
 
         assertTrue(sessionIsLive(session()))
         assertFalse(sessionIsLive(session(hasUnread = false)))
@@ -118,21 +117,25 @@ class InboxLogicTest {
     // ---- SLA ----
 
     @Test
-    fun `overdue DM re-enters inbox despite being read`() {
+    fun `overdue is an escalation of UNREAD DMs only — a read thread is never overdue`() {
         val raw = """{"lastInboundTs":${NOW - 30 * HOUR},"lastOutboundTs":${NOW - 40 * HOUR}}"""
-        val overdueRoom = room(isUnread = false, rawJson = raw)
+        val overdueRoom = room(rawJson = raw)
         assertTrue(isOverdue(overdueRoom, InboxRules.DEFAULT, NOW))
-        assertTrue(roomIsLive(overdueRoom, InboxRules.DEFAULT, NOW))
+        assertTrue(roomToEntry(overdueRoom, InboxRules.DEFAULT, NOW).overdue)
+        // Read = "seen, chose not to reply" (^neat-bass): not overdue, not live.
+        val readRoom = room(isUnread = false, rawJson = raw)
+        assertFalse(isOverdue(readRoom, InboxRules.DEFAULT, NOW))
+        assertFalse(roomIsLive(readRoom, NOW))
+        // Manual unread counts as unread.
+        assertTrue(isOverdue(room(isUnread = false, manualUnread = true, rawJson = raw), InboxRules.DEFAULT, NOW))
         // Replying clears it.
-        val replied = room(isUnread = false,
-            rawJson = """{"lastInboundTs":${NOW - 30 * HOUR},"lastOutboundTs":${NOW - HOUR}}""")
+        val replied = room(rawJson = """{"lastInboundTs":${NOW - 30 * HOUR},"lastOutboundTs":${NOW - HOUR}}""")
         assertFalse(isOverdue(replied, InboxRules.DEFAULT, NOW))
         // Inside the window → not overdue.
-        val fresh = room(isUnread = false,
-            rawJson = """{"lastInboundTs":${NOW - 2 * HOUR},"lastOutboundTs":0}""")
+        val fresh = room(rawJson = """{"lastInboundTs":${NOW - 2 * HOUR},"lastOutboundTs":0}""")
         assertFalse(isOverdue(fresh, InboxRules.DEFAULT, NOW))
         // Groups have no default SLA.
-        val group = room(isDirect = false, isUnread = false, rawJson = raw)
+        val group = room(isDirect = false, rawJson = raw)
         assertFalse(isOverdue(group, InboxRules.DEFAULT, NOW))
         // Per-room override 0 disables even for DMs.
         val rules = InboxRules.DEFAULT.copy(slaRooms = mapOf("!r1" to 0.0))
@@ -167,7 +170,7 @@ class InboxLogicTest {
     fun `inbox bands order overdue, attention, chat+mail merged, agents, feeds`() {
         val rules = InboxRules.DEFAULT.copy(feedFeeds = mapOf("f1" to "inbox"))
         val overdue = roomToEntry(
-            room(id = "!od", isUnread = false, lastTime = NOW - 50 * HOUR,
+            room(id = "!od", lastTime = NOW - 50 * HOUR,
                 rawJson = """{"lastInboundTs":${NOW - 30 * HOUR},"lastOutboundTs":0}"""),
             InboxRules.DEFAULT, NOW,
         )
