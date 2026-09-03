@@ -19,9 +19,11 @@ export interface DbFeedRead {
   itemId: string
 }
 
-/** Per-item feed snooze (unified Inbox `b`) — hides the item until due. */
-export interface DbFeedSnooze {
-  itemId: string
+/** Local snooze for an Inbox item whose source has no snooze concept of its
+ *  own (feed items, agent sessions) — keyed by `InboxItem.key`, hides the row
+ *  until due. Mail and chat snooze durably in their own stores instead. */
+export interface DbItemSnooze {
+  key: string
   snoozedUntil: number
 }
 
@@ -80,7 +82,7 @@ class ConsoleDatabase extends Dexie {
   meta!: Table<{ key: string; value: string }, string>
   feedItems!: Table<DbFeedItem, string>
   feedRead!: Table<DbFeedRead, string>
-  feedSnooze!: Table<DbFeedSnooze, string>
+  itemSnooze!: Table<DbItemSnooze, string>
   calendarList!: Table<DbCalendarInfo, string>
   calendarEvents!: Table<DbCalendarEvent, string>
   geocaches!: Table<DbGeocache, string>
@@ -211,6 +213,26 @@ class ConsoleDatabase extends Dexie {
     // v12: unified Inbox — per-item feed snooze (b on a feed item)
     this.version(12).stores({
       feedSnooze: '&itemId, snoozedUntil',
+    })
+
+    // v13: that snooze generalised to any source without its own snooze
+    // (feed items AND agent sessions), keyed by InboxItem.key. Existing rows
+    // carry bare feed-item ids, so they migrate with a `feed:` prefix.
+    this.version(13).stores({
+      itemSnooze: '&key, snoozedUntil',
+    }).upgrade(async (tx) => {
+      const old = await tx.table('feedSnooze').toArray()
+      if (old.length) {
+        await tx.table('itemSnooze').bulkPut(
+          old.map((r: { itemId: string; snoozedUntil: number }) => ({ key: `feed:${r.itemId}`, snoozedUntil: r.snoozedUntil })),
+        )
+      }
+    })
+
+    // v14: drop the superseded table (separate version — a v13 upgrade can
+    // only read tables that still exist in v13's schema).
+    this.version(14).stores({
+      feedSnooze: null,
     })
   }
 }

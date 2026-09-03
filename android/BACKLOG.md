@@ -7,6 +7,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
+- Inbox snooze parity (SPA ^rare-lark): the SPA now snoozes ANY Inbox
+  source through one picker (later today / tomorrow / next week / custom)
+  with a 5 s undo, incl. agent sessions (local `itemSnooze` keyed by
+  `InboxItem.key`, feed rows migrated as `feed:<id>`). Android's swipe-left
+  is snooze-tomorrow for mail/chat/feed only (agents excluded) via its own
+  `feed_snooze` table — add agents to the swipe + a time choice, and key the
+  local table by item key if the two ports should read alike. Local-only on
+  both sides, so nothing to sync.
+
 - Agent transcript inline media parity: SPA now renders `![x](/abs/path.png)`
   via hub `GET /agents/local-file?path=` (rewrite local/`~/` img srcs) and
   fenced ```html blocks as sandboxed WebView fragments. Android transcript

@@ -314,7 +314,12 @@ interface ChatState {
   // Triage (inbox-zero for chat)
   markRoomRead: (roomId?: string) => Promise<void>
   markRoomUnread: (roomId?: string) => Promise<void>
-  snoozeRoom: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date) => Promise<void>
+  /** `advance` (default true): when the snoozed room is the selected one,
+   *  step the Chat pane's selection to its neighbour. The unified Inbox
+   *  manages its own selection and passes false. */
+  snoozeRoom: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date, roomId?: string, opts?: { advance?: boolean }) => Promise<void>
+  /** Clear a room's snooze now (undo). Hub-owned like snoozeRoom. */
+  unsnoozeRoom: (roomId: string) => Promise<void>
 
   // Send
   sendMessage: (roomId: string, body: string, formattedBody?: string, mentionUserIds?: string[]) => Promise<void>
@@ -584,9 +589,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 
-  snoozeRoom: async (option, customDate) => {
-    const id = get().selectedRoomId
+  snoozeRoom: async (option, customDate, roomId, opts) => {
+    const id = roomId ?? get().selectedRoomId
     if (!id) return
+    const advance = opts?.advance ?? true
 
     const snoozedUntil = getSnoozeTime(option, customDate)
 
@@ -597,17 +603,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const newRooms = s.rooms.filter((r) => r.id !== id)
       const currentIdx = s.rooms.findIndex((r) => r.id === id)
       const nextRoom = newRooms[Math.min(currentIdx, newRooms.length - 1)]
+      // Only walk the selection when the snoozed room WAS selected and the
+      // caller wants the pane's own stepping — the Inbox pane advances itself.
       return {
         rooms: newRooms,
-        selectedRoomId: nextRoom?.id ?? null,
+        selectedRoomId: advance && s.selectedRoomId === id ? (nextRoom?.id ?? null) : s.selectedRoomId,
       }
     })
-    useUiStore.getState().setShowSnoozePicker(false)
     // Hub owns the authoritative snoozed-until — route through the
     // chat-rooms RPC so every device snoozes / unsnoozes together.
     try {
       const { hubBus } = await import('@/sync-bus')
       await hubBus.rpc('chat-rooms', 'snooze', { roomId: id, untilMs: snoozedUntil })
+    } catch { /* hub will reconcile on next snapshot fetch */ }
+  },
+
+  unsnoozeRoom: async (roomId) => {
+    await db.chatRooms.update(roomId, { snoozedUntil: undefined })
+    try {
+      const { hubBus } = await import('@/sync-bus')
+      // No untilMs = clear it (the hub reads `args.untilMs` straight through,
+      // and JSON drops an undefined key — never send null, which would
+      // persist as a null in the room snapshot).
+      await hubBus.rpc('chat-rooms', 'snooze', { roomId })
     } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 

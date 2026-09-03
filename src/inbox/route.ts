@@ -5,7 +5,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem, FeedSubscription } from '@/store/feeds'
 import { isHiddenFolder } from '@/feeds/hidden-folders'
 import { FEED_KINDS, feedKind, type FeedKind } from '@/feeds/feed-kind'
-import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type Route } from './types'
+import { DEFAULT_RULES, itemKey, type FeedRoute, type InboxItem, type InboxRules, type Route } from './types'
 
 export function routeForRoom(room: DbChatRoom, rules: InboxRules): Route {
   return rules.chat.rooms[room.id] ?? rules.chat.default
@@ -61,7 +61,7 @@ export function isOverdue(r: DbChatRoom, rules: InboxRules, now: number): boolea
 
 export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
   return {
-    key: `mail:${t.id}`,
+    key: itemKey('mail', t.id),
     source: 'mail',
     sourceId: t.id,
     header: t.from,
@@ -80,7 +80,7 @@ export function roomToItem(r: DbChatRoom, rules: InboxRules, now?: number): Inbo
   // the header, repeating it in the body is noise.
   const body = !sender || (r.isDirect && sender === r.name) ? text : `${sender}: ${text}`
   return {
-    key: `chat:${r.id}`,
+    key: itemKey('chat', r.id),
     source: 'chat',
     sourceId: r.id,
     header: r.name,
@@ -121,7 +121,7 @@ export function sessionIsLive(s: AgentSessionLike): boolean {
 export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>): InboxItem {
   const idle = s.status !== 'running'
   return {
-    key: `agent:${s.id}`,
+    key: itemKey('agent', s.id),
     source: 'agent',
     sourceId: s.id,
     header: (s.name || s.prompt.slice(0, 40)).replace(/\s\(fork\)$/, ''),
@@ -174,7 +174,7 @@ export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, 
   const route = routeForFeed(i.feedId, rules)
   if (route === 'hidden') return null
   return {
-    key: `feed:${i.id}`,
+    key: itemKey('feed', i.id),
     source: 'feed',
     sourceId: i.id,
     header: feed?.title ?? '',

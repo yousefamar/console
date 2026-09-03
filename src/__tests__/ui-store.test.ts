@@ -16,7 +16,7 @@ beforeEach(() => {
     emailDarkMode: true,
     showSearch: false,
     showKeybindingHelp: false,
-    showSnoozePicker: false,
+    snoozeTarget: null,
     showSchedulePicker: false,
     showCompose: false,
     syncStatus: 'idle',
@@ -62,9 +62,12 @@ describe('panel toggles', () => {
     expect(useUiStore.getState().showKeybindingHelp).toBe(true)
   })
 
-  it('setShowSnoozePicker', () => {
-    useUiStore.getState().setShowSnoozePicker(true)
-    expect(useUiStore.getState().showSnoozePicker).toBe(true)
+  it('openSnoozePicker / closeSnoozePicker', () => {
+    const target = { source: 'chat' as const, sourceId: '!r:x', key: 'chat:!r:x', origin: 'pane' as const }
+    useUiStore.getState().openSnoozePicker(target)
+    expect(useUiStore.getState().snoozeTarget).toEqual(target)
+    useUiStore.getState().closeSnoozePicker()
+    expect(useUiStore.getState().snoozeTarget).toBeNull()
   })
 
   it('setShowSchedulePicker', () => {

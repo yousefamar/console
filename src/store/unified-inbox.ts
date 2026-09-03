@@ -15,7 +15,8 @@ import { useFeedStore } from '@/store/feeds'
 import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type InboxSource, type Route } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
 import { useSpacesStore } from '@/store/spaces'
-import { getSnoozeTime } from '@/utils/date'
+import { useUiStore } from '@/store/ui'
+import { activeLocalSnoozes } from '@/inbox/snooze'
 import {
   feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
@@ -57,9 +58,33 @@ interface UnifiedInboxState {
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
   selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
-  /** Handle the selected item (e = archive/mark-read, b = snooze) and advance
-   *  to the next one in its list — same flow as the legacy panes. */
+  /** Handle the selected item and advance to the next one in its list — same
+   *  flow as the legacy panes. `done` = archive / mark-read in the owning
+   *  store; `snooze` = open the shared picker for it (the picker's commit
+   *  path, `applySnooze`, does the dropping). */
   handleSelected: (verb: 'done' | 'snooze') => void
+  /** Remove an item from the composed lists NOW and move the selection to its
+   *  neighbour. The rebuild would drop it anyway, but that is a 300 ms
+   *  trailing debounce that every source-store write resets — a busy agent
+   *  fleet writes every few hundred ms, so a handled row could linger for
+   *  seconds (the "snooze does nothing" report). Optimistic, like every other
+   *  mutation in the app; the next rebuild agrees. */
+  dropAndAdvance: (key: string) => void
+  /** Lift a `dropAndAdvance` suppression (undo) so the next rebuild may list
+   *  the item again. */
+  restore: (key: string) => void
+}
+
+/** Keys handled optimistically that rebuilds must keep out until the source
+ *  store has confirmed the change. A rebuild already in flight when the row
+ *  is dropped read Dexie BEFORE the source wrote its snooze/read flag and
+ *  would re-add the row from that stale read. Time-boxed: the source's own
+ *  guards take over well inside this window. */
+const HANDLED_SUPPRESS_MS = 5_000
+const handledKeys = new Map<string, number>()
+function suppressedKeys(now: number): Set<string> {
+  for (const [k, until] of handledKeys) if (until <= now) handledKeys.delete(k)
+  return new Set(handledKeys.keys())
 }
 
 export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
@@ -148,13 +173,13 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // Feeds: unread items. Reads Dexie directly (the feeds store's items
     // array follows its own pane's feed/folder selection).
     const readSet = new Set((await db.feedRead.toArray()).map((r) => r.itemId))
-    const snoozedSet = new Set(
-      (await db.feedSnooze.where('snoozedUntil').above(now).toArray()).map((r) => r.itemId),
-    )
+    // Feed items and agent sessions share the local snooze table, keyed by
+    // InboxItem.key — the two sources with no snooze of their own.
+    const snoozedKeys = await activeLocalSnoozes(now)
     const feeds = useFeedStore.getState().feeds
     const feedById = new Map(feeds.map((f) => [f.id, f]))
     const feedItems = (await db.feedItems.orderBy('publishedAt').reverse().limit(500).toArray())
-      .filter((i) => !readSet.has(i.id) && !snoozedSet.has(i.id))
+      .filter((i) => !readSet.has(i.id))
       .map((i) => feedItemToItem(i, feedById.get(i.feedId), effective))
       .filter((i): i is InboxItem => i !== null)
 
@@ -168,7 +193,9 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
       .filter(sessionIsLive)
       .map((s) => sessionToItem(s, reviewKeys))
 
+    const suppressed = suppressedKeys(now)
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
+      .filter((i) => !snoozedKeys.has(i.key) && !suppressed.has(i.key))
     set({
       feedList: sortFeed(filterByFeedMode(all.filter((i) => i.route === 'feed'), get().feedMode)),
       inboxList: sortInbox(all.filter((i) => i.route === 'inbox')),
@@ -194,6 +221,24 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     get().select(items[next]!)
   },
 
+  dropAndAdvance: (key) => {
+    const { feedList, inboxList, selected } = get()
+    const inFeed = feedList.some((i) => i.key === key)
+    const list = inFeed ? visibleFeed(get()) : visibleInbox(get())
+    // Landing spot from the CURRENT snapshot — the item is gone after this.
+    const next = selected?.key === key ? nextAfterHandle(list, key) : null
+    handledKeys.set(key, Date.now() + HANDLED_SUPPRESS_MS)
+    set({
+      feedList: inFeed ? feedList.filter((i) => i.key !== key) : feedList,
+      inboxList: inFeed ? inboxList : inboxList.filter((i) => i.key !== key),
+    })
+    // Advance if there's somewhere to go; otherwise STAY on the handled item
+    // (the viewer keeps it — an emptied list must not blank the viewer).
+    if (next) get().select(next)
+  },
+
+  restore: (key) => { handledKeys.delete(key) },
+
   handleSelected: (verb) => {
     const { feedList, selected } = get()
     if (!selected) return
@@ -201,29 +246,19 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const list = inFeed ? visibleFeed(get()) : visibleInbox(get())
     const item = list.find((i) => i.key === selected.key) ?? selected
 
-    // Compute the landing spot BEFORE the verb fires — the handled item drops
-    // from the list on the next rebuild, so "next" must come from the current
-    // snapshot (the legacy mail pane does the same inside archiveThread).
-    const next = nextAfterHandle(list, selected.key)
-
-    if (verb === 'done') {
-      if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId)
-      else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
-      else if (item.source === 'agent') useAgentStore.getState().markSessionRead(item.sourceId)
-      else void useFeedStore.getState().markRead(item.sourceId)
-    } else {
-      if (item.source === 'mail') useInboxStore.getState().snoozeThread('tomorrow', undefined, item.sourceId)
-      else if (item.source === 'chat') void useChatStore.getState().snoozeRoom('tomorrow')
-      else if (item.source === 'feed') {
-        // Local-only, like mail snooze pre-hub: hide until tomorrow 8am.
-        void db.feedSnooze.put({ itemId: item.sourceId, snoozedUntil: getSnoozeTime('tomorrow') })
-          .then(() => get().rebuild())
-      } else return // agent sessions have no snooze
+    if (verb === 'snooze') {
+      // The picker owns the rest: time choice → applySnooze → dropAndAdvance.
+      useUiStore.getState().openSnoozePicker({ source: item.source, sourceId: item.sourceId, key: item.key, origin: 'inbox' })
+      return
     }
 
-    // Advance if there's somewhere to go; otherwise STAY on the handled item
-    // (the viewer keeps it — an emptied list must not blank the viewer).
-    if (next) get().select(next)
+    get().dropAndAdvance(item.key)
+    // `advance: false` — this pane just moved its own selection; the mail
+    // store must not step to ITS list neighbour and mark that one read.
+    if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId, { advance: false })
+    else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
+    else if (item.source === 'agent') useAgentStore.getState().markSessionRead(item.sourceId)
+    else void useFeedStore.getState().markRead(item.sourceId)
   },
 }))
 

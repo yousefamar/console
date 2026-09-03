@@ -67,6 +67,22 @@ export interface InboxItem {
   image?: string
 }
 
+/** The one place `InboxItem.key` is spelled — the legacy panes mint targets
+ *  for the shared snooze picker without holding an item. */
+export function itemKey(source: InboxSource, sourceId: string): string {
+  return `${source}:${sourceId}`
+}
+
+/** What the snooze picker acts on. `origin` decides who advances the
+ *  selection afterwards: the Inbox pane walks its own composed list, a legacy
+ *  pane lets its source store step to the next thread/room as it always has. */
+export interface SnoozeTarget {
+  source: InboxSource
+  sourceId: string
+  key: string
+  origin: 'inbox' | 'pane'
+}
+
 /** Per-source routing rules, persisted hub-side (inbox-rules.json).
  *  Overrides are keyed by source id (room id, feed id, mail sender email).
  *  Absent everything → DEFAULT_RULES. */

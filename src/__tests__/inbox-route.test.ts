@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { DbThread } from '@/gmail/types'
 import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
-import { DEFAULT_RULES, type InboxRules } from '@/inbox/types'
+import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
   feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
@@ -359,5 +359,13 @@ describe('nextAfterHandle', () => {
   it('returns null for a single-item list or unknown key', () => {
     expect(nextAfterHandle([items[0]!], 'feed:a')).toBeNull()
     expect(nextAfterHandle(items, 'feed:zzz')).toBeNull()
+  })
+})
+
+describe('itemKey', () => {
+  it('is the exact key every adapter stamps — the legacy panes mint snooze targets from it', () => {
+    const thread = { id: 't1', historyId: '1', snippet: '', subject: 's', from: 'A', fromEmail: 'a@x.io', date: 1, messageCount: 1, isUnread: true, labelIds: ['INBOX'], hasAttachments: false } as DbThread
+    expect(threadToItem(thread, DEFAULT_RULES).key).toBe(itemKey('mail', 't1'))
+    expect(itemKey('chat', '!r:beeper.local')).toBe('chat:!r:beeper.local')
   })
 })

@@ -1,33 +1,45 @@
-import { useRef, useMemo } from 'react'
-import { useInboxStore } from '@/store/inbox'
+import { useEffect, useRef, useMemo } from 'react'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getSnoozeTime } from '@/utils/date'
+// `SnoozeOption` is also the local option-row component's name.
+import { applySnooze, type SnoozeOption as SnoozeChoice } from '@/inbox/snooze'
 import { DateTimePicker } from './DateTimePicker'
 
+/** Rendered only while `ui.snoozeTarget` is set — one picker for every
+ *  source (mail, chat, feed item, agent session) and both the legacy panes
+ *  and the unified Inbox; `applySnooze` routes the choice. */
 export function SnoozePicker() {
-  const snoozeThread = useInboxStore((s) => s.snoozeThread)
-  const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
+  const target = useUiStore((s) => s.snoozeTarget)
+  const closeSnoozePicker = useUiStore((s) => s.closeSnoozePicker)
   const isMobile = useIsMobile()
   const dateInputRef = useRef<HTMLInputElement>(null)
   const laterTodayLabel = useMemo(() => getLaterTodayLabel(), [])
 
-  function handleSnooze(option: 'laterToday' | 'tomorrow' | 'nextWeek') {
-    snoozeThread(option)
-    setShowSnoozePicker(false)
+  function snooze(option: SnoozeChoice, customDate?: Date) {
+    if (target) applySnooze(target, option, customDate)
+    else closeSnoozePicker()
   }
 
-  function handleCustom(date: Date) {
-    snoozeThread('custom', date)
-    setShowSnoozePicker(false)
-  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const option = e.key === '1' ? 'laterToday' : e.key === '2' ? 'tomorrow' : e.key === '3' ? 'nextWeek' : null
+      if (!option) return
+      e.preventDefault()
+      e.stopPropagation()
+      snooze(option)
+    }
+    // Capture phase: the pane keybindings listen on window too.
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  })
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/40"
-        onClick={() => setShowSnoozePicker(false)}
+        onClick={closeSnoozePicker}
       />
 
       {/* Hidden native picker for mobile */}
@@ -37,7 +49,7 @@ export function SnoozePicker() {
           type="datetime-local"
           className="fixed opacity-0 pointer-events-none"
           onChange={(e) => {
-            if (e.target.value) handleCustom(new Date(e.target.value))
+            if (e.target.value) snooze('custom', new Date(e.target.value))
           }}
         />
       )}
@@ -53,19 +65,19 @@ export function SnoozePicker() {
             label="Later today"
             shortcut="1"
             description={laterTodayLabel}
-            onClick={() => handleSnooze('laterToday')}
+            onClick={() => snooze('laterToday')}
           />
           <SnoozeOption
             label="Tomorrow"
             shortcut="2"
             description="8:00 AM"
-            onClick={() => handleSnooze('tomorrow')}
+            onClick={() => snooze('tomorrow')}
           />
           <SnoozeOption
             label="Next week"
             shortcut="3"
             description="Mon, 8:00 AM"
-            onClick={() => handleSnooze('nextWeek')}
+            onClick={() => snooze('nextWeek')}
           />
 
           <div className="mx-3 my-1 border-t border-border" />
@@ -79,7 +91,7 @@ export function SnoozePicker() {
             </button>
           ) : (
             <div className="px-4 py-2">
-              <DateTimePicker onSelect={handleCustom} />
+              <DateTimePicker onSelect={(d) => snooze('custom', d)} />
             </div>
           )}
         </div>

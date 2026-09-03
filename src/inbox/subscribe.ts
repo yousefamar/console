@@ -10,15 +10,18 @@ import { useFeedStore } from '@/store/feeds'
 import { useAgentStore } from '@/store/agent'
 import { useSpacesStore } from '@/store/spaces'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
+import { makeRebuildScheduler } from '@/inbox/rebuild-scheduler'
 
 const REBUILD_DEBOUNCE_MS = 300
+/** Ceiling on how long a busy fleet's store writes can hold a rebuild off
+ *  (each write resets the debounce; see rebuild-scheduler.ts). */
+const REBUILD_MAX_WAIT_MS = 1000
 
 export function wireUnifiedInbox(): void {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const schedule = () => {
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => { void useUnifiedInboxStore.getState().rebuild() }, REBUILD_DEBOUNCE_MS)
-  }
+  const { schedule } = makeRebuildScheduler(
+    () => { void useUnifiedInboxStore.getState().rebuild() },
+    { debounceMs: REBUILD_DEBOUNCE_MS, maxWaitMs: REBUILD_MAX_WAIT_MS },
+  )
   void useUnifiedInboxStore.getState().rebuild()
   useInboxStore.subscribe((s, prev) => { if (s.threads !== prev.threads) schedule() })
   useChatStore.subscribe((s, prev) => { if (s.rooms !== prev.rooms) schedule() })

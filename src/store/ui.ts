@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { SyncStatus } from '@/gmail/sync'
 import type { MatrixSyncStatus } from '@/matrix/sync'
 import { getPref, setPref } from '@/prefs'
+import type { SnoozeTarget } from '@/inbox/types'
 
 export type ActivePane = 'home' | 'email' | 'chat' | 'bookmarks' | 'notes' | 'feeds' | 'calendar' | 'map' | 'money' | 'spaces' | 'inbox'
 
@@ -94,14 +95,16 @@ interface UiState {
   // Panels
   showSearch: boolean
   showKeybindingHelp: boolean
-  showSnoozePicker: boolean
+  /** The snooze picker is open for exactly this item (any source), or closed. */
+  snoozeTarget: SnoozeTarget | null
   showSchedulePicker: boolean
   showCompose: boolean // new compose (not reply)
   showMatrixLogin: boolean
   showAccountModal: boolean
   setShowSearch: (v: boolean) => void
   setShowKeybindingHelp: (v: boolean) => void
-  setShowSnoozePicker: (v: boolean) => void
+  openSnoozePicker: (target: SnoozeTarget) => void
+  closeSnoozePicker: () => void
   setShowSchedulePicker: (v: boolean) => void
   setShowCompose: (v: boolean) => void
   setShowMatrixLogin: (v: boolean) => void
@@ -185,14 +188,15 @@ export const useUiStore = create<UiState>((set) => ({
 
   showSearch: false,
   showKeybindingHelp: false,
-  showSnoozePicker: false,
+  snoozeTarget: null,
   showSchedulePicker: false,
   showCompose: false,
   showMatrixLogin: false,
   showAccountModal: false,
   setShowSearch: (v) => set({ showSearch: v }),
   setShowKeybindingHelp: (v) => set({ showKeybindingHelp: v }),
-  setShowSnoozePicker: (v) => set({ showSnoozePicker: v }),
+  openSnoozePicker: (target) => set({ snoozeTarget: target }),
+  closeSnoozePicker: () => set({ snoozeTarget: null }),
   setShowSchedulePicker: (v) => set({ showSchedulePicker: v }),
   setShowCompose: (v) => set({ showCompose: v }),
   setShowMatrixLogin: (v) => set({ showMatrixLogin: v }),

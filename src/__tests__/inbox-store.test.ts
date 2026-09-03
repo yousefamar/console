@@ -72,7 +72,7 @@ beforeEach(async () => {
   })
   useUiStore.setState({
     undoAction: null,
-    showSnoozePicker: false,
+    snoozeTarget: null,
   })
 })
 
@@ -294,8 +294,9 @@ describe('snoozeThread', () => {
     const queued = await db.queue.toArray()
     expect(queued.some((q) => q.type === 'snooze')).toBe(true)
 
-    // Snooze picker closed
-    expect(useUiStore.getState().showSnoozePicker).toBe(false)
+    // The store no longer touches the picker — applySnooze closes it before
+    // dispatching, so a direct snoozeThread leaves it wherever it was.
+    expect(useUiStore.getState().snoozeTarget).toBeNull()
   })
 })
 

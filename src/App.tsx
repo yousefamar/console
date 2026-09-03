@@ -103,7 +103,7 @@ function ConsoleApp() {
 
   const showSearch = useUiStore((s) => s.showSearch)
   const showKeybindingHelp = useUiStore((s) => s.showKeybindingHelp)
-  const showSnoozePicker = useUiStore((s) => s.showSnoozePicker)
+  const snoozeTarget = useUiStore((s) => s.snoozeTarget)
   const showCompose = useUiStore((s) => s.showCompose)
   const setShowCompose = useUiStore((s) => s.setShowCompose)
   const showMatrixLogin = useUiStore((s) => s.showMatrixLogin)
@@ -116,7 +116,7 @@ function ConsoleApp() {
       <Layout />
       {showSearch && <SearchOverlay />}
       {showKeybindingHelp && <KeybindingHelp />}
-      {showSnoozePicker && <SnoozePicker />}
+      {snoozeTarget && <SnoozePicker />}
       {showCompose && (
         <div className="fixed inset-0 z-50 flex items-end justify-center">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowCompose(false)} />

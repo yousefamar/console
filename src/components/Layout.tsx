@@ -82,6 +82,7 @@ import { MoneyTab } from './MoneyTab'
 import { SpacesTab } from './SpacesTab'
 import { InboxTab } from './InboxTab'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
+import { itemKey } from '@/inbox/types'
 import { MusicDrawer } from './music/MusicDrawer'
 import { useMusicStore } from '@/store/music'
 // MapTab pulls in MapLibre GL (~250KB gz) — code-split it so it stays out of the
@@ -711,7 +712,6 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
 // ---------- Footer (desktop only) ----------
 
 function Footer({ activePane }: { activePane: ActivePane }) {
-  const setShowSnoozePicker = useUiStore((s) => s.setShowSnoozePicker)
   const isEmail = activePane === 'email'
   const isSpaces = activePane === 'spaces'
   const isBookmarks = activePane === 'bookmarks'
@@ -720,11 +720,21 @@ function Footer({ activePane }: { activePane: ActivePane }) {
   const isCalendar = activePane === 'calendar'
   const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
+  const isInbox = activePane === 'inbox'
 
   const handleDone = () => {
-    if (isEmail) useInboxStore.getState().archiveThread()
+    // The Inbox selection can be any source, so the verb must go through that
+    // pane's dispatcher — the chat fallback below marked the wrong thing read.
+    if (isInbox) useUnifiedInboxStore.getState().handleSelected('done')
+    else if (isEmail) useInboxStore.getState().archiveThread()
     else if (isFeeds) useFeedStore.getState().markRead()
     else useChatStore.getState().markRoomRead()
+  }
+  const handleSnooze = () => {
+    if (isInbox) { useUnifiedInboxStore.getState().handleSelected('snooze'); return }
+    const source = isEmail ? 'mail' : 'chat'
+    const sourceId = isEmail ? useInboxStore.getState().selectedThreadId : useChatStore.getState().selectedRoomId
+    if (sourceId) useUiStore.getState().openSnoozePicker({ source, sourceId, key: itemKey(source, sourceId), origin: 'pane' })
   }
 
   return (
@@ -741,10 +751,10 @@ function Footer({ activePane }: { activePane: ActivePane }) {
           <>
             <ActionHint
               keyLabel="e"
-              action={isEmail ? 'Done' : 'Read'}
+              action={isEmail || isInbox ? 'Done' : 'Read'}
               onClick={handleDone}
             />
-            <ActionHint keyLabel="b" action="Snooze" onClick={() => setShowSnoozePicker(true)} />
+            <ActionHint keyLabel="b" action="Snooze" onClick={handleSnooze} />
             {isEmail && (
               <>
                 <ActionHint keyLabel="r" action="Reply" />

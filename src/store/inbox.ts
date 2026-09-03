@@ -7,6 +7,8 @@ import { useComposeStore } from './compose'
 import { getSnoozeTime } from '@/utils/date'
 import { evictThreadAttachments } from '@/utils/attachment-cache'
 
+export interface HandleOpts { advance?: boolean }
+
 interface InboxState {
   threads: DbThread[]
   selectedThreadId: string | null
@@ -23,9 +25,17 @@ interface InboxState {
   loadMessages: (threadId: string) => Promise<void>
 
   // Triage (synchronous — DB writes happen in background)
-  archiveThread: (threadId?: string) => void
+  /** `advance` (default true) = the legacy pane's own behaviour: when the
+   *  handled thread is the selected one, step the selection to its list
+   *  neighbour and load/mark-read it. A caller that manages its own selection
+   *  (the unified Inbox) passes false — otherwise a mail-list neighbour the
+   *  user never saw gets marked read. */
+  archiveThread: (threadId?: string, opts?: HandleOpts) => void
   deleteThread: (threadId?: string) => void
-  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date, threadId?: string) => void
+  snoozeThread: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date, threadId?: string, opts?: HandleOpts) => void
+  /** Bring a snoozed thread back now — undo, and the mirror of the due-time
+   *  wake sweep in `gmail/sync.ts` (clear the timer, restore INBOX, unarchive). */
+  unsnoozeThread: (threadId: string) => Promise<void>
   markRead: (threadId?: string) => Promise<void>
 
   // Reply
@@ -130,9 +140,10 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     }
   },
 
-  archiveThread: (threadId) => {
+  archiveThread: (threadId, opts) => {
     const id = threadId ?? get().selectedThreadId
     if (!id) return
+    const advance = opts?.advance ?? true
 
     // Get thread from store synchronously (no await)
     const thread = get().threads.find((t) => t.id === id)
@@ -144,7 +155,7 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     // Optimistic: synchronous set() — instant UI
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
-      const wasSelected = s.selectedThreadId === id
+      const wasSelected = advance && s.selectedThreadId === id
       const currentIdx = s.threads.findIndex((t) => t.id === id)
       const nextThread = wasSelected
         ? newThreads[Math.min(currentIdx, newThreads.length - 1)]
@@ -165,7 +176,9 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     // Everything below is background — no awaits blocking the UI
     const newSelectedId = get().selectedThreadId
     const bg = async () => {
-      if (newSelectedId) {
+      if (!advance) {
+        // The caller owns the selection — leave it (and its messages) alone.
+      } else if (newSelectedId) {
         await get().loadMessages(newSelectedId)
         const next = get().threads.find((t) => t.id === newSelectedId)
         if (next?.isUnread) await get().markRead(newSelectedId)
@@ -232,16 +245,17 @@ export const useInboxStore = create<InboxState>((set, get) => ({
     bg().catch(() => {})
   },
 
-  snoozeThread: (option, customDate, threadId) => {
+  snoozeThread: (option, customDate, threadId, opts) => {
     const id = threadId ?? get().selectedThreadId
     if (!id) return
+    const advance = opts?.advance ?? true
 
     const snoozedUntil = getSnoozeTime(option, customDate)
 
     optimisticallyRemoved.add(id)
 
     // Optimistic: synchronous set() — instant UI
-    const wasSelected = get().selectedThreadId === id
+    const wasSelected = advance && get().selectedThreadId === id
     set((s) => {
       const newThreads = s.threads.filter((t) => t.id !== id)
       const currentIdx = s.threads.findIndex((t) => t.id === id)
@@ -256,7 +270,9 @@ export const useInboxStore = create<InboxState>((set, get) => ({
 
     const newSelectedId = get().selectedThreadId
     const bg = async () => {
-      if (newSelectedId) {
+      if (!advance) {
+        // Caller-owned selection — see archiveThread.
+      } else if (newSelectedId) {
         await get().loadMessages(newSelectedId)
         const next = get().threads.find((t) => t.id === newSelectedId)
         if (next?.isUnread) await get().markRead(newSelectedId)
@@ -268,8 +284,22 @@ export const useInboxStore = create<InboxState>((set, get) => ({
       await enqueue('snooze', { snoozedUntil }, { threadId: id })
     }
     bg().catch(() => {})
+  },
 
-    useUiStore.getState().setShowSnoozePicker(false)
+  unsnoozeThread: async (threadId) => {
+    const thread = await db.threads.get(threadId)
+    if (!thread) return
+    const labelIds = thread.labelIds.includes('INBOX') ? thread.labelIds : [...thread.labelIds, 'INBOX']
+    await db.threads.update(threadId, { snoozedUntil: undefined, labelIds })
+    await removeByThread(threadId, 'snooze')
+    await enqueue('unsnooze', {}, { threadId })
+
+    const threads = await db.threads
+      .filter((t) => t.labelIds.includes('INBOX') && !t.snoozedUntil)
+      .reverse()
+      .sortBy('date')
+    set({ threads })
+    useUiStore.getState().setUndoAction(null)
   },
 
   markRead: async (threadId) => {

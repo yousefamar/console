@@ -6,6 +6,7 @@ import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
 import { useFeedStore } from '@/store/feeds'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
+import { itemKey } from '@/inbox/types'
 import { useCalendarStore } from '@/store/calendar'
 import { useMoneyStore } from '@/store/money'
 import { useMapStore } from '@/store/map'
@@ -51,8 +52,8 @@ export function useKeybindings() {
           ui.getState().setShowSearch(false)
         } else if (ui.getState().showKeybindingHelp) {
           ui.getState().setShowKeybindingHelp(false)
-        } else if (ui.getState().showSnoozePicker) {
-          ui.getState().setShowSnoozePicker(false)
+        } else if (ui.getState().snoozeTarget) {
+          ui.getState().closeSnoozePicker()
         } else if (ui.getState().showCompose) {
           ui.getState().setShowCompose(false)
         } else if (ui.getState().showMatrixLogin) {
@@ -124,6 +125,11 @@ export function useKeybindings() {
         // Handled by compose editor / agent prompt input
         return
       }
+
+      // Snooze picker open: it owns the keyboard (1/2/3 pick a time, Escape
+      // closed it above). Without this, j/k/e walked the list BEHIND the modal
+      // and the picker then snoozed whatever the selection had become.
+      if (ui.getState().snoozeTarget) return
 
       // Notes: Ctrl+Shift+T for reopen closed tab
       if (isNotesish && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 't' || e.key === 'T')) {
@@ -425,6 +431,9 @@ export function useKeybindings() {
           return
         }
         if (e.key === 'b' && selected) {
+          // Opens the shared picker (time choice + undo), exactly like the
+          // legacy panes — an instant snooze-to-tomorrow with no dialog read
+          // as "b does nothing".
           e.preventDefault()
           uinbox.handleSelected('snooze')
           return
@@ -664,7 +673,12 @@ export function useKeybindings() {
       }
       if (e.key === 'b') {
         e.preventDefault()
-        ui.getState().setShowSnoozePicker(true)
+        // Snooze the pane's OWN selection through the shared picker. Chat
+        // never had this wired — the picker used to be mail-only, so `b` on
+        // the Chat pane snoozed whatever mail thread happened to be selected.
+        const source = isEmail ? 'mail' : 'chat'
+        const sourceId = isEmail ? inbox.getState().selectedThreadId : chat.getState().selectedRoomId
+        if (sourceId) ui.getState().openSnoozePicker({ source, sourceId, key: itemKey(source, sourceId), origin: 'pane' })
         return
       }
 
