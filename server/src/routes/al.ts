@@ -80,7 +80,10 @@ export function handleAlRoutes(
       }
       try {
         const { id, jid } = await wa.sendText(to.trim(), text)
-        jsonResponse(res, 200, { ok: true, id, jid })
+        // `user` labels the send in the caller's transcript with the SAME
+        // resolved name the inbound envelope uses, so "sent to Veronica @phone"
+        // and "reply from Nica @lid" visibly meet in one identity.
+        jsonResponse(res, 200, { ok: true, id, jid, user: resolveUsername(jid) })
       } catch (err) {
         const msg = (err as Error)?.message ?? 'unknown'
         const status = /not connected/i.test(msg) ? 503 : 500

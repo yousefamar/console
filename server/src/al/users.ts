@@ -112,12 +112,6 @@ export function resolveAllow(senderId: string): string[] {
   return lookupMap.get(normalize(senderId))?.allow ?? []
 }
 
-/** One key per PERSON: the username when known (spans every JID in their
- *  file — phone + @lid), else the bare normalized id. */
-export function contactKey(senderId: string): string {
-  return resolveUsername(senderId) ?? normalize(senderId)
-}
-
 /** Every identifier a user's file lists (normalized), or [] when unknown. */
 export function identifiersFor(username: string | null): string[] {
   if (!lookupMap || !username) return []

@@ -41,8 +41,6 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 import { transcribeAudio } from './transcribe.js'
-import { contactKey } from './users.js'
-import { recordOutbound, formatRecentOutbound, type OutboundEntry } from './outbound-ledger.js'
 
 const logger = pino({ level: 'silent' })
 
@@ -429,7 +427,6 @@ export async function sendText(to: string, text: string): Promise<{ id: string; 
   const result = await sock.sendMessage(jid, { text })
   const id = result?.key?.id
   if (!id) throw new Error('send returned no message id')
-  recordOutbound(contactKey(jid), { text, ts: Date.now(), jid })
   return { id, jid }
 }
 
@@ -452,11 +449,15 @@ export async function deleteForEveryone(to: string, messageId: string): Promise<
 export function inboundEnvelope(
   msg: WhatsAppInbound,
   resolvedUser: string | null,
-  recentOut: OutboundEntry[] = [],
-  now = Date.now(),
+  /** The contact's OTHER identifiers (phone vs @lid). One person can write
+   *  from either while our sends went to the other — without this label the
+   *  model reads "Nica @lid" and "Veronica @phone" as two threads and answers
+   *  a stale antecedent (^rosy-kiwi, 2026-09-02). */
+  otherIds: string[] = [],
 ): string {
   const user = resolvedUser ?? 'unknown'
   const senderTag = msg.senderName ? `${msg.senderName} (${msg.sender})` : msg.sender
+  const userTag = otherIds.length ? `${user} (same person as ${otherIds.join(', ')})` : user
   // Envelope is framed as a TASK with a required ACTION (Bash call), not as a
   // chat message awaiting a reply. This stops Claude from defaulting to a
   // conversational in-session reply (which fails silently — the WA sender
@@ -464,7 +465,7 @@ export function inboundEnvelope(
   // the Bash call is the OPERATOR LOG, not the reply.
   const lines = [
     `[INBOUND WhatsApp — action required]`,
-    `From: ${senderTag} — resolved user: ${user}`,
+    `From: ${senderTag} — resolved user: ${userTag}`,
     `Thread: ${msg.jid}`,
     `Message ID: ${msg.id}`,
     ``,
@@ -481,16 +482,6 @@ export function inboundEnvelope(
   for (const file of msg.files) {
     lines.push(``, `[INBOUND WhatsApp] Attached file (${file.kind}, ${file.mimeType}): ${file.path}`)
     if (file.transcript) lines.push(`Voice note transcript: "${file.transcript}"`)
-  }
-  // The antecedent anchor: a contact's reply may arrive from a DIFFERENT JID
-  // than the one we sent to (phone vs @lid), so the thread alone can't show
-  // what they're answering. See outbound-ledger.ts.
-  if (recentOut.length > 0) {
-    lines.push(
-      ``,
-      `Your most recent messages to this contact (any of their WhatsApp identities, newest first) — a short reply like "thanks" almost certainly answers the top one:`,
-      ...formatRecentOutbound(recentOut, now),
-    )
   }
   lines.push(
     ``,
