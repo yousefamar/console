@@ -269,16 +269,18 @@ archives everything under ~/.config/console/ring/recordings/ (never pruned),
 falls back to hub STT when the ring's transcript is missing, then routes the
 text through the command tree in the vault note projects/console/ring-schema.md:
   <verb> <target> <payload>
-  log <name> <text>          dated bullet appended to a log note
-  add <list> <item>          bullet (movies: LLM-enriched table row)
+  add|log <target> <text>    append to a list/log note under scratch/lists/
+                             (dated targets = logs: day heading + HH:MM bullet;
+                              movies: LLM-enriched table row)
   add <project> <text>       board card on that project (Backlog — queued)
   start <project> <text>     board card in In Progress (dispatched — an agent forks now)
   message <person> <text>    AL relays it on WhatsApp, attributed to you
+  echo <text>                straight to your own WhatsApp, no LLM (smoke test)
   play | pause | next | previous | play <query>
-There is no "agent" verb — you talk to projects (add = backlog it, start = kick
-it off). Text no verb claims goes to AL — into an "AL ↔ ring" fork seeded with
-this tree, which acts on it and files a "Ring schema gap" card when the tree
-should have caught it.
+Every note entry is "canonical: [ways to say it]". There is no "agent" verb —
+you talk to projects (add = backlog it, start = kick it off). Text no verb
+claims goes to AL — into an "AL ↔ ring" fork seeded with this tree, which acts
+on it and files a "Ring schema gap" card when the tree should have caught it.
 Verbs/targets tolerate one-letter mis-transcriptions and the note's aliases;
 the LLM classifier runs only when no rule fires; anything still unclaimed goes
 to the fallback agent (AL). The ring ignores the HTTP response, so the outcome
@@ -286,6 +288,7 @@ arrives as a push notification.
 
 Examples:
   con ring setup
+  con ring say "echo testing one two"
   con ring say "log dream I was escaping a prison made of cheese"
   con ring schema --check
   con ring list --limit 5

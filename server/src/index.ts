@@ -1155,6 +1155,12 @@ const ringStore = new RingStore(configDir)
 /** Live keyed sessions — only for `describeSchema`'s fallback-is-live check. */
 const ringLiveAgents = () => [...sessions.values()].filter((s) => s.status !== 'ended').map((s) => ({ agentKey: s.getInfo().agentKey ?? null }))
 const ringSchema = new RingSchemaLoader(noteStore, log)
+/** Yousef's own WhatsApp: NOTIFY_JID (server/.env), else the first id in users/yousef.md. */
+const yousefWhatsAppJid = (): string | null => {
+  const env = process.env.NOTIFY_JID?.trim()
+  if (env) return env
+  return identifiersFor('yousef')[0] ?? null
+}
 const ringEnv = async (): Promise<RouteEnv> => {
   const [spaces, users] = await Promise.all([
     listSpaces(noteStore).catch(() => [] as Awaited<ReturnType<typeof listSpaces>>),
@@ -1168,7 +1174,7 @@ const ringEnv = async (): Promise<RouteEnv> => {
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
-  describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringLiveAgents() }, (p) => noteStore.read(p).then(() => true, () => false)),
+  describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringLiveAgents(), echoConfigured: !!yousefWhatsAppJid() }, (p) => noteStore.read(p).then(() => true, () => false)),
   env: ringEnv,
   // Ring work for AL lives in ONE conversation fork (`AL ↔ ring`, thread key
   // 'ring') so it never lands in his main session; routeInbound returns false
@@ -1179,6 +1185,12 @@ const ringCtx: RingCtx = {
     const seed = buildRingForkSeed(ringSchema.current())
     if (routeInbound(agentCtx, 'ring', null, 'ring', envelope, { seed })) return true
     return injectToSession(al.id, envelope)
+  },
+  // echo: pure software — AL's WhatsApp socket, Yousef's own number.
+  whatsappToYousef: async (text) => {
+    const jid = yousefWhatsAppJid()
+    if (!jid) throw new Error('NOTIFY_JID unset and no whatsapp id in users/yousef.md')
+    return (await alWa.sendText(jid, text)).jid
   },
   deliverToAgent: (key, envelope) => {
     const k = key.toLowerCase()

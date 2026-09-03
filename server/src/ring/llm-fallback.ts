@@ -18,14 +18,14 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     'You classify a short voice-command transcript from a smart ring into ONE command from a fixed tree. The transcript may be mis-transcribed (homophones, dropped words, mangled names) — infer the intended command generously but never invent content that is not there, and never pick a target outside the lists below.',
     '',
     'Tree: <verb> <target> <payload>. Output exactly one JSON object, nothing else:',
-    `  {"kind":"log","target":"<one of: ${Object.keys(v.log.targets).join(', ') || '-'}>","text":"<payload>"}`,
     `  {"kind":"list","target":"<one of: ${Object.keys(v.add.targets).join(', ') || '-'}>","item":"<payload>"}`,
     `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","text":"<payload>","start":<true only if the speaker clearly wants work to begin NOW (verbs like start/do/go/kick off), else false>}`,
-    `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.values(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","text":"<payload>"}`,
+    `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.keys(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","text":"<payload>"}`,
+    '  {"kind":"echo","text":"<payload>"}',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: what to play>"}',
     '  {"kind":"unknown"}',
     '',
-    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
+    `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
     '',
     `Transcript: ${JSON.stringify(text)}`,
     '',
@@ -42,15 +42,14 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
   const str = (k: string) => (typeof obj[k] === 'string' ? (obj[k] as string).trim() : '')
   const v = schema.verbs
   switch (obj.kind) {
-    case 'log': {
-      const target = str('target').toLowerCase(); const t = str('text')
-      const file = v.log.targets[target]
-      return file && t ? { kind: 'log', target, file, text: t } : null
-    }
     case 'list': {
       const target = str('target').toLowerCase(); const item = str('item')
       const t = v.add.targets[target]
-      return t && item ? { kind: 'list', target, file: t.file, item, ...(t.enrich ? { enrich: t.enrich } : {}) } : null
+      return t && item ? { kind: 'list', target, file: t.file, item, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } : null
+    }
+    case 'echo': {
+      const t = str('text')
+      return t ? { kind: 'echo', text: t } : null
     }
     case 'card': {
       const project = str('project').toLowerCase(); const t = str('text')
@@ -58,7 +57,7 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
     }
     case 'message': {
       const contact = str('contact').toLowerCase(); const t = str('text')
-      const known = Object.values(v.message.contacts).includes(contact) || env.contacts.includes(contact)
+      const known = contact in v.message.contacts || env.contacts.includes(contact)
       return known && t ? { kind: 'message', contact, spoken: contact, text: t } : null
     }
     case 'music': {

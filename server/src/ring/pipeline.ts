@@ -19,6 +19,9 @@ export interface RingCtx {
   deliverToAl: (envelope: string) => boolean
   /** Deliver to a non-AL fallback agent by agentKey. False = no live session. */
   deliverToAgent: (agentKey: string, envelope: string) => boolean
+  /** `echo` — the payload to Yousef's own WhatsApp via AL's number, no LLM.
+   *  Returns the JID it went to; throws when WhatsApp is down / unconfigured. */
+  whatsappToYousef: (text: string) => Promise<string>
   notes: {
     /** null when the note doesn't exist yet. */
     read: (path: string) => Promise<string | null>
@@ -53,12 +56,13 @@ export interface RingDelivery {
  *  with a transcript the tree didn't claim. */
 export function buildRingForkSeed(schema: RingSchema): string {
   const v = schema.verbs
+  const targets = Object.entries(v.add.targets)
   const tree = [
-    `log <name> <text>        → dated bullet in a log note (names: ${Object.keys(v.log.targets).join(', ') || '-'})`,
-    `add <list> <item>        → list note (lists: ${Object.keys(v.add.targets).join(', ') || '-'})`,
+    `add|log <target> <text>  → append to a list/log note (logs, dated: ${targets.filter(([, t]) => t.dated).map(([n]) => n).join(', ') || '-'}; lists: ${targets.filter(([, t]) => !t.dated).map(([n]) => n).join(', ') || '-'})`,
     `add <project> <text>     → board card in ${v.add.projectColumn}`,
     `start <project> <text>   → board card in ${v.start.column} (dispatched, forks an agent now)`,
     `message <person> <text>  → you relay it on WhatsApp (nicknames: ${Object.keys(v.message.contacts).join(', ') || '-'})`,
+    'echo <text>              → straight to Yousef\'s WhatsApp (pure software smoke test)',
     'play | pause | next | previous | play <query>',
   ]
   return [
@@ -142,8 +146,8 @@ function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { ti
   switch (c.kind) {
     case 'fallback': return { title: `Ring → ${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`}`, body: c.text }
     case 'message': return { title: `Ring → AL relays to ${c.spoken}`, body: c.text, ...(o.detail ? {} : {}) }
-    case 'log': return { title: `Ring · log ${c.target}`, body: c.text }
-    case 'list': return { title: `Ring · add ${c.target}`, body: o.detail ?? c.item }
+    case 'list': return { title: `Ring · ${c.dated ? 'log' : 'add'} ${c.target}`, body: c.dated ? c.item : (o.detail ?? c.item) }
+    case 'echo': return { title: 'Ring · echo → WhatsApp', body: c.text }
     case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
     case 'music': return { title: 'Ring · music', body: o.detail ?? describeCommand(c) }
     default: return { title: 'Ring', body: describeCommand(c) }
@@ -163,13 +167,16 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
         const ok = ctx.deliverToAl(buildRelayEnvelope(c.contact, c.spoken, c.text, recordingId))
         return ok ? { ok } : { ok, detail: 'AL is not live to relay the message' }
       }
-      case 'log': {
-        const existing = await ctx.notes.read(c.file)
-        await ctx.notes.write(c.file, appendLogEntry(existing, c.text, now))
-        return { ok: true, detail: c.file }
+      case 'echo': {
+        const jid = await ctx.whatsappToYousef(c.text)
+        return { ok: true, detail: `sent to ${jid}` }
       }
       case 'list': {
         const existing = await ctx.notes.read(c.file)
+        if (c.dated) {
+          await ctx.notes.write(c.file, appendLogEntry(existing, c.item, now))
+          return { ok: true, detail: c.file }
+        }
         if (c.enrich === 'movie') {
           const row = await ctx.enrichMovie(c.item)
           if (row) {

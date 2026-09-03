@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
-import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, matchVerb, type RouteEnv } from '../ring/router.js'
+import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, type RouteEnv } from '../ring/router.js'
 import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
-import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, type RingSchema } from '../ring/schema.js'
+import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
 import { RingStore } from '../ring/store.js'
@@ -16,7 +16,7 @@ import { NoteStore } from '../notes.js'
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
 const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools'], contacts: ['nica', 'sam-miller', 'yasmina-amar'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
-SCHEMA.verbs.message.contacts = { mum: 'yasmina-amar', nica: 'nica' }
+SCHEMA.verbs.message.contacts = { 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
 
 describe('multipart', () => {
   it('round-trips text + binary parts byte-exactly', () => {
@@ -51,16 +51,27 @@ describe('normalise + fuzzy', () => {
   it('editDistance / fuzzyEqual / pickFuzzy', () => {
     expect(editDistance('movies', 'moves')).toBe(1)
     expect(editDistance('log', 'lock')).toBe(2)
+    expect(editDistance('flims', 'films')).toBe(1) // adjacent swap = one edit
     expect(fuzzyEqual('moves', 'movies')).toBe(true)
     expect(fuzzyEqual('log', 'lock')).toBe(false) // <4 letters → exact only
     expect(fuzzyEqual('dreem', 'dream')).toBe(true)
-    expect(pickFuzzy('gaems', ['games', 'gamer'])).toBeNull() // ambiguous → never guess
+    expect(pickFuzzy('gamer', ['games', 'gamed'])).toBeNull() // ambiguous → never guess
+    expect(pickFuzzy('gaems', ['games', 'gamer'])).toBe('games') // swap = 1 edit, unique
     expect(pickFuzzy('games', ['games', 'gamer'])).toBe('games')
   })
+  it('resolveSpoken: alias table, fuzzy on two forms of the SAME canonical is still unique', () => {
+    const forms = spokenForms(SCHEMA.verbs.add.targets)
+    expect(resolveSpoken('films', forms)).toBe('movies')
+    expect(resolveSpoken('flims', forms)).toBe('movies') // one edit off "films"
+    expect(resolveSpoken('dreams', forms)).toBe('dream')
+    expect(resolveSpoken('system', forms)).toBe('emotion')
+    expect(resolveSpoken('banana', forms)).toBeNull()
+  })
   it('matchVerb: name, alias, one edit — never between two verbs', () => {
-    expect(matchVerb('log', SCHEMA)).toBe('log')
-    expect(matchVerb('lock', SCHEMA)).toBe('log') // schema alias
+    expect(matchVerb('log', SCHEMA)).toBe('add') // log IS add
+    expect(matchVerb('lock', SCHEMA)).toBe('add') // schema alias
     expect(matchVerb('massage', SCHEMA)).toBe('message')
+    expect(matchVerb('ping', SCHEMA)).toBe('echo')
     expect(matchVerb('tell', SCHEMA)).toBe('message')
     expect(matchVerb('kick', SCHEMA)).toBe('start')
     expect(matchVerb('stat', SCHEMA)).toBe('start')
@@ -74,9 +85,11 @@ describe('schema note', () => {
     expect(p.found).toBe(true)
     expect(p.errors).toEqual([])
     expect(p.schema.fallback).toBe('al')
-    expect(p.schema.verbs.add.targets.movies).toEqual({ file: 'scratch/lists/movie-list.md', enrich: 'movie' })
-    expect(p.schema.verbs.add.targets.reading).toEqual({ file: 'scratch/lists/reading-list.md' })
-    expect(p.schema.verbs.log.aliases).toContain('lock')
+    expect(p.schema.verbs.add.targets.movies).toEqual({ file: 'scratch/lists/movie-list.md', dated: false, enrich: 'movie', aliases: ['movie', 'film', 'films'] })
+    expect(p.schema.verbs.add.targets.groceries).toEqual({ file: 'scratch/lists/groceries.md', dated: false, aliases: ['grocery', 'shopping'] })
+    expect(p.schema.verbs.add.targets.dream).toMatchObject({ file: 'scratch/lists/dream.md', dated: true })
+    expect(p.schema.verbs.add.aliases).toContain('log')
+    expect(p.schema.verbs.echo.aliases).toContain('ping')
   })
   it('missing fence → defaults + found:false; bad yaml → error', () => {
     expect(parseSchemaNote('# nothing here')).toMatchObject({ found: false, schema: DEFAULT_SCHEMA })
@@ -85,26 +98,37 @@ describe('schema note', () => {
     expect(bad.errors[0]).toMatch(/^yaml/)
   })
   it('validates shapes and unknown verbs/enrichers without dropping the rest', () => {
-    const p = parseSchemaNote('```yaml\nfallback: null\nverbs:\n  add:\n    targets:\n      films: { file: x.md, enrich: imdb }\n      books: 12\n  dance: {}\n```')
+    const p = parseSchemaNote('```yaml\nfallback: null\nverbs:\n  add:\n    targets:\n      films: { file: x.md, enrich: imdb }\n      books: 12\n      todo:\n  message:\n    contacts:\n      mum: mai\n  dance: {}\n```')
     expect(p.schema.fallback).toBeNull()
-    expect(p.schema.verbs.add.targets.films).toEqual({ file: 'x.md' })
+    expect(p.schema.verbs.add.targets.films).toEqual({ file: 'x.md', dated: false, aliases: [] })
     expect(p.schema.verbs.add.targets.books).toBeUndefined()
+    expect(p.schema.verbs.add.targets.todo).toEqual({ file: 'scratch/lists/todo.md', dated: false, aliases: [] })
     expect(p.errors.join('\n')).toMatch(/enrich: unknown enricher "imdb"/)
-    expect(p.errors.join('\n')).toMatch(/books: expected a file path/)
+    expect(p.errors.join('\n')).toMatch(/books: expected a path/)
+    expect(p.errors.join('\n')).toMatch(/contacts.mum: expected a LIST/) // old nickname→user shape rejected, not inverted
     expect(p.errors.join('\n')).toMatch(/verbs.dance: unknown verb/)
+  })
+  it('flags a spoken form claimed by two targets or two contacts', () => {
+    const p = parseSchemaNote('```yaml\nverbs:\n  add:\n    targets:\n      dream: { aliases: [log] }\n      diary: { aliases: [log] }\n  message:\n    contacts:\n      mai: [mum]\n      nica: [mum]\n```')
+    expect(p.errors.join('\n')).toMatch(/"log" is claimed by both target dream and target diary/)
+    expect(p.errors.join('\n')).toMatch(/"mum" is claimed by both contacts mai and nica/)
   })
 })
 
 describe('routeByRules (schema-driven tree)', () => {
   const r = (t: string) => routeByRules(t, SCHEMA, ENV)
-  it('log <name> <text>, with STT punctuation and a fuzzy target', () => {
-    expect(r('Log dream. I was escaping a prison made of cheese')).toMatchObject({ rule: 'log', command: { kind: 'log', target: 'dream', file: 'scratch/logs/dream.md', text: 'I was escaping a prison made of cheese' } })
-    expect(r('lock dreem it was dark')).toMatchObject({ command: { kind: 'log', target: 'dream' } })
-    expect(r('log food two eggs')).toMatchObject({ rule: 'log.unknown-target', command: { kind: 'unknown-target', verb: 'log', target: 'food' } })
+  it('log <target> <text> is add with a dated target; STT punctuation + aliases + fuzzy tolerated', () => {
+    expect(r('Log dream. I was escaping a prison made of cheese')).toMatchObject({ rule: 'add.log', command: { kind: 'list', target: 'dream', file: 'scratch/lists/dream.md', dated: true, item: 'I was escaping a prison made of cheese' } })
+    expect(r('lock dreems it was dark')).toMatchObject({ command: { kind: 'list', target: 'dream', dated: true } })
+    expect(r('log journal just finished sowing the seeds for this season')).toMatchObject({ command: { target: 'journal', dated: true, item: 'just finished sowing the seeds for this season' } })
+    expect(r('log system feeling flat today')).toMatchObject({ command: { target: 'emotion', dated: true } })
+    expect(r('add dream flying again')).toMatchObject({ command: { target: 'dream', dated: true } }) // verb doesn't matter, target does
+    expect(r('log food two eggs')).toMatchObject({ rule: 'add.unknown-target', command: { kind: 'unknown-target', verb: 'add', target: 'food' } })
   })
   it('add <list> <item> and add <project> <text>', () => {
-    expect(r('Add movies Spiderman')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Spiderman', enrich: 'movie' } })
-    expect(r('ad groceries eggs')).toMatchObject({ command: { kind: 'list', target: 'groceries', item: 'eggs' } })
+    expect(r('Add movies Spiderman')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Spiderman', dated: false, enrich: 'movie' } })
+    expect(r('add film Dune')).toMatchObject({ command: { target: 'movies' } })
+    expect(r('ad shopping eggs')).toMatchObject({ command: { kind: 'list', target: 'groceries', item: 'eggs', dated: false } })
     expect(r('add console the login button is misaligned')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'console', column: 'Backlog', text: 'the login button is misaligned' } })
     expect(r('add reflection tools export to csv')).toMatchObject({ command: { kind: 'card', project: 'reflection-tools', text: 'export to csv' } })
     expect(r('add nonsense thing')).toMatchObject({ command: { kind: 'unknown-target', verb: 'add', target: 'nonsense' } })
@@ -116,16 +140,21 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('start movies Dune')).toMatchObject({ rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start' } })
   })
   it('message <person> <text> via nickname or username', () => {
-    expect(r("Message mum I'll be home in 30 mins")).toMatchObject({ rule: 'message.nickname', command: { kind: 'message', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
-    expect(r('text nica running late')).toMatchObject({ rule: 'message.nickname', command: { kind: 'message', contact: 'nica' } })
-    expect(r('message sam-miller hi')).toMatchObject({ rule: 'message.contact', command: { contact: 'sam-miller' } })
+    expect(r("Message mum I'll be home in 30 mins")).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
+    expect(r('text nika running late')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'nica' } })
+    expect(r('message sam-miller hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } })
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
   })
   it('there is no agent verb — "tell" is a message alias, bare names are unclaimed', () => {
-    expect(r("tell mum I'm late")).toMatchObject({ rule: 'message.nickname', command: { kind: 'message', contact: 'yasmina-amar', text: "I'm late" } })
+    expect(r("tell mum I'm late")).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'yasmina-amar', text: "I'm late" } })
     expect(r('agent console fix the build')).toBeNull()
     expect(r('Console, restart the dev server')).toBeNull()
     expect(r('ask owl what time is it')).toBeNull()
+  })
+  it('echo <text> — no target, payload verbatim', () => {
+    expect(r('Echo testing one two three')).toMatchObject({ rule: 'echo', command: { kind: 'echo', text: 'testing one two three' } })
+    expect(r('ping, is this thing on')).toMatchObject({ command: { kind: 'echo', text: 'is this thing on' } })
+    expect(r('echo')).toBeNull()
   })
   it('music transport + play query', () => {
     expect(r('pause the music')).toMatchObject({ rule: 'music.pause' })
@@ -142,15 +171,18 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(describeCommand({ kind: 'card', project: 'console', column: 'Backlog', text: 'x' })).toBe('card → console (Backlog): x')
     expect(describeCommand({ kind: 'unknown-target', verb: 'log', target: 'food', text: 'x' })).toBe('log: no target called "food"')
     expect(describeCommand({ kind: 'fallback', agentKey: 'al', text: 'hi' })).toBe('→ @al (fallback): hi')
+    expect(describeCommand({ kind: 'list', target: 'dream', file: 'f', item: 'x', dated: true })).toBe('log dream: x')
+    expect(describeCommand({ kind: 'echo', text: 'x' })).toBe('echo: x')
   })
 })
 
 describe('llm fallback parsing', () => {
   it('accepts only on-schema replies with known targets', () => {
     expect(parseClassifyReply('{"kind":"agent","targetId":"s2","message":"buy milk"}', SCHEMA, ENV, 'x')).toBeNull() // no agent verb
-    expect(parseClassifyReply('{"kind":"log","target":"dream","text":"flying"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'log', file: 'scratch/logs/dream.md' })
-    expect(parseClassifyReply('{"kind":"log","target":"food","text":"eggs"}', SCHEMA, ENV, 'x')).toBeNull()
-    expect(parseClassifyReply('{"kind":"list","target":"movies","item":"Dune"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', enrich: 'movie' })
+    expect(parseClassifyReply('{"kind":"list","target":"dream","item":"flying"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', file: 'scratch/lists/dream.md', dated: true })
+    expect(parseClassifyReply('{"kind":"list","target":"food","item":"eggs"}', SCHEMA, ENV, 'x')).toBeNull()
+    expect(parseClassifyReply('{"kind":"list","target":"movies","item":"Dune"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', enrich: 'movie', dated: false })
+    expect(parseClassifyReply('{"kind":"echo","text":"hi"}', SCHEMA, ENV, 'x')).toEqual({ kind: 'echo', text: 'hi' })
     expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'Backlog' })
     expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix","start":true}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'In Progress' })
     expect(parseClassifyReply('{"kind":"card","project":"nope","text":"fix"}', SCHEMA, ENV, 'x')).toBeNull()
@@ -163,7 +195,7 @@ describe('llm fallback parsing', () => {
     const p = buildClassifyPrompt('tel owl buy "milk"', SCHEMA, ENV)
     expect(p).not.toContain('"agent"')
     expect(p).toContain('one of: dream')
-    expect(p).toContain('mum→yasmina-amar')
+    expect(p).toContain('yasmina-amar←mum/sister/yasmina')
     expect(p).toContain(JSON.stringify('tel owl buy "milk"'))
   })
   it('movie reply parsing falls back to the spoken title', () => {
@@ -219,15 +251,17 @@ describe('RingSchemaLoader', () => {
 
 describe('describeSchema', () => {
   it('flags contacts/agents that do not resolve, and missing files as create-on-use', async () => {
-    const d = await describeSchema({ schema: SCHEMA, errors: [], stale: false, path: 'p.md' }, { ...ENV, agents: AGENTS }, async (p) => p.endsWith('movie-list.md'))
+    const d = await describeSchema({ schema: SCHEMA, errors: [], stale: false, path: 'p.md' }, { ...ENV, agents: AGENTS, echoConfigured: false }, async (p) => p.endsWith('movie-list.md'))
     expect(d.fallback).toEqual({ agentKey: 'al', live: true })
     const add = d.verbs.find((v) => v.verb === 'add')!
     expect(add.targets.find((t) => t.name === 'movies')!.note).toBeUndefined()
     expect(add.targets.find((t) => t.name === 'groceries')!.note).toMatch(/created on first use/)
     expect(add.targets.find((t) => t.name === 'console')!.resolves).toBe('board card → Backlog')
+    expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
-    expect(msg.targets.find((t) => t.name === 'mum')!.ok).toBe(true)
-    expect(d.verbs.map((v) => v.verb)).toEqual(['log', 'add', 'start', 'message', 'music'])
+    expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] })
+    expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
+    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
   })
 })
 
@@ -236,6 +270,7 @@ describe('RingStore + pipeline', () => {
   let store: RingStore
   let toAl: string[]
   let toAgent: Array<{ key: string; content: string }>
+  let echoed: string[]
   let notified: Array<{ title: string; body: string }>
   let music: string[]
   let notes: Map<string, string>
@@ -246,7 +281,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; notified = []; music = []; cards = []
+    toAl = []; toAgent = []; echoed = []; notified = []; music = []; cards = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -256,6 +291,7 @@ describe('RingStore + pipeline', () => {
       env: async () => ENV,
       deliverToAl: (envelope) => { toAl.push(envelope); return true },
       deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },
+      whatsappToYousef: async (text) => { echoed.push(text); return '447000@s.whatsapp.net' },
       notes: { read: async (p) => notes.get(p) ?? null, write: async (p, c) => { notes.set(p, c) } },
       addCard: async (project, text, column) => { cards.push(`${project}/${column}: ${text}`); return `"${text}" → ${column}` },
       music: {
@@ -292,9 +328,20 @@ describe('RingStore + pipeline', () => {
 
   it('log appends a dated bullet to the target note', async () => {
     const rec = await deliver('log dream I was escaping a prison made of cheese')
-    expect(rec.route).toMatchObject({ rule: 'log', ok: true })
-    expect(notes.get('scratch/logs/dream.md')).toBe('## 2026-09-02\n- 23:07 I was escaping a prison made of cheese\n')
-    expect(notified[0]).toMatchObject({ title: 'Ring · log dream' })
+    expect(rec.route).toMatchObject({ rule: 'add.log', ok: true })
+    expect(notes.get('scratch/lists/dream.md')).toBe('## 2026-09-02\n- 23:07 I was escaping a prison made of cheese\n')
+    expect(notified[0]).toMatchObject({ title: 'Ring · log dream', body: 'I was escaping a prison made of cheese' })
+    await deliver('add journal sowed the seeds')
+    expect(notes.get('scratch/lists/journal.md')).toBe('## 2026-09-02\n- 23:07 sowed the seeds\n')
+  })
+
+  it('echo goes straight to WhatsApp, no LLM', async () => {
+    const rec = await deliver('echo testing one two')
+    expect(rec.route).toMatchObject({ rule: 'echo', ok: true, detail: 'sent to 447000@s.whatsapp.net' })
+    expect(echoed).toEqual(['testing one two'])
+    expect(notified[0]).toMatchObject({ title: 'Ring · echo → WhatsApp', body: 'testing one two' })
+    ctx.whatsappToYousef = async () => { throw new Error('WhatsApp not connected') }
+    expect((await deliver('echo again')).route).toMatchObject({ ok: false, detail: 'WhatsApp not connected' })
   })
 
   it('add <list>: movie enrichment → table row; other lists → bullet; enrichment failure → bullet', async () => {
@@ -316,7 +363,7 @@ describe('RingStore + pipeline', () => {
 
   it('message relays through AL with attribution', async () => {
     const rec = await deliver("message mum I'll be home in 30 mins")
-    expect(rec.route).toMatchObject({ rule: 'message.nickname', ok: true })
+    expect(rec.route).toMatchObject({ rule: 'message', ok: true })
     expect(toAl[0]).toBe(buildRelayEnvelope('yasmina-amar', 'mum', "I'll be home in 30 mins", rec.id))
     expect(toAl[0]).toMatch(/attributed to Yousef/)
     expect(notified[0]!.title).toBe('Ring → AL relays to mum')
@@ -324,9 +371,9 @@ describe('RingStore + pipeline', () => {
 
   it('a verb with an unknown target is actionable feedback, not a fallback', async () => {
     const rec = await deliver('log food two eggs')
-    expect(rec.route).toMatchObject({ rule: 'log.unknown-target', ok: false })
+    expect(rec.route).toMatchObject({ rule: 'add.unknown-target', ok: false })
     expect(toAl).toHaveLength(0)
-    expect(notified[0]!.body).toMatch(/no log target called "food"/)
+    expect(notified[0]!.body).toMatch(/no add target called "food"/)
   })
 
   it('falls back to hub STT when the ring sent no transcript', async () => {
@@ -361,6 +408,8 @@ describe('RingStore + pipeline', () => {
     expect(seed).toMatch(/^\[RING FORK\]/)
     expect(seed).toContain('projects/console/ring-schema.md')
     expect(seed).toContain('start <project> <text>   → board card in In Progress')
+    expect(seed).toContain('logs, dated: dream, journal, emotion')
+    expect(seed).toContain('echo <text>')
     expect(seed).toContain('con spaces board console add "Ring schema gap:')
     expect(seed).toContain('Do not edit the schema note yourself')
   })

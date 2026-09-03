@@ -9,7 +9,7 @@
 // (`add <project> …` files a card, the board forks an agent for it), not to
 // agents. AL is reached only as the fallback for text no verb claims.
 
-import type { RingSchema, ListTarget } from './schema.js'
+import { spokenForms, contactForms, type RingSchema, type ListTarget } from './schema.js'
 
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
@@ -20,8 +20,9 @@ export interface RouteEnv {
 }
 
 export type RingCommand =
-  | { kind: 'log'; target: string; file: string; text: string }
-  | { kind: 'list'; target: string; file: string; item: string; enrich?: ListTarget['enrich'] }
+  /** Append to a list/log note. `dated` = log semantics (day heading + HH:MM). */
+  | { kind: 'list'; target: string; file: string; item: string; dated: boolean; enrich?: ListTarget['enrich'] }
+  | { kind: 'echo'; text: string }
   | { kind: 'card'; project: string; column: string; text: string }
   | { kind: 'message'; contact: string; spoken: string; text: string }
   /** Only ever minted by the FALLBACK (unclaimed text → the fallback agent) —
@@ -61,23 +62,26 @@ export function normalise(text: string): string {
   return normaliseKeepCase(text).toLowerCase()
 }
 
-/** Levenshtein distance, capped early at `max + 1`. */
+/** Optimal-string-alignment edit distance (Levenshtein + adjacent
+ *  transposition as ONE edit), capped early at `max + 1`. */
 export function editDistance(a: string, b: string, max = 2): number {
   if (a === b) return 0
   if (Math.abs(a.length - b.length) > max) return max + 1
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  const rows: number[][] = [Array.from({ length: b.length + 1 }, (_, i) => i)]
   for (let i = 1; i <= a.length; i++) {
+    const prev = rows[i - 1]!
     const cur = [i]
     let rowMin = i
     for (let j = 1; j <= b.length; j++) {
-      const v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+      let v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, rows[i - 2]![j - 2]! + 1)
       cur.push(v)
       if (v < rowMin) rowMin = v
     }
     if (rowMin > max) return max + 1
-    prev = cur
+    rows.push(cur)
   }
-  return prev[b.length]!
+  return rows[a.length]![b.length]!
 }
 
 /** Spoken word ≈ known word: exact, or one edit apart when both have 4+ letters. */
@@ -93,6 +97,16 @@ export function pickFuzzy(spoken: string, candidates: string[]): string | null {
   if (candidates.includes(spoken)) return spoken
   const fuzzy = candidates.filter((c) => fuzzyEqual(spoken, c))
   return fuzzy.length === 1 ? fuzzy[0]! : null
+}
+
+/** Resolve a spoken form through an alias table (spoken → canonical). Fuzzy
+ *  hits on two forms of the SAME canonical still count as unique. */
+export function resolveSpoken(spoken: string, forms: Map<string, string>): string | null {
+  const exact = forms.get(spoken)
+  if (exact) return exact
+  const hits = new Set<string>()
+  for (const [form, canonical] of forms) if (fuzzyEqual(spoken, form)) hits.add(canonical)
+  return hits.size === 1 ? [...hits][0]! : null
 }
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
@@ -138,25 +152,23 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
     if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: play[1]!.replace(/^(?:some|me)\s+/i, '') } }
   }
 
+  // echo <text> — no target; the whole remainder is the payload.
+  const first = /^(\S+?)[,.:]?\s+(.+)$/.exec(cased)
+  if (first && matchVerb(first[1]!.toLowerCase(), schema) === 'echo') {
+    return { rule: 'echo', command: { kind: 'echo', text: first[2]!.trim() } }
+  }
+
   const parts = split3(cased)
   const verb = parts ? matchVerb(parts.verb, schema) : null
 
   if (verb && parts) {
     const { target, payload } = parts
     switch (verb) {
-      case 'log': {
-        const known = pickFuzzy(target, Object.keys(v.log.targets))
-        if (known) return { rule: 'log', command: { kind: 'log', target: known, file: v.log.targets[known]!, text: payload } }
-        if (v.log.createUnknown && /^[a-z][a-z0-9-]{1,30}$/.test(target)) {
-          return { rule: 'log.create', command: { kind: 'log', target, file: `scratch/logs/${target}.md`, text: payload } }
-        }
-        return { rule: 'log.unknown-target', command: { kind: 'unknown-target', verb: 'log', target, text } }
-      }
       case 'add': {
-        const list = pickFuzzy(target, Object.keys(v.add.targets))
+        const list = resolveSpoken(target, spokenForms(v.add.targets))
         if (list) {
           const t = v.add.targets[list]!
-          return { rule: 'add.list', command: { kind: 'list', target: list, file: t.file, item: payload, ...(t.enrich ? { enrich: t.enrich } : {}) } }
+          return { rule: t.dated ? 'add.log' : 'add.list', command: { kind: 'list', target: list, file: t.file, item: payload, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } }
         }
         const card = projectCard(target, payload, env.projects, v.add.projectColumn)
         if (card) return { rule: 'add.card', command: card }
@@ -168,11 +180,11 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         return { rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start', target, text } }
       }
       case 'message': {
-        const nick = pickFuzzy(target, Object.keys(v.message.contacts))
-        const contact = nick ? v.message.contacts[nick]! : pickFuzzy(target, env.contacts)
-        if (contact) return { rule: nick ? 'message.nickname' : 'message.contact', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
+        const contact = resolveSpoken(target, contactForms(v.message.contacts)) ?? pickFuzzy(target, env.contacts)
+        if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
         return { rule: 'message.unknown-target', command: { kind: 'unknown-target', verb: 'message', target, text } }
       }
+      case 'echo':
       case 'music':
         break
     }
@@ -195,8 +207,8 @@ function projectCard(target: string, payload: string, projects: string[], column
 /** Human-readable one-liner for pushes / logs. */
 export function describeCommand(c: RingCommand): string {
   switch (c.kind) {
-    case 'log': return `log ${c.target}: ${c.text}`
-    case 'list': return `add ${c.target}: ${c.item}`
+    case 'list': return `${c.dated ? 'log' : 'add'} ${c.target}: ${c.item}`
+    case 'echo': return `echo: ${c.text}`
     case 'card': return `card → ${c.project} (${c.column}): ${c.text}`
     case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
     case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
