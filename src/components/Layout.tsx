@@ -721,6 +721,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
   const isMap = activePane === 'map'
   const isMoney = activePane === 'money'
   const isInbox = activePane === 'inbox'
+  const inboxShowsSnoozed = useUnifiedInboxStore((s) => s.showSnoozed)
 
   const handleDone = () => {
     // The Inbox selection can be any source, so the verb must go through that
@@ -751,7 +752,7 @@ function Footer({ activePane }: { activePane: ActivePane }) {
           <>
             <ActionHint
               keyLabel="e"
-              action={isEmail || isInbox ? 'Done' : 'Read'}
+              action={isInbox && inboxShowsSnoozed ? 'Unsnooze' : isEmail || isInbox ? 'Done' : 'Read'}
               onClick={handleDone}
             />
             <ActionHint keyLabel="b" action="Snooze" onClick={handleSnooze} />

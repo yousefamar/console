@@ -14,7 +14,9 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   is snooze-tomorrow for mail/chat/feed only (agents excluded) via its own
   `feed_snooze` table — add agents to the swipe + a time choice, and key the
   local table by item key if the two ports should read alike. Local-only on
-  both sides, so nothing to sync.
+  both sides, so nothing to sync. The SPA also gained a "N snoozed" toggle in
+  the Inbox column header listing everything snoozed (all sources, soonest-due
+  first, tap-to-unsnooze) — Android has no snoozed view at all.
 
 - Agent transcript inline media parity: SPA now renders `![x](/abs/path.png)`
   via hub `GET /agents/local-file?path=` (rewrite local/`~/` img srcs) and

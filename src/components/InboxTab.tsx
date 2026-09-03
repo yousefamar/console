@@ -15,7 +15,7 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { ArrowLeftToLine, ArrowRightToLine, Bot, Check, ClipboardCheck, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Bot, Check, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
@@ -33,6 +33,7 @@ import { relativeTime } from '@/utils/date'
 import { feedKindsPresent, reviewHandbacksFor, routeForFeed, type ReviewHandback } from '@/inbox/route'
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
+import { snoozeLabel, unsnoozeItem } from '@/inbox/snooze'
 
 // Composition wiring (source-store subscriptions → rebuild) lives in
 // src/inbox/subscribe.ts, wired at boot from GatedBoot — the tab badge needs
@@ -50,6 +51,9 @@ export const InboxTab = memo(function InboxTab() {
   const inboxFilter = useUnifiedInboxStore((s) => s.inboxFilter)
   const setInboxFilter = useUnifiedInboxStore((s) => s.setInboxFilter)
   const inboxList = inboxFilter ? fullInboxList.filter((i) => i.source === inboxFilter) : fullInboxList
+  const snoozedList = useUnifiedInboxStore((s) => s.snoozedList)
+  const showSnoozed = useUnifiedInboxStore((s) => s.showSnoozed)
+  const setShowSnoozed = useUnifiedInboxStore((s) => s.setShowSnoozed)
   const selected = useUnifiedInboxStore((s) => s.selected)
   const select = useUnifiedInboxStore((s) => s.select)
   const feedMode = useUnifiedInboxStore((s) => s.feedMode)
@@ -137,33 +141,61 @@ export const InboxTab = memo(function InboxTab() {
       {/* Inbox column */}
       <div className={`${colClass} ${showInboxCol ? 'flex' : 'hidden'} flex-col overflow-hidden`}>
         <ColumnHeader
-          label="Inbox"
-          count={inboxList.length}
+          label={showSnoozed ? 'Snoozed' : 'Inbox'}
+          count={showSnoozed ? snoozedList.length : inboxList.length}
           extra={
             <>
               {mobileToggle}
-              <span className="flex gap-1">
-                {SOURCE_FILTERS.map(({ source, icon, title }) => (
-                  <button
-                    key={source}
-                    onClick={() => setInboxFilter(inboxFilter === source ? null : source)}
-                    className={`transition-colors duration-fast ${
-                      inboxFilter === source ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
-                    }`}
-                    title={inboxFilter === source ? 'Show everything' : title}
-                  >
-                    {icon}
-                  </button>
-                ))}
-              </span>
+              {/* "N snoozed" toggle — the Mail pane's affordance, across all
+                  four sources. Rendered whenever something is snoozed (or the
+                  view is open), so it's never a dead control. */}
+              {(snoozedList.length > 0 || showSnoozed) && (
+                <button
+                  onClick={() => setShowSnoozed(!showSnoozed)}
+                  className={`flex items-center gap-1 text-[10px] transition-colors duration-fast ${
+                    showSnoozed ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+                  title={showSnoozed ? 'Back to the inbox' : 'Show snoozed items'}
+                >
+                  <Clock size={11} />
+                  <span>{showSnoozed ? 'hide' : snoozedList.length}</span>
+                </button>
+              )}
+              {!showSnoozed && (
+                <span className="flex gap-1">
+                  {SOURCE_FILTERS.map(({ source, icon, title }) => (
+                    <button
+                      key={source}
+                      onClick={() => setInboxFilter(inboxFilter === source ? null : source)}
+                      className={`transition-colors duration-fast ${
+                        inboxFilter === source ? 'text-text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                      }`}
+                      title={inboxFilter === source ? 'Show everything' : title}
+                    >
+                      {icon}
+                    </button>
+                  ))}
+                </span>
+              )}
             </>
           }
         />
         <div className="flex-1 overflow-y-auto">
-          {inboxList.map((item) => (
-            <ItemRow key={item.key} item={item} selected={item.key === selectedKey} onClick={() => select(item)} />
-          ))}
-          {inboxList.length === 0 && <EmptyHint text="Inbox zero" />}
+          {showSnoozed ? (
+            <>
+              {snoozedList.map((item) => (
+                <ItemRow key={item.key} item={item} selected={item.key === selectedKey} onClick={() => select(item)} />
+              ))}
+              {snoozedList.length === 0 && <EmptyHint text="Nothing snoozed" />}
+            </>
+          ) : (
+            <>
+              {inboxList.map((item) => (
+                <ItemRow key={item.key} item={item} selected={item.key === selectedKey} onClick={() => select(item)} />
+              ))}
+              {inboxList.length === 0 && <EmptyHint text="Inbox zero" />}
+            </>
+          )}
         </div>
       </div>
 
@@ -381,7 +413,23 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
                 {promote ? <ArrowRightToLine size={11} /> : <ArrowLeftToLine size={11} />}
               </button>
             )}
-            <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
+            {item.snoozedUntil ? (
+              <>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void unsnoozeNow(item) }}
+                  className="hidden group-hover:inline text-text-tertiary hover:text-text-primary flex-shrink-0"
+                  title="Bring it back now (e)"
+                >
+                  <AlarmClockOff size={11} />
+                </button>
+                <span className="flex items-center gap-1 text-[10px] text-text-tertiary flex-shrink-0" title={new Date(item.snoozedUntil).toLocaleString()}>
+                  <Clock size={10} />
+                  {snoozeLabel(item.snoozedUntil)}
+                </span>
+              </>
+            ) : (
+              <span className="text-[10px] text-text-tertiary flex-shrink-0">{relativeTime(item.ts)}</span>
+            )}
           </div>
           {item.body && <div className="truncate text-xs text-text-tertiary mt-0.5">{item.body}</div>}
         </div>
@@ -390,6 +438,15 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
     </div>
   )
 })
+
+/** Row-button unsnooze: same path as `e` in the snoozed view. */
+async function unsnoozeNow(item: InboxItem): Promise<void> {
+  const store = useUnifiedInboxStore.getState()
+  store.dropAndAdvance(item.key)
+  await unsnoozeItem(item)
+  useUnifiedInboxStore.getState().restore(item.key)
+  await useUnifiedInboxStore.getState().rebuild()
+}
 
 // Item thumbnail (video still / post image), sized to the two-line row so
 // it never grows the row; a dead URL just disappears.

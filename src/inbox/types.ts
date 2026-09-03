@@ -65,6 +65,9 @@ export interface InboxItem {
   icon?: string
   /** Feed only: the ITEM's thumbnail (video still, post image). */
   image?: string
+  /** Set only on rows of the Inbox's SNOOZED view — when the item is due
+   *  back (ms). Absent on live rows. */
+  snoozedUntil?: number
 }
 
 /** The one place `InboxItem.key` is spelled — the legacy panes mint targets

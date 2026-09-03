@@ -12,11 +12,11 @@ import { hubFetchRaw as hubFetch } from '@/hub'
 import { useInboxStore } from '@/store/inbox'
 import { useChatStore } from '@/store/chat'
 import { useFeedStore } from '@/store/feeds'
-import { DEFAULT_RULES, type FeedRoute, type InboxItem, type InboxRules, type InboxSource, type Route } from '@/inbox/types'
+import { DEFAULT_RULES, itemKey, type FeedRoute, type InboxItem, type InboxRules, type InboxSource, type Route } from '@/inbox/types'
 import { useAgentStore } from '@/store/agent'
 import { useSpacesStore } from '@/store/spaces'
 import { useUiStore } from '@/store/ui'
-import { activeLocalSnoozes } from '@/inbox/snooze'
+import { activeLocalSnoozes, unsnoozeItem } from '@/inbox/snooze'
 import {
   feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
@@ -28,6 +28,14 @@ interface UnifiedInboxState {
   rules: InboxRules
   rulesLoaded: boolean
   feedList: InboxItem[]
+  /** Everything currently snoozed, across all four sources, soonest-due
+   *  first — the Inbox column's "N snoozed" view. Derived like the lists:
+   *  mail/chat from their rows' `snoozedUntil`, feed/agent from `itemSnooze`. */
+  snoozedList: InboxItem[]
+  /** Inbox column shows the snoozed view instead of the live list. Session-
+   *  only, like the filters. */
+  showSnoozed: boolean
+  setShowSnoozed: (v: boolean) => void
   inboxList: InboxItem[]
   /** Feed-column mode: 'default' hides hidden-folder feeds (X); 'x' shows
    *  ONLY those. Session-only — always lands on default. */
@@ -57,7 +65,9 @@ interface UnifiedInboxState {
   setFeedFilter: (kind: FeedKind | null) => void
   rebuild: () => Promise<void>
   select: (item: InboxItem | null) => void
-  selectAdjacent: (list: 'feed' | 'inbox', dir: 1 | -1) => void
+  selectAdjacent: (list: 'feed' | 'inbox' | 'snoozed', dir: 1 | -1) => void
+  /** Which displayed list holds the selection (drives j/k + the verbs). */
+  listOf: (key: string | null | undefined) => 'feed' | 'inbox' | 'snoozed'
   /** Handle the selected item and advance to the next one in its list — same
    *  flow as the legacy panes. `done` = archive / mark-read in the owning
    *  store; `snooze` = open the shared picker for it (the picker's commit
@@ -69,7 +79,7 @@ interface UnifiedInboxState {
    *  fleet writes every few hundred ms, so a handled row could linger for
    *  seconds (the "snooze does nothing" report). Optimistic, like every other
    *  mutation in the app; the next rebuild agrees. */
-  dropAndAdvance: (key: string) => void
+  dropAndAdvance: (key: string, opts?: { snoozedUntil?: number }) => void
   /** Lift a `dropAndAdvance` suppression (undo) so the next rebuild may list
    *  the item again. */
   restore: (key: string) => void
@@ -81,16 +91,27 @@ interface UnifiedInboxState {
  *  would re-add the row from that stale read. Time-boxed: the source's own
  *  guards take over well inside this window. */
 const HANDLED_SUPPRESS_MS = 5_000
-const handledKeys = new Map<string, number>()
-function suppressedKeys(now: number): Set<string> {
-  for (const [k, until] of handledKeys) if (until <= now) handledKeys.delete(k)
-  return new Set(handledKeys.keys())
+/** Direction matters: a key dropped from the LIVE lists (snoozed/archived)
+ *  must stay out of live but may appear in the snoozed view at once; one
+ *  dropped from the SNOOZED view (unsnoozed) is the mirror image. */
+const handledKeys = new Map<string, { until: number; from: 'live' | 'snoozed' }>()
+/** Rebuilds overlap (several awaits each, scheduled from many writers); an
+ *  older one finishing after a newer one would publish stale lists — e.g. a
+ *  read taken before a snooze landed, erasing the row from the snoozed view
+ *  until the next rebuild. Only the newest rebuild may publish. */
+let rebuildSeq = 0
+function suppressedKeys(now: number, from: 'live' | 'snoozed'): Set<string> {
+  for (const [k, h] of handledKeys) if (h.until <= now) handledKeys.delete(k)
+  return new Set([...handledKeys].filter(([, h]) => h.from === from).map(([k]) => k))
 }
 
 export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   rules: DEFAULT_RULES,
   rulesLoaded: false,
   feedList: [],
+  snoozedList: [],
+  showSnoozed: false,
+  setShowSnoozed: (v) => set({ showSnoozed: v }),
   inboxList: [],
   feedMode: 'default',
   inboxFilter: null,
@@ -154,6 +175,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   },
 
   rebuild: async () => {
+    const seq = ++rebuildSeq
     const { rules, rulesLoaded } = get()
     if (!rulesLoaded) await get().loadRules()
     const effective = get().rulesLoaded ? get().rules : rules
@@ -166,7 +188,8 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
 
     // Chat: unread/manual-unread rooms, straight from Dexie (the chat store's
     // rooms array drops read rooms lazily; Dexie is the durable mirror).
-    const rooms = (await db.chatRooms.toArray())
+    const allRooms = await db.chatRooms.toArray()
+    const rooms = allRooms
       .filter((r) => roomIsLive(r, now))
       .map((r) => roomToItem(r, effective, now))
 
@@ -193,12 +216,38 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
       .filter(sessionIsLive)
       .map((s) => sessionToItem(s, reviewKeys))
 
-    const suppressed = suppressedKeys(now)
+    const suppressedLive = suppressedKeys(now, 'live')
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
-      .filter((i) => !snoozedKeys.has(i.key) && !suppressed.has(i.key))
+      .filter((i) => !snoozedKeys.has(i.key) && !suppressedLive.has(i.key))
+
+    // Snoozed view: the same four sources, inverted — rows whose snooze is
+    // still running, stamped with when they come back. Mail reads Dexie here
+    // (the store's threads array excludes snoozed threads by construction).
+    const stamp = (i: InboxItem | null, until: number | undefined): InboxItem | null =>
+      i && until ? { ...i, snoozedUntil: until } : null
+    const snoozedThreads = (await db.threads.filter((t) => !!t.snoozedUntil && t.snoozedUntil > now).toArray())
+      .map((t) => stamp(threadToItem(t, effective), t.snoozedUntil))
+    const snoozedRooms = allRooms
+      .filter((r) => !!r.snoozedUntil && r.snoozedUntil > now)
+      .map((r) => stamp(roomToItem(r, effective, now), r.snoozedUntil))
+    const feedIds = [...snoozedKeys.keys()].filter((k) => k.startsWith('feed:')).map((k) => k.slice(5))
+    const snoozedFeed = (await db.feedItems.bulkGet(feedIds))
+      .map((i) => i ? stamp(feedItemToItem(i, feedById.get(i.feedId), effective), snoozedKeys.get(itemKey('feed', i.id))) : null)
+    const sessionById = new Map(useAgentStore.getState().sessions.map((x) => [x.id, x]))
+    const snoozedAgents = [...snoozedKeys.keys()].filter((k) => k.startsWith('agent:')).map((k) => {
+      const sess = sessionById.get(k.slice(6))
+      return sess ? stamp(sessionToItem(sess, reviewKeys), snoozedKeys.get(k)) : null
+    })
+    const suppressedSnoozed = suppressedKeys(now, 'snoozed')
+    const snoozedList = [...snoozedThreads, ...snoozedRooms, ...snoozedFeed, ...snoozedAgents]
+      .filter((i): i is InboxItem => i !== null && !suppressedSnoozed.has(i.key))
+      .sort((a, b) => a.snoozedUntil! - b.snoozedUntil!)
+
+    if (seq !== rebuildSeq) return
     set({
       feedList: sortFeed(filterByFeedMode(all.filter((i) => i.route === 'feed'), get().feedMode)),
       inboxList: sortInbox(all.filter((i) => i.route === 'inbox')),
+      snoozedList,
     })
   },
 
@@ -213,24 +262,41 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     else useFeedStore.getState().selectItem(item.sourceId)
   },
 
+  listOf: (key) => {
+    const { feedList, showSnoozed } = get()
+    if (key && feedList.some((i) => i.key === key)) return 'feed'
+    // The Inbox column shows ONE of two lists; nav follows what's displayed,
+    // even when the selection was carried over from the other view.
+    return showSnoozed ? 'snoozed' : 'inbox'
+  },
+
   selectAdjacent: (list, dir) => {
-    const items = list === 'feed' ? visibleFeed(get()) : visibleInbox(get())
+    const items = list === 'feed' ? visibleFeed(get()) : list === 'snoozed' ? get().snoozedList : visibleInbox(get())
     if (items.length === 0) return
     const idx = items.findIndex((i) => i.key === get().selected?.key)
     const next = idx < 0 ? (dir === 1 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, idx + dir))
     get().select(items[next]!)
   },
 
-  dropAndAdvance: (key) => {
-    const { feedList, inboxList, selected } = get()
-    const inFeed = feedList.some((i) => i.key === key)
-    const list = inFeed ? visibleFeed(get()) : visibleInbox(get())
+  dropAndAdvance: (key, opts) => {
+    const { feedList, inboxList, snoozedList, selected } = get()
+    const which = get().listOf(key)
+    const list = which === 'feed' ? visibleFeed(get()) : which === 'snoozed' ? snoozedList : visibleInbox(get())
+    const dropped = list.find((i) => i.key === key)
     // Landing spot from the CURRENT snapshot — the item is gone after this.
     const next = selected?.key === key ? nextAfterHandle(list, key) : null
-    handledKeys.set(key, Date.now() + HANDLED_SUPPRESS_MS)
+    handledKeys.set(key, { until: Date.now() + HANDLED_SUPPRESS_MS, from: which === 'snoozed' ? 'snoozed' : 'live' })
+    // A snooze moves the row into the snoozed view at once (the rebuild
+    // that would list it there is several Dexie reads away).
+    const nextSnoozed = which === 'snoozed'
+      ? snoozedList.filter((i) => i.key !== key)
+      : dropped && opts?.snoozedUntil
+        ? [...snoozedList.filter((i) => i.key !== key), { ...dropped, snoozedUntil: opts.snoozedUntil }].sort((a, b) => a.snoozedUntil! - b.snoozedUntil!)
+        : snoozedList
     set({
-      feedList: inFeed ? feedList.filter((i) => i.key !== key) : feedList,
-      inboxList: inFeed ? inboxList : inboxList.filter((i) => i.key !== key),
+      feedList: which === 'feed' ? feedList.filter((i) => i.key !== key) : feedList,
+      inboxList: which === 'inbox' ? inboxList.filter((i) => i.key !== key) : inboxList,
+      snoozedList: nextSnoozed,
     })
     // Advance if there's somewhere to go; otherwise STAY on the handled item
     // (the viewer keeps it — an emptied list must not blank the viewer).
@@ -240,15 +306,27 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
   restore: (key) => { handledKeys.delete(key) },
 
   handleSelected: (verb) => {
-    const { feedList, selected } = get()
+    const { selected, snoozedList } = get()
     if (!selected) return
-    const inFeed = feedList.some((i) => i.key === selected.key)
-    const list = inFeed ? visibleFeed(get()) : visibleInbox(get())
-    const item = list.find((i) => i.key === selected.key) ?? selected
+    const which = get().listOf(selected.key)
+    const list = which === 'feed' ? visibleFeed(get()) : which === 'snoozed' ? snoozedList : visibleInbox(get())
+    const found = list.find((i) => i.key === selected.key)
+    // A selection carried into the snoozed view from the live list isn't a
+    // snoozed row — there's nothing here to act on.
+    if (!found && which === 'snoozed') return
+    const item = found ?? selected
 
     if (verb === 'snooze') {
       // The picker owns the rest: time choice → applySnooze → dropAndAdvance.
+      // On a snoozed row this is a re-snooze (new time replaces the old).
       useUiStore.getState().openSnoozePicker({ source: item.source, sourceId: item.sourceId, key: item.key, origin: 'inbox' })
+      return
+    }
+
+    if (which === 'snoozed') {
+      // In the snoozed view "done" means bring it back now.
+      get().dropAndAdvance(item.key)
+      void unsnoozeItem(item).then(() => { get().restore(item.key); return get().rebuild() })
       return
     }
 

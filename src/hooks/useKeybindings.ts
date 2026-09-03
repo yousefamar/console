@@ -414,7 +414,7 @@ export function useKeybindings() {
       if (activePane === 'inbox' && !isEditing) {
         const uinbox = useUnifiedInboxStore.getState()
         const selected = uinbox.selected
-        const list = selected && uinbox.feedList.some((i) => i.key === selected.key) ? 'feed' : 'inbox'
+        const list = uinbox.listOf(selected?.key)
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault()
           uinbox.selectAdjacent(list, 1)

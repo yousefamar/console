@@ -64,9 +64,9 @@ export async function unsnoozeItem(item: Snoozable): Promise<void> {
   }
 }
 
-/** Keys of locally-snoozed items still in their snooze window. */
-export async function activeLocalSnoozes(now: number): Promise<Set<string>> {
-  return new Set((await db.itemSnooze.where('snoozedUntil').above(now).toArray()).map((r) => r.key))
+/** Locally-snoozed items still in their snooze window: key → due (ms). */
+export async function activeLocalSnoozes(now: number): Promise<Map<string, number>> {
+  return new Map((await db.itemSnooze.where('snoozedUntil').above(now).toArray()).map((r) => [r.key, r.snoozedUntil]))
 }
 
 /** "tomorrow 8:00 AM" / "Mon 8:00 AM" — for the undo toast, so a mis-hit
@@ -94,10 +94,15 @@ export function applySnooze(target: SnoozeTarget, option: SnoozeOption, customDa
   const ui = useUiStore.getState()
   ui.closeSnoozePicker()
   const fromInbox = target.origin === 'inbox'
-  if (fromInbox) useUnifiedInboxStore.getState().dropAndAdvance(target.key)
-  void snoozeItem(target, option, customDate, { advance: !fromInbox }).catch(() => {})
+  const until = getSnoozeTime(option, customDate)
+  if (fromInbox) useUnifiedInboxStore.getState().dropAndAdvance(target.key, { snoozedUntil: until })
+  // Rebuild once the snooze has landed so the snoozed view agrees — a
+  // feed/agent snooze writes only Dexie, which no store subscription sees.
+  void snoozeItem(target, option, customDate, { advance: !fromInbox })
+    .catch(() => {})
+    .then(() => useUnifiedInboxStore.getState().rebuild())
   ui.setUndoAction({
-    label: `Snoozed until ${snoozeLabel(getSnoozeTime(option, customDate))}`,
+    label: `Snoozed until ${snoozeLabel(until)}`,
     expiresAt: Date.now() + UNDO_MS,
     undo: async () => {
       useUiStore.getState().setUndoAction(null)
