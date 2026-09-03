@@ -4,6 +4,10 @@
 // mis-transcription: explicit aliases from the schema note plus a one-edit
 // fuzzy match on words of 4+ letters. The LLM (llm-fallback.ts) is consulted
 // only when nothing here matches. Keep every rule deterministic and testable.
+//
+// There is deliberately NO "agent <name>" verb: Yousef talks to PROJECTS
+// (`add <project> …` files a card, the board forks an agent for it), not to
+// agents. AL is reached only as the fallback for text no verb claims.
 
 import type { RingSchema, ListTarget } from './schema.js'
 
@@ -11,13 +15,10 @@ export interface RingAgent {
   id: string
   name: string
   agentKey: string | null
-  /** Forks are never first-word candidates ("astera" → the root, not a fork). */
-  fork?: boolean
 }
 
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
-  agents: RingAgent[]
   /** Vault project slugs (an `add` target naming one files a board card). */
   projects: string[]
   /** AL workspace usernames (users/<name>.md) for `message`. */
@@ -29,6 +30,9 @@ export type RingCommand =
   | { kind: 'list'; target: string; file: string; item: string; enrich?: ListTarget['enrich'] }
   | { kind: 'card'; project: string; column: string; text: string }
   | { kind: 'message'; contact: string; spoken: string; text: string }
+  /** Only ever minted by the FALLBACK (unclaimed text → AL) — there is no
+   *  spoken "agent" verb: Yousef talks to projects (`add <project> …` forks a
+   *  card), not to agents. */
   | { kind: 'agent'; targetId: string; targetName: string; message: string }
   | { kind: 'music'; action: 'play' | 'pause' | 'next' | 'previous'; query?: string }
   /** A verb matched but its target didn't — actionable feedback, not a fallback. */
@@ -95,56 +99,6 @@ export function pickFuzzy(spoken: string, candidates: string[]): string | null {
   if (candidates.includes(spoken)) return spoken
   const fuzzy = candidates.filter((c) => fuzzyEqual(spoken, c))
   return fuzzy.length === 1 ? fuzzy[0]! : null
-}
-
-interface NameToken { token: string; agent: RingAgent; weight: number }
-
-/** Every spoken form that could mean an agent, longest first so "console
- *  general" beats "console". Weight breaks length ties: full name > key >
- *  schema alias > unique first word. */
-export function agentTokens(agents: RingAgent[], names: Record<string, string> = {}): NameToken[] {
-  const out: NameToken[] = []
-  const firstWords = new Map<string, RingAgent[]>()
-  const byKey = new Map<string, RingAgent>()
-  for (const a of agents) {
-    const name = normalise(a.name.replace(/\s*\(fork\)\s*$/i, ''))
-    if (name) out.push({ token: name, agent: a, weight: 3 })
-    if (a.agentKey) {
-      const k = a.agentKey.toLowerCase()
-      byKey.set(k, a)
-      const key = k.replace(/-/g, ' ')
-      if (key !== name) out.push({ token: key, agent: a, weight: 2 })
-    }
-    if (!a.fork) {
-      const fw = name.split(' ')[0]
-      if (fw && fw !== name) firstWords.set(fw, [...(firstWords.get(fw) ?? []), a])
-    }
-  }
-  for (const [alias, key] of Object.entries(names)) {
-    const agent = byKey.get(key.toLowerCase())
-    if (agent && !out.some((t) => t.token === alias && t.agent === agent)) out.push({ token: alias, agent, weight: 1 })
-  }
-  for (const [fw, owners] of firstWords) {
-    if (owners.length === 1 && !out.some((t) => t.token === fw)) out.push({ token: fw, agent: owners[0]!, weight: 0 })
-  }
-  return out.sort((x, y) => y.token.length - x.token.length || y.weight - x.weight)
-}
-
-/** If `text` starts with an agent token, return the agent + the remainder.
- *  `cased` (same words, original case) makes the remainder keep its case. */
-export function matchAgentPrefix(text: string, tokens: NameToken[], cased = text): { agent: RingAgent; rest: string } | null {
-  for (const { token, agent } of tokens) {
-    if (text === token) return { agent, rest: '' }
-    if (text.startsWith(token)) {
-      const ch = text[token.length]!
-      if (ch === ' ' || ch === ',' || ch === ':' || ch === '.') {
-        const n = token.split(' ').length
-        const rest = cased.split(' ').slice(n).join(' ').replace(/^[,:.]?\s*/, '')
-        return { agent, rest }
-      }
-    }
-  }
-  return null
 }
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
@@ -224,39 +178,14 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         const nick = pickFuzzy(target, Object.keys(v.message.contacts))
         const contact = nick ? v.message.contacts[nick]! : pickFuzzy(target, env.contacts)
         if (contact) return { rule: nick ? 'message.nickname' : 'message.contact', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
-        // "message console …" — an agent named where a contact was expected.
-        const asAgent = agentCommand(`${target} ${payload}`, env, v.agent.names)
-        if (asAgent) return { rule: 'message.as-agent', command: asAgent }
         return { rule: 'message.unknown-target', command: { kind: 'unknown-target', verb: 'message', target, text } }
-      }
-      case 'agent': {
-        const cmd = agentCommand(`${target} ${payload}`, env, v.agent.names)
-        if (cmd) return { rule: 'agent', command: cmd }
-        // "tell mum …" — a contact named where an agent was expected.
-        const nick = pickFuzzy(target, Object.keys(v.message.contacts))
-        const contact = nick ? v.message.contacts[nick]! : pickFuzzy(target, env.contacts)
-        if (contact) return { rule: 'agent.as-message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
-        return { rule: 'agent.unknown-target', command: { kind: 'unknown-target', verb: 'agent', target, text } }
       }
       case 'music':
         break
     }
   }
 
-  // Name-first agent addressing without a verb: "<agent>, <message>".
-  const direct = agentCommand(cased, env, v.agent.names)
-  if (direct) return { rule: 'agent.direct', command: direct }
-
   return null
-}
-
-/** "<agent token> <message>" → agent command, or null. `cased` keeps the
- *  message's capitalisation; matching is on its lowercase form. */
-function agentCommand(cased: string, env: RouteEnv, names: Record<string, string>): RingCommand | null {
-  const hit = matchAgentPrefix(cased.toLowerCase(), agentTokens(env.agents, names), cased)
-  if (!hit || !hit.rest) return null
-  const message = hit.rest.replace(MESSAGE_LEAD, '').trim()
-  return message ? { kind: 'agent', targetId: hit.agent.id, targetName: hit.agent.name, message } : null
 }
 
 /** Human-readable one-liner for pushes / logs. */

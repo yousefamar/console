@@ -273,8 +273,9 @@ text through the command tree in the vault note projects/console/ring-schema.md:
   add <list> <item>          bullet (movies: LLM-enriched table row)
   add <project> <text>       board card on that project (Backlog)
   message <person> <text>    AL relays it on WhatsApp, attributed to you
-  agent <name> <text>        inject into that live session ("<name>, <text>" works too)
   play | pause | next | previous | play <query>
+There is no "agent" verb — you talk to projects ("add <project> …" files a card
+and the board forks an agent for it); AL only receives text no verb claims.
 Verbs/targets tolerate one-letter mis-transcriptions and the note's aliases;
 the LLM classifier runs only when no rule fires; anything still unclaimed goes
 to the fallback agent (AL). The ring ignores the HTTP response, so the outcome

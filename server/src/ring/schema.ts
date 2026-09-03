@@ -27,7 +27,6 @@ export interface RingSchema {
     log: { aliases: string[]; targets: Record<string, string>; createUnknown: boolean }
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
     message: { aliases: string[]; contacts: Record<string, string> }
-    agent: { aliases: string[]; names: Record<string, string> }
     music: { aliases: string[]; enabled: boolean }
   }
 }
@@ -47,8 +46,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
       },
       projectColumn: 'Backlog',
     },
-    message: { aliases: ['text', 'whatsapp'], contacts: {} },
-    agent: { aliases: ['ask', 'tell'], names: { owl: 'al', hal: 'al', el: 'al', alan: 'al' } },
+    message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {} },
     music: { aliases: [], enabled: true },
   },
 }
@@ -95,7 +93,6 @@ export function parseSchemaNote(md: string): SchemaParse {
   const log = verbs.log ?? {}
   const add = verbs.add ?? {}
   const message = verbs.message ?? {}
-  const agent = verbs.agent ?? {}
   const music = verbs.music ?? {}
 
   const addTargets: Record<string, ListTarget> = {}
@@ -134,10 +131,6 @@ export function parseSchemaNote(md: string): SchemaParse {
         aliases: message.aliases === undefined ? [...d.message.aliases] : strList(message.aliases, 'verbs.message.aliases', errors),
         contacts: strMap(message.contacts, 'verbs.message.contacts', errors),
       },
-      agent: {
-        aliases: agent.aliases === undefined ? [...d.agent.aliases] : strList(agent.aliases, 'verbs.agent.aliases', errors),
-        names: agent.names === undefined ? { ...d.agent.names } : strMap(agent.names, 'verbs.agent.names', errors),
-      },
       music: {
         aliases: strList(music.aliases, 'verbs.music.aliases', errors),
         enabled: typeof music.enabled === 'boolean' ? music.enabled : true,
@@ -163,7 +156,8 @@ hot-reloads it. Check it with \`con ring schema --check\`; dry-run a phrase with
 Shape: \`<verb> <target> <payload>\` — e.g. \`log dream I was escaping a prison
 made of cheese\`, \`add movies Spiderman\`, \`message mum I'll be home in 30 mins\`,
 \`add console the login button is misaligned\` (a project name as the \`add\`
-target files a board card), \`agent console what's on the board\`.
+target files a board card — you talk to projects, not agents; the card forks
+one). Anything no verb claims goes to the fallback agent.
 
 \`\`\`yaml
 fallback: al            # agentKey for anything no verb claims; null = only notify
@@ -186,18 +180,10 @@ verbs:
     project_column: Backlog
 
   message:              # message <person> <text> → AL relays it on WhatsApp
-    aliases: [text, whatsapp]
+    aliases: [text, whatsapp, tell]
     contacts:           # spoken name → users/<name>.md in AL's workspace
       # mum: some-user
       nica: nica
-
-  agent:                # agent <name> <text> → inject into that live session
-    aliases: [ask, tell]
-    names:              # STT mangles → agentKey (session names + keys also work)
-      owl: al
-      hal: al
-      el: al
-      alan: al
 
   music:                # play | pause | next | previous | play <query>
     enabled: true
@@ -221,7 +207,7 @@ export interface SchemaDescription {
 
 export async function describeSchema(
   loaded: { schema: RingSchema; errors: string[]; stale: boolean; path: string },
-  env: { agents: Array<{ id: string; name: string; agentKey: string | null }>; projects: string[]; contacts: string[] },
+  env: { projects: string[]; contacts: string[]; agents: Array<{ agentKey: string | null }> },
   exists: (vaultPath: string) => Promise<boolean>,
 ): Promise<SchemaDescription> {
   const v = loaded.schema.verbs
@@ -239,10 +225,6 @@ export async function describeSchema(
     const ok = env.contacts.includes(user)
     return { name: nick, resolves: `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
   })
-  const agentNames = Object.entries(v.agent.names).map(([spoken, key]) => {
-    const ok = liveKey(key)
-    return { name: spoken, resolves: `@${key}`, ok, ...(ok ? {} : { note: 'no live session with that agentKey' }) }
-  })
   return {
     path: loaded.path,
     errors: loaded.errors,
@@ -253,7 +235,6 @@ export async function describeSchema(
       { verb: 'log', aliases: v.log.aliases, usage: 'log <name> <text>', targets: await fileTargets(v.log.targets), ...(v.log.createUnknown ? { note: 'unknown names create scratch/logs/<name>.md' } : {}) },
       { verb: 'add', aliases: v.add.aliases, usage: 'add <list|project> <item>', targets: [...listTargets, ...projectTargets] },
       { verb: 'message', aliases: v.message.aliases, usage: 'message <person> <text>', targets: contacts, note: `also any of: ${env.contacts.join(', ') || '-'}` },
-      { verb: 'agent', aliases: v.agent.aliases, usage: 'agent <name> <text>  ·  <name>, <text>', targets: agentNames, note: `also any live session name/key: ${env.agents.map((a) => a.agentKey ?? a.name).join(', ') || '-'}` },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
     ],
   }

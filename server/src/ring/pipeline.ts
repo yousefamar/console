@@ -46,7 +46,7 @@ export interface RingDelivery {
   client: string | null
 }
 
-/** Envelope the target agent sees — task-framed like the WhatsApp inbound. */
+/** Envelope the fallback agent sees for unclaimed text — task-framed like the WhatsApp inbound. */
 export function buildRingEnvelope(message: string, recordingId: string): string {
   return `[RING — voice command from Yousef's Pebble Index 01, recording ${recordingId}]\n${message}`
 }
@@ -133,6 +133,7 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
   try {
     switch (c.kind) {
       case 'agent': {
+        // Fallback delivery only (unclaimed text → AL); never a spoken verb.
         const ok = ctx.inject(c.targetId, buildRingEnvelope(c.message, recordingId))
         return ok ? { ok } : { ok, detail: `${c.targetName} is not live` }
       }

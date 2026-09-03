@@ -14,7 +14,6 @@ const TIMEOUT_MS = 20_000
 
 export function buildClassifyPrompt(text: string, schema: RingSchema, env: RouteEnv): string {
   const v = schema.verbs
-  const roster = env.agents.map((a) => `- id=${a.id} name="${a.name}"${a.agentKey ? ` key=${a.agentKey}` : ''}`).join('\n')
   return [
     'You classify a short voice-command transcript from a smart ring into ONE command from a fixed tree. The transcript may be mis-transcribed (homophones, dropped words, mangled names) — infer the intended command generously but never invent content that is not there, and never pick a target outside the lists below.',
     '',
@@ -23,14 +22,10 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     `  {"kind":"list","target":"<one of: ${Object.keys(v.add.targets).join(', ') || '-'}>","item":"<payload>"}`,
     `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","text":"<payload>"}`,
     `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.values(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","text":"<payload>"}`,
-    '  {"kind":"agent","targetId":"<id from roster>","message":"<payload>"}',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: what to play>"}',
     '  {"kind":"unknown"}',
     '',
-    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; agent=${v.agent.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}. Spoken agent names: ${Object.entries(v.agent.names).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
-    '',
-    'Agent roster:',
-    roster || '- (none)',
+    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
     '',
     `Transcript: ${JSON.stringify(text)}`,
     '',
@@ -65,11 +60,6 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
       const contact = str('contact').toLowerCase(); const t = str('text')
       const known = Object.values(v.message.contacts).includes(contact) || env.contacts.includes(contact)
       return known && t ? { kind: 'message', contact, spoken: contact, text: t } : null
-    }
-    case 'agent': {
-      const a = env.agents.find((x) => x.id === obj.targetId)
-      const message = str('message')
-      return a && message ? { kind: 'agent', targetId: a.id, targetName: a.name, message } : null
     }
     case 'music': {
       const action = obj.action

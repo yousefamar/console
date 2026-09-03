@@ -91,7 +91,8 @@ export function handleRingRoutes(
         fallback: sch.schema.fallback,
         llmFallback: sch.schema.llmFallback,
         schemaErrors: sch.errors,
-        agents: env.agents.map((a) => ({ id: a.id, name: a.name, agentKey: a.agentKey })),
+        projects: env.projects,
+        contacts: env.contacts,
       })
     }).catch((err: Error) => json({ error: err.message }, 500))
     return true

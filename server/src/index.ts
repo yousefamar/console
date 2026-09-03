@@ -1156,7 +1156,7 @@ const ringAgents = (): RingAgent[] => {
   for (const s of sessions.values()) {
     if (s.status === 'ended') continue
     const info = s.getInfo()
-    out.push({ id: s.id, name: info.name ?? s.id, agentKey: info.agentKey ?? null, fork: !!info.parentClaudeSessionId })
+    out.push({ id: s.id, name: info.name ?? s.id, agentKey: info.agentKey ?? null })
   }
   return out
 }
@@ -1167,7 +1167,6 @@ const ringEnv = async (): Promise<RouteEnv> => {
     readdir(join(WORKSPACE_DIR, 'users')).catch(() => [] as string[]),
   ])
   return {
-    agents: ringAgents(),
     projects: spaces.filter((sp) => sp.kind === 'project').map((sp) => sp.slug.toLowerCase()),
     contacts: users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase()),
   }
@@ -1175,7 +1174,7 @@ const ringEnv = async (): Promise<RouteEnv> => {
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
-  describeSchema: async () => describeRingSchema(await ringSchema.load(), await ringEnv(), (p) => noteStore.read(p).then(() => true, () => false)),
+  describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringAgents() }, (p) => noteStore.read(p).then(() => true, () => false)),
   env: ringEnv,
   sessionForKey: (key) => {
     const k = key.toLowerCase()
