@@ -466,8 +466,9 @@ export const COMMANDS: CommandDef[] = [
   { name: 'ring say', description: 'Simulate a ring transcript through the command router', safety: 'write',
     args: [{ name: 'text', required: true, description: 'Transcript text' }],
     examples: ['con ring say "tell al to buy milk"'] },
-  { name: 'ring config', description: 'Show/set router config: fallback agent, LLM classifier', safety: 'write',
-    flags: { fallback: { type: 'string', description: 'agentKey to receive unmatched commands, or "none"' }, llm: { type: 'string', description: 'on|off — consult the LLM classifier when rules miss' } } },
+  { name: 'ring schema', description: 'Print the effective ring command tree with every target resolved', safety: 'read',
+    flags: { check: { type: 'boolean', description: 'Exit non-zero on parse errors or unresolved targets' } },
+    examples: ['con ring schema', 'con ring schema --check'] },
   // pen (Neo smartpen — routed through the phone's APK, like glasses)
   { name: 'pen status', description: 'Show pen connection, battery, storage, lock state', safety: 'read',
     examples: ['con pen status'] },

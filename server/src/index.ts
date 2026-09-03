@@ -30,6 +30,9 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
+import { listSpaces } from './spaces.js'
+import { readdir } from 'node:fs/promises'
+import { WORKSPACE_DIR } from './al/identity.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
@@ -65,10 +68,12 @@ import { handleConfigRoutes } from './routes/config.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { RingStore } from './ring/store.js'
-import { classifyWithLlm } from './ring/llm-fallback.js'
+import { classifyWithLlm, enrichMovieWithLlm } from './ring/llm-fallback.js'
+import { RingSchemaLoader } from './ring/schema-loader.js'
+import { describeSchema as describeRingSchema } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
-import type { RingAgent } from './ring/router.js'
+import type { RingAgent, RouteEnv } from './ring/router.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -1155,9 +1160,23 @@ const ringAgents = (): RingAgent[] => {
   }
   return out
 }
+const ringSchema = new RingSchemaLoader(noteStore, log)
+const ringEnv = async (): Promise<RouteEnv> => {
+  const [spaces, users] = await Promise.all([
+    listSpaces(noteStore).catch(() => [] as Awaited<ReturnType<typeof listSpaces>>),
+    readdir(join(WORKSPACE_DIR, 'users')).catch(() => [] as string[]),
+  ])
+  return {
+    agents: ringAgents(),
+    projects: spaces.filter((sp) => sp.kind === 'project').map((sp) => sp.slug.toLowerCase()),
+    contacts: users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase()),
+  }
+}
 const ringCtx: RingCtx = {
   store: ringStore,
-  agents: ringAgents,
+  schema: () => ringSchema.load(),
+  describeSchema: async () => describeRingSchema(await ringSchema.load(), await ringEnv(), (p) => noteStore.read(p).then(() => true, () => false)),
+  env: ringEnv,
   sessionForKey: (key) => {
     const k = key.toLowerCase()
     if (k === 'al') {
@@ -1167,6 +1186,14 @@ const ringCtx: RingCtx = {
     return ringAgents().find((a) => a.agentKey?.toLowerCase() === k) ?? null
   },
   inject: injectToSession,
+  notes: {
+    read: (p) => noteStore.read(p).catch(() => null),
+    write: (p, content) => noteStore.write(p, content),
+  },
+  addCard: async (project, text, column) => {
+    const card = await boardOps.add(project, text, { column, top: false })
+    return `"${card.text}" → ${card.column}`
+  },
   music: {
     play: async (query) => {
       if (!query) { await spotifyClient.play(); spotifySync.pokeSoon(); return 'resumed' }
@@ -1182,7 +1209,8 @@ const ringCtx: RingCtx = {
     previous: async () => { await spotifyClient.previous(); spotifySync.pokeSoon(); return 'previous track' },
   },
   transcribe: transcribeAudio,
-  classify: (text, agents) => classifyWithLlm(text, agents, smallFastModel()),
+  classify: (text, schema, env) => classifyWithLlm(text, schema, env, smallFastModel()),
+  enrichMovie: (text) => enrichMovieWithLlm(text, smallFastModel()),
   notify: ({ title, body, sessionId, id }) => {
     pushServer.broadcast({ type: sessionId ? 'agent' : 'generic', title, body, ...(sessionId ? { pane: 'agents' } : {}), id: `ring:${id}` })
   },

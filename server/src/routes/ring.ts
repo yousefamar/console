@@ -82,25 +82,26 @@ export function handleRingRoutes(
   }
 
   if (path === '/ring/status' && req.method === 'GET') {
-    const latest = ctx.store.list(1)[0]
-    json({
-      webhookUrl,
-      recordings: ctx.store.count(),
-      lastRecordedAt: latest?.recordedAt ?? null,
-      config: ctx.store.config(),
-      agents: ctx.agents().map((a) => ({ id: a.id, name: a.name, agentKey: a.agentKey })),
-    })
+    Promise.all([ctx.schema(), ctx.env()]).then(([sch, env]) => {
+      const latest = ctx.store.list(1)[0]
+      json({
+        webhookUrl,
+        recordings: ctx.store.count(),
+        lastRecordedAt: latest?.recordedAt ?? null,
+        fallback: sch.schema.fallback,
+        llmFallback: sch.schema.llmFallback,
+        schemaErrors: sch.errors,
+        agents: env.agents.map((a) => ({ id: a.id, name: a.name, agentKey: a.agentKey })),
+      })
+    }).catch((err: Error) => json({ error: err.message }, 500))
     return true
   }
 
-  if (path === '/ring/config' && req.method === 'POST') {
-    readBody(req).then((body) => {
-      const patch = JSON.parse(body || '{}') as { fallbackAgent?: string | null; llmFallback?: boolean }
-      const out: { fallbackAgent?: string | null; llmFallback?: boolean } = {}
-      if ('fallbackAgent' in patch) out.fallbackAgent = patch.fallbackAgent ? String(patch.fallbackAgent) : null
-      if (typeof patch.llmFallback === 'boolean') out.llmFallback = patch.llmFallback
-      json({ ok: true, config: ctx.store.setConfig(out) })
-    }).catch((err: Error) => json({ error: err.message }, 400))
+  // GET /ring/schema — the effective command tree with every target resolved
+  // (file exists? project known? contact known? agent live?) so a typo in the
+  // note is visible before the ring hits it.
+  if (path === '/ring/schema' && req.method === 'GET') {
+    ctx.describeSchema().then((d) => json(d)).catch((err: Error) => json({ error: err.message }, 500))
     return true
   }
 

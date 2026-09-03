@@ -1,26 +1,35 @@
 // LLM fallback for the ring router — consulted ONLY when routeByRules()
-// finds nothing, to rescue a mis-transcribed command ("tell owl to..." the
-// alias table didn't anticipate, a mangled agent name, a paraphrase). One-shot
+// finds nothing, to rescue a mis-transcribed command (a mangled verb or
+// target the alias table didn't anticipate, a paraphrase). One-shot
 // `claude -p` on the small/fast model, same pattern as /blog/format. The
-// model may only pick from the schema the rules already implement — it never
-// invents a command kind.
+// model may only pick from the tree the rules already implement — it never
+// invents a command kind or a target that isn't in the schema/env.
 
 import { execFile } from 'node:child_process'
-import type { RingAgent, RingCommand } from './router.js'
+import type { RingCommand, RouteEnv } from './router.js'
+import type { RingSchema } from './schema.js'
+import type { MovieRow } from './append.js'
 
 const TIMEOUT_MS = 20_000
 
-export function buildClassifyPrompt(text: string, agents: RingAgent[]): string {
-  const roster = agents.map((a) => `- id=${a.id} name="${a.name}"${a.agentKey ? ` key=${a.agentKey}` : ''}`).join('\n')
+export function buildClassifyPrompt(text: string, schema: RingSchema, env: RouteEnv): string {
+  const v = schema.verbs
+  const roster = env.agents.map((a) => `- id=${a.id} name="${a.name}"${a.agentKey ? ` key=${a.agentKey}` : ''}`).join('\n')
   return [
-    'You classify a short voice-command transcript from a smart ring into ONE command. The transcript may be mis-transcribed (homophones, dropped words, mangled names) — infer the intended command generously but never invent content that is not there.',
+    'You classify a short voice-command transcript from a smart ring into ONE command from a fixed tree. The transcript may be mis-transcribed (homophones, dropped words, mangled names) — infer the intended command generously but never invent content that is not there, and never pick a target outside the lists below.',
     '',
-    'Commands (output exactly one JSON object, nothing else):',
-    '  {"kind":"agent","targetId":"<id from roster>","message":"<the message for that agent, verbatim minus the addressing words>"}',
+    'Tree: <verb> <target> <payload>. Output exactly one JSON object, nothing else:',
+    `  {"kind":"log","target":"<one of: ${Object.keys(v.log.targets).join(', ') || '-'}>","text":"<payload>"}`,
+    `  {"kind":"list","target":"<one of: ${Object.keys(v.add.targets).join(', ') || '-'}>","item":"<payload>"}`,
+    `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","text":"<payload>"}`,
+    `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.values(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","text":"<payload>"}`,
+    '  {"kind":"agent","targetId":"<id from roster>","message":"<payload>"}',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: what to play>"}',
     '  {"kind":"unknown"}',
     '',
-    'Agent roster (match spoken names loosely — "owl"/"hal" usually mean "AL"; "console" means "Console general"):',
+    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; agent=${v.agent.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}. Spoken agent names: ${Object.entries(v.agent.names).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
+    '',
+    'Agent roster:',
     roster || '- (none)',
     '',
     `Transcript: ${JSON.stringify(text)}`,
@@ -30,22 +39,42 @@ export function buildClassifyPrompt(text: string, agents: RingAgent[]): string {
 }
 
 /** Parse the model's reply into a RingCommand, or null on anything off-schema. */
-export function parseClassifyReply(reply: string, agents: RingAgent[], text: string): RingCommand | null {
+export function parseClassifyReply(reply: string, schema: RingSchema, env: RouteEnv, text: string): RingCommand | null {
   const m = /\{[\s\S]*\}/.exec(reply)
   if (!m) return null
   let obj: Record<string, unknown>
   try { obj = JSON.parse(m[0]) as Record<string, unknown> } catch { return null }
+  const str = (k: string) => (typeof obj[k] === 'string' ? (obj[k] as string).trim() : '')
+  const v = schema.verbs
   switch (obj.kind) {
+    case 'log': {
+      const target = str('target').toLowerCase(); const t = str('text')
+      const file = v.log.targets[target]
+      return file && t ? { kind: 'log', target, file, text: t } : null
+    }
+    case 'list': {
+      const target = str('target').toLowerCase(); const item = str('item')
+      const t = v.add.targets[target]
+      return t && item ? { kind: 'list', target, file: t.file, item, ...(t.enrich ? { enrich: t.enrich } : {}) } : null
+    }
+    case 'card': {
+      const project = str('project').toLowerCase(); const t = str('text')
+      return env.projects.includes(project) && t ? { kind: 'card', project, column: v.add.projectColumn, text: t } : null
+    }
+    case 'message': {
+      const contact = str('contact').toLowerCase(); const t = str('text')
+      const known = Object.values(v.message.contacts).includes(contact) || env.contacts.includes(contact)
+      return known && t ? { kind: 'message', contact, spoken: contact, text: t } : null
+    }
     case 'agent': {
-      const a = agents.find((x) => x.id === obj.targetId)
-      const message = typeof obj.message === 'string' ? obj.message.trim() : ''
-      if (!a || !message) return null
-      return { kind: 'agent', targetId: a.id, targetName: a.name, message }
+      const a = env.agents.find((x) => x.id === obj.targetId)
+      const message = str('message')
+      return a && message ? { kind: 'agent', targetId: a.id, targetName: a.name, message } : null
     }
     case 'music': {
       const action = obj.action
       if (action !== 'play' && action !== 'pause' && action !== 'next' && action !== 'previous') return null
-      const query = typeof obj.query === 'string' && obj.query.trim() ? obj.query.trim() : undefined
+      const query = str('query')
       return { kind: 'music', action, ...(query ? { query } : {}) }
     }
     case 'unknown': return { kind: 'unknown', text }
@@ -53,14 +82,44 @@ export function parseClassifyReply(reply: string, agents: RingAgent[], text: str
   }
 }
 
-export async function classifyWithLlm(text: string, agents: RingAgent[], model: string): Promise<RingCommand | null> {
-  const prompt = buildClassifyPrompt(text, agents)
-  const reply = await new Promise<string | null>((resolve) => {
+function claudeOneShot(prompt: string, model: string): Promise<string | null> {
+  return new Promise((resolve) => {
     execFile('claude', ['-p', prompt, '--output-format', 'text', '--model', model], { timeout: TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout) => {
-      if (err) { console.warn(`[ring] llm fallback failed: ${err.message.slice(0, 200)}`); resolve(null); return }
+      if (err) { console.warn(`[ring] llm call failed: ${err.message.slice(0, 200)}`); resolve(null); return }
       resolve(String(stdout))
     })
   })
-  if (!reply) return null
-  return parseClassifyReply(reply, agents, text)
+}
+
+export async function classifyWithLlm(text: string, schema: RingSchema, env: RouteEnv, model: string): Promise<RingCommand | null> {
+  const reply = await claudeOneShot(buildClassifyPrompt(text, schema, env), model)
+  return reply ? parseClassifyReply(reply, schema, env, text) : null
+}
+
+export function buildMoviePrompt(text: string): string {
+  return [
+    'A user spoke the name of a film or TV series to add to their watch list. Identify it and reply with exactly one JSON object, nothing else:',
+    '  {"title":"<canonical title>","year":"<first release year, 4 digits>","series":"No" | "Yes" | "Yes (<network or season note>)"}',
+    'If you genuinely cannot identify it, use the spoken text as the title and "" for year.',
+    '',
+    `Spoken: ${JSON.stringify(text)}`,
+    'JSON:',
+  ].join('\n')
+}
+
+export function parseMovieReply(reply: string, fallbackTitle: string): MovieRow | null {
+  const m = /\{[\s\S]*\}/.exec(reply)
+  if (!m) return null
+  try {
+    const o = JSON.parse(m[0]) as { title?: unknown; year?: unknown; series?: unknown }
+    const title = typeof o.title === 'string' && o.title.trim() ? o.title.trim() : fallbackTitle
+    const year = typeof o.year === 'string' || typeof o.year === 'number' ? String(o.year).trim() : ''
+    const series = typeof o.series === 'string' && o.series.trim() ? o.series.trim() : 'No'
+    return { title, year, series }
+  } catch { return null }
+}
+
+export async function enrichMovieWithLlm(text: string, model: string): Promise<MovieRow | null> {
+  const reply = await claudeOneShot(buildMoviePrompt(text), model)
+  return reply ? parseMovieReply(reply, text) : null
 }

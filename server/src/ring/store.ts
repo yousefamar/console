@@ -30,40 +30,14 @@ export interface RingRecording {
   }
 }
 
-export interface RingConfig {
-  /** agentKey to receive anything the router can't classify. null = only notify. */
-  fallbackAgent: string | null
-  /** Consult the LLM classifier before falling back. */
-  llmFallback: boolean
-}
-
-const DEFAULT_CONFIG: RingConfig = { fallbackAgent: 'al', llmFallback: true }
-
 export class RingStore {
   private readonly dir: string
   private readonly recordingsDir: string
-  private readonly configPath: string
 
   constructor(configDir: string) {
     this.dir = join(configDir, 'ring')
     this.recordingsDir = join(this.dir, 'recordings')
-    this.configPath = join(configDir, 'ring.json')
     mkdirSync(this.recordingsDir, { recursive: true })
-  }
-
-  config(): RingConfig {
-    try {
-      const raw = JSON.parse(readFileSync(this.configPath, 'utf8')) as Partial<RingConfig>
-      return { ...DEFAULT_CONFIG, ...raw }
-    } catch {
-      return { ...DEFAULT_CONFIG }
-    }
-  }
-
-  setConfig(patch: Partial<RingConfig>): RingConfig {
-    const next = { ...this.config(), ...patch }
-    this.writeAtomic(this.configPath, JSON.stringify(next, null, 2))
-    return next
   }
 
   /** Sortable, filesystem-safe id: `2026-09-02T10-15-30.123Z-ab12`. */

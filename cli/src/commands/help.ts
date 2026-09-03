@@ -24,7 +24,7 @@ Services:
   whatsapp     WhatsApp (via AL) — send, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
-  ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), config
+  ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
 
 System:
   auth         Manage accounts — login, logout, status
@@ -255,26 +255,35 @@ Examples:
 con ring — Pebble Index 01 smart ring
 
 Commands:
-  status       Webhook URL, recording count, router config, agent roster
+  status       Webhook URL, recording count, fallback, agent roster
   setup        Mint a ring-scoped bearer + print the Pebble app webhook settings
   list         Recent recordings (--limit N): transcript, source, routing outcome
   show <id>    Full recording metadata (sidecar JSON)
   audio <id>   Download the M4A (--out <path>)
   say "<text>" Simulate a ring transcript through the router (no audio)
-  config       Show or set: --fallback <agentKey|none>, --llm on|off
+  schema       Print the effective command tree, every target resolved (--check → exit 1 on problems)
 
 The ring's app POSTs multipart (audio/mp4 + transcription + recordedAt) to
 https://con.amar.io/hub/ring/webhook with the bearer from 'setup'. The hub
 archives everything under ~/.config/console/ring/recordings/ (never pruned),
 falls back to hub STT when the ring's transcript is missing, then routes the
-text: deterministic rules first (server/src/ring/router.ts — "tell <agent> …",
-"<agent>, …", music play/pause/next/previous), the LLM classifier only when
-rules miss, then the fallback agent (default AL). The ring ignores the HTTP
-response, so the outcome arrives as a push notification.
+text through the command tree in the vault note projects/console/ring-schema.md:
+  <verb> <target> <payload>
+  log <name> <text>          dated bullet appended to a log note
+  add <list> <item>          bullet (movies: LLM-enriched table row)
+  add <project> <text>       board card on that project (Backlog)
+  message <person> <text>    AL relays it on WhatsApp, attributed to you
+  agent <name> <text>        inject into that live session ("<name>, <text>" works too)
+  play | pause | next | previous | play <query>
+Verbs/targets tolerate one-letter mis-transcriptions and the note's aliases;
+the LLM classifier runs only when no rule fires; anything still unclaimed goes
+to the fallback agent (AL). The ring ignores the HTTP response, so the outcome
+arrives as a push notification.
 
 Examples:
   con ring setup
-  con ring say "tell al to buy milk"
+  con ring say "log dream I was escaping a prison made of cheese"
+  con ring schema --check
   con ring list --limit 5
 `,
   pen: `

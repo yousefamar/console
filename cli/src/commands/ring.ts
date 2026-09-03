@@ -18,9 +18,9 @@ export async function ring(verb: string | undefined, args: string[], flags: Glob
     case 'show': return ringShow(args, flags)
     case 'audio': return ringAudio(args, flags)
     case 'say': return ringSay(args, flags)
-    case 'config': return ringConfig(args, flags)
+    case 'schema': return ringSchema(args, flags)
     default:
-      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, config. Run 'con help ring'.`, flags)
+      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, schema. Run 'con help ring'.`, flags)
   }
 }
 
@@ -83,16 +83,27 @@ async function ringSay(args: string[], flags: GlobalFlags): Promise<void> {
   output(await hubFetch('/ring/webhook', { method: 'POST', body: { transcription: text, client: 'cli' } }), flags)
 }
 
-// con ring config [--fallback <agentKey|none>] [--llm on|off]
-async function ringConfig(args: string[], flags: GlobalFlags): Promise<void> {
-  const opts = parseFlags(args)
-  const body: Record<string, unknown> = {}
-  if (opts.fallback !== undefined) body.fallbackAgent = opts.fallback === 'none' ? null : opts.fallback
-  if (opts.llm !== undefined) body.llmFallback = opts.llm !== 'off' && opts.llm !== 'false'
-  if (!Object.keys(body).length) {
-    const s = await hubFetch<{ config: unknown }>('/ring/status')
-    output(s.config, flags)
-    return
+// con ring schema [--check] — the effective command tree from the vault note
+// (projects/console/ring-schema.md), every target resolved. --check exits
+// non-zero on parse errors or unresolvable targets (for a pre-commit sanity run).
+async function ringSchema(args: string[], flags: GlobalFlags): Promise<void> {
+  const check = args.includes('--check')
+  const d = await hubFetch<{
+    path: string; errors: string[]; stale: boolean
+    fallback: { agentKey: string | null; live: boolean }; llmFallback: boolean
+    verbs: Array<{ verb: string; aliases: string[]; usage: string; note?: string; targets: Array<{ name: string; resolves: string; ok: boolean; note?: string }> }>
+  }>('/ring/schema')
+  const broken = d.verbs.flatMap((v) => v.targets.filter((t) => !t.ok).map((t) => `${v.verb} ${t.name} → ${t.resolves}: ${t.note ?? 'unresolved'}`))
+  if (flags.json) { output({ ...d, broken }, flags); return }
+  info(`${d.path}${d.stale ? '  (UNPARSEABLE — using last good)' : ''}`)
+  for (const e of d.errors) info(`  ! ${e}`)
+  for (const v of d.verbs) {
+    info(`${v.usage}${v.aliases.length ? `   aliases: ${v.aliases.join(', ')}` : ''}`)
+    for (const t of v.targets) info(`  ${t.ok ? '·' : '✗'} ${t.name.padEnd(14)} → ${t.resolves}${t.note ? `   (${t.note})` : ''}`)
+    if (v.note) info(`    ${v.note}`)
   }
-  output(await hubFetch('/ring/config', { method: 'POST', body }), flags)
+  info(`fallback → ${d.fallback.agentKey ?? 'none (notify only)'}${d.fallback.agentKey ? (d.fallback.live ? '' : '  ✗ not live') : ''}   llm fallback: ${d.llmFallback ? 'on' : 'off'}`)
+  if (check && (d.stale || d.errors.length || broken.length || (d.fallback.agentKey && !d.fallback.live))) {
+    exitWithError('SCHEMA', `${d.errors.length} error(s), ${broken.length} unresolved target(s)`, flags)
+  }
 }

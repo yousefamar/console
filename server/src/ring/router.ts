@@ -1,8 +1,11 @@
 // Ring command router — PURE string parsing, no LLM. A transcript from the
-// Pebble Index 01 becomes a RingCommand via an ordered rule table; the LLM
-// (see llm-fallback.ts) is consulted only when nothing here matches, as a
-// hedge against mis-transcription. Keep every rule deterministic and
-// testable — the schema is meant to be read and extended by hand.
+// Pebble Index 01 becomes a RingCommand by walking the command tree in
+// schema.ts (`<verb> <target> <payload>`), with tolerance for
+// mis-transcription: explicit aliases from the schema note plus a one-edit
+// fuzzy match on words of 4+ letters. The LLM (llm-fallback.ts) is consulted
+// only when nothing here matches. Keep every rule deterministic and testable.
+
+import type { RingSchema, ListTarget } from './schema.js'
 
 export interface RingAgent {
   id: string
@@ -12,9 +15,24 @@ export interface RingAgent {
   fork?: boolean
 }
 
+/** What the router can see besides the transcript — all resolved by the hub. */
+export interface RouteEnv {
+  agents: RingAgent[]
+  /** Vault project slugs (an `add` target naming one files a board card). */
+  projects: string[]
+  /** AL workspace usernames (users/<name>.md) for `message`. */
+  contacts: string[]
+}
+
 export type RingCommand =
+  | { kind: 'log'; target: string; file: string; text: string }
+  | { kind: 'list'; target: string; file: string; item: string; enrich?: ListTarget['enrich'] }
+  | { kind: 'card'; project: string; column: string; text: string }
+  | { kind: 'message'; contact: string; spoken: string; text: string }
   | { kind: 'agent'; targetId: string; targetName: string; message: string }
   | { kind: 'music'; action: 'play' | 'pause' | 'next' | 'previous'; query?: string }
+  /** A verb matched but its target didn't — actionable feedback, not a fallback. */
+  | { kind: 'unknown-target'; verb: string; target: string; text: string }
   | { kind: 'unknown'; text: string }
 
 export interface RouteMatch {
@@ -23,16 +41,13 @@ export interface RouteMatch {
   rule: string
 }
 
-/** Mis-transcription aliases for names the STT reliably mangles. Keyed by
- *  agentKey; values are additional lowercase tokens that mean that agent. */
-export const AGENT_ALIASES: Record<string, string[]> = {
-  al: ['al', 'owl', 'el', 'hal', 'alan', 'ale', 'a l', 'l'],
-}
-
 const FILLERS = /^(?:hey|hi|ok|okay|um|uh|so|please|right|yeah)[,.]?\s+/i
 
-export function normalise(text: string): string {
-  let t = text.normalize('NFKC').toLowerCase()
+/** Everything `normalise` does except case-folding, so payloads keep the
+ *  speaker's capitalisation (a dream log shouldn't read all-lowercase).
+ *  Word boundaries are identical between the two forms. */
+export function normaliseKeepCase(text: string): string {
+  let t = text.normalize('NFKC')
     .replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
     .replace(/\s+/g, ' ').trim()
   t = t.replace(/^[,.!?;:\s]+/, '').replace(/[.!?,;:\s]+$/, '')
@@ -44,52 +59,95 @@ export function normalise(text: string): string {
   return t
 }
 
+export function normalise(text: string): string {
+  return normaliseKeepCase(text).toLowerCase()
+}
+
+/** Levenshtein distance, capped early at `max + 1`. */
+export function editDistance(a: string, b: string, max = 2): number {
+  if (a === b) return 0
+  if (Math.abs(a.length - b.length) > max) return max + 1
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let rowMin = i
+    for (let j = 1; j <= b.length; j++) {
+      const v = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+      cur.push(v)
+      if (v < rowMin) rowMin = v
+    }
+    if (rowMin > max) return max + 1
+    prev = cur
+  }
+  return prev[b.length]!
+}
+
+/** Spoken word ≈ known word: exact, or one edit apart when both have 4+ letters. */
+export function fuzzyEqual(spoken: string, known: string): boolean {
+  if (spoken === known) return true
+  if (spoken.length < 4 || known.length < 4) return false
+  return editDistance(spoken, known, 1) <= 1
+}
+
+/** Pick the best of `candidates` for `spoken`: exact beats fuzzy; among fuzzy
+ *  hits, a unique one wins, ambiguity loses (never guess between two). */
+export function pickFuzzy(spoken: string, candidates: string[]): string | null {
+  if (candidates.includes(spoken)) return spoken
+  const fuzzy = candidates.filter((c) => fuzzyEqual(spoken, c))
+  return fuzzy.length === 1 ? fuzzy[0]! : null
+}
+
 interface NameToken { token: string; agent: RingAgent; weight: number }
 
 /** Every spoken form that could mean an agent, longest first so "console
  *  general" beats "console". Weight breaks length ties: full name > key >
- *  alias > unique first word. */
-export function agentTokens(agents: RingAgent[]): NameToken[] {
+ *  schema alias > unique first word. */
+export function agentTokens(agents: RingAgent[], names: Record<string, string> = {}): NameToken[] {
   const out: NameToken[] = []
   const firstWords = new Map<string, RingAgent[]>()
+  const byKey = new Map<string, RingAgent>()
   for (const a of agents) {
     const name = normalise(a.name.replace(/\s*\(fork\)\s*$/i, ''))
     if (name) out.push({ token: name, agent: a, weight: 3 })
     if (a.agentKey) {
-      const key = a.agentKey.toLowerCase().replace(/-/g, ' ')
+      const k = a.agentKey.toLowerCase()
+      byKey.set(k, a)
+      const key = k.replace(/-/g, ' ')
       if (key !== name) out.push({ token: key, agent: a, weight: 2 })
-      for (const alias of AGENT_ALIASES[a.agentKey.toLowerCase()] ?? []) {
-        if (alias !== name && alias !== key) out.push({ token: alias, agent: a, weight: 1 })
-      }
     }
     if (!a.fork) {
       const fw = name.split(' ')[0]
       if (fw && fw !== name) firstWords.set(fw, [...(firstWords.get(fw) ?? []), a])
     }
   }
+  for (const [alias, key] of Object.entries(names)) {
+    const agent = byKey.get(key.toLowerCase())
+    if (agent && !out.some((t) => t.token === alias && t.agent === agent)) out.push({ token: alias, agent, weight: 1 })
+  }
   for (const [fw, owners] of firstWords) {
-    if (owners.length === 1) out.push({ token: fw, agent: owners[0]!, weight: 0 })
+    if (owners.length === 1 && !out.some((t) => t.token === fw)) out.push({ token: fw, agent: owners[0]!, weight: 0 })
   }
   return out.sort((x, y) => y.token.length - x.token.length || y.weight - x.weight)
 }
 
-/** If `text` starts with an agent token, return the agent + the remainder. */
-export function matchAgentPrefix(text: string, tokens: NameToken[]): { agent: RingAgent; rest: string } | null {
+/** If `text` starts with an agent token, return the agent + the remainder.
+ *  `cased` (same words, original case) makes the remainder keep its case. */
+export function matchAgentPrefix(text: string, tokens: NameToken[], cased = text): { agent: RingAgent; rest: string } | null {
   for (const { token, agent } of tokens) {
     if (text === token) return { agent, rest: '' }
     if (text.startsWith(token)) {
       const ch = text[token.length]!
       if (ch === ' ' || ch === ',' || ch === ':' || ch === '.') {
-        return { agent, rest: text.slice(token.length).replace(/^[,:.]?\s*/, '') }
+        const n = token.split(' ').length
+        const rest = cased.split(' ').slice(n).join(' ').replace(/^[,:.]?\s*/, '')
+        return { agent, rest }
       }
     }
   }
   return null
 }
 
-const ADDRESS_VERB = /^(?:tell|ask|message|msg|ping|text|say to|send to|forward to|to|for)\s+(.+)$/
-const MESSAGE_LEAD = /^(?:to|that)\s+/
-
+const MESSAGE_LEAD = /^(?:to|that)\s+/i
 const MUSIC_TAIL = '(?:\\s+(?:the\\s+)?(?:music|spotify|song|track|tunes?|playback|this))?'
 const MUSIC_RULES: Array<{ rule: string; re: RegExp; action: 'play' | 'pause' | 'next' | 'previous' }> = [
   { rule: 'music.play', re: new RegExp(`^(?:play|resume|unpause|start)${MUSIC_TAIL}$`), action: 'play' },
@@ -98,44 +156,119 @@ const MUSIC_RULES: Array<{ rule: string; re: RegExp; action: 'play' | 'pause' | 
   { rule: 'music.previous', re: new RegExp(`^(?:previous|prev|last|back|go back)${MUSIC_TAIL}$`), action: 'previous' },
 ]
 
-/** Deterministic pass. Returns null when no rule fires — the caller decides
- *  whether to consult the LLM and/or a fallback agent. */
-export function routeByRules(rawText: string, agents: RingAgent[]): RouteMatch | null {
-  const text = normalise(rawText)
-  if (!text) return null
-  const tokens = agentTokens(agents)
+type VerbName = keyof RingSchema['verbs']
 
-  // "tell <agent> <message>" / "ask <agent> <question>"
-  const verb = ADDRESS_VERB.exec(text)
-  if (verb) {
-    const hit = matchAgentPrefix(verb[1]!, tokens)
-    if (hit) {
-      const message = hit.rest.replace(MESSAGE_LEAD, '').trim()
-      if (message) return { rule: 'agent.verb', command: { kind: 'agent', targetId: hit.agent.id, targetName: hit.agent.name, message } }
+/** Resolve the first spoken word to a schema verb (name, alias, or one edit). */
+export function matchVerb(word: string, schema: RingSchema): VerbName | null {
+  const names = Object.keys(schema.verbs) as VerbName[]
+  for (const v of names) if (word === v || schema.verbs[v].aliases.includes(word)) return v
+  const fuzzy = names.filter((v) => fuzzyEqual(word, v) || schema.verbs[v].aliases.some((a) => fuzzyEqual(word, a)))
+  return fuzzy.length === 1 ? fuzzy[0]! : null
+}
+
+/** Split "verb target payload" — verb/target lowercased with trailing
+ *  punctuation dropped (the STT likes "Log dream. I was…"), payload as spoken. */
+function split3(cased: string): { verb: string; target: string; payload: string } | null {
+  const m = /^(\S+?)[,.:]?\s+(\S+?)[,.:]?\s+(.+)$/.exec(cased)
+  if (!m) return null
+  return { verb: m[1]!.toLowerCase(), target: m[2]!.toLowerCase(), payload: m[3]!.trim() }
+}
+
+/** Deterministic pass. Returns null when no rule fires — the caller decides
+ *  whether to consult the LLM and/or the fallback agent. */
+export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv): RouteMatch | null {
+  const cased = normaliseKeepCase(rawText)
+  const text = cased.toLowerCase()
+  if (!text) return null
+  const v = schema.verbs
+
+  // Music: whole-utterance transport words, before the verb tree so a bare
+  // "play"/"skip" never gets read as a verb with a missing target.
+  if (v.music.enabled) {
+    for (const m of MUSIC_RULES) if (m.re.test(text)) return { rule: m.rule, command: { kind: 'music', action: m.action } }
+    const play = /^(?:play|(?:music|spotify)\s+play)\s+(.+)$/i.exec(cased)
+    if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: play[1]!.replace(/^(?:some|me)\s+/i, '') } }
+  }
+
+  const parts = split3(cased)
+  const verb = parts ? matchVerb(parts.verb, schema) : null
+
+  if (verb && parts) {
+    const { target, payload } = parts
+    switch (verb) {
+      case 'log': {
+        const known = pickFuzzy(target, Object.keys(v.log.targets))
+        if (known) return { rule: 'log', command: { kind: 'log', target: known, file: v.log.targets[known]!, text: payload } }
+        if (v.log.createUnknown && /^[a-z][a-z0-9-]{1,30}$/.test(target)) {
+          return { rule: 'log.create', command: { kind: 'log', target, file: `scratch/logs/${target}.md`, text: payload } }
+        }
+        return { rule: 'log.unknown-target', command: { kind: 'unknown-target', verb: 'log', target, text } }
+      }
+      case 'add': {
+        const list = pickFuzzy(target, Object.keys(v.add.targets))
+        if (list) {
+          const t = v.add.targets[list]!
+          return { rule: 'add.list', command: { kind: 'list', target: list, file: t.file, item: payload, ...(t.enrich ? { enrich: t.enrich } : {}) } }
+        }
+        // Project slugs may be hyphenated two-word names ("reflection tools").
+        const [p2, ...restWords] = payload.split(' ')
+        const twoWord = p2 && restWords.length ? pickFuzzy(`${target}-${p2.toLowerCase()}`, env.projects) : null
+        const project = pickFuzzy(target, env.projects) ?? twoWord
+        if (project) {
+          const text = project === twoWord ? restWords.join(' ') : payload
+          return { rule: 'add.card', command: { kind: 'card', project, column: v.add.projectColumn, text } }
+        }
+        return { rule: 'add.unknown-target', command: { kind: 'unknown-target', verb: 'add', target, text } }
+      }
+      case 'message': {
+        const nick = pickFuzzy(target, Object.keys(v.message.contacts))
+        const contact = nick ? v.message.contacts[nick]! : pickFuzzy(target, env.contacts)
+        if (contact) return { rule: nick ? 'message.nickname' : 'message.contact', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
+        // "message console …" — an agent named where a contact was expected.
+        const asAgent = agentCommand(`${target} ${payload}`, env, v.agent.names)
+        if (asAgent) return { rule: 'message.as-agent', command: asAgent }
+        return { rule: 'message.unknown-target', command: { kind: 'unknown-target', verb: 'message', target, text } }
+      }
+      case 'agent': {
+        const cmd = agentCommand(`${target} ${payload}`, env, v.agent.names)
+        if (cmd) return { rule: 'agent', command: cmd }
+        // "tell mum …" — a contact named where an agent was expected.
+        const nick = pickFuzzy(target, Object.keys(v.message.contacts))
+        const contact = nick ? v.message.contacts[nick]! : pickFuzzy(target, env.contacts)
+        if (contact) return { rule: 'agent.as-message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
+        return { rule: 'agent.unknown-target', command: { kind: 'unknown-target', verb: 'agent', target, text } }
+      }
+      case 'music':
+        break
     }
   }
 
-  // "<agent>, <message>" — name-first addressing.
-  const direct = matchAgentPrefix(text, tokens)
-  if (direct && direct.rest) {
-    const message = direct.rest.replace(MESSAGE_LEAD, '').trim()
-    if (message) return { rule: 'agent.direct', command: { kind: 'agent', targetId: direct.agent.id, targetName: direct.agent.name, message } }
-  }
-
-  for (const m of MUSIC_RULES) {
-    if (m.re.test(text)) return { rule: m.rule, command: { kind: 'music', action: m.action } }
-  }
-  const playQuery = /^play\s+(.+)$/.exec(text)
-  if (playQuery) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: playQuery[1]!.replace(/^(?:some|me)\s+/, '') } }
+  // Name-first agent addressing without a verb: "<agent>, <message>".
+  const direct = agentCommand(cased, env, v.agent.names)
+  if (direct) return { rule: 'agent.direct', command: direct }
 
   return null
+}
+
+/** "<agent token> <message>" → agent command, or null. `cased` keeps the
+ *  message's capitalisation; matching is on its lowercase form. */
+function agentCommand(cased: string, env: RouteEnv, names: Record<string, string>): RingCommand | null {
+  const hit = matchAgentPrefix(cased.toLowerCase(), agentTokens(env.agents, names), cased)
+  if (!hit || !hit.rest) return null
+  const message = hit.rest.replace(MESSAGE_LEAD, '').trim()
+  return message ? { kind: 'agent', targetId: hit.agent.id, targetName: hit.agent.name, message } : null
 }
 
 /** Human-readable one-liner for pushes / logs. */
 export function describeCommand(c: RingCommand): string {
   switch (c.kind) {
+    case 'log': return `log ${c.target}: ${c.text}`
+    case 'list': return `add ${c.target}: ${c.item}`
+    case 'card': return `card → ${c.project} (${c.column}): ${c.text}`
+    case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
     case 'agent': return `→ ${c.targetName}: ${c.message}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
+    case 'unknown-target': return `${c.verb}: no target called "${c.target}"`
     case 'unknown': return `unrecognised: ${c.text}`
   }
 }
