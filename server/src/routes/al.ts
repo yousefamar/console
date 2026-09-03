@@ -179,7 +179,7 @@ async function handleVoiceDelegate(
   if (rawPhone && !callerPhone) console.warn(`[al/voice] delegate: ignoring non-phone callerPhone ${JSON.stringify(String(rawPhone)).slice(0, 40)}`)
 
   const al = getAlSession()
-  if (!al) return jsonResponse(res, 503, { error: 'Al session not bootstrapped' })
+  if (!al) return jsonResponse(res, 503, { error: 'AL session not bootstrapped' })
 
   if (callerPhone) {
     ensureUserKnown(callerPhone, 'voice').catch((err: Error) =>

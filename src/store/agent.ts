@@ -614,7 +614,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   acceptHandoff: (targetAgentKey) => {
     const sessions = get().sessions
-    const al = sessions.find((s) => s.id === 'al' || s.name === 'Al')
+    const al = sessions.find((s) => s.id === 'al' || s.agentKey === 'al' || s.name?.toLowerCase() === 'al')
     const live = sessions.find((s) => s.agentKey === targetAgentKey && s.status !== 'ended')
     if (live) get().selectSession(live.id)
     set({ pendingHandoff: null, handoffReturnTo: al?.id ?? null })

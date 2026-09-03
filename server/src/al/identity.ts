@@ -45,8 +45,18 @@ export const WORKSPACE_DIR =
 /** Baileys auth state — owned by Console post-cutover. */
 export const AUTH_WHATSAPP_DIR = join(homedir(), '.config', 'console', 'auth_whatsapp')
 
-/** Persistent record of which Claude session is "Al". */
+/** Persistent record of which Claude session is AL. */
 export const AL_SESSION_FILE = join(homedir(), '.config', 'console', 'al-session.json')
+
+/** AL's session name — all caps everywhere the hub names him (Yousef, 2026-09-02).
+ *  The agentKey slug stays lowercase `al` (board `@al`, mic owner, ring fallback). */
+export const AL_NAME = 'AL'
+
+/** True for the canonical name AND the legacy "Al" spelling still carried by
+ *  old manifests / transcripts, so a pre-rename session is still recognised. */
+export function isAlName(name: string | null | undefined): boolean {
+  return !!name && name.toLowerCase() === 'al'
+}
 
 // NOTE: there is intentionally no OWNER_PHONE / recipient guard here. The old
 // standalone daemon restricted *non-owner conversation participants* from

@@ -63,7 +63,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'al-forks-test-'))
   process.env.CONSOLE_AL_FORKS_FILE = join(dir, 'forks.json')
   created.length = 0; woken.length = 0; merged.length = 0
-  parent = new TestSession('s-al', { claudeSessionId: 'c-al', name: 'Al' })
+  parent = new TestSession('s-al', { claudeSessionId: 'c-al', name: 'AL' })
   vi.spyOn(alSession, 'getAlSession').mockReturnValue(parent as any)
   vi.useFakeTimers()
 })
@@ -90,7 +90,7 @@ describe('routeInbound', () => {
     expect(routeInbound(ctx, '491629386217@s.whatsapp.net', 'mai', 'Mai', '[env 1]')).toBe(true)
     expect(created.length).toBe(1)
     const fork = created[0]!
-    expect(fork.name).toBe('Al ↔ Mai')
+    expect(fork.name).toBe('AL ↔ Mai')
     // seed + first envelope went out immediately (the --fork-session no-init gotcha)
     expect(woken[0]!.id).toBe(fork.id)
     expect(woken[0]!.content).toContain('[CONVERSATION FORK]')

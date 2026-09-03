@@ -96,6 +96,7 @@ import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
 import { syncVoiceAuth } from './al/voice.js'
+import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
@@ -720,7 +721,7 @@ function effectiveMicOwnerId(): string | null {
 }
 function micOwnerName(sessionId: string | null): string | undefined {
   if (!sessionId) return undefined
-  return sessions.get(sessionId)?.name ?? (sessionId === getAlSession()?.id ? 'Al' : undefined)
+  return sessions.get(sessionId)?.name ?? (sessionId === getAlSession()?.id ? AL_NAME : undefined)
 }
 /** Resolve a session id / name / agentKey to a live session id, or null. */
 function resolveMicTarget(target: string): string | null {
@@ -1161,7 +1162,7 @@ const ringCtx: RingCtx = {
     const k = key.toLowerCase()
     if (k === 'al') {
       const al = getAlSession()
-      return al && al.status !== 'ended' ? { id: al.id, name: 'Al', agentKey: 'al' } : null
+      return al && al.status !== 'ended' ? { id: al.id, name: AL_NAME, agentKey: 'al' } : null
     }
     return ringAgents().find((a) => a.agentKey?.toLowerCase() === k) ?? null
   },
@@ -1745,7 +1746,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   // Al connects on /al path — handle separately from browser clients
   if (urlPath === '/al') {
-    log('[al] Al connecting...')
+    log('[al] AL connecting...')
     alBridge.handleAlConnection(ws)
 
     // Broadcast updated session list to all browser clients
@@ -2121,10 +2122,10 @@ httpServer.listen(port, host, () => {
         log(`  Skipped (ended by user): ${entry.name ?? entry.claudeSessionId}`)
         continue
       }
-      if (entry.agentKey === 'al' || entry.name === 'Al') {
+      if (entry.agentKey === 'al' || isAlName(entry.name)) {
         const isOfficial = officialAlId ? entry.claudeSessionId === officialAlId : !alRestored
         if (!isOfficial) {
-          log(`  Skipped (stale Al duplicate): ${entry.claudeSessionId}`)
+          log(`  Skipped (stale AL duplicate): ${entry.claudeSessionId}`)
           continue
         }
         alRestored = true
@@ -2194,10 +2195,10 @@ httpServer.listen(port, host, () => {
       await loadUsers()
       setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
       const alSession = await ensureAlSession(agentCtx)
-      log(`Al session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+      log(`AL session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
       // Atoms carries the hub's voice bearer on every callback — push the
       // current token (+ prompt) so the first inbound call passes the auth
-      // wall. Fire-and-forget: Atoms being down must not block Al's boot.
+      // wall. Fire-and-forget: Atoms being down must not block AL's boot.
       syncVoiceAuth().catch((err: Error) => log(`[al/voice] auth sync failed: ${err.message}`))
       // Conversation-fork router: restores the thread→fork table + starts the
       // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound

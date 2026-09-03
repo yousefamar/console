@@ -36,6 +36,7 @@ import type { AgentContext } from '../routes/agents.js'
 import { createSession, wakeSession, mergeIntoParent } from '../routes/agents.js'
 import { saveManifest } from '../manifest.js'
 import { getAlSession } from './al-session.js'
+import { AL_NAME } from './identity.js'
 import { identifiersFor, normalize } from './users.js'
 
 // Resolved per call (not captured at module load) so tests can point it at a
@@ -113,12 +114,12 @@ function liveFork(ctx: AgentContext, rec: ForkRecord): Session | null {
  *  JID as a different conversation and answers a stale antecedent. */
 export function forkSeed(threadJid: string, senderLabel: string, otherIds: string[] = []): string {
   return [
-    `[CONVERSATION FORK] You are a fork of Al dedicated to ONE WhatsApp conversation: ${senderLabel} (thread ${threadJid}).`,
+    `[CONVERSATION FORK] You are a fork of AL dedicated to ONE WhatsApp conversation: ${senderLabel} (thread ${threadJid}).`,
     ...(otherIds.length ? [
       `This is the SAME PERSON as ${otherIds.join(', ')} — one conversation across all their identities; anything you (Al) recently sent to any of them is part of this thread.`,
     ] : []),
     `All messages from this thread now come to you, not your parent. Handle them exactly per your persona — identity rules, allow/deny walls, reply via \`con whatsapp send ${threadJid} --body "..."\`.`,
-    `You know everything parent-Al knew up to this branch point, but you are ONLY this conversation's handler — do not act on other threads.`,
+    `You know everything parent-AL knew up to this branch point, but you are ONLY this conversation's handler — do not act on other threads.`,
     `When the conversation goes quiet you will be wound down automatically (merged back or closed). No action needed from you.`,
   ].join('\n')
 }
@@ -166,7 +167,7 @@ export function routeInbound(
       resume: parent.claudeSessionId,
       fork: true,
       silent: true,
-      name: `Al ↔ ${senderLabel}`,
+      name: `${AL_NAME} ↔ ${senderLabel}`,
       parentClaudeSessionId: parent.claudeSessionId,
       // Inherit Al's space binding (fork_session does the same) — without it
       // the fork has no project/areas and the Spaces rail buries it in

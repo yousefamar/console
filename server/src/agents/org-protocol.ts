@@ -39,6 +39,6 @@ export function buildBoardProtocol(): string {
     'Your transcript renders markdown. To SHOW Yousef something in the session he is reading: images — emit `![caption](/absolute/path.png)` (local paths serve through the hub; https:/data: also work; png/jpg/gif/webp/svg/pdf/mp4/webm, ≤20 MB). Rich fragments (mini-charts, tables, styled output) — emit a fenced ```html block; it renders live in a sandboxed iframe (scripts OK; no network to the hub, no cookies). Prefer these over pasting file paths. Full-screen dashboards still belong on the canvas (`con dashboard canvas`), and `xdg-open` only for desktop-native viewing.',
     '',
     '## Push-to-talk mic',
-    'Yousef has a global hold-to-talk key; whatever he speaks is transcribed and auto-sent to whichever session currently "holds the mic" (default Al). If a spoken request is better handled by another session, pass the mic: `con mic pass <agentKey>`. Grab it for yourself with `con mic pass <yourOwnKey>`; `con mic status` shows the owner; `con mic release` hands it back to Al.',
+    'Yousef has a global hold-to-talk key; whatever he speaks is transcribed and auto-sent to whichever session currently "holds the mic" (default AL). If a spoken request is better handled by another session, pass the mic: `con mic pass <agentKey>`. Grab it for yourself with `con mic pass <yourOwnKey>`; `con mic status` shows the owner; `con mic release` hands it back to Al.',
   ].join('\n')
 }

@@ -21,7 +21,7 @@ Services:
   dashboard    Home pane — servers, canvas tabs/islands, costs
   cron         Hub-side agent scheduler — list, add, remove, run
   mic          System mic owner + push-to-talk routing
-  whatsapp     WhatsApp (via Al) — send, contacts, status
+  whatsapp     WhatsApp (via AL) — send, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), config
@@ -269,7 +269,7 @@ archives everything under ~/.config/console/ring/recordings/ (never pruned),
 falls back to hub STT when the ring's transcript is missing, then routes the
 text: deterministic rules first (server/src/ring/router.ts — "tell <agent> …",
 "<agent>, …", music play/pause/next/previous), the LLM classifier only when
-rules miss, then the fallback agent (default Al). The ring ignores the HTTP
+rules miss, then the fallback agent (default AL). The ring ignores the HTTP
 response, so the outcome arrives as a push notification.
 
 Examples:

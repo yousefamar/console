@@ -20,7 +20,7 @@ export function buildClassifyPrompt(text: string, agents: RingAgent[]): string {
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: what to play>"}',
     '  {"kind":"unknown"}',
     '',
-    'Agent roster (match spoken names loosely — "owl"/"hal" usually mean "Al"; "console" means "Console general"):',
+    'Agent roster (match spoken names loosely — "owl"/"hal" usually mean "AL"; "console" means "Console general"):',
     roster || '- (none)',
     '',
     `Transcript: ${JSON.stringify(text)}`,

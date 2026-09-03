@@ -212,7 +212,7 @@ function SpacesHandoffBanner() {
   if (pendingHandoff) {
     return (
       <div className="fixed bottom-4 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-lg border border-violet-500/40 bg-surface-2 px-3 py-2 shadow-xl">
-        <span className="text-xs text-text-secondary">Al suggests you talk to <span className="font-medium text-text-primary">{useAgentStore.getState().sessions.find((s2) => s2.agentKey === pendingHandoff.targetAgentKey)?.name ?? pendingHandoff.targetAgentKey}</span></span>
+        <span className="text-xs text-text-secondary">AL suggests you talk to <span className="font-medium text-text-primary">{useAgentStore.getState().sessions.find((s2) => s2.agentKey === pendingHandoff.targetAgentKey)?.name ?? pendingHandoff.targetAgentKey}</span></span>
         <button onClick={() => acceptHandoff(pendingHandoff.targetAgentKey)} className="rounded bg-violet-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-violet-500">Talk →</button>
         <button onClick={dismissHandoff} className="text-text-tertiary hover:text-text-primary"><X size={12} /></button>
       </div>
@@ -224,7 +224,7 @@ function SpacesHandoffBanner() {
         onClick={returnFromHandoff}
         className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs text-text-secondary shadow-xl hover:text-text-primary"
       >
-        ↩ Back to Al
+        ↩ Back to AL
       </button>
     )
   }
@@ -485,7 +485,7 @@ function SpaceListRail() {
       } },
       { label: 'Generate title', onClick: () => agent.generateTitle(sessionId) },
       { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sessionId) },
-      { label: useMicStore.getState().owner === sessionId ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
+      { label: useMicStore.getState().owner === sessionId ? 'Release mic to AL' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sessionId ? 'al' : sessionId) },
       { label: 'Fork', onClick: () => agent.forkSession(sessionId) },
       ...(sess?.parentClaudeSessionId ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sessionId) }] : []),
       ...ownerMenuItem(sess),
@@ -793,7 +793,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               } },
               { label: 'Generate title', onClick: () => agent.generateTitle(sess.id) },
               { label: 'Reload history', onClick: () => agent.reloadSessionHistory(sess.id) },
-              { label: useMicStore.getState().owner === sess.id ? 'Release mic to Al' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sess.id ? 'al' : sess.id) },
+              { label: useMicStore.getState().owner === sess.id ? 'Release mic to AL' : 'Give mic', onClick: () => useMicStore.getState().setMic(useMicStore.getState().owner === sess.id ? 'al' : sess.id) },
               { label: 'Fork', onClick: () => agent.forkSession(sess.id) },
               ...(isFork ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sess.id) }] : []),
               ...ownerMenuItem(sess),

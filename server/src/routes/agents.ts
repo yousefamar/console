@@ -16,6 +16,7 @@ import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
+import { isAlName } from '../al/identity.js'
 import { getLastReadIndex, setLastReadIndex } from '../read-state.js'
 
 // Session order persistence
@@ -83,7 +84,7 @@ export function loadSessionOrder(sessions: Map<string, Session>): string[] {
 
 function findAlHubId(sessions: Map<string, Session>): string | undefined {
   for (const s of sessions.values()) {
-    if (s.name === 'Al' && s.status !== 'ended') return s.id
+    if (isAlName(s.name) && s.status !== 'ended') return s.id
   }
   return undefined
 }
@@ -781,7 +782,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       // Al keeps its bespoke persona path (buildAlSystemPrompt) — route to reloadAl.
       if (session.agentKey === 'al' && ctx.reloadAl) {
         ctx.reloadAl()
-        log('Al reloaded (via reloadAl)')
+        log('AL reloaded (via reloadAl)')
       } else {
         session.reload()
         broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
@@ -793,17 +794,17 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
 
     case 'reload_al': {
       if (!ctx.reloadAl) {
-        sendTo(ws, { type: 'hub_error', message: 'Al reload is not wired on this hub' })
+        sendTo(ws, { type: 'hub_error', message: 'AL reload is not wired on this hub' })
         return
       }
       ctx.reloadAl()
         .then((s) => {
           saveManifest(sessions)
           broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((x) => x.getInfo()) })
-          log(`Al reloaded (fresh persona): ${s?.id ?? 'spawn pending'}`)
+          log(`AL reloaded (fresh persona): ${s?.id ?? 'spawn pending'}`)
         })
         .catch((e) => {
-          sendTo(ws, { type: 'hub_error', message: `Al reload failed: ${(e as Error).message}` })
+          sendTo(ws, { type: 'hub_error', message: `AL reload failed: ${(e as Error).message}` })
         })
       break
     }

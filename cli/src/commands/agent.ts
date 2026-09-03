@@ -334,12 +334,12 @@ async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
 async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const target = args.filter((a) => !a.startsWith('--'))[0]
-  if (!target) exitWithError('USAGE', 'Usage: con agent reload <session-id|name|agentKey|Al> [--from-csid <claudeSessionId>]', flags)
+  if (!target) exitWithError('USAGE', 'Usage: con agent reload <session-id|name|agentKey|AL> [--from-csid <claudeSessionId>]', flags)
   const { sendAndReceive } = await import('../ws-client.js')
 
   if (target.toLowerCase() === 'al') {
     await sendAndReceive({ type: 'reload_al' }, () => false)
-    output({ reloaded: 'Al', mode: 'fresh-persona-spawn' }, flags)
+    output({ reloaded: 'AL', mode: 'fresh-persona-spawn' }, flags)
     return
   }
 

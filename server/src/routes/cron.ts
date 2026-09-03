@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto'
 import type { HubCronScheduler, HubCronTask } from '../cron/scheduler.js'
 import { buildIcs } from '../cron/ics.js'
 import type { Session } from '../session.js'
+import { AL_NAME } from '../al/identity.js'
 import { AL_SESSION_ID } from '../al-bridge.js'
 
 interface Deps {
@@ -34,7 +35,7 @@ function nameForSession(claudeSessionId: string, deps: Deps): string {
   for (const s of deps.getSessions().values()) {
     if (s.claudeSessionId === claudeSessionId) return s.name || claudeSessionId.slice(0, 8)
   }
-  if (claudeSessionId === AL_SESSION_ID && deps.getAlConnected()) return 'Al'
+  if (claudeSessionId === AL_SESSION_ID && deps.getAlConnected()) return AL_NAME
   return claudeSessionId.slice(0, 8)
 }
 

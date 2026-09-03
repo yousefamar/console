@@ -241,7 +241,7 @@ export class AlBridge {
       id: AL_SESSION_ID,
       status: this.alWs ? this.status : 'ended',
       createdAt: this.connectedAt || Date.now(),
-      prompt: 'Al',
+      prompt: 'AL',
       cwd: undefined,
       totalCost: 0,
       totalTokens: { input: 0, output: 0 },

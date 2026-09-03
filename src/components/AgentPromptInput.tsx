@@ -721,7 +721,7 @@ export const AgentPromptInput = memo(function AgentPromptInput() {
           placeholder={
             pendingToolName === 'ExitPlanMode' ? 'Plan feedback — Claude keeps planning (approve above to proceed)'
             : pendingToolName === 'AskUserQuestion' ? 'Answer the question above first...'
-            : activeSessionId === 'al' ? 'Message Al...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
+            : activeSessionId === 'al' ? 'Message AL...' : activeSessionId ? 'Follow up...' : selectedResumeId ? 'Send a message to resume...' : 'Start a new agent session...'}
           rows={1}
           className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[50vh] overflow-y-auto"
           disabled={!connected}

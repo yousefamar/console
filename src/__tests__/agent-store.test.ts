@@ -865,7 +865,7 @@ describe('handoff + org store', () => {
     const base = { createdAt: 0, prompt: '', totalCost: 0, totalTokens: { input: 0, output: 0 }, contextWindow: 0, contextUsed: 0 }
     useAgentStore.setState({
       sessions: [
-        { id: 'al', name: 'Al', status: 'idle', ...base },
+        { id: 'al', name: 'AL', status: 'idle', ...base },
         { id: 's-feeds', agentKey: 'feeds-tab', status: 'idle', ...base },
       ],
       pendingHandoff: { fromSessionId: 'al', targetAgentKey: 'feeds-tab' },

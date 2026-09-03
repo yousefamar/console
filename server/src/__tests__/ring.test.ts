@@ -11,7 +11,7 @@ import { deliveryFromRequest } from '../routes/ring.js'
 
 const AGENTS: RingAgent[] = [
   { id: 's1', name: 'Console general', agentKey: 'console-general' },
-  { id: 's2', name: 'Al', agentKey: 'al' },
+  { id: 's2', name: 'AL', agentKey: 'al' },
   { id: 's3', name: 'Astera general', agentKey: 'astera-general' },
   { id: 's4', name: 'Astera admin (fork)', agentKey: 'astera-general-fork-2', fork: true },
   { id: 's5', name: 'Home', agentKey: 'home' },
@@ -101,13 +101,13 @@ describe('routeByRules', () => {
   })
   it('describeCommand is a one-liner per kind', () => {
     expect(describeCommand({ kind: 'music', action: 'play', query: 'x' })).toBe('music play "x"')
-    expect(describeCommand({ kind: 'agent', targetId: 's2', targetName: 'Al', message: 'hi' })).toBe('→ Al: hi')
+    expect(describeCommand({ kind: 'agent', targetId: 's2', targetName: 'AL', message: 'hi' })).toBe('→ AL: hi')
   })
 })
 
 describe('llm fallback parsing', () => {
   it('accepts only on-schema replies with a known agent id', () => {
-    expect(parseClassifyReply('Sure! {"kind":"agent","targetId":"s2","message":"buy milk"}', AGENTS, 'x')).toMatchObject({ kind: 'agent', targetId: 's2', targetName: 'Al', message: 'buy milk' })
+    expect(parseClassifyReply('Sure! {"kind":"agent","targetId":"s2","message":"buy milk"}', AGENTS, 'x')).toMatchObject({ kind: 'agent', targetId: 's2', targetName: 'AL', message: 'buy milk' })
     expect(parseClassifyReply('{"kind":"agent","targetId":"nope","message":"x"}', AGENTS, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', AGENTS, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"music","action":"next"}', AGENTS, 'x')).toEqual({ kind: 'music', action: 'next' })
@@ -116,7 +116,7 @@ describe('llm fallback parsing', () => {
   })
   it('prompt carries the roster and the transcript verbatim', () => {
     const p = buildClassifyPrompt('tel owl buy "milk"', AGENTS)
-    expect(p).toContain('id=s2 name="Al" key=al')
+    expect(p).toContain('id=s2 name="AL" key=al')
     expect(p).toContain(JSON.stringify('tel owl buy "milk"'))
   })
 })
@@ -163,7 +163,7 @@ describe('RingStore + pipeline', () => {
     expect(injected[0]).toMatchObject({ id: 's2' })
     expect(injected[0]!.content).toBe(buildRingEnvelope('buy milk', rec.id))
     expect(injected[0]!.content).toMatch(/^\[RING — voice command/)
-    expect(notified[0]).toMatchObject({ title: 'Ring → Al', body: 'buy milk' })
+    expect(notified[0]).toMatchObject({ title: 'Ring → AL', body: 'buy milk' })
     // Sidecar on disk carries the routing outcome.
     const sidecar = JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${rec.id}.json`), 'utf8'))
     expect(sidecar.route.ok).toBe(true)

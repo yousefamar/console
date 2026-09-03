@@ -15,7 +15,8 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { Session } from '../session.js'
 import { createSession, type AgentContext } from '../routes/agents.js'
-import { AL_SESSION_FILE, WORKSPACE_DIR } from './identity.js'
+import { AL_NAME, AL_SESSION_FILE, WORKSPACE_DIR, isAlName } from './identity.js'
+import { saveManifest } from '../manifest.js'
 import { buildAlSystemPrompt } from './persona.js'
 
 interface AlSessionFile {
@@ -60,8 +61,17 @@ export function getRecordedAlSessionId(): string | null {
   return loadAlSession()?.claudeSessionId ?? null
 }
 
+/** A session restored from a pre-rename manifest still says "Al" — the
+ *  restart IS the rename, so normalise in place (same write path as
+ *  rename_session: field + manifest; clients learn it from sessions_list). */
+function adoptCanonicalName(ctx: AgentContext, s: Session): void {
+  if (s.name === AL_NAME) return
+  s.name = AL_NAME
+  saveManifest(ctx.sessions)
+}
+
 /**
- * Bootstrap the Al session. Idempotent: if Al already exists in
+ * Bootstrap the AL session. Idempotent: if Al already exists in
  * `ctx.sessions` (restored from manifest), we just record it; otherwise we
  * spawn a fresh one with the persona system prompt and persist the
  * claudeSessionId once Claude emits it.
@@ -72,7 +82,8 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
     for (const s of ctx.sessions.values()) {
       if (s.claudeSessionId === existing.claudeSessionId) {
         currentAlSession = s
-        console.log(`[al/session] resumed Al (claude=${existing.claudeSessionId.slice(0, 8)} hub=${s.id})`)
+        adoptCanonicalName(ctx, s)
+        console.log(`[al/session] resumed AL (claude=${existing.claudeSessionId.slice(0, 8)} hub=${s.id})`)
         return s
       }
     }
@@ -85,13 +96,13 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
     const encodedCwd = WORKSPACE_DIR.replace(/\//g, '-')
     const transcript = join(homedir(), '.claude', 'projects', encodedCwd, `${existing.claudeSessionId}.jsonl`)
     if (existsSync(transcript)) {
-      console.log(`[al/session] recorded Al ${existing.claudeSessionId.slice(0, 8)} not live — resuming from transcript (history preserved)`)
+      console.log(`[al/session] recorded AL ${existing.claudeSessionId.slice(0, 8)} not live — resuming from transcript (history preserved)`)
       const session = createSession(ctx, {
         prompt: '',
         resume: existing.claudeSessionId,
         silent: true,
         cwd: WORKSPACE_DIR,
-        name: 'Al',
+        name: AL_NAME,
         agentKey: 'al',
         // Space binding — without it the Spaces rail files Al under
         // ~unassigned (the "where is Al??" incident after a reload).
@@ -112,15 +123,16 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
   // restore dedup (index.ts), this guarantees exactly one Al per boot, with no
   // session ever being killed.
   for (const s of ctx.sessions.values()) {
-    if ((s.agentKey === 'al' || s.name === 'Al') && s.status !== 'ended' && s.claudeSessionId) {
+    if ((s.agentKey === 'al' || isAlName(s.name)) && s.status !== 'ended' && s.claudeSessionId) {
       currentAlSession = s
+      adoptCanonicalName(ctx, s)
       saveAlSession({ version: 1, claudeSessionId: s.claudeSessionId, hubSessionId: s.id, createdAt: Date.now() })
-      console.log(`[al/session] adopted existing Al ${s.id} (claude=${s.claudeSessionId.slice(0, 8)}) — re-pointed al-session.json`)
+      console.log(`[al/session] adopted existing AL ${s.id} (claude=${s.claudeSessionId.slice(0, 8)}) — re-pointed al-session.json`)
       return s
     }
   }
 
-  console.log('[al/session] no existing Al — spawning fresh')
+  console.log('[al/session] no existing AL — spawning fresh')
   const systemPrompt = await buildAlSystemPrompt()
   // Al's working directory IS his persona/workflow vault. This makes
   // `Read users/<name>.md`, `Read workflows/<slug>.md`, etc. resolve as
@@ -139,7 +151,7 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
       'Acknowledge briefly that you are online.',
     ].join('\n'),
     cwd: WORKSPACE_DIR,
-    name: 'Al',
+    name: AL_NAME,
     systemPrompt,
     agentKey: 'al',
     // Space binding — the Spaces rail places sessions by project/areas; Al
@@ -159,7 +171,7 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
         hubSessionId: session.id,
         createdAt: Date.now(),
       })
-      console.log(`[al/session] persisted Al claudeSessionId=${msg.claudeSessionId.slice(0, 8)}`)
+      console.log(`[al/session] persisted AL claudeSessionId=${msg.claudeSessionId.slice(0, 8)}`)
     }
   }
   session.on('hub_message', onInit as any)
@@ -189,14 +201,14 @@ export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
   }
   currentAlSession = null
   try { if (existsSync(AL_SESSION_FILE)) unlinkSync(AL_SESSION_FILE) } catch { /* ignore */ }
-  console.log('[al/session] reloading Al — fresh persona spawn')
+  console.log('[al/session] reloading AL — fresh persona spawn')
   const session = await ensureAlSession(ctx)
   if (oldCsid) {
     const onInit = (msg: { type: string; claudeSessionId?: string }) => {
       if (msg.type !== 'session_init' || !msg.claudeSessionId) return
       session.off('hub_message', onInit as any)
       const moved = ctx.reassignCron?.(oldCsid, msg.claudeSessionId) ?? 0
-      if (moved) console.log(`[al/session] ${moved} cron task(s) followed Al ${oldCsid.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}`)
+      if (moved) console.log(`[al/session] ${moved} cron task(s) followed AL ${oldCsid.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}`)
     }
     session.on('hub_message', onInit as any)
   }

@@ -102,7 +102,7 @@ export function startDeprecationShim(): void {
         try {
           // Old shim prefixed text with "[Al] ". Preserve that contract so
           // existing recipients see the same attribution.
-          const { id, jid } = await wa.sendText(to, `[Al] ${text}`)
+          const { id, jid } = await wa.sendText(to, `[AL] ${text}`)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, channel: 'whatsapp', to: jid, id, deprecated: 'use `con whatsapp send` instead' }))
         } catch (err) {

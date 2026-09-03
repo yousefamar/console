@@ -52,6 +52,11 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **AL rename** (^green-seal): user-facing strings say "AL" (Release mic to
+  AL, Message AL…, AL suggests you talk to…). The `isAl`/`id == "al"`
+  identity checks are slug-based and unchanged; the hub now names the session
+  `AL` so anything showing `session.name` follows automatically.
+
 - **Inbox: agent ordering tiers** (^lean-deer, SPA parity): `InboxLogic.kt`
   bands agents attention → review hand-back (turn ended + `agentKey` owns an
   Under Review card) → chat+mail → finished-unread → still-running-unread.

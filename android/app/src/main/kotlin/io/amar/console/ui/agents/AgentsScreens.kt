@@ -117,7 +117,7 @@ fun SessionActionsSheet(
                 if (onShowInfo != null) SheetItem("ⓘ Show info") { onShowInfo() }
                 SheetItem("✓✓ Mark read") { onMarkRead(); onDismiss() }
                 SheetItem("● Mark unread") { onMarkUnread(); onDismiss() }
-                SheetItem(if (micOwner) "🎙 Release mic to Al" else "🎙 Give mic to this agent") { onMic(); onDismiss() }
+                SheetItem(if (micOwner) "🎙 Release mic to AL" else "🎙 Give mic to this agent") { onMic(); onDismiss() }
                 if (canMerge) SheetItem("⤵ Merge into parent") { onMerge(); onDismiss() }
                 if (ownerToggle != null) SheetItem(if (ownerToggle.first) "☆ Unset as project owner" else "★ Set as project owner") { ownerToggle.second(); onDismiss() }
                 if (session.status != "ended") {
@@ -298,7 +298,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 // looking frozen.
                 sessionApprovals.any { it.toolName == "ExitPlanMode" } -> "Plan feedback — Claude keeps planning"
                 sessionApprovals.any { it.toolName == "AskUserQuestion" } -> "Answer the question above first…"
-                session?.id == "al" -> "Message Al…"
+                session?.id == "al" -> "Message AL…"
                 act?.running == true || session?.status == "running" -> "Follow up…"
                 else -> "Prompt"
             },

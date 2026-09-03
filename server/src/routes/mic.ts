@@ -82,7 +82,7 @@ export function handleMicRoutes(
       const t = (text ?? '').trim()
       if (!t) { console.log('[mic] say: empty transcript (skipped)'); json({ ok: true, skipped: 'empty transcript' }); return }
       const owner = ctx.effectiveOwnerId()
-      if (!owner) { console.log('[mic] say: no owner'); json({ error: 'no mic owner available (is Al up?)' }, 503); return }
+      if (!owner) { console.log('[mic] say: no owner'); json({ error: 'no mic owner available (is AL up?)' }, 503); return }
       const ok = ctx.injectToSession(owner, t)
       console.log(`[mic] say → owner=${owner} (${ctx.ownerName(owner)}) live=${ok} text=${JSON.stringify(t.slice(0, 80))}`)
       json(ok ? { ok: true, owner, ownerName: ctx.ownerName(owner) } : { error: 'owner session not live' }, ok ? 200 : 503)

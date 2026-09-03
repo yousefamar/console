@@ -221,7 +221,7 @@ fun SpacesScreen(
             ) {
                 val target = sessions.firstOrNull { it.agentKey == h.targetAgentKey && it.status != "ended" }
                 Text(
-                    "Al suggests you talk to ${target?.name?.removeSuffix(" (fork)") ?: h.targetAgentKey}",
+                    "AL suggests you talk to ${target?.name?.removeSuffix(" (fork)") ?: h.targetAgentKey}",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = {
