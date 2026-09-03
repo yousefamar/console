@@ -416,7 +416,7 @@ export function handleAuthRoutes(
         jsonResponse(res, 400, { error: 'name and scope are required' })
         return
       }
-      const allowedScopes = ['cli', 'al', 'apk', 'ring', 'other']
+      const allowedScopes = ['cli', 'al', 'apk', 'ring', 'voice', 'other']
       if (!allowedScopes.includes(scope)) {
         jsonResponse(res, 400, { error: `scope must be one of ${allowedScopes.join(', ')}` })
         return

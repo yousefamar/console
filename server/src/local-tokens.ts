@@ -1,4 +1,8 @@
-// Local plaintext bearer cache for same-machine clients (CLI + Al).
+// Local plaintext bearer cache for same-machine clients (CLI + Al) and for
+// the one remote caller the hub itself configures (Atoms voice — see
+// al/voice.ts, which pushes the `voice` token into the Atoms tool + webhook
+// headers so those callbacks pass the normal auth wall instead of being
+// exempt from it).
 //
 // The hub never stores plaintext bearers — only sha256 hashes. But the CLI
 // and Al run as the same unix user on the same machine, so a 0600 sidecar
@@ -7,7 +11,7 @@
 // minted at hub boot avoids any chicken-and-egg dance.
 //
 // File: ~/.config/console/local-tokens.json
-// Shape: { cli?: string, al?: string, mintedAt?: number, version: 1 }
+// Shape: { cli?: string, al?: string, voice?: string, mintedAt?: number, version: 1 }
 
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -22,6 +26,7 @@ interface LocalTokensFile {
   mintedAt?: number
   cli?: string
   al?: string
+  voice?: string
 }
 
 function loadLocalTokens(): LocalTokensFile {
@@ -64,13 +69,14 @@ function isPlaintextStillValid(plaintext: string, scope: HubTokenScope, store: A
  *
  * Returns the resolved plaintexts so the caller can log or react.
  */
-export function ensureLocalTokens(store: AuthStore): { cli: string; al: string } {
+export function ensureLocalTokens(store: AuthStore): { cli: string; al: string; voice: string } {
   const file = loadLocalTokens()
   let dirty = false
 
-  const scopes: Array<{ scope: HubTokenScope; key: 'cli' | 'al'; name: string }> = [
+  const scopes: Array<{ scope: HubTokenScope; key: LocalTokenScope; name: string }> = [
     { scope: 'cli', key: 'cli', name: 'local-cli' },
     { scope: 'al', key: 'al', name: 'local-al' },
+    { scope: 'voice', key: 'voice', name: 'atoms-voice' },
   ]
 
   for (const { scope, key, name } of scopes) {
@@ -87,11 +93,13 @@ export function ensureLocalTokens(store: AuthStore): { cli: string; al: string }
 
   if (dirty) saveLocalTokens(file)
 
-  return { cli: file.cli!, al: file.al! }
+  return { cli: file.cli!, al: file.al!, voice: file.voice! }
 }
 
+export type LocalTokenScope = 'cli' | 'al' | 'voice'
+
 /** Read the plaintext bearer for a known scope from the on-disk cache. */
-export function readLocalToken(scope: 'cli' | 'al'): string | null {
+export function readLocalToken(scope: LocalTokenScope): string | null {
   const file = loadLocalTokens()
   return file[scope] ?? null
 }

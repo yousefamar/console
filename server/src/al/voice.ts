@@ -7,11 +7,20 @@
 // Outbound calls: POST /conversation/outbound to Atoms, then poll for the
 // transcript since Atoms's webhook is configured to hit al.amar.io/voice/webhook
 // which Caddy now routes back into this hub.
+//
+// AUTH: neither callback is exempt from the hub's auth wall. The hub mints a
+// `voice`-scoped bearer at boot (local-tokens.ts) and installs it as an
+// `Authorization` header on BOTH the Atoms delegate tool (syncVoicePrompt)
+// and the Atoms webhook record (syncWebhookAuth) — Atoms sends it back on
+// every call, the middleware validates it like any other bearer. Before this
+// (^gold-hare, opsec rem #63) /voice/delegate was open to the internet and
+// injected caller text straight into Al's live session.
 
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HubMessage } from '../protocol.js'
 import type { Session } from '../session.js'
+import { readLocalToken } from '../local-tokens.js'
 import { WORKSPACE_DIR, readIfExists } from './identity.js'
 
 const ATOMS_API_URL = 'https://atoms-api.smallest.ai/api/v1'
@@ -113,7 +122,7 @@ export async function syncVoicePrompt(callContext?: string): Promise<void> {
       llmParameters: [
         { name: 'request', description: 'The task or question to delegate to the text agent', type: 'text', required: true },
       ],
-      headers: { 'Content-Type': 'application/json' },
+      headers: voiceCallbackHeaders(),
       requestBody: '{"request": "{{request}}", "callerPhone": "{{user_number}}", "callId": "{{call_id}}"}',
       responseVariables: [],
     },
@@ -125,6 +134,54 @@ export async function syncVoicePrompt(callContext?: string): Promise<void> {
   })
   if (!result.ok) console.error(`[al/voice] sync failed: ${result.status}`)
   else console.log('[al/voice] prompt synced to Atoms')
+}
+
+/** Headers Atoms sends back to us on every callback. Missing token → no
+ *  Authorization header → the hub 401s the callback (fail closed, loudly). */
+export function voiceCallbackHeaders(token: string | null = readLocalToken('voice')): Record<string, string> {
+  if (!token) {
+    console.error('[al/voice] no voice bearer in local-tokens.json — Atoms callbacks will be rejected until the hub mints one (restart)')
+    return { 'Content-Type': 'application/json' }
+  }
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+}
+
+/** Which of our webhook records need the bearer header installed/refreshed. */
+export function webhooksNeedingAuth(
+  hooks: Array<{ _id?: string; url?: string; headers?: Record<string, string> }>,
+  token: string,
+): string[] {
+  const want = `Bearer ${token}`
+  return hooks
+    .filter((h) => h._id && typeof h.url === 'string' && /\/voice\/webhook$/.test(h.url))
+    .filter((h) => (h.headers?.Authorization ?? h.headers?.authorization) !== want)
+    .map((h) => h._id!)
+}
+
+/** Install the voice bearer on our Atoms webhook record(s). Idempotent. */
+export async function syncWebhookAuth(): Promise<void> {
+  const token = readLocalToken('voice')
+  if (!token) return
+  const list = await atomsApi('GET', '/webhook')
+  if (!list.ok) {
+    console.error(`[al/voice] webhook list failed: ${list.status}`)
+    return
+  }
+  const hooks = (list.data?.data ?? []) as Array<{ _id?: string; url?: string; headers?: Record<string, string> }>
+  for (const id of webhooksNeedingAuth(hooks, token)) {
+    const r = await atomsApi('PATCH', `/webhook/${id}`, { headers: voiceCallbackHeaders(token) })
+    if (!r.ok) console.error(`[al/voice] webhook ${id} auth header sync failed: ${r.status} ${JSON.stringify(r.data).slice(0, 200)}`)
+    else console.log(`[al/voice] webhook ${id}: bearer header installed`)
+  }
+}
+
+/** Boot-time: push the current prompt + tool auth header, and the webhook
+ *  auth header, so Atoms carries a valid bearer before the first call. Runs
+ *  once per hub start; outbound calls re-sync the prompt with call context. */
+export async function syncVoiceAuth(): Promise<void> {
+  if (!process.env.ATOMS_API_KEY || !process.env.ATOMS_AGENT_ID) return
+  await syncVoicePrompt()
+  await syncWebhookAuth()
 }
 
 // --- Delegate (Atoms → Al) ---
@@ -237,6 +294,10 @@ export async function handleWebhook(payload: any): Promise<void> {
     return
   }
 
+  if (!isSafeCallId(callId)) {
+    console.error(`[al/voice] webhook: rejecting non-id callId ${JSON.stringify(String(callId)).slice(0, 60)}`)
+    return
+  }
   const details = await atomsApi('GET', `/analytics/conversation-details/${encodeURIComponent(callId)}`)
   if (!details.ok) return
   const data = details.data?.data ?? details.data
@@ -260,4 +321,19 @@ export async function handleWebhook(payload: any): Promise<void> {
   } catch (err) {
     console.error('[al/voice] failed to save transcript:', (err as Error)?.message)
   }
+}
+
+/** Atoms ids are opaque alnum tokens; the callId also names a file on disk,
+ *  so anything path-shaped is refused outright. */
+export function isSafeCallId(id: unknown): id is string {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{6,80}$/.test(id)
+}
+
+/** E.164-ish: optional `+`, 6–15 digits, after stripping spaces/dashes/dots.
+ *  Anything else → '' — the value names the caller in Al's envelope AND
+ *  seeds a users/<phone>.md record, so only a phone-shaped string may. */
+export function normalisePhone(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const cleaned = raw.replace(/[\s().-]/g, '')
+  return /^\+?\d{6,15}$/.test(cleaned) ? cleaned : ''
 }

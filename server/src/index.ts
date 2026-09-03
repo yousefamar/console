@@ -95,6 +95,7 @@ import { PenHub } from './pen-hub.js'
 import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
+import { syncVoiceAuth } from './al/voice.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import { startDeprecationShim } from './al/shim-18789.js'
@@ -2194,6 +2195,10 @@ httpServer.listen(port, host, () => {
       setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
       const alSession = await ensureAlSession(agentCtx)
       log(`Al session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+      // Atoms carries the hub's voice bearer on every callback — push the
+      // current token (+ prompt) so the first inbound call passes the auth
+      // wall. Fire-and-forget: Atoms being down must not block Al's boot.
+      syncVoiceAuth().catch((err: Error) => log(`[al/voice] auth sync failed: ${err.message}`))
       // Conversation-fork router: restores the thread→fork table + starts the
       // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound
       // routes correctly.

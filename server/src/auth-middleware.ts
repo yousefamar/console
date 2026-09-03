@@ -89,11 +89,15 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   if (path.startsWith('/auth/monzo/poll')) return true
   if (path === '/auth/session' && method === 'GET') return true
   if (path === '/money/webhook') return true
-  // Voice webhooks are hit by Atoms from the public internet via
-  // al.amar.io → Caddy → hub. They authenticate via their own signed payloads
-  // and the route handler's payload checks; the hub bearer doesn't apply.
-  if (path === '/voice/delegate' || path.startsWith('/voice/delegate?')) return true
-  if (path === '/voice/webhook') return true
+  // Voice: Atoms calls /voice/delegate + /voice/webhook from the public
+  // internet via al.amar.io → Caddy → hub, and they are NOT exempt — the hub
+  // configures both callbacks itself (al/voice.ts syncVoiceAuth) with an
+  // `Authorization: Bearer <voice-scoped token>` header, so they pass the
+  // bearer check in decide() like any other client. An earlier exemption
+  // here claimed "they authenticate via their own signed payloads" — nothing
+  // ever verified a signature, so /voice/delegate was an unauthenticated write
+  // primitive into Al's session (opsec rem #63, ^gold-hare). Only the
+  // credential-free health probe stays open.
   if (path === '/voice/health') return true
   return false
 }

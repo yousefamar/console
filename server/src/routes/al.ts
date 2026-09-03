@@ -11,10 +11,11 @@
 //   POST /voice/call {phoneNumber,context} → { callId } | { error }
 //   POST /voice/webhook                   → { ok }         (Atoms post-call)
 //
-// All WhatsApp routes require the hub bearer (Phase 8+ of the hub-auth
-// refactor). Voice routes are marked always-open in auth-middleware.ts
-// because Atoms posts to /voice/delegate + /voice/webhook from the public
-// internet via al.amar.io → Caddy → hub.
+// Every route here requires the hub bearer — the voice callbacks included.
+// Atoms reaches /voice/delegate + /voice/webhook from the public internet via
+// al.amar.io → Caddy → hub carrying `Authorization: Bearer <voice token>`,
+// which the hub itself installs on the Atoms tool + webhook config
+// (al/voice.ts syncVoiceAuth). Only /voice/health is exempt.
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -126,7 +127,8 @@ export function handleAlRoutes(
     return true
   }
 
-  if (path.startsWith('/voice/delegate') && (req.method === 'POST' || req.method === 'GET')) {
+  // POST only: a GET here would fire from a bare URL (img src, link, crawler).
+  if (path === '/voice/delegate' && req.method === 'POST') {
     handleVoiceDelegate(req, res, readBody).catch((err: Error) =>
       jsonResponse(res, 500, { error: err.message }))
     return true
@@ -164,14 +166,17 @@ async function handleVoiceDelegate(
   readBody: (req: IncomingMessage) => Promise<string>,
 ): Promise<void> {
   const rawBody = await readBody(req)
-  const parsedUrl = new URL(req.url ?? '/', 'http://localhost')
-  console.log(`[al/voice] delegate ${req.method} ${req.url}`)
+  console.log('[al/voice] delegate POST')
 
   const body = rawBody ? JSON.parse(rawBody) : {}
-  const callerPhone = body.callerPhone ?? body.caller_phone ?? body.from ?? body.fromNumber ?? ''
-  const text = parsedUrl.searchParams.get('request') ?? body.request ?? body.text ?? body.message ?? ''
+  const rawPhone = body.callerPhone ?? body.caller_phone ?? body.from ?? body.fromNumber ?? ''
+  const text = body.request ?? body.text ?? body.message ?? ''
 
-  if (!text) return jsonResponse(res, 400, { error: 'missing request field' })
+  if (typeof text !== 'string' || !text) return jsonResponse(res, 400, { error: 'missing request field' })
+  // The phone names the caller in Al's envelope AND seeds a users/<phone>.md
+  // record — only a phone-shaped value may do either.
+  const callerPhone = voice.normalisePhone(rawPhone)
+  if (rawPhone && !callerPhone) console.warn(`[al/voice] delegate: ignoring non-phone callerPhone ${JSON.stringify(String(rawPhone)).slice(0, 40)}`)
 
   const al = getAlSession()
   if (!al) return jsonResponse(res, 503, { error: 'Al session not bootstrapped' })

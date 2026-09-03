@@ -38,7 +38,7 @@ export interface SpotifyAuth {
   displayName?: string
 }
 
-export type HubTokenScope = 'cli' | 'al' | 'apk' | 'ring' | 'other'
+export type HubTokenScope = 'cli' | 'al' | 'apk' | 'ring' | 'voice' | 'other'
 
 export interface HubSession {
   id: string
