@@ -23,6 +23,10 @@ export class NotesSearchIndex {
   private mini: MiniSearch
   private paths: string[] = []
   private fzfInstance: Fzf<string[]> | null = null
+  // Bumped per build; a build that yields and wakes to find itself superseded
+  // stops adding, or two concurrent builds double-add every doc (MiniSearch
+  // throws "duplicate ID" on the first one).
+  private buildGen = 0
 
   constructor() {
     this.mini = new MiniSearch({
@@ -41,6 +45,7 @@ export class NotesSearchIndex {
     files: VaultFile[],
     readFile: (path: string) => Promise<string>,
   ): Promise<void> {
+    const gen = ++this.buildGen
     this.mini.removeAll()
     this.paths = files.map((f) => f.path)
 
@@ -79,6 +84,7 @@ export class NotesSearchIndex {
         })
       }
 
+      if (gen !== this.buildGen) return
       this.mini.addAll(docs)
       // Yield to main thread so keyboard events can process
       await yield_()
