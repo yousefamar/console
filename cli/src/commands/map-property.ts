@@ -51,12 +51,15 @@ async function add(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.label) body.label = String(o.label)
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
   if (o['notify-layer']) body.notifyLayer = String(o['notify-layer'])
+  if (o.notify) body.notify = o.notify !== 'off' && o.notify !== 'false'
+  const nc = notifyCriteriaFrom(o)
+  if (Object.keys(nc).length) body.notifyCriteria = nc
   output(await hubFetch('/property/searches', { method: 'POST', body }), flags)
 }
 
 async function set(args: string[], flags: GlobalFlags): Promise<void> {
   const id = args[0]
-  if (!id) return exitWithError('USAGE', 'con map property set <id> [--label X] [--enabled true|false] [criteria flags]', flags)
+  if (!id) return exitWithError('USAGE', 'con map property set <id> [--label X] [--enabled true|false] [--notify on|off] [--notify-layer <slug|path|none>] [--notify-* gate flags | --notify-criteria none] [criteria flags]', flags)
   const o = parseFlags(args.slice(1))
   const body: Record<string, unknown> = {}
   if (o.label) body.label = String(o.label)
@@ -66,6 +69,15 @@ async function set(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.enabled) body.enabled = o.enabled !== 'false'
   // --notify-layer none clears the filter (push on everything again).
   if (o['notify-layer']) body.notifyLayer = String(o['notify-layer']) === 'none' ? null : String(o['notify-layer'])
+  // --notify off: keep polling + pins, never push (the other countries' searches).
+  if (o.notify) body.notify = o.notify !== 'off' && o.notify !== 'false'
+  // --notify-criteria none clears the "really good" gate; any --notify-* gate
+  // flag REPLACES the whole gate (sent as one object), same as criteria flags.
+  if (o['notify-criteria'] === 'none') body.notifyCriteria = null
+  else {
+    const nc = notifyCriteriaFrom(o)
+    if (Object.keys(nc).length) body.notifyCriteria = nc
+  }
   const criteria = criteriaFrom(o)
   // Only send criteria when a criteria flag was actually passed — an empty
   // object would wipe the search's filters and force a re-seed.
@@ -123,6 +135,23 @@ async function listings(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.limit) q.set('limit', String(o.limit))
   if (o.country) q.set('country', String(o.country).toUpperCase())
   output(await hubFetch(`/property/listings${q.size ? `?${q}` : ''}`), flags)
+}
+
+/**
+ * `--notify-*` flags → the notification-only gate (server/src/property/
+ * notify-filter.ts). Evaluated locally on each fresh listing; unknown fields
+ * FAIL, so e.g. `--notify-min-plot` silences a Rightmove search outright.
+ */
+function notifyCriteriaFrom(o: Record<string, string>): Record<string, unknown> {
+  const nc: Record<string, unknown> = {}
+  if (o['notify-max-price']) nc.maxPrice = Number(o['notify-max-price'])
+  if (o['notify-min-beds']) nc.minBedrooms = Number(o['notify-min-beds'])
+  if (o['notify-min-plot']) nc.minPlotArea = Number(o['notify-min-plot'])
+  if (o['notify-min-area']) nc.minFloorArea = Number(o['notify-min-area'])
+  if (o['notify-house-subtypes']) nc.houseSubtypes = String(o['notify-house-subtypes']).split(',').map((s) => s.trim()).filter(Boolean)
+  if (o['notify-keywords']) nc.keywords = String(o['notify-keywords']).split(',').map((s) => s.trim()).filter(Boolean)
+  if (o['notify-max-drive']) nc.maxAirportDriveMinutes = Number(o['notify-max-drive'])
+  return nc
 }
 
 /** Criteria flags → the portable Criteria object the hub compiles per portal. */

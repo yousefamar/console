@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGeometry } from '../property/geo.js'
 import { PropertySearchStore, PORTAL_BY_COUNTRY } from '../property/store.js'
-import { postFilter } from '../property/sync.js'
+import { postFilter, applyNotifyGate } from '../property/sync.js'
+import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray } from '../property/immoscout24.js'
 import { isTooSmall } from '../property/immobiliare.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
@@ -252,6 +253,102 @@ describe('PropertySearchStore.recordBackfill', () => {
     store.recordPoll(s.id, { listings: [listing('old')] })
     const updated = store.recordBackfill(s.id, [listing('new')])
     expect(updated?.lastResults?.map((l) => l.id).sort()).toEqual(['new', 'old'])
+  })
+})
+
+describe('notify gate (notify-filter)', () => {
+  it('classifies Rightmove type text into the portable vocabulary', () => {
+    expect(normaliseHouseType('Detached')).toEqual(['detached'])
+    expect(normaliseHouseType('Detached Bungalow').sort()).toEqual(['bungalow', 'detached'])
+    expect(normaliseHouseType('Link Detached House')).toEqual(['detached'])
+    expect(normaliseHouseType('Semi-Detached')).toEqual(['semi-detached'])
+    expect(normaliseHouseType('Semi-detached Villa').sort()).toEqual(['semi-detached', 'villa'])
+    expect(normaliseHouseType('Terraced Bungalow').sort()).toEqual(['bungalow', 'terraced'])
+    expect(normaliseHouseType('Cottage')).toEqual(['farmhouse'])
+    expect(normaliseHouseType('Town House')).toEqual(['terraced'])
+    expect(normaliseHouseType('House')).toEqual([])
+    expect(normaliseHouseType(undefined)).toEqual([])
+    // Other portals' text lands in the same buckets.
+    expect(normaliseHouseType('Einfamilienhaus (freistehend)')).toEqual(['detached'])
+    expect(normaliseHouseType('Doppelhaushälfte')).toEqual(['semi-detached'])
+    expect(normaliseHouseType('Villa unifamiliare')).toEqual(['detached', 'villa'])
+  })
+
+  it('a semi never passes a detached-only gate, whatever else its text says', () => {
+    const gate = { houseSubtypes: ['detached', 'bungalow', 'villa'] }
+    expect(notifyRejection(listing('a', { propertyType: 'Semi-Detached Bungalow' }), gate)).toBe('houseType')
+    expect(notifyRejection(listing('b', { propertyType: 'Semi-detached Villa' }), gate)).toBe('houseType')
+    expect(notifyRejection(listing('c', { propertyType: 'Detached Bungalow' }), gate)).toBeNull()
+    expect(notifyRejection(listing('d', { propertyType: 'Bungalow' }), gate)).toBeNull()
+    // Unclassifiable type text fails — a notification is a positive claim.
+    expect(notifyRejection(listing('e', { propertyType: 'House' }), gate)).toBe('houseType')
+    expect(notifyRejection(listing('f', {}), gate)).toBe('houseType')
+  })
+
+  it('unknown fields FAIL the gate (unlike postFilter, which passes them)', () => {
+    expect(notifyRejection(listing('a', {}), { maxPrice: 250_000 })).toBe('price')
+    expect(notifyRejection(listing('a', { price: 250_000 }), { maxPrice: 250_000 })).toBeNull()
+    expect(notifyRejection(listing('a', { price: 250_001 }), { maxPrice: 250_000 })).toBe('price')
+    expect(notifyRejection(listing('a', { bedrooms: 2 }), { minBedrooms: 3 })).toBe('bedrooms')
+    expect(notifyRejection(listing('a', {}), { minPlotArea: 800 })).toBe('plot')
+    expect(notifyRejection(listing('a', { plotArea: 900 }), { minPlotArea: 800 })).toBeNull()
+    expect(notifyRejection(listing('a', { floorArea: 80 }), { minFloorArea: 100 })).toBe('floorArea')
+    // postFilter's contract for contrast: an unknown plot passes.
+    expect(postFilter([listing('a', {})], { minPlotArea: 800 }, ['minPlotArea'])).toHaveLength(1)
+  })
+
+  it('keywords are any-of over title/summary/address, case-insensitive', () => {
+    const gate = { keywords: ['acre', 'paddock', 'smallholding'] }
+    expect(notifyRejection(listing('a', { summary: 'Set in 1.5 ACRES with outbuildings' }), gate)).toBeNull()
+    expect(notifyRejection(listing('b', { title: 'Cottage with paddock' }), gate)).toBeNull()
+    expect(notifyRejection(listing('c', { summary: 'Modern semi on a quiet road' }), gate)).toBe('keywords')
+  })
+
+  it('airport-drive gate needs the lookup and can be split off', () => {
+    const gate = { maxPrice: 250_000, maxAirportDriveMinutes: 45 }
+    expect(needsAirportDistance(gate)).toBe(true)
+    expect(needsAirportDistance({ maxPrice: 1 })).toBe(false)
+    expect(needsAirportDistance(undefined)).toBe(false)
+    expect(withoutAirportGate(gate)).toEqual({ maxPrice: 250_000 })
+    expect(notifyRejection(listing('a', { price: 1 }), gate)).toBe('airportDrive')
+    const near = listing('b', { price: 1, nearestAirport: { iata: 'LHR', name: 'Heathrow', driveMinutes: 40, transitMinutes: null } })
+    expect(notifyRejection(near, gate)).toBeNull()
+    const far = listing('c', { price: 1, nearestAirport: { iata: 'LHR', name: 'Heathrow', driveMinutes: 46, transitMinutes: null } })
+    expect(notifyRejection(far, gate)).toBe('airportDrive')
+  })
+
+  it('applyNotifyGate passes everything through when no gate is set', () => {
+    const rows = [listing('a', { price: 999_999, propertyType: 'Semi-Detached' })]
+    expect(applyNotifyGate(rows, undefined)).toEqual(rows)
+    expect(applyNotifyGate(rows, { maxPrice: 250_000 })).toEqual([])
+  })
+
+  it('the UK defaults: detached-type AND ≤£250k, semis and dear detacheds both drop', () => {
+    const uk = { houseSubtypes: ['detached', 'bungalow', 'villa', 'farmhouse', 'land'], maxPrice: 250_000 }
+    const rows = [
+      listing('semi', { propertyType: 'Semi-Detached', price: 200_000 }),
+      listing('dear', { propertyType: 'Detached', price: 299_950 }),
+      listing('good', { propertyType: 'Detached Bungalow', price: 245_000 }),
+      listing('cottage', { propertyType: 'Cottage', price: 210_000 }),
+    ]
+    expect(applyNotifyGate(rows, uk).map((l) => l.id)).toEqual(['good', 'cottage'])
+  })
+})
+
+describe('PropertySearchStore notify fields', () => {
+  it('create() persists notify/notifyLayer/notifyCriteria, and update() changes to them never re-seed', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l', notifyLayer: '/tmp/x.geojson', notify: true, notifyCriteria: { maxPrice: 1 } })
+    expect(store.get(s.id)?.notifyLayer).toBe('/tmp/x.geojson')
+    expect(store.get(s.id)?.notifyCriteria).toEqual({ maxPrice: 1 })
+    store.recordPoll(s.id, { total: 1, listings: [listing('a')] })
+    expect(store.get(s.id)?.seeded).toBe(true)
+    store.update(s.id, { notify: false, notifyCriteria: { maxPrice: 2 }, notifyLayer: undefined })
+    const after = store.get(s.id)!
+    expect(after.notify).toBe(false)
+    expect(after.notifyCriteria).toEqual({ maxPrice: 2 })
+    expect(after.seeded).toBe(true)
+    expect(after.seenIds).toEqual(['a'])
   })
 })
 

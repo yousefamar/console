@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { Criteria, Listing, Portal } from './types.js'
+import type { NotifyCriteria } from './notify-filter.js'
 
 const SEEN_LIMIT = 4000
 // The map pins are drawn from `lastResults`, so this also caps how many pins a
@@ -52,6 +53,20 @@ export interface PropertySearch {
    * apart.
    */
   notifyLayer?: string
+  /**
+   * `false` = poll + draw pins as normal, never push. The other two searches
+   * stay useful as a map layer while only one country is allowed to buzz the
+   * phone (Yousef, 2026-09-03: "only UK ones"). Unset = true.
+   */
+  notify?: boolean
+  /**
+   * "Only when it's really good" — a stricter gate evaluated locally on each
+   * genuinely-new listing before it's pushed (after `notifyLayer`). Search
+   * `criteria` decide what lands on the map; this decides what's worth a
+   * notification. See notify-filter.ts for the strictness rule (unknown
+   * fields fail). Unset = every fresh in-geofence listing notifies.
+   */
+  notifyCriteria?: NotifyCriteria
   criteria: Criteria
   enabled?: boolean
   createdAt: number
@@ -81,7 +96,7 @@ export interface PropertySearch {
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer'>>
+  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria'>>
 
 export class PropertySearchStore {
   private items: PropertySearch[] = []
@@ -108,6 +123,9 @@ export class PropertySearchStore {
       maxRings: input.maxRings,
       criteria: input.criteria ?? {},
       enabled: input.enabled ?? true,
+      ...(input.notifyLayer !== undefined ? { notifyLayer: input.notifyLayer } : {}),
+      ...(input.notify !== undefined ? { notify: input.notify } : {}),
+      ...(input.notifyCriteria !== undefined ? { notifyCriteria: input.notifyCriteria } : {}),
       id: `ps_${randomBytes(5).toString('hex')}`,
       createdAt: Date.now(),
       seeded: false,

@@ -22,6 +22,7 @@ import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo
 import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore } from './store.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
+import { needsAirportDistance, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
 
 const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
 const LAYER_GROUP = 'property'
@@ -38,6 +39,13 @@ const BACKFILL_LIMIT = 5000
 const MAX_PINS = 600
 /** Notifications per poll per search — beyond this, one summary push. */
 const MAX_ALERTS = 5
+/**
+ * When `notifyCriteria.maxAirportDriveMinutes` is set, the airport lookup has
+ * to run BEFORE the gate can decide — at most this many candidates per poll
+ * get looked up (2–4 Routes calls each); the rest stay on the map un-pushed.
+ * A gate strict enough to want drive time shouldn't be passing more than this.
+ */
+const DRIVE_GATE_MAX_LOOKUPS = 10
 
 export class PropertySync {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -203,8 +211,14 @@ export class PropertySync {
    */
   private async attachAirportDistances(s: PropertySearch, fresh: Listing[]): Promise<void> {
     if (!this.gmaps.isConfigured() || fresh.length > MAX_ALERTS) return
+    await this.lookupAirportDistances(s, fresh)
+  }
+
+  private async lookupAirportDistances(s: PropertySearch, fresh: Listing[]): Promise<void> {
+    if (!this.gmaps.isConfigured()) return
     let changed = false
     for (const l of fresh) {
+      if (l.nearestAirport) continue
       if (l.lat == null || l.lon == null) continue
       try {
         const dist = await nearestAirport(this.gmaps, { lat: l.lat, lon: l.lon }, s.country)
@@ -285,6 +299,10 @@ export class PropertySync {
    * No `notifyLayer` set → notify on everything, as before.
    */
   private filterForNotify(s: PropertySearch, fresh: Listing[]): Listing[] {
+    return applyNotifyGate(this.filterByGeofence(s, fresh), s.notifyCriteria && withoutAirportGate(s.notifyCriteria))
+  }
+
+  private filterByGeofence(s: PropertySearch, fresh: Listing[]): Listing[] {
     if (!s.notifyLayer) return fresh
     const geometries = this.geometriesForNotify(s.notifyLayer)
     if (!geometries.length) {
@@ -296,6 +314,21 @@ export class PropertySync {
       const point: [number, number] = [l.lon, l.lat]
       return geometries.some((g) => pointInGeometry(point, g))
     })
+  }
+
+  /**
+   * The airport-drive gate is the one gate that needs a network lookup, so it
+   * runs last, on the survivors of everything else, and only for a bounded
+   * number of candidates per poll.
+   */
+  private async filterByAirportDrive(s: PropertySearch, fresh: Listing[]): Promise<Listing[]> {
+    if (!needsAirportDistance(s.notifyCriteria)) return fresh
+    const candidates = fresh.slice(0, DRIVE_GATE_MAX_LOOKUPS)
+    if (fresh.length > candidates.length) {
+      this.log(`[property-sync] ${s.id}: ${fresh.length} candidates for the airport-drive gate, looking up the newest ${candidates.length}`)
+    }
+    await this.lookupAirportDistances(s, candidates)
+    return applyNotifyGate(candidates, { maxAirportDriveMinutes: s.notifyCriteria!.maxAirportDriveMinutes })
   }
 
   /** One pin layer per search, so each toggles independently on the Map tab. */
@@ -351,10 +384,14 @@ export class PropertySync {
   }
 
   private async notify(s: PropertySearch, allFresh: Listing[]): Promise<void> {
-    const fresh = this.filterForNotify(s, allFresh)
+    if (s.notify === false) {
+      this.log(`[property-sync] ${s.id}: ${allFresh.length} new, notifications off for this search`)
+      return
+    }
+    const fresh = await this.filterByAirportDrive(s, this.filterForNotify(s, allFresh))
     if (fresh.length === 0) {
       if (allFresh.length) {
-        this.log(`[property-sync] ${s.id}: ${allFresh.length} new but 0 inside notifyLayer, no push`)
+        this.log(`[property-sync] ${s.id}: ${allFresh.length} new but 0 pass the notify gate (geofence + notifyCriteria), no push`)
       }
       return
     }
@@ -429,6 +466,15 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     }
     return true
   })
+}
+
+/**
+ * The "really good" gate — drops fresh listings that fail any set field of
+ * `notifyCriteria`. Pure; pass-through when no criteria are set.
+ */
+export function applyNotifyGate(listings: Listing[], nc: NotifyCriteria | undefined): Listing[] {
+  if (!nc) return listings
+  return listings.filter((l) => notifyRejection(l, nc) === null)
 }
 
 /**
