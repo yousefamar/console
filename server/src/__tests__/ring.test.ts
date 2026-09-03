@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
 import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, type RouteEnv } from '../ring/router.js'
 import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
-import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, type RingSchema } from '../ring/schema.js'
+import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
 import { RingStore } from '../ring/store.js'
@@ -66,6 +66,13 @@ describe('normalise + fuzzy', () => {
     expect(resolveSpoken('dreams', forms)).toBe('dream')
     expect(resolveSpoken('system', forms)).toBe('emotion')
     expect(resolveSpoken('banana', forms)).toBeNull()
+  })
+  it('contactForms: first name of a hyphenated username is automatic when unique', () => {
+    const forms = contactForms({ 'yasmina-amar': ['mum'], 'sam-miller': [] }, ['yasmina-amar', 'sam-miller', 'sam-miller-1', 'nica'])
+    expect(forms.get('yasmina')).toBe('yasmina-amar')
+    expect(forms.get('sam')).toBeUndefined() // sam-miller AND sam-miller-1 both own "sam" → not derived
+    expect(forms.get('mum')).toBe('yasmina-amar')
+    expect(contactForms({ 'sam-miller': ['sam'] }, ['sam-miller', 'sam-miller-1']).get('sam')).toBe('sam-miller') // explicit wins
   })
   it('matchVerb: name, alias, one edit — never between two verbs', () => {
     expect(matchVerb('log', SCHEMA)).toBe('add') // log IS add
@@ -143,6 +150,7 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r("Message mum I'll be home in 30 mins")).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
     expect(r('text nika running late')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'nica' } })
     expect(r('message sam-miller hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } })
+    expect(r('message sam hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } }) // first name, derived
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
   })
   it('there is no agent verb — "tell" is a message alias, bare names are unclaimed', () => {
@@ -259,7 +267,7 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'console')!.resolves).toBe('board card → Backlog')
     expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
-    expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] })
+    expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
     expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
   })

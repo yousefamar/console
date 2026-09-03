@@ -196,10 +196,22 @@ export function spokenForms(targets: Record<string, { aliases: string[] }>): Map
   return out
 }
 
-/** Same for contacts (`username: [forms]`). */
-export function contactForms(contacts: Record<string, string[]>): Map<string, string> {
+/** Same for contacts (`username: [forms]`). Yousef calls people by their
+ *  FIRST name, so a hyphenated username's first segment (`sam-miller` → `sam`)
+ *  is a spoken form automatically — when only one contact owns it. `allUsers`
+ *  (every users/*.md, not just the listed ones) makes that uniqueness check
+ *  honest. */
+export function contactForms(contacts: Record<string, string[]>, allUsers: string[] = []): Map<string, string> {
   const out = new Map<string, string>()
+  const firstNames = new Map<string, Set<string>>()
+  for (const user of new Set([...Object.keys(contacts), ...allUsers])) {
+    const first = user.split('-')[0]!
+    if (first && first !== user && !/^\d/.test(first)) firstNames.set(first, new Set([...(firstNames.get(first) ?? []), user]))
+  }
   for (const [user, forms] of Object.entries(contacts)) { out.set(user, user); for (const f of forms) out.set(f, user) }
+  for (const [first, owners] of firstNames) {
+    if (owners.size === 1 && !out.has(first)) out.set(first, [...owners][0]!)
+  }
   return out
 }
 
@@ -252,6 +264,7 @@ verbs:
   message:              # message <person> <text> → AL relays it on WhatsApp, attributed to you
     aliases: [text, whatsapp, tell]
     contacts:           # users/<name>.md in AL's workspace → spoken forms (matched lowercased, one edit tolerated)
+      # a hyphenated username's first name is understood automatically (sam-miller ← sam)
       # mai: [mum, mom, mother]
 
   echo:                 # echo <text> → straight to your own WhatsApp, no LLM
@@ -294,9 +307,11 @@ export async function describeSchema(
     }
   }))
   const projectTargets = env.projects.map((p) => ({ name: p, aliases: [], resolves: `board card → ${v.add.projectColumn}`, ok: true }))
+  const derived = contactForms(v.message.contacts, env.contacts)
   const contacts = Object.entries(v.message.contacts).map(([user, forms]) => {
     const ok = env.contacts.includes(user)
-    return { name: user, aliases: forms, resolves: `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
+    const first = [...derived].filter(([f, u]) => u === user && f !== user && !forms.includes(f)).map(([f]) => f)
+    return { name: user, aliases: [...first, ...forms], resolves: `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
   })
   return {
     path: loaded.path,

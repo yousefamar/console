@@ -180,7 +180,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         return { rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start', target, text } }
       }
       case 'message': {
-        const contact = resolveSpoken(target, contactForms(v.message.contacts)) ?? pickFuzzy(target, env.contacts)
+        const contact = resolveSpoken(target, contactForms(v.message.contacts, env.contacts)) ?? pickFuzzy(target, env.contacts)
         if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
         return { rule: 'message.unknown-target', command: { kind: 'unknown-target', verb: 'message', target, text } }
       }
