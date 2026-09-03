@@ -135,6 +135,9 @@ export function routeInbound(
   resolvedUser: string | null,
   senderLabel: string,
   envelope: string,
+  /** Non-WhatsApp threads (the ring's fallback fork) supply their own seed —
+   *  the default one frames the fork as a WhatsApp conversation. */
+  opts: { seed?: string } = {},
 ): boolean {
   // Owner thread → parent, always.
   if (resolvedUser === 'yousef') return false
@@ -185,7 +188,7 @@ export function routeInbound(
     // CRITICAL: a --fork-session emits no init until it gets input — send the
     // seed + envelope immediately (same rule as fork_session/con agent chat).
     const otherIds = identifiersFor(resolvedUser).filter((id) => id !== normalize(threadJid))
-    wakeSession(ctx, fork, `${forkSeed(threadJid, senderLabel, otherIds)}\n\n${envelope}`)
+    wakeSession(ctx, fork, `${opts.seed ?? forkSeed(threadJid, senderLabel, otherIds)}\n\n${envelope}`)
     // Capture the fork's own claudeSessionId when it lands, then flush any
     // messages that arrived during the spawn gap.
     const onInit = (msg: { type: string; claudeSessionId?: string }) => {

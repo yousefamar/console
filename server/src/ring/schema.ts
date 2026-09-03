@@ -26,6 +26,8 @@ export interface RingSchema {
   verbs: {
     log: { aliases: string[]; targets: Record<string, string>; createUnknown: boolean }
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
+    /** start <project> <text> → card straight into the dispatch column (forks an agent now). */
+    start: { aliases: string[]; column: string }
     message: { aliases: string[]; contacts: Record<string, string> }
     music: { aliases: string[]; enabled: boolean }
   }
@@ -46,6 +48,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
       },
       projectColumn: 'Backlog',
     },
+    start: { aliases: ['do', 'go', 'kick', 'begin', 'now'], column: 'In Progress' },
     message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {} },
     music: { aliases: [], enabled: true },
   },
@@ -92,6 +95,7 @@ export function parseSchemaNote(md: string): SchemaParse {
 
   const log = verbs.log ?? {}
   const add = verbs.add ?? {}
+  const start = verbs.start ?? {}
   const message = verbs.message ?? {}
   const music = verbs.music ?? {}
 
@@ -127,6 +131,10 @@ export function parseSchemaNote(md: string): SchemaParse {
         targets: add.targets === undefined ? structuredClone(d.add.targets) : addTargets,
         projectColumn: typeof add.project_column === 'string' && add.project_column.trim() ? add.project_column.trim() : d.add.projectColumn,
       },
+      start: {
+        aliases: start.aliases === undefined ? [...d.start.aliases] : strList(start.aliases, 'verbs.start.aliases', errors),
+        column: typeof start.column === 'string' && start.column.trim() ? start.column.trim() : d.start.column,
+      },
       message: {
         aliases: message.aliases === undefined ? [...d.message.aliases] : strList(message.aliases, 'verbs.message.aliases', errors),
         contacts: strMap(message.contacts, 'verbs.message.contacts', errors),
@@ -156,8 +164,10 @@ hot-reloads it. Check it with \`con ring schema --check\`; dry-run a phrase with
 Shape: \`<verb> <target> <payload>\` — e.g. \`log dream I was escaping a prison
 made of cheese\`, \`add movies Spiderman\`, \`message mum I'll be home in 30 mins\`,
 \`add console the login button is misaligned\` (a project name as the \`add\`
-target files a board card — you talk to projects, not agents; the card forks
-one). Anything no verb claims goes to the fallback agent.
+target files a card in Backlog — you talk to projects, not agents), \`start
+console fix the login button\` (same, but straight into In Progress: the board
+dispatches it and an agent forks for it now). Anything no verb claims goes to
+the fallback agent.
 
 \`\`\`yaml
 fallback: al            # agentKey for anything no verb claims; null = only notify
@@ -177,7 +187,11 @@ verbs:
       reading: scratch/lists/reading-list.md
       games: scratch/lists/game-list.md
       groceries: scratch/lists/groceries.md
-    project_column: Backlog
+    project_column: Backlog   # add <project> … lands here (queued for triage)
+
+  start:                # start <project> <text> → card straight into the dispatch column
+    aliases: [do, go, kick, begin, now]
+    column: In Progress     # the board watcher dispatches it → an agent forks now
 
   message:              # message <person> <text> → AL relays it on WhatsApp
     aliases: [text, whatsapp, tell]
@@ -234,6 +248,7 @@ export async function describeSchema(
     verbs: [
       { verb: 'log', aliases: v.log.aliases, usage: 'log <name> <text>', targets: await fileTargets(v.log.targets), ...(v.log.createUnknown ? { note: 'unknown names create scratch/logs/<name>.md' } : {}) },
       { verb: 'add', aliases: v.add.aliases, usage: 'add <list|project> <item>', targets: [...listTargets, ...projectTargets] },
+      { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: env.projects.map((p) => ({ name: p, resolves: `board card → ${v.start.column} (dispatches now)`, ok: true })) },
       { verb: 'message', aliases: v.message.aliases, usage: 'message <person> <text>', targets: contacts, note: `also any of: ${env.contacts.join(', ') || '-'}` },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
     ],

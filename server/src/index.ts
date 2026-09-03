@@ -73,7 +73,8 @@ import { RingSchemaLoader } from './ring/schema-loader.js'
 import { describeSchema as describeRingSchema } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
-import type { RingAgent, RouteEnv } from './ring/router.js'
+import type { RouteEnv } from './ring/router.js'
+import { buildRingForkSeed } from './ring/pipeline.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -1151,15 +1152,8 @@ const configDir = join(homedir(), '.config', 'console')
 // Pebble Index 01 ring — webhook archive + command router (ring/pipeline.ts)
 // --------------------------------------------------------------------------
 const ringStore = new RingStore(configDir)
-const ringAgents = (): RingAgent[] => {
-  const out: RingAgent[] = []
-  for (const s of sessions.values()) {
-    if (s.status === 'ended') continue
-    const info = s.getInfo()
-    out.push({ id: s.id, name: info.name ?? s.id, agentKey: info.agentKey ?? null })
-  }
-  return out
-}
+/** Live keyed sessions — only for `describeSchema`'s fallback-is-live check. */
+const ringLiveAgents = () => [...sessions.values()].filter((s) => s.status !== 'ended').map((s) => ({ agentKey: s.getInfo().agentKey ?? null }))
 const ringSchema = new RingSchemaLoader(noteStore, log)
 const ringEnv = async (): Promise<RouteEnv> => {
   const [spaces, users] = await Promise.all([
@@ -1174,17 +1168,25 @@ const ringEnv = async (): Promise<RouteEnv> => {
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
-  describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringAgents() }, (p) => noteStore.read(p).then(() => true, () => false)),
+  describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringLiveAgents() }, (p) => noteStore.read(p).then(() => true, () => false)),
   env: ringEnv,
-  sessionForKey: (key) => {
-    const k = key.toLowerCase()
-    if (k === 'al') {
-      const al = getAlSession()
-      return al && al.status !== 'ended' ? { id: al.id, name: AL_NAME, agentKey: 'al' } : null
-    }
-    return ringAgents().find((a) => a.agentKey?.toLowerCase() === k) ?? null
+  // Ring work for AL lives in ONE conversation fork (`AL ↔ ring`, thread key
+  // 'ring') so it never lands in his main session; routeInbound returns false
+  // only when AL isn't ready or the fork can't spawn → parent as a last resort.
+  deliverToAl: (envelope) => {
+    const al = getAlSession()
+    if (!al || al.status === 'ended') return false
+    const seed = buildRingForkSeed(ringSchema.current())
+    if (routeInbound(agentCtx, 'ring', null, 'ring', envelope, { seed })) return true
+    return injectToSession(al.id, envelope)
   },
-  inject: injectToSession,
+  deliverToAgent: (key, envelope) => {
+    const k = key.toLowerCase()
+    for (const s of sessions.values()) {
+      if (s.status !== 'ended' && s.getInfo().agentKey?.toLowerCase() === k) return injectToSession(s.id, envelope)
+    }
+    return false
+  },
   notes: {
     read: (p) => noteStore.read(p).catch(() => null),
     write: (p, content) => noteStore.write(p, content),
@@ -1210,8 +1212,8 @@ const ringCtx: RingCtx = {
   transcribe: transcribeAudio,
   classify: (text, schema, env) => classifyWithLlm(text, schema, env, smallFastModel()),
   enrichMovie: (text) => enrichMovieWithLlm(text, smallFastModel()),
-  notify: ({ title, body, sessionId, id }) => {
-    pushServer.broadcast({ type: sessionId ? 'agent' : 'generic', title, body, ...(sessionId ? { pane: 'agents' } : {}), id: `ring:${id}` })
+  notify: ({ title, body, id }) => {
+    pushServer.broadcast({ type: 'generic', title, body, id: `ring:${id}` })
   },
   log,
 }

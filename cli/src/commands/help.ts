@@ -271,11 +271,14 @@ text through the command tree in the vault note projects/console/ring-schema.md:
   <verb> <target> <payload>
   log <name> <text>          dated bullet appended to a log note
   add <list> <item>          bullet (movies: LLM-enriched table row)
-  add <project> <text>       board card on that project (Backlog)
+  add <project> <text>       board card on that project (Backlog — queued)
+  start <project> <text>     board card in In Progress (dispatched — an agent forks now)
   message <person> <text>    AL relays it on WhatsApp, attributed to you
   play | pause | next | previous | play <query>
-There is no "agent" verb — you talk to projects ("add <project> …" files a card
-and the board forks an agent for it); AL only receives text no verb claims.
+There is no "agent" verb — you talk to projects (add = backlog it, start = kick
+it off). Text no verb claims goes to AL — into an "AL ↔ ring" fork seeded with
+this tree, which acts on it and files a "Ring schema gap" card when the tree
+should have caught it.
 Verbs/targets tolerate one-letter mis-transcriptions and the note's aliases;
 the LLM classifier runs only when no rule fires; anything still unclaimed goes
 to the fallback agent (AL). The ring ignores the HTTP response, so the outcome

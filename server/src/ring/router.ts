@@ -11,12 +11,6 @@
 
 import type { RingSchema, ListTarget } from './schema.js'
 
-export interface RingAgent {
-  id: string
-  name: string
-  agentKey: string | null
-}
-
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
   /** Vault project slugs (an `add` target naming one files a board card). */
@@ -30,10 +24,10 @@ export type RingCommand =
   | { kind: 'list'; target: string; file: string; item: string; enrich?: ListTarget['enrich'] }
   | { kind: 'card'; project: string; column: string; text: string }
   | { kind: 'message'; contact: string; spoken: string; text: string }
-  /** Only ever minted by the FALLBACK (unclaimed text → AL) — there is no
-   *  spoken "agent" verb: Yousef talks to projects (`add <project> …` forks a
-   *  card), not to agents. */
-  | { kind: 'agent'; targetId: string; targetName: string; message: string }
+  /** Only ever minted by the FALLBACK (unclaimed text → the fallback agent) —
+   *  there is no spoken "agent" verb: Yousef talks to projects (`add <project>
+   *  …` forks a card), not to agents. */
+  | { kind: 'fallback'; agentKey: string; text: string }
   | { kind: 'music'; action: 'play' | 'pause' | 'next' | 'previous'; query?: string }
   /** A verb matched but its target didn't — actionable feedback, not a fallback. */
   | { kind: 'unknown-target'; verb: string; target: string; text: string }
@@ -164,15 +158,14 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
           const t = v.add.targets[list]!
           return { rule: 'add.list', command: { kind: 'list', target: list, file: t.file, item: payload, ...(t.enrich ? { enrich: t.enrich } : {}) } }
         }
-        // Project slugs may be hyphenated two-word names ("reflection tools").
-        const [p2, ...restWords] = payload.split(' ')
-        const twoWord = p2 && restWords.length ? pickFuzzy(`${target}-${p2.toLowerCase()}`, env.projects) : null
-        const project = pickFuzzy(target, env.projects) ?? twoWord
-        if (project) {
-          const text = project === twoWord ? restWords.join(' ') : payload
-          return { rule: 'add.card', command: { kind: 'card', project, column: v.add.projectColumn, text } }
-        }
+        const card = projectCard(target, payload, env.projects, v.add.projectColumn)
+        if (card) return { rule: 'add.card', command: card }
         return { rule: 'add.unknown-target', command: { kind: 'unknown-target', verb: 'add', target, text } }
+      }
+      case 'start': {
+        const card = projectCard(target, payload, env.projects, v.start.column)
+        if (card) return { rule: 'start.card', command: card }
+        return { rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start', target, text } }
       }
       case 'message': {
         const nick = pickFuzzy(target, Object.keys(v.message.contacts))
@@ -188,6 +181,17 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   return null
 }
 
+/** `<target> <payload>` against the project slugs — slugs may be hyphenated
+ *  two-word names ("reflection tools"), so the payload's first word is tried
+ *  as the second half. */
+function projectCard(target: string, payload: string, projects: string[], column: string): RingCommand | null {
+  const [p2, ...restWords] = payload.split(' ')
+  const twoWord = p2 && restWords.length ? pickFuzzy(`${target}-${p2.toLowerCase()}`, projects) : null
+  const project = pickFuzzy(target, projects) ?? twoWord
+  if (!project) return null
+  return { kind: 'card', project, column, text: project === twoWord ? restWords.join(' ') : payload }
+}
+
 /** Human-readable one-liner for pushes / logs. */
 export function describeCommand(c: RingCommand): string {
   switch (c.kind) {
@@ -195,7 +199,7 @@ export function describeCommand(c: RingCommand): string {
     case 'list': return `add ${c.target}: ${c.item}`
     case 'card': return `card → ${c.project} (${c.column}): ${c.text}`
     case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
-    case 'agent': return `→ ${c.targetName}: ${c.message}`
+    case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
     case 'unknown-target': return `${c.verb}: no target called "${c.target}"`
     case 'unknown': return `unrecognised: ${c.text}`

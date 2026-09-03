@@ -20,12 +20,12 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     'Tree: <verb> <target> <payload>. Output exactly one JSON object, nothing else:',
     `  {"kind":"log","target":"<one of: ${Object.keys(v.log.targets).join(', ') || '-'}>","text":"<payload>"}`,
     `  {"kind":"list","target":"<one of: ${Object.keys(v.add.targets).join(', ') || '-'}>","item":"<payload>"}`,
-    `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","text":"<payload>"}`,
+    `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","text":"<payload>","start":<true only if the speaker clearly wants work to begin NOW (verbs like start/do/go/kick off), else false>}`,
     `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.values(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","text":"<payload>"}`,
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: what to play>"}',
     '  {"kind":"unknown"}',
     '',
-    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
+    `Spoken aliases: log=${v.log.aliases.join('/') || '-'}; add=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}. Nicknames → contacts: ${Object.entries(v.message.contacts).map(([k, c]) => `${k}→${c}`).join(', ') || '-'}.`,
     '',
     `Transcript: ${JSON.stringify(text)}`,
     '',
@@ -54,7 +54,7 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
     }
     case 'card': {
       const project = str('project').toLowerCase(); const t = str('text')
-      return env.projects.includes(project) && t ? { kind: 'card', project, column: v.add.projectColumn, text: t } : null
+      return env.projects.includes(project) && t ? { kind: 'card', project, column: obj.start === true ? v.start.column : v.add.projectColumn, text: t } : null
     }
     case 'message': {
       const contact = str('contact').toLowerCase(); const t = str('text')

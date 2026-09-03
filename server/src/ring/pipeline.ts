@@ -4,8 +4,8 @@
 // STT) arrives through RingCtx so this stays unit-testable with stubs.
 
 import type { RingStore, RingRecording } from './store.js'
-import { routeByRules, describeCommand, type RingAgent, type RingCommand, type RouteEnv } from './router.js'
-import type { RingSchema, SchemaDescription } from './schema.js'
+import { routeByRules, describeCommand, type RingCommand, type RouteEnv } from './router.js'
+import { RING_SCHEMA_NOTE, type RingSchema, type SchemaDescription } from './schema.js'
 import { appendLogEntry, appendBullet, appendMovieRow, type MovieRow } from './append.js'
 
 export interface RingCtx {
@@ -13,10 +13,12 @@ export interface RingCtx {
   schema: () => Promise<{ schema: RingSchema; errors: string[] }>
   describeSchema: () => Promise<SchemaDescription>
   env: () => Promise<RouteEnv>
-  /** Resolve an agentKey to a live session (the fallback / relay target). */
-  sessionForKey: (agentKey: string) => RingAgent | null
-  /** Inject + auto-send into a session. False if the session is not live. */
-  inject: (sessionId: string, content: string) => boolean
+  /** Deliver ring-originated work to AL — into the `AL ↔ ring` conversation
+   *  fork (never AL's main session), falling back to the parent only when the
+   *  fork can't spawn. False = AL is not live at all. */
+  deliverToAl: (envelope: string) => boolean
+  /** Deliver to a non-AL fallback agent by agentKey. False = no live session. */
+  deliverToAgent: (agentKey: string, envelope: string) => boolean
   notes: {
     /** null when the note doesn't exist yet. */
     read: (path: string) => Promise<string | null>
@@ -34,7 +36,7 @@ export interface RingCtx {
   classify: (text: string, schema: RingSchema, env: RouteEnv) => Promise<RingCommand | null>
   /** LLM step for `add movies`: infer title/year/series. null → plain bullet. */
   enrichMovie: (text: string) => Promise<MovieRow | null>
-  notify: (msg: { title: string; body: string; sessionId?: string; id: string }) => void
+  notify: (msg: { title: string; body: string; id: string }) => void
   now?: () => Date
   log: (msg: string) => void
 }
@@ -46,9 +48,32 @@ export interface RingDelivery {
   client: string | null
 }
 
-/** Envelope the fallback agent sees for unclaimed text — task-framed like the WhatsApp inbound. */
-export function buildRingEnvelope(message: string, recordingId: string): string {
-  return `[RING — voice command from Yousef's Pebble Index 01, recording ${recordingId}]\n${message}`
+/** Everything the `AL ↔ ring` fork needs to know, sent ONCE when the fork
+ *  spawns: what the ring is, where the command tree lives, and what to do
+ *  with a transcript the tree didn't claim. */
+export function buildRingForkSeed(schema: RingSchema): string {
+  const v = schema.verbs
+  const tree = [
+    `log <name> <text>        → dated bullet in a log note (names: ${Object.keys(v.log.targets).join(', ') || '-'})`,
+    `add <list> <item>        → list note (lists: ${Object.keys(v.add.targets).join(', ') || '-'})`,
+    `add <project> <text>     → board card in ${v.add.projectColumn}`,
+    `start <project> <text>   → board card in ${v.start.column} (dispatched, forks an agent now)`,
+    `message <person> <text>  → you relay it on WhatsApp (nicknames: ${Object.keys(v.message.contacts).join(', ') || '-'})`,
+    'play | pause | next | previous | play <query>',
+  ]
+  return [
+    `[RING FORK] You are a fork of AL dedicated to Yousef's Pebble Index 01 smart ring — a voice-command device. The hub routes each transcript through a deterministic command tree (\`${RING_SCHEMA_NOTE}\`, printable with \`con ring schema\`):`,
+    ...tree.map((l) => `  ${l}`),
+    'Two kinds of work reach you here, both as envelopes below:',
+    '1. RELAY — a `message <person>` command: send it on WhatsApp per the envelope, attributed to Yousef.',
+    '2. UNCLAIMED — a transcript no verb matched (mis-heard word, phrasing the tree lacks, or a genuine free-form request). Work out what Yousef meant and DO it. Then judge: if this SHOULD have been a tree command (a mangled verb/target, a nickname/alias the note lacks, a log or list that does not exist yet), file a card on the console board so the tree gets fixed: `con spaces board console add "Ring schema gap: <exact transcript> → <what it should map to>"`. Do not edit the schema note yourself — Console general owns it. A one-off request that no command should cover needs no card.',
+    'You know everything parent-AL knew up to this branch point. You will be wound down automatically when idle; no action needed.',
+  ].join('\n')
+}
+
+/** Per-delivery envelope for unclaimed text. */
+export function buildFallbackEnvelope(text: string, recordingId: string): string {
+  return `[RING — unclaimed voice command, recording ${recordingId}]\n${text}`
 }
 
 /** `message <person> <text>` goes through AL: the WhatsApp number is AL's own
@@ -56,7 +81,7 @@ export function buildRingEnvelope(message: string, recordingId: string): string 
  *  sending them as if AL had said them. */
 export function buildRelayEnvelope(contact: string, spoken: string, text: string, recordingId: string): string {
   return [
-    `[RING — relay request from Yousef's Pebble Index 01, recording ${recordingId}]`,
+    `[RING — relay request, recording ${recordingId}]`,
     `Yousef said "message ${spoken}" — resolved to your contact \`${contact}\` (users/${contact}.md).`,
     `Relay this to them on WhatsApp now, faithfully and attributed to Yousef (e.g. "Yousef says: …"), no embellishment:`,
     '',
@@ -100,10 +125,7 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
     const guess = await ctx.classify(transcription, schema, env)
     if (guess && guess.kind !== 'unknown') { command = guess; via = 'llm' }
   }
-  if (!command && schema.fallback) {
-    const target = ctx.sessionForKey(schema.fallback)
-    if (target) { command = { kind: 'agent', targetId: target.id, targetName: target.name, message: transcription }; via = 'default' }
-  }
+  if (!command && schema.fallback) { command = { kind: 'fallback', agentKey: schema.fallback, text: transcription }; via = 'default' }
   if (!command) command = { kind: 'unknown', text: transcription }
 
   const outcome = await execute(ctx, command, id)
@@ -115,14 +137,14 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
   return rec
 }
 
-function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { title: string; body: string; sessionId?: string } {
+function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { title: string; body: string } {
   if (!o.ok) return { title: 'Ring: not delivered', body: `${describeCommand(c)} — ${o.detail ?? 'failed'}` }
   switch (c.kind) {
-    case 'agent': return { title: `Ring → ${c.targetName}`, body: c.message, sessionId: c.targetId }
+    case 'fallback': return { title: `Ring → ${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`}`, body: c.text }
     case 'message': return { title: `Ring → AL relays to ${c.spoken}`, body: c.text, ...(o.detail ? {} : {}) }
     case 'log': return { title: `Ring · log ${c.target}`, body: c.text }
     case 'list': return { title: `Ring · add ${c.target}`, body: o.detail ?? c.item }
-    case 'card': return { title: `Ring · card on ${c.project}`, body: o.detail ?? c.text }
+    case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
     case 'music': return { title: 'Ring · music', body: o.detail ?? describeCommand(c) }
     default: return { title: 'Ring', body: describeCommand(c) }
   }
@@ -132,15 +154,13 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
   const now = ctx.now?.() ?? new Date()
   try {
     switch (c.kind) {
-      case 'agent': {
-        // Fallback delivery only (unclaimed text → AL); never a spoken verb.
-        const ok = ctx.inject(c.targetId, buildRingEnvelope(c.message, recordingId))
-        return ok ? { ok } : { ok, detail: `${c.targetName} is not live` }
+      case 'fallback': {
+        const envelope = buildFallbackEnvelope(c.text, recordingId)
+        const ok = c.agentKey === 'al' ? ctx.deliverToAl(envelope) : ctx.deliverToAgent(c.agentKey, envelope)
+        return ok ? { ok } : { ok, detail: `${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`} is not live` }
       }
       case 'message': {
-        const al = ctx.sessionForKey('al')
-        if (!al) return { ok: false, detail: 'AL is not live to relay the message' }
-        const ok = ctx.inject(al.id, buildRelayEnvelope(c.contact, c.spoken, c.text, recordingId))
+        const ok = ctx.deliverToAl(buildRelayEnvelope(c.contact, c.spoken, c.text, recordingId))
         return ok ? { ok } : { ok, detail: 'AL is not live to relay the message' }
       }
       case 'log': {

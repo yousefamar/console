@@ -23,6 +23,11 @@ export class RingSchemaLoader {
 
   constructor(private store: NoteStore, private log: (msg: string) => void, private path = RING_SCHEMA_NOTE) {}
 
+  /** Last good schema without I/O (for callers already past `load()`). */
+  current(): RingSchema {
+    return this.lastGood
+  }
+
   async load(): Promise<LoadedSchema> {
     let md: string
     try {

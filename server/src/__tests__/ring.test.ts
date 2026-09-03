@@ -3,20 +3,17 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
-import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, matchVerb, type RingAgent, type RouteEnv } from '../ring/router.js'
+import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, matchVerb, type RouteEnv } from '../ring/router.js'
 import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
 import { RingStore } from '../ring/store.js'
-import { processDelivery, buildRingEnvelope, buildRelayEnvelope, type RingCtx } from '../ring/pipeline.js'
+import { processDelivery, buildFallbackEnvelope, buildRelayEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
-const AGENTS: RingAgent[] = [
-  { id: 's1', name: 'Console general', agentKey: 'console-general' },
-  { id: 's2', name: 'AL', agentKey: 'al' },
-]
+const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
 const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools'], contacts: ['nica', 'sam-miller', 'yasmina-amar'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
 SCHEMA.verbs.message.contacts = { mum: 'yasmina-amar', nica: 'nica' }
@@ -65,6 +62,8 @@ describe('normalise + fuzzy', () => {
     expect(matchVerb('lock', SCHEMA)).toBe('log') // schema alias
     expect(matchVerb('massage', SCHEMA)).toBe('message')
     expect(matchVerb('tell', SCHEMA)).toBe('message')
+    expect(matchVerb('kick', SCHEMA)).toBe('start')
+    expect(matchVerb('stat', SCHEMA)).toBe('start')
     expect(matchVerb('banana', SCHEMA)).toBeNull()
   })
 })
@@ -110,6 +109,12 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('add reflection tools export to csv')).toMatchObject({ command: { kind: 'card', project: 'reflection-tools', text: 'export to csv' } })
     expect(r('add nonsense thing')).toMatchObject({ command: { kind: 'unknown-target', verb: 'add', target: 'nonsense' } })
   })
+  it('start <project> <text> goes straight to the dispatch column; lists are not startable', () => {
+    expect(r('Start console fix the login button')).toMatchObject({ rule: 'start.card', command: { kind: 'card', project: 'console', column: 'In Progress', text: 'fix the login button' } })
+    expect(r('kick astera chase the invoice')).toMatchObject({ command: { kind: 'card', project: 'astera', column: 'In Progress' } })
+    expect(r('do reflection tools export to csv')).toMatchObject({ command: { project: 'reflection-tools', column: 'In Progress', text: 'export to csv' } })
+    expect(r('start movies Dune')).toMatchObject({ rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start' } })
+  })
   it('message <person> <text> via nickname or username', () => {
     expect(r("Message mum I'll be home in 30 mins")).toMatchObject({ rule: 'message.nickname', command: { kind: 'message', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
     expect(r('text nica running late')).toMatchObject({ rule: 'message.nickname', command: { kind: 'message', contact: 'nica' } })
@@ -136,6 +141,7 @@ describe('routeByRules (schema-driven tree)', () => {
   it('describeCommand covers every kind', () => {
     expect(describeCommand({ kind: 'card', project: 'console', column: 'Backlog', text: 'x' })).toBe('card → console (Backlog): x')
     expect(describeCommand({ kind: 'unknown-target', verb: 'log', target: 'food', text: 'x' })).toBe('log: no target called "food"')
+    expect(describeCommand({ kind: 'fallback', agentKey: 'al', text: 'hi' })).toBe('→ @al (fallback): hi')
   })
 })
 
@@ -146,6 +152,7 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"log","target":"food","text":"eggs"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"list","target":"movies","item":"Dune"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', enrich: 'movie' })
     expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'Backlog' })
+    expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix","start":true}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'In Progress' })
     expect(parseClassifyReply('{"kind":"card","project":"nope","text":"fix"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"message","contact":"nica","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'nica' })
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
@@ -220,14 +227,15 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'console')!.resolves).toBe('board card → Backlog')
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'mum')!.ok).toBe(true)
-    expect(d.verbs.map((v) => v.verb)).toEqual(['log', 'add', 'message', 'music'])
+    expect(d.verbs.map((v) => v.verb)).toEqual(['log', 'add', 'start', 'message', 'music'])
   })
 })
 
 describe('RingStore + pipeline', () => {
   let dir: string
   let store: RingStore
-  let injected: Array<{ id: string; content: string }>
+  let toAl: string[]
+  let toAgent: Array<{ key: string; content: string }>
   let notified: Array<{ title: string; body: string }>
   let music: string[]
   let notes: Map<string, string>
@@ -238,7 +246,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    injected = []; notified = []; music = []; cards = []
+    toAl = []; toAgent = []; notified = []; music = []; cards = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -246,8 +254,8 @@ describe('RingStore + pipeline', () => {
       schema: async () => ({ schema, errors: [] }),
       describeSchema: async () => { throw new Error('unused') },
       env: async () => ENV,
-      sessionForKey: (k) => AGENTS.find((a) => a.agentKey === k) ?? null,
-      inject: (id, content) => { injected.push({ id, content }); return true },
+      deliverToAl: (envelope) => { toAl.push(envelope); return true },
+      deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },
       notes: { read: async (p) => notes.get(p) ?? null, write: async (p, c) => { notes.set(p, c) } },
       addCard: async (project, text, column) => { cards.push(`${project}/${column}: ${text}`); return `"${text}" → ${column}` },
       music: {
@@ -274,8 +282,9 @@ describe('RingStore + pipeline', () => {
     expect(rec.audio?.bytes).toBe(audio.length)
     expect(existsSync(rec.audio!.path)).toBe(true)
     expect(rec.transcriptionSource).toBe('ring')
-    expect(rec.route).toMatchObject({ via: 'default', ok: true, command: { kind: 'agent', targetId: 's2' } })
-    expect(injected[0]!.content).toBe(buildRingEnvelope('What is the weather like', rec.id))
+    expect(rec.route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
+    expect(toAl[0]).toBe(buildFallbackEnvelope('What is the weather like', rec.id))
+    expect(toAl[0]).toMatch(/^\[RING — unclaimed voice command/)
     expect(notified[0]).toMatchObject({ title: 'Ring → AL', body: 'What is the weather like' })
     expect(JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${rec.id}.json`), 'utf8')).route.ok).toBe(true)
     expect(store.count()).toBe(1)
@@ -308,39 +317,52 @@ describe('RingStore + pipeline', () => {
   it('message relays through AL with attribution', async () => {
     const rec = await deliver("message mum I'll be home in 30 mins")
     expect(rec.route).toMatchObject({ rule: 'message.nickname', ok: true })
-    expect(injected[0]!.id).toBe('s2')
-    expect(injected[0]!.content).toBe(buildRelayEnvelope('yasmina-amar', 'mum', "I'll be home in 30 mins", rec.id))
-    expect(injected[0]!.content).toMatch(/attributed to Yousef/)
+    expect(toAl[0]).toBe(buildRelayEnvelope('yasmina-amar', 'mum', "I'll be home in 30 mins", rec.id))
+    expect(toAl[0]).toMatch(/attributed to Yousef/)
     expect(notified[0]!.title).toBe('Ring → AL relays to mum')
   })
 
   it('a verb with an unknown target is actionable feedback, not a fallback', async () => {
     const rec = await deliver('log food two eggs')
     expect(rec.route).toMatchObject({ rule: 'log.unknown-target', ok: false })
-    expect(injected).toHaveLength(0)
+    expect(toAl).toHaveLength(0)
     expect(notified[0]!.body).toMatch(/no log target called "food"/)
   })
 
   it('falls back to hub STT when the ring sent no transcript', async () => {
     const rec = await processDelivery(ctx, { transcription: null, audio: { data: Buffer.from('x'), contentType: 'audio/mp4' }, recordedAt: null, client: 'ring' })
     expect(rec.transcriptionSource).toBe('hub-stt')
-    expect(rec.route?.command).toMatchObject({ kind: 'agent', targetId: 's2', message: 'weather from stt' })
+    expect(rec.route?.command).toMatchObject({ kind: 'fallback', agentKey: 'al', text: 'weather from stt' })
   })
 
   it('LLM only when rules miss, then the fallback agent, then unknown', async () => {
     expect((await deliver('uh skip please')).route).toMatchObject({ via: 'llm', command: { kind: 'music', action: 'next' } })
     expect(music).toEqual(['next'])
-    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true, command: { targetId: 's2' } })
+    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
+    schema.fallback = 'console-general'
+    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true })
+    expect(toAgent.at(-1)!.key).toBe('console-general')
+    schema.fallback = 'dead'
+    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: false, detail: '@dead is not live' })
     schema.fallback = null; schema.llmFallback = false
     const none = await deliver('remind me to water the plants')
     expect(none.route).toMatchObject({ via: 'none', ok: false, command: { kind: 'unknown' } })
     expect(notified.at(-1)!.title).toBe('Ring: not delivered')
   })
 
-  it('reports a dead fallback instead of pretending', async () => {
-    ctx.sessionForKey = () => ({ id: 'dead', name: 'AL', agentKey: 'al' })
-    ctx.inject = () => false
+  it('reports a dead AL instead of pretending', async () => {
+    ctx.deliverToAl = () => false
     expect((await deliver('what is the weather like')).route).toMatchObject({ via: 'default', ok: false, detail: 'AL is not live' })
+    expect((await deliver('message nica hi')).route).toMatchObject({ ok: false, detail: 'AL is not live to relay the message' })
+  })
+
+  it('the ring fork seed carries the tree and the schema-gap instruction', () => {
+    const seed = buildRingForkSeed(SCHEMA)
+    expect(seed).toMatch(/^\[RING FORK\]/)
+    expect(seed).toContain('projects/console/ring-schema.md')
+    expect(seed).toContain('start <project> <text>   → board card in In Progress')
+    expect(seed).toContain('con spaces board console add "Ring schema gap:')
+    expect(seed).toContain('Do not edit the schema note yourself')
   })
 
   it('an untranscribable delivery is still archived', async () => {
