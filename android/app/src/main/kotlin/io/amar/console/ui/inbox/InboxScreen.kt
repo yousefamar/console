@@ -51,6 +51,7 @@ import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.NetworkBadge
 import io.amar.console.ui.components.PaneTopBar
 import io.amar.console.ui.components.RelativeTime
+import kotlinx.coroutines.delay
 
 /**
  * Unified Inbox — native twin of the SPA's InboxTab in its MOBILE mode:
@@ -134,6 +135,17 @@ fun InboxScreen(
                             }
                         },
                     )
+                    // A confirmed swipe relies on the ACTION dropping the entry
+                    // from the derived list. If the row is still here 1.5 s later
+                    // the action didn't remove it (^quick-ram: "done" on a read
+                    // overdue DM was a no-op and rows froze on "Done") — snap it
+                    // back so a no-op reads as a bounce, never a stuck hint.
+                    LaunchedEffect(dismissState.currentValue) {
+                        if (dismissState.currentValue != SwipeToDismissBoxValue.Settled) {
+                            delay(1_500)
+                            dismissState.reset()
+                        }
+                    }
                     SwipeToDismissBox(
                         state = dismissState,
                         backgroundContent = { SwipeHint(dismissState.dismissDirection) },
