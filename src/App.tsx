@@ -177,7 +177,14 @@ export function App() {
         void import('@/store/calendar').then(({ useCalendarStore }) => {
           const patch: Partial<{ defaultCalendarId: string | null; visibleCalendarIds: Set<string> }> = {}
           if (defaultCalId !== null) patch.defaultCalendarId = defaultCalId
-          if (visibleCalIds && Array.isArray(visibleCalIds)) patch.visibleCalendarIds = new Set(visibleCalIds)
+          if (visibleCalIds && Array.isArray(visibleCalIds)) {
+            // Keep overlays registered during the load window: the pref predates
+            // them (a first-seen overlay defaults visible in memory and defers its
+            // write), so a plain replace would hide it until something re-asserted.
+            const { visibleCalendarIds, overlaySources } = useCalendarStore.getState()
+            const liveOverlays = Object.keys(overlaySources).filter((id) => visibleCalendarIds.has(id))
+            patch.visibleCalendarIds = new Set([...visibleCalIds, ...liveOverlays])
+          }
           useCalendarStore.setState(patch)
         })
       }

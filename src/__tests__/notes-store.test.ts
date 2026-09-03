@@ -1,4 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+// The tab-persistence tests need prefs genuinely LOADED — `initPrefs()` only
+// resolves on a successful /config read (a failed load must never let a default
+// be written back), so the hub call is stubbed rather than left to fail.
+const hubFetch = vi.hoisted(() => vi.fn(() => Promise.resolve({})))
+vi.mock('@/hub', () => ({ hubFetch, getHubUrl: () => 'http://localhost' }))
+
 import { useNotesStore, buildFileTree, slugify, flushDraftsNow } from '@/store/notes'
 import { initPrefs, getPref } from '@/prefs'
 import type { VaultFile } from '@/notes/vault-adapter'
@@ -392,7 +399,6 @@ describe('notes store', () => {
   // Tab persistence: the open-tab set is user work-in-progress context, so it
   // lives in the hub pref `notesOpenTabs` (localStorage is only a mirror).
   it('persists the tab set to the hub pref, and restores it', async () => {
-    // initPrefs() with no reachable hub → empty cache, but loaded, so writes go up.
     await initPrefs()
 
     const mockAdapter = {

@@ -604,7 +604,12 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       // opt-out). On every subsequent register we respect the live set, so a
       // later toggle-off sticks across reloads.
       const seen = getPref<string[]>(OVERLAY_SEEN_PREF, [])
-      const next = new Set(s.visibleCalendarIds)
+      // Seed from the PERSISTED set as well as the in-memory one: the store is
+      // created at import time (before the prefs cache is populated) and App
+      // hydrates it a few ticks later, so an overlay registering in that window
+      // would otherwise persist a set missing every real calendar — shrinking
+      // the user's selection to just this overlay. A register may only ever ADD.
+      const next = new Set([...getPref<string[]>(VISIBLE_CAL_IDS_PREF, []), ...s.visibleCalendarIds])
       if (!seen.includes(id)) {
         next.add(id)
         // Mark seen and persist visibility ATOMICALLY — both or neither. The old
