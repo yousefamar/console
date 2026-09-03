@@ -1540,7 +1540,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
             <div className="mt-2 flex flex-wrap gap-2">
               {images.map((path) => (
                 <span key={path} className="group/thumb relative">
-                  <CardImageThumb path={path} size={96} />
+                  <CardImageThumb path={path} size={96} group={card.blockId ?? card.text} />
                   <button
                     onClick={() => { setImages((cur) => cur.filter((x) => x !== path)); setTimeout(commitContent, 0) }}
                     className="absolute -right-1.5 -top-1.5 hidden rounded-full border border-border bg-surface-0 p-0.5 text-text-tertiary hover:text-destructive group-hover/thumb:block"
@@ -1732,8 +1732,10 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
   )
 }
 
-/** Async blob-URL thumbnail for a card image (asset-relative path). */
-function CardImageThumb({ path, size }: { path: string; size: number }) {
+/** Async blob-URL thumbnail for a card image (asset-relative path). Click
+ *  opens the global lightbox; `group` (the card's identity) tags the <img> so
+ *  GlobalLightbox pages ←/→ across THIS card's images only. */
+function CardImageThumb({ path, size, group }: { path: string; size: number; group: string }) {
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
     let alive = true
@@ -1741,7 +1743,16 @@ function CardImageThumb({ path, size }: { path: string; size: number }) {
     return () => { alive = false }
   }, [path])
   if (!url) return <span style={{ width: size, height: size }} className="inline-block rounded-sm border border-border bg-surface-1" />
-  return <img src={url} alt="" style={{ maxWidth: size, maxHeight: size }} className="rounded-sm border border-border object-cover" />
+  return (
+    <img
+      src={url}
+      alt=""
+      data-card-image={group}
+      style={{ maxWidth: size, maxHeight: size }}
+      className="cursor-zoom-in rounded-sm border border-border object-cover"
+      onClick={(e) => { e.stopPropagation(); useUiStore.getState().setLightboxSrc(url) }}
+    />
+  )
 }
 
 /** Assignee chip colour = the assignee session's state, same vocabulary as
@@ -1794,7 +1805,7 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
         {detail.length > 0 && <div className="mt-0.5 whitespace-pre-wrap text-[10px] leading-snug text-text-tertiary line-clamp-6">{detail.join('\n')}</div>}
         {imagePaths.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
-            {imagePaths.map((path) => <CardImageThumb key={path} path={path} size={48} />)}
+            {imagePaths.map((path) => <CardImageThumb key={path} path={path} size={48} group={card.blockId ?? card.text} />)}
           </div>
         )}
       </div>
