@@ -366,7 +366,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectRoom: async (roomId) => {
     // When switching away from a room, let read rooms drop from the list
     const prev = get().selectedRoomId
-    set({ selectedRoomId: roomId })
+    // ChatRoomView renders a message pane ONLY for rooms in `rooms`, and that
+    // list is the Chat pane's own (favourites + unread). A selection from
+    // elsewhere — an overdue-but-read DM in the Inbox, a notification tap on
+    // a since-read room, a search hit — can name a room the list doesn't
+    // hold, and would render blank. List it first. The Dexie read happens
+    // BEFORE selection is set: a liveQuery setRooms landing between
+    // "selected" and "listed" sees an unlisted selection and clears it.
+    const unlisted = roomId && !get().rooms.some((r) => r.id === roomId)
+      ? await db.chatRooms.get(roomId)
+      : undefined
+    set((s) => ({
+      selectedRoomId: roomId,
+      ...(unlisted && !s.rooms.some((r) => r.id === roomId) ? { rooms: [...s.rooms, unlisted] } : {}),
+    }))
     if (prev && prev !== roomId) {
       const prevRoom = get().rooms.find((r) => r.id === prev)
       if (prevRoom && !prevRoom.isUnread && !prevRoom.tags?.includes('m.favourite')) {

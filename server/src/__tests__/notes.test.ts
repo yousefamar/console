@@ -223,6 +223,10 @@ describe('NoteStore conditional writes + since-listing', () => {
   })
 
   it('listSince returns only files newer than the cursor', async () => {
+    // The fixture was written in beforeEach — possibly in the SAME ms as this
+    // cursor, and ext4 mtimes carry sub-ms fractions Date.now() lacks
+    // (N.203 > N), so the cursor needs its own tick after the fixture.
+    await new Promise((r) => setTimeout(r, 10))
     const before = Date.now()
     await new Promise((r) => setTimeout(r, 10))
     await store.write('notes/guides/foo.md', 'updated')

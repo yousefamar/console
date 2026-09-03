@@ -127,8 +127,6 @@ function ChatSearch() {
   const inputRef = useRef<HTMLInputElement>(null)
   const setShowSearch = useUiStore((s) => s.setShowSearch)
   const selectRoom = useChatStore((s) => s.selectRoom)
-  const setRooms = useChatStore((s) => s.setRooms)
-  const rooms = useChatStore((s) => s.rooms)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -166,13 +164,9 @@ function ChatSearch() {
   }, [query, search])
 
   const select = useCallback((room: DbChatRoom) => {
-    // Ensure the room is in the store's rooms list so it stays visible after selection
-    if (!rooms.some((r) => r.id === room.id)) {
-      setRooms([...rooms, room])
-    }
-    selectRoom(room.id)
+    void selectRoom(room.id)
     setShowSearch(false)
-  }, [rooms, setRooms, selectRoom, setShowSearch])
+  }, [selectRoom, setShowSearch])
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'ArrowDown') {
