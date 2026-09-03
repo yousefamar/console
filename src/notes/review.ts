@@ -15,7 +15,7 @@
 // agent edits into one review pass.
 // ============================================================================
 
-import { unifiedMergeView, getChunks, acceptChunk, rejectChunk } from '@codemirror/merge'
+import { unifiedMergeView, getChunks, getOriginalDoc, acceptChunk, rejectChunk } from '@codemirror/merge'
 import { Compartment, type EditorState, type Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 
@@ -55,16 +55,32 @@ export function remainingChunks(state: EditorState): number | null {
   return c ? c.chunks.length : null
 }
 
+/** The merge view's CURRENT original text, or null when review isn't
+ *  configured in this state. Accepting a chunk rewrites this original in
+ *  place (the buffer is untouched), so it drifts from the base the review
+ *  started with. */
+export function currentOriginal(state: EditorState): string | null {
+  if (!getChunks(state)) return null
+  return getOriginalDoc(state).toString()
+}
+
+type ReviewUpdate = {
+  docChanged: boolean
+  transactions: readonly { isUserEvent(event: string): boolean }[]
+}
+
+/** Did this update accept one or more chunks? */
+export function acceptedChunk(update: ReviewUpdate): boolean {
+  return update.transactions.some((t) => t.isUserEvent('accept'))
+}
+
 /** Could this view update have resolved review chunks? Rejecting/typing
  *  edits the buffer (`docChanged`); ACCEPTING rewrites only the merge view's
  *  original doc (`userEvent: "accept"`, docChanged false) — gating the
  *  auto-exit on docChanged alone left a fully-accepted review stuck at
  *  "0 pending changes". */
-export function mayResolveChunks(update: {
-  docChanged: boolean
-  transactions: readonly { isUserEvent(event: string): boolean }[]
-}): boolean {
-  return update.docChanged || update.transactions.some((t) => t.isUserEvent('accept'))
+export function mayResolveChunks(update: ReviewUpdate): boolean {
+  return update.docChanged || acceptedChunk(update)
 }
 
 /** Accept every remaining chunk (keep the agent's text). */

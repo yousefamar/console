@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { EditorState } from '@codemirror/state'
-import { reviewCompartment, reviewExtension, remainingChunks, mayResolveChunks } from '@/notes/review'
+import { reviewCompartment, reviewExtension, remainingChunks, mayResolveChunks, acceptedChunk, currentOriginal } from '@/notes/review'
 
 const mkState = (doc: string, original?: string) =>
   EditorState.create({
@@ -47,5 +47,25 @@ describe('mayResolveChunks', () => {
   it('false on unrelated non-doc transactions (selection, focus)', () => {
     expect(mayResolveChunks({ docChanged: false, transactions: [tx([])] })).toBe(false)
     expect(mayResolveChunks({ docChanged: false, transactions: [] })).toBe(false)
+  })
+})
+
+describe('currentOriginal', () => {
+  it('null when review is not configured', () => {
+    expect(currentOriginal(mkState('hello\n'))).toBeNull()
+  })
+
+  it('returns the merge view original the review was configured with', () => {
+    expect(currentOriginal(mkState('edited\n', 'base\n'))).toBe('base\n')
+  })
+})
+
+describe('acceptedChunk', () => {
+  const tx = (events: string[]) => ({ isUserEvent: (e: string) => events.includes(e) })
+
+  it('true only for accept transactions', () => {
+    expect(acceptedChunk({ docChanged: false, transactions: [tx(['accept'])] })).toBe(true)
+    expect(acceptedChunk({ docChanged: true, transactions: [tx([])] })).toBe(false)
+    expect(acceptedChunk({ docChanged: false, transactions: [] })).toBe(false)
   })
 })

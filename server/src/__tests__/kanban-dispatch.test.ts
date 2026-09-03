@@ -301,6 +301,37 @@ describe('BoardWatcher onCardEdited', () => {
   })
 })
 
+describe('BoardWatcher onFileChanged', () => {
+  it('announces every changed .md on poll — boards and plain notes alike — but never at boot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    const noteAbs = join(dir, 'projects', 'demo', 'notes.md')
+    writeFileSync(boardAbs, '---\nkanban-plugin: board\n---\n\n## In Progress\n\n## Done\n')
+    writeFileSync(noteAbs, '# notes\n')
+    writeFileSync(join(dir, 'projects', 'demo', 'image.png'), 'not markdown')
+    const changed: Array<{ path: string; mtime: number }> = []
+    let clock = 1_000_000
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true, onFileChanged: (path, mtime) => changed.push({ path, mtime }), pollMs: 999_999, now: () => (clock += 1000),
+    })
+    try {
+      await watcher.start()
+      expect(changed).toHaveLength(0)
+      writeFileSync(noteAbs, '# notes\n\nagent wrote this via Bash\n')
+      writeFileSync(join(dir, 'projects', 'demo', 'image.png'), 'still not markdown')
+      await watcher.poll()
+      const paths = changed.map((c) => c.path).sort()
+      expect(paths).toContain('projects/demo/notes.md')
+      expect(paths).not.toContain('projects/demo/image.png')
+      expect(changed.every((c) => typeof c.mtime === 'number' && c.mtime > 0)).toBe(true)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('BoardWatcher default owner', () => {
   it('auto-assigns an unassigned In Progress card via resolveOwner and stamps it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'boards-'))

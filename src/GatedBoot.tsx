@@ -100,9 +100,10 @@ const LazyApp = lazy(async () => {
   const { wireNotesOpenSubscription } = await import('./notes/open-subscribe')
   wireNotesOpenSubscription()
 
-  // Agent vault edits → inline review mode in any open doc editor.
-  const { wireAgentEditSubscription } = await import('./notes/agent-edit-subscribe')
-  wireAgentEditSubscription()
+  // Vault files changing under an open doc editor (agent Edit/Write, Bash
+  // writes, other devices, reconnect sweep) → inline review mode.
+  const { wireDiskReviewSubscription } = await import('./notes/disk-review')
+  wireDiskReviewSubscription()
 
   // Live kanban-board refresh (agent card moves → open Spaces board re-reads).
   const { wireBoardSubscription } = await import('./kanban/board-subscribe')

@@ -83,13 +83,15 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
   const activeFile = activeFilePath ? openFiles[activeFilePath] : null
 
   // Single-buffer: opening a file closes the previous in-scope one — unless
-  // it's dirty (closeFile without force refuses), in which case it stays
-  // "open" and the tree shows its blue icon.
+  // it's dirty (closeFile without force refuses) or has an AI edit awaiting
+  // review (closing would silently drop the review base — this close is a
+  // navigation side effect, not a walk-away), in which case it stays "open"
+  // and the tree shows its amber/violet icon.
   useEffect(() => {
     if (!singleBuffer || !activeFilePath) return
     const s = useNotesStore.getState()
     for (const p of Object.keys(s.openFiles)) {
-      if (p !== activeFilePath && inScope(p)) s.closeFile(p, false)
+      if (p !== activeFilePath && inScope(p) && s.reviewBase[p] === undefined) s.closeFile(p, false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [singleBuffer, activeFilePath])

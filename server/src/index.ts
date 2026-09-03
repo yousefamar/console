@@ -1034,6 +1034,10 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // Any board edit (agent moving its card, Obsidian, Syncthing) → live SPA
   // refresh. The path is the payload; the client re-reads via /notes/file/.
   onBoardChanged: (boardPath) => syncBus.broadcast('boards', 'changed', { boardPath }),
+  // Any vault .md changed on disk → open doc editors reconcile (inline review
+  // when the buffer differs). Catches every writer the instant `agent_edit`
+  // broadcast can't: Bash/`con notes write`, Syncthing from another device.
+  onFileChanged: (path, mtime) => syncBus.broadcast('notes', 'file_changed', { path, mtime }),
   // Unassigned card dragged into In Progress → the project's default owner:
   // frontmatter `default_owner:` (checked upstream) beats the "* general"
   // naming convention over the project's bound roles. If it's ambiguous the

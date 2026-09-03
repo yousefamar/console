@@ -246,6 +246,10 @@ interface NotesState {
    *  (word-level diff, per-chunk accept/reject) until all chunks resolve. */
   reviewBase: Record<string, string>
   beginReview: (path: string, original: string) => void
+  /** Advance an in-flight review's base — accepting a chunk rewrites the
+   *  merge view's original in place, and a remount reconfigures from THIS
+   *  value, so without the sync every accepted chunk came back. */
+  updateReviewBase: (path: string, original: string) => void
   endReview: (path: string) => void
 }
 
@@ -278,6 +282,13 @@ let restoring = false
 /** Per-path save queue — see saveFile. Zustand-declaration-order note: must
  *  sit ABOVE the store (create() runs eagerly; a const below is in its TDZ). */
 const savesInFlight = new Map<string, Promise<void>>()
+
+/** The most recent save promise for `path` (resolved or not). Disk
+ *  reconciliation awaits it before reading, so a write of OUR OWN buffer is
+ *  never mistaken for an external change. */
+export function pendingSave(path: string): Promise<void> | undefined {
+  return savesInFlight.get(path)
+}
 
 // ---------------------------------------------------------------------------
 // Draft persistence — unsaved buffers survive a refresh
@@ -884,6 +895,13 @@ export const useNotesStore = create<NotesState>((set, get) => ({
     // The base may hold UNSAVED user edits (it's the buffer at edit time) and
     // ✗-restore is the only copy — mirror it like drafts so a reload
     // mid-review can't eat it. Same 1 MB quota-safety cap as the draft mirror.
+    try {
+      if (original.length <= 1_000_000) localStorage.setItem(REVIEW_KEY_PREFIX + path, original)
+    } catch { /* quota — in-memory review still works */ }
+    set((s) => ({ reviewBase: { ...s.reviewBase, [path]: original } }))
+  },
+  updateReviewBase: (path, original) => {
+    if (get().reviewBase[path] === undefined || get().reviewBase[path] === original) return
     try {
       if (original.length <= 1_000_000) localStorage.setItem(REVIEW_KEY_PREFIX + path, original)
     } catch { /* quota — in-memory review still works */ }

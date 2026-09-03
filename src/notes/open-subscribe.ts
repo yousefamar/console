@@ -14,6 +14,7 @@
 
 import { hubBus } from '@/sync-bus'
 import { useNotesStore } from '@/store/notes'
+import { reconcileWithDisk } from './disk-review'
 import { useUiStore } from '@/store/ui'
 
 /** Find the line of a `# Heading` matching `anchor` (case-insensitive, any
@@ -58,7 +59,10 @@ async function handleOpen(data: unknown): Promise<void> {
   const view = await waitForEditorView(path)
   if (!view) return
 
-  await refreshFromDisk(path, view)
+  // An already-open tab holds the content read when it was opened, and the
+  // caller has usually JUST written the file — reconcile with disk so the user
+  // sees the change (as an inline review when it differs from their buffer).
+  await reconcileWithDisk(path)
   view.focus()
 
   if (anchor) {
@@ -68,40 +72,6 @@ async function handleOpen(data: unknown): Promise<void> {
       view.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
     }
   }
-}
-
-/**
- * An already-open tab holds the content read when it was opened. Whoever asked
- * for the remote-open usually JUST wrote the file, so without this the user is
- * shown a stale buffer (and an anchor added by that write jumps nowhere).
- *
- * Skipped when the tab is dirty — never clobber unsaved edits.
- *
- * Exported so `:e` can refresh the buffer from disk.
- */
-export async function refreshFromDisk(path: string, view: any): Promise<void> {
-  const notes = useNotesStore.getState()
-  if (notes.isFileDirty(path)) return
-  let fresh: string
-  let freshMtime: number | undefined
-  try {
-    const meta = await notes.adapter!.readFileWithMeta(path)
-    fresh = meta.content
-    freshMtime = meta.mtime
-  } catch {
-    return
-  }
-  if (fresh === view.state.doc.toString()) return
-  // The editor is keyed on the path, so it does NOT remount for a content
-  // change — the new text has to be dispatched into the live view too.
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fresh } })
-  // Set BOTH content and savedContent — the disk version is by definition the
-  // saved one, so the tab must not come back marked dirty.
-  useNotesStore.setState((s) => {
-    const file = s.openFiles[path]
-    if (!file) return s
-    return { openFiles: { ...s.openFiles, [path]: { ...file, content: fresh, savedContent: fresh, baseMtime: freshMtime } } }
-  })
 }
 
 /**

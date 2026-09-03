@@ -4,6 +4,14 @@ import { showConfirm } from '@/dialog'
 import { isDraftPath } from '@/utils/frontmatter'
 import { ChevronRight, Circle, Eye, EyeOff, File, FilePlus, Folder, Plus, RefreshCw, Search, Trash2, PenLine, NotebookPen } from 'lucide-react'
 
+type BufferMark = 'dirty' | 'review'
+const MARK_ICON: Record<BufferMark | 'draft' | 'none', string> = {
+  dirty: 'text-amber-500',
+  review: 'text-violet-500',
+  draft: 'text-blue-500',
+  none: 'text-text-tertiary',
+}
+
 interface ContextMenu {
   x: number
   y: number
@@ -35,15 +43,20 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
   const openQuickSwitcher = useNotesStore((s) => s.openQuickSwitcher)
   const openNewFileForm = useNotesStore((s) => s.openNewFileForm)
   const showHidden = useNotesStore((s) => s.showHidden)
-  // Unsaved buffers — the tree doubles as the tab strip in Spaces (single-
-  // buffer docs): a dirty file is "open". Colour vocabulary matches agents:
-  // amber = unsaved (working), blue = unpublished draft (pending attention).
+  // Buffer marks — the tree doubles as the tab strip in Spaces (single-buffer
+  // docs): a dirty or under-review file is "open". Colour vocabulary matches
+  // agents: amber = unsaved (working), violet = AI edit awaiting review (the
+  // ReviewBanner's colour), blue = unpublished draft (pending attention).
   const openFiles = useNotesStore((s) => s.openFiles)
-  const dirtyPaths = useMemo(() => {
-    const out = new Set<string>()
-    for (const [path, f] of Object.entries(openFiles)) if (f.content !== f.savedContent) out.add(path)
+  const reviewBase = useNotesStore((s) => s.reviewBase)
+  const marks = useMemo(() => {
+    const out = new Map<string, BufferMark>()
+    for (const [path, f] of Object.entries(openFiles)) {
+      if (f.content !== f.savedContent) out.set(path, 'dirty')
+      else if (reviewBase[path] !== undefined) out.set(path, 'review')
+    }
     return out
-  }, [openFiles])
+  }, [openFiles, reviewBase])
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const treeRef = useRef<HTMLDivElement>(null)
@@ -208,7 +221,7 @@ export function NotesFileBrowser({ rootPath, compact, onOpened }: NotesFileBrows
               depth={0}
               expandedDirs={expandedDirs}
               activeFilePath={activeFilePath}
-              dirtyPaths={dirtyPaths}
+              marks={marks}
               selectedPath={selectedPath}
               renaming={renaming}
               onToggleDir={toggleDir}
@@ -266,7 +279,7 @@ function TreeNodeItem({
   depth,
   expandedDirs,
   activeFilePath,
-  dirtyPaths,
+  marks,
   selectedPath,
   renaming,
   onToggleDir,
@@ -281,7 +294,7 @@ function TreeNodeItem({
   depth: number
   expandedDirs: Set<string>
   activeFilePath: string | null
-  dirtyPaths: Set<string>
+  marks: Map<string, BufferMark>
   selectedPath: string | null
   renaming: { path: string; value: string } | null
   onToggleDir: (path: string) => void
@@ -324,7 +337,7 @@ function TreeNodeItem({
               depth={depth + 1}
               expandedDirs={expandedDirs}
               activeFilePath={activeFilePath}
-              dirtyPaths={dirtyPaths}
+              marks={marks}
               selectedPath={selectedPath}
               renaming={renaming}
               onToggleDir={onToggleDir}
@@ -378,11 +391,13 @@ function TreeNodeItem({
       `}
       style={{ paddingLeft }}
     >
-      <File size={10} className={`flex-shrink-0 ${dirtyPaths.has(node.path) ? 'text-amber-500' : isDraftPath(node.path) ? 'text-blue-500' : 'text-text-tertiary'}`} />
+      <File size={10} className={`flex-shrink-0 ${MARK_ICON[marks.get(node.path) ?? (isDraftPath(node.path) ? 'draft' : 'none')]}`} />
       <span className="truncate">{displayName}</span>
-      {dirtyPaths.has(node.path)
+      {marks.get(node.path) === 'dirty'
         ? <span className="ml-auto w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" title="Unsaved changes" />
-        : isDraftPath(node.path) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" title="Unpublished draft" />}
+        : marks.get(node.path) === 'review'
+          ? <span className="ml-auto w-1.5 h-1.5 rounded-full bg-violet-500 flex-shrink-0" title="AI edit awaiting review" />
+          : isDraftPath(node.path) && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" title="Unpublished draft" />}
     </div>
   )
 }

@@ -64,6 +64,12 @@ export interface BoardWatcherOpts {
   /** A board file changed on disk (any edit — agent, Obsidian, Syncthing).
    *  Fired AFTER stamp-writes so the content the client re-reads is final. */
   onBoardChanged?: (boardPath: string) => void
+  /** ANY vault .md changed on disk since the last poll (board or not). This
+   *  poll is the vault's only change feed, so it doubles as the signal for
+   *  "a file changed under an open doc editor" — writes the agent_edit
+   *  broadcast can't see (Bash, `con notes write`, other devices). Not fired
+   *  at boot. */
+  onFileChanged?: (path: string, mtime: number) => void
   /** Resolve the default owner for UNASSIGNED cards dragged into a dispatch
    *  column (frontmatter `default_owner:` wins before this is consulted).
    *  Null = leave the card unassigned and undispatched. */
@@ -143,6 +149,7 @@ export class BoardWatcher {
       for (const path of deleted) this.dropBoard(path)
       for (const f of files) {
         if (!f.path.endsWith('.md')) continue
+        this.opts.onFileChanged?.(f.path, f.mtime)
         await this.classify(f.path, { boot: false })
       }
       this.checkStale()

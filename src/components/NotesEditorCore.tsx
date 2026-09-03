@@ -14,7 +14,7 @@ import { consoleEditorTheme } from '@/notes/editor-theme'
 import { insertFootnote } from '@/notes/editor-actions'
 import { livePreview } from '@/notes/live-preview'
 import { tablePreview } from '@/notes/table-preview'
-import { reviewCompartment, setReviewMode, remainingChunks, mayResolveChunks } from '@/notes/review'
+import { reviewCompartment, setReviewMode, remainingChunks, mayResolveChunks, acceptedChunk, currentOriginal } from '@/notes/review'
 import { useNotesStore } from '@/store/notes'
 import { useBlogStore } from '@/store/blog'
 import { useUiStore } from '@/store/ui'
@@ -178,47 +178,30 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
     Vim.defineEx('w', 'w', () => {
       useNotesStore.getState().saveFile()
     })
-    Vim.defineEx('q', 'q', () => {
+    // codemirror-vim's ex parser takes `^\w+` as the command name, so `:q!`
+    // arrives as command `q` with argString `!` — a separate defineEx('q!')
+    // is unreachable (that dead path is why `:q!`/`:e!` never worked).
+    const hasBang = (params: { argString?: string }) => (params.argString ?? '').trim().startsWith('!')
+    Vim.defineEx('q', 'q', (_cm: unknown, params: { argString?: string }) => {
       const state = useNotesStore.getState()
-      if (state.activeFilePath) {
-        const closed = state.closeFile(state.activeFilePath, false)
-        if (!closed) {
-          console.warn('File has unsaved changes. Use :q! to force close.')
-        }
-      }
-    })
-    Vim.defineEx('q!', 'q!', () => {
-      const state = useNotesStore.getState()
-      if (state.activeFilePath) state.closeFile(state.activeFilePath, true)
+      if (!state.activeFilePath) return
+      const closed = state.closeFile(state.activeFilePath, hasBang(params))
+      if (!closed) console.warn('File has unsaved changes. Use :q! to force close.')
     })
     Vim.defineEx('wq', 'wq', async () => {
       const state = useNotesStore.getState()
       await state.saveFile()
       if (state.activeFilePath) state.closeFile(state.activeFilePath, true)
     })
-    Vim.defineEx('e', 'e', async () => {
-      const state = useNotesStore.getState()
-      const path = state.activeFilePath
+    // :e = reconcile with disk: a disk change opens (or extends) an inline
+    // review against the current buffer, dirty edits included — never a
+    // blind reload, so it's safe on a modified buffer too. :e! is the blind
+    // reload (drops local edits AND any open review), as in vim.
+    Vim.defineEx('e', 'e', async (_cm: unknown, params: { argString?: string }) => {
+      const path = useNotesStore.getState().activeFilePath
       if (!path) return
-      // Refuse when dirty — vim's :e also blocks on modified buffers without :e!.
-      if (state.isFileDirty(path)) {
-        console.warn('File has unsaved changes. Use :e! to discard and reload.')
-        return
-      }
-      // Re-read from disk and dispatch into the live editor.
-      const view = state.editorView
-      if (!view || state.editorViewPath !== path) return
-      const { refreshFromDisk } = await import('@/notes/open-subscribe')
-      await refreshFromDisk(path, view)
-    })
-    Vim.defineEx('e!', 'e!', async () => {
-      const state = useNotesStore.getState()
-      const path = state.activeFilePath
-      if (!path) return
-      const view = state.editorView
-      if (!view || state.editorViewPath !== path) return
-      const { refreshFromDisk } = await import('@/notes/open-subscribe')
-      await refreshFromDisk(path, view)
+      const { reconcileWithDisk } = await import('@/notes/disk-review')
+      await reconcileWithDisk(path, { force: hasBang(params) })
     })
 
     const extensions = [
@@ -366,6 +349,13 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
                 if (v) setReviewMode(v, null)
               }, 0)
             }
+          } else if (acceptedChunk(update)) {
+            // An accept rewrote the merge view's original in place; mirror it
+            // into the store so a remount (pane switch, tab switch) rebuilds
+            // the review from the advanced base instead of resurrecting the
+            // accepted chunks.
+            const original = currentOriginal(update.state)
+            if (original !== null) useNotesStore.getState().updateReviewBase(filePathRef.current, original)
           }
           if (update.docChanged) {
             pendingContent = update.state.doc.toString()
@@ -615,6 +605,9 @@ export const NotesEditorCore = memo(function NotesEditorCore({ filePath, content
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
+    // Accepts advance the store base to what the merge view already holds —
+    // reconfiguring then would rebuild the extension for no change.
+    if (reviewBase !== undefined && currentOriginal(view.state) === reviewBase) return
     setReviewMode(view, reviewBase ?? null)
   }, [reviewBase, filePath])
 
