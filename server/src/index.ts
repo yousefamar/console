@@ -1174,7 +1174,8 @@ const ringEnv = async (): Promise<RouteEnv> => {
     readdir(join(WORKSPACE_DIR, 'users')).catch(() => [] as string[]),
   ])
   return {
-    projects: spaces.filter((sp) => sp.kind === 'project').map((sp) => sp.slug.toLowerCase()),
+    // Only projects with a board can take a card — keeps ~70 vault slugs out of the fuzzy match.
+    projects: spaces.filter((sp) => sp.kind === 'project' && sp.boardPath).map((sp) => sp.slug.toLowerCase()),
     contacts: users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase()),
   }
 }

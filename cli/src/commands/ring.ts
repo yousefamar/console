@@ -91,7 +91,7 @@ async function ringSchema(args: string[], flags: GlobalFlags): Promise<void> {
   const d = await hubFetch<{
     path: string; errors: string[]; stale: boolean
     fallback: { agentKey: string | null; live: boolean }; llmFallback: boolean
-    verbs: Array<{ verb: string; aliases: string[]; usage: string; note?: string; targets: Array<{ name: string; resolves: string; ok: boolean; note?: string }> }>
+    verbs: Array<{ verb: string; aliases: string[]; usage: string; note?: string; targets: Array<{ name: string; aliases?: string[]; resolves: string; ok: boolean; note?: string }> }>
   }>('/ring/schema')
   const broken = d.verbs.flatMap((v) => v.targets.filter((t) => !t.ok).map((t) => `${v.verb} ${t.name} → ${t.resolves}: ${t.note ?? 'unresolved'}`))
   if (flags.json) { output({ ...d, broken }, flags); return }
@@ -99,7 +99,7 @@ async function ringSchema(args: string[], flags: GlobalFlags): Promise<void> {
   for (const e of d.errors) info(`  ! ${e}`)
   for (const v of d.verbs) {
     info(`${v.usage}${v.aliases.length ? `   aliases: ${v.aliases.join(', ')}` : ''}`)
-    for (const t of v.targets) info(`  ${t.ok ? '·' : '✗'} ${t.name.padEnd(14)} → ${t.resolves}${t.note ? `   (${t.note})` : ''}`)
+    for (const t of v.targets) info(`  ${t.ok ? '·' : '✗'} ${t.name.padEnd(14)}${t.aliases?.length ? ` ← ${t.aliases.join(', ')}` : ''}  → ${t.resolves}${t.note ? `   (${t.note})` : ''}`)
     if (v.note) info(`    ${v.note}`)
   }
   info(`fallback → ${d.fallback.agentKey ?? 'none (notify only)'}${d.fallback.agentKey ? (d.fallback.live ? '' : '  ✗ not live') : ''}   llm fallback: ${d.llmFallback ? 'on' : 'off'}`)
