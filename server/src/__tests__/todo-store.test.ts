@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readTodos, todosEqual, watchTodos, type TodoItem } from '../agents/todo-store.js'
+import { readTodos, todosEqual, watchTodos, todosUpdatedAt, isStaleTodoList, TODO_STALE_MS, type TodoItem } from '../agents/todo-store.js'
 
 const CSID = 'sess-abc'
 let root: string
@@ -157,5 +157,32 @@ describe('watchTodos', () => {
     write('2', { id: '2', subject: 'b', status: 'pending' })
     await new Promise((r) => setTimeout(r, 400))
     expect(seen).toEqual([])
+  })
+})
+
+describe('stale finished lists', () => {
+  const done = (id: string): TodoItem => ({ id, subject: `t${id}`, status: 'completed' })
+  const now = 10_000_000
+
+  it('is stale only when every task is completed AND the dir has sat untouched past TODO_STALE_MS', () => {
+    expect(isStaleTodoList([done('1'), done('2')], now - TODO_STALE_MS, now)).toBe(true)
+    expect(isStaleTodoList([done('1'), done('2')], now - TODO_STALE_MS + 1, now)).toBe(false)
+    expect(isStaleTodoList([done('1'), { id: '2', subject: 'b', status: 'pending' }], now - 10 * TODO_STALE_MS, now)).toBe(false)
+    expect(isStaleTodoList([], now - 10 * TODO_STALE_MS, now)).toBe(false)
+  })
+
+  it('todosUpdatedAt is the newest task-file mtime, 0 for a missing dir', () => {
+    expect(todosUpdatedAt('sess-none')).toBe(0)
+    write('1', { id: '1', subject: 'a', status: 'completed' })
+    write('2', { id: '2', subject: 'b', status: 'completed' })
+    const old = Date.now() - 3 * TODO_STALE_MS
+    utimesSync(join(root, CSID, '1.json'), old / 1000, old / 1000)
+    utimesSync(join(root, CSID, '2.json'), old / 1000, old / 1000)
+    writeFileSync(join(root, CSID, '.lock'), '')
+    expect(Math.abs(todosUpdatedAt(CSID) - old)).toBeLessThan(2000)
+    expect(isStaleTodoList(readTodos(CSID), todosUpdatedAt(CSID))).toBe(true)
+    // A fresh TaskCreate un-hides the list.
+    write('3', { id: '3', subject: 'c', status: 'pending' })
+    expect(isStaleTodoList(readTodos(CSID), todosUpdatedAt(CSID))).toBe(false)
   })
 })

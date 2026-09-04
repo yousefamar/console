@@ -19,9 +19,43 @@
 // NOTE: distinct from the vault kanban boards (kanban/), which carry Console's own work assignment.
 // ============================================================================
 
-import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+
+/** A finished list is history. The CLI never clears ~/.claude/tasks/<csid>/ —
+ *  for a session that lives for months it is the accumulated record of every
+ *  plan ever made — so once every task is completed and the dir has sat
+ *  untouched this long, the list is hidden from SessionInfo (both clients
+ *  render off that). A new TaskCreate bumps the mtime and un-hides it. */
+export const TODO_STALE_MS = 60 * 60_000
+
+export function isStaleTodoList(todos: TodoItem[], updatedAt: number, now = Date.now()): boolean {
+  return todos.length > 0
+    && todos.every((t) => t.status === 'completed')
+    && now - updatedAt >= TODO_STALE_MS
+}
+
+/** Newest mtime (ms epoch) across the session's task files; 0 when none. */
+export function todosUpdatedAt(claudeSessionId: string): number {
+  const dir = sessionDir(claudeSessionId)
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return 0
+  }
+  let newest = 0
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    try {
+      newest = Math.max(newest, statSync(join(dir, name)).mtimeMs)
+    } catch {
+      // Removed between readdir and stat — nothing to count.
+    }
+  }
+  return newest
+}
 
 export interface TodoItem {
   id: string

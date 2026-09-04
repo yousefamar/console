@@ -29,7 +29,7 @@ import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
 import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
-import { readTodos, watchTodos, type TodoItem } from './agents/todo-store.js'
+import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 
 let sessionCounter = 0
 
@@ -151,6 +151,8 @@ export class Session extends EventEmitter {
    *  ~/.claude/tasks/<claudeSessionId>/ (see agents/todo-store.ts). The stream
    *  never carries the assembled list, so the disk store is the only source. */
   todos: TodoItem[] = []
+  /** Newest task-file mtime — drives the stale-list cut in visibleTodos(). */
+  private todosUpdatedAt = 0
   private todoWatcher: (() => void) | null = null
   /** claudeSessionId the todo watcher is bound to — a fork gets a new csid, so
    *  the watcher must re-bind rather than keep watching the parent's dir. */
@@ -609,15 +611,21 @@ export class Session extends EventEmitter {
     if (!csid || csid === this.todoWatchedCsid) return
     this.todoWatcher?.()
     this.todoWatchedCsid = csid
-    const initial = readTodos(csid)
-    if (initial.length) {
-      this.todos = initial
-      this.emitTodos()
-    }
+    this.todos = readTodos(csid)
+    this.todosUpdatedAt = todosUpdatedAt(csid)
+    if (this.visibleTodos().length) this.emitTodos()
     this.todoWatcher = watchTodos(csid, (todos) => {
       this.todos = todos
+      this.todosUpdatedAt = todosUpdatedAt(csid)
       this.emitTodos()
     })
+  }
+
+  /** What clients should show: the list, unless it's finished and stale
+   *  (see TODO_STALE_MS). Evaluated per read — getInfo() runs on every
+   *  sessions_list poll, so the cut lands without any file event. */
+  visibleTodos(): TodoItem[] {
+    return isStaleTodoList(this.todos, this.todosUpdatedAt) ? [] : this.todos
   }
 
   /** Ephemeral like session_queued — the authoritative copy rides
@@ -626,7 +634,7 @@ export class Session extends EventEmitter {
     this.emit('hub_message', {
       type: 'session_todos',
       sessionId: this.id,
-      todos: this.todos,
+      todos: this.visibleTodos(),
     } satisfies HubMessage)
   }
 
@@ -941,7 +949,7 @@ export class Session extends EventEmitter {
       needsAttention: this.needsAttention,
       lastTextSnippet: this.lastTextSnippet,
       queuedMessage: this.queuedMessage,
-      todos: this.todos.length ? this.todos : undefined,
+      todos: this.visibleTodos().length ? this.visibleTodos() : undefined,
       gitBranch: this.gitBranch,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,
