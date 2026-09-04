@@ -18,9 +18,11 @@ describe('isStrayCwd', () => {
   it('flags a session running outside its space home', () => {
     expect(isStrayCwd('/home/amar/proj/code/console/server', home)).toBe(true)
   })
-  it('accepts the space home, trailing slash or not', () => {
+  it('accepts the space home, trailing slash or not, and any subdir of it', () => {
     expect(isStrayCwd(home, home)).toBe(false)
     expect(isStrayCwd(`${home}/`, home)).toBe(false)
+    expect(isStrayCwd(`${home}/workspace`, home)).toBe(false)
+    expect(isStrayCwd(`${home}-other`, home)).toBe(true) // sibling dir sharing the prefix is NOT inside
   })
   it('never flags when either side is unknown', () => {
     expect(isStrayCwd(undefined, home)).toBe(false)
