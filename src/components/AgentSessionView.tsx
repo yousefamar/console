@@ -249,7 +249,10 @@ export function AgentSessionView() {
 
           {/* Git branch */}
           {activeSession?.gitBranch && (
-            <span className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1">
+            <span
+              className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1"
+              title={activeSession.gitRepo ? `git: ${shortCwd(activeSession.gitRepo)} (the repo symlink in this project dir)` : `git: ${activeSession.cwd ? shortCwd(activeSession.cwd) : 'cwd'}`}
+            >
               <GitBranch size={10} className="flex-shrink-0" />
               <span className="truncate">{activeSession.gitBranch}</span>
               {activeSession.gitStats && (activeSession.gitStats.added > 0 || activeSession.gitStats.deleted > 0) ? (

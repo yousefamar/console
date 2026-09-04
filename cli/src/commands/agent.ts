@@ -19,6 +19,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'chat': return agentChat(args, flags)
     case 'merge': return agentMerge(args, flags)
     case 'model': return agentModel(args, flags)
+    case 'cwd': return agentCwd(args, flags)
     case 'backend': return agentBackend(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
@@ -402,6 +403,30 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
 /** `con agent model` — inspect or switch the model all hub agents spawn with.
  *  The out-of-band recovery lever when Anthropic pulls a model: change it here,
  *  no code edit, and live sessions restart onto the new model. */
+/** `con agent cwd <session-id|name> <path>` — relocate an idle session to
+ *  another cwd WITH its conversation: the hub moves the transcript under the
+ *  new cwd's ~/.claude/projects/ dir and the session resumes there on its next
+ *  message. The fix for a session spawned in the wrong dir (it read the wrong
+ *  CLAUDE.md; its forks inherited the cwd) without erasing it. */
+async function agentCwd(args: string[], flags: GlobalFlags): Promise<void> {
+  const [target, path] = args
+  if (!target || !path) exitWithError('USAGE', 'Usage: con agent cwd <session-id|name> <path>', flags)
+  let hubId = target!
+  if (!/^session_/.test(hubId)) {
+    try { hubId = (await resolveByName(target!)).id } catch { /* assume it's a hub id */ }
+  }
+  const { resolve } = await import('node:path')
+  const cwd = resolve(path!.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
+  const { sendAndReceive } = await import('../ws-client.js')
+  const reply = await sendAndReceive(
+    { type: 'relocate_session', sessionId: hubId, cwd },
+    (msg: any) => (msg.type === 'hub_error' && /relocate|not found/i.test(msg.message))
+      || (msg.type === 'sessions_list' && msg.sessions?.some((s: any) => s.id === hubId && s.cwd === cwd)),
+  )
+  if (!reply || reply.type === 'hub_error') exitWithError('ERROR', reply?.message ?? 'no reply from hub', flags)
+  output({ relocated: hubId, cwd }, flags)
+}
+
 async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
   const sub = args[0]
   if (!sub || sub === 'get' || sub === 'list') {

@@ -811,6 +811,16 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               { label: 'Fork', onClick: () => agent.forkSession(sess.id) },
               ...(isFork ? [{ label: 'Merge into parent', onClick: () => agent.mergeSession(sess.id) }] : []),
               ...ownerMenuItem(sess),
+              // Stray session (wrong cwd) → move it into the space's dir with its
+              // transcript; only meaningful when idle (the hub refuses mid-turn).
+              ...(isStrayCwd(sess.cwd, space.cwd) && space.cwd ? [{
+                label: `Relocate to ${shortCwd(space.cwd)}`,
+                onClick: async () => {
+                  if (sess.status === 'running') { await showAlert('Wait for the turn to end — a running session can\'t be relocated.', { title: 'Relocate' }); return }
+                  const ok = await showConfirm(`Move "${displayName}" to ${shortCwd(space.cwd!)}?\n\nIts transcript moves with it and it resumes there on the next message; from then on it reads that dir's CLAUDE.md and auto-memory, not ${shortCwd(sess.cwd!)}'s. Forks are separate sessions — relocate them individually.`, { title: 'Relocate session', confirmLabel: 'Relocate' })
+                  if (ok) agent.relocateSession(sess.id, space.cwd!)
+                },
+              }] : []),
               { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
             ]
             const isOwner = !!sess.agentKey && ownerKey === sess.agentKey

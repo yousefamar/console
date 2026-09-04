@@ -854,6 +854,24 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       break
     }
 
+    case 'relocate_session': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      const from = session.cwd
+      const r = session.relocate(msg.cwd)
+      if (!r.ok) {
+        sendTo(ws, { type: 'hub_error', message: `relocate failed: ${r.error}` })
+        return
+      }
+      log(`Session ${session.id} relocated ${from} → ${session.cwd} (transcript moved; wakes there on next message)`)
+      saveManifest(sessions)
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      break
+    }
+
     case 'set_session_model': {
       const session = sessions.get(msg.sessionId)
       if (!session) {

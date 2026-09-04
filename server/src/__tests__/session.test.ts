@@ -952,3 +952,64 @@ describe('Session queued messages', () => {
     expect(session.queuedMessage).toBeNull()
   })
 })
+
+// --------------------------------------------------------------------------
+// relocate() — move an idle session's cwd WITH its transcript (^spry-seal)
+// --------------------------------------------------------------------------
+
+describe('Session.relocate', () => {
+  let home: string
+  let savedHome: string | undefined
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'reloc-home-'))
+    savedHome = process.env.HOME
+    process.env.HOME = home
+  })
+  afterEach(() => {
+    process.env.HOME = savedHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function idleSessionAt(cwd: string): Session {
+    const session = new Session({ prompt: 'x', cwd })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'csid-reloc-1', model: 'claude-opus-5' })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, is_error: false, num_turns: 1, result: 'ok', session_id: 'csid-reloc-1', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    return session
+  }
+
+  it('moves the JSONL into the new cwd project dir, puts the process down, and re-points cwd', async () => {
+    const { mkdirSync, writeFileSync, existsSync: exists } = await import('node:fs')
+    const a = join(home, 'a'); const b = join(home, 'b')
+    mkdirSync(a); mkdirSync(b)
+    const session = idleSessionAt(a)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(session.status).toBe('idle')
+    const encA = '-' + a.replace(/^\//, '').replace(/[^A-Za-z0-9-]/g, '-')
+    const encB = '-' + b.replace(/^\//, '').replace(/[^A-Za-z0-9-]/g, '-')
+    mkdirSync(join(home, '.claude', 'projects', encA), { recursive: true })
+    writeFileSync(join(home, '.claude', 'projects', encA, 'csid-reloc-1.jsonl'), '{"type":"user"}\n')
+
+    const r = session.relocate(b)
+    expect(r).toEqual({ ok: true })
+    expect(session.cwd).toBe(b)
+    expect(exists(join(home, '.claude', 'projects', encB, 'csid-reloc-1.jsonl'))).toBe(true)
+    expect(exists(join(home, '.claude', 'projects', encA, 'csid-reloc-1.jsonl'))).toBe(false)
+    expect(mockProcess.killed).toBe(true)
+    // The kill ran through the hibernation path: the session is dormant, not ended.
+    expect(session.status).toBe('idle')
+    expect(session.hibernated).toBe(true)
+  })
+
+  it('refuses a running session, a missing dir, and a no-op', async () => {
+    const { mkdirSync } = await import('node:fs')
+    const a = join(home, 'a'); mkdirSync(a)
+    const session = idleSessionAt(a)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(session.relocate(join(home, 'nope')).ok).toBe(false)
+    expect(session.relocate(a)).toEqual({ ok: false, error: 'already there' })
+    session.sendMessage('go') // → running
+    const r = session.relocate(home)
+    expect(r.ok).toBe(false)
+    expect(session.cwd).toBe(a)
+  })
+})

@@ -21,7 +21,10 @@ import type {
   SessionInfo,
   AttentionState,
 } from './protocol.js'
-import { parseModelString } from './utils.js'
+import { parseModelString, cwdToProjectDir } from './utils.js'
+import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { getLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
@@ -125,7 +128,9 @@ export class Session extends EventEmitter {
   status: 'running' | 'idle' | 'ended' = 'running'
   readonly createdAt = Date.now()
   readonly initialPrompt: string
-  readonly cwd: string
+  /** Fixed at spawn (`--resume` is keyed by it) — changes only via relocate(),
+   *  which moves the transcript to the new cwd's project dir first. */
+  cwd: string
   totalCost = 0
   totalTokens: TokenUsage = { input: 0, output: 0 }
   contextWindow = 200_000
@@ -776,6 +781,43 @@ export class Session extends EventEmitter {
     return true
   }
 
+  /** Move an IDLE session to another cwd without losing its conversation.
+   *  `--resume` finds a transcript under ~/.claude/projects/<encoded cwd>/, so
+   *  the JSONL is moved into the new cwd's project dir and the subprocess (if
+   *  alive) is put down like a hibernation — the next message wakes it with
+   *  `--resume` from the new dir. Verified live: a relocated session recalls
+   *  its earlier turns. Auto-memory and CLAUDE.md follow the NEW cwd (that is
+   *  the point — a stray session was reading the wrong project's). Forks are
+   *  separate sessions with their own cwd; relocate them individually. */
+  relocate(newCwd: string): { ok: true } | { ok: false; error: string } {
+    if (this.status === 'running' || this.approvalPending) return { ok: false, error: 'session is mid-turn — wait for it to go idle' }
+    if (this.endedByUser || this.status === 'ended') return { ok: false, error: 'session has ended' }
+    if (!this.claudeSessionId) return { ok: false, error: 'session has no claudeSessionId yet' }
+    try { if (!statSync(newCwd).isDirectory()) return { ok: false, error: `not a directory: ${newCwd}` } } catch { return { ok: false, error: `not a directory: ${newCwd}` } }
+    if (newCwd === this.cwd) return { ok: false, error: 'already there' }
+    const projects = join(homedir(), '.claude', 'projects')
+    const from = join(projects, cwdToProjectDir(this.cwd), `${this.claudeSessionId}.jsonl`)
+    const toDir = join(projects, cwdToProjectDir(newCwd))
+    const to = join(toDir, `${this.claudeSessionId}.jsonl`)
+    if (existsSync(to)) return { ok: false, error: `a transcript for ${this.claudeSessionId} already exists under ${toDir}` }
+    if (this.processAlive && this.process) {
+      // Same mechanics as hibernate(): SIGKILL, exit handler flips `hibernated`,
+      // a message racing the kill is queued and delivered after the wake.
+      this.hibernating = true
+      this.stdinReady = false
+      this.process.kill('SIGKILL')
+    }
+    // A pruned transcript (no file) just means the wake respawns fresh — the
+    // existing resumeTargetMissing path handles that; nothing to move.
+    if (existsSync(from)) {
+      mkdirSync(toDir, { recursive: true })
+      renameSync(from, to)
+    }
+    this.cwd = newCwd
+    this.gitCheckedAt = 0
+    return { ok: true }
+  }
+
   /** Re-spawn a hibernated session with --resume (history preserved, no
    *  system-prompt re-append — spawn() only appends on fresh starts). */
   private wakeFromHibernation() {
@@ -875,18 +917,32 @@ export class Session extends EventEmitter {
   private gitBranch?: string
   private gitDirty?: boolean
   private gitStats?: { added: number; deleted: number }
+  /** Where the git chip's numbers come from when it isn't the cwd itself. */
+  private gitRepo?: string
   private gitCheckedAt = 0
+
+  /** The checkout the status bar should describe. A space-bound session runs
+   *  from its VAULT project dir; when that dir carries a `repo` symlink to the
+   *  code, the vault's own branch/+/- is noise (Yousef, ^spry-seal) — report
+   *  the linked checkout instead. */
+  private gitCwd(): string {
+    const repo = join(this.cwd, 'repo')
+    try { if (statSync(repo).isDirectory()) return repo } catch { /* no repo link */ }
+    return this.cwd
+  }
 
   private checkGit(): void {
     // Cache for 10 seconds
     if (Date.now() - this.gitCheckedAt < 10_000) return
     this.gitCheckedAt = Date.now()
+    const gitCwd = this.gitCwd()
+    this.gitRepo = gitCwd === this.cwd ? undefined : gitCwd
     try {
       this.gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
+        cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
       }).toString().trim()
       const status = execSync('git status --porcelain', {
-        cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
+        cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
       }).toString().trim()
       this.gitDirty = status.length > 0
       // Get line-level diff stats: staged + unstaged + count untracked files
@@ -894,7 +950,7 @@ export class Session extends EventEmitter {
         let added = 0, deleted = 0
         // Staged changes
         const staged = execSync('git diff --cached --numstat', {
-          cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
+          cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
         }).toString().trim()
         for (const line of staged.split('\n')) {
           const [a, d] = line.split('\t')
@@ -902,7 +958,7 @@ export class Session extends EventEmitter {
         }
         // Unstaged changes to tracked files
         const unstaged = execSync('git diff --numstat', {
-          cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
+          cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
         }).toString().trim()
         for (const line of unstaged.split('\n')) {
           const [a, d] = line.split('\t')
@@ -951,6 +1007,7 @@ export class Session extends EventEmitter {
       queuedMessage: this.queuedMessage,
       todos: this.visibleTodos().length ? this.visibleTodos() : undefined,
       gitBranch: this.gitBranch,
+      gitRepo: this.gitRepo,
       gitDirty: this.gitDirty,
       gitStats: this.gitStats,
     }

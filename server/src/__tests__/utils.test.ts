@@ -88,4 +88,9 @@ describe('cwdToProjectDir', () => {
   it('encodes deeply nested path', () => {
     expect(cwdToProjectDir('/a/b/c/d/e')).toBe('-a-b-c-d-e')
   })
+
+  it('flattens dots (and any other non-alphanumeric) like the CLI does', () => {
+    expect(cwdToProjectDir('/tmp/reloc-a.gZkd')).toBe('-tmp-reloc-a-gZkd')
+    expect(cwdToProjectDir('/home/amar/.paperclip/x')).toBe('-home-amar--paperclip-x')
+  })
 })

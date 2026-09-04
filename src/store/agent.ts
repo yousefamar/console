@@ -141,6 +141,8 @@ export interface SessionInfo {
   hasUnread?: boolean
   isAl?: boolean
   gitBranch?: string
+  /** The checkout the git fields describe when it isn't the cwd (vault project dir's `repo` symlink). */
+  gitRepo?: string
   gitDirty?: boolean
   gitStats?: { added: number; deleted: number }
 }
@@ -279,6 +281,8 @@ interface AgentState {
   /** Pin ONE session to a model, applied mid-session (in-place set_model with
    *  respawn fallback). null clears the pin — back to the hub-wide model. */
   setSessionModel: (sessionId: string, model: string | null) => void
+  /** Move an idle session to another cwd, transcript included (hub moves the JSONL; wakes there). */
+  relocateSession: (sessionId: string, cwd: string) => void
   dismissModelFallbackNotice: () => void
   /** Reload a live session (respawn via --resume, history preserved). */
   reloadSession: (sessionId: string) => void
@@ -604,6 +608,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setSessionModel: (sessionId, model) => {
     sendWs({ type: 'set_session_model', sessionId, model })
+  },
+
+  relocateSession: (sessionId, cwd) => {
+    sendWs({ type: 'relocate_session', sessionId, cwd })
   },
 
   dismissModelFallbackNotice: () => set({ modelFallbackNotice: null }),

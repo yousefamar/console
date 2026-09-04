@@ -47,6 +47,7 @@ export type ClientMessage =
   /** Pin ONE session to a model (mid-session; fast set_model path with respawn
    *  fallback). `model: null` clears the pin — back to the hub-wide model. */
   | { type: 'set_session_model'; sessionId: string; model: string | null }
+  | { type: 'relocate_session'; sessionId: string; cwd: string }
   /** Merge a fork back into its parent: the fork summarises, the digest is
    *  injected into the parent, then the fork is killed. */
   | { type: 'merge_session'; sessionId: string }
@@ -238,6 +239,9 @@ export interface SessionInfo {
   gitBranch?: string
   gitDirty?: boolean
   gitStats?: { added: number; deleted: number }
+  /** The checkout the git fields describe when it isn't the cwd — the `repo`
+   *  symlink inside a vault project dir. */
+  gitRepo?: string
 }
 
 // --------------------------------------------------------------------------

@@ -63,5 +63,9 @@ export function parseModelString(model?: string): { displayName: string; context
  * e.g. `/home/amar/proj/code/console` → `-home-amar-proj-code-console`
  */
 export function cwdToProjectDir(cwdPath: string): string {
-  return '-' + cwdPath.replace(/^\//, '').replace(/\//g, '-')
+  // The CLI flattens every non-alphanumeric char to `-`, not just `/`:
+  // observed `/tmp/reloc-a.gZkd` → `-tmp-reloc-a-gZkd` and
+  // `~/.paperclip/…/.default` → `-home-amar--paperclip-…--default`. Mapping
+  // only `/` made history lookups silently miss any cwd with a dot.
+  return '-' + cwdPath.replace(/^\//, '').replace(/[^A-Za-z0-9-]/g, '-')
 }
