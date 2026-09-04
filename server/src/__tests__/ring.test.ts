@@ -15,9 +15,9 @@ import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
-const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools'], contacts: ['nica', 'sam-miller', 'yasmina-amar'] }
+const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
-SCHEMA.verbs.message.contacts = { 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
+SCHEMA.verbs.message.contacts = { al: ['owl', 'hal'], 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
 
 describe('multipart', () => {
   it('round-trips text + binary parts byte-exactly', () => {
@@ -76,13 +76,12 @@ describe('normalise + fuzzy', () => {
     expect(contactForms({ 'sam-miller': ['sam'] }, ['sam-miller', 'sam-miller-1']).get('sam')).toBe('sam-miller') // explicit wins
   })
   it('matchVerb: name, alias, one edit — never between two verbs', () => {
-    expect(matchVerb('log', SCHEMA)).toBe('add') // log IS add
-    expect(matchVerb('lock', SCHEMA)).toBe('add') // schema alias
-    expect(matchVerb('massage', SCHEMA)).toBe('message')
-    expect(matchVerb('ping', SCHEMA)).toBe('echo')
-    expect(matchVerb('tell', SCHEMA)).toBe('message')
-    expect(matchVerb('kick', SCHEMA)).toBe('start')
-    expect(matchVerb('stat', SCHEMA)).toBe('start')
+    expect(matchVerb('log', SCHEMA)).toEqual({ verb: 'add', exact: true }) // log IS add
+    expect(matchVerb('lock', SCHEMA)).toEqual({ verb: 'add', exact: true }) // schema alias
+    expect(matchVerb('massage', SCHEMA)).toEqual({ verb: 'message', exact: false })
+    expect(matchVerb('ping', SCHEMA)).toEqual({ verb: 'echo', exact: true })
+    expect(matchVerb('kick', SCHEMA)).toEqual({ verb: 'start', exact: true })
+    expect(matchVerb('stat', SCHEMA)).toEqual({ verb: 'start', exact: false })
     expect(matchVerb('banana', SCHEMA)).toBeNull()
   })
 })
@@ -133,6 +132,11 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('add dream flying again')).toMatchObject({ command: { target: 'dream', dated: true } }) // verb doesn't matter, target does
     expect(r('log food two eggs')).toMatchObject({ rule: 'add.unknown-target', command: { kind: 'unknown-target', verb: 'add', target: 'food' } })
   })
+  it('a FUZZY verb with an unknown target is not a command — falls through (the "look at…" misfire)', () => {
+    expect(r('Look at the movie titles that Veronica sent me and open the URLs')).toBeNull() // look ≈ lock, target "at" unknown
+    expect(r('massage therapy is on tuesday')).toBeNull() // massage ≈ message, "therapy" is nobody
+    expect(r('lock food two eggs')).toMatchObject({ rule: 'add.unknown-target' }) // exact alias → real bad target
+  })
   it('add <list> <item> and add <project> <text>', () => {
     expect(r('Add movies Spiderman')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Spiderman', dated: false, enrich: 'movie' } })
     expect(r('add film Dune')).toMatchObject({ command: { target: 'movies' } })
@@ -152,6 +156,8 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('text nika running late')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'nica' } })
     expect(r('message sam-miller hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } })
     expect(r('message sam hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } }) // first name, derived
+    expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { contact: 'al', text: 'are you there' } })
+    expect(r('text owl ping')).toMatchObject({ rule: 'message', command: { contact: 'al' } })
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
   })
   it('there is no agent verb — "tell" is a message alias, bare names are unclaimed', () => {
@@ -269,6 +275,7 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
+    expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's own WhatsApp DM" })
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
     expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
   })

@@ -70,7 +70,7 @@ import { handleRingRoutes } from './routes/ring.js'
 import { RingStore } from './ring/store.js'
 import { classifyWithLlm, enrichMovieWithLlm } from './ring/llm-fallback.js'
 import { RingSchemaLoader } from './ring/schema-loader.js'
-import { describeSchema as describeRingSchema } from './ring/schema.js'
+import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import type { RouteEnv } from './ring/router.js'
@@ -1176,7 +1176,7 @@ const ringEnv = async (): Promise<RouteEnv> => {
   return {
     // Only projects with a board can take a card — keeps ~70 vault slugs out of the fuzzy match.
     projects: spaces.filter((sp) => sp.kind === 'project' && sp.boardPath).map((sp) => sp.slug.toLowerCase()),
-    contacts: users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase()),
+    contacts: [AL_CONTACT, ...users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase())],
   }
 }
 const ringCtx: RingCtx = {
@@ -1197,8 +1197,9 @@ const ringCtx: RingCtx = {
   // message: AS YOUSEF, through his own Matrix account → the contact's bridged
   // WhatsApp DM (resolved by ghost member id; encryption-aware send).
   chatSendAsYousef: async (contact, text) => {
-    const room = await ringContactRooms.resolve(contact, identifiersFor(contact))
-    if (!room) throw new Error(`no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
+    const ids = contact === AL_CONTACT ? [alWa.ownNumber() ?? ''] : identifiersFor(contact)
+    const room = await ringContactRooms.resolve(contact, ids)
+    if (!room) throw new Error(contact === AL_CONTACT ? "no WhatsApp DM room found for AL's own number" : `no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
     await matrixSync.sendRoomEvent({ roomId: room.id, type: 'm.room.message', content: { msgtype: 'm.text', body: text } })
     return room.name
   },

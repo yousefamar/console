@@ -140,6 +140,13 @@ export function isConnected(): boolean {
   return connected && !!sock?.user
 }
 
+/** AL's own WhatsApp number (digits), once logged in — the identifier that
+ *  names his DM room in Yousef's Beeper. */
+export function ownNumber(): string | null {
+  const id = sock?.user?.id
+  return id ? id.split(':')[0]!.split('@')[0]!.replace(/\D/g, '') || null : null
+}
+
 export function getQrDataUrl(): string | null {
   // QR is invalidated once we pair.
   return connected ? null : latestQrDataUrl

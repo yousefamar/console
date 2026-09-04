@@ -120,12 +120,13 @@ const MUSIC_RULES: Array<{ rule: string; re: RegExp; action: 'play' | 'pause' | 
 
 type VerbName = keyof RingSchema['verbs']
 
-/** Resolve the first spoken word to a schema verb (name, alias, or one edit). */
-export function matchVerb(word: string, schema: RingSchema): VerbName | null {
+/** Resolve the first spoken word to a schema verb (name, alias, or one edit).
+ *  `exact` = name/alias hit; a fuzzy hit is a weaker claim (see routeByRules). */
+export function matchVerb(word: string, schema: RingSchema): { verb: VerbName; exact: boolean } | null {
   const names = Object.keys(schema.verbs) as VerbName[]
-  for (const v of names) if (word === v || schema.verbs[v].aliases.includes(word)) return v
+  for (const v of names) if (word === v || schema.verbs[v].aliases.includes(word)) return { verb: v, exact: true }
   const fuzzy = names.filter((v) => fuzzyEqual(word, v) || schema.verbs[v].aliases.some((a) => fuzzyEqual(word, a)))
-  return fuzzy.length === 1 ? fuzzy[0]! : null
+  return fuzzy.length === 1 ? { verb: fuzzy[0]!, exact: false } : null
 }
 
 /** Split "verb target payload" — verb/target lowercased with trailing
@@ -154,16 +155,22 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
 
   // echo <text> — no target; the whole remainder is the payload.
   const first = /^(\S+?)[,.:]?\s+(.+)$/.exec(cased)
-  if (first && matchVerb(first[1]!.toLowerCase(), schema) === 'echo') {
+  if (first && matchVerb(first[1]!.toLowerCase(), schema)?.verb === 'echo') {
     return { rule: 'echo', command: { kind: 'echo', text: first[2]!.trim() } }
   }
 
   const parts = split3(cased)
-  const verb = parts ? matchVerb(parts.verb, schema) : null
+  const matched = parts ? matchVerb(parts.verb, schema) : null
 
-  if (verb && parts) {
+  if (matched && parts) {
     const { target, payload } = parts
-    switch (verb) {
+    // A verb matched only FUZZILY ("look" ≈ alias "lock") with a target
+    // nothing recognises is almost certainly not a command at all — let it
+    // fall through to the LLM/fallback instead of dying as unknown-target.
+    // An EXACT verb with a bad target is a real mis-heard target → push.
+    const unknown = (verb: string): RouteMatch | null =>
+      matched.exact ? { rule: `${verb}.unknown-target`, command: { kind: 'unknown-target', verb, target, text } } : null
+    switch (matched.verb) {
       case 'add': {
         const list = resolveSpoken(target, spokenForms(v.add.targets))
         if (list) {
@@ -172,17 +179,17 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         }
         const card = projectCard(target, payload, env.projects, v.add.projectColumn)
         if (card) return { rule: 'add.card', command: card }
-        return { rule: 'add.unknown-target', command: { kind: 'unknown-target', verb: 'add', target, text } }
+        return unknown('add')
       }
       case 'start': {
         const card = projectCard(target, payload, env.projects, v.start.column)
         if (card) return { rule: 'start.card', command: card }
-        return { rule: 'start.unknown-target', command: { kind: 'unknown-target', verb: 'start', target, text } }
+        return unknown('start')
       }
       case 'message': {
         const contact = resolveSpoken(target, contactForms(v.message.contacts, env.contacts)) ?? pickFuzzy(target, env.contacts)
         if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
-        return { rule: 'message.unknown-target', command: { kind: 'unknown-target', verb: 'message', target, text } }
+        return unknown('message')
       }
       case 'echo':
       case 'music':

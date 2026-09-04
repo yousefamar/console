@@ -196,6 +196,11 @@ export function spokenForms(targets: Record<string, { aliases: string[] }>): Map
   return out
 }
 
+/** AL is a contact too — `message al …` goes to his WhatsApp DM from Yousef's
+ *  own account. He has no users/*.md (that list is AL's OWN contacts), so the
+ *  hub resolves this name to his own number instead. */
+export const AL_CONTACT = 'al'
+
 /** Same for contacts (`username: [forms]`). Yousef calls people by their
  *  FIRST name, so a hyphenated username's first segment (`sam-miller` → `sam`)
  *  is a spoken form automatically — when only one contact owns it. `allUsers`
@@ -265,6 +270,7 @@ verbs:
     aliases: [text, whatsapp, tell]
     contacts:           # users/<name>.md in AL's workspace → spoken forms (matched lowercased, one edit tolerated)
       # a hyphenated username's first name is understood automatically (sam-miller ← sam)
+      al: [owl, hal, el, alan]     # AL himself — his WhatsApp DM, sent from your account
       # mai: [mum, mom, mother]
 
   echo:                 # echo <text> → straight to your own WhatsApp, no LLM
@@ -309,9 +315,10 @@ export async function describeSchema(
   const projectTargets = env.projects.map((p) => ({ name: p, aliases: [], resolves: `board card → ${v.add.projectColumn}`, ok: true }))
   const derived = contactForms(v.message.contacts, env.contacts)
   const contacts = Object.entries(v.message.contacts).map(([user, forms]) => {
-    const ok = env.contacts.includes(user)
+    const isAl = user === AL_CONTACT
+    const ok = isAl || env.contacts.includes(user)
     const first = [...derived].filter(([f, u]) => u === user && f !== user && !forms.includes(f)).map(([f]) => f)
-    return { name: user, aliases: [...first, ...forms], resolves: `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
+    return { name: user, aliases: [...first, ...forms], resolves: isAl ? "AL's own WhatsApp DM" : `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
   })
   return {
     path: loaded.path,
