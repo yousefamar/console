@@ -11,6 +11,7 @@ import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBa
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { isKanbanBoard } from '../kanban/board.js'
+import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
@@ -282,6 +283,13 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   // assignee filter groups fork keys under their root by that shape.
   const title = `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
   const forkKey = mintAgentKey(ctx, `${baseTitle} ${blockId} fork`)
+  // `--fork-session` resumes the source's transcript, which the CLI keys by
+  // cwd — so the fork MUST inherit source.cwd even when that is wrong for the
+  // project. Flag it: the only fix is recreating the source in the right dir.
+  const wantCwd = ctx.vaultPath ? spaceCwd(ctx.vaultPath, source) : null
+  if (wantCwd && source.cwd !== wantCwd) {
+    ctx.log(`[boards] ^${blockId}: source "${source.name ?? source.id}" runs from ${source.cwd}, not its project dir ${wantCwd} — the fork inherits that cwd`)
+  }
   const session = createSession(ctx, {
     prompt: '',
     cwd: source.cwd,
@@ -385,9 +393,21 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
       if (boardAbs) {
         options.systemPrompt += `\n\n# Your project board\nYour project's kanban board is \`${boardAbs}\` — add cards there (\`@key\` to assign), and work cards tagged \`@${options.agentKey}\`.`
       }
+      // The project's code checkout, when the vault dir links to one — the
+      // session runs from the vault project dir (below), not the repo.
+      const repo = projectRepo(ctx.vaultPath, options.project)
+      if (repo) {
+        options.systemPrompt += `\n\n# Your project's code\nThe code repository is \`${repo}\` (also reachable as \`repo/\` inside your cwd). Its own CLAUDE.md applies to work in it.`
+      }
     }
   }
-  const session = new Session({ ...options, cwd: options.cwd ?? ctx.cwd })
+  // A space-bound session without an explicit cwd runs from its space's home
+  // in the vault (project dir / projects/ / vault root — spaceCwd), NOT the
+  // hub's own cwd: a session spawned from the hub's server dir reads the
+  // Console repo's CLAUDE.md as if it were its own project (^spry-seal), and
+  // every ticket-fork inherits that cwd.
+  const cwd = options.cwd ?? (ctx.vaultPath ? spaceCwd(ctx.vaultPath, options) : null) ?? ctx.cwd
+  const session = new Session({ ...options, cwd })
 
   session.on('hub_message', (msg: HubMessage) => {
     // `push` is a transport-only hint — strip it before broadcasting to clients.

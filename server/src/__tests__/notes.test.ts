@@ -235,7 +235,11 @@ describe('NoteStore conditional writes + since-listing', () => {
   })
 
   it('delete and rename record tombstones surfaced by listSince', async () => {
-    const before = Date.now() - 5
+    // Fixture written in beforeEach; a real gap so the rename's touched mtime
+    // is provably newer than the cursor (fs.rename alone would keep the old one).
+    await new Promise((r) => setTimeout(r, 10))
+    const before = Date.now()
+    await new Promise((r) => setTimeout(r, 10))
     await store.delete('notes/guides/bar.md')
     await store.rename('scratch/quick.md', 'scratch/renamed.md')
     const delta = await store.listSince(before)

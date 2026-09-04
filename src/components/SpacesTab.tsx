@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
@@ -23,6 +23,7 @@ import { todoLabel, todoProgress } from './agent/TodoList'
 import { showPrompt, showConfirm, showAlert } from '@/dialog'
 import { useDictation } from '@/hooks/useDictation'
 import { dictationSeparator } from '@/utils/dictation-text'
+import { shortCwd, isStrayCwd } from '@/utils/cwd'
 import { AgentSessionView } from './AgentSessionView'
 import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
@@ -814,6 +815,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
             ]
             const isOwner = !!sess.agentKey && ownerKey === sess.agentKey
             const glyphClass = clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')
+            // A session running outside its space's home dir (the bug class:
+            // spawned from the hub's cwd, so it reads the wrong CLAUDE.md and
+            // every ticket-fork inherits it). cwd is fixed at spawn, so the
+            // only remedy is recreating the session — make the stray visible.
+            const stray = isStrayCwd(sess.cwd, space.cwd)
             return (
               <ContextMenu key={sess.id} items={menuItems}>
                 <button
@@ -823,7 +829,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                     isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
                   )}
                   style={{ paddingLeft: `${12 + depth * 14}px` }}
-                  title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}${isOwner ? ' · project owner — unassigned cards dragged into In Progress go here' : ''}`}
+                  title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}${isOwner ? ' · project owner — unassigned cards dragged into In Progress go here' : ''}${sess.cwd ? `\ncwd: ${shortCwd(sess.cwd)}` : ''}`}
                 >
                   {/* The owner's bot wears the crown (same state colour) instead of a
                       separate amber crown beside the name. Forks never own. */}
@@ -833,6 +839,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                       ? <BotCrowned size={10} className={glyphClass} />
                       : <Bot size={10} className={glyphClass} />}
                   <span className="truncate">{displayName}</span>
+                  {stray && <span title={`Runs from ${shortCwd(sess.cwd!)}, not this space's dir ${shortCwd(space.cwd!)} — it reads the wrong CLAUDE.md and its forks inherit the cwd. Recreate it to fix.`}><FolderX size={9} className="flex-shrink-0 text-amber-500" /></span>}
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
                     <SessionBadges session={sess} />
                     {micOwnerId === sess.id && <Mic size={9} className="text-text-primary" />}

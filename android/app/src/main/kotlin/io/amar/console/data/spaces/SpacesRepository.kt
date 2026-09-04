@@ -54,6 +54,10 @@ class SpacesRepository(
          *  key is here is card-owned: the card is its affordance, so it's
          *  suppressed from L1 alert rows unless it needs attention. */
         val cardAgentKeys: List<String> = emptyList(),
+        /** Where a session bound here runs by default (vault project dir /
+         *  vault root) — a bound session on another cwd is a stray. Null on an
+         *  older hub. */
+        val cwd: String? = null,
     )
 
     /** Hub CardView (board-ops.ts): detail = trimmed continuation lines. */
@@ -136,6 +140,7 @@ class SpacesRepository(
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
                     cardAgentKeys = (o["cardAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+                    cwd = o["cwd"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
                 )
             } ?: emptyList()
         }

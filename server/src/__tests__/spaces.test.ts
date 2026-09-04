@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listSpaces } from '../spaces.js'
+import { listSpaces, spaceCwd, projectRepo } from '../spaces.js'
 import { NoteStore } from '../notes.js'
 
 const BOARD = `---
@@ -87,5 +87,53 @@ describe('listSpaces review counts', () => {
     expect(plain.reviewCards).toEqual([])
     expect(plain.doneColumn).toBeNull()
     expect(plain.cardAgentKeys).toEqual([])
+  })
+})
+
+describe('spaceCwd — where a bound session runs (^spry-seal)', () => {
+  it('a folder project → its vault project dir; a flat project → projects/', () => {
+    const store = vault()
+    mkdirSync(join(dir!, 'projects', 'demovid'), { recursive: true })
+    writeFileSync(join(dir!, 'projects', 'coaching.md'), '# Coaching\n')
+    expect(spaceCwd(store.vaultPath, { project: 'demovid' })).toBe(join(dir!, 'projects', 'demovid'))
+    expect(spaceCwd(store.vaultPath, { project: 'coaching' })).toBe(join(dir!, 'projects'))
+    expect(spaceCwd(store.vaultPath, { project: 'never-heard-of' })).toBe(join(dir!, 'projects'))
+  })
+  it('an area → the vault root; no binding → null (caller falls back)', () => {
+    const store = vault()
+    expect(spaceCwd(store.vaultPath, { areas: ['life'] })).toBe(store.vaultPath)
+    expect(spaceCwd(store.vaultPath, { areas: [] })).toBeNull()
+    expect(spaceCwd(store.vaultPath, {})).toBeNull()
+  })
+  it('project wins over areas when both are set', () => {
+    const store = vault()
+    mkdirSync(join(dir!, 'projects', 'p'), { recursive: true })
+    expect(spaceCwd(store.vaultPath, { project: 'p', areas: ['life'] })).toBe(join(dir!, 'projects', 'p'))
+  })
+})
+
+describe('projectRepo + listSpaces cwd/repo', () => {
+  it('resolves the repo symlink target; null when absent or dangling', async () => {
+    const store = vault()
+    const code = mkdtempSync(join(tmpdir(), 'spaces-repo-'))
+    try {
+      for (const slug of ['demovid', 'plain', 'broken']) {
+        mkdirSync(join(dir!, 'projects', slug), { recursive: true })
+        writeFileSync(join(dir!, 'projects', slug, 'index.md'), `---\ntitle: ${slug}\n---\n`)
+      }
+      symlinkSync(code, join(dir!, 'projects', 'demovid', 'repo'))
+      symlinkSync(join(code, 'nope'), join(dir!, 'projects', 'broken', 'repo'))
+      expect(projectRepo(store.vaultPath, 'demovid')).toBe(realpathSync(code))
+      expect(projectRepo(store.vaultPath, 'plain')).toBeNull()
+      expect(projectRepo(store.vaultPath, 'broken')).toBeNull()
+
+      const spaces = await listSpaces(store)
+      const demovid = spaces.find((s) => s.slug === 'demovid')!
+      expect(demovid.cwd).toBe(join(dir!, 'projects', 'demovid'))
+      expect(demovid.repo).toBe(realpathSync(code))
+      expect(spaces.find((s) => s.slug === 'plain')!.repo).toBeNull()
+    } finally {
+      rmSync(code, { recursive: true, force: true })
+    }
   })
 })

@@ -347,12 +347,13 @@ fun NoteEditorScreen(
             onConfirm = { firstMessage ->
                 startAgentSlug = null
                 scope.launch {
-                    val vault = repo.getVaultPath()
-                    if (vault != null && agents != null) {
-                        agents.createSession(firstMessage, "$vault/projects/$slug", io.amar.console.data.notes.BlogHelpers.humaniseSlug(slug))
+                    if (agents != null) {
+                        // Keyed + project-bound (SPA parity); no cwd — the hub
+                        // places it in the vault project dir.
+                        agents.createSession(firstMessage, null, io.amar.console.data.notes.BlogHelpers.humaniseSlug(slug), asAgent = true, project = slug)
                         Toast.makeText(context, "Starting agent…", Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(context, "Vault path not loaded — try again", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Agents not connected — try again", Toast.LENGTH_SHORT).show()
                     }
                 }
             },

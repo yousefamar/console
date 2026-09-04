@@ -242,11 +242,14 @@ async function agentCreate(args: string[], flags: GlobalFlags): Promise<void> {
   // session into Spaces — the CLI path to a durable, space-visible agent
   // (e.g. the vault Curator: --name Curator --cwd ~/sync/brain --areas all).
   const areas = opts.areas ? opts.areas.split(',').map((s) => s.trim()).filter(Boolean) : undefined
+  // A space-bound create without --cwd lets the hub pick the space's home
+  // (vault project dir / vault root); an unbound one runs where you stand.
+  const cwd = opts.cwd || (opts.project || areas?.length ? undefined : process.cwd())
 
   // Create session — only match session_created with a NEW ID (not replayed)
   const result = await sendAndReceive(
     {
-      type: 'create_session', prompt, cwd: opts.cwd || process.cwd(),
+      type: 'create_session', prompt, ...(cwd ? { cwd } : {}),
       ...(opts.name ? { name: opts.name, asAgent: true } : {}),
       ...(opts.project ? { project: opts.project } : {}),
       ...(areas?.length ? { areas } : {}),

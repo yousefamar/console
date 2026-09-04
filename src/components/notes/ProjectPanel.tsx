@@ -5,7 +5,6 @@ import { useNotesStore } from '@/store/notes'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
 import { useUiStore } from '@/store/ui'
 import { showAlert, showPrompt } from '@/dialog'
-import { getVaultPath } from '@/notes/vault-info'
 
 interface Props {
   slug: string
@@ -38,12 +37,6 @@ export function ProjectPanel({ slug, onClose }: Props) {
   const agentSessions = useAgentStore((s) => s.sessions)
   const [statusOpen, setStatusOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [vaultPath, setVaultPath] = useState<string | null>(null)
-
-  useEffect(() => {
-    void getVaultPath().then(setVaultPath)
-  }, [])
-
   // Sessions whose cwd is anywhere under projects/<slug>/. Match on the
   // suffix so it works regardless of vault location (and survives if we
   // failed to fetch vaultPath — the suffix is unambiguous).
@@ -95,18 +88,14 @@ export function ProjectPanel({ slug, onClose }: Props) {
   }
 
   const startAgent = async () => {
-    if (!vaultPath) {
-      await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
-      return
-    }
     const prompt = await showPrompt(`First message for the new ${title} agent:`, {
       title: `Start agent — ${title}`,
       placeholder: 'e.g. Help me plan the next iteration',
       confirmLabel: 'Start',
     })
     if (!prompt || !prompt.trim()) return
-    const cwd = `${vaultPath}/projects/${slug}`
-    useAgentStore.getState().createSessionAsAgent(prompt.trim(), cwd, title, { project: slug })
+    // No cwd: the hub places a project-bound session in its vault project dir.
+    useAgentStore.getState().createSessionAsAgent(prompt.trim(), undefined, title, { project: slug })
     useUiStore.getState().setActivePane('spaces')
     void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().selectSpace(slug))
   }

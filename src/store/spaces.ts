@@ -38,6 +38,11 @@ export interface SpaceSummary {
   /** Board frontmatter `default_owner:` — unassigned cards dragged into In
    *  Progress auto-assign to this agent. Optional: older hub payloads omit it. */
   defaultOwner?: string | null
+  /** Where a session bound here runs by default (vault project dir / vault
+   *  root) — a bound session whose cwd differs is a stray. Optional: older hub. */
+  cwd?: string
+  /** The project's `repo` symlink target (code checkout). Optional: older hub. */
+  repo?: string | null
 }
 
 interface SpacesState {

@@ -220,12 +220,9 @@ fun ProjectPanelDialog(
             onDismiss = { startAgentPrompt = false },
             onConfirm = { firstMessage ->
                 startAgentPrompt = false; onDismiss()
-                scope.launch {
-                    val vault = repo.getVaultPath()
-                    if (vault != null) {
-                        agents.createSession(firstMessage, "$vault/projects/$slug", tracked?.title ?: slug)
-                    }
-                }
+                // Keyed + project-bound (SPA parity); no cwd — the hub places
+                // it in the vault project dir.
+                agents.createSession(firstMessage, null, tracked?.title ?: slug, asAgent = true, project = slug)
             },
         )
     }

@@ -250,7 +250,7 @@ export const COMMANDS: CommandDef[] = [
   { name: 'agent create', description: 'Create a new agent session', safety: 'write',
     args: [{ name: 'prompt', required: true, description: 'Initial prompt' }],
     flags: {
-      cwd: { type: 'string', description: 'Working directory' },
+      cwd: { type: 'string', description: 'Working directory (default: the vault project dir for --project, vault root for --areas, else your cwd)' },
       wait: { type: 'boolean', description: 'Block until complete' },
       name: { type: 'string', description: 'Session title; mints a stable agentKey (asAgent)' },
       project: { type: 'string', description: 'Bind to a Spaces project slug' },

@@ -839,13 +839,15 @@ class AgentsRepository(
     val contextUsage: StateFlow<Map<String, ContextUsage>> = _contextUsage
 
     fun createSession(
-        prompt: String, cwd: String, name: String? = null,
+        prompt: String, cwd: String?, name: String? = null,
         asAgent: Boolean = false, project: String? = null, areas: List<String> = emptyList(),
     ) {
         sendWs(buildJsonObject {
             put("type", "create_session")
             put("prompt", prompt)
-            put("cwd", cwd)
+            // No cwd → the hub places a space-bound session in its space's home
+            // (vault project dir / vault root) instead of the hub's own cwd.
+            cwd?.takeIf { it.isNotBlank() }?.let { put("cwd", it) }
             name?.let { put("name", it) }
             if (asAgent) {
                 put("asAgent", true)

@@ -8,9 +8,10 @@ import { CronPanel } from './agent/CronPanel'
 import { TodoPanel } from './agent/TodoPanel'
 import { useCronStore } from '@/store/cron'
 import { displayModel } from '@/utils/model-label'
+import { shortCwd } from '@/utils/cwd'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
-import { Loader2, GitBranch, ChevronDown, Check, Pin } from 'lucide-react'
+import { Loader2, GitBranch, ChevronDown, Check, Pin, Folder } from 'lucide-react'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -213,7 +214,7 @@ export function AgentSessionView() {
       <TodoPanel />
 
       {/* Status bar */}
-      {(isRunning || statusText || sessionModel || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (
+      {(isRunning || statusText || sessionModel || activeSession?.cwd || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (
         <div className="flex items-center border-t border-border/50 px-3 py-1 gap-2 overflow-hidden min-w-0">
           {/* Model name + mode — the label is a per-session picker: choosing a
               model PINS this session to it (applied mid-session, in place);
@@ -232,6 +233,17 @@ export function AgentSessionView() {
           {permissionMode && permissionMode !== 'default' && (
             <span className="text-[10px] text-warning font-medium flex-shrink-0">
               {permissionMode}
+            </span>
+          )}
+
+          {/* Working directory — `--resume` is keyed by it and it can't change
+              in place, so a session spawned in the wrong dir (the hub's own
+              cwd instead of its project's — ^spry-seal) must at least be
+              visible. */}
+          {activeSession?.cwd && (
+            <span className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1" title={`cwd: ${activeSession.cwd}`}>
+              <Folder size={10} className="flex-shrink-0" />
+              <span className="truncate">{shortCwd(activeSession.cwd)}</span>
             </span>
           )}
 

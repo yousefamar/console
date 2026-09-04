@@ -1,6 +1,6 @@
 // Note file server for hub fallback — serves vault files over REST
 
-import { readdir, readFile, writeFile, unlink, mkdir, rename, stat } from 'fs/promises'
+import { readdir, readFile, writeFile, unlink, mkdir, rename, stat, utimes } from 'fs/promises'
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs'
 import { join, relative, extname, basename, dirname } from 'path'
 
@@ -194,10 +194,15 @@ export class NoteStore {
     const absFrom = join(this.vaultPath, fromPath)
     const absTo = join(this.vaultPath, toPath)
     await mkdir(dirname(absTo), { recursive: true })
-    // The old path vanishes — offline clients learn via the tombstone; the
-    // new path shows up in their next since-listing by mtime.
+    // The old path vanishes — offline clients learn via the tombstone. The
+    // new path must show up in their next since-listing, but fs.rename keeps
+    // the file's OLD mtime, so touch it: without this a renamed note was
+    // invisible to every listSince consumer (mobile sync, BoardWatcher) until
+    // its next edit.
     this.recordTombstone(fromPath)
     await rename(absFrom, absTo)
+    const now = new Date()
+    await utimes(absTo, now, now)
   }
 
   /** Read file as raw bytes (images etc.) */

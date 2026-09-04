@@ -7,6 +7,8 @@
 // Boards live ONLY in projects (projects/<slug>/board.md or any kanban file
 // in the project folder).
 
+import { join } from 'node:path'
+import { realpathSync, statSync } from 'node:fs'
 import type { NoteStore } from './notes.js'
 import { parseFrontmatter } from './blog.js'
 import { loadAreaRegistry } from './areas.js'
@@ -14,6 +16,31 @@ import { isKanbanBoard, parseBoard, boardDefaultOwner } from './kanban/board.js'
 import { DONE_COLUMN_RE, REVIEW_COLUMN_RE } from './kanban/dispatch.js'
 
 const PROJECTS_DIR = 'projects'
+
+/** Default cwd for a session bound to a space (Yousef's spec, ^spry-seal): a
+ *  project session lives in its VAULT project dir — index.md / board.md /
+ *  roadmap.md, code reachable via the `repo` symlink — a flat project
+ *  (projects/<slug>.md, no folder) in projects/, an area session at the vault
+ *  root. Null when the session has no binding (caller falls back to its own
+ *  default). `--resume` is keyed by cwd and Session.cwd is readonly, so this
+ *  only ever applies at create time; forks inherit their source's cwd. */
+export function spaceCwd(vaultPath: string, binding: { project?: string | null; areas?: readonly string[] | null }): string | null {
+  if (binding.project) {
+    const dir = join(vaultPath, PROJECTS_DIR, binding.project)
+    try { if (statSync(dir).isDirectory()) return dir } catch { /* flat project */ }
+    return join(vaultPath, PROJECTS_DIR)
+  }
+  if (binding.areas?.length) return vaultPath
+  return null
+}
+
+/** Resolved target of a project's `repo` symlink (the code checkout), or null. */
+export function projectRepo(vaultPath: string, slug: string): string | null {
+  try {
+    const target = realpathSync(join(vaultPath, PROJECTS_DIR, slug, 'repo'))
+    return statSync(target).isDirectory() ? target : null
+  } catch { return null }
+}
 
 /** One card sitting in an Under-Review column — enough for a client to
  *  address it on the /board/:project API without loading the board. */
@@ -55,6 +82,11 @@ export interface SpaceSummary {
   /** Board frontmatter `default_owner:` — the agent unassigned cards auto-
    *  assign to (null = none set; the "-general" convention applies). */
   defaultOwner: string | null
+  /** Where a session bound to this space runs by default — see spaceCwd().
+   *  Clients compare each bound session's cwd against it to flag strays. */
+  cwd: string
+  /** Target of the project's `repo` symlink (code checkout), null if none. */
+  repo: string | null
 }
 
 export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
@@ -127,7 +159,12 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
         }
       } catch { /* unparseable board — counts stay 0 */ }
     }
-    out.push({ kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length, reviewCount, reviewAgentKeys, reviewCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner })
+    out.push({
+      kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length,
+      reviewCount, reviewAgentKeys, reviewCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
+      cwd: spaceCwd(store.vaultPath, { project: slug })!,
+      repo: projectRepo(store.vaultPath, slug),
+    })
   }
 
   const registry = await loadAreaRegistry(store)
@@ -146,6 +183,8 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       doneColumn: null,
       cardAgentKeys: [],
       defaultOwner: null,
+      cwd: store.vaultPath,
+      repo: null,
     })
   }
 

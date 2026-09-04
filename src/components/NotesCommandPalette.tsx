@@ -6,7 +6,6 @@ import { useBlogStore, projectSlugFromPath, enclosingProjectSlug } from '@/store
 import { useAgentStore } from '@/store/agent'
 import { useUiStore } from '@/store/ui'
 import { showConfirm, showAlert, showPrompt } from '@/dialog'
-import { getVaultPath } from '@/notes/vault-info'
 
 interface CommandItem {
   id: string
@@ -153,19 +152,14 @@ export function NotesCommandPalette() {
         icon: <Bot size={12} />,
         action: async () => {
           closeCommandPalette()
-          const vaultPath = await getVaultPath()
-          if (!vaultPath) {
-            await showAlert('Vault path not loaded yet — try again in a moment.', { title: 'Not ready' })
-            return
-          }
           const prompt = await showPrompt(`First message for the new ${projectTitle} agent:`, {
             title: `Start agent — ${projectTitle}`,
             placeholder: 'e.g. Help me plan the next iteration',
             confirmLabel: 'Start',
           })
           if (!prompt || !prompt.trim()) return
-          const cwd = `${vaultPath}/projects/${enclosingSlug}`
-          useAgentStore.getState().createSessionAsAgent(prompt.trim(), cwd, projectTitle, { project: enclosingSlug })
+          // No cwd: the hub places a project-bound session in its vault project dir.
+          useAgentStore.getState().createSessionAsAgent(prompt.trim(), undefined, projectTitle, { project: enclosingSlug })
           useUiStore.getState().setActivePane('spaces')
           void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().selectSpace(enclosingSlug))
         },

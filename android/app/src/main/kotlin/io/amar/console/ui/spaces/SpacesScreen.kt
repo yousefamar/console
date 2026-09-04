@@ -1216,6 +1216,8 @@ private fun SpaceAgentsList(
     val default = remember(bound, boardState) { defaultAgent(bound, boardState?.defaultOwner) }
     val todosMap by agents.todos.collectAsState()
     var creating by remember { mutableStateOf(false) }
+    val spaces by spacesRepo.spaces.collectAsState()
+    val spaceCwd = remember(spaces, slug) { spaces.firstOrNull { it.slug == slug }?.cwd }
     // Fork-lineage order: parents before their forks, indented by depth
     // (parentClaudeSessionId — SPA SpaceRail tree parity, flattened).
     val ordered = remember(bound) { lineageOrder(bound) }
@@ -1253,7 +1255,17 @@ private fun SpaceAgentsList(
                             fontWeight = if (s.id == default?.id) FontWeight.Medium else null,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
-                        Text(s.status + if (s.hibernated) " · hibernated" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        // cwd is fixed at spawn (--resume is keyed by it), so a
+                        // session running outside its space's home — the bug
+                        // class: spawned from the hub's own cwd — can only be
+                        // fixed by recreating it. Make it visible (SPA parity).
+                        val stray = isStrayCwd(s.cwd, spaceCwd)
+                        Text(
+                            s.status + (if (s.hibernated) " · hibernated" else "") + (s.cwd?.let { " · " + shortCwd(it) } ?: ""),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (stray) AMBER else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
                     }
                     // SPA SessionBadges parity: amber shell count, grey cron
                     // count, violet todo progress (hidden once complete),
@@ -1323,6 +1335,7 @@ private fun SpaceAgentsList(
     }
     if (creating) {
         NewSpaceAgentSheet(
+            defaultCwd = spaceCwd,
             onCreate = { prompt, cwd ->
                 creating = false
                 // Mints a durable role WITH the space binding (SPA + button parity).
@@ -1339,9 +1352,12 @@ private fun SpaceAgentsList(
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun NewSpaceAgentSheet(onCreate: (prompt: String, cwd: String) -> Unit, onDismiss: () -> Unit) {
+private fun NewSpaceAgentSheet(defaultCwd: String?, onCreate: (prompt: String, cwd: String) -> Unit, onDismiss: () -> Unit) {
     var prompt by remember { mutableStateOf("") }
-    var cwd by remember { mutableStateOf("/home/amar") }
+    // Prefilled with the space's home from the hub (vault project dir / vault
+    // root); blank = let the hub decide. Never a hardcoded path — that was the
+    // ^spry-seal bug in a different coat.
+    var cwd by remember(defaultCwd) { mutableStateOf(defaultCwd ?: "") }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text("New agent in this space", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
@@ -1352,7 +1368,7 @@ private fun NewSpaceAgentSheet(onCreate: (prompt: String, cwd: String) -> Unit, 
             )
             androidx.compose.material3.OutlinedTextField(
                 value = cwd, onValueChange = { cwd = it },
-                label = { Text("cwd") }, singleLine = true,
+                label = { Text("cwd") }, placeholder = { Text("hub default for this space") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
             )
             TextButton(onClick = { if (prompt.isNotBlank()) onCreate(prompt.trim(), cwd.trim()) }, enabled = prompt.isNotBlank()) { Text("Create") }
@@ -1392,3 +1408,11 @@ private fun SpaceDocsList(
         }
     }
 }
+
+/** `/home/<user>/x` → `~/x` for display (the hub reports absolute Linux paths). */
+internal fun shortCwd(path: String): String = path.replace(Regex("^/home/[^/]+(?=/|$)"), "~")
+
+/** A bound session runs somewhere other than its space's home; unknown on
+ *  either side (older hub, pre-init session) is never a stray. */
+internal fun isStrayCwd(sessionCwd: String?, spaceCwd: String?): Boolean =
+    !sessionCwd.isNullOrEmpty() && !spaceCwd.isNullOrEmpty() && sessionCwd.trimEnd('/') != spaceCwd.trimEnd('/')
