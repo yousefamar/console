@@ -75,6 +75,7 @@ import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import type { RouteEnv } from './ring/router.js'
 import { buildRingForkSeed } from './ring/pipeline.js'
+import { ContactRoomResolver } from './ring/chat-room.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -1155,6 +1156,12 @@ const ringStore = new RingStore(configDir)
 /** Live keyed sessions — only for `describeSchema`'s fallback-is-live check. */
 const ringLiveAgents = () => [...sessions.values()].filter((s) => s.status !== 'ended').map((s) => ({ agentKey: s.getInfo().agentKey ?? null }))
 const ringSchema = new RingSchemaLoader(noteStore, log)
+const ringContactRooms = new ContactRoomResolver(
+  () => Object.values(chatRoomsStore.snapshot().data).map((r) => ({ id: r.id, name: r.name, isDirect: r.isDirect, networkIcon: r.networkIcon })),
+  async (roomId) => (await matrixClient.getRoomState(roomId) as Array<{ type: string; state_key?: string; content?: { membership?: string } }>)
+    .filter((e) => e.type === 'm.room.member' && e.content?.membership === 'join' && e.state_key)
+    .map((e) => e.state_key!),
+)
 /** Yousef's own WhatsApp: NOTIFY_JID (server/.env), else the first id in users/yousef.md. */
 const yousefWhatsAppJid = (): string | null => {
   const env = process.env.NOTIFY_JID?.trim()
@@ -1185,6 +1192,14 @@ const ringCtx: RingCtx = {
     const seed = buildRingForkSeed(ringSchema.current())
     if (routeInbound(agentCtx, 'ring', null, 'ring', envelope, { seed })) return true
     return injectToSession(al.id, envelope)
+  },
+  // message: AS YOUSEF, through his own Matrix account → the contact's bridged
+  // WhatsApp DM (resolved by ghost member id; encryption-aware send).
+  chatSendAsYousef: async (contact, text) => {
+    const room = await ringContactRooms.resolve(contact, identifiersFor(contact))
+    if (!room) throw new Error(`no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
+    await matrixSync.sendRoomEvent({ roomId: room.id, type: 'm.room.message', content: { msgtype: 'm.text', body: text } })
+    return room.name
   },
   // echo: pure software — AL's WhatsApp socket, Yousef's own number.
   whatsappToYousef: async (text) => {

@@ -9,7 +9,8 @@ import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spoken
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
 import { RingStore } from '../ring/store.js'
-import { processDelivery, buildFallbackEnvelope, buildRelayEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
+import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
+import { ContactRoomResolver, ghostUserIds, identifierFromGhost } from '../ring/chat-room.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
@@ -279,6 +280,7 @@ describe('RingStore + pipeline', () => {
   let toAl: string[]
   let toAgent: Array<{ key: string; content: string }>
   let echoed: string[]
+  let sentAsYousef: Array<{ contact: string; text: string }>
   let notified: Array<{ title: string; body: string }>
   let music: string[]
   let notes: Map<string, string>
@@ -289,7 +291,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; notified = []; music = []; cards = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; notified = []; music = []; cards = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -300,6 +302,7 @@ describe('RingStore + pipeline', () => {
       deliverToAl: (envelope) => { toAl.push(envelope); return true },
       deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },
       whatsappToYousef: async (text) => { echoed.push(text); return '447000@s.whatsapp.net' },
+      chatSendAsYousef: async (contact, text) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); sentAsYousef.push({ contact, text }); return `${contact} (dm)` },
       notes: { read: async (p) => notes.get(p) ?? null, write: async (p, c) => { notes.set(p, c) } },
       addCard: async (project, text, column) => { cards.push(`${project}/${column}: ${text}`); return `"${text}" → ${column}` },
       music: {
@@ -369,12 +372,15 @@ describe('RingStore + pipeline', () => {
     expect(cards).toEqual(['console/Backlog: the login button is misaligned'])
   })
 
-  it('message relays through AL with attribution', async () => {
+  it('message sends AS YOUSEF through his own chat, never via AL', async () => {
     const rec = await deliver("message mum I'll be home in 30 mins")
-    expect(rec.route).toMatchObject({ rule: 'message', ok: true })
-    expect(toAl[0]).toBe(buildRelayEnvelope('yasmina-amar', 'mum', "I'll be home in 30 mins", rec.id))
-    expect(toAl[0]).toMatch(/attributed to Yousef/)
-    expect(notified[0]!.title).toBe('Ring → AL relays to mum')
+    expect(rec.route).toMatchObject({ rule: 'message', ok: true, detail: 'yasmina-amar (dm)' })
+    expect(sentAsYousef).toEqual([{ contact: 'yasmina-amar', text: "I'll be home in 30 mins" }])
+    expect(toAl).toHaveLength(0)
+    expect(notified[0]).toMatchObject({ title: 'Ring → mum (yasmina-amar (dm))', body: "I'll be home in 30 mins" })
+    ENV.contacts.push('nobody')
+    expect((await deliver('message nobody hi')).route).toMatchObject({ ok: false, detail: 'no WhatsApp DM room found for nobody' })
+    ENV.contacts.pop()
   })
 
   it('a verb with an unknown target is actionable feedback, not a fallback', async () => {
@@ -408,7 +414,6 @@ describe('RingStore + pipeline', () => {
   it('reports a dead AL instead of pretending', async () => {
     ctx.deliverToAl = () => false
     expect((await deliver('what is the weather like')).route).toMatchObject({ via: 'default', ok: false, detail: 'AL is not live' })
-    expect((await deliver('message nica hi')).route).toMatchObject({ ok: false, detail: 'AL is not live to relay the message' })
   })
 
   it('the ring fork seed carries the tree and the schema-gap instruction', () => {
@@ -418,6 +423,8 @@ describe('RingStore + pipeline', () => {
     expect(seed).toContain('start <project> <text>   → board card in In Progress')
     expect(seed).toContain('logs, dated: dream, journal, emotion')
     expect(seed).toContain('echo <text>')
+    expect(seed).toContain('sent AS YOUSEF from his own chat account')
+    expect(seed).not.toContain('RELAY')
     expect(seed).toContain('con spaces board console add "Ring schema gap:')
     expect(seed).toContain('Do not edit the schema note yourself')
   })
@@ -433,6 +440,41 @@ describe('RingStore + pipeline', () => {
   it('rejects path-ish ids', () => {
     expect(store.get('../x')).toBeNull()
     expect(store.audioPath('../../etc/passwd')).toBeNull()
+  })
+})
+
+describe('ContactRoomResolver', () => {
+  it('ghost id forms + parsing', () => {
+    expect(ghostUserIds('+44 7599 712846')).toEqual(['@whatsapp_447599712846:beeper.local', '@whatsapp_lid-447599712846:beeper.local'])
+    expect(identifierFromGhost('@whatsapp_lid-153635979829408:beeper.local')).toBe('153635979829408')
+    expect(identifierFromGhost('@whatsapp_447599712846:beeper.local')).toBe('447599712846')
+    expect(identifierFromGhost('@whatsappbot:beeper.local')).toBeNull()
+    expect(identifierFromGhost('@drmr:beeper.com')).toBeNull()
+  })
+  it('matches a contact to the direct WhatsApp room whose ghost carries one of their ids; caches; skips non-DMs', async () => {
+    const rooms = [
+      { id: '!group', name: 'Family', isDirect: false, networkIcon: 'whatsapp' },
+      { id: '!signal', name: 'Nica', isDirect: true, networkIcon: 'signal' },
+      { id: '!nica', name: 'Nica🐈‍⬛', isDirect: true, networkIcon: 'whatsapp' },
+      { id: '!lucas', name: 'Lucas', isDirect: true, networkIcon: 'whatsapp' },
+    ]
+    const fetched: string[] = []
+    const members: Record<string, string[]> = {
+      '!group': ['@whatsapp_1:beeper.local', '@whatsapp_2:beeper.local'],
+      '!signal': ['@signal_1:beeper.local'],
+      '!nica': ['@whatsappbot:beeper.local', '@drmr:beeper.com', '@whatsapp_lid-999:beeper.local'],
+      '!lucas': ['@whatsappbot:beeper.local', '@drmr:beeper.com', '@whatsapp_447:beeper.local'],
+    }
+    const r = new ContactRoomResolver(() => rooms, async (id) => { fetched.push(id); return members[id] ?? [] })
+    expect((await r.resolve('nica', ['4479', '999']))?.id).toBe('!nica') // lid form
+    expect((await r.resolve('lucas', ['447']))?.id).toBe('!lucas')
+    expect(fetched).not.toContain('!group')
+    expect(fetched).not.toContain('!signal')
+    const before = fetched.length
+    expect((await r.resolve('nica', ['999']))?.id).toBe('!nica')
+    expect(fetched.length).toBe(before) // cached
+    expect(await r.resolve('stranger', ['123'])).toBeNull()
+    expect(await r.resolve('noids', [])).toBeNull()
   })
 })
 

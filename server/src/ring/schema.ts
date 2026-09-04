@@ -35,7 +35,7 @@ export interface RingSchema {
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
     /** start <project> <text> → card straight into the dispatch column (forks an agent now). */
     start: { aliases: string[]; column: string }
-    /** message <person> <text> → AL relays it. contacts: username → spoken forms. */
+    /** message <person> <text> → sent AS Yousef via his own chat account. contacts: username → spoken forms. */
     message: { aliases: string[]; contacts: Record<string, string[]> }
     /** echo <text> → the payload lands on Yousef's WhatsApp, no LLM — the smoke test. */
     echo: { aliases: string[] }
@@ -261,7 +261,7 @@ verbs:
     aliases: [do, go, kick, begin, now]
     column: In Progress     # the board watcher dispatches it → an agent forks now
 
-  message:              # message <person> <text> → AL relays it on WhatsApp, attributed to you
+  message:              # message <person> <text> → sent AS YOU through your own chat (Beeper WhatsApp DM)
     aliases: [text, whatsapp, tell]
     contacts:           # users/<name>.md in AL's workspace → spoken forms (matched lowercased, one edit tolerated)
       # a hyphenated username's first name is understood automatically (sam-miller ← sam)

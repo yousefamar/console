@@ -22,6 +22,10 @@ export interface RingCtx {
   /** `echo` — the payload to Yousef's own WhatsApp via AL's number, no LLM.
    *  Returns the JID it went to; throws when WhatsApp is down / unconfigured. */
   whatsappToYousef: (text: string) => Promise<string>
+  /** `message` — send AS YOUSEF through his own chat account (Matrix/Beeper
+   *  WhatsApp bridge) to the contact's DM room. Returns the room name; throws
+   *  when no room resolves or the send fails. */
+  chatSendAsYousef: (contact: string, text: string) => Promise<string>
   notes: {
     /** null when the note doesn't exist yet. */
     read: (path: string) => Promise<string | null>
@@ -61,16 +65,15 @@ export function buildRingForkSeed(schema: RingSchema): string {
     `add|log <target> <text>  → append to a list/log note (logs, dated: ${targets.filter(([, t]) => t.dated).map(([n]) => n).join(', ') || '-'}; lists: ${targets.filter(([, t]) => !t.dated).map(([n]) => n).join(', ') || '-'})`,
     `add <project> <text>     → board card in ${v.add.projectColumn}`,
     `start <project> <text>   → board card in ${v.start.column} (dispatched, forks an agent now)`,
-    `message <person> <text>  → you relay it on WhatsApp (nicknames: ${Object.keys(v.message.contacts).join(', ') || '-'})`,
+    `message <person> <text>  → sent AS YOUSEF from his own chat account (not via you)`,
     'echo <text>              → straight to Yousef\'s WhatsApp (pure software smoke test)',
     'play | pause | next | previous | play <query>',
   ]
   return [
     `[RING FORK] You are a fork of AL dedicated to Yousef's Pebble Index 01 smart ring — a voice-command device. The hub routes each transcript through a deterministic command tree (\`${RING_SCHEMA_NOTE}\`, printable with \`con ring schema\`):`,
     ...tree.map((l) => `  ${l}`),
-    'Two kinds of work reach you here, both as envelopes below:',
-    '1. RELAY — a `message <person>` command: send it on WhatsApp per the envelope, attributed to Yousef.',
-    '2. UNCLAIMED — a transcript no verb matched (mis-heard word, phrasing the tree lacks, or a genuine free-form request). Work out what Yousef meant and DO it. Then judge: if this SHOULD have been a tree command (a mangled verb/target, a nickname/alias the note lacks, a log or list that does not exist yet), file a card on the console board so the tree gets fixed: `con spaces board console add "Ring schema gap: <exact transcript> → <what it should map to>"`. Do not edit the schema note yourself — Console general owns it. A one-off request that no command should cover needs no card.',
+    'One kind of work reaches you here, as envelopes below:',
+    'UNCLAIMED — a transcript no verb matched (mis-heard word, phrasing the tree lacks, or a genuine free-form request). Work out what Yousef meant and DO it. Then judge: if this SHOULD have been a tree command (a mangled verb/target, a nickname/alias the note lacks, a log or list that does not exist yet), file a card on the console board so the tree gets fixed: `con spaces board console add "Ring schema gap: <exact transcript> → <what it should map to>"`. Do not edit the schema note yourself — Console general owns it. A one-off request that no command should cover needs no card.',
     'You know everything parent-AL knew up to this branch point. You will be wound down automatically when idle; no action needed.',
   ].join('\n')
 }
@@ -78,19 +81,6 @@ export function buildRingForkSeed(schema: RingSchema): string {
 /** Per-delivery envelope for unclaimed text. */
 export function buildFallbackEnvelope(text: string, recordingId: string): string {
   return `[RING — unclaimed voice command, recording ${recordingId}]\n${text}`
-}
-
-/** `message <person> <text>` goes through AL: the WhatsApp number is AL's own
- *  identity, so AL relays Yousef's words with attribution rather than the hub
- *  sending them as if AL had said them. */
-export function buildRelayEnvelope(contact: string, spoken: string, text: string, recordingId: string): string {
-  return [
-    `[RING — relay request, recording ${recordingId}]`,
-    `Yousef said "message ${spoken}" — resolved to your contact \`${contact}\` (users/${contact}.md).`,
-    `Relay this to them on WhatsApp now, faithfully and attributed to Yousef (e.g. "Yousef says: …"), no embellishment:`,
-    '',
-    text,
-  ].join('\n')
 }
 
 export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<RingRecording> {
@@ -145,7 +135,7 @@ function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { ti
   if (!o.ok) return { title: 'Ring: not delivered', body: `${describeCommand(c)} — ${o.detail ?? 'failed'}` }
   switch (c.kind) {
     case 'fallback': return { title: `Ring → ${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`}`, body: c.text }
-    case 'message': return { title: `Ring → AL relays to ${c.spoken}`, body: c.text, ...(o.detail ? {} : {}) }
+    case 'message': return { title: `Ring → ${c.spoken}${o.detail ? ` (${o.detail})` : ''}`, body: c.text }
     case 'list': return { title: `Ring · ${c.dated ? 'log' : 'add'} ${c.target}`, body: c.dated ? c.item : (o.detail ?? c.item) }
     case 'echo': return { title: 'Ring · echo → WhatsApp', body: c.text }
     case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
@@ -164,8 +154,8 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
         return ok ? { ok } : { ok, detail: `${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`} is not live` }
       }
       case 'message': {
-        const ok = ctx.deliverToAl(buildRelayEnvelope(c.contact, c.spoken, c.text, recordingId))
-        return ok ? { ok } : { ok, detail: 'AL is not live to relay the message' }
+        const room = await ctx.chatSendAsYousef(c.contact, c.text)
+        return { ok: true, detail: room }
       }
       case 'echo': {
         const jid = await ctx.whatsappToYousef(c.text)

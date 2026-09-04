@@ -274,7 +274,7 @@ text through the command tree in the vault note projects/console/ring-schema.md:
                               movies: LLM-enriched table row)
   add <project> <text>       board card on that project (Backlog — queued)
   start <project> <text>     board card in In Progress (dispatched — an agent forks now)
-  message <person> <text>    AL relays it on WhatsApp, attributed to you
+  message <person> <text>    sent AS YOU through your own chat (Beeper WhatsApp DM)
   echo <text>                straight to your own WhatsApp, no LLM (smoke test)
   play | pause | next | previous | play <query>
 Every note entry is "canonical: [ways to say it]". There is no "agent" verb —
