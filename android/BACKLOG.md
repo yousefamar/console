@@ -42,6 +42,14 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   {card:"^id"|text, to:doneColumn}` (`SpacesRepository`). Disabled when
   `doneColumn` is null. Not gated on idle (unlike the ordering tier).
 
+- Spaces Agents list: crowned-bot owner glyph (SPA ^shy-ibis) — the SPA
+  replaced the separate amber crown with a bot-wearing-a-crown glyph in the
+  row's own state colour, and marks owners BY CONVENTION too (no
+  `default_owner:` → single bound root session / the `-general` one / first by
+  key, mirroring the hub's `resolveDefaultOwner`; `src/spaces/owner.ts`). The
+  native ★ default-agent marker only reflects explicit frontmatter — port the
+  convention pick + draw a crowned Bot vector in place of the ★.
+
 - Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
   push under every AREA their `tags` name (dedup'd against the project slug);
   SpaceRow needs a FileText+count badge and draft rows beneath area entries.

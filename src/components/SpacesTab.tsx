@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, Crown, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
@@ -38,6 +38,8 @@ import { splitTrailingTags, cardUrls } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
+import { effectiveOwnerKey } from '@/spaces/owner'
+import { BotCrowned } from '@/components/icons/BotCrowned'
 
 /** "Set/Unset as project owner" — board frontmatter `default_owner:` (the
  *  agent unassigned In-Progress cards auto-assign to). Only for a keyed
@@ -49,10 +51,14 @@ function ownerMenuItem(sess: SessionInfo | undefined): ContextMenuItem[] {
   const { spaces, setDefaultOwner } = useSpacesStore.getState()
   const space = spaces.find((s) => s.kind === 'project' && s.slug === sess.project)
   if (!space) return []
-  const isOwner = (space.defaultOwner ?? null) === sess.agentKey
+  const explicit = (space.defaultOwner ?? null) === sess.agentKey
+  // Owner by convention (no frontmatter) already wears the crown — "pinning"
+  // makes it explicit so a second bound session can't take it over.
+  const byConvention = !explicit && !space.defaultOwner
+    && effectiveOwnerKey(space.slug, null, useAgentStore.getState().sessions) === sess.agentKey
   return [{
-    label: isOwner ? 'Unset as project owner' : 'Set as project owner',
-    onClick: () => void setDefaultOwner(sess.project!, isOwner ? null : sess.agentKey!),
+    label: explicit ? 'Unset as project owner' : byConvention ? 'Pin as project owner (owner by convention)' : 'Set as project owner',
+    onClick: () => void setDefaultOwner(sess.project!, explicit ? null : sess.agentKey!),
   }]
 }
 
@@ -737,6 +743,13 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
     }
     return out
   }, [sessions, space])
+  // Explicit (frontmatter default_owner) OR by convention — the hub resolves
+  // both the same way when an unassigned card lands in In Progress, so both
+  // wear the crown.
+  const ownerKey = useMemo(
+    () => (space.kind === 'project' && !space.slug.startsWith('~') ? effectiveOwnerKey(space.slug, space.defaultOwner, sessions) : null),
+    [sessions, space],
+  )
   const micOwnerId = useMicStore((s) => s.owner)
 
   // Areas are "large projects without agents" — an empty Agents box is
@@ -799,7 +812,8 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
               ...ownerMenuItem(sess),
               { label: 'End session', onClick: () => agent.killSession(sess.id), destructive: true },
             ]
-            const isOwner = !!sess.agentKey && (space.defaultOwner ?? null) === sess.agentKey
+            const isOwner = !!sess.agentKey && ownerKey === sess.agentKey
+            const glyphClass = clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')
             return (
               <ContextMenu key={sess.id} items={menuItems}>
                 <button
@@ -809,13 +823,16 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                     isActive ? 'bg-surface-2 text-text-primary' : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
                   )}
                   style={{ paddingLeft: `${12 + depth * 14}px` }}
-                  title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}`}
+                  title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}${isOwner ? ' · project owner — unassigned cards dragged into In Progress go here' : ''}`}
                 >
+                  {/* The owner's bot wears the crown (same state colour) instead of a
+                      separate amber crown beside the name. Forks never own. */}
                   {isFork
-                    ? <GitBranch size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />
-                    : <Bot size={10} className={clsx('flex-shrink-0', alert === 'attention' ? 'text-red-500' : alert === 'working' ? 'text-amber-500' : alert === 'unread' ? 'text-blue-500' : 'opacity-60')} />}
+                    ? <GitBranch size={10} className={glyphClass} />
+                    : isOwner
+                      ? <BotCrowned size={10} className={glyphClass} />
+                      : <Bot size={10} className={glyphClass} />}
                   <span className="truncate">{displayName}</span>
-                  {isOwner && <span title="Project owner — unassigned cards dragged into In Progress go here"><Crown size={9} className="flex-shrink-0 text-amber-500" /></span>}
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
                     <SessionBadges session={sess} />
                     {micOwnerId === sess.id && <Mic size={9} className="text-text-primary" />}
