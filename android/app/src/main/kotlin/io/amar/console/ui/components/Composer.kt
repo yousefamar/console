@@ -95,7 +95,11 @@ fun Composer(
         io.amar.console.core.DraftStore.put(context, draftKey, draft)
     }
     var attachments by remember(draftKey) { mutableStateOf<List<Uri>>(emptyList()) }
-    val dictation by Dictation.state.collectAsState()
+    val dictationState by Dictation.state.collectAsState()
+    // A dictation owned by some other field (an approval answer, say) is not
+    // the composer's: it neither renders its transcript nor commits into the
+    // draft, and the composer's mic stays a plain Mic.
+    val dictation = if (dictationState.owner == null) dictationState else Dictation.State()
     if (handle != null) {
         handle.getter = { draft }
         handle.setter = { draft = it; onTextChange(it) }
@@ -109,8 +113,11 @@ fun Composer(
     // Committed dictation (mic button OR the hardware PTT key while this
     // composer is on screen) folds into the draft here — single append path.
     LaunchedEffect(Unit) {
-        Dictation.committed.collect { text ->
-            draft = (draft.trimEnd() + " " + text).trim()
+        Dictation.committed.collect { commit ->
+            // An owned dictation (an approval answer field, say) belongs to
+            // that field — the composer must not also swallow it.
+            if (commit.owner != null) return@collect
+            draft = (draft.trimEnd() + " " + commit.text).trim()
             onTextChange(draft)
         }
     }
@@ -285,6 +292,8 @@ fun Composer(
                     if (dictation.active) {
                         Dictation.stop() // commit lands via Dictation.committed
                     } else {
+                        // Another field's dictation is running → the composer takes the mic over.
+                        if (dictationState.active) Dictation.cancel()
                         val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
                             PackageManager.PERMISSION_GRANTED
                         if (granted) Dictation.start()

@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useAgentStore, type PendingApproval } from '@/store/agent'
-import { ShieldAlert, Terminal, Pencil, FileText, MessageCircleQuestion, ClipboardList, ChevronLeft, ChevronRight, Check } from 'lucide-react'
+import { ShieldAlert, Terminal, Pencil, FileText, MessageCircleQuestion, ClipboardList, ChevronLeft, ChevronRight, Check, Mic } from 'lucide-react'
 import { renderMarkdownLite } from './AgentMessageBlock'
+import { useDictation, type Dictation } from '@/hooks/useDictation'
+import { dictationSeparator } from '@/utils/dictation-text'
 
 // ============================================================================
 // AgentToolApproval — bottom sheet that appears when Claude wants to use a
@@ -24,6 +26,42 @@ export function AgentToolApproval({ approval }: Props) {
     return <PlanApprovalUI approval={approval} />
   }
   return <ToolPermissionUI approval={approval} />
+}
+
+// --------------------------------------------------------------------------
+// Dictation for the CONTROLLED answer fields below. The composer's textarea is
+// uncontrolled and inserts at the caret; here committed chunks append to the
+// owner's state via `append`, and `display()` shows browser-SR interim text
+// after the committed value without committing it.
+// --------------------------------------------------------------------------
+
+function useAnswerDictation(append: (chunk: string, verbatim: boolean) => void) {
+  const dictation = useDictation({ onText: append })
+  const stopRef = useRef(dictation.stop)
+  stopRef.current = dictation.stop
+  useEffect(() => () => stopRef.current(), [])
+  const display = (value: string) =>
+    dictation.interim ? value + dictationSeparator(value, dictation.interim, false) + dictation.interim : value
+  return { dictation, display }
+}
+
+function appendChunk(before: string, chunk: string, verbatim: boolean): string {
+  return before + dictationSeparator(before, chunk, verbatim) + chunk
+}
+
+function DictationMic({ dictation, onToggle }: { dictation: Dictation; onToggle?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => { dictation.toggle(); onToggle?.() }}
+      className={`flex-shrink-0 p-1 transition-colors duration-fast ${
+        dictation.recording ? 'text-destructive animate-pulse' : 'text-text-tertiary hover:text-text-secondary'
+      }`}
+      title={dictation.recording ? 'Stop listening' : 'Voice input'}
+    >
+      <Mic size={14} />
+    </button>
+  )
 }
 
 // --------------------------------------------------------------------------
@@ -80,6 +118,21 @@ function AskUserQuestionUI({ approval }: Props) {
     })
   }, [])
 
+  // Dictated chunks land on whichever page is showing when they commit.
+  const pageRef = useRef(page)
+  pageRef.current = page
+  const appendToAnswer = useCallback((chunk: string, verbatim: boolean) => {
+    const i = pageRef.current
+    setAnswers((prev) => {
+      const next = [...prev]
+      next[i] = appendChunk(next[i] ?? '', chunk, verbatim)
+      return next
+    })
+  }, [])
+  const { dictation, display } = useAnswerDictation(appendToAnswer)
+  // A page flip or a new question mid-sentence would route the tail elsewhere.
+  useEffect(() => { dictation.stop() }, [page, requestId, dictation.stop])
+
   const toggleOption = useCallback((qIdx: number, optIdx: number) => {
     setSelections((prev) => {
       const next = prev.map((s) => new Set(s))
@@ -114,13 +167,14 @@ function AskUserQuestionUI({ approval }: Props) {
 
   const submit = useCallback(() => {
     if (!allAnswered) return
+    dictation.stop()
     const out: Record<string, string[]> = {}
     for (let i = 0; i < questions.length; i++) {
       out[questions[i]!.question] = buildAnswerFor(i)
     }
     approveTool(requestId, { questions, answers: out })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approveTool, requestId, allAnswered, questions, answers, selections])
+  }, [approveTool, requestId, allAnswered, questions, answers, selections, dictation.stop])
 
   const goPrev = useCallback(() => setPage((p) => Math.max(0, p - 1)), [])
   const goNext = useCallback(() => setPage((p) => Math.min(questions.length - 1, p + 1)), [questions.length])
@@ -184,10 +238,12 @@ function AskUserQuestionUI({ approval }: Props) {
 
         <textarea
           ref={inputRef}
-          value={answers[page] ?? ''}
-          onChange={(e) => setAnswerAt(page, e.target.value)}
+          value={display(answers[page] ?? '')}
+          // While browser-SR interim text is showing, a keystroke would commit
+          // it (and the final would then land twice) — same block as the composer.
+          onChange={(e) => { if (!dictation.interim) setAnswerAt(page, e.target.value) }}
           onKeyDown={handleKeyDown}
-          placeholder={opts.length > 0 ? 'Select above or type a response...' : 'Type your response...'}
+          placeholder={dictation.recording ? 'Listening…' : opts.length > 0 ? 'Select above or type a response...' : 'Type your response...'}
           rows={1}
           className="w-full bg-surface-2 border border-border rounded-sm px-2 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-blue-400/50"
         />
@@ -240,6 +296,7 @@ function AskUserQuestionUI({ approval }: Props) {
             </button>
           )}
           <div className="flex-1" />
+          <DictationMic dictation={dictation} onToggle={() => inputRef.current?.focus()} />
           <button
             onClick={submit}
             disabled={!allAnswered}
@@ -269,8 +326,13 @@ function PlanApprovalUI({ approval }: Props) {
   // Deliberately NOT auto-focused — the y/n keybindings stay live until the
   // user clicks in (useKeybindings bails while an input has focus).
   const [comment, setComment] = useState('')
+  const appendToComment = useCallback((chunk: string, verbatim: boolean) => {
+    setComment((prev) => appendChunk(prev, chunk, verbatim))
+  }, [])
+  const { dictation, display } = useAnswerDictation(appendToComment)
 
   const approve = () => {
+    dictation.stop()
     approveTool(requestId)
     // Approve-with-comment (terminal parity): the comment arrives as the next
     // user message — steering right after the plan is accepted. Must be sent
@@ -279,7 +341,7 @@ function PlanApprovalUI({ approval }: Props) {
     const text = comment.trim()
     if (text) sendMessage(text)
   }
-  const reject = () => denyTool(requestId, comment.trim() || 'Plan rejected')
+  const reject = () => { dictation.stop(); denyTool(requestId, comment.trim() || 'Plan rejected') }
 
   return (
     <div className="border-t border-border bg-surface-1 animate-slide-up">
@@ -297,18 +359,19 @@ function PlanApprovalUI({ approval }: Props) {
 
         {/* Feedback / comment */}
         <textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
+          value={display(comment)}
+          onChange={(e) => { if (!dictation.interim) setComment(e.target.value) }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reject() }
           }}
-          placeholder="Optional — comment on the plan… (with Reject: Claude keeps planning; with Approve: sent as follow-up)"
+          placeholder={dictation.recording ? 'Listening…' : 'Optional — comment on the plan… (with Reject: Claude keeps planning; with Approve: sent as follow-up)'}
           rows={1}
           className="w-full bg-surface-2 border border-border rounded-sm px-2 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-blue-400/50 mb-2"
         />
 
         {/* Actions */}
         <div className="flex items-center gap-2">
+          <DictationMic dictation={dictation} />
           <button
             onClick={approve}
             className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-sm bg-success/20 text-success hover:bg-success/30 transition-colors duration-fast"

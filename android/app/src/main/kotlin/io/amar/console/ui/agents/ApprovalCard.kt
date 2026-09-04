@@ -15,7 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import io.amar.console.ui.components.DictatedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -127,14 +127,11 @@ private fun AskUserQuestionUi(
                 )
             }
         }
-        OutlinedTextField(
+        DictatedTextField(
             value = otherDrafts[qText] ?: "",
             onValueChange = { otherDrafts = otherDrafts + (qText to it) },
-            placeholder = { Text("Other…", style = MaterialTheme.typography.bodySmall) },
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+            placeholder = "Other…",
             modifier = Modifier.fillMaxWidth(),
-            textStyle = MaterialTheme.typography.bodySmall,
-            singleLine = true,
         )
     }
 
@@ -188,14 +185,11 @@ private fun PlanApprovalUi(
     ) {
         Text(plan, style = MaterialTheme.typography.bodySmall)
     }
-    OutlinedTextField(
+    DictatedTextField(
         value = comment,
         onValueChange = { comment = it },
-        placeholder = { Text("Optional — comment on the plan…", style = MaterialTheme.typography.bodySmall) },
-        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+        placeholder = "Optional — comment on the plan…",
         modifier = Modifier.fillMaxWidth(),
-        textStyle = MaterialTheme.typography.bodySmall,
-        singleLine = true,
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = {

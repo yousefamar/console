@@ -27,16 +27,23 @@ object Dictation {
         val active: Boolean = false,
         val transcript: String = "",   // finals + current interim
         val error: String? = null,
+        /** Who started this dictation. null = the composer / hardware PTT (the
+         *  on-screen Composer appends the commit); a field id = that field alone
+         *  owns the text, and the Composer must ignore it. */
+        val owner: String? = null,
     )
+
+    data class Commit(val text: String, val owner: String?)
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state
 
     /** Committed transcripts (fired from [stop]). The active composer collects
      *  this and appends to its draft — so BOTH the in-composer mic button and
-     *  the hardware PTT key (PushService) land text the same way. */
-    private val _committed = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val committed: kotlinx.coroutines.flow.SharedFlow<String> = _committed
+     *  the hardware PTT key (PushService) land text the same way. Owned
+     *  dictations (a specific text field) are tagged so the Composer skips them. */
+    private val _committed = kotlinx.coroutines.flow.MutableSharedFlow<Commit>(extraBufferCapacity = 4)
+    val committed: kotlinx.coroutines.flow.SharedFlow<Commit> = _committed
 
     private var ws: WebSocket? = null
     private var record: AudioRecord? = null
@@ -60,12 +67,12 @@ object Dictation {
     }
 
     @SuppressLint("MissingPermission") // caller checks RECORD_AUDIO
-    fun start() {
+    fun start(owner: String? = null) {
         if (running) return
         running = true
         sawFinal = false
         finals.setLength(0); interim = ""
-        _state.value = State(active = true)
+        _state.value = State(active = true, owner = owner)
 
         val builder = Request.Builder().url(HubConfig.sttWsUrl)
         HubTokenStore.get()?.let { builder.header("Authorization", "Bearer $it") }
@@ -156,8 +163,9 @@ object Dictation {
             runCatching { ws?.close(1000, "dictation-end") }
             ws = null
             val text = _state.value.transcript
+            val owner = _state.value.owner
             _state.value = State()
-            if (text.isNotEmpty()) _committed.tryEmit(text)
+            if (text.isNotEmpty()) _committed.tryEmit(Commit(text, owner))
             onDone(text)
         }.start()
     }
