@@ -276,7 +276,8 @@ text through the command tree in the vault note projects/console/ring-schema.md:
   start <project> <text>     board card in In Progress (dispatched — an agent forks now)
   message <person> <text>    sent AS YOU through your own chat (Beeper WhatsApp DM)
   echo <text>                straight to your own WhatsApp, no LLM (smoke test)
-  play | pause | next | previous | play <query>
+  al <text>                  escape hatch: straight to AL's ring fork, skipping the tree
+  play | pause | next | previous | play <query>   (any word order: "music plays" works)
 Every note entry is "canonical: [ways to say it]". There is no "agent" verb —
 you talk to projects (add = backlog it, start = kick it off). Text no verb
 claims goes to AL — into an "AL ↔ ring" fork seeded with this tree, which acts

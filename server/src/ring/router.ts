@@ -9,7 +9,7 @@
 // (`add <project> …` files a card, the board forks an agent for it), not to
 // agents. AL is reached only as the fallback for text no verb claims.
 
-import { spokenForms, contactForms, type RingSchema, type ListTarget } from './schema.js'
+import { spokenForms, contactForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
 
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
@@ -110,13 +110,34 @@ export function resolveSpoken(spoken: string, forms: Map<string, string>): strin
 }
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
-const MUSIC_TAIL = '(?:\\s+(?:the\\s+)?(?:music|spotify|song|track|tunes?|playback|this))?'
-const MUSIC_RULES: Array<{ rule: string; re: RegExp; action: 'play' | 'pause' | 'next' | 'previous' }> = [
-  { rule: 'music.play', re: new RegExp(`^(?:play|resume|unpause|start)${MUSIC_TAIL}$`), action: 'play' },
-  { rule: 'music.pause', re: new RegExp(`^(?:pause|stop)${MUSIC_TAIL}$`), action: 'pause' },
-  { rule: 'music.next', re: new RegExp(`^(?:next|skip)${MUSIC_TAIL}$`), action: 'next' },
-  { rule: 'music.previous', re: new RegExp(`^(?:previous|prev|last|back|go back)${MUSIC_TAIL}$`), action: 'previous' },
-]
+/** Music transport is matched as a WORD SET, not an ordered phrase — the STT
+ *  gives "Music plays." as readily as "play music". Every word must be either
+ *  one action word or filler, and exactly one action may appear. */
+const MUSIC_ACTIONS: Record<string, 'play' | 'pause' | 'next' | 'previous'> = {
+  play: 'play', plays: 'play', playing: 'play', resume: 'play', unpause: 'play', start: 'play', on: 'play',
+  pause: 'pause', stop: 'pause', off: 'pause', silence: 'pause',
+  next: 'next', skip: 'next', forward: 'next',
+  previous: 'previous', prev: 'previous', back: 'previous', rewind: 'previous', last: 'previous',
+}
+const MUSIC_FILLER = new Set(['music', 'the', 'spotify', 'song', 'songs', 'track', 'tune', 'tunes', 'playback', 'this', 'that', 'some', 'please', 'go', 'it'])
+
+export function matchMusicTransport(text: string): 'play' | 'pause' | 'next' | 'previous' | null {
+  const words = text.split(' ').filter(Boolean)
+  if (!words.length || words.length > 4) return null
+  let action: 'play' | 'pause' | 'next' | 'previous' | null = null
+  let hasNoun = false
+  for (const w of words) {
+    const a = MUSIC_ACTIONS[w]
+    if (a) { if (action && action !== a) return null; action = a; continue }
+    if (MUSIC_FILLER.has(w)) { if (w === 'music' || w === 'spotify' || w === 'song' || w === 'songs' || w === 'track' || w === 'tune' || w === 'tunes' || w === 'playback') hasNoun = true; continue }
+    return null
+  }
+  if (!action) return null
+  // Bare "on"/"off"/"back"/"last"/"start"/"forward" mean nothing without the noun.
+  if (words.length === 1 && ['on', 'off', 'back', 'last', 'start', 'forward', 'go', 'it'].includes(words[0]!)) return null
+  if (!hasNoun && ['on', 'off', 'back', 'last', 'forward'].some((w) => words.includes(w))) return null
+  return action
+}
 
 type VerbName = keyof RingSchema['verbs']
 
@@ -148,13 +169,22 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   // Music: whole-utterance transport words, before the verb tree so a bare
   // "play"/"skip" never gets read as a verb with a missing target.
   if (v.music.enabled) {
-    for (const m of MUSIC_RULES) if (m.re.test(text)) return { rule: m.rule, command: { kind: 'music', action: m.action } }
+    const transport = matchMusicTransport(text)
+    if (transport) return { rule: `music.${transport}`, command: { kind: 'music', action: transport } }
     const play = /^(?:play|(?:music|spotify)\s+play)\s+(.+)$/i.exec(cased)
     if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: play[1]!.replace(/^(?:some|me)\s+/i, '') } }
   }
 
-  // echo <text> — no target; the whole remainder is the payload.
   const first = /^(\S+?)[,.:]?\s+(.+)$/.exec(cased)
+
+  // "al <text>" — addressed to AL by name: straight to his ring fork, no tree,
+  // no classifier (that exists to rescue mis-heard TREE commands).
+  const alForms = new Set(['al', ...(v.message.contacts[AL_CONTACT] ?? [])])
+  if (first && alForms.has(first[1]!.toLowerCase())) {
+    return { rule: 'al.direct', command: { kind: 'fallback', agentKey: AL_CONTACT, text: first[2]!.trim() } }
+  }
+
+  // echo <text> — no target; the whole remainder is the payload.
   if (first && matchVerb(first[1]!.toLowerCase(), schema)?.verb === 'echo') {
     return { rule: 'echo', command: { kind: 'echo', text: first[2]!.trim() } }
   }

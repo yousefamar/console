@@ -290,9 +290,18 @@ export function gatherAlerts(args: {
   sessions: Map<string, Session>
   cal: CalendarSync
   debugLog: DebugLog
+  /** Ring deliveries that failed to route/execute (last 24h) — see ring/pipeline.ts. */
+  ringFailures?: () => Array<{ ts: number; message: string }>
   upcomingWindowMs?: number
 }): DashboardAlert[] {
   const alerts: DashboardAlert[] = []
+  const dayAgo = Date.now() - 24 * 60 * 60_000
+
+  // Ring: a voice command that didn't land is exactly the kind of silent
+  // failure Home exists to surface (the ring shows no response itself).
+  for (const f of args.ringFailures?.() ?? []) {
+    if (f.ts >= dayAgo) alerts.push({ kind: 'error', ts: f.ts, source: 'ring', message: f.message })
+  }
 
   // Agent approvals (most actionable — surface first)
   for (const session of args.sessions.values()) {

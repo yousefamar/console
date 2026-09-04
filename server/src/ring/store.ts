@@ -82,6 +82,18 @@ export class RingStore {
     return ids.map((id) => this.get(id)).filter((r): r is RingRecording => !!r)
   }
 
+  /** Recent deliveries that failed — no transcript, or a route that didn't
+   *  execute — for the Home alerts log. */
+  failures(sinceMs: number, limit = 100): Array<{ ts: number; message: string }> {
+    const out: Array<{ ts: number; message: string }> = []
+    for (const r of this.list(limit)) {
+      if (r.receivedAt < sinceMs) break
+      if (!r.transcription) { out.push({ ts: r.receivedAt, message: r.audio ? 'recording could not be transcribed' : 'empty delivery' }); continue }
+      if (r.route && !r.route.ok) out.push({ ts: r.receivedAt, message: `"${r.transcription}" — ${r.route.detail ?? 'not delivered'}` })
+    }
+    return out
+  }
+
   count(): number {
     return readdirSync(this.recordingsDir).filter((f) => f.endsWith('.json')).length
   }

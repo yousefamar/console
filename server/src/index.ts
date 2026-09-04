@@ -1742,6 +1742,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   }, readBody)) return
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
+    ringFailures: () => ringStore.failures(Date.now() - 24 * 60 * 60_000),
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,

@@ -22,6 +22,8 @@ export interface DashboardCtx {
   debugLog: DebugLog
   publicRegistry: CanvasPublicRegistry
   costs: AwsCostStore
+  /** Failed ring deliveries for the alerts log (ring/store.ts failures()). */
+  ringFailures?: () => Array<{ ts: number; message: string }>
 }
 
 /**
@@ -68,7 +70,7 @@ export function handleDashboardRoutes(
   // ---- alerts ----
   if (path === '/dashboard/alerts' && req.method === 'GET') {
     try {
-      const alerts = gatherAlerts({ sessions: ctx.sessions, cal: ctx.cal, debugLog: ctx.debugLog })
+      const alerts = gatherAlerts({ sessions: ctx.sessions, cal: ctx.cal, debugLog: ctx.debugLog, ...(ctx.ringFailures ? { ringFailures: ctx.ringFailures } : {}) })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ alerts }))
     } catch (err) {

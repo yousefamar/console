@@ -243,7 +243,8 @@ the same verb. Examples: \`log dream I was escaping a prison made of cheese\`,
 \`message mum I'll be home in 30 mins\`, \`add console the login button is
 misaligned\` (a project slug → Backlog card), \`start console fix the login
 button\` (→ In Progress, an agent forks now), \`echo testing one two\` (→ your own
-WhatsApp, pure software — the smoke test).
+WhatsApp, pure software — the smoke test), \`al <anything>\` (escape hatch: straight
+to AL's ring fork, skipping the tree). Failed deliveries show in Home → Alerts.
 
 \`\`\`yaml
 fallback: al            # agentKey for anything no verb claims; null = only notify

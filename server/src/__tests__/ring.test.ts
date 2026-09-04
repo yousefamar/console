@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
-import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, type RouteEnv } from '../ring/router.js'
+import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, type RouteEnv } from '../ring/router.js'
 import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
@@ -171,11 +171,25 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('ping, is this thing on')).toMatchObject({ command: { kind: 'echo', text: 'is this thing on' } })
     expect(r('echo')).toBeNull()
   })
-  it('music transport + play query', () => {
+  it('music transport is a word set — any order, one action — plus play <query>', () => {
     expect(r('pause the music')).toMatchObject({ rule: 'music.pause' })
     expect(r('Skip.')).toMatchObject({ command: { action: 'next' } })
     expect(r('play')).toMatchObject({ rule: 'music.play' })
+    expect(r('Music plays.')).toMatchObject({ rule: 'music.play', command: { kind: 'music', action: 'play' } }) // the live miss
+    expect(r('music on')).toMatchObject({ command: { action: 'play' } })
+    expect(r('stop the music please')).toMatchObject({ command: { action: 'pause' } })
+    expect(r('next song')).toMatchObject({ command: { action: 'next' } })
     expect(r('play some Radiohead')).toMatchObject({ rule: 'music.play-query', command: { query: 'Radiohead' } })
+    expect(matchMusicTransport('on')).toBeNull() // bare on/off/back mean nothing
+    expect(matchMusicTransport('go back')).toBeNull() // no noun → not music
+    expect(matchMusicTransport('play pause')).toBeNull() // two actions
+    expect(matchMusicTransport('play the long game')).toBeNull() // unknown word
+  })
+  it('"al <text>" is the escape hatch — straight to AL, no tree, no classifier', () => {
+    expect(r('Al, look at the movie titles Veronica sent me')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'look at the movie titles Veronica sent me' } })
+    expect(r('owl what time is it')).toMatchObject({ rule: 'al.direct', command: { text: 'what time is it' } })
+    expect(r('al')).toBeNull() // name alone is nothing
+    expect(r('all good here')).toBeNull() // exact match only
   })
   it('unmatched → null (caller decides LLM / fallback)', () => {
     expect(r('remind me to water the plants')).toBeNull()
@@ -319,7 +333,7 @@ describe('RingStore + pipeline', () => {
         previous: async () => { music.push('prev'); return 'ok' },
       },
       transcribe: async () => 'weather from stt',
-      classify: async (text) => text.includes('skip please') ? { kind: 'music', action: 'next' } : null,
+      classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
       enrichMovie: async (t) => t.toLowerCase() === 'spiderman' ? { title: 'Spider-Man', year: '2002', series: 'No' } : null,
       notify: (m) => notified.push({ title: m.title, body: m.body }),
       now: () => new Date(2026, 8, 2, 23, 7),
@@ -403,8 +417,27 @@ describe('RingStore + pipeline', () => {
     expect(rec.route?.command).toMatchObject({ kind: 'fallback', agentKey: 'al', text: 'weather from stt' })
   })
 
+  it('al.direct goes to AL without consulting the classifier', async () => {
+    let classified = 0
+    ctx.classify = async () => { classified++; return null }
+    const rec = await deliver('Al, look at the movie titles')
+    expect(rec.route).toMatchObject({ via: 'rule', rule: 'al.direct', ok: true })
+    expect(toAl[0]).toBe(buildFallbackEnvelope('look at the movie titles', rec.id))
+    expect(classified).toBe(0)
+  })
+
+  it('store.failures() lists undelivered recordings for the Home alerts log', async () => {
+    await deliver('echo fine')
+    await deliver('log food two eggs')
+    ctx.transcribe = async () => null
+    await processDelivery(ctx, { transcription: null, audio: { data: Buffer.from('x'), contentType: 'audio/mp4' }, recordedAt: null, client: 'ring' })
+    const f = store.failures(Date.now() - 60_000)
+    expect(f.map((x) => x.message)).toEqual(['recording could not be transcribed', '"log food two eggs" — no add target called "food" — add it to the ring schema note'])
+    expect(store.failures(Date.now() + 1)).toEqual([])
+  })
+
   it('LLM only when rules miss, then the fallback agent, then unknown', async () => {
-    expect((await deliver('uh skip please')).route).toMatchObject({ via: 'llm', command: { kind: 'music', action: 'next' } })
+    expect((await deliver('uh skippity doo')).route).toMatchObject({ via: 'llm', command: { kind: 'music', action: 'next' } })
     expect(music).toEqual(['next'])
     expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
     schema.fallback = 'console-general'
