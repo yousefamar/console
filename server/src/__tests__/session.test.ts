@@ -990,7 +990,7 @@ describe('Session.relocate', () => {
     writeFileSync(join(home, '.claude', 'projects', encA, 'csid-reloc-1.jsonl'), '{"type":"user"}\n')
 
     const r = session.relocate(b)
-    expect(r).toEqual({ ok: true })
+    expect(r).toEqual({ ok: true, memory: 'none' })
     expect(session.cwd).toBe(b)
     expect(exists(join(home, '.claude', 'projects', encB, 'csid-reloc-1.jsonl'))).toBe(true)
     expect(exists(join(home, '.claude', 'projects', encA, 'csid-reloc-1.jsonl'))).toBe(false)
@@ -1011,5 +1011,49 @@ describe('Session.relocate', () => {
     const r = session.relocate(home)
     expect(r.ok).toBe(false)
     expect(session.cwd).toBe(a)
+  })
+})
+
+describe('Session.relocate carries auto-memory', () => {
+  let home: string
+  let savedHome: string | undefined
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'reloc-mem-')); savedHome = process.env.HOME; process.env.HOME = home })
+  afterEach(() => { process.env.HOME = savedHome; rmSync(home, { recursive: true, force: true }) })
+
+  const enc = (p: string) => '-' + p.replace(/^\//, '').replace(/[^A-Za-z0-9-]/g, '-')
+
+  async function idleAt(cwd: string): Promise<Session> {
+    const session = new Session({ prompt: 'x', cwd })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'csid-mem-1', model: 'claude-opus-5' })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, is_error: false, num_turns: 1, result: 'ok', session_id: 'csid-mem-1', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 0))
+    return session
+  }
+
+  it('links the new cwd memory dir to the old one (shared, nothing moved)', async () => {
+    const { mkdirSync, writeFileSync, readlinkSync, readFileSync, lstatSync: lstat } = await import('node:fs')
+    const a = join(home, 'a'); const b = join(home, 'b'); mkdirSync(a); mkdirSync(b)
+    const memA = join(home, '.claude', 'projects', enc(a), 'memory')
+    mkdirSync(memA, { recursive: true }); writeFileSync(join(memA, 'MEMORY.md'), '# mem\n')
+    const session = await idleAt(a)
+    const r = session.relocate(b)
+    expect(r).toEqual({ ok: true, memory: 'linked' })
+    const memB = join(home, '.claude', 'projects', enc(b), 'memory')
+    expect(lstat(memB).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(memB)).toBe(memA)
+    expect(readFileSync(join(memB, 'MEMORY.md'), 'utf-8')).toBe('# mem\n')
+    expect(lstat(memA).isDirectory()).toBe(true) // old cwd's sessions keep theirs
+  })
+
+  it("adopts the target's own memory when it already has one; reports none when the source has none", async () => {
+    const { mkdirSync, writeFileSync, lstatSync: lstat } = await import('node:fs')
+    const a = join(home, 'a'); const b = join(home, 'b'); const c = join(home, 'c'); mkdirSync(a); mkdirSync(b); mkdirSync(c)
+    const memA = join(home, '.claude', 'projects', enc(a), 'memory'); mkdirSync(memA, { recursive: true }); writeFileSync(join(memA, 'MEMORY.md'), 'a')
+    const memB = join(home, '.claude', 'projects', enc(b), 'memory'); mkdirSync(memB, { recursive: true }); writeFileSync(join(memB, 'MEMORY.md'), 'b')
+    const s1 = await idleAt(a)
+    expect(s1.relocate(b)).toEqual({ ok: true, memory: 'kept-existing' })
+    expect(lstat(memB).isDirectory()).toBe(true)
+    const s2 = await idleAt(c)
+    expect(s2.relocate(a)).toEqual({ ok: true, memory: 'none' })
   })
 })

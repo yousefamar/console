@@ -406,8 +406,9 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
 /** `con agent cwd <session-id|name> <path>` — relocate an idle session to
  *  another cwd WITH its conversation: the hub moves the transcript under the
  *  new cwd's ~/.claude/projects/ dir and the session resumes there on its next
- *  message. The fix for a session spawned in the wrong dir (it read the wrong
- *  CLAUDE.md; its forks inherited the cwd) without erasing it. */
+ *  message; its auto-memory is shared into the new dir. The fix for a session
+ *  spawned in the wrong dir (it read the wrong CLAUDE.md; its forks inherited
+ *  the cwd) without erasing it. */
 async function agentCwd(args: string[], flags: GlobalFlags): Promise<void> {
   const [target, path] = args
   if (!target || !path) exitWithError('USAGE', 'Usage: con agent cwd <session-id|name> <path>', flags)

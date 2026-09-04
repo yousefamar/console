@@ -866,7 +866,8 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         sendTo(ws, { type: 'hub_error', message: `relocate failed: ${r.error}` })
         return
       }
-      log(`Session ${session.id} relocated ${from} → ${session.cwd} (transcript moved; wakes there on next message)`)
+      const mem = { linked: 'memory shared into the new dir', 'already-shared': 'memory already shared', 'kept-existing': 'target has its own memory — adopted', none: 'no memory to carry' }[r.memory]
+      log(`Session ${session.id} relocated ${from} → ${session.cwd} (transcript moved, ${mem}; wakes there on next message)`)
       saveManifest(sessions)
       broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
       break

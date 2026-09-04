@@ -22,7 +22,7 @@ import type {
   AttentionState,
 } from './protocol.js'
 import { parseModelString, cwdToProjectDir } from './utils.js'
-import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getLastReadIndex } from './read-state.js'
@@ -113,6 +113,31 @@ export interface SessionOptions {
   /** Restore a prompt that was queued for turn-end but never flushed (hub
    *  restarted mid-turn). Persisted in the manifest. */
   queuedMessage?: string | null
+}
+
+export type RelocateMemoryOutcome = 'linked' | 'already-shared' | 'kept-existing' | 'none'
+
+/** Make `toMemory` resolve to `fromMemory`'s content (auto-memory follows a
+ *  relocation). Symlink, not move: other sessions may still run from the old
+ *  cwd. An existing non-empty target is the destination project's own memory
+ *  and wins untouched. */
+export function linkMemoryDir(fromMemory: string, toMemory: string): RelocateMemoryOutcome {
+  let fromIsDir = false
+  try { fromIsDir = statSync(fromMemory).isDirectory() } catch { /* no source memory */ }
+  if (!fromIsDir) return 'none'
+  try {
+    const st = lstatSync(toMemory)
+    if (st.isSymbolicLink()) return 'already-shared'
+    if (st.isDirectory()) {
+      if (readdirSync(toMemory).length > 0) return 'kept-existing'
+      rmdirSync(toMemory)
+    } else {
+      return 'kept-existing'
+    }
+  } catch { /* no target yet */ }
+  mkdirSync(join(toMemory, '..'), { recursive: true })
+  symlinkSync(fromMemory, toMemory)
+  return 'linked'
 }
 
 export class Session extends EventEmitter {
@@ -787,9 +812,14 @@ export class Session extends EventEmitter {
    *  alive) is put down like a hibernation — the next message wakes it with
    *  `--resume` from the new dir. Verified live: a relocated session recalls
    *  its earlier turns. Auto-memory and CLAUDE.md follow the NEW cwd (that is
-   *  the point — a stray session was reading the wrong project's). Forks are
-   *  separate sessions with their own cwd; relocate them individually. */
-  relocate(newCwd: string): { ok: true } | { ok: false; error: string } {
+   *  the point — a stray session was reading the wrong project's). Auto-memory
+   *  FOLLOWS: it is per-cwd (`<project dir>/memory/`), so the new cwd's memory
+   *  dir becomes a symlink to the old one — shared, nothing moves out from
+   *  under sessions still at the old cwd. A target that already has its own
+   *  memory keeps it (that IS the project's memory; the stray adopts it).
+   *  Forks are separate sessions with their own cwd; relocate them
+   *  individually. */
+  relocate(newCwd: string): { ok: true; memory: RelocateMemoryOutcome } | { ok: false; error: string } {
     if (this.status === 'running' || this.approvalPending) return { ok: false, error: 'session is mid-turn — wait for it to go idle' }
     if (this.endedByUser || this.status === 'ended') return { ok: false, error: 'session has ended' }
     if (!this.claudeSessionId) return { ok: false, error: 'session has no claudeSessionId yet' }
@@ -813,9 +843,10 @@ export class Session extends EventEmitter {
       mkdirSync(toDir, { recursive: true })
       renameSync(from, to)
     }
+    const memory = linkMemoryDir(join(projects, cwdToProjectDir(this.cwd), 'memory'), join(toDir, 'memory'))
     this.cwd = newCwd
     this.gitCheckedAt = 0
-    return { ok: true }
+    return { ok: true, memory }
   }
 
   /** Re-spawn a hibernated session with --resume (history preserved, no

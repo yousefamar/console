@@ -259,6 +259,8 @@ interface SpaceAlert {
   depth?: number
   /** Role key for session rows — the lineage-tree join. */
   sessionId?: string
+  /** The project's owner (explicit or by convention) — wears the crown. */
+  owner?: boolean
 }
 
 function SpaceListRail() {
@@ -408,6 +410,9 @@ function SpaceListRail() {
     // its forks is. Siblings sort attention > working > unread > context;
     // dirty-file rows trail.
     const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4, draft: 5 }
+    // Project owner per slug (frontmatter or convention) — the same pick the
+    // hub makes when an unassigned card lands in In Progress.
+    const ownerBySlug = new Map(spaces.filter((sp) => sp.kind === 'project').map((sp) => [sp.slug, effectiveOwnerKey(sp.slug, sp.defaultOwner, sessions)]))
     for (const [slug, arr] of alerts) {
       const sessionRows = arr.filter((a) => a.kind === 'session')
       const fileRows = arr.filter((a) => a.kind === 'file')
@@ -447,13 +452,19 @@ function SpaceListRail() {
         }
       }
       const ordered: SpaceAlert[] = []
+      const ownerKey = ownerBySlug.get(slug) ?? null
       const emit = (a: SpaceAlert, depth: number) => {
         a.depth = depth
+        a.owner = !!ownerKey && live.find((x) => x.id === a.id)?.agentKey === ownerKey
         ordered.push(a)
         for (const c of (childrenOf.get(a.id) ?? []).sort(byRank)) emit(c, depth + 1)
       }
       for (const r of roots.sort(byRank)) emit(r, 0)
-      alerts.set(slug, [...ordered, ...fileRows])
+      // A project whose only alerted agent is its own (root) owner shows no
+      // row: the project badge already carries that state and clicking the
+      // project lands on the owner — the row was pure real estate.
+      const soleOwner = ordered.length === 1 && ordered[0]!.owner && !ordered[0]!.fork
+      alerts.set(slug, [...(soleOwner ? [] : ordered), ...fileRows])
     }
     curatorForkRows.sort((x, y) => rank[x.level] - rank[y.level] || x.label.localeCompare(y.label))
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned, curatorForks: curatorForkRows }
@@ -535,7 +546,9 @@ function SpaceListRail() {
               ? <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', a.level === 'draft' ? 'bg-blue-500' : 'bg-amber-500')} />
               : a.fork
                 ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
-                : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />}
+                : a.owner
+                  ? <BotCrowned size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
+                  : <Bot size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />}
             <span className="truncate">{a.label}</span>
           </button>
         )
@@ -817,7 +830,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                 label: `Relocate to ${shortCwd(space.cwd)}`,
                 onClick: async () => {
                   if (sess.status === 'running') { await showAlert('Wait for the turn to end — a running session can\'t be relocated.', { title: 'Relocate' }); return }
-                  const ok = await showConfirm(`Move "${displayName}" to ${shortCwd(space.cwd!)}?\n\nIts transcript moves with it and it resumes there on the next message; from then on it reads that dir's CLAUDE.md and auto-memory, not ${shortCwd(sess.cwd!)}'s. Forks are separate sessions — relocate them individually.`, { title: 'Relocate session', confirmLabel: 'Relocate' })
+                  const ok = await showConfirm(`Move "${displayName}" to ${shortCwd(space.cwd!)}?\n\nIts transcript and auto-memory come along (memory is shared with ${shortCwd(sess.cwd!)}, or the target's own memory is adopted if it has one) and it resumes there on the next message, reading that dir's CLAUDE.md. Forks are separate sessions — relocate them individually.`, { title: 'Relocate session', confirmLabel: 'Relocate' })
                   if (ok) agent.relocateSession(sess.id, space.cwd!)
                 },
               }] : []),
