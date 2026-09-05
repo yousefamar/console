@@ -196,11 +196,12 @@ export function spokenForms(targets: Record<string, { aliases: string[] }>): Map
   return out
 }
 
-/** AL is a contact too, but `message al …` / `text al …` is Yousef talking TO
- *  AL — it routes to his ring fork (rule `al.direct`) exactly like the bare
- *  `al <text>` verb, never a send from Yousef's own account to AL's WhatsApp
- *  (^glad-ibis: that send failed and was never what he meant). The contact
- *  entry exists so his spoken forms ("Al", "Alan"…) resolve. */
+/** AL is a contact too — `message al …` goes to his WhatsApp DM FROM YOUSEF'S
+ *  OWN ACCOUNT (so AL replies on WhatsApp; Yousef, 2026-09-05: "I want to
+ *  WhatsApp Al sometimes so he replies on there" — never reroute this to the
+ *  ring fork). He has no users/*.md (that list is AL's OWN contacts), so the
+ *  hub resolves this name to his own identifiers (`alWa.ownIdentifiers()`,
+ *  phone + lid) instead. */
 export const AL_CONTACT = 'al'
 
 /** Same for contacts (`username: [forms]`). Yousef calls people by their
@@ -321,7 +322,7 @@ export async function describeSchema(
     const isAl = user === AL_CONTACT
     const ok = isAl || env.contacts.includes(user)
     const first = [...derived].filter(([f, u]) => u === user && f !== user && !forms.includes(f)).map(([f]) => f)
-    return { name: user, aliases: [...first, ...forms], resolves: isAl ? "AL's ring fork (al.direct)" : `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
+    return { name: user, aliases: [...first, ...forms], resolves: isAl ? "AL's own WhatsApp DM (as Yousef)" : `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
   })
   return {
     path: loaded.path,

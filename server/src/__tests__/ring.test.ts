@@ -158,11 +158,11 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('message sam hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } }) // first name, derived
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
   })
-  it('message/text/tell AL is a conversation with him, never a send from Yousef (^glad-ibis)', () => {
-    expect(r('message al are you there')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'are you there' } })
-    expect(r('Message Al Hi')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'Hi' } })
-    expect(r('text owl ping')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'ping' } })
-    expect(r('tell AL to check the calendar')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', text: 'check the calendar' } })
+  it('message/text/tell AL is a WhatsApp send FROM YOUSEF to AL\'s DM — he wants AL to reply on WhatsApp (never rerouted to al.direct)', () => {
+    expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'are you there' } })
+    expect(r('Message Al Hi')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'Hi' } })
+    expect(r('text owl ping')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'ping' } })
+    expect(r('tell AL to check the calendar')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'check the calendar' } })
   })
   it('there is no agent verb — "tell" is a message alias, bare names are unclaimed', () => {
     expect(r("tell mum I'm late")).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'yasmina-amar', text: "I'm late" } })
@@ -238,7 +238,7 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix","start":true}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'In Progress' })
     expect(parseClassifyReply('{"kind":"card","project":"nope","text":"fix"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"message","contact":"nica","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'nica' })
-    expect(parseClassifyReply('{"kind":"message","contact":"al","text":"hi"}', SCHEMA, ENV, 'x')).toEqual({ kind: 'fallback', agentKey: 'al', text: 'hi' }) // talking TO AL, never a send
+    expect(parseClassifyReply('{"kind":"message","contact":"al","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'al' }) // a real send to AL's DM, not rerouted
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"unknown"}', SCHEMA, ENV, 'raw')).toEqual({ kind: 'unknown', text: 'raw' })
     expect(parseClassifyReply('I cannot help', SCHEMA, ENV, 'x')).toBeNull()
@@ -312,7 +312,7 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
-    expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's ring fork (al.direct)" })
+    expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's own WhatsApp DM (as Yousef)" })
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
     expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
   })
