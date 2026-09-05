@@ -566,6 +566,16 @@ function localMediaSrc(src: string): string {
   return s
 }
 
+/** Video extensions the media bridge whitelists (server/src/agents/local-file.ts MEDIA_TYPES). */
+const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov']
+
+export function isVideoPath(path: string): boolean {
+  const noQuery = path.split(/[?#]/)[0]!
+  const dot = noQuery.lastIndexOf('.')
+  if (dot === -1) return false
+  return VIDEO_EXTENSIONS.includes(noQuery.slice(dot).toLowerCase())
+}
+
 // --------------------------------------------------------------------------
 // ```html fence — renders the fragment in a sandboxed iframe (allow-scripts
 // only: no same-origin, no cookies, no parent DOM — the canvas containment
@@ -904,20 +914,29 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
       parts.push(<span key={key++}>{text.slice(lastIndex, match.index)}</span>)
     }
     if (match[1] !== undefined && match[2] !== undefined) {
-      // Image — local absolute/`~` paths serve through the hub's media bridge
-      // (a browser can't fetch /tmp/x.png; agents emit paths, not bytes).
+      // Image (or video) — local absolute/`~` paths serve through the hub's
+      // media bridge (a browser can't fetch /tmp/x.png; agents emit paths, not bytes).
       {
         const src = localMediaSrc(match[2])
-        parts.push(
-          <img
-            key={key++}
-            alt={match[1]}
-            src={src}
-            data-agent-image
-            className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain cursor-zoom-in"
-            onClick={() => useUiStore.getState().setLightboxSrc(src)}
-          />,
-        )
+        if (isVideoPath(match[2])) {
+          parts.push(
+            <span key={key++} className="block my-1">
+              <video controls preload="metadata" src={src} className="block max-h-72 max-w-md rounded border border-border" data-agent-video />
+              {match[1] && <span className="block text-[11px] text-text-tertiary mt-0.5">{match[1]}</span>}
+            </span>,
+          )
+        } else {
+          parts.push(
+            <img
+              key={key++}
+              alt={match[1]}
+              src={src}
+              data-agent-image
+              className="block max-h-64 max-w-xs my-1 rounded border border-border object-contain cursor-zoom-in"
+              onClick={() => useUiStore.getState().setLightboxSrc(src)}
+            />,
+          )
+        }
       }
     } else if (match[3] !== undefined && match[4] !== undefined) {
       // Markdown link [text](url) — fall back to literal text on an unsafe scheme.
