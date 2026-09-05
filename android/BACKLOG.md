@@ -71,6 +71,29 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Built, awaiting release
 
+- **Fix: new space agents landed in the hub's cwd; strays now flagged**
+  (3716ec9e, ^spry-seal): `NewSpaceAgentSheet` defaulted cwd to a hardcoded
+  `/home/amar`, and the NoteEditor/ProjectPanel "start agent" paths built
+  `$vault/projects/<slug>` without binding the session to the project. All
+  three now send no cwd (blank field = hub default: the vault project dir /
+  vault root) and create keyed + project-bound; the sheet prefills from the
+  space's new `/blog/spaces` `cwd` field. `AgentsRepository.createSession`
+  takes `cwd: String?` and omits it when blank. `SpaceSummary.cwd` parsed
+  (null on an older hub). Not yet ported: the SPA's amber stray glyph on
+  agent rows + cwd in the session status bar.
+
+## Shipped
+
+### v92 (2026-09-04)
+- **Approval card: dictate the answer** (89f49d96, ^lime-newt): the
+  AskUserQuestion "Other…" field and the plan-review comment field are
+  `DictatedTextField`s (`ui/components/`) — a mic per field, live transcript
+  in the field, commit on stop. Dictations are OWNED (`Dictation.start(owner)`,
+  `Commit.owner`): the on-screen Composer ignores owned commits and shows a
+  plain Mic, so a dictated answer never also lands in the composer draft;
+  tapping either mic takes the mic over from the other. SPA parity in the
+  same commit.
+
 - **Inbox: a swipe whose action doesn't drop the row snaps back** (5805b3f1,
   ^quick-ram): rows swiped "done" froze on the Done hint — they were READ
   overdue DMs, so mark-read was a no-op and the entry never left the derived
@@ -111,8 +134,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
   `us.anthropic.claude-fable-5-1` (after opus-5, before fable-5), matching the
   SPA `SpacesFleetMenu.tsx` lists and the hub chains. `shortModel` needs no
   change (strips ARN/`us.anthropic.` prefixes only; the bare id renders fine).
-
-## Shipped
 
 ### v91 (2026-09-01)
 - **Unified Inbox app** (^cool-tern): native twin of the SPA's Inbox pane in
