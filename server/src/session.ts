@@ -115,6 +115,23 @@ export interface SessionOptions {
   queuedMessage?: string | null
 }
 
+/** Pin the CLI's per-project directory (transcripts + auto-memory) to the
+ *  session's CWD. By default the CLI derives it from the GIT ROOT, so every
+ *  cwd inside one repo shares one memory dir — for us that meant every vault-
+ *  homed project session (`~/sync/brain/root/projects/<slug>/`) wrote into the
+ *  vault's single MEMORY.md, and a fork running from `console/server` filed
+ *  its memory under Console's (^spry-seal, 2026-09-05). The pinned name is the
+ *  same encoding the CLI derives for a non-git cwd, so transcript paths are
+ *  unchanged and `relocate()`'s memory links line up. `CLAUDE_CONFIG_DIR` must
+ *  be set alongside or the name is ignored (docs: sessions#name-the-project-
+ *  directory-yourself, v≥2.1.234). Names outside `[A-Za-z0-9_-]{1,64}` are
+ *  ignored by the CLI — fall back to its derivation rather than send junk. */
+export function projectDirEnv(cwd: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const name = cwdToProjectDir(cwd)
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) return {}
+  return { CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), CLAUDE_CODE_PROJECT_DIR_NAME: name }
+}
+
 export type RelocateMemoryOutcome = 'linked' | 'already-shared' | 'kept-existing' | 'none'
 
 /** Make `toMemory` resolve to `fromMemory`'s content (auto-memory follows a
@@ -339,11 +356,15 @@ export class Session extends EventEmitter {
     this.process = spawn('claude', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      // The session's own agentKey rides the env so the `con` CLI (and any
-      // script the agent runs) can self-identify to the hub — board mutations
-      // carry an X-Console-Agent header, letting notifiers skip echoing an
-      // agent's own edits back at it.
-      env: { ...process.env, ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}) },
+      env: {
+        ...process.env,
+        // The session's own agentKey rides the env so the `con` CLI (and any
+        // script the agent runs) can self-identify to the hub — board mutations
+        // carry an X-Console-Agent header, letting notifiers skip echoing an
+        // agent's own edits back at it.
+        ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}),
+        ...projectDirEnv(cwd),
+      },
     })
     this.processAlive = true
 

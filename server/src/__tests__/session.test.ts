@@ -1057,3 +1057,17 @@ describe('Session.relocate carries auto-memory', () => {
     expect(s2.relocate(a)).toEqual({ ok: true, memory: 'none' })
   })
 })
+
+describe('projectDirEnv — memory follows the cwd, not the git root', () => {
+  it('pins CLAUDE_CODE_PROJECT_DIR_NAME to the cwd encoding, with CLAUDE_CONFIG_DIR alongside', async () => {
+    const { projectDirEnv } = await import('../session.js')
+    const env = projectDirEnv('/home/amar/sync/brain/root/projects/console', { HOME: '/home/amar' })
+    expect(env.CLAUDE_CODE_PROJECT_DIR_NAME).toBe('-home-amar-sync-brain-root-projects-console')
+    expect(env.CLAUDE_CONFIG_DIR).toMatch(/\/.claude$/)
+  })
+  it('respects an explicit CLAUDE_CONFIG_DIR and skips names the CLI would reject', async () => {
+    const { projectDirEnv } = await import('../session.js')
+    expect(projectDirEnv('/x', { CLAUDE_CONFIG_DIR: '/srv/cfg' }).CLAUDE_CONFIG_DIR).toBe('/srv/cfg')
+    expect(projectDirEnv('/' + 'a'.repeat(70))).toEqual({})
+  })
+})
