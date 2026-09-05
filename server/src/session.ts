@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { createInterface } from 'node:readline'
 import type {
@@ -253,12 +254,18 @@ export class Session extends EventEmitter {
     if (options.restoreMessageLogLength && options.restoreMessageLogLength > 0) {
       this.logOffset = options.restoreMessageLogLength
     }
-    // For resumes (not forks), set claudeSessionId immediately so list_sessions
-    // can match before Claude emits the `system` message.
-    // Forks get a NEW claudeSessionId from Claude — don't pre-set to avoid
-    // manifest dedup collisions with the source session.
-    if (options.resume && !options.fork) {
-      this.claudeSessionId = options.resume
+    // Set claudeSessionId immediately so list_sessions / the manifest can match
+    // before Claude emits the `system` init. Resumes reuse the target id; FORKS
+    // get a hub-minted id that spawn() pins with `--session-id` (the CLI honours
+    // it alongside `--resume <parent> --fork-session`, verified 2026-09-05).
+    // Without the pin a fork had NO csid until init and its argv named only
+    // the PARENT's id — so a fork reading `ps` believed it was the parent, and
+    // anything matching processes by `--resume` could not tell the two apart
+    // (^blue-vole). Never pre-set the parent's id here: that collides in the
+    // manifest dedup.
+    if (options.resume) {
+      this.claudeSessionId = options.fork ? randomUUID() : options.resume
+      if (options.fork) this.forkPin = this.claudeSessionId
     }
     // Silent resumes (hub restart restore) start idle — no prompt will be sent
     if (options.silent) {
@@ -336,7 +343,10 @@ export class Session extends EventEmitter {
     }
 
     if (options.fork) {
-      args.push('--fork-session')
+      // The pre-minted id (ctor) — the fork's argv now names ITSELF, so `ps`
+      // identifies a fork and a reaper can match it without confusing it with
+      // its parent (whose id sits in --resume).
+      args.push('--fork-session', '--session-id', this.claudeSessionId!)
     }
 
     if (options.name) {
@@ -769,6 +779,8 @@ export class Session extends EventEmitter {
   private spawnedAt = 0
   /** True once the subprocess emitted its `system` init — i.e. it started fine. */
   private gotSystemInit = false
+  /** The csid this fork was spawned with (`--session-id`); init must echo it. */
+  private forkPin: string | null = null
   /** De-dupe: emit at most one `model_failure` per spawn. */
   private modelFailureSignaled = false
   /** Set while a model-driven restart is in flight so the exit handler re-spawns
@@ -1110,14 +1122,18 @@ export class Session extends EventEmitter {
           this.handleSystemLifecycle(msg)
           break
         }
-        // A pre-set csid (resume) that differs from what the CLI minted means
-        // this live session was re-keyed (pruned-transcript fresh respawn) —
-        // forks/fresh spawns never pre-set, so they can't trip this.
+        // A pre-set csid that differs from what the CLI minted means this live
+        // session was re-keyed: a pruned-transcript fresh respawn, or a CLI that
+        // ignored a fork's `--session-id` pin (log it — the pin is load-bearing
+        // for identity). Fresh spawns never pre-set, so they can't trip this.
         const prevCsid = this.claudeSessionId
         const rekeyedFrom = prevCsid && prevCsid !== msg.session_id ? prevCsid : undefined
+        if (rekeyedFrom && rekeyedFrom === this.forkPin) {
+          this.emitHub({ type: 'status', sessionId: this.id, text: `fork csid pin ignored by the CLI: pinned ${rekeyedFrom}, got ${msg.session_id}` })
+        }
         this.claudeSessionId = msg.session_id
-        // A fork's csid only arrives here, so this is where the todo watcher
-        // gets its dir (idempotent for a resume that pre-set the same csid).
+        // Binds the todo watcher to the confirmed csid (idempotent when the
+        // pre-set id — resume target or fork pin — matches).
         this.bindTodoWatcher()
         // Subprocess started cleanly — clear model-failure bookkeeping so a
         // later (different) model death can still trip a fresh fallback.

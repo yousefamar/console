@@ -215,7 +215,16 @@ export function buildBoardEnvelope(opts: {
    *  this the fork reads the reassigned board line, believes it's still the
    *  source role, and STANDS DOWN from its own card ("a dedicated fork owns
    *  this") — observed live 2026-08-20. */
-  forkIdentity?: { key: string; sourceKey: string | null } | null
+  forkIdentity?: {
+    key: string
+    sourceKey: string | null
+    /** The fork's hub-minted csid (pinned via `--session-id`). Named in the
+     *  envelope so the reader can PROVE it is the addressee from its own
+     *  argv — an inherited transcript is full of the parent's "I am <csid>"
+     *  claims, and a mis-routed or twin-delivered wake should be loud, not
+     *  silently worked (^blue-vole). */
+    claudeSessionId?: string | null
+  } | null
 }): string {
   const { boardAbsPath, card, column, project, deployGate, forkIdentity } = opts
   // Image detail lines are delivered as REAL image attachments on the wake —
@@ -228,6 +237,9 @@ export function buildBoardEnvelope(opts: {
       `IDENTITY: YOU are the dedicated fork for this card. Your agentKey is now \`${forkIdentity.key}\`` +
       (forkIdentity.sourceKey ? ` (no longer \`${forkIdentity.sourceKey}\` — your system prompt predates the fork)` : '') +
       `. The board line's \`@${forkIdentity.key}\` means YOU. Do not stand down or defer to "the fork" — you ARE it.`,
+      ...(forkIdentity.claudeSessionId ? [
+        `Your claudeSessionId is \`${forkIdentity.claudeSessionId}\` — your own process argv carries \`--session-id ${forkIdentity.claudeSessionId}\` (\`ps -o args= -p $PPID\`); the \`--resume\` id beside it is your PARENT's, not yours. If your argv does NOT carry this --session-id, this wake reached the wrong process: do not work the card — say so and stop.`,
+      ] : []),
       '',
     ] : []),
     `Board: ${boardAbsPath}${project ? `   Project: ${project}` : ''}`,

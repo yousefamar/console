@@ -213,6 +213,22 @@ describe('buildBoardEnvelope fork identity', () => {
     expect(env).toContain('`astera-general-tgcekv-fork`')
     expect(env).toContain('no longer `astera-general`')
     expect(env).toContain('you ARE it')
+    expect(env).not.toContain('--session-id')
+  })
+
+  it('names the fork csid so the reader can verify itself from argv', () => {
+    // The inherited transcript is full of the parent's "I am <csid>" claims;
+    // the envelope gives the fork a check it can run (`ps`) and an instruction
+    // for the wrong-process case (^blue-vole: a twin worked the card).
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/vault/projects/astera/board.md',
+      card: { text: 'Fix nav', blockId: 'tgcekv', lines: ['- [ ] Fix nav @astera-general-tgcekv-fork ^tgcekv'] },
+      column: 'In Progress',
+      forkIdentity: { key: 'astera-general-tgcekv-fork', sourceKey: 'astera-general', claudeSessionId: '11111111-2222-3333-4444-555555555555' },
+    })
+    expect(env).toContain('--session-id 11111111-2222-3333-4444-555555555555')
+    expect(env).toContain("`--resume` id beside it is your PARENT's")
+    expect(env).toContain('do not work the card')
   })
 
   it('omits the identity block for non-fork dispatch', () => {

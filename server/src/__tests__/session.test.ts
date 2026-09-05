@@ -635,13 +635,43 @@ describe('Session rich protocol', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect((sameMsgs.find((m) => m.type === 'session_init') as any).rekeyedFrom).toBeUndefined()
 
-    // Forks never pre-set a csid, so a fork's new id is not a re-key (forks
-    // deliberately inherit zero crons).
+    // A fork pre-sets its own hub-minted id and the CLI honours the pin, so
+    // init echoing it back is not a re-key (forks deliberately inherit zero
+    // crons — the parent's id is never pre-set on them).
     const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
     const forkMsgs = collectHubMessages(fork)
-    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'fork_csid', model: 'claude-opus-4-8', slash_commands: [] })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: fork.claudeSessionId!, model: 'claude-opus-4-8', slash_commands: [] })
     await new Promise((r) => setTimeout(r, 10))
     expect((forkMsgs.find((m) => m.type === 'session_init') as any).rekeyedFrom).toBeUndefined()
+  })
+
+  it('a fork mints its own csid up front and pins it with --session-id', () => {
+    // Before the pin a fork had NO csid until init and its argv named only the
+    // parent (`--resume <parent>`), so `ps` could not tell a fork from its
+    // parent and a fork reading its own args concluded it WAS the parent.
+    const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
+    expect(fork.claudeSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(fork.claudeSessionId).not.toBe('parent_csid')
+    const args = lastSpawnArgs!.args
+    expect(args).toContain('--fork-session')
+    expect(args[args.indexOf('--session-id') + 1]).toBe(fork.claudeSessionId)
+    expect(args[args.indexOf('--resume') + 1]).toBe('parent_csid')
+    // Two forks of one parent never share an id.
+    const other = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
+    expect(other.claudeSessionId).not.toBe(fork.claudeSessionId)
+    // A plain resume still reuses the target id and pins nothing.
+    const resumed = new Session({ prompt: 'x', resume: 'keep_csid' })
+    expect(resumed.claudeSessionId).toBe('keep_csid')
+    expect(lastSpawnArgs!.args).not.toContain('--session-id')
+  })
+
+  it('logs a status when the CLI ignores a fork\'s --session-id pin', async () => {
+    const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
+    const msgs = collectHubMessages(fork)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'cli_minted_instead', model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fork.claudeSessionId).toBe('cli_minted_instead')
+    expect(msgs.some((m) => m.type === 'status' && /pin ignored/.test((m as any).text))).toBe(true)
   })
 
   it('re-emits an accurate context_update from get_context_usage after result', async () => {

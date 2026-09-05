@@ -850,7 +850,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // A ticket-fork inherits the SOURCE role's self-identity prompt — tell
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey } : null,
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null } : null,
     }), images)
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not
@@ -1012,7 +1012,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       column: t.column,
       project: projectForBoardPath(t.boardPath),
       deployGate: t.deployGate,
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null } : null,
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: worker.claudeSessionId ?? null } : null,
     }), images)
     if (worker.agentKey && worker.agentKey !== t.agentKey) return worker.agentKey
     return true

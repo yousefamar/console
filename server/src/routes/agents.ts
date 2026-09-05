@@ -1019,11 +1019,12 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       // UI forks (seed:true) get a branch-point marker so the fork KNOWS where
       // its own work begins (the inherited history above vs its branch below).
-      // CRITICAL: `claude --fork-session` emits NO `system` init — and therefore
-      // never hands the hub the forked claudeSessionId — until it receives a
-      // first message. So we must send the seed IMMEDIATELY (not wait for
-      // session_init, which would deadlock: no message → no init → no csid → a
-      // dead, unusable fork). Sending the seed both kicks the fork into
+      // CRITICAL: `claude --fork-session` emits NO `system` init — and writes
+      // no transcript — until it receives a first message. So we must send the
+      // seed IMMEDIATELY (not wait for session_init, which would deadlock: no
+      // message → no init → a dead, unusable fork). The hub already knows the
+      // fork's csid (pinned via --session-id in Session), but a pre-init fork
+      // still has no JSONL to resume from. Sending the seed both kicks the fork into
       // initialising and marks the branch point. `con agent chat` forks pass no
       // seed because they send their own richer side-conversation seed instead.
       if (msg.seed) {
