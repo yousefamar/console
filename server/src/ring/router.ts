@@ -121,6 +121,16 @@ const MUSIC_ACTIONS: Record<string, 'play' | 'pause' | 'next' | 'previous'> = {
 }
 const MUSIC_FILLER = new Set(['music', 'the', 'spotify', 'song', 'songs', 'track', 'tune', 'tunes', 'playback', 'this', 'that', 'some', 'please', 'go', 'it'])
 
+const MUSIC_VOCATIVE = /^(?:music|spotify)[,.:;!]?\s+/i
+
+/** Spoken query → search string: drop "some"/"me", and a quoted title's
+ *  wrapping quotes (only a MATCHED pair — an apostrophe inside stays). */
+export function musicQuery(spoken: string): string {
+  const q = spoken.trim().replace(/^(?:some|me)\s+/i, '')
+  const quoted = /^"(.+)"$/.exec(q) ?? /^'(.+)'$/.exec(q)
+  return (quoted ? quoted[1]! : q).trim()
+}
+
 export function matchMusicTransport(text: string): 'play' | 'pause' | 'next' | 'previous' | null {
   const words = text.split(' ').filter(Boolean)
   if (!words.length || words.length > 4) return null
@@ -169,10 +179,13 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   // Music: whole-utterance transport words, before the verb tree so a bare
   // "play"/"skip" never gets read as a verb with a missing target.
   if (v.music.enabled) {
-    const transport = matchMusicTransport(text)
+    // "Music, play …" — the STT punctuates an address word; strip the vocative
+    // (with its comma) before either matcher sees it.
+    const unaddressed = cased.replace(MUSIC_VOCATIVE, '')
+    const transport = matchMusicTransport(text) ?? matchMusicTransport(unaddressed.toLowerCase())
     if (transport) return { rule: `music.${transport}`, command: { kind: 'music', action: transport } }
-    const play = /^(?:play|(?:music|spotify)\s+play)\s+(.+)$/i.exec(cased)
-    if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: play[1]!.replace(/^(?:some|me)\s+/i, '') } }
+    const play = /^play\s+(.+)$/i.exec(unaddressed)
+    if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: musicQuery(play[1]!) } }
   }
 
   const first = /^(\S+?)[,.:]?\s+(.+)$/.exec(cased)

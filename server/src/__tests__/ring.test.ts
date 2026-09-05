@@ -180,6 +180,14 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('stop the music please')).toMatchObject({ command: { action: 'pause' } })
     expect(r('next song')).toMatchObject({ command: { action: 'next' } })
     expect(r('play some Radiohead')).toMatchObject({ rule: 'music.play-query', command: { query: 'Radiohead' } })
+    // The live miss (^quick-deer): a punctuated address word before the verb.
+    expect(r('Music, play "Fate of Ophelia".')).toMatchObject({ rule: 'music.play-query', command: { query: 'Fate of Ophelia' } })
+    expect(r('Spotify: play Taylor Swift')).toMatchObject({ rule: 'music.play-query', command: { query: 'Taylor Swift' } })
+    expect(r('music play Radiohead')).toMatchObject({ rule: 'music.play-query', command: { query: 'Radiohead' } }) // unpunctuated form still works
+    expect(r('Music, pause.')).toMatchObject({ rule: 'music.pause' })
+    expect(r('Spotify, next track')).toMatchObject({ command: { action: 'next' } })
+    expect(r("play 'Fate of Ophelia'")).toMatchObject({ command: { query: 'Fate of Ophelia' } })
+    expect(r("play Don't Stop Me Now")).toMatchObject({ command: { query: "Don't Stop Me Now" } }) // apostrophe is not a quote pair
     expect(matchMusicTransport('on')).toBeNull() // bare on/off/back mean nothing
     expect(matchMusicTransport('go back')).toBeNull() // no noun → not music
     expect(matchMusicTransport('play pause')).toBeNull() // two actions
