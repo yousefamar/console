@@ -43,6 +43,10 @@ export interface SpaceSummary {
   cwd?: string
   /** The project's `repo` symlink target (code checkout). Optional: older hub. */
   repo?: string | null
+  /** Cards in a dispatch column the hub's concurrency cap is holding back —
+   *  they look like ordinary un-dispatched cards, so the column says so.
+   *  Optional: older hub payloads omit it. */
+  queuedCount?: number
 }
 
 interface SpacesState {

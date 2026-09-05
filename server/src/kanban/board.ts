@@ -84,6 +84,17 @@ export function boardDefaultOwner(content: string): string | null {
   return m ? m[1]! : null
 }
 
+/** Board-level frontmatter: `max_forks: N` — how many of THIS board's cards
+ *  may have a live worker at once. The count itself is machine-wide (every
+ *  board's running cards), so a board can only narrow or widen its own
+ *  headroom against that shared total; `0` disables dispatch for the board.
+ *  Absent = the hub-wide default. */
+export function boardMaxForks(content: string): number | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  const m = (fence?.[1] ?? '').match(/^max_forks:\s*(\d+)\s*$/m)
+  return m ? Number(m[1]) : null
+}
+
 /** Set (or clear, with null) the board's `default_owner:` frontmatter line in
  *  place. Replaces an existing line; otherwise inserts before the closing
  *  fence; a board with no frontmatter gets a fresh fence prepended. Only the

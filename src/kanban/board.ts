@@ -56,6 +56,10 @@ export interface KanbanBoard {
   footer: string[]
 }
 
+/** Columns the hub dispatches from — mirror of the server's
+ *  DISPATCH_COLUMN_RE (kanban/dispatch.ts). Keep the two in sync. */
+export const DISPATCH_COLUMN_RE = /^(in.?progress|doing|active|now)$/i
+
 const CARD_RE = /^- \[( |x|X)\] (.*)$/
 const HEADING_RE = /^## (.+?)\s*$/
 const FOOTER_START = '%% kanban:settings'

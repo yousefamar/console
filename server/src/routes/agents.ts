@@ -134,6 +134,10 @@ export interface AgentContext {
    *  A human message to such a session gets a stdin-only reminder that
    *  feedback re-opens the card — see withReviewReminder. */
   reviewCardsFor?: (agentKey: string) => ReviewCardRef[]
+  /** A session ended — a card fork holding a dispatch slot may have died, so
+   *  the board dispatcher should re-scan its queue (BoardWatcher.onWorkerEnded).
+   *  The 10 s poll would find it anyway; this just makes it immediate. */
+  onWorkerEnded?: () => void
 }
 
 /** What the MODEL receives for a human message: the text plus, when the
@@ -438,6 +442,7 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
 
   session.on('exit', () => {
     saveManifest(ctx.sessions)
+    if (session.status === 'ended') ctx.onWorkerEnded?.()
   })
 
   // A session hit a model-unavailable error. Advance the fallback chain (once

@@ -15,6 +15,8 @@ export function handleBlogRoutes(
   path: string,
   noteStore: NoteStore,
   readBody: (req: IncomingMessage) => Promise<string>,
+  /** Cards the board dispatcher has queued per board path (watcher state). */
+  queuedFor?: (boardPath: string) => number,
 ): boolean {
   if (path === '/blog/drafts' && req.method === 'GET') {
     listDrafts(noteStore)
@@ -65,7 +67,7 @@ export function handleBlogRoutes(
   // GET /blog/spaces → projects (derived from projects/) + areas (registry),
   // the nav source for the project-first Spaces pane.
   if (path === '/blog/spaces' && req.method === 'GET') {
-    listSpaces(noteStore)
+    listSpaces(noteStore, { queuedFor })
       .then((spaces) => json(res, 200, { spaces }))
       .catch((err) => json(res, 500, { error: (err as Error).message }))
     return true

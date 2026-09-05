@@ -39,7 +39,7 @@ import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBac
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
-import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
@@ -710,6 +710,9 @@ const agentCtx: AgentContext = {
   // Under-Review cards per agentKey, from the watcher's in-flight ledger
   // (declared below; only ever called at message time, long after boot).
   reviewCardsFor: (agentKey) => boardWatcher.reviewCardsFor(agentKey),
+  // A card fork that ended frees its dispatch slot — drain the queue now
+  // rather than waiting out the 10 s poll.
+  onWorkerEnded: () => void boardWatcher.onWorkerEnded(),
 }
 
 // --------------------------------------------------------------------------
@@ -802,7 +805,7 @@ const SELF_ECHO_WINDOW_MS = 60_000
 
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
-  onDispatch: ({ boardPath, card, column, project, deployGate }) => {
+  onDispatch: ({ boardPath, card, column, project, deployGate, load }) => {
     // Assigning a ticket to a LIVE session forks it: the fork inherits the
     // session's context, works just this ticket (in its own worktree, per
     // the envelope), and is merged after — the main session stays free for
@@ -851,6 +854,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
       forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null } : null,
+      load,
     }), images)
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not
@@ -1061,6 +1065,16 @@ const boardWatcher = new BoardWatcher(noteStore, {
     if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
     return owner
   },
+  // Concurrency cap: every card fork runs its own tsc/tests in its own
+  // worktree, and all the worktrees share one disk. Read live from prefs so
+  // raising the cap doesn't need a restart.
+  maxRunningForks: () => {
+    const v = prefsStore.getAll()['boards.maxRunningForks']
+    return typeof v === 'number' && v >= 0 ? v : DEFAULT_MAX_RUNNING_FORKS
+  },
+  // A card only holds a slot while its worker is actually alive — a dead fork
+  // (crashed, killed, ended without moving its card) must not block the queue.
+  isWorkerAlive: (agentKey) => !!liveSessionForRole(agentCtx, agentKey),
 })
 void boardWatcher.start()
 
@@ -1721,7 +1735,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     broadcast: (data) => syncBus.broadcast('notes', 'open_file', data),
     clientCount: () => syncBus.subscriberCount('notes'),
   })) return
-  if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody)) return
+  if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody, (bp) => boardWatcher.queuedCards().filter((q) => q.boardPath === bp).length)) return
   if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return

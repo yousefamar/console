@@ -413,6 +413,127 @@ describe('BoardWatcher default owner', () => {
   })
 })
 
+describe('BoardWatcher concurrency cap (^tame-bear)', () => {
+  /** Board with N assigned In-Progress cards, each its own agent. */
+  const CARDS = (n: number, fm = '') => `---\nkanban-plugin: board\n${fm}---\n\n## In Progress\n\n`
+    + Array.from({ length: n }, (_, i) => `- [ ] Task ${i + 1} @eng${i + 1}\n`).join('')
+    + `\n## Under Review\n\n\n## Done\n\n`
+
+  async function capSetup(initial: string, opts: { cap?: number; alive?: Set<string> } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    const boardAbs = join(dir, 'projects', 'demo', 'board.md')
+    writeFileSync(boardAbs, initial)
+    const dispatches: BoardDispatch[] = []
+    let clock = 1_000_000
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {},
+      onDispatch: (d) => { dispatches.push(d); return true },
+      maxRunningForks: () => opts.cap ?? 2,
+      ...(opts.alive ? { isWorkerAlive: (k: string) => opts.alive!.has(k) } : {}),
+      pollMs: 999_999,
+      now: () => (clock += 1000),
+    })
+    return { dir, boardAbs, watcher, dispatches }
+  }
+
+  it('dispatches up to the cap and leaves the rest UNSTAMPED and queued', async () => {
+    const { dir, boardAbs, watcher, dispatches } = await capSetup(CARDS(5))
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(2)
+      expect(watcher.runningForks()).toBe(2)
+      const queued = watcher.queuedCards()
+      expect(queued.map((q) => q.text)).toEqual(['Task 3', 'Task 4', 'Task 5'])
+      const onDisk = readFileSync(boardAbs, 'utf-8')
+      expect(onDisk).toMatch(/- \[ \] Task 1 @eng1 \^[a-z0-9-]+/)
+      expect(onDisk).toMatch(/- \[ \] Task 2 @eng2 \^[a-z0-9-]+/)
+      // Queued cards keep their line EXACTLY as the user left it.
+      for (const n of [3, 4, 5]) expect(onDisk).toContain(`- [ ] Task ${n} @eng${n}\n`)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a card leaving the dispatch column releases its slot to the next in FIFO order', async () => {
+    const { dir, boardAbs, watcher, dispatches } = await capSetup(CARDS(5))
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(2)
+      // Yousef moves Task 1 (stamped) to Under Review — one slot frees.
+      const before = readFileSync(boardAbs, 'utf-8')
+      const line1 = before.split('\n').find((l) => l.includes('Task 1'))!
+      writeFileSync(boardAbs, before.replace(`${line1}\n`, '').replace('## Under Review\n', `## Under Review\n\n${line1}\n`))
+      await watcher.poll()
+      expect(dispatches).toHaveLength(3)
+      expect(dispatches[2]!.card.text).toBe('Task 3') // oldest queued, not Task 5
+      expect(watcher.queuedCards().map((q) => q.text)).toEqual(['Task 4', 'Task 5'])
+      expect(readFileSync(boardAbs, 'utf-8')).toMatch(/- \[ \] Task 3 @eng3 \^[a-z0-9-]+/)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a card whose worker died holds no slot', async () => {
+    const alive = new Set(['eng1', 'eng2'])
+    const { dir, watcher, dispatches } = await capSetup(CARDS(5), { alive })
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(2)
+      alive.delete('eng1') // its fork ended without moving the card
+      alive.add('eng3')
+      await watcher.onWorkerEnded()
+      expect(dispatches).toHaveLength(3)
+      expect(dispatches[2]!.card.text).toBe('Task 3')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('per-board frontmatter max_forks overrides the hub default', async () => {
+    const { dir, watcher, dispatches } = await capSetup(CARDS(5, 'max_forks: 3\n'), { cap: 1 })
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(3)
+      expect(watcher.queuedCards()).toHaveLength(2)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('max_forks: 0 dispatches nothing; a raised cap drains the whole queue', async () => {
+    const { dir, watcher, dispatches } = await capSetup(CARDS(3, 'max_forks: 0\n'))
+    try {
+      await watcher.start()
+      expect(dispatches).toHaveLength(0)
+      expect(watcher.queuedCards()).toHaveLength(3)
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the envelope warns a fork that starts under load; a lone fork gets no warning', () => {
+    const under = buildBoardEnvelope({
+      boardAbsPath: '/v/projects/demo/board.md',
+      card: { text: 'Heavy', blockId: 'bold-fox', lines: ['- [ ] Heavy'] },
+      column: 'In Progress', load: { running: 4, cap: 4 },
+    })
+    expect(under).toContain('LOAD: 4 of a maximum 4 cards')
+    expect(under).toMatch(/heavy\.sh|pnpm heavy/)
+    const alone = buildBoardEnvelope({
+      boardAbsPath: '/v/projects/demo/board.md',
+      card: { text: 'Heavy', blockId: 'bold-fox', lines: ['- [ ] Heavy'] },
+      column: 'In Progress', load: { running: 1, cap: 4 },
+    })
+    expect(alone).not.toContain('LOAD:')
+  })
+})
+
 describe('projectForBoardPath', () => {
   it('extracts the project slug', () => {
     expect(projectForBoardPath('projects/astera/board.md')).toBe('astera')

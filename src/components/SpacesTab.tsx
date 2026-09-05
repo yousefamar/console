@@ -35,7 +35,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls } from '@/kanban/board'
+import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1108,6 +1108,10 @@ function BoardView() {
   const deleteCard = useSpacesStore((s) => s.deleteCard)
   const sessions = useAgentStore((s) => s.sessions)
   const activeSlug = useSpacesStore((s) => s.activeSlug)
+  // Cards the hub's fork cap is holding back — un-dispatched by design, not
+  // forgotten (a queued card carries no @fork or ^id, so nothing on the card
+  // itself says why it hasn't started).
+  const queuedCount = useSpacesStore((s) => s.spaces.find((sp) => sp.slug === s.activeSlug)?.queuedCount ?? 0)
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
@@ -1262,7 +1266,17 @@ function BoardView() {
           )}
         >
           <div className="flex items-center justify-between px-2 py-1 border-b border-border">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">{col.title}</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">{col.title}</span>
+              {queuedCount > 0 && DISPATCH_COLUMN_RE.test(col.title) && (
+                <span
+                  className="rounded-sm bg-surface-2 px-1 text-[9px] text-text-tertiary"
+                  title={`${queuedCount} card(s) waiting for a free slot — the hub caps how many card forks run at once (all worktrees share one disk). They start automatically as slots free.`}
+                >
+                  queued ({queuedCount})
+                </span>
+              )}
+            </span>
             <button
               onClick={() => setAddingTo(addingTo === col.title ? null : col.title)}
               className="text-text-tertiary hover:text-text-primary"

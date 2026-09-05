@@ -24,6 +24,15 @@ export const DONE_COLUMN_RE = /^(done|complete|completed|shipped)$/i
  *  the `#blocked` tag ON the card (a property — keeps its queue position). */
 export const BLOCKED_COLUMN_RE = /^(blocked|waiting|stuck)$/i
 
+/** How many cards may have a live worker at once, machine-wide. Every fork
+ *  runs tsc/vitest/eslint in its own worktree, and the worktrees share ONE
+ *  spinning disk: 6–9 concurrent forks measured iowait 55–59 %, load 21 on 8
+ *  cores and pre-push hooks stretching to 15 min (astera ^lime-kiwi/^pale-yak,
+ *  2026-09-03) — at which point `con spaces board` itself times out and the
+ *  dispatcher's own writes start failing. Override per hub in prefs
+ *  (`boards.maxRunningForks`), per board in frontmatter (`max_forks:`). */
+export const DEFAULT_MAX_RUNNING_FORKS = 4
+
 export interface DispatchableCard {
   column: string
   index: number
@@ -225,8 +234,12 @@ export function buildBoardEnvelope(opts: {
      *  silently worked (^blue-vole). */
     claudeSessionId?: string | null
   } | null
+  /** How many cards (including this one) now have a live worker, and the cap.
+   *  Every worktree lives on the same disk, so a fork starting under load must
+   *  serialise its heavy steps instead of adding a parallel tsc/vitest. */
+  load?: { running: number; cap: number } | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate, forkIdentity } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load } = opts
   // Image detail lines are delivered as REAL image attachments on the wake —
   // echoing them as text renders a broken ![img] box in the transcript.
   const detail = card.lines.slice(1).map((l) => l.trim())
@@ -281,6 +294,15 @@ export function buildBoardEnvelope(opts: {
       'survives), then `autowt cleanup <ticket-slug> -y`. Trivial edits (docs,',
       'one-liners) can skip the worktree — your judgment.',
     ]),
+    ...(load && load.running > 1 ? [
+      '',
+      `LOAD: ${load.running} of a maximum ${load.cap} cards are being worked right now, and every`,
+      'worktree is on the SAME disk. Run heavy steps (typecheck, tests, lint,',
+      'builds, install) through the repo\'s serialising wrapper if it has one',
+      '(`pnpm heavy <cmd>` / `scripts/heavy.sh`), or one at a time — do not fan',
+      'them out in parallel. A saturated disk stalls every other fork AND the',
+      'hub\'s own board writes.',
+    ] : []),
   ].join('\n')
 }
 

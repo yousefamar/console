@@ -87,9 +87,20 @@ export interface SpaceSummary {
   cwd: string
   /** Target of the project's `repo` symlink (code checkout), null if none. */
   repo: string | null
+  /** Cards in a dispatch column that the concurrency cap is holding back —
+   *  unstamped and unassigned-by-us, so nothing on the card itself explains
+   *  why it is idle. The rail shows "queued (N)" on the dispatch column. */
+  queuedCount: number
 }
 
-export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
+export interface ListSpacesOpts {
+  /** How many of this board's cards the dispatcher has queued
+   *  (BoardWatcher.queuedCards, grouped by board path). In-memory watcher
+   *  state — absent (tests, boot before the watcher exists) → 0. */
+  queuedFor?: (boardPath: string) => number
+}
+
+export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): Promise<SpaceSummary[]> {
   const all = await store.list()
   const out: SpaceSummary[] = []
 
@@ -164,6 +175,7 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       reviewCount, reviewAgentKeys, reviewCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
       cwd: spaceCwd(store.vaultPath, { project: slug })!,
       repo: projectRepo(store.vaultPath, slug),
+      queuedCount: boardPath ? opts.queuedFor?.(boardPath) ?? 0 : 0,
     })
   }
 
@@ -185,6 +197,7 @@ export async function listSpaces(store: NoteStore): Promise<SpaceSummary[]> {
       defaultOwner: null,
       cwd: store.vaultPath,
       repo: null,
+      queuedCount: 0,
     })
   }
 
