@@ -83,6 +83,9 @@ fun Composer(
     onSendWithAttachments: ((String, List<Uri>) -> Unit)? = null,
     handle: ComposerHandle? = null,
     aboveInput: (@Composable () -> Unit)? = null,
+    /** Long-press Send: queue the text for the end of the agent's turn (SPA
+     *  Ctrl+Enter). Null = no queueing on this composer. */
+    onQueue: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     // Durable draft: loads on entry, persists on every edit (blank = cleared).
@@ -310,31 +313,46 @@ fun Composer(
                     modifier = Modifier.size(20.dp),
                 )
             }
-            IconButton(
-                onClick = {
-                    val text = displayText.trim()
-                    if (dictation.active) Dictation.cancel()
-                    if (text.isNotEmpty() || attachments.isNotEmpty()) {
-                        val toSend = attachments
-                        draft = ""
-                        io.amar.console.core.DraftStore.put(context, draftKey, "")
-                        attachments = emptyList()
-                        onTextChange("")
-                        if (onSendWithAttachments != null && toSend.isNotEmpty()) {
-                            onSendWithAttachments(text, toSend)
-                        } else {
-                            onSend(text)
-                        }
-                    }
-                },
-                enabled = canSend,
-                colors = IconButtonDefaults.iconButtonColors(
-                    containerColor = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-                modifier = Modifier.size(44.dp).clip(CircleShape),
+            fun clearAfterSend() {
+                draft = ""
+                io.amar.console.core.DraftStore.put(context, draftKey, "")
+                attachments = emptyList()
+                onTextChange("")
+            }
+            fun send() {
+                val text = displayText.trim()
+                if (dictation.active) Dictation.cancel()
+                if (text.isNotEmpty() || attachments.isNotEmpty()) {
+                    val toSend = attachments
+                    clearAfterSend()
+                    if (onSendWithAttachments != null && toSend.isNotEmpty()) onSendWithAttachments(text, toSend)
+                    else onSend(text)
+                }
+            }
+            fun queue() {
+                val text = displayText.trim()
+                if (dictation.active) Dictation.cancel()
+                if (text.isEmpty() || onQueue == null) return
+                clearAfterSend()
+                onQueue(text)
+            }
+            // Tap = send, long-press = queue (Box + combinedClickable: IconButton
+            // has no long-press slot).
+            Box(
+                Modifier.size(44.dp).clip(CircleShape)
+                    .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                    .combinedClickable(
+                        enabled = canSend,
+                        onClick = { send() },
+                        onLongClick = if (onQueue != null) ({ queue() }) else null,
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.Send, contentDescription = "Send",
+                    tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }

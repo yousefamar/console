@@ -99,6 +99,7 @@ class AppGraph(context: Context) {
         // Eager pen live-activity wiring: the Notes tile's red dot + auto-open
         // work even before the Notes pane is first opened (SyncBus 'pen').
         notes.wirePenActivity(appScope)
+        notes.wireNotesEvents(appScope)
 
         feeds.registerOutboxHandlers()
         syncEngine.addDomain("feeds") { feeds.reconcile() }

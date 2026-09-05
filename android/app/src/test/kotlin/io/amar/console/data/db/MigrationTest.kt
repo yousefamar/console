@@ -4,6 +4,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -107,6 +108,23 @@ class MigrationTest {
 
     @Test
     fun `migrate 10 to latest`() = migrateFrom(10)
+
+    @Test
+    fun `migrate 13 to latest carries feed snoozes into item_snooze with the feed prefix`() {
+        val dbFile = File(context.cacheDir, "migration-13-snooze.db")
+        dbFile.delete()
+        createAtVersion(13, dbFile)
+        SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("INSERT INTO feed_snooze (itemId, snoozedUntil) VALUES ('abc', 123)")
+        }
+        val room = Room.databaseBuilder(context, ConsoleDb::class.java, dbFile.absolutePath).build()
+        try {
+            val rows = runBlocking { room.feeds().observeSnoozes().first() }
+            org.junit.Assert.assertEquals(listOf(ItemSnoozeRow("feed:abc", 123L)), rows)
+        } finally {
+            room.close()
+        }
+    }
 
     @Test
     fun `migrate 12 to latest with agent session data`() = migrateFrom(12) { db ->

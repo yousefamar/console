@@ -7,69 +7,124 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
-- Inbox snooze parity (SPA ^rare-lark): the SPA now snoozes ANY Inbox
-  source through one picker (later today / tomorrow / next week / custom)
-  with a 5 s undo, incl. agent sessions (local `itemSnooze` keyed by
-  `InboxItem.key`, feed rows migrated as `feed:<id>`). Android's swipe-left
-  is snooze-tomorrow for mail/chat/feed only (agents excluded) via its own
-  `feed_snooze` table — add agents to the swipe + a time choice, and key the
-  local table by item key if the two ports should read alike. Local-only on
-  both sides, so nothing to sync. The SPA also gained a "N snoozed" toggle in
-  the Inbox column header listing everything snoozed (all sources, soonest-due
-  first, tap-to-unsnooze) — Android has no snoozed view at all.
+Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
+(`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
-- Agent transcript inline media parity: SPA now renders `![x](/abs/path.png)`
-  via hub `GET /agents/local-file?path=` (rewrite local/`~/` img srcs) and
-  fenced ```html blocks as sandboxed WebView fragments. Android transcript
-  renderer needs the same img-src rewrite; html-fence can render as a
-  collapsed "view HTML" card if a sandboxed WebView is too heavy.
+- Money pane — SPA mobile bottom bar includes Money (Cashflow / Net worth /
+  Budgets / Scenarios / Transactions; `src/components/money/*`, hub `/money/*`).
+  Android `AppNav.kt` marks it out of scope and `money` pushes land on Home.
+  Plan: a Money tile → RunwayCard + net-worth line + recent transactions list
+  (read-only first; budgets/scenarios later), `data/money/MoneyRepository`
+  mirroring `/money/summary` + `/money/transactions` into Room.
 
-- Inbox: Feed platform chips + row glyphs/thumbnails (SPA fcd93fbf,
-  ^mild-toad) — port `src/feeds/feed-kind.ts` (`feedKind()` by host:
-  youtube/reddit/hn/substack/x/rss, incl. proxied `url=` params) into
-  `InboxLogic.kt`; items carry `feedKind`/`icon` (feed favicon)/`image`
-  (item thumbnail). Feed list header offers one chip per kind present
-  (hidden when only one), filtering the list; rows show the platform mark
-  instead of a generic RSS glyph, the feed favicon for plain RSS, and a
-  row-height 16:9 thumbnail when the item has an image.
+- Home: Costs sub-tab — SPA `CostsCard.tsx` (`GET /dashboard/costs`, per-day
+  stacked bars by person + $/day). Android `HomeSubTab` = Alerts/Servers/Blog/
+  Canvas. Plan: fifth sub-tab, Compose Canvas bars, same endpoint.
 
-- Inbox: approve a review hand-back from the agent row (SPA ^pale-tern) —
-  `/blog/spaces` now ships `reviewCards[{blockId,text,agentKey}]` +
-  `doneColumn` per project; join an agent item's `agentKey` to its cards
-  (SPA `reviewHandbacksFor` in route.ts → port into `InboxLogic.kt`), show a
-  ClipboardCheck glyph on the row and, in the agent detail screen, one strip
-  per card with "Approve → <Done>" → `POST /board/:project/move
-  {card:"^id"|text, to:doneColumn}` (`SpacesRepository`). Disabled when
-  `doneColumn` is null. Not gated on idle (unlike the ordering tier).
+- Map: Google Maps place search + "Open in Google Maps" — SPA `GmapsPanel`/
+  `PlaceDetailPanel` over hub `/gmaps/*`. Android `MapScreen.kt` has no gmaps
+  at all (the mobile ask in root CLAUDE.md is exactly this). Plan: search box
+  → `/gmaps/autocomplete` → pin + detail sheet → `geo:` deep link.
 
-- Spaces Agents list: crowned-bot owner glyph (SPA ^shy-ibis) — the SPA
-  replaced the separate amber crown with a bot-wearing-a-crown glyph in the
-  row's own state colour, and marks owners BY CONVENTION too (no
-  `default_owner:` → single bound root session / the `-general` one / first by
-  key, mirroring the hub's `resolveDefaultOwner`; `src/spaces/owner.ts`). The
-  native ★ default-agent marker only reflects explicit frontmatter — port the
-  convention pick + draw a crowned Bot vector in place of the ★.
+- Feeds: Reddit comments — SPA `RedditComments` via `/feeds/reddit-comments`;
+  Android renders the HN tree only (`FeedsLogic.kt`). Plan: flat comment list
+  under Reddit items, same endpoint, reuse the HN row.
 
-- Spaces rail: area draft counts + rows (SPA 7508161, ^tidy-swan) — drafts
-  push under every AREA their `tags` name (dedup'd against the project slug);
-  SpaceRow needs a FileText+count badge and draft rows beneath area entries.
-  Drafts come from `GET /blog/drafts` (bare array).
+- Spaces: area contents = tagged-post history + New post (SPA ^loud-colt
+  `AreaDevlog`, `GET /blog/area/:slug/posts`, `createDraft({area})`). Android
+  `SpaceDetailScreen` gives areas only Agents. Plan: a Devlog tab for areas
+  (posts + drafts + New-post FAB seeding `tags: [<area>]`).
 
-- Notes: inline AI-edit review parity (SPA 7bd0fb1, ^wavy-yak) — SPA flips an
-  open vault file into word-diff review (per-chunk accept/reject) when an
-  agent edits it, via SyncBus `notes.agent_edit {path, sessionId}`. Android's
-  notes editor has no review mode; at minimum surface a "changed on disk by
-  agent" banner with reload/keep choice. Related to the baseMtime entry below
-  (same conflict-surface plumbing).
+- Spaces: project devlog strip + New post in Docs (SPA ^prim-moth/^bold-hawk:
+  drafts then `postsByProject` above the tree). Android `SpaceDocsList` is a
+  flat path-prefix list, `log/<ts>.md` posts absent. Plan: Drafts/Posts
+  section above the tree + New post → `createDraft(project)`.
 
-- Notes editor: send `baseMtime` on save (conditional write) — the SPA gained
-  optimistic-concurrency saves (f866974: reads carry disk mtime, hub 409s on
-  conflict, Overwrite/Keep-editing dialog) after a stale writer clobbered a
-  draft. Android still saves last-writer-wins, so the same clobber class
-  exists there. Hub GET `/notes/file/` already returns `mtime`; PUT accepts
-  `baseMtime` and 409s — client-side only.
+- Spaces: quick switcher (SPA `SpacesQuickSwitcher.tsx`, `/`) — Android has
+  none (Notes has one). Plan: top-bar search over spaces + live sessions.
+
+- Inbox: routing-override management (SPA `RouteOverrides`, InboxTab.tsx:517
+  — clearable per source). Android has only the per-row `→ feed/→ inbox`
+  toggle. Plan: "Routing rules" sheet from the top bar, ✕ per override,
+  writes `/inbox/rules`.
+
+- Notes: live-buffer mirror (SPA ^tame-hare posts the active buffer to
+  `POST /notes/live` so the Curator's `con notes live` sees it). Android:
+  none — the Curator is blind to phone drafts. Plan: debounced POST from
+  `NoteEditor` while a writing file is active (path, content, cursor line).
+
+- Agents: "Allow all <tool>" on the approval card (SPA `AgentToolApproval`);
+  Android `ApprovalCard.kt` is Approve/Deny only. Low — tools auto-approve.
+
+- Theme: light mode — SPA Shift+T; Android `Theme.kt` is dark-only (map has
+  its own light toggle). Plan: follow the system theme.
+
+- Grid: `legacyTabs` hide pref — SPA hides Mail/Chat/Feeds/Notes tabs once
+  the Inbox/Spaces absorb them; Android grid always shows the tiles. Plan:
+  read the hub pref and hide those tiles when set.
+
+## Desktop-only (considered, not gaps)
+
+Inbox day rail · every keybinding (j/k/e/b/p, y/n/a, Ctrl+H/L focus cycling,
+Ctrl+Tab) · CodeMirror features (live table preview, vim `:e`/`:e!`, inline
+wiki-link widgets, word-diff AI review — the phone shows a Reload/Keep banner
+instead) · drag-to-Done track / drag between columns (swipe + sheet exist) ·
+hover copy/read-aloud cluster (long-press exists) · `~vault` pseudo-space (the
+Notes app covers it) · multi-tab strip vs single-buffer Docs · three-pane
+layouts / rail geometry · Home canvas iframe sandbox (WebView already) ·
+AccountModal cross-origin IndexedDB migration + APK pairing QR · desktop
+notifications · YouTube inline-vs-PiP · global `SearchOverlay` (per-pane search
+exists) · Music drawer-from-any-pane (tile instead) · per-space remembered
+view (the phone's Board > Agents > Docs landing is deliberate) · Notes tabs /
+view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
+
+- **Mobile parity sweep batch** (^neat-toad, 2026-09-05 — a deep SPA-vs-app
+  audit; the leftovers are the Open entries above):
+  - Inbox: snooze ANY source via the shared `SnoozeSheet` (agents included;
+    mail/chat on the hub, feed/agent locally by item key — Room v14
+    `item_snooze` replaces `feed_snooze`, rows migrated as `feed:<id>`), 5 s
+    undo on every done/snooze (via UndoHost — swipe-done had none), "N
+    snoozed" Clock toggle listing everything snoozed soonest-due first
+    (swipe right = unsnooze), source chips on the Inbox list, platform chips +
+    glyphs + 16:9 thumbnails on the Feed list (`FeedKind.kt` port of
+    `src/feeds/feed-kind.ts`; `FeedRow.imageUrl` for plain-RSS favicons),
+    ClipboardCheck glyph on rows whose `@key` owns an Under Review card.
+  - Agent session: "Under review · project · text · Approve → Done" strip per
+    owned review card (`reviewHandbacksFor` port; `SpacesRepository.reviewCards`
+    /`doneColumn` from `/blog/spaces`, `moveCardByQuery`).
+  - Spaces: Curator hoisted above AREAS (lineage-based, its forks nest under
+    it, skipped from area badges — ^tame-hare/^zany-kiwi); `~unassigned`
+    pseudo-space under EVERYTHING ELSE for live sessions with no binding (they
+    had NO surface since the Agents tile died); area/project draft rows +
+    FileText count badge (amber unsaved beats blue draft — ^tidy-swan/
+    ^sly-deer); `+ New project` on the PROJECTS header (^pale-otter); rail
+    badge order kanban-left-of-Bot with amber = working (^blue-eel); card
+    assignee chip coloured by the session's state (^plum-ibis); crowned-Bot
+    owner glyph in the row's state colour replaces ★ (^shy-ibis); "Relocate to
+    <space cwd>" in the session sheet for strays (^spry-seal); card image thumbs
+    open a shared `ImageLightbox` with ‹ › paging (^spry-koi).
+  - Notes: "Changed on disk / Edited by an agent — Reload | Keep" banner when
+    the file under an open buffer moves (subscribes SyncBus `notes.file_changed`
+    + `agent_edit`; the phone twin of the SPA's inline review — ^wavy-yak/
+    ^spry-fox); dirty buffers mirrored to Room meta and restored on open so
+    typing survives process death (^red-ibis); `con notes open` opens the note
+    on the phone too (`notes.open_file`). The `baseMtime` conditional save +
+    409 conflict banner turned out to be ALREADY built — entry retired.
+  - Agents: transcript `![alt](/abs/path.png)` renders via the hub media
+    bridge (`/agents/local-file`, tap → lightbox gallery); ```html fences are
+    a collapsed card with Render (JS-enabled WebView, no base URL) / Source;
+    long-press Send queues the prompt for the end of the turn
+    (`queue_message`), a chip above the composer shows/edits/cancels it
+    (`session_queued` + `SessionInfo.queuedMessage`).
+  - Calendar: **bug** — "Add account" omitted `add=1`, so Google silently
+    re-linked the signed-in account instead of adding one; recurring delete
+    offers This / This-and-following / All (`calDeleteFollowing` outbox action:
+    master delete or RRULE `UNTIL` truncation, `truncateRecurrence` port);
+    declined events render struck-through at 45 % alpha in both grids.
+  - Feeds: hidden-folder (X) items no longer leak into the legacy Feeds "All"
+    scope or the grid tile count.
 
 - **Fix: new space agents landed in the hub's cwd; strays now flagged**
   (3716ec9e, ^spry-seal): `NewSpaceAgentSheet` defaulted cwd to a hardcoded

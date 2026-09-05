@@ -140,6 +140,16 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
         io.amar.console.ui.shell.UndoController.offer("Deleted \"${row.summary}\"") { repo.undoDelete(row) }
     }
 
+    /** Recurring: cut the series from this instance on (fromStart) or delete it all (null). */
+    fun deleteSeriesWithUndo(row: CalEventRow, fromStart: Long?) {
+        scope.launch {
+            val removed = repo.deleteSeries(row.compoundKey, fromStart)
+            io.amar.console.ui.shell.UndoController.offer(if (fromStart == null) "Series deleted" else "Deleted from here on") {
+                repo.undoDeleteSeries(removed)
+            }
+        }
+    }
+
     fun applyEdit(edit: GridEdit) {
         val e = edit.event ?: return
         val details = parseEventDetails(e.rawJson)
@@ -150,7 +160,9 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     }
 
     fun openOAuth() {
-        val url = "${HubConfig.hubBase}/auth/google/start?callback=app"
+        // `add=1`: link an ADDITIONAL Google account — without it Google silently
+        // re-links the already-signed-in account (CLAUDE.md Auth gotcha; SPA parity).
+        val url = "${HubConfig.hubBase}/auth/google/start?callback=app&add=1"
         runCatching { CustomTabsIntent.Builder().build().launchUrl(context, android.net.Uri.parse(url)) }
         scope.launch {
             val email = repo.pollForNewAccount()
@@ -303,6 +315,8 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
             onSetReminder = { minutes -> scope.launch { repo.setReminder(event.compoundKey, minutes) } },
             onEdit = { detailKey = null; editTarget = event },
             onDelete = { detailKey = null; deleteWithUndo(event) },
+            onDeleteFollowing = { detailKey = null; deleteSeriesWithUndo(event, event.startTime) },
+            onDeleteSeries = { detailKey = null; deleteSeriesWithUndo(event, null) },
         )
     }
 

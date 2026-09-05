@@ -37,6 +37,7 @@ fun AgentComposer(
     onSend: (String) -> Unit,
     onTextChange: (String) -> Unit = {},
     onSendWithAttachments: ((String, List<Uri>) -> Unit)? = null,
+    onQueue: ((String) -> Unit)? = null,
 ) {
     var draft by remember(draftKey) { mutableStateOf("") }
 
@@ -56,6 +57,7 @@ fun AgentComposer(
         onSend = onSend,
         onTextChange = { draft = it; onTextChange(it) },
         onSendWithAttachments = onSendWithAttachments,
+        onQueue = onQueue,
         aboveInput = if (matches.isNotEmpty()) {
             {
                 LazyColumn(

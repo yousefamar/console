@@ -19,7 +19,15 @@ import kotlinx.serialization.json.put
 class BlogRepository(private val hub: HubClient) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    data class Draft(val path: String, val title: String, val mtime: Long)
+    data class Draft(
+        val path: String,
+        val title: String,
+        val mtime: Long,
+        /** Project the draft belongs to (path-homed or frontmatter-claimed), else null. */
+        val project: String? = null,
+        /** Frontmatter tags — an AREA slug here files the draft under that area. */
+        val tags: List<String> = emptyList(),
+    )
     data class Project(
         val slug: String,
         val title: String,
@@ -209,7 +217,14 @@ class BlogRepository(private val hub: HubClient) {
 
     private fun toDraft(o: JsonObject): Draft? {
         val path = o["path"]?.jsonPrimitive?.content ?: return null
-        return Draft(path, o["title"]?.jsonPrimitive?.content ?: "", mtimeOf(o, "mtime") ?: 0L)
+        return Draft(
+            path = path,
+            title = o["title"]?.jsonPrimitive?.content ?: "",
+            mtime = mtimeOf(o, "mtime") ?: 0L,
+            project = o["project"]?.let { if (it is kotlinx.serialization.json.JsonNull) null else it.jsonPrimitive.content }
+                ?: Regex("^projects/([^/]+)/log/drafts/").find(path)?.groupValues?.get(1),
+            tags = (o["tags"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+        )
     }
 
     private fun toProject(o: JsonObject): Project? {

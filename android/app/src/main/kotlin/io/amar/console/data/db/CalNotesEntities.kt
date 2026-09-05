@@ -70,6 +70,11 @@ interface CalendarDao {
     @Query("DELETE FROM cal_events WHERE compoundKey IN (:keys)")
     suspend fun deleteByKeys(keys: List<String>)
 
+    /** Every cached instance of a recurring series: the master row itself plus
+     *  Google's `<masterId>_<instanceStamp>` instance ids, one calendar. */
+    @Query("SELECT * FROM cal_events WHERE accountEmail = :account AND calendarId = :calendarId AND (eventId = :masterId OR eventId LIKE :masterId || '\\_%' ESCAPE '\\')")
+    suspend fun seriesRows(account: String, calendarId: String, masterId: String): List<CalEventRow>
+
     @Query("DELETE FROM cal_events WHERE endTime < :cutoffMs OR startTime > :horizonMs")
     suspend fun pruneOutsideWindow(cutoffMs: Long, horizonMs: Long)
 

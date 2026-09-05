@@ -26,6 +26,8 @@ data class FeedRow(
     /** null → default cap (50); a positive value overrides. */
     @ColumnInfo(defaultValue = "NULL") val maxItems: Int? = null,
     @ColumnInfo(defaultValue = "NULL") val addedAt: String? = null,
+    /** v14: the feed's own icon (`<image><url>` / favicon) — Inbox row glyph for plain RSS. */
+    @ColumnInfo(defaultValue = "NULL") val imageUrl: String? = null,
 )
 
 @Entity(
@@ -52,11 +54,14 @@ data class FeedReadRow(
     val pendingSync: Boolean,
 )
 
-/** v13: Inbox feed-item snooze — local-only, like the SPA's Dexie feedSnooze
- *  (hides the item from the Inbox pane until due; the Feeds app ignores it). */
-@Entity(tableName = "feed_snooze")
-data class FeedSnoozeRow(
-    @PrimaryKey val itemId: String,
+/** v14: Inbox item snooze for sources with no server-side snooze (feed items,
+ *  agent sessions) — local-only, like the SPA's Dexie `itemSnooze`. Keyed by
+ *  the Inbox item key (`feed:<id>` / `agent:<sessionId>`) so both ports read
+ *  alike; hides the item from the Inbox pane until due, other apps ignore it.
+ *  (v13 `feed_snooze` rows were migrated with the `feed:` prefix.) */
+@Entity(tableName = "item_snooze")
+data class ItemSnoozeRow(
+    @PrimaryKey val key: String,
     val snoozedUntil: Long,
 )
 
@@ -138,15 +143,18 @@ interface FeedsDao {
     @Query("SELECT COUNT(*) FROM feed_read WHERE itemId = :id")
     suspend fun readCount(id: String): Int
 
-    // Inbox feed-item snooze (v13, local-only)
+    // Inbox item snooze (v14, local-only)
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSnooze(row: FeedSnoozeRow)
+    suspend fun upsertSnooze(row: ItemSnoozeRow)
+
+    @Query("DELETE FROM item_snooze WHERE `key` = :key")
+    suspend fun deleteSnooze(key: String)
 
     /** ALL snooze rows — expiry is filtered at compose time against a live
      *  clock (a `WHERE snoozedUntil > :now` here would freeze `now` at
      *  construction and hide expired snoozes until app restart). */
-    @Query("SELECT * FROM feed_snooze")
-    fun observeSnoozes(): Flow<List<FeedSnoozeRow>>
+    @Query("SELECT * FROM item_snooze")
+    fun observeSnoozes(): Flow<List<ItemSnoozeRow>>
 }
 
 // ---------------------------------------------------------------------- //

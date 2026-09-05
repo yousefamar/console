@@ -637,13 +637,21 @@ fun BgTaskChip(p: JsonObject) {
 fun MarkdownLite(text: String, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         val blocks = remember(text) { splitBlocks(text) }
+        // All images in this text share one lightbox gallery (SPA parity).
+        val imageModels = remember(blocks) { blocks.filterIsInstance<MdBlock.Image>().map { localMediaSrc(it.src) } }
+        var lightbox by remember { mutableStateOf<Int?>(null) }
         for (block in blocks) {
             when (block) {
-                is MdBlock.Code -> CodeFence(block.lang, block.code)
+                is MdBlock.Code -> if (block.lang.equals("html", ignoreCase = true)) HtmlFenceCard(block.code) else CodeFence(block.lang, block.code)
                 is MdBlock.Table -> MdTable(block.header, block.rows)
+                is MdBlock.Image -> {
+                    val model = localMediaSrc(block.src)
+                    InlineImage(model, block.alt) { lightbox = imageModels.indexOf(model).coerceAtLeast(0) }
+                }
                 is MdBlock.Lines -> for (line in block.lines) { if (line.isNotBlank()) RenderMdLine(line) }
             }
         }
+        lightbox?.let { io.amar.console.ui.components.ImageLightbox(imageModels, it) { lightbox = null } }
     }
 }
 
@@ -651,6 +659,80 @@ private sealed interface MdBlock {
     data class Code(val lang: String, val code: String) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
     data class Lines(val lines: List<String>) : MdBlock
+    /** A whole-line `![alt](src)` — agents drop screenshots/charts into their
+     *  transcript this way; the SPA renders them via the hub media bridge. */
+    data class Image(val alt: String, val src: String) : MdBlock
+}
+
+private val IMAGE_LINE = Regex("""^!\[([^\]]*)\]\(([^)\s]+)\)\s*$""")
+
+/**
+ * Local absolute / `~/` paths render through the hub's media bridge
+ * (`GET /agents/local-file?path=`, bearer via Coil); everything else
+ * (https:, data:) passes through — the SPA `localMediaSrc` rule.
+ */
+internal fun localMediaSrc(src: String): String {
+    val s = src.trim()
+    return if (s.startsWith("/") || s.startsWith("~/")) {
+        io.amar.console.core.HubConfig.hubBase + "/agents/local-file?path=" + java.net.URLEncoder.encode(s, "UTF-8")
+    } else s
+}
+
+@Composable
+private fun InlineImage(model: String, alt: String, onClick: () -> Unit) {
+    var failed by remember(model) { mutableStateOf(false) }
+    if (failed) {
+        Text(
+            if (alt.isNotBlank()) "[image: $alt]" else "[image]",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    AsyncImage(
+        model = model,
+        contentDescription = alt.ifBlank { null },
+        onError = { failed = true },
+        contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+    )
+}
+
+/**
+ * ```html fence → the SPA renders it live in a sandboxed iframe. Here it is a
+ * collapsed card: "Render" swaps in a JS-enabled WebView (no base URL → no
+ * hub/cookie access, like the iframe's `allow-scripts` sandbox), "Source"
+ * shows the fence. Collapsed by default: a WebView per fence in a transcript
+ * list would be heavy.
+ */
+@Composable
+private fun HtmlFenceCard(code: String) {
+    var mode by remember { mutableStateOf("collapsed") }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("HTML", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            androidx.compose.material3.TextButton(onClick = { mode = if (mode == "render") "collapsed" else "render" }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text(if (mode == "render") "Hide" else "Render", style = MaterialTheme.typography.labelSmall)
+            }
+            androidx.compose.material3.TextButton(onClick = { mode = if (mode == "source") "collapsed" else "source" }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text(if (mode == "source") "Hide" else "Source", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        when (mode) {
+            "render" -> io.amar.console.ui.components.SelfSizingWebView(
+                html = code,
+                configure = { it.settings.javaScriptEnabled = true },
+            )
+            "source" -> CodeFence("html", code)
+        }
+    }
 }
 
 private fun splitBlocks(text: String): List<MdBlock> {
@@ -684,7 +766,12 @@ private fun splitBlocks(text: String): List<MdBlock> {
             out.add(MdBlock.Table(header, rows))
             continue
         }
-        plain.add(line); i++
+        IMAGE_LINE.matchEntire(line.trim())?.let { m ->
+            flushPlain()
+            out.add(MdBlock.Image(m.groupValues[1], m.groupValues[2]))
+            i++
+            return@let
+        } ?: run { plain.add(line); i++ }
     }
     flushPlain()
     return out

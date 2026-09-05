@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +34,7 @@ import io.amar.console.data.cal.DAY_MS
 import io.amar.console.data.cal.hasReminder
 import io.amar.console.data.cal.isAccepted
 import io.amar.console.data.cal.monthGridDays
+import io.amar.console.data.cal.isDeclined
 import io.amar.console.data.cal.parseEventDetails
 import io.amar.console.data.db.CalEventRow
 import io.amar.console.data.db.CalendarRow
@@ -182,7 +184,12 @@ private fun MonthPill(
         if (!e.isAllDay) {
             Text(timeShort(e.startTime), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         }
-        Text(e.summary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        val declined = isDeclined(details)
+        Text(
+            e.summary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            textDecoration = if (declined) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+            modifier = Modifier.weight(1f, fill = false).then(if (declined) Modifier.alpha(0.45f) else Modifier),
+        )
         if (hasReminder(details.reminders, calDefaults[e.calendarId] ?: emptyList())) {
             Icon(Icons.Filled.Notifications, null, Modifier.size(7.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }

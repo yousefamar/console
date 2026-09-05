@@ -17,6 +17,10 @@ import kotlinx.coroutines.flow.StateFlow
 class NotesTabs(
     /** Persist the open-path list + active path (Room meta, fire-and-forget). */
     private val persist: (openPaths: List<String>, active: String?) -> Unit = { _, _ -> },
+    /** Mirror a DIRTY buffer durably (null = buffer is clean, drop the mirror)
+     *  — unsaved typing must survive process death (SPA localStorage draft
+     *  mirror, ^red-ibis). Fire-and-forget. */
+    private val mirror: (path: String, content: String?) -> Unit = { _, _ -> },
 ) {
     data class Tab(val path: String, val content: String, val savedContent: String) {
         val dirty: Boolean get() = content != savedContent
@@ -51,12 +55,13 @@ class NotesTabs(
         persist(_state.value.open.map { it.path }, path)
     }
 
-    /** Live-edit buffer of a tab (drives the dirty dot). No persistence. */
+    /** Live-edit buffer of a tab (drives the dirty dot); dirty text is mirrored. */
     fun setContent(path: String, content: String) {
         val s = _state.value
         val tab = s.tab(path) ?: return
         if (tab.content == content) return
         _state.value = s.copy(open = s.open.map { if (it.path == path) it.copy(content = content) else it })
+        mirror(path, if (content != tab.savedContent) content else null)
     }
 
     /** Mark a tab clean (called after a successful save). */
@@ -65,6 +70,7 @@ class NotesTabs(
         _state.value = s.copy(open = s.open.map {
             if (it.path == path) it.copy(content = savedContent, savedContent = savedContent) else it
         })
+        mirror(path, null)
     }
 
     /**

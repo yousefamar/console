@@ -3,8 +3,12 @@ package io.amar.console.data.db
 import android.content.Context
 import androidx.room.AutoMigration
 import androidx.room.Database
+import androidx.room.RenameColumn
+import androidx.room.RenameTable
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.AutoMigrationSpec
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * The offline-first local database. Schema versions are additive (new tables
@@ -24,14 +28,14 @@ import androidx.room.RoomDatabase
         FeedRow::class,
         FeedItemRow::class,
         FeedReadRow::class,
-        FeedSnoozeRow::class,
+        ItemSnoozeRow::class,
         AgentSessionRow::class,
         AgentMessageRow::class,
         BookmarkRow::class,
         GeocacheRow::class,
         MeetupEventRow::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
@@ -46,9 +50,19 @@ import androidx.room.RoomDatabase
         AutoMigration(from = 10, to = 11),
         AutoMigration(from = 11, to = 12),
         AutoMigration(from = 12, to = 13),
+        AutoMigration(from = 13, to = 14, spec = ConsoleDb.Migration13To14::class),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {
+    /** v13 `feed_snooze(itemId)` → v14 `item_snooze(key)`; existing rows become `feed:<id>`. */
+    @RenameTable(fromTableName = "feed_snooze", toTableName = "item_snooze")
+    @RenameColumn(tableName = "feed_snooze", fromColumnName = "itemId", toColumnName = "key")
+    class Migration13To14 : AutoMigrationSpec {
+        override fun onPostMigrate(db: SupportSQLiteDatabase) {
+            db.execSQL("UPDATE item_snooze SET `key` = 'feed:' || `key` WHERE `key` NOT LIKE 'feed:%' AND `key` NOT LIKE 'agent:%'")
+        }
+    }
+
     abstract fun outbox(): OutboxDao
     abstract fun meta(): MetaDao
     abstract fun chatRooms(): ChatRoomDao

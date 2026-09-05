@@ -118,7 +118,7 @@ fun NotesCommandPalette(
                 scope.launch {
                     val r = repo.blog.createDraft(t, FrontmatterParser.enclosingProjectSlug(activePath))
                     if (r.ok && r.path != null) {
-                        repo.reconcile(); repo.tabs.open(r.path, repo.openFile(r.path) ?: ""); repo.blog.refreshDrafts()
+                        repo.reconcile(); repo.openInTabs(r.path); repo.blog.refreshDrafts()
                     } else onToast(r.error ?: "Draft failed")
                 }
             },
@@ -135,7 +135,7 @@ fun NotesCommandPalette(
                 scope.launch {
                     val r = repo.blog.createProject(t)
                     if (r.ok && r.path != null) {
-                        repo.reconcile(); repo.tabs.open(r.path, repo.openFile(r.path) ?: ""); repo.blog.refreshProjects()
+                        repo.reconcile(); repo.openInTabs(r.path); repo.blog.refreshProjects()
                     } else onToast(r.error ?: "Project failed")
                 }
             },

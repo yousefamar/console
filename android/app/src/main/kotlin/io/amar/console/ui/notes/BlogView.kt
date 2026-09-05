@@ -69,7 +69,7 @@ fun BlogView(
     LaunchedEffect(Unit) { repo.blog.refreshAll() }
 
     fun openBlogFile(path: String) {
-        scope.launch { repo.tabs.open(path, repo.openFile(path) ?: ""); onOpenFile(path) }
+        scope.launch { repo.openInTabs(path); onOpenFile(path) }
     }
 
     Column(modifier.fillMaxSize()) {

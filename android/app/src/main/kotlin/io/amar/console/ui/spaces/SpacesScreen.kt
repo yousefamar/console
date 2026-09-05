@@ -27,12 +27,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Schedule
@@ -64,6 +66,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.db.AgentSessionRow
 import io.amar.console.data.db.areaList
@@ -74,6 +77,31 @@ import kotlinx.coroutines.launch
 private val VIOLET = Color(0xFFA78BFA)
 private val AMBER = Color(0xFFF59E0B)
 private val GREEN = Color(0xFF4ADE80)
+
+/** The single shared writing agent (SPA `CURATOR_AGENT_KEY`, src/spaces/scope.ts). */
+const val CURATOR_AGENT_KEY = "curator"
+/** Pseudo-space for live sessions with no project/area binding (SPA `~unassigned`). */
+const val UNASSIGNED_SLUG = "~unassigned"
+
+/** True when [s]'s fork lineage roots at the Curator. Lineage, NOT key: chat
+ *  forks carry their own `@key` (or none), so a key match misses them and
+ *  they'd badge every one of the Curator's seven areas (^zany-kiwi). */
+fun isCuratorLineage(s: AgentSessionRow, all: List<AgentSessionRow>): Boolean {
+    val byCsid = all.filter { it.claudeSessionId != null }.associateBy { it.claudeSessionId!! }
+    var cur: AgentSessionRow? = s
+    var guard = 0
+    while (cur != null && guard++ < 8) {
+        if (cur.agentKey == CURATOR_AGENT_KEY) return true
+        cur = cur.parentClaudeSessionId?.let { byCsid[it] }
+    }
+    return false
+}
+
+/** Live, non-Al sessions bound to no space at all — they have no other surface. */
+fun unassignedSessions(sessions: List<AgentSessionRow>): List<AgentSessionRow> =
+    sessions.filter { s ->
+        s.status != "ended" && !s.isAl && s.project == null && s.areaList().isEmpty() && !isCuratorLineage(s, sessions)
+    }
 
 /**
  * Spaces — the project-first pane that will eventually absorb Notes+Agents
@@ -114,6 +142,15 @@ fun SpacesScreen(
 
     // Unsaved (dirty) docs — offline edits awaiting a save/flush.
     val notesFiles by notes.observeFiles().collectAsState(initial = emptyList())
+    // Unpublished drafts: project drafts under their project, area-tagged
+    // drafts under every area their tags name (SPA ^tidy-swan/^sly-deer).
+    val drafts by notes.blog.drafts.collectAsState()
+    LaunchedEffect(Unit) { notes.blog.refreshDrafts() }
+    val dirtyPaths = remember(notesFiles) { notesFiles.filter { it.dirty }.map { it.path }.toHashSet() }
+    val areaSlugs = remember(spaces) { spaces.filter { it.kind == "area" }.map { it.slug }.toHashSet() }
+    fun draftsFor(slug: String, kind: String): List<io.amar.console.data.notes.BlogRepository.Draft> =
+        if (kind == "project") drafts.filter { it.project == slug }
+        else drafts.filter { slug in areaSlugs && slug in it.tags && it.project != slug }
 
     // Concrete alert ITEMS per space (SPA SpaceAlert parity): the actual
     // unread/alerted sessions + dirty files render as tappable rows inline
@@ -173,6 +210,12 @@ fun SpacesScreen(
                 if (inSpace) items.add(SpaceAlertItem("file", f.path, f.path.substringAfterLast('/'), "dirty"))
             }
         }
+        // Unsaved (amber) beats unpublished (blue): a dirty draft already has
+        // its amber row above (projects) or takes the dirty level here (areas).
+        for (d in draftsFor(slug, kind)) {
+            if (items.any { it.kind == "file" && it.id == d.path }) continue
+            items.add(SpaceAlertItem("file", d.path, d.title.ifBlank { d.path.substringAfterLast('/') }, if (d.path in dirtyPaths) "dirty" else "draft"))
+        }
         return items
     }
 
@@ -185,8 +228,21 @@ fun SpacesScreen(
             .thenBy { it.title.lowercase() })
 
     var showFleet by remember { mutableStateOf(false) }
+    var newProject by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val fallback by agents.fallbackNotice.collectAsState()
     val handoff by agents.handoff.collectAsState()
+
+    // Curator: ONE row above AREAS (hoisted — bound to every area, it would
+    // otherwise badge all seven); its alerted/working/unread forks nest under
+    // it. Skipped from area badges/rows by lineage.
+    val curator = sessions.firstOrNull { it.agentKey == CURATOR_AGENT_KEY && it.status != "ended" }
+    val curatorForks = sessions.filter { s ->
+        s.id != curator?.id && s.status != "ended" && isCuratorLineage(s, sessions) &&
+            (s.needsAttention || s.hasUnread || activity[s.id]?.running == true)
+    }.sortedWith(compareBy({ if (it.needsAttention) 0 else if (activity[it.id]?.running == true) 1 else 2 }, { it.createdAt }))
+    val unassigned = unassignedSessions(sessions)
 
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
@@ -242,11 +298,13 @@ fun SpacesScreen(
                     fun isHandback(s: AgentSessionRow) =
                         s.hasUnread && !s.needsAttention && s.agentKey != null && s.agentKey in reviewOwners
                     SpaceRow(
-                        sp, hasAlerts = items.isNotEmpty(),
+                        sp, hasAlerts = items.any { it.level != "context" },
                         boundCount = boundHere.count { !isHandback(it) },
                         boundAttention = boundHere.any { it.needsAttention },
+                        boundWorking = boundHere.any { activity[it.id]?.running == true },
                         boundUnread = boundHere.any { it.hasUnread && !isHandback(it) },
                         reviewUnread = boundHere.any { isHandback(it) },
+                        draftCount = items.count { it.kind == "file" && it.level == "draft" },
                         onClick = { onOpenSpace("${sp.kind}/${sp.slug}") },
                     )
                 }
@@ -256,15 +314,124 @@ fun SpacesScreen(
                     })
                 }
             }
+            if (curator != null) {
+                item(key = "curator") {
+                    CuratorRow(
+                        curator,
+                        alerted = curatorForks.isNotEmpty() || curator.hasUnread || curator.needsAttention,
+                        onClick = { onOpenSession(curator.id) },
+                    )
+                }
+                items(curatorForks, key = { "curator:${it.id}" }) { f ->
+                    AlertRow(
+                        SpaceAlertItem(
+                            "session", f.id, f.name.removeSuffix(" (fork)"),
+                            when {
+                                f.needsAttention -> "attention"
+                                activity[f.id]?.running == true -> "working"
+                                else -> "unread"
+                            },
+                            depth = 0, fork = true,
+                        ),
+                        onClick = { onOpenSession(f.id) },
+                    )
+                }
+            }
             if (areas.isNotEmpty()) {
                 item { SectionHeader("AREAS") }
                 for (sp in areas) renderSpace(this, sp)
             }
-            item { SectionHeader("PROJECTS") }
+            item { SectionHeader("PROJECTS", action = "New project" to { newProject = true }) }
             for (sp in projects) renderSpace(this, sp)
+            // Unbound live sessions (chat forks, one-off creates) — the only
+            // surface they have since the Agents tab died. Appears when non-empty.
+            if (unassigned.isNotEmpty()) {
+                item { SectionHeader("EVERYTHING ELSE") }
+                item(key = "unassigned") {
+                    SpaceRow(
+                        SpacesRepository.SpaceSummary(kind = "project", slug = UNASSIGNED_SLUG, title = "Unassigned", notePath = null, boardPath = null, status = null, fileCount = 0),
+                        hasAlerts = unassigned.any { it.hasUnread || it.needsAttention },
+                        boundCount = unassigned.size,
+                        boundAttention = unassigned.any { it.needsAttention },
+                        boundWorking = unassigned.any { activity[it.id]?.running == true },
+                        boundUnread = unassigned.any { it.hasUnread },
+                        onClick = { onOpenSpace("project/$UNASSIGNED_SLUG") },
+                    )
+                }
+                items(
+                    unassigned.filter { it.hasUnread || it.needsAttention || activity[it.id]?.running == true },
+                    key = { "unassigned:${it.id}" },
+                ) { s ->
+                    AlertRow(
+                        SpaceAlertItem(
+                            "session", s.id, s.name.removeSuffix(" (fork)"),
+                            when {
+                                s.needsAttention -> "attention"
+                                activity[s.id]?.running == true -> "working"
+                                else -> "unread"
+                            },
+                            fork = s.parentClaudeSessionId != null,
+                        ),
+                        onClick = { onOpenSession(s.id) },
+                    )
+                }
+            }
         }
     }
     if (showFleet) io.amar.console.ui.agents.FleetModelSheet(agents, onDismiss = { showFleet = false })
+    if (newProject) {
+        NewProjectDialog(
+            onDismiss = { newProject = false },
+            onCreate = { title ->
+                newProject = false
+                scope.launch {
+                    val r = notes.blog.createProject(title)
+                    if (r.ok && r.slug != null) {
+                        spacesRepo.refreshSpaces()
+                        onOpenSpace("project/${r.slug}")
+                    } else {
+                        android.widget.Toast.makeText(context, r.error ?: "Could not create project", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CuratorRow(curator: AgentSessionRow, alerted: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Filled.Create, contentDescription = null, tint = VIOLET, modifier = Modifier.size(16.dp))
+        Text(
+            curator.name, style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (alerted) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+        if (curator.needsAttention) Dot(MaterialTheme.colorScheme.error)
+        else if (curator.hasUnread) Dot(MaterialTheme.colorScheme.primary)
+    }
+}
+
+@Composable
+private fun NewProjectDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New project") },
+        text = {
+            androidx.compose.material3.OutlinedTextField(
+                value = title, onValueChange = { title = it },
+                singleLine = true, label = { Text("Title") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { if (title.isNotBlank()) onCreate(title.trim()) }, enabled = title.isNotBlank()) { Text("Create") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Fork-lineage depth (parentClaudeSessionId chain within the live set, cap 6)
@@ -304,9 +471,12 @@ fun sessionsForSpace(
     slug: String,
     kind: String,
     sessions: List<AgentSessionRow>,
-): List<AgentSessionRow> = sessions.filter { s ->
-    s.status != "ended" && !s.isAl &&
-        (if (kind == "project") s.project == slug else slug in s.areaList())
+): List<AgentSessionRow> {
+    if (slug == UNASSIGNED_SLUG) return unassignedSessions(sessions)
+    return sessions.filter { s ->
+        s.status != "ended" && !s.isAl &&
+            (if (kind == "project") s.project == slug else slug in s.areaList() && !isCuratorLineage(s, sessions))
+    }
 }
 
 /** Root agent of an assignee key: walk the LIVE session's
@@ -369,12 +539,18 @@ fun lineageOrder(
 }
 
 @Composable
-private fun SectionHeader(label: String) {
-    Text(
-        label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 2.dp),
-    )
+private fun SectionHeader(label: String, action: Pair<String, () -> Unit>? = null) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
+        )
+        if (action != null) {
+            TextButton(onClick = action.second, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text("+ ${action.first}", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
 }
 
 /** A concrete alert item under a space: an unread/alerted session or a
@@ -396,6 +572,9 @@ private fun SpaceRow(
     /** An unread bot's unread is really a review hand-back it owns — the blue
      *  belongs on the kanban badge, not the Bot badge (SPA parity). */
     reviewUnread: Boolean = false,
+    boundWorking: Boolean = false,
+    /** Unpublished drafts filed under this space (blue FileText badge). */
+    draftCount: Int = 0,
     onClick: () -> Unit,
 ) {
     val dim = sp.status == "dormant" || sp.status == "complete"
@@ -425,16 +604,12 @@ private fun SpaceRow(
                 Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        // SPA rail-1 parity: Bot+count coloured by the space's hottest alert
-        // (red attention > blue unread > grey), Kanban glyph when a board exists.
-        if (boundCount > 0) {
-            val botTint = when {
-                boundAttention -> MaterialTheme.colorScheme.error
-                boundUnread -> MaterialTheme.colorScheme.primary
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
-            Icon(Icons.Filled.SmartToy, "$boundCount agents", tint = botTint, modifier = Modifier.size(13.dp))
-            Text("$boundCount", style = MaterialTheme.typography.labelSmall, color = botTint)
+        // SPA rail-1 parity (^blue-eel order): drafts, then the kanban badge
+        // (review count, blue on a hand-back), then Bot+count coloured by the
+        // space's hottest alert (red attention > amber working > blue unread).
+        if (draftCount > 0) {
+            Icon(Icons.AutoMirrored.Filled.InsertDriveFile, "$draftCount drafts", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
+            Text("$draftCount", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
         if (sp.boardPath != null) {
             val kanbanTint =
@@ -449,6 +624,16 @@ private fun SpaceRow(
             if (sp.reviewCount > 0) {
                 Text("${sp.reviewCount}", style = MaterialTheme.typography.labelSmall, color = kanbanTint)
             }
+        }
+        if (boundCount > 0) {
+            val botTint = when {
+                boundAttention -> MaterialTheme.colorScheme.error
+                boundWorking -> AMBER
+                boundUnread -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Icon(Icons.Filled.SmartToy, "$boundCount agents", tint = botTint, modifier = Modifier.size(13.dp))
+            Text("$boundCount", style = MaterialTheme.typography.labelSmall, color = botTint)
         }
     }
 }
@@ -474,7 +659,9 @@ private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
             "unread" -> Dot(MaterialTheme.colorScheme.primary)
             // Non-alerted ancestor pulled in for tree shape — neutral marker.
             "context" -> Dot(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
-            else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // Unpublished draft (blue); "dirty" (unsaved, amber pen) wins over it.
+            "draft" -> Dot(MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+            else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = AMBER)
         }
         if (a.fork) {
             Icon(
@@ -507,6 +694,8 @@ fun SpaceDetailScreen(
 ) {
     val spaces by spacesRepo.spaces.collectAsState()
     val sp = spaces.firstOrNull { it.slug == slug && it.kind == kind }
+    // `~unassigned` is a pseudo-space: Agents only, no board/docs to offer.
+    val pseudo = slug == UNASSIGNED_SLUG
     val sessions by agents.observeSessions().collectAsState(initial = emptyList())
     val bound = remember(sessions) { sessionsForSpace(slug, kind, sessions) }
     val scope = rememberCoroutineScope()
@@ -533,7 +722,7 @@ fun SpaceDetailScreen(
 
     Column(Modifier.fillMaxSize()) {
         io.amar.console.ui.components.PaneTopBar(
-            title = sp?.title ?: slug,
+            title = sp?.title ?: if (pseudo) "Unassigned" else slug,
             subtitle = listOfNotNull(sp?.status, if (bound.isNotEmpty()) "${bound.size} agents" else null)
                 .joinToString(" · ").ifEmpty { null },
             onBack = onBack,
@@ -545,9 +734,9 @@ fun SpaceDetailScreen(
         ) {
             val tabs = buildList {
                 if (sp?.boardPath != null) add("board" to "Board")
-                else if (kind == "project") add("newboard" to "+ Board")
+                else if (kind == "project" && !pseudo) add("newboard" to "+ Board")
                 add("agents" to "Agents")
-                if (kind == "project") add("docs" to "Docs")
+                if (kind == "project" && !pseudo) add("docs" to "Docs")
             }
             for ((id, label) in tabs) {
                 Surface(
@@ -768,18 +957,22 @@ private fun CardChip(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        // Image thumbs (48dp) via GET /notes/asset/<path> (bearer via Coil).
+        // Image thumbs (48dp) via GET /notes/asset/<path> (bearer via Coil);
+        // tap → lightbox paging through this card's attachments (^spry-koi).
         if (images.isNotEmpty()) {
+            var lightbox by remember(card.blockId ?: card.text) { mutableStateOf<Int?>(null) }
+            val models = remember(images) { images.map { assetUrl(it) } }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
-                for (path in images.take(4)) {
+                for ((i, path) in images.take(4).withIndex()) {
                     coil.compose.AsyncImage(
-                        model = io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8"),
+                        model = assetUrl(path),
                         contentDescription = null,
-                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)),
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)).clickable { lightbox = i },
                         contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                     )
                 }
             }
+            lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
         }
         // URL chips — tappable, open browser.
         if (urls.isNotEmpty()) {
@@ -823,9 +1016,20 @@ private fun CardChip(
                 }
                 card.agentKey?.let { key ->
                     val label = io.amar.console.data.spaces.agentLabel(key, allSessions)
+                    // Chip colour = the assignee session's state, the rail's
+                    // vocabulary (^plum-ibis): red attention > amber working >
+                    // blue unread > violet idle / no live session.
+                    val live = allSessions.firstOrNull { it.agentKey == key && it.status != "ended" }
+                    val tint = when {
+                        live == null -> VIOLET
+                        live.needsAttention -> MaterialTheme.colorScheme.error
+                        live.status == "running" -> AMBER
+                        live.hasUnread -> MaterialTheme.colorScheme.primary
+                        else -> VIOLET
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Icon(Icons.Filled.SmartToy, null, tint = VIOLET, modifier = Modifier.size(11.dp))
-                        Text(label, style = MaterialTheme.typography.labelSmall, color = VIOLET, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(Icons.Filled.SmartToy, null, tint = tint, modifier = Modifier.size(11.dp))
+                        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 if (card.blockId != null) {
@@ -888,19 +1092,22 @@ private fun CardSheet(
                 }
             }
             if (sheetImages.isNotEmpty()) {
+                var lightbox by remember(sheetImages) { mutableStateOf<Int?>(null) }
+                val models = remember(sheetImages) { sheetImages.map { assetUrl(it) } }
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    for (path in sheetImages) {
+                    for ((i, path) in sheetImages.withIndex()) {
                         coil.compose.AsyncImage(
-                            model = io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8"),
+                            model = assetUrl(path),
                             contentDescription = path,
-                            modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)),
+                            modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).clickable { lightbox = i },
                             contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                         )
                     }
                 }
+                lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
             }
             if (sheetUrls.isNotEmpty()) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
@@ -1248,9 +1455,22 @@ private fun SpaceAgentsList(
                             contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(12.dp),
                         )
                     }
+                    // Project owner (frontmatter default_owner, else the hub's
+                    // convention pick) wears a crowned Bot in the row's state
+                    // colour — SPA ^shy-ibis, replacing the old ★ prefix.
+                    if (s.id == default?.id) {
+                        CrownedBot(
+                            tint = when {
+                                s.needsAttention -> MaterialTheme.colorScheme.error
+                                activity[s.id]?.running == true -> AMBER
+                                s.hasUnread -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(
-                            (if (s.id == default?.id) "★ " else "") + s.name.removeSuffix(" (fork)"),
+                            s.name.removeSuffix(" (fork)"),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = if (s.id == default?.id) FontWeight.Medium else null,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -1331,6 +1551,9 @@ private fun SpaceAgentsList(
                 val isOwner = boardState?.defaultOwner == key
                 Pair(isOwner) { ownerScope.launch { spacesRepo.setDefaultOwner(slug, if (isOwner) null else key) } }
             },
+            relocate = spaceCwd?.takeIf { isStrayCwd(target.cwd, it) }?.let { cwd ->
+                Pair(shortCwd(cwd)) { agents.relocateSession(target.id, cwd) }
+            },
         )
     }
     if (creating) {
@@ -1410,6 +1633,19 @@ private fun SpaceDocsList(
 }
 
 /** `/home/<user>/x` → `~/x` for display (the hub reports absolute Linux paths). */
+/** A Bot glyph wearing a small crown — the project-owner marker. */
+@Composable
+private fun CrownedBot(tint: Color) {
+    Box(Modifier.size(18.dp)) {
+        Icon(Icons.Filled.SmartToy, contentDescription = "Project owner", tint = tint, modifier = Modifier.size(15.dp).align(Alignment.BottomStart))
+        Text("♛", fontSize = 9.sp, color = AMBER, lineHeight = 9.sp, modifier = Modifier.align(Alignment.TopEnd))
+    }
+}
+
+/** Card image line → hub asset URL (bearer attached by Coil's hub interceptor). */
+internal fun assetUrl(path: String): String =
+    io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8")
+
 internal fun shortCwd(path: String): String = path.replace(Regex("^/home/[^/]+(?=/|$)"), "~")
 
 /** A bound session runs somewhere other than its space's home; unknown on

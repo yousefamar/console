@@ -71,4 +71,26 @@ class EventDetailsTest {
         assertEquals("a < b", stripHtml("a &lt; b"))
         assertEquals("plain", stripHtml("plain"))
     }
+
+    @Test
+    fun `truncateRecurrence ends the series just before the cut and drops COUNT`() {
+        // Timed cut: UNTIL is one second before the cut instance, UTC basic format.
+        assertEquals(
+            listOf("RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20260914T085959Z", "EXDATE:20260907T090000Z"),
+            truncateRecurrence(listOf("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=10", "EXDATE:20260907T090000Z"), "2026-09-14T10:00:00+01:00"),
+        )
+        // All-day cut: date-only UNTIL, the day before.
+        assertEquals(listOf("RRULE:FREQ=DAILY;UNTIL=20260913"), truncateRecurrence(listOf("RRULE:FREQ=DAILY;UNTIL=20261231"), "2026-09-14"))
+    }
+
+    @Test
+    fun `isDeclined only when the self attendee declined`() {
+        val declined = parseEventDetails("""{"attendees":[{"email":"me@x","self":true,"responseStatus":"declined"}]}""")
+        val accepted = parseEventDetails("""{"attendees":[{"email":"me@x","self":true,"responseStatus":"accepted"}]}""")
+        val other = parseEventDetails("""{"attendees":[{"email":"you@x","responseStatus":"declined"}]}""")
+        assertTrue(isDeclined(declined))
+        assertTrue(!isDeclined(accepted))
+        assertTrue(!isDeclined(other))
+        assertTrue(!isDeclined(parseEventDetails("{}")))
+    }
 }

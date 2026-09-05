@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.NotificationImportant
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
@@ -79,6 +80,28 @@ import kotlinx.serialization.json.jsonPrimitive
 private val jsonLenient = Json { ignoreUnknownKeys = true }
 private val AMBER = Color(0xFFF59E0B)
 private val VIOLET = Color(0xFFA78BFA)
+
+@Composable
+private fun ReviewHandbackStrip(hb: io.amar.console.data.spaces.SpacesRepository.ReviewHandback, onApprove: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer).padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Under review · ${hb.project}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+            Text(hb.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        androidx.compose.material3.TextButton(onClick = onApprove, enabled = hb.doneColumn != null) {
+            Text(if (hb.doneColumn != null) "Approve → ${hb.doneColumn}" else "No Done column")
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionActionsSheet(
@@ -98,6 +121,9 @@ fun SessionActionsSheet(
     /** Project-owner toggle (board frontmatter default_owner) — null hides it
      *  (sessions outside a project space). Pair: (isCurrentOwner, toggle). */
     ownerToggle: Pair<Boolean, () -> Unit>? = null,
+    /** Stray session (bound here, running elsewhere): (short target cwd, relocate).
+     *  Hidden while the session is running — the hub respawns it. */
+    relocate: Pair<String, () -> Unit>? = null,
 ) {
     var renaming by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf(session.name) }
@@ -120,6 +146,7 @@ fun SessionActionsSheet(
                 SheetItem(if (micOwner) "🎙 Release mic to AL" else "🎙 Give mic to this agent") { onMic(); onDismiss() }
                 if (canMerge) SheetItem("⤵ Merge into parent") { onMerge(); onDismiss() }
                 if (ownerToggle != null) SheetItem(if (ownerToggle.first) "☆ Unset as project owner" else "★ Set as project owner") { ownerToggle.second(); onDismiss() }
+                if (relocate != null && session.status != "running") SheetItem("⇢ Relocate to ${relocate.first}") { relocate.second(); onDismiss() }
                 if (session.status != "ended") {
                     androidx.compose.material3.TextButton(onClick = { onKill(); onDismiss() }) {
                         Text("■ End session", color = MaterialTheme.colorScheme.error)
@@ -143,7 +170,14 @@ private fun SheetItem(label: String, onClick: () -> Unit) {
 
 
 @Composable
-fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> Unit = {}, onComposerChange: (String) -> Unit = {}) {
+fun AgentSessionScreen(
+    repo: AgentsRepository,
+    sessionId: String,
+    onBack: () -> Unit = {},
+    onComposerChange: (String) -> Unit = {},
+    /** Board access for the review hand-back strip (Approve → Done); null hides it. */
+    spaces: io.amar.console.data.spaces.SpacesRepository? = null,
+) {
     val messages by repo.observeMessages(sessionId).collectAsState(initial = emptyList())
     val approvals by repo.approvals.collectAsState()
     val sessionApprovals = remember(approvals) { approvals.filter { it.sessionId == sessionId } }
@@ -204,6 +238,18 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
         StatusBar(repo, session, act, modelState, sessionId)
 
         if (sessionApprovals.isNotEmpty()) ApprovalCard(repo, sessionApprovals.first())
+
+        // Review hand-backs: one strip per Under Review card this session's
+        // @key owns — approve straight from the transcript (SPA
+        // ReviewHandbackStrip parity). The Done transition runs the fork's
+        // wind-down hub-side exactly like a Spaces drag.
+        if (spaces != null) {
+            val spaceList by spaces.spaces.collectAsState()
+            val handbacks = remember(spaceList, session?.agentKey) {
+                io.amar.console.data.inbox.reviewHandbacksFor(session?.agentKey, spaceList)
+            }
+            for (hb in handbacks) ReviewHandbackStrip(hb) { scope.launch { spaces.moveCardByQuery(hb.project, hb.query, hb.doneColumn ?: return@launch); spaces.refreshSpaces() } }
+        }
 
         // Pair tool_result / tool_diff to their tool_use; dedup bg_task.
         val paired = remember(messages) { pairMessages(messages) }
@@ -291,6 +337,28 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 }
             }
         }
+        // Queued prompt (long-press Send): shown until the turn ends and the
+        // hub flushes it — tap the text to edit (pulls it back into the
+        // composer, clearing the queue), ✕ cancels.
+        val queuedMap by repo.queued.collectAsState()
+        queuedMap[sessionId]?.let { q ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(Icons.Filled.Schedule, "Queued", tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(14.dp))
+                Text(
+                    q, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).clickable { handle.setText(q); repo.setQueuedMessage(sessionId, null) },
+                )
+                IconButton(onClick = { repo.setQueuedMessage(sessionId, null) }, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Filled.Close, "Cancel queued", modifier = Modifier.size(14.dp))
+                }
+            }
+        }
         AgentComposer(
             placeholder = when {
                 // The hub routes a send during a plan review into plan feedback
@@ -316,6 +384,7 @@ fun AgentSessionScreen(repo: AgentsRepository, sessionId: String, onBack: () -> 
                 repo.markRead(sessionId)
                 scope.launch { listState.animateScrollToItem(0) }
             },
+            onQueue = { text -> repo.queueMessage(sessionId, text) },
         )
     }
 }

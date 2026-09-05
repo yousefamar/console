@@ -74,6 +74,10 @@ fun EventDetailSheet(
     onSetReminder: (Int?) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    /** Recurring only: delete this and every following instance / the whole
+     *  series (SPA DeleteScopeDialog). Null hides the scoped options. */
+    onDeleteFollowing: (() -> Unit)? = null,
+    onDeleteSeries: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val details = remember(event.rawJson) { parseEventDetails(event.rawJson) }
@@ -208,12 +212,20 @@ fun EventDetailSheet(
     }
 
     if (confirmDelete) {
+        val scoped = details.isRecurring && onDeleteFollowing != null && onDeleteSeries != null
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete event") },
-            text = { Text("Delete this event?") },
+            title = { Text(if (scoped) "Delete recurring event" else "Delete event") },
+            text = {
+                if (!scoped) Text("Delete this event?")
+                else Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { confirmDelete = false; onDelete() }, modifier = Modifier.fillMaxWidth()) { Text("This event") }
+                    TextButton(onClick = { confirmDelete = false; onDeleteFollowing!!() }, modifier = Modifier.fillMaxWidth()) { Text("This and following events") }
+                    TextButton(onClick = { confirmDelete = false; onDeleteSeries!!() }, modifier = Modifier.fillMaxWidth()) { Text("All events", color = MaterialTheme.colorScheme.error) }
+                }
+            },
             confirmButton = {
-                TextButton(onClick = { confirmDelete = false; onDelete() }) {
+                if (!scoped) TextButton(onClick = { confirmDelete = false; onDelete() }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },

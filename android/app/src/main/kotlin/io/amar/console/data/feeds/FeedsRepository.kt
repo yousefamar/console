@@ -246,6 +246,7 @@ class FeedsRepository(
             fullText = f["fullText"]?.jsonPrimitive?.booleanOrNull ?: false,
             maxItems = f["maxItems"]?.jsonPrimitive?.content?.toIntOrNull(),
             addedAt = f["addedAt"]?.jsonPrimitive?.content,
+            imageUrl = f["imageUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
         )
     }
 

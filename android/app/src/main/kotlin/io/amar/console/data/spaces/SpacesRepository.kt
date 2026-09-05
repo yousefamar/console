@@ -38,6 +38,11 @@ class SpacesRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    data class ReviewCard(val blockId: String?, val text: String, val agentKey: String?)
+
+    /** One approvable hand-back: a review card owned by [agentKey] on a project board. */
+    data class ReviewHandback(val project: String, val query: String, val text: String, val doneColumn: String?)
+
     data class SpaceSummary(
         val kind: String, // project | area
         val slug: String,
@@ -50,6 +55,10 @@ class SpacesRepository(
         val reviewCount: Int = 0,
         /** agentKeys assigned to those review cards. */
         val reviewAgentKeys: List<String> = emptyList(),
+        /** The review cards themselves (approve-from-Inbox); empty on an older hub. */
+        val reviewCards: List<ReviewCard> = emptyList(),
+        /** First Done-like column title, or null when the board has none. */
+        val doneColumn: String? = null,
         /** EVERY assignee on the board (all columns, dedup'd) — a fork whose
          *  key is here is card-owned: the card is its affordance, so it's
          *  suppressed from L1 alert rows unless it needs attention. */
@@ -138,6 +147,15 @@ class SpacesRepository(
                     reviewCount = o["reviewCount"]?.jsonPrimitive?.intOrNull ?: 0,
                     reviewAgentKeys = (o["reviewAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+                    reviewCards = (o["reviewCards"] as? JsonArray)?.mapNotNull { c ->
+                        val co = c as? JsonObject ?: return@mapNotNull null
+                        ReviewCard(
+                            blockId = co["blockId"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+                            text = co["text"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                            agentKey = co["agentKey"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+                        )
+                    } ?: emptyList(),
+                    doneColumn = o["doneColumn"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
                     cardAgentKeys = (o["cardAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
                     cwd = o["cwd"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
@@ -220,6 +238,10 @@ class SpacesRepository(
 
     suspend fun moveCard(project: String, card: CardView, to: String): Boolean =
         post(project, "move", buildJsonObject { put("card", cardAddress(card)); put("to", to) })
+
+    /** Move by address (`^id` or unique text) — for cards known only from `reviewCards`. */
+    suspend fun moveCardByQuery(project: String, query: String, to: String): Boolean =
+        post(project, "move", buildJsonObject { put("card", query); put("to", to) })
 
     suspend fun assignCard(project: String, card: CardView, agent: String?): Boolean =
         post(project, "assign", buildJsonObject {

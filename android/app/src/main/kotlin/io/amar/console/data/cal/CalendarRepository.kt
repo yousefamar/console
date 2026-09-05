@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -63,6 +64,7 @@ class CalendarRepository(
         const val TYPE_RSVP = "calRsvp"
         const val TYPE_REMINDER = "calReminder"
         const val TYPE_LOCATION = "calLocation"
+        const val TYPE_DELETE_FOLLOWING = "calDeleteFollowing"
         val WINDOW_PAST_MS = 30L * 24 * 60 * 60 * 1000
         val WINDOW_FUTURE_MS = 90L * 24 * 60 * 60 * 1000
     }
@@ -300,6 +302,42 @@ class CalendarRepository(
         }
         outbox.enqueue(TYPE_DELETE, payload.toString(), entityId = compoundKey)
     }
+
+    /**
+     * Delete a recurring series from [row] on — `fromStart == null` = the whole
+     * series (SPA `deleteSeriesRows`/`calDeleteFollowing`). Optimistically
+     * drops every cached instance ≥ the cut, then queues ONE action against the
+     * master id; returns the removed rows for undo. Non-recurring rows fall
+     * back to a plain delete.
+     */
+    suspend fun deleteSeries(compoundKey: String, fromStart: Long?): List<CalEventRow> {
+        val row = db.calendar().byKey(compoundKey) ?: return emptyList()
+        val masterId = parseEventDetails(row.rawJson).recurringEventId ?: run { deleteEvent(compoundKey); return listOf(row) }
+        val rows = db.calendar().seriesRows(row.accountEmail, row.calendarId, masterId)
+            .filter { fromStart == null || it.startTime >= fromStart }
+            .ifEmpty { listOf(row) }
+        db.calendar().deleteByKeys(rows.map { it.compoundKey })
+        val masterKey = "${row.accountEmail}:${row.calendarId}:$masterId"
+        val payload = buildJsonObject {
+            put("account", row.accountEmail)
+            put("calendarId", row.calendarId)
+            put("masterId", masterId)
+            // ISO start of the cut instance — all-day rows cut on the date.
+            if (fromStart != null) put("fromStart", if (row.isAllDay) isoDate(fromStart) else isoUtc(fromStart))
+        }
+        outbox.enqueue(TYPE_DELETE_FOLLOWING, payload.toString(), entityId = masterKey)
+        return rows
+    }
+
+    suspend fun undoDeleteSeries(rows: List<CalEventRow>) {
+        val first = rows.firstOrNull() ?: return
+        val masterId = parseEventDetails(first.rawJson).recurringEventId ?: return undoDelete(first)
+        db.calendar().upsertEvents(rows)
+        outbox.cancel("${first.accountEmail}:${first.calendarId}:$masterId", TYPE_DELETE_FOLLOWING)
+    }
+
+    private fun isoUtc(ms: Long): String =
+        java.time.Instant.ofEpochMilli(ms).toString().replace(Regex("\\.\\d+Z$"), "Z")
 
     /**
      * Edit an event (queued PATCH). Supports summary/times/location/description
@@ -608,6 +646,7 @@ class CalendarRepository(
         outbox.register(TYPE_UPDATE) { row, _ -> handleUpdate(row) }
         outbox.register("$TYPE_UPDATE:onFailed") { row, _ -> rollbackUpdate(row) }
         outbox.register(TYPE_DELETE) { row, _ -> handleDelete(row) }
+        outbox.register(TYPE_DELETE_FOLLOWING) { row, _ -> handleDeleteFollowing(row) }
         outbox.register(TYPE_REMINDER) { row, _ -> handleReminder(row) }
         outbox.register(TYPE_RSVP) { row, _ -> handleRsvp(row) }
     }
@@ -704,6 +743,48 @@ class CalendarRepository(
             (p["rollback"] as? JsonObject)?.let { db.calendar().upsertEvents(listOf(rowFromRollback(it))) }
         }
         return Outbox.Result.Done
+    }
+
+    /**
+     * Port of the SPA's `calDeleteFollowing` sync case: no cut (or a cut at/before
+     * the first instance, or a master with no RRULE) deletes the master —
+     * i.e. the whole series; otherwise the master's RRULE gets `UNTIL` just
+     * before the cut (COUNT dropped), so earlier instances survive.
+     */
+    private suspend fun handleDeleteFollowing(row: io.amar.console.data.db.OutboxRow): Outbox.Result {
+        val p = json.parseToJsonElement(row.payloadJson).jsonObject
+        return try {
+            val account = p["account"]!!.jsonPrimitive.content
+            val calendarId = p["calendarId"]!!.jsonPrimitive.content
+            val masterId = p["masterId"]!!.jsonPrimitive.content
+            val fromStart = p["fromStart"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }
+            val q = "?account=${enc(account)}&calendarId=${enc(calendarId)}"
+            if (fromStart == null) {
+                hub.delete("/cal/events/${enc(masterId)}$q")
+            } else {
+                val master = json.parseToJsonElement(hub.get("/cal/events/${enc(masterId)}$q")).jsonObject
+                val start = master["start"]?.jsonObject
+                val masterStart = start?.get("dateTime")?.jsonPrimitive?.content ?: start?.get("date")?.jsonPrimitive?.content ?: ""
+                val recurrence = (master["recurrence"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
+                if (recurrence.isEmpty() || masterStart >= fromStart) {
+                    hub.delete("/cal/events/${enc(masterId)}$q")
+                } else {
+                    val body = buildJsonObject {
+                        put("recurrence", kotlinx.serialization.json.JsonArray(truncateRecurrence(recurrence, fromStart).map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                        put("calendarId", calendarId)
+                        put("account", account)
+                    }
+                    hub.patch("/cal/events/${enc(masterId)}", body.toString())
+                }
+            }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code == 404 || e.code == 410) Outbox.Result.Done
+            else if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}")
+            else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
     }
 
     private suspend fun handleDelete(row: io.amar.console.data.db.OutboxRow): Outbox.Result {

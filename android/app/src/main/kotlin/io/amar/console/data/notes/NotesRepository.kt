@@ -20,6 +20,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -54,6 +55,7 @@ class NotesRepository(
         const val TYPE_DELETE = "noteDelete"
         const val TABS_OPEN_KEY = "notes:openTabs"
         const val TABS_ACTIVE_KEY = "notes:activeTab"
+        const val DRAFT_KEY_PREFIX = "notes:draft:"
     }
 
     fun observeFiles(): Flow<List<NoteFileRow>> = db.notes().observeAll()
@@ -67,9 +69,30 @@ class NotesRepository(
      * detached coroutine created lazily).
      */
     val tabs: NotesTabs by lazy {
-        NotesTabs(persist = { open, active ->
-            tabsPersistScope.launch { persistTabs(open, active) }
-        })
+        NotesTabs(
+            persist = { open, active -> tabsPersistScope.launch { persistTabs(open, active) } },
+            mirror = { path, content ->
+                tabsPersistScope.launch {
+                    if (content == null) db.meta().delete(DRAFT_KEY_PREFIX + path)
+                    else db.meta().put(MetaRow(DRAFT_KEY_PREFIX + path, content))
+                }
+            },
+        )
+    }
+
+    /**
+     * Open [path] in the tab model: disk/cached body, then any mirrored unsaved
+     * buffer re-applied on top (dirty again, exactly as left) — the mirror is
+     * dropped if it matches disk (someone saved it meanwhile).
+     */
+    suspend fun openInTabs(path: String): String {
+        val content = openFile(path) ?: ""
+        tabs.open(path, content)
+        val draft = db.meta().get(DRAFT_KEY_PREFIX + path)
+        if (draft != null) {
+            if (draft != content) tabs.setContent(path, draft) else db.meta().delete(DRAFT_KEY_PREFIX + path)
+        }
+        return tabs.state.value.tab(path)?.content ?: content
     }
     private val tabsPersistScope by lazy {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
@@ -86,6 +109,8 @@ class NotesRepository(
     suspend fun searchContent(query: String): List<NoteFileRow> =
         if (query.isBlank()) emptyList() else db.notes().searchContent(query.trim(), 50)
 
+    suspend fun fileMtime(path: String): Long? = db.notes().byPath(path)?.mtime
+
     /** Body for the editor: cached copy or fetch-and-cache. */
     suspend fun openFile(path: String): String? {
         val row = db.notes().byPath(path)
@@ -95,10 +120,77 @@ class NotesRepository(
 
     private suspend fun fetchBody(path: String): String? {
         val resp = runCatching { hub.get("/notes/file/${encPath(path)}") }.getOrNull() ?: return null
-        val content = json.parseToJsonElement(resp).jsonObject["content"]?.jsonPrimitive?.content ?: return null
+        val obj = json.parseToJsonElement(resp).jsonObject
+        val content = obj["content"]?.jsonPrimitive?.content ?: return null
         val row = db.notes().byPath(path)
-        db.notes().setContent(path, content, row?.mtime, dirty = false)
+        // The hub's mtime is the disk truth; the listing's copy can lag a poll.
+        val mtime = obj["mtime"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: row?.mtime
+        if (row != null && mtime != null && mtime > row.mtime) db.notes().updateMeta(path, mtime, row.size)
+        db.notes().setContent(path, content, mtime, dirty = false)
         return content
+    }
+
+    /**
+     * A file changed on disk (hub `notes.file_changed` / `agent_edit`, or a
+     * reconcile diff): advance the listing mtime; drop a CLEAN cached body so
+     * the next open refetches. A dirty body is kept — its save 409s into the
+     * conflict banner. The editor watches the row for the reload banner.
+     */
+    private suspend fun applyRemoteChange(path: String, mtime: Long, size: Long? = null) {
+        val existing = db.notes().byPath(path) ?: return
+        if (mtime <= existing.mtime) return
+        db.notes().updateMeta(path, mtime, size ?: existing.size)
+        if (!existing.dirty && existing.contentMtime != null && mtime > existing.contentMtime) {
+            db.notes().setContent(path, null, null, dirty = false)
+        }
+    }
+
+    /** `con notes open <path>` relayed by the hub (`notes.open_file`) — the shell
+     *  navigates to the note. Replay 0: an open request is not state. */
+    private val _remoteOpen = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val remoteOpen: kotlinx.coroutines.flow.SharedFlow<String> = _remoteOpen
+
+    /** Vault paths an AGENT edited (Edit/Write tool), for the banner's wording. */
+    private val _agentEdited = MutableStateFlow<Set<String>>(emptySet())
+    val agentEdited: StateFlow<Set<String>> = _agentEdited
+    @Volatile private var notesWired = false
+
+    /**
+     * Wire the SyncBus 'notes' service — idempotent. Live change events beat
+     * the reconcile poll by up to a sync cycle; without them an open editor
+     * only learns about an agent's edit on the next sync pass.
+     */
+    fun wireNotesEvents(scope: kotlinx.coroutines.CoroutineScope) {
+        if (notesWired) return
+        notesWired = true
+        syncBus.on("notes", "file_changed") { d ->
+            val o = d as? JsonObject ?: return@on
+            val path = o["path"]?.jsonPrimitive?.contentOrNull ?: return@on
+            val mtime = o["mtime"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: return@on
+            scope.launch { applyRemoteChange(path, mtime) }
+        }
+        syncBus.on("notes", "open_file") { d ->
+            val o = d as? JsonObject ?: return@on
+            val path = o["path"]?.jsonPrimitive?.contentOrNull ?: return@on
+            _remoteOpen.tryEmit(path)
+        }
+        syncBus.on("notes", "agent_edit") { d ->
+            val o = d as? JsonObject ?: return@on
+            val path = o["path"]?.jsonPrimitive?.contentOrNull ?: return@on
+            _agentEdited.value = _agentEdited.value + path
+            // No mtime on this event — the file_changed poll (≤10 s) or a
+            // refetch carries it; nudge the row now so the banner is prompt.
+            scope.launch {
+                val fresh = runCatching { hub.get("/notes/file/${encPath(path)}") }.getOrNull() ?: return@launch
+                val mtime = json.parseToJsonElement(fresh).jsonObject["mtime"]?.jsonPrimitive?.doubleOrNull?.toLong() ?: return@launch
+                applyRemoteChange(path, mtime)
+            }
+        }
+    }
+
+    /** The editor reloaded/kept after a disk change — forget the agent marker. */
+    fun clearAgentEdited(path: String) {
+        _agentEdited.value = _agentEdited.value - path
     }
 
     /**
@@ -505,12 +597,10 @@ class NotesRepository(
                 if (existing == null) {
                     db.notes().upsertAll(listOf(rowFromListing(f)))
                 } else {
-                    db.notes().updateMeta(path, mtime, size)
-                    // Cached body is stale (changed server-side, no local
-                    // dirty edit) → drop it; refetched on next open.
-                    if (!existing.dirty && existing.contentMtime != null && mtime > existing.contentMtime) {
-                        db.notes().setContent(path, null, null, dirty = false)
-                    }
+                    // Size can change without mtime moving past ours (our own
+                    // save echoed back) — keep meta current either way.
+                    if (mtime <= existing.mtime) db.notes().updateMeta(path, existing.mtime, size)
+                    else applyRemoteChange(path, mtime, size)
                 }
             }
             db.meta().put(MetaRow(CURSOR_KEY, System.currentTimeMillis().toString()))

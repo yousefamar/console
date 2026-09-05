@@ -6,7 +6,7 @@ import io.amar.console.data.db.ChatRoomRow
 import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.db.FeedItemRow
 import io.amar.console.data.db.FeedRow
-import io.amar.console.data.db.FeedSnoozeRow
+import io.amar.console.data.db.ItemSnoozeRow
 import io.amar.console.data.db.MailThreadRow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -84,7 +84,7 @@ class InboxRepository(
             feedItems = src.items,
             feedsById = src.feeds.associateBy { it.id },
             readIds = src.readIds.toHashSet(),
-            snoozedFeedIds = snoozes.filter { it.snoozedUntil > now }.map { it.itemId }.toHashSet(),
+            snoozedKeys = snoozes.filter { it.snoozedUntil > now }.associate { it.key to it.snoozedUntil },
             sessions = sessions,
             rules = r,
             now = now,
@@ -111,6 +111,9 @@ class InboxRepository(
 
     fun setXOnly(value: Boolean) { xOnly.value = value }
 
+    /** Run a handling action on the repo's scope (screens have no own scope for fire-and-forget). */
+    fun launch(block: suspend () -> Unit) { scope.launch { block() } }
+
     /** Load hub rules; offline keeps whatever we have (defaults at boot). */
     suspend fun refreshRules() {
         runCatching { rules.value = InboxRules.fromJson(hub.get("/inbox/rules")) }
@@ -123,8 +126,13 @@ class InboxRepository(
         scope.launch { runCatching { hub.post("/inbox/rules", next.toJson()) } }
     }
 
-    /** Snooze a feed item — local-only (SPA feedSnooze parity). */
-    fun snoozeFeedItem(itemId: String, untilMs: Long) {
-        scope.launch { db.feeds().upsertSnooze(FeedSnoozeRow(itemId, untilMs)) }
+    /** Snooze a feed item or agent session by Inbox key — local-only (SPA
+     *  `itemSnooze` parity; mail/chat snooze through their own repositories). */
+    fun snoozeItem(key: String, untilMs: Long) {
+        scope.launch { db.feeds().upsertSnooze(ItemSnoozeRow(key, untilMs)); nowTick.value = System.currentTimeMillis() }
+    }
+
+    fun unsnoozeItem(key: String) {
+        scope.launch { db.feeds().deleteSnooze(key); nowTick.value = System.currentTimeMillis() }
     }
 }

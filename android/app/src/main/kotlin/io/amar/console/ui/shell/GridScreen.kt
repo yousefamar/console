@@ -84,9 +84,12 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
     // Feeds total unread — items not in the read set (mirrors FeedsScreen).
     val feedItems by app.graph.feeds.observeItems().collectAsState(initial = emptyList())
     val feedReadIds by app.graph.feeds.observeReadIds().collectAsState(initial = emptyList())
+    val feedList by app.graph.feeds.observeFeeds().collectAsState(initial = emptyList())
     val feedUnread = run {
         val read = feedReadIds.toHashSet()
-        feedItems.count { it.id !in read }
+        // Hidden-folder (X) items never count — same rule as the Feeds "All" scope.
+        val hidden = feedList.filter { io.amar.console.data.inbox.isHiddenFolder(it.folder) }.map { it.id }.toHashSet()
+        feedItems.count { it.id !in read && it.feedId !in hidden }
     }
 
     // Notes: dirty (unsaved) open tabs + pen live-streaming red dot.

@@ -91,6 +91,7 @@ import io.amar.console.ui.components.Composer
 import io.amar.console.ui.components.CountPill
 import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.PaneTopBar
+import io.amar.console.ui.components.SnoozeSheet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -324,59 +325,6 @@ private fun SnoozeAndMenuSheets(
                 }
             },
         )
-    }
-}
-
-/** Bottom-sheet snooze picker (SPA SnoozePicker parity). */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SnoozeSheet(onDismiss: () -> Unit, onPick: (Long) -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.UK) }
-    val laterToday = remember { io.amar.console.data.chat.SnoozeTimes.laterToday() }
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text("Snooze until", style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
-        SnoozeOption("Later today", timeFmt.format(Date(laterToday))) { onPick(laterToday) }
-        SnoozeOption("Tomorrow", "8:00") { onPick(io.amar.console.data.chat.SnoozeTimes.tomorrowMorning()) }
-        SnoozeOption("Next week", "Mon 8:00") { onPick(io.amar.console.data.chat.SnoozeTimes.nextWeekMonday()) }
-        androidx.compose.material3.HorizontalDivider(
-            Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            color = MaterialTheme.colorScheme.outline,
-        )
-        SnoozeOption("Pick date & time", "") {
-            val cal = Calendar.getInstance()
-            android.app.DatePickerDialog(
-                context,
-                { _, y, m, d ->
-                    android.app.TimePickerDialog(
-                        context,
-                        { _, h, min ->
-                            cal.set(y, m, d, h, min, 0)
-                            cal.set(Calendar.MILLISECOND, 0)
-                            onPick(cal.timeInMillis)
-                        },
-                        cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), true,
-                    ).show()
-                },
-                cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH),
-            ).show()
-        }
-        androidx.compose.foundation.layout.Spacer(Modifier.size(24.dp))
-    }
-}
-
-@Composable
-private fun SnoozeOption(label: String, description: String, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        if (description.isNotEmpty()) {
-            Text(description, style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
     }
 }
 

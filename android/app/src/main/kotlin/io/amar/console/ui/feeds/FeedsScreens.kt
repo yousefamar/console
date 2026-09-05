@@ -116,7 +116,10 @@ fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () 
     val folderNames = remember(feeds) { feeds.mapNotNull { it.folder }.distinct().sorted() }
     val folderFeeds = remember(feeds) { feeds.filter { it.folder != null }.groupBy { it.folder!! } }
     val topLevelFeeds = remember(feeds) { feeds.filter { it.folder == null }.sortedBy { it.title.lowercase() } }
-    val totalUnread = remember(items, readSet) { items.count { it.id !in readSet } }
+    // Hidden-folder feeds (X) are excluded from "All" and its count — they are
+    // reachable only through their own folder scope (SPA `HIDDEN_FOLDERS`).
+    val hiddenFeedIds = remember(feeds) { feeds.filter { io.amar.console.data.inbox.isHiddenFolder(it.folder) }.map { it.id }.toHashSet() }
+    val totalUnread = remember(items, readSet, hiddenFeedIds) { items.count { it.id !in readSet && it.feedId !in hiddenFeedIds } }
 
     var currentScope by rememberSaveable(stateSaver = feedScopeSaver) { mutableStateOf<FeedScope>(FeedScope.All) }
     var expandedFolders by rememberSaveable(stateSaver = stringSetSaver) { mutableStateOf(emptySet<String>()) }
@@ -152,9 +155,9 @@ fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () 
 
     // Visible items for the current scope, then unread filter.
     val scopeIds = scopeFeedIds(currentScope)
-    val visible = remember(items, currentScope, showRead, readSet, feedFolders, scopeIds) {
+    val visible = remember(items, currentScope, showRead, readSet, feedFolders, scopeIds, hiddenFeedIds) {
         items.filter { item ->
-            (scopeIds == null || item.feedId in scopeIds) &&
+            (if (scopeIds == null) item.feedId !in hiddenFeedIds else item.feedId in scopeIds) &&
                 (showRead || item.id !in readSet)
         }
     }

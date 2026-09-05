@@ -139,6 +139,16 @@ data class InboxEntry(
     /** Feed only: the feed lives in a hidden FOLDER (X) — suppressed from the
      *  Feed list by default, shown exclusively in X-only mode. */
     val hiddenFolder: Boolean = false,
+    /** Agent only: the session's `@key` — joins the row to its review cards. */
+    val agentKey: String? = null,
+    /** Set only in the snoozed view: when the item comes back. */
+    val snoozedUntil: Long? = null,
+    /** Feed only: platform of the subscription (chips + row glyph). */
+    val feedKind: FeedKind? = null,
+    /** Feed only: the feed's own icon URL (plain-RSS row glyph). */
+    val icon: String? = null,
+    /** Feed only: the item's thumbnail URL. */
+    val image: String? = null,
 )
 
 /** Folders whose feeds never appear in the Feed list by default — port of
@@ -250,7 +260,35 @@ fun sessionToEntry(s: AgentSessionRow, reviewKeys: Set<String> = emptySet()): In
         attention = s.needsAttention,
         idle = idle,
         review = idle && s.agentKey != null && s.agentKey in reviewKeys,
+        agentKey = s.agentKey,
     )
+}
+
+/**
+ * Review cards an agent row can approve from the Inbox — port of
+ * `reviewHandbacksFor` in src/inbox/route.ts. NOT gated on idle (unlike the
+ * ordering tier): a card in Under Review is approvable whatever the session
+ * is doing. `query` addresses the card for the hub's move verb.
+ */
+fun reviewHandbacksFor(
+    agentKey: String?,
+    spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary>,
+): List<io.amar.console.data.spaces.SpacesRepository.ReviewHandback> {
+    if (agentKey == null) return emptyList()
+    val out = ArrayList<io.amar.console.data.spaces.SpacesRepository.ReviewHandback>()
+    for (s in spaces) {
+        if (s.kind != "project") continue
+        for (c in s.reviewCards) {
+            if (c.agentKey != agentKey) continue
+            out += io.amar.console.data.spaces.SpacesRepository.ReviewHandback(
+                project = s.slug,
+                query = c.blockId?.let { "^$it" } ?: c.text,
+                text = c.text,
+                doneColumn = s.doneColumn,
+            )
+        }
+    }
+    return out
 }
 
 /** Null when the feed is routed 'hidden' — dropped from the pane entirely. */
@@ -267,6 +305,9 @@ fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEnt
         inInbox = route == "inbox",
         routeKey = i.feedId,
         hiddenFolder = isHiddenFolder(feed?.folder),
+        feedKind = feedKind(feed),
+        icon = feed?.imageUrl,
+        image = i.imageUrl,
     )
 }
 
@@ -306,33 +347,58 @@ fun filterByFeedMode(entries: List<InboxEntry>, xOnly: Boolean): List<InboxEntry
 // Whole-pane composition — one pure function from source rows to both lists.
 // --------------------------------------------------------------------------
 
-data class InboxLists(val feed: List<InboxEntry>, val inbox: List<InboxEntry>)
+/** `snoozed` = every currently-snoozed item across all four sources, soonest
+ *  due first — the SPA's snoozed view (Clock toggle). */
+data class InboxLists(
+    val feed: List<InboxEntry>,
+    val inbox: List<InboxEntry>,
+    val snoozed: List<InboxEntry> = emptyList(),
+)
 
+/**
+ * @param snoozedKeys local item-key snoozes still in force (`feed:<id>` /
+ *   `agent:<sessionId>` → until). Mail/chat snoozes live on their rows.
+ */
 fun composeInbox(
     threads: List<MailThreadRow>,
     rooms: List<ChatRoomRow>,
     feedItems: List<FeedItemRow>,
     feedsById: Map<String, FeedRow>,
     readIds: Set<String>,
-    snoozedFeedIds: Set<String>,
+    snoozedKeys: Map<String, Long>,
     sessions: List<AgentSessionRow>,
     rules: InboxRules,
     now: Long,
     xOnly: Boolean = false,
     reviewKeys: Set<String> = emptySet(),
 ): InboxLists {
+    val snoozed = ArrayList<InboxEntry>()
     val all = buildList {
-        threads.filter { threadIsLive(it, now) }.forEach { add(threadToEntry(it, rules)) }
-        rooms.filter { roomIsLive(it, now) }.forEach { add(roomToEntry(it, rules, now)) }
-        feedItems.asSequence()
-            .filter { it.id !in readIds && it.id !in snoozedFeedIds }
-            .mapNotNull { feedItemToEntry(it, feedsById[it.feedId], rules) }
-            .forEach { add(it) }
-        sessions.filter { sessionIsLive(it) }.forEach { add(sessionToEntry(it, reviewKeys)) }
+        for (t in threads) {
+            if (threadIsLive(t, now)) add(threadToEntry(t, rules))
+            else if (t.isInbox && t.snoozedUntil != null && t.snoozedUntil > now) snoozed += threadToEntry(t, rules).copy(snoozedUntil = t.snoozedUntil)
+        }
+        for (r in rooms) {
+            if (roomIsLive(r, now)) add(roomToEntry(r, rules, now))
+            else if (r.snoozedUntil != null && r.snoozedUntil > now && !r.isLowPriority && !r.isMuted) snoozed += roomToEntry(r, rules, now).copy(snoozedUntil = r.snoozedUntil)
+        }
+        for (i in feedItems) {
+            if (i.id in readIds) continue
+            val e = feedItemToEntry(i, feedsById[i.feedId], rules) ?: continue
+            val until = snoozedKeys[e.key]
+            if (until != null && until > now) snoozed += e.copy(snoozedUntil = until) else add(e)
+        }
+        for (s in sessions) {
+            if (!sessionIsLive(s)) continue
+            val e = sessionToEntry(s, reviewKeys)
+            val until = snoozedKeys[e.key]
+            if (until != null && until > now) snoozed += e.copy(snoozedUntil = until) else add(e)
+        }
     }
     return InboxLists(
         feed = sortFeed(filterByFeedMode(all.filter { !it.inInbox }, xOnly)),
         inbox = sortInbox(all.filter { it.inInbox }),
+        snoozed = snoozed.sortedBy { it.snoozedUntil },
     )
 }
 

@@ -50,6 +50,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -109,6 +110,25 @@ fun NoteEditorScreen(
     val activeTab = tabState.activeTab
     val conflicts by repo.observeConflict(activePath).collectAsState(initial = emptyList())
     val row by repo.observeFile(activePath).collectAsState(initial = null)
+    val agentEdited by repo.agentEdited.collectAsState()
+
+    // Disk-change baseline per open path: the listing mtime when the tab was
+    // first seen here (or after Reload/Keep). A row whose mtime moved past it
+    // with its clean body dropped, or a dirty body left behind, means the file
+    // changed under the buffer.
+    val openedMtimes = remember { mutableStateMapOf<String, Long>() }
+    LaunchedEffect(activePath, row?.mtime) {
+        val m = row?.mtime ?: return@LaunchedEffect
+        if (activePath !in openedMtimes) openedMtimes[activePath] = m
+    }
+    val diskChanged = run {
+        val r = row ?: return@run false
+        val base = openedMtimes[activePath] ?: return@run false
+        conflicts.isEmpty() && r.mtime > base && (
+            (r.cachedContent == null && r.contentMtime == null) ||
+                (r.contentMtime != null && r.mtime > r.contentMtime)
+            )
+    }
 
     var viewMode by remember { mutableStateOf(true) }
     var tfv by remember(activePath) { mutableStateOf(TextFieldValue(activeTab?.content ?: "")) }
@@ -216,6 +236,26 @@ fun NoteEditorScreen(
             IconButton(onClick = { showPalette = true }) { Icon(Icons.Filled.MoreVert, "Commands") }
         }
 
+        if (diskChanged) {
+            DiskChangedBanner(
+                byAgent = activePath in agentEdited,
+                dirty = activeTab?.dirty == true,
+                onReload = {
+                    scope.launch {
+                        val fresh = repo.fetchFreshBody(activePath) ?: return@launch
+                        repo.tabs.markSaved(activePath, fresh)
+                        tfv = TextFieldValue(fresh)
+                        repo.clearAgentEdited(activePath)
+                        repo.fileMtime(activePath)?.let { openedMtimes[activePath] = it }
+                    }
+                },
+                onKeep = {
+                    row?.let { openedMtimes[activePath] = it.mtime }
+                    repo.clearAgentEdited(activePath)
+                },
+            )
+        }
+
         if (conflicts.isNotEmpty()) {
             ConflictBanner(
                 onKeepMine = { scope.launch { repo.resolveKeepMine(activePath, tfv.text) } },
@@ -256,7 +296,7 @@ fun NoteEditorScreen(
                         content = tfv.text,
                         repo = repo,
                         filePath = activePath,
-                        onOpenNote = { p -> scope.launch { repo.tabs.open(p, repo.openFile(p) ?: "") } },
+                        onOpenNote = { p -> scope.launch { repo.openInTabs(p) } },
                         onOpenUrl = { openInBrowser(context, it) },
                         allPaths = files.map { it.path },
                     )
@@ -310,7 +350,7 @@ fun NoteEditorScreen(
             repo = repo,
             slug = slug,
             onDismiss = { projectPanelSlug = null },
-            onOpenFile = { p -> scope.launch { repo.tabs.open(p, repo.openFile(p) ?: "") } },
+            onOpenFile = { p -> scope.launch { repo.openInTabs(p) } },
             agents = agents,
             onOpenAgentSession = onOpenAgentSession,
         )
@@ -327,7 +367,7 @@ fun NoteEditorScreen(
             onSave = { save() },
             onCloseFile = { if (!repo.tabs.close(activePath)) closeConfirm = activePath },
             onCloseAll = { repo.tabs.closeAll() },
-            onReopenClosed = { scope.launch { repo.tabs.reopenLastClosed()?.let { repo.tabs.open(it, repo.openFile(it) ?: "") } } },
+            onReopenClosed = { scope.launch { repo.tabs.reopenLastClosed()?.let { repo.openInTabs(it) } } },
             onLink = { linkPicker = LinkPickerRequest(tfv.text.substring(tfv.selection.min, tfv.selection.max), tfv.selection.min, tfv.selection.max, wikiOnly = false) },
             onFootnote = { applyAction(EditorActions.insertFootnote(tfv.text, tfv.selection.end)) },
             onToast = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
@@ -531,6 +571,32 @@ private fun NoteStatusBar(
             color = if (vimEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.clickable { onToggleVim() },
         )
+    }
+}
+
+/**
+ * Disk moved under the open buffer (agent Edit/Write, another device, `con
+ * notes write`). Phone twin of the SPA's inline review: no word-diff here —
+ * Reload takes the disk copy, Keep leaves the buffer (a dirty one 409s into
+ * the conflict banner on save, so nothing is silently lost either way).
+ */
+@Composable
+private fun DiskChangedBanner(byAgent: Boolean, dirty: Boolean, onReload: () -> Unit, onKeep: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.tertiaryContainer).padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            buildString {
+                append(if (byAgent) "Edited by an agent" else "Changed on disk")
+                if (dirty) append(" — you have unsaved edits")
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onReload) { Text(if (dirty) "Reload (discard mine)" else "Reload") }
+            TextButton(onClick = onKeep) { Text(if (dirty) "Keep mine" else "Keep") }
+        }
     }
 }
 

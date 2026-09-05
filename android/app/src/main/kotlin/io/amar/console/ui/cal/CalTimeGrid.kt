@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -48,6 +49,7 @@ import io.amar.console.data.cal.isAccepted
 import io.amar.console.data.cal.mergeDuplicates
 import io.amar.console.data.cal.packAllDayBars
 import io.amar.console.data.cal.packLanes
+import io.amar.console.data.cal.isDeclined
 import io.amar.console.data.cal.parseEventDetails
 import io.amar.console.data.cal.snapToQuarter
 import io.amar.console.data.db.CalEventRow
@@ -285,7 +287,12 @@ private fun AllDayBarsRow(
                         .padding(horizontal = 5.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    Text(bar.event.summary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val declined = isDeclined(parseEventDetails(bar.event.rawJson))
+                    Text(
+                        bar.event.summary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        textDecoration = if (declined) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                        modifier = if (declined) Modifier.alpha(0.45f) else Modifier,
+                    )
                 }
             }
         }
@@ -363,8 +370,9 @@ private fun EventBlock(
                     e.summary,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Medium,
+                    textDecoration = if (isDeclined(details)) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f, fill = false).then(if (isDeclined(details)) Modifier.alpha(0.45f) else Modifier),
                 )
                 if (hasReminder(details.reminders, calDefaults)) {
                     Spacer(Modifier.width(2.dp))

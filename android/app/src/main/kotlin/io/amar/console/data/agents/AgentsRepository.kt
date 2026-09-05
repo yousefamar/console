@@ -111,6 +111,11 @@ class AgentsRepository(
     val handoff: StateFlow<Handoff?> = _handoff
     private val _fallbackNotice = MutableStateFlow<FallbackNotice?>(null)
     val fallbackNotice: StateFlow<FallbackNotice?> = _fallbackNotice
+
+    /** sessionId → prompt queued for the END of its current turn (hub
+     *  `SessionInfo.queuedMessage`, live via `session_queued`). */
+    private val _queued = MutableStateFlow<Map<String, String>>(emptyMap())
+    val queued: StateFlow<Map<String, String>> = _queued
     private val _generatingTitles = MutableStateFlow<Set<String>>(emptySet())
     val generatingTitles: StateFlow<Set<String>> = _generatingTitles
 
@@ -347,6 +352,11 @@ class AgentsRepository(
                     val items = todosFrom(s["todos"] as? JsonArray)
                     if (items.isEmpty()) null else id to items
                 }.toMap()
+                _queued.value = sessions.mapNotNull { s ->
+                    val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val q = s["queuedMessage"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }
+                    if (q.isNullOrBlank()) null else id to q
+                }.toMap()
                 // Catch up transcripts for sessions we lag on (REST — indices
                 // are authoritative); then open the live-append gate.
                 for (row in rows) {
@@ -558,6 +568,11 @@ class AgentsRepository(
                         attentionSnippet = att?.get("snippet")?.jsonPrimitive?.content,
                     )))
                 }
+            }
+            "session_queued" -> {
+                val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
+                val q = msg["queuedMessage"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }
+                _queued.value = if (q.isNullOrBlank()) _queued.value - sessionId else _queued.value + (sessionId to q)
             }
             "session_renamed" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
@@ -874,6 +889,25 @@ class AgentsRepository(
 
     fun killSession(sessionId: String) {
         sendWs(buildJsonObject { put("type", "kill_session"); put("sessionId", sessionId) })
+    }
+
+    /** Queue a prompt for the end of the session's current turn (idle → sends now). */
+    fun queueMessage(sessionId: String, content: String) {
+        sendWs(buildJsonObject { put("type", "queue_message"); put("sessionId", sessionId); put("content", content) })
+    }
+
+    /** Replace/cancel the queued prompt (null cancels). */
+    fun setQueuedMessage(sessionId: String, content: String?) {
+        sendWs(buildJsonObject {
+            put("type", "set_queued_message"); put("sessionId", sessionId)
+            if (content == null) put("content", JsonNull) else put("content", content)
+        })
+    }
+
+    /** Move a session's cwd (hub `relocate_session`) — a stray session bound
+     *  to a space but running elsewhere; the hub respawns it in place. */
+    fun relocateSession(sessionId: String, cwd: String) {
+        sendWs(buildJsonObject { put("type", "relocate_session"); put("sessionId", sessionId); put("cwd", cwd) })
     }
 
     fun renameSession(sessionId: String, name: String) {

@@ -143,6 +143,9 @@ fun isAccepted(details: EventDetails): Boolean {
     return self.responseStatus == "accepted"
 }
 
+/** You declined it — the grids fade + strike the title (SPA parity). */
+fun isDeclined(details: EventDetails): Boolean = details.selfAttendee?.responseStatus == "declined"
+
 /** Cheap HTML → text for event descriptions (Google often embeds markup). */
 fun stripHtml(s: String): String = s
     .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
@@ -164,3 +167,23 @@ fun extractUrls(s: String): List<String> =
     Regex("https?://[^\\s<>\"')]+").findAll(s)
         .map { it.value.trimEnd('.', ',', ';', ':', '!', '?', ')') }
         .distinct().toList()
+
+/**
+ * Cut a Google `recurrence` list so the series ends just before [fromStart]
+ * (ISO `date` for all-day, `dateTime` otherwise) — port of
+ * src/calendar/recurrence.ts `truncateRecurrence`. Non-RRULE lines pass
+ * through; UNTIL/COUNT are replaced by one UNTIL (UTC basic format).
+ */
+fun truncateRecurrence(recurrence: List<String>, fromStart: String): List<String> {
+    val allDay = !fromStart.contains('T')
+    val cutoff = (if (allDay) java.time.Instant.parse("${fromStart}T00:00:00Z") else java.time.OffsetDateTime.parse(fromStart).toInstant())
+        .minusSeconds(1)
+    val until = if (allDay) cutoff.toString().substring(0, 10).replace("-", "")
+    else cutoff.toString().replace(Regex("[-:]"), "").replace(Regex("\\.\\d+Z$"), "Z")
+    return recurrence.map { line ->
+        if (!line.uppercase().startsWith("RRULE")) return@map line
+        val parts = line.substring(line.indexOf(':') + 1).split(';')
+            .filter { it.isNotEmpty() && !Regex("^(UNTIL|COUNT)=", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+        "RRULE:" + (parts + "UNTIL=$until").joinToString(";")
+    }
+}

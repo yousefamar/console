@@ -308,7 +308,7 @@ fun WriteActionBar(
                                 if (isDraft) {
                                     repo.tabs.close(path, force = true)
                                     repo.reconcile()
-                                    r.newPath?.let { repo.tabs.open(it, repo.openFile(it) ?: "") }
+                                    r.newPath?.let { repo.openInTabs(it) }
                                     repo.blog.refreshDrafts(); repo.blog.refreshRecentPosts()
                                 }
                                 // Background-verify via ETag polling (~3 min).

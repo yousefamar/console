@@ -95,6 +95,14 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     // Grid navigation helper shared by every L1 top bar.
     val toGrid: () -> Unit = { navController.navigateToGrid() }
 
+    // `con notes open <path>` → open the note here too (the hub relays to every
+    // `notes` subscriber; the phone now counts as a client for its 409 check).
+    androidx.compose.runtime.LaunchedEffect(navController) {
+        app.graph.notes.remoteOpen.collect { path ->
+            runCatching { navController.navigate("notes/${android.net.Uri.encode(path)}") { launchSingleTop = true } }
+        }
+    }
+
     val shellScope = androidx.compose.runtime.rememberCoroutineScope()
     Scaffold { padding ->
         androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
@@ -134,28 +142,40 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 composable(Pane.Inbox.route) {
                     io.amar.console.ui.inbox.InboxScreen(
                         app.graph.inbox,
+                        spaces = app.graph.spaces,
                         onOpenChat = { roomId -> navController.navigate("chat/${android.net.Uri.encode(roomId)}") },
                         onOpenMail = { threadId -> navController.navigate("mail/${android.net.Uri.encode(threadId)}") },
                         onOpenFeedItem = { itemId -> navController.navigate("feeds/${android.net.Uri.encode(itemId)}") },
                         onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
+                        // Each done returns its undo (5 s UndoHost, SPA parity).
                         onDone = { entry ->
-                            shellScope.launch {
-                                when (entry.source) {
-                                    io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.archive(entry.sourceId)
-                                    io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.markRead(entry.sourceId)
-                                    io.amar.console.data.inbox.InboxSource.FEED -> app.graph.feeds.markRead(entry.sourceId)
-                                    io.amar.console.data.inbox.InboxSource.AGENT -> app.graph.agents.markRead(entry.sourceId)
+                            when (entry.source) {
+                                io.amar.console.data.inbox.InboxSource.MAIL -> {
+                                    app.graph.mail.archive(entry.sourceId); suspend { app.graph.mail.undoArchive(entry.sourceId) }
+                                }
+                                io.amar.console.data.inbox.InboxSource.CHAT -> {
+                                    app.graph.chat.markRead(entry.sourceId); suspend { app.graph.chat.markUnread(entry.sourceId) }
+                                }
+                                io.amar.console.data.inbox.InboxSource.FEED -> {
+                                    app.graph.feeds.markRead(entry.sourceId); suspend { app.graph.feeds.markUnread(entry.sourceId) }
+                                }
+                                io.amar.console.data.inbox.InboxSource.AGENT -> {
+                                    app.graph.agents.markRead(entry.sourceId); suspend { app.graph.agents.markUnread(entry.sourceId) }
                                 }
                             }
                         },
-                        onSnooze = { entry ->
-                            shellScope.launch {
-                                val until = io.amar.console.data.chat.SnoozeTimes.tomorrowMorning()
-                                when (entry.source) {
-                                    io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.snooze(entry.sourceId, until)
-                                    io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.snooze(entry.sourceId, until)
-                                    else -> {}
-                                }
+                        onSnooze = { entry, until ->
+                            when (entry.source) {
+                                io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.snooze(entry.sourceId, until)
+                                io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.snooze(entry.sourceId, until)
+                                else -> {}
+                            }
+                        },
+                        onUnsnooze = { entry ->
+                            when (entry.source) {
+                                io.amar.console.data.inbox.InboxSource.MAIL -> app.graph.mail.unsnooze(entry.sourceId)
+                                io.amar.console.data.inbox.InboxSource.CHAT -> app.graph.chat.snooze(entry.sourceId, null)
+                                else -> {}
                             }
                         },
                         onGrid = toGrid,
@@ -204,6 +224,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         app.graph.agents, sessionId,
                         onBack = { navController.popBackStack() },
                         onComposerChange = { app.graph.mirror.setComposerText(it) },
+                        spaces = app.graph.spaces,
                     )
                 }
                 composable(Pane.Spaces.route) {

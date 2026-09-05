@@ -223,7 +223,7 @@ class InboxLogicTest {
         // composeInbox threads reviewKeys through to the adapter.
         val lists = composeInbox(
             threads = emptyList(), rooms = emptyList(), feedItems = emptyList(), feedsById = emptyMap(),
-            readIds = emptySet(), snoozedFeedIds = emptySet(),
+            readIds = emptySet(), snoozedKeys = emptyMap(),
             sessions = listOf(session(id = "rev", agentKey = "reviewer"), session(id = "idle")),
             rules = InboxRules.DEFAULT, now = NOW, reviewKeys = review,
         )
@@ -249,13 +249,81 @@ class InboxLogicTest {
             feedItems = listOf(feedItem(id = "a"), feedItem(id = "read"), feedItem(id = "snoozed")),
             feedsById = mapOf("f1" to feed()),
             readIds = setOf("read"),
-            snoozedFeedIds = setOf("snoozed"),
+            snoozedKeys = mapOf("feed:snoozed" to Long.MAX_VALUE),
             sessions = listOf(session()),
             rules = InboxRules.DEFAULT,
             now = NOW,
         )
         assertEquals(listOf("feed:a"), lists.feed.map { it.key })
         assertEquals(setOf("mail:t1", "chat:!r1", "agent:s1"), lists.inbox.map { it.key }.toSet())
+        // The snoozed feed item is in the snoozed view with its due time, not gone.
+        assertEquals(listOf("feed:snoozed"), lists.snoozed.map { it.key })
+        assertEquals(Long.MAX_VALUE, lists.snoozed[0].snoozedUntil)
+    }
+
+    @Test
+    fun `snoozed view collects every source soonest first and expiry is live`() {
+        val lists = composeInbox(
+            threads = listOf(thread(id = "late", snoozedUntil = NOW + 3 * HOUR), thread(id = "expired", snoozedUntil = NOW - HOUR)),
+            rooms = listOf(room(id = "!soon", snoozedUntil = NOW + HOUR)),
+            feedItems = listOf(feedItem(id = "f")),
+            feedsById = mapOf("f1" to feed()),
+            readIds = emptySet(),
+            snoozedKeys = mapOf("feed:f" to NOW + 2 * HOUR, "agent:s1" to NOW + 30 * 60_000, "agent:gone" to NOW - 1),
+            sessions = listOf(session(id = "s1"), session(id = "gone")),
+            rules = InboxRules.DEFAULT,
+            now = NOW,
+        )
+        assertEquals(listOf("agent:s1", "chat:!soon", "feed:f", "mail:late"), lists.snoozed.map { it.key })
+        // Expired snoozes are live again (mail thread + agent), snoozed ones are not.
+        assertEquals(setOf("mail:expired", "agent:gone"), lists.inbox.map { it.key }.toSet())
+        assertTrue(lists.feed.isEmpty())
+    }
+
+    // ---- feed kinds ----
+
+    @Test
+    fun `feedKind classifies by host incl proxied url params`() {
+        assertEquals(FeedKind.YOUTUBE, feedKind("https://www.youtube.com/feeds/videos.xml?channel_id=x", null))
+        assertEquals(FeedKind.REDDIT, feedKind("https://old.reddit.com/r/kotlin/.rss", "https://reddit.com/r/kotlin"))
+        assertEquals(FeedKind.HN, feedKind("https://hnrss.org/frontpage", null))
+        assertEquals(FeedKind.SUBSTACK, feedKind(null, "https://someone.substack.com"))
+        assertEquals(FeedKind.X, feedKind("https://granary.io/url?url=https%3A%2F%2Ftwitter.com%2Famar&input=html", null))
+        assertEquals(FeedKind.X, feedKind("https://rsshub.app/twitter/user/amar", null))
+        assertEquals(FeedKind.RSS, feedKind("https://example.com/feed.xml", "https://example.com"))
+        assertEquals(FeedKind.RSS, feedKind(null as FeedRow?))
+    }
+
+    @Test
+    fun `feed kind chips count in ORDER and filter narrows`() {
+        val yt = feedItemToEntry(feedItem(id = "y"), FeedRow(id = "f1", title = "YT", folder = null, xmlUrl = "https://youtube.com/feeds/x"), InboxRules.DEFAULT)!!
+        val rss = feedItemToEntry(feedItem(id = "r"), feed(), InboxRules.DEFAULT)!!
+        val rss2 = feedItemToEntry(feedItem(id = "r2"), feed(), InboxRules.DEFAULT)!!
+        assertEquals(listOf(FeedKind.YOUTUBE to 1, FeedKind.RSS to 2), feedKindsPresent(listOf(rss, yt, rss2)))
+        assertEquals(listOf(yt), filterByFeedKind(listOf(rss, yt, rss2), FeedKind.YOUTUBE))
+        assertEquals(3, filterByFeedKind(listOf(rss, yt, rss2), null).size)
+    }
+
+    // ---- review hand-backs ----
+
+    @Test
+    fun `reviewHandbacksFor joins an agent key to its review cards across project boards`() {
+        val sp = io.amar.console.data.spaces.SpacesRepository.SpaceSummary(
+            kind = "project", slug = "console", title = "Console", notePath = null, boardPath = "projects/console/board.md",
+            status = null, fileCount = 0,
+            reviewCards = listOf(
+                io.amar.console.data.spaces.SpacesRepository.ReviewCard("abc", "Fix it", "worker"),
+                io.amar.console.data.spaces.SpacesRepository.ReviewCard(null, "No id card", "worker"),
+                io.amar.console.data.spaces.SpacesRepository.ReviewCard("zzz", "Other", "someone-else"),
+            ),
+            doneColumn = "Done",
+        )
+        val area = sp.copy(kind = "area", slug = "life", reviewCards = sp.reviewCards)
+        val hb = reviewHandbacksFor("worker", listOf(sp, area))
+        assertEquals(listOf("^abc", "No id card"), hb.map { it.query })
+        assertEquals("Done", hb[0].doneColumn)
+        assertTrue(reviewHandbacksFor(null, listOf(sp)).isEmpty())
+        assertTrue(reviewHandbacksFor("nobody", listOf(sp)).isEmpty())
     }
 
     // ---- promote/demote ----
