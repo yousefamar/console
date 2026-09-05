@@ -127,4 +127,14 @@ class TranscriptHelpersTest {
         assertEquals("claude-opus-4-8", TranscriptHelpers.shortModel("us.anthropic.claude-opus-4-8"))
         assertEquals("claude-fable-5", TranscriptHelpers.shortModel("claude-fable-5"))
     }
+
+    @Test
+    fun `isVideoPath matches bridge video extensions, ignoring query and case`() {
+        assertTrue(isVideoPath("/tmp/demo.mp4"))
+        assertTrue(isVideoPath("~/clips/Take2.MOV?t=3#x"))
+        assertTrue(isVideoPath("https://x/y/z.webm"))
+        assertFalse(isVideoPath("/tmp/shot.png"))
+        assertFalse(isVideoPath("/tmp/noext"))
+        assertFalse(isVideoPath("/tmp/dir.mp4/shot.png"))
+    }
 }

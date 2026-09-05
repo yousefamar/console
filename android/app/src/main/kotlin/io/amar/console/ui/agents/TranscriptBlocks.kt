@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -637,8 +638,11 @@ fun BgTaskChip(p: JsonObject) {
 fun MarkdownLite(text: String, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         val blocks = remember(text) { splitBlocks(text) }
-        // All images in this text share one lightbox gallery (SPA parity).
-        val imageModels = remember(blocks) { blocks.filterIsInstance<MdBlock.Image>().map { localMediaSrc(it.src) } }
+        // All images in this text share one lightbox gallery (SPA parity);
+        // videos play inline and stay out of the gallery.
+        val imageModels = remember(blocks) {
+            blocks.filterIsInstance<MdBlock.Image>().filter { !isVideoPath(it.src) }.map { localMediaSrc(it.src) }
+        }
         var lightbox by remember { mutableStateOf<Int?>(null) }
         for (block in blocks) {
             when (block) {
@@ -646,7 +650,8 @@ fun MarkdownLite(text: String, modifier: Modifier = Modifier) {
                 is MdBlock.Table -> MdTable(block.header, block.rows)
                 is MdBlock.Image -> {
                     val model = localMediaSrc(block.src)
-                    InlineImage(model, block.alt) { lightbox = imageModels.indexOf(model).coerceAtLeast(0) }
+                    if (isVideoPath(block.src)) InlineVideo(model, block.alt)
+                    else InlineImage(model, block.alt) { lightbox = imageModels.indexOf(model).coerceAtLeast(0) }
                 }
                 is MdBlock.Lines -> for (line in block.lines) { if (line.isNotBlank()) RenderMdLine(line) }
             }
@@ -676,6 +681,58 @@ internal fun localMediaSrc(src: String): String {
     return if (s.startsWith("/") || s.startsWith("~/")) {
         io.amar.console.core.HubConfig.hubBase + "/agents/local-file?path=" + java.net.URLEncoder.encode(s, "UTF-8")
     } else s
+}
+
+/** Video extensions the hub media bridge whitelists (server/src/agents/local-file.ts
+ *  MEDIA_TYPES) — port of the SPA's `isVideoPath` (^neat-duck). */
+private val VIDEO_EXTENSIONS = setOf(".mp4", ".webm", ".mov")
+
+internal fun isVideoPath(path: String): Boolean {
+    val noQuery = path.split('?', '#')[0]
+    val dot = noQuery.lastIndexOf('.')
+    if (dot == -1) return false
+    return noQuery.substring(dot).lowercase() in VIDEO_EXTENSIONS
+}
+
+/**
+ * Inline `<video controls>` twin: a VideoView with a MediaController inside a
+ * 16:9 box. Hub URLs need the bearer — `setVideoURI(uri, headers)` carries it
+ * (Coil's interceptor only covers images). A failed load falls back to the
+ * alt text so a dead path never leaves a black box in the transcript.
+ */
+@Composable
+private fun InlineVideo(model: String, alt: String) {
+    var failed by remember(model) { mutableStateOf(false) }
+    if (failed) {
+        Text(
+            if (alt.isNotBlank()) "[video: $alt]" else "[video]",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column {
+        androidx.compose.ui.viewinterop.AndroidView(
+            modifier = Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(8.dp))
+                .background(androidx.compose.ui.graphics.Color.Black),
+            factory = { ctx ->
+                android.widget.VideoView(ctx).apply {
+                    val headers = HashMap<String, String>()
+                    if (model.startsWith(io.amar.console.core.HubConfig.hubBase)) {
+                        io.amar.console.HubTokenStore.get()?.let { headers["Authorization"] = "Bearer $it" }
+                    }
+                    setVideoURI(android.net.Uri.parse(model), headers)
+                    val controller = android.widget.MediaController(ctx)
+                    controller.setAnchorView(this)
+                    setMediaController(controller)
+                    setOnPreparedListener { mp -> mp.isLooping = false; seekTo(1) } // first frame as poster
+                    setOnErrorListener { _, _, _ -> failed = true; true }
+                }
+            },
+        )
+        if (alt.isNotBlank()) {
+            Text(alt, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
 }
 
 @Composable

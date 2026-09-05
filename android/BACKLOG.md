@@ -84,6 +84,15 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Shipped
 
+### v94 (2026-09-05)
+- **Transcripts: local video paths play inline** (SPA f11f194b, ^neat-duck →
+  ^neat-toad feedback): `![alt](/path.mp4|.webm|.mov)` lines render a
+  `VideoView` + MediaController (16:9, first frame as poster) instead of a
+  broken image — `isVideoPath` port; hub media-bridge URLs carry the bearer via
+  `setVideoURI(uri, headers)` (Coil's interceptor covers images only); a failed
+  load falls back to `[video: alt]`. Videos stay out of the image lightbox
+  gallery.
+
 ### v93 (2026-09-05)
 - **Mobile parity sweep batch** (^neat-toad, 2026-09-05 — a deep SPA-vs-app
   audit; the leftovers are the Open entries above):
