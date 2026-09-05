@@ -26,6 +26,16 @@ export function identifierFromGhost(userId: string): string | null {
   return m ? m[1]! : null
 }
 
+/** A contact's known identifiers plus the lid WhatsApp maps each phone number
+ *  to. Beeper's bridge may name the ghost by EITHER form — a `users/<name>.md`
+ *  that only records the phone never matched a lid-keyed DM room (this hid
+ *  AL's own DM: ghost `@whatsapp_lid-…`, lookup by number). */
+export async function expandIdentifiers(known: string[], lidFor: (digits: string) => Promise<string | null>): Promise<string[]> {
+  const digits = [...new Set(known.map((k) => k.replace(/\D/g, '')).filter(Boolean))]
+  const lids = await Promise.all(digits.map((d) => lidFor(d).catch(() => null)))
+  return [...new Set([...digits, ...lids.filter((l): l is string => !!l)])]
+}
+
 export class ContactRoomResolver {
   private ghostsByRoom = new Map<string, Set<string>>()
   private roomByContact = new Map<string, string>()

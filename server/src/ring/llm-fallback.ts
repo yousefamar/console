@@ -7,7 +7,7 @@
 
 import { execFile } from 'node:child_process'
 import type { RingCommand, RouteEnv } from './router.js'
-import type { RingSchema } from './schema.js'
+import { AL_CONTACT, type RingSchema } from './schema.js'
 import type { MovieRow } from './append.js'
 
 const TIMEOUT_MS = 20_000
@@ -58,7 +58,10 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
     case 'message': {
       const contact = str('contact').toLowerCase(); const t = str('text')
       const known = contact in v.message.contacts || env.contacts.includes(contact)
-      return known && t ? { kind: 'message', contact, spoken: contact, text: t } : null
+      if (!known || !t) return null
+      // Same as the rule router: addressing AL is a conversation, not a send.
+      if (contact === AL_CONTACT) return { kind: 'fallback', agentKey: AL_CONTACT, text: t }
+      return { kind: 'message', contact, spoken: contact, text: t }
     }
     case 'music': {
       const action = obj.action

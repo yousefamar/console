@@ -10,7 +10,7 @@ import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
 import { RingStore } from '../ring/store.js'
 import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
-import { ContactRoomResolver, ghostUserIds, identifierFromGhost } from '../ring/chat-room.js'
+import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
@@ -156,9 +156,13 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('text nika running late')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'nica' } })
     expect(r('message sam-miller hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } })
     expect(r('message sam hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } }) // first name, derived
-    expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { contact: 'al', text: 'are you there' } })
-    expect(r('text owl ping')).toMatchObject({ rule: 'message', command: { contact: 'al' } })
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
+  })
+  it('message/text/tell AL is a conversation with him, never a send from Yousef (^glad-ibis)', () => {
+    expect(r('message al are you there')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'are you there' } })
+    expect(r('Message Al Hi')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'Hi' } })
+    expect(r('text owl ping')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', agentKey: 'al', text: 'ping' } })
+    expect(r('tell AL to check the calendar')).toMatchObject({ rule: 'al.direct', command: { kind: 'fallback', text: 'check the calendar' } })
   })
   it('there is no agent verb — "tell" is a message alias, bare names are unclaimed', () => {
     expect(r("tell mum I'm late")).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'yasmina-amar', text: "I'm late" } })
@@ -224,6 +228,7 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix","start":true}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'In Progress' })
     expect(parseClassifyReply('{"kind":"card","project":"nope","text":"fix"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"message","contact":"nica","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'nica' })
+    expect(parseClassifyReply('{"kind":"message","contact":"al","text":"hi"}', SCHEMA, ENV, 'x')).toEqual({ kind: 'fallback', agentKey: 'al', text: 'hi' }) // talking TO AL, never a send
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"unknown"}', SCHEMA, ENV, 'raw')).toEqual({ kind: 'unknown', text: 'raw' })
     expect(parseClassifyReply('I cannot help', SCHEMA, ENV, 'x')).toBeNull()
@@ -297,7 +302,7 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
-    expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's own WhatsApp DM" })
+    expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's ring fork (al.direct)" })
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
     expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
   })
@@ -523,6 +528,16 @@ describe('ContactRoomResolver', () => {
     expect(fetched.length).toBe(before) // cached
     expect(await r.resolve('stranger', ['123'])).toBeNull()
     expect(await r.resolve('noids', [])).toBeNull()
+  })
+  it('expandIdentifiers adds the lid each phone maps to, so a lid-keyed room resolves from a phone-only contact (^glad-ibis)', async () => {
+    const lidFor = async (d: string) => d === '447' ? '34154016194786' : d === '999' ? null : Promise.reject(new Error('offline'))
+    expect(await expandIdentifiers(['447'], lidFor)).toEqual(['447', '34154016194786'])
+    expect(await expandIdentifiers(['+44 7', '447', '999', ''], lidFor)).toEqual(['447', '999', '34154016194786']) // digits-only, dedup, null skipped
+    expect(await expandIdentifiers(['555'], lidFor)).toEqual(['555']) // lookup failure is not fatal
+    const rooms = [{ id: '!al', name: 'Al', isDirect: true, networkIcon: 'whatsapp' }]
+    const r = new ContactRoomResolver(() => rooms, async () => ['@whatsappbot:beeper.local', '@drmr:beeper.com', '@whatsapp_lid-34154016194786:beeper.local'])
+    expect(await r.resolve('al', ['447'])).toBeNull() // phone alone never matched — the live failure
+    expect((await r.resolve('al', await expandIdentifiers(['447'], lidFor)))?.id).toBe('!al')
   })
 })
 

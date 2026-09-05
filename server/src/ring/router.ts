@@ -231,6 +231,9 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
       }
       case 'message': {
         const contact = resolveSpoken(target, contactForms(v.message.contacts, env.contacts)) ?? pickFuzzy(target, env.contacts)
+        // "message al …" is Yousef talking TO AL, not sending as himself to
+        // AL's WhatsApp — same destination as the bare "al <text>" verb.
+        if (contact === AL_CONTACT) return { rule: 'al.direct', command: { kind: 'fallback', agentKey: AL_CONTACT, text: payload.replace(MESSAGE_LEAD, '') } }
         if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
         return unknown('message')
       }

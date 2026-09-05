@@ -67,7 +67,7 @@ export function buildRingForkSeed(schema: RingSchema): string {
     `start <project> <text>   → board card in ${v.start.column} (dispatched, forks an agent now)`,
     `message <person> <text>  → sent AS YOUSEF from his own chat account (not via you)`,
     'echo <text>              → straight to Yousef\'s WhatsApp (pure software smoke test)',
-    'al <text>                → straight to YOU (this fork), skipping the tree — he addressed you by name',
+    'al <text>                → straight to YOU (this fork), skipping the tree — he addressed you by name ("message al …" / "text al …" land here too, never as a WhatsApp send)',
     'play | pause | next | previous | play <query>',
   ]
   return [

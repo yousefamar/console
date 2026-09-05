@@ -147,6 +147,29 @@ export function ownNumber(): string | null {
   return id ? id.split(':')[0]!.split('@')[0]!.replace(/\D/g, '') || null : null
 }
 
+const jidDigits = (jid: string | undefined): string | null => jid ? jid.split(':')[0]!.split('@')[0]!.replace(/\D/g, '') || null : null
+
+/** AL's own WhatsApp identifiers (digits): phone number AND lid. Beeper's
+ *  bridge names his ghost in Yousef's DM by the LID (`@whatsapp_lid-…`), so a
+ *  phone-only lookup never finds that room (^glad-ibis, 2026-09-05). */
+export function ownIdentifiers(): string[] {
+  return [jidDigits(sock?.user?.id), jidDigits(sock?.user?.lid)].filter((d): d is string => !!d)
+}
+
+/** The lid (digits) WhatsApp maps a phone number to, from the socket's
+ *  persisted lid-mapping store — populated as AL sees the contact. Null when
+ *  unknown or offline. */
+export async function lidForNumber(digits: string): Promise<string | null> {
+  const repo = sock?.signalRepository
+  if (!repo || !digits) return null
+  try {
+    const lid = await repo.lidMapping.getLIDForPN(`${digits}@s.whatsapp.net`)
+    return jidDigits(lid ?? undefined)
+  } catch {
+    return null
+  }
+}
+
 export function getQrDataUrl(): string | null {
   // QR is invalidated once we pair.
   return connected ? null : latestQrDataUrl

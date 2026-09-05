@@ -75,7 +75,7 @@ import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import type { RouteEnv } from './ring/router.js'
 import { buildRingForkSeed } from './ring/pipeline.js'
-import { ContactRoomResolver } from './ring/chat-room.js'
+import { ContactRoomResolver, expandIdentifiers } from './ring/chat-room.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
 import { handleApkRoutes } from './routes/apk.js'
@@ -1197,9 +1197,13 @@ const ringCtx: RingCtx = {
   // message: AS YOUSEF, through his own Matrix account → the contact's bridged
   // WhatsApp DM (resolved by ghost member id; encryption-aware send).
   chatSendAsYousef: async (contact, text) => {
-    const ids = contact === AL_CONTACT ? [alWa.ownNumber() ?? ''] : identifiersFor(contact)
+    // Beeper names a ghost by phone OR lid — expand every known phone to its
+    // lid via AL's socket so a users/<name>.md that only lists the number
+    // still finds a lid-keyed room (the class that hid AL's own DM).
+    const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)
+    const ids = await expandIdentifiers(known, alWa.lidForNumber)
     const room = await ringContactRooms.resolve(contact, ids)
-    if (!room) throw new Error(contact === AL_CONTACT ? "no WhatsApp DM room found for AL's own number" : `no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
+    if (!room) throw new Error(contact === AL_CONTACT ? "no WhatsApp DM room found for AL's own identifiers" : `no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
     await matrixSync.sendRoomEvent({ roomId: room.id, type: 'm.room.message', content: { msgtype: 'm.text', body: text } })
     return room.name
   },
