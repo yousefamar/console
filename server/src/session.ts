@@ -27,6 +27,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
+import { HUB_PID_ENV } from './agents/process-reaper.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
@@ -51,6 +52,8 @@ function resolveAgentModel(): string {
   return agentModelResolver?.() ?? process.env.CLAUDE_MODEL?.trim() ?? DEFAULT_AGENT_MODEL
 }
 
+/** kill(): SIGTERM → SIGKILL if the subprocess is still alive after this. */
+const KILL_ESCALATE_MS = 5_000
 /** How many times a single session may auto-restart chasing a working model
  *  before giving up — guards against a restart loop if every model fails. */
 const MAX_MODEL_RESTARTS = 6
@@ -364,6 +367,9 @@ export class Session extends EventEmitter {
         // agent's own edits back at it.
         ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}),
         ...projectDirEnv(cwd),
+        // Which hub generation spawned this process — the reaper kills claude
+        // children whose marker names a dead hub (process-reaper.ts).
+        [HUB_PID_ENV]: String(process.pid),
       },
     })
     this.processAlive = true
@@ -408,6 +414,10 @@ export class Session extends EventEmitter {
     this.process.on('exit', (code) => {
       this.stdinReady = false
       this.processAlive = false
+      // Hub going down: the manifest was already saved with this session's
+      // real status. Touch nothing — flipping status/endedByUser here would be
+      // persisted as `ended` by the hub's exit listener and skipped on restore.
+      if (this.shuttingDown) return
       // A model-driven restart or a user `reload()` killed the subprocess on
       // purpose — re-spawn it instead of ending the session.
       if (this.restartingForModel || this.reloading) {
@@ -877,6 +887,23 @@ export class Session extends EventEmitter {
     this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId!, silent: true, name: this.name })
   }
 
+  /** Set by terminateForShutdown(): the exit handler must not reinterpret
+   *  the death as a session end or a reason to respawn. */
+  private shuttingDown = false
+
+  /** Hub shutdown: SIGTERM the subprocess WITHOUT changing session state (the
+   *  manifest keeps status/wasRunning as they were, so the next hub resumes
+   *  it). Returns the pid so the caller can wait and SIGKILL a survivor —
+   *  a child left alive reparents to init as a live twin of the resumed one. */
+  terminateForShutdown(): number | null {
+    this.shuttingDown = true
+    if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
+    if (!this.process || !this.processAlive) return null
+    const pid = this.process.pid ?? null
+    this.process.kill('SIGTERM')
+    return pid
+  }
+
   /** Kill the session */
   kill() {
     if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
@@ -896,7 +923,12 @@ export class Session extends EventEmitter {
     this.todoWatcher = null
     this.todoWatchedCsid = null
     if (this.process) {
-      this.process.kill('SIGTERM')
+      const proc = this.process
+      proc.kill('SIGTERM')
+      // The CLI can sit on SIGTERM mid-tool-call; an ended session must not
+      // keep a live process (it would be a twin of nothing, still writing).
+      const t = setTimeout(() => { if (this.processAlive && this.process === proc) proc.kill('SIGKILL') }, KILL_ESCALATE_MS)
+      t.unref?.()
     }
   }
 

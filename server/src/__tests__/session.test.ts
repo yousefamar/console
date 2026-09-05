@@ -304,6 +304,61 @@ describe('Session interrupt and kill', () => {
     expect(session.status).toBe('ended')
     expect(mockProcess.killed).toBe(true)
   })
+
+  it('kill escalates to SIGKILL when the subprocess ignores SIGTERM', () => {
+    vi.useFakeTimers()
+    try {
+      const session = new Session({ prompt: 'test' })
+      // A CLI mid-tool-call can sit on SIGTERM: swallow it, never exit.
+      const signals: string[] = []
+      mockProcess.kill = (sig?: string) => { signals.push(sig ?? '') }
+      session.kill()
+      expect(signals).toEqual(['SIGTERM'])
+      vi.advanceTimersByTime(5_000)
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('spawns with the hub-generation marker so the reaper can tell dead-hub children apart', () => {
+    new Session({ prompt: 'test' })
+    const env = lastSpawnArgs!.options.env as Record<string, string>
+    expect(env.CONSOLE_HUB_PID).toBe(String(process.pid))
+  })
+})
+
+describe('Session terminateForShutdown', () => {
+  // Hub shutdown must end the subprocess WITHOUT the session looking ended:
+  // the hub's exit listener persists the manifest, and `endedByUser` there
+  // means "skip on restore" — a shutdown that waits for exits would otherwise
+  // erase every session.
+  it('SIGTERMs the process, returns its pid, and leaves session state untouched', () => {
+    const session = new Session({ prompt: 'test' })
+    session.status = 'running'
+    const exits: unknown[] = []
+    session.on('exit', (c) => exits.push(c))
+    const hub = collectHubMessages(session)
+    const signals: string[] = []
+    const realKill = mockProcess.kill.bind(mockProcess)
+    mockProcess.kill = (sig?: string) => { signals.push(sig ?? ''); realKill(sig) }
+
+    const pid = session.terminateForShutdown()
+
+    expect(pid).toBe(12345)
+    expect(signals).toEqual(['SIGTERM'])
+    // The mock emits `exit` synchronously on kill — the handler must have bailed.
+    expect(session.status).toBe('running')
+    expect(session.endedByUser).toBe(false)
+    expect(exits).toEqual([])
+    expect(hub.some((m) => m.type === 'session_ended')).toBe(false)
+  })
+
+  it('returns null when there is no live process (hibernated / already dead)', () => {
+    const session = new Session({ prompt: 'test' })
+    mockProcess.emit('exit', 0)
+    expect(session.terminateForShutdown()).toBeNull()
+  })
 })
 
 describe('Session control_request handling', () => {

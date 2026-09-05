@@ -24,6 +24,7 @@ import { BookmarkStore } from './bookmarks.js'
 import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
+import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
@@ -2145,189 +2146,240 @@ httpServer.listen(port, host, () => {
   log(`Health check: ${proto}://${host}:${port}/health`)
   if (tlsOpts && certCandidates[0]) log(`TLS: using ${certCandidates[0].cert}`)
 
-  // Restore sessions from manifest
+  // Restore sessions from manifest — but FIRST reap the previous hub's claude
+  // children (process-reaper.ts). pm2 restarts the tree with SIGINT, which the
+  // CLI reads as "interrupt the turn", so children routinely survived the old
+  // hub; resuming a session whose old process is still alive makes a TWIN
+  // executing the same turn in the same worktree (incident 2026-09-04).
   const manifest = loadManifest()
-  if (manifest.length > 0) {
-    log(`Restoring ${manifest.length} session(s) from manifest...`)
-
-    // One-time backfill of fork lineage for forks created before the hub began
-    // recording `parentClaudeSessionId`. A fork is named "<parent> (fork)"; if
-    // exactly one manifest entry has that base name, adopt it as the parent.
-    // Ambiguous (no/multiple matches) → left unlinked (renders as a root).
-    const byName = new Map<string, string[]>()
-    for (const e of manifest) {
-      if (e.name && e.claudeSessionId) {
-        const arr = byName.get(e.name) ?? []
-        arr.push(e.claudeSessionId)
-        byName.set(e.name, arr)
+  const bootCsids = new Set<string>()
+  for (const e of manifest) if (e.claudeSessionId) bootCsids.add(e.claudeSessionId)
+  void (async () => {
+    try {
+      const { reaped } = await reapStaleProcesses({ ownPid: process.pid, ownedCsids: bootCsids })
+      for (const r of reaped) {
+        log(`[reaper] ended stale claude pid ${r.pid} (${r.reason}${r.resume ? `, resume ${r.resume.slice(0, 8)}` : ''})${r.killed ? ' — needed SIGKILL' : ''}`)
       }
+      if (reaped.length) log(`[reaper] ${reaped.length} stale claude process(es) from the previous hub reaped before restore`)
+    } catch (err) {
+      log(`[reaper] boot reap failed: ${(err as Error).message}`)
     }
-    const resolveParent = (entry: { name?: string; parentClaudeSessionId?: string }): string | undefined => {
-      if (entry.parentClaudeSessionId) return entry.parentClaudeSessionId
-      const m = entry.name?.match(/^(.*) \(fork\)$/)
-      if (!m) return undefined
-      const candidates = byName.get(m[1]!)
-      return candidates && candidates.length === 1 ? candidates[0] : undefined
-    }
+    if (manifest.length > 0) {
+      log(`Restoring ${manifest.length} session(s) from manifest...`)
 
-    // Re-instantiate only ONE Al — the official one per al-session.json (or the
-    // first if none recorded). Stale Al entries (left by prior reloads/restarts)
-    // are skipped so a second "Al" never appears on boot; the saveManifest()
-    // after this loop then prunes them from the file. ensureAlSession (below)
-    // adopts the restored Al or spawns fresh — exactly one Al either way, with
-    // nothing killed.
-    const officialAlId = getRecordedAlSessionId()
-    let alRestored = false
-    for (const entry of manifest) {
-      // User explicitly ended this session — stay dead. The saveManifest()
-      // after the loop prunes it (it never enters the sessions map).
-      if (entry.ended) {
-        log(`  Skipped (ended by user): ${entry.name ?? entry.claudeSessionId}`)
-        continue
+      // One-time backfill of fork lineage for forks created before the hub began
+      // recording `parentClaudeSessionId`. A fork is named "<parent> (fork)"; if
+      // exactly one manifest entry has that base name, adopt it as the parent.
+      // Ambiguous (no/multiple matches) → left unlinked (renders as a root).
+      const byName = new Map<string, string[]>()
+      for (const e of manifest) {
+        if (e.name && e.claudeSessionId) {
+          const arr = byName.get(e.name) ?? []
+          arr.push(e.claudeSessionId)
+          byName.set(e.name, arr)
+        }
       }
-      if (entry.agentKey === 'al' || isAlName(entry.name)) {
-        const isOfficial = officialAlId ? entry.claudeSessionId === officialAlId : !alRestored
-        if (!isOfficial) {
-          log(`  Skipped (stale AL duplicate): ${entry.claudeSessionId}`)
+      const resolveParent = (entry: { name?: string; parentClaudeSessionId?: string }): string | undefined => {
+        if (entry.parentClaudeSessionId) return entry.parentClaudeSessionId
+        const m = entry.name?.match(/^(.*) \(fork\)$/)
+        if (!m) return undefined
+        const candidates = byName.get(m[1]!)
+        return candidates && candidates.length === 1 ? candidates[0] : undefined
+      }
+
+      // Re-instantiate only ONE Al — the official one per al-session.json (or the
+      // first if none recorded). Stale Al entries (left by prior reloads/restarts)
+      // are skipped so a second "Al" never appears on boot; the saveManifest()
+      // after this loop then prunes them from the file. ensureAlSession (below)
+      // adopts the restored Al or spawns fresh — exactly one Al either way, with
+      // nothing killed.
+      const officialAlId = getRecordedAlSessionId()
+      let alRestored = false
+      for (const entry of manifest) {
+        // User explicitly ended this session — stay dead. The saveManifest()
+        // after the loop prunes it (it never enters the sessions map).
+        if (entry.ended) {
+          log(`  Skipped (ended by user): ${entry.name ?? entry.claudeSessionId}`)
           continue
         }
-        alRestored = true
-      }
-      try {
-        const session = createSession(agentCtx, {
-          prompt: entry.prompt,
-          cwd: entry.cwd,
-          resume: entry.claudeSessionId,
-          silent: true,
-          name: entry.name,
-          parentClaudeSessionId: resolveParent(entry),
-          agentKey: entry.agentKey,
-          project: entry.project,
-          areas: entry.areas,
-          needsAttention: entry.needsAttention,
-          restoreMessageLogLength: entry.messageLogLength,
-          modelOverride: entry.modelOverride,
-          queuedMessage: entry.queuedMessage,
-          // Idle sessions restore straight into hibernation — no subprocess
-          // until their first message (a restart used to thunder-herd 40+
-          // claude spawns ≈ 12GB RSS). Mid-turn sessions (wasRunning → the
-          // "continue" nudge below wakes them) and Al (always-on front door,
-          // handled by ensureAlSession) spawn live.
-          hibernateOnStart: !entry.wasRunning && entry.agentKey !== 'al',
-        })
-        // If the session was mid-turn when the hub stopped, nudge it to
-        // continue where it left off. Silent resume alone leaves it idle.
-        if (entry.wasRunning) {
-          setTimeout(() => {
-            if (session.status !== 'ended') {
-              const content = 'The hub was restarted, which interrupted you. Continue.'
-              // Mirror the UI send-message path: broadcast + log so the prompt
-              // appears in the conversation view, not just on Claude's stdin.
-              const userMsg = { type: 'user_prompt' as const, sessionId: session.id, content }
-              broadcast(userMsg)
-              session.logMessage(userMsg)
-              session.sendMessage(content)
-            }
-          }, 1_000)
-          log(`  Resumed + continued: ${session.id} (claude: ${entry.claudeSessionId})`)
-        } else {
-          // A queue restored onto an idle session has no turn left to wait for
-          // — deliver it now (also wakes a hibernated session, as any inbound
-          // message would). Mid-turn sessions flush at the end of the nudged turn.
-          if (entry.queuedMessage) setTimeout(() => session.flushIfIdle(), 1_000)
-          log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
-        }
-      } catch (err) {
-        log(`  Failed to resume ${entry.claudeSessionId}: ${(err as Error).message}`)
-      }
-    }
-    // Save manifest immediately so restored sessions are persisted
-    saveManifest(sessions)
-  }
-
-  // -----------------------------------------------------------------
-  // Al runtime bootstrap — absorbed from ~/proj/code/al into the hub.
-  //
-  // Order: ensure the Al Claude session is alive (spawned fresh or resumed
-  // from manifest), THEN load users + start Baileys. The WhatsApp handlers
-  // inject inbound messages into Al; injecting before Al exists is a no-op
-  // (returns false) so a fast inbound during the boot window is dropped
-  // safely rather than crashing.
-  ;(async () => {
-    try {
-      await loadUsers()
-      setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
-      const alSession = await ensureAlSession(agentCtx)
-      log(`AL session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
-      // Atoms carries the hub's voice bearer on every callback — push the
-      // current token (+ prompt) so the first inbound call passes the auth
-      // wall. Fire-and-forget: Atoms being down must not block AL's boot.
-      syncVoiceAuth().catch((err: Error) => log(`[al/voice] auth sync failed: ${err.message}`))
-      // Conversation-fork router: restores the thread→fork table + starts the
-      // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound
-      // routes correctly.
-      startConversationForks(agentCtx)
-
-      await alWa.startWhatsApp({
-        onInbound: async (msg) => {
-          try {
-            await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
-            const resolved = resolveUsername(msg.sender)
-            const otherIds = identifiersFor(resolved).filter((id) => id !== normalizeJid(msg.sender))
-            const envelope = alWa.inboundEnvelope(msg, resolved, otherIds)
-            // Non-owner threads route to a per-conversation fork of Al
-            // (conversation-forks.ts); owner (Yousef) + fallback paths go to
-            // the parent as before.
-            const senderLabel = resolved ?? msg.senderName ?? msg.sender
-            const handled = routeInbound(agentCtx, msg.jid, resolved, senderLabel, envelope)
-            if (!handled) injectToAl(envelope, broadcast)
-          } catch (err) {
-            console.error('[al/wa/inbound] handler failed:', (err as Error)?.message)
+        if (entry.agentKey === 'al' || isAlName(entry.name)) {
+          const isOfficial = officialAlId ? entry.claudeSessionId === officialAlId : !alRestored
+          if (!isOfficial) {
+            log(`  Skipped (stale AL duplicate): ${entry.claudeSessionId}`)
+            continue
           }
-        },
-        onQrUpdate: (dataUrl) => {
-          const body = [
-            '[Hub event] WhatsApp needs pairing.',
-            'Scan with your phone (rotates every ~20s):',
-            '',
-            `![WhatsApp QR](${dataUrl})`,
-          ].join('\n')
-          injectToAl(body, broadcast)
-        },
-        onHealthChange: (state, detail) => {
-          // WhatsApp drops + auto-reconnects constantly on transient 428/503
-          // blips. Injecting each connect/disconnect into Al's session spends a
-          // full turn's tokens for zero action, so DON'T feed Al — just log for
-          // diagnostics. The one actionable case (logged-out → needs re-pair) is
-          // surfaced separately via onQrUpdate when the fresh QR is issued.
-          const detailSuffix = detail ? ` (${detail})` : ''
-          console.log(`[al/wa] health: ${state}${detailSuffix}`)
-        },
-      })
-      log('Baileys WhatsApp started')
-
-      // Deprecation shim on :18789 — translates old POST /message → wa.sendText
-      // until every caller migrates to `con whatsapp send`. Logs every caller.
-      startDeprecationShim()
-    } catch (err) {
-      console.error('[al/boot] failed:', (err as Error)?.message)
+          alRestored = true
+        }
+        try {
+          const session = createSession(agentCtx, {
+            prompt: entry.prompt,
+            cwd: entry.cwd,
+            resume: entry.claudeSessionId,
+            silent: true,
+            name: entry.name,
+            parentClaudeSessionId: resolveParent(entry),
+            agentKey: entry.agentKey,
+            project: entry.project,
+            areas: entry.areas,
+            needsAttention: entry.needsAttention,
+            restoreMessageLogLength: entry.messageLogLength,
+            modelOverride: entry.modelOverride,
+            queuedMessage: entry.queuedMessage,
+            // Idle sessions restore straight into hibernation — no subprocess
+            // until their first message (a restart used to thunder-herd 40+
+            // claude spawns ≈ 12GB RSS). Mid-turn sessions (wasRunning → the
+            // "continue" nudge below wakes them) and Al (always-on front door,
+            // handled by ensureAlSession) spawn live.
+            hibernateOnStart: !entry.wasRunning && entry.agentKey !== 'al',
+          })
+          // If the session was mid-turn when the hub stopped, nudge it to
+          // continue where it left off. Silent resume alone leaves it idle.
+          if (entry.wasRunning) {
+            setTimeout(() => {
+              if (session.status !== 'ended') {
+                const content = 'The hub was restarted, which interrupted you. Continue.'
+                // Mirror the UI send-message path: broadcast + log so the prompt
+                // appears in the conversation view, not just on Claude's stdin.
+                const userMsg = { type: 'user_prompt' as const, sessionId: session.id, content }
+                broadcast(userMsg)
+                session.logMessage(userMsg)
+                session.sendMessage(content)
+              }
+            }, 1_000)
+            log(`  Resumed + continued: ${session.id} (claude: ${entry.claudeSessionId})`)
+          } else {
+            // A queue restored onto an idle session has no turn left to wait for
+            // — deliver it now (also wakes a hibernated session, as any inbound
+            // message would). Mid-turn sessions flush at the end of the nudged turn.
+            if (entry.queuedMessage) setTimeout(() => session.flushIfIdle(), 1_000)
+            log(`  Resumed: ${session.id} (claude: ${entry.claudeSessionId})`)
+          }
+        } catch (err) {
+          log(`  Failed to resume ${entry.claudeSessionId}: ${(err as Error).message}`)
+        }
+      }
+      // Save manifest immediately so restored sessions are persisted
+      saveManifest(sessions)
     }
+
+    // -----------------------------------------------------------------
+    // Al runtime bootstrap — absorbed from ~/proj/code/al into the hub.
+    //
+    // Order: ensure the Al Claude session is alive (spawned fresh or resumed
+    // from manifest), THEN load users + start Baileys. The WhatsApp handlers
+    // inject inbound messages into Al; injecting before Al exists is a no-op
+    // (returns false) so a fast inbound during the boot window is dropped
+    // safely rather than crashing.
+    ;(async () => {
+      try {
+        await loadUsers()
+        setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
+        const alSession = await ensureAlSession(agentCtx)
+        log(`AL session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+        // Atoms carries the hub's voice bearer on every callback — push the
+        // current token (+ prompt) so the first inbound call passes the auth
+        // wall. Fire-and-forget: Atoms being down must not block AL's boot.
+        syncVoiceAuth().catch((err: Error) => log(`[al/voice] auth sync failed: ${err.message}`))
+        // Conversation-fork router: restores the thread→fork table + starts the
+        // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound
+        // routes correctly.
+        startConversationForks(agentCtx)
+
+        await alWa.startWhatsApp({
+          onInbound: async (msg) => {
+            try {
+              await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
+              const resolved = resolveUsername(msg.sender)
+              const otherIds = identifiersFor(resolved).filter((id) => id !== normalizeJid(msg.sender))
+              const envelope = alWa.inboundEnvelope(msg, resolved, otherIds)
+              // Non-owner threads route to a per-conversation fork of Al
+              // (conversation-forks.ts); owner (Yousef) + fallback paths go to
+              // the parent as before.
+              const senderLabel = resolved ?? msg.senderName ?? msg.sender
+              const handled = routeInbound(agentCtx, msg.jid, resolved, senderLabel, envelope)
+              if (!handled) injectToAl(envelope, broadcast)
+            } catch (err) {
+              console.error('[al/wa/inbound] handler failed:', (err as Error)?.message)
+            }
+          },
+          onQrUpdate: (dataUrl) => {
+            const body = [
+              '[Hub event] WhatsApp needs pairing.',
+              'Scan with your phone (rotates every ~20s):',
+              '',
+              `![WhatsApp QR](${dataUrl})`,
+            ].join('\n')
+            injectToAl(body, broadcast)
+          },
+          onHealthChange: (state, detail) => {
+            // WhatsApp drops + auto-reconnects constantly on transient 428/503
+            // blips. Injecting each connect/disconnect into Al's session spends a
+            // full turn's tokens for zero action, so DON'T feed Al — just log for
+            // diagnostics. The one actionable case (logged-out → needs re-pair) is
+            // surfaced separately via onQrUpdate when the fresh QR is issued.
+            const detailSuffix = detail ? ` (${detail})` : ''
+            console.log(`[al/wa] health: ${state}${detailSuffix}`)
+          },
+        })
+        log('Baileys WhatsApp started')
+
+        // Deprecation shim on :18789 — translates old POST /message → wa.sendText
+        // until every caller migrates to `con whatsapp send`. Logs every caller.
+        startDeprecationShim()
+      } catch (err) {
+        console.error('[al/boot] failed:', (err as Error)?.message)
+      }
+    })()
+    staleSweeper.start()
   })()
 
   log('')
   log('Waiting for Console to connect...')
 })
 
-// Graceful shutdown — save manifest synchronously before exit
+// Timer belt for the reaper: a stale claude twin (previous hub generation, or
+// a --resume of a csid we own that isn't our child) older than a minute gets
+// SIGTERM, then SIGKILL on the next tick. Started after the boot reap.
+const staleSweeper = new StaleProcessSweeper({
+  ownPid: process.pid,
+  ownedCsids: () => {
+    const owned = new Set<string>()
+    for (const s of sessions.values()) {
+      if (s.claudeSessionId) owned.add(s.claudeSessionId)
+      if (s.parentClaudeSessionId) owned.add(s.parentClaudeSessionId)
+    }
+    return owned
+  },
+  log,
+})
+
+// Graceful shutdown — save manifest synchronously, then end every claude
+// child BEFORE exiting. Children are SIGTERMed without touching session state
+// (Session.terminateForShutdown — the saved manifest already holds the real
+// status), given ≤1 s to exit, then SIGKILLed: a child left alive reparents to
+// init and becomes a live twin of the session the next hub resumes. pm2's
+// kill_timeout is 1.6 s, so the whole sequence must stay under that.
+let shuttingDown = false
 function shutdown() {
+  if (shuttingDown) return
+  shuttingDown = true
   log('\nShutting down — saving manifest...')
   saveManifestSync(sessions)
   flushReadState()
   cronScheduler.flush()
-  for (const session of sessions.values()) session.kill()
+  staleSweeper.stop()
+  const children: number[] = []
+  for (const session of sessions.values()) {
+    const pid = session.terminateForShutdown()
+    if (pid) children.push(pid)
+  }
   authStore.destroy()
   httpServer.close()
-  process.exit(0)
+  void waitForExit(children, 1_000).then((survivors) => {
+    for (const pid of survivors) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }
+    log(`Shutdown: ${children.length} claude child(ren) ended${survivors.length ? `, ${survivors.length} needed SIGKILL` : ''}`)
+    process.exit(0)
+  })
 }
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
