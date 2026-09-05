@@ -205,23 +205,31 @@ function signal(pid: number, sig: NodeJS.Signals): boolean {
   }
 }
 
+/** Process I/O seam — tests inject fakes. NEVER let a test reach the real
+ *  `process.kill`: any pid below pid_max (4194304 here) can be a real process. */
+export interface ProcIo {
+  kill: (pid: number, sig: NodeJS.Signals) => boolean
+  isAlive: (pid: number) => boolean
+}
+const realIo: ProcIo = { kill: signal, isAlive }
+
 /** Resolve with the pids still alive once every pid is gone or `graceMs` elapsed. */
-export async function waitForExit(pids: number[], graceMs: number, pollMs = 50): Promise<number[]> {
+export async function waitForExit(pids: number[], graceMs: number, pollMs = 50, io: ProcIo = realIo): Promise<number[]> {
   const deadline = Date.now() + graceMs
-  let alive = pids.filter(isAlive)
+  let alive = pids.filter(io.isAlive)
   while (alive.length && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, pollMs))
-    alive = alive.filter(isAlive)
+    alive = alive.filter(io.isAlive)
   }
   return alive
 }
 
 /** SIGTERM `pids`, wait up to `graceMs`, SIGKILL whatever is left. Returns the
  *  pids that needed SIGKILL. */
-export async function terminateAll(pids: number[], graceMs: number): Promise<number[]> {
-  for (const pid of pids) signal(pid, 'SIGTERM')
-  const survivors = await waitForExit(pids, graceMs)
-  for (const pid of survivors) signal(pid, 'SIGKILL')
+export async function terminateAll(pids: number[], graceMs: number, io: ProcIo = realIo): Promise<number[]> {
+  for (const pid of pids) io.kill(pid, 'SIGTERM')
+  const survivors = await waitForExit(pids, graceMs, 50, io)
+  for (const pid of survivors) io.kill(pid, 'SIGKILL')
   return survivors
 }
 
@@ -241,10 +249,10 @@ export function describeCsid(args: string[]): string | null {
 /** Boot-time reap: find the dead generation's children and end them BEFORE
  *  anything is resumed. Awaited by the restore loop so no twin is spawned
  *  while its predecessor still holds the transcript. */
-export async function reapStaleProcesses(opts: ClassifyOpts & { graceMs?: number; list?: () => ProcInfo[] }): Promise<ReapResult> {
+export async function reapStaleProcesses(opts: ClassifyOpts & { graceMs?: number; list?: () => ProcInfo[]; io?: ProcIo }): Promise<ReapResult> {
   const stale = findStaleProcesses((opts.list ?? listClaudeProcesses)(), opts)
   if (!stale.length) return { reaped: [] }
-  const killed = new Set(await terminateAll(stale.map((s) => s.proc.pid), opts.graceMs ?? 2_000))
+  const killed = new Set(await terminateAll(stale.map((s) => s.proc.pid), opts.graceMs ?? 2_000, opts.io ?? realIo))
   return {
     reaped: stale.map((s) => ({ pid: s.proc.pid, reason: s.reason, csid: describeCsid(s.proc.args), killed: killed.has(s.proc.pid) })),
   }

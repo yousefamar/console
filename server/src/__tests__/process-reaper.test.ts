@@ -114,18 +114,27 @@ describe('classifyStale', () => {
 })
 
 describe('reapStaleProcesses', () => {
-  it('reports what it would reap from an injected list (nothing to signal for dead pids)', async () => {
-    // pids that cannot exist → process.kill throws → waitForExit sees them gone at once.
+  // The kill/isAlive seam is ALWAYS injected here: every pid below pid_max is a
+  // potential real process, and an earlier version of this test that relied on
+  // "impossible" pids signalled a live one when the pid counter wrapped.
+  it('SIGTERMs every stale twin, SIGKILLs only the ones that survive the grace', async () => {
     const list = () => [
-      proc({ pid: 2 ** 22 - 1, args: [...HUB_ARGS, '--resume', 'aaaaaaaa-1111'] }),
-      proc({ pid: 2 ** 22 - 2, env: { [HUB_PID_ENV]: '4242' } }),
-      proc({ pid: 2 ** 22 - 3, ppid: HUB }),
+      proc({ pid: 11, args: [...HUB_ARGS, '--resume', 'aaaaaaaa-1111'] }),
+      proc({ pid: 12, env: { [HUB_PID_ENV]: '4242' } }),
+      proc({ pid: 13, ppid: HUB }),
     ]
-    const res = await reapStaleProcesses({ ownPid: HUB, ownedCsids: OWN, list, graceMs: 50 })
-    expect(res.reaped.map((r) => [r.reason, r.csid, r.killed])).toEqual([
-      ['resume-match', 'aaaaaaaa-1111', false],
-      ['hub-marker', null, false],
+    const signals: Array<[number, string]> = []
+    const alive = new Set([11, 12])
+    const io = {
+      kill: (pid: number, sig: NodeJS.Signals) => { signals.push([pid, sig]); if (sig === 'SIGTERM' && pid === 11) alive.delete(pid); return true },
+      isAlive: (pid: number) => alive.has(pid),
+    }
+    const res = await reapStaleProcesses({ ownPid: HUB, ownedCsids: OWN, list, graceMs: 120, io })
+    expect(res.reaped.map((r) => [r.pid, r.reason, r.csid, r.killed])).toEqual([
+      [11, 'resume-match', 'aaaaaaaa-1111', false],
+      [12, 'hub-marker', null, true],
     ])
+    expect(signals).toEqual([[11, 'SIGTERM'], [12, 'SIGTERM'], [12, 'SIGKILL']])
   })
 
   it('is a no-op with no stale processes', async () => {
