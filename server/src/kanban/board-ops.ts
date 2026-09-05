@@ -16,6 +16,10 @@ import { boardDefaultOwner, setBoardDefaultOwner,
 } from './board.js'
 import { REVIEW_COLUMN_RE, hasSummaryBullets, handbackWarning } from './dispatch.js'
 
+/** Assets-relative dir for card attachments. Must stay OUT of the website's
+ *  `publicAssetDirs` allow-list in the vault's .eleventy.js. */
+export const CARD_ASSET_DIR = 'board'
+
 /** Detail text → indented card continuation lines. A note may span several
  *  lines (a bulleted hand-back summary); pushing it as ONE line would put a
  *  raw newline inside a card line and the next parse would read the tail as
@@ -279,16 +283,22 @@ export class BoardOps {
   }
 
   /** Attach an image (a hand-back screenshot) to a card: the bytes land in
-   *  the vault's sibling assets dir under the same `images/card-*` convention
-   *  the SPA's paste-upload uses, and the card gains a `![caption](images/…)`
-   *  detail line — rendered as a thumbnail by the board UI and delivered as a
-   *  real image attachment on any later dispatch of the card. */
+   *  the vault's sibling assets dir under `board/` (same convention as the
+   *  SPA's paste-upload), and the card gains a `![caption](board/…)` detail
+   *  line — rendered as a thumbnail by the board UI and delivered as a real
+   *  image attachment on any later dispatch of the card.
+   *
+   *  `board/` and NOT `images/`: the website publishes assets/ by a dir
+   *  allow-list, so an unlisted dir is private by construction. Card
+   *  screenshots written into images/ went live on yousefamar.com (opsec rem
+   *  #65, 2026-09-04); the site now also excludes `images/card-*` by name,
+   *  but a dir nobody lists is the survivable location. */
   async attach(project: string, query: string, image: { data: Buffer; ext: string; caption?: string }, actor?: string): Promise<CardView & { asset: string }> {
     const ext = image.ext.replace(/^\./, '').toLowerCase().replace('jpeg', 'jpg')
     if (!/^(png|jpg|gif|webp)$/.test(ext)) throw new Error(`unsupported image type "${image.ext}" (png/jpg/gif/webp)`)
     // Resolve first so a bad card query doesn't leave an orphan asset behind.
     const hit = await this.resolveCard(project, query)
-    const asset = `images/card-${Date.now()}-${hit.blockId ?? 'card'}.${ext}`
+    const asset = `${CARD_ASSET_DIR}/card-${Date.now()}-${hit.blockId ?? 'card'}.${ext}`
     await this.store.writeAsset(asset, image.data)
     const caption = image.caption?.trim().replace(/[\[\]]/g, '') || 'screenshot'
     const view = await this.note(project, query, `![${caption}](${asset})`, actor)

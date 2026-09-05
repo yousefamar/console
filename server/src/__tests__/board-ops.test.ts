@@ -199,7 +199,8 @@ describe('hand-back (^shy-boar)', () => {
   it('attach writes the image to the assets dir and appends an image detail line', async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
     const r = await ops.attach('demo', '^cc22dd', { data: png, ext: '.PNG', caption: 'after [fix]' })
-    expect(r.asset).toMatch(/^images\/card-\d+-cc22dd\.png$/)
+    // board/, not images/ — images/ is a published website dir (opsec rem #65).
+    expect(r.asset).toMatch(/^board\/card-\d+-cc22dd\.png$/)
     expect(readFileSync(join(store.assetsPath, r.asset))).toEqual(png)
     expect(r.detail).toContain(`![after fix](${r.asset})`)
     expect(onDisk()).toContain(`  ![after fix](${r.asset})`)

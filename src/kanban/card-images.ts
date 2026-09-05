@@ -1,12 +1,19 @@
 // Card image attachments — shared plumbing for the board UI.
 //
-// An image on a card IS a markdown image detail line (`![img](images/x.png)`)
-// under the card, path relative to the vault's sibling assets dir (the
-// pasteImage convention) and served by the hub at /notes/asset/<path>. The
-// UI renders those lines as thumbnails instead of text; pasting into a card
-// editor uploads the blob and appends the line.
+// An image on a card IS a markdown image detail line (`![img](board/x.png)`)
+// under the card, path relative to the vault's sibling assets dir and served
+// by the hub at /notes/asset/<path>. The UI renders those lines as thumbnails
+// instead of text; pasting into a card editor uploads the blob and appends
+// the line.
+//
+// New uploads go under `board/`, never `images/`: the website publishes
+// assets/ by a dir allow-list, so an unlisted dir is private by construction
+// (card screenshots in images/ went live on yousefamar.com — opsec rem #65).
+// Older `images/card-*` lines still render; the hub serves any assets path.
 
 import { getHubUrl } from '@/hub'
+
+export const CARD_ASSET_DIR = 'board'
 
 export const IMAGE_LINE_RE = /^!\[[^\]]*\]\(([^)]+)\)$/
 
@@ -22,12 +29,12 @@ export function imageLineFor(assetPath: string): string {
   return `![img](${assetPath})`
 }
 
-/** Upload a pasted image blob to the sibling assets dir (same convention as
- *  the notes editor's pasteImage). Returns the asset-relative path. */
+/** Upload a pasted image blob to the sibling assets dir under `board/`.
+ *  Returns the asset-relative path. */
 export async function uploadCardImage(blob: Blob): Promise<string | null> {
   const ext = (blob.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg')
   const filename = `card-${Date.now()}.${ext}`
-  const assetPath = `images/${filename}`
+  const assetPath = `${CARD_ASSET_DIR}/${filename}`
   try {
     const res = await fetch(`${getHubUrl()}/notes/asset/${encodeURIComponent(assetPath)}`, {
       method: 'PUT',
