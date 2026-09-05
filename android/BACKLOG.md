@@ -80,6 +80,11 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+(empty)
+
+## Shipped
+
+### v93 (2026-09-05)
 - **Mobile parity sweep batch** (^neat-toad, 2026-09-05 — a deep SPA-vs-app
   audit; the leftovers are the Open entries above):
   - Inbox: snooze ANY source via the shared `SnoozeSheet` (agents included;
@@ -136,8 +141,6 @@ view-mode hub-sync (Room meta is fine on one device).
   takes `cwd: String?` and omits it when blank. `SpaceSummary.cwd` parsed
   (null on an older hub). Not yet ported: the SPA's amber stray glyph on
   agent rows + cwd in the session status bar.
-
-## Shipped
 
 ### v92 (2026-09-04)
 - **Approval card: dictate the answer** (89f49d96, ^lime-newt): the

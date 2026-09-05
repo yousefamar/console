@@ -212,3 +212,58 @@ it) dispatch as forks of this role. A card that touches contended files
 before folding; keep both intents on conflict. Forks never cut releases — the
 parent reconciles all sibling cards, runs the FULL suite on the folded state,
 restarts the hub if any fork touched `server/`, then cuts.
+
+## The Mobile agent and the weekly parity sweep
+
+The durable session for this directory is **"New mobile app"** (agentKey
+`new-mobile-app`, bound to project `console`, cwd = this `android/` dir since
+2026-09-05 so this file loads natively). Cards on the console board assigned
+`@new-mobile-app` dispatch as forks of it.
+
+**Cron `KqtDQQU`** (hub scheduler, bound to that session's csid, `0 5 * * 0` =
+every Sunday 05:00 local, guard `~/exec/mobile-parity-guard.sh`) wakes the
+agent only when there is something to sweep — hub/SPA commits since the last
+sweep, `## Open` entries still waiting, or board cards newly Done; a quiet
+week costs zero tokens. The woken PARENT runs the loop end to end: sweep →
+group gaps into 3–6 self-contained board cards assigned to `@new-mobile-app`
+(each dispatches as a fork of it, working in its own worktree) → reconcile the
+folded state → full suite → cut the release (forks never cut; the parent
+does — the shape that shipped v90). Inspect/retune with `con cron list | run
+KqtDQQU | remove KqtDQQU`; edit the guard file in place (registered as
+`--guard "bash …"`, not `--guard-file`, so edits propagate).
+
+**The sweep (what each card's fork does; the parent does 1–2 for the whole
+batch and 5 once everything is folded):**
+1. Diff the SPA against the app since the last release: `git log
+   --since=<last release date> -- src/ server/src/` for new user-facing
+   features; the console board's Done cards for "Android parity not scoped" /
+   "BACKLOG" mentions; the root `CLAUDE.md` feature sections vs the Kotlin
+   surface under `app/src/main/kotlin/io/amar/console/{ui,data}`. Grep before
+   listing anything as missing — a phone twin often already exists (the
+   `baseMtime` conditional save sat in "Open" for weeks after it had shipped).
+2. Each real gap → an `## Open` entry: SPA commit/section, what Android has,
+   the phone equivalent in ≤3 lines. Inherently desktop-only things go in
+   `## Desktop-only (considered, not gaps)`, once.
+3. Implement the Open entries, highest daily-use first (Inbox → Spaces →
+   Notes → Agents → Calendar → the rest), in an autowt worktree; commits land
+   on `main`. Every pure-logic port gets a unit test.
+4. `./gradlew :app:compileDebugKotlin` then `./gradlew :app:testDebugUnitTest`
+   — both in a background task (cold runs are 10–18 min; never behind a shell
+   `timeout`, which kills the run AFTER it wipes `build/test-results/`).
+5. Release when anything user-visible shipped (bump + build + roll the
+   backlog, per the working agreement above); a sweep card counts as Yousef's
+   standing "cut" for its own batch.
+6. Hand back per the board contract: `note` bullets (gaps found / built /
+   released / left Open and why), then `move … "Under Review"`. **There is no
+   emulator or KVM on this box** — UI screenshots come from Yousef's phone
+   after it installs the release: `POST /debug/screenshot?target=apk` (see
+   "Debug on the REAL device"). Say so on the card rather than skipping it.
+
+If nothing changed and Open is empty, one bullet saying so is a valid hand-back.
+
+**Since this went live, the phone counts as a `notes` SyncBus subscriber**:
+`con notes open <path>` no longer 409s when only the app is connected — the
+note opens on the phone (`NotesRepository.wireNotesEvents`). Room migrations
+that rename/transform (not just add) use an `AutoMigrationSpec` —
+`ConsoleDb.Migration13To14` is the pattern, with a `MigrationTest` seeding the
+OLD table.
