@@ -268,8 +268,9 @@ describe('transition deployGate threading', () => {
     const gated = (inprog: string, done: string) => `---\nkanban-plugin: board\ndeploy_gate: review\n---\n\n## In Progress\n${inprog}\n## Done\n${done}`
     writeFileSync(boardAbs, gated('\n- [ ] Work @eng ^gg11\n', '\n'))
     const transitions: BoardTransition[] = []
+    let clock = 1_000_000 // fake clock: lastPoll stays tiny so listSince sees a same-ms rewrite
     const watcher = new BoardWatcher(new NoteStore(dir), {
-      log: () => {}, onDispatch: () => true, onTransition: (t) => transitions.push(t), pollMs: 999_999,
+      log: () => {}, onDispatch: () => true, onTransition: (t) => transitions.push(t), pollMs: 999_999, now: () => (clock += 1000),
     })
     try {
       await watcher.start()

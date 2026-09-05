@@ -192,6 +192,16 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('Spotify, next track')).toMatchObject({ command: { action: 'next' } })
     expect(r("play 'Fate of Ophelia'")).toMatchObject({ command: { query: 'Fate of Ophelia' } })
     expect(r("play Don't Stop Me Now")).toMatchObject({ command: { query: "Don't Stop Me Now" } }) // apostrophe is not a quote pair
+    // ^ripe-orca: the same mis-hearings with a query attached, and a noun after the verb.
+    expect(r('Music, plays Taylor Swift.')).toMatchObject({ rule: 'music.play-query', command: { query: 'Taylor Swift' } })
+    expect(r('Music, playing Taylor Swift.')).toMatchObject({ rule: 'music.play-query', command: { query: 'Taylor Swift' } })
+    expect(r('Play music Fate of Ophelia')).toMatchObject({ command: { query: 'Fate of Ophelia' } }) // noun after the verb is address, not search
+    expect(r('Play some music, Radiohead.')).toMatchObject({ command: { query: 'Radiohead' } })
+    expect(r('Music, play Taylor Swift please.')).toMatchObject({ command: { query: 'Taylor Swift' } })
+    expect(r('Music - play')).toMatchObject({ rule: 'music.play' }) // dash / ellipsis vocatives
+    expect(r('Music… play Radiohead')).toMatchObject({ command: { query: 'Radiohead' } })
+    expect(r('Playing tennis with Sam later')).toBeNull() // unaddressed "playing" is a note, not a search
+    expect(r('Log journal went to see a play')).toMatchObject({ rule: 'add.log' }) // trailing "play" inside a real command is untouched
     expect(matchMusicTransport('on')).toBeNull() // bare on/off/back mean nothing
     expect(matchMusicTransport('go back')).toBeNull() // no noun → not music
     expect(matchMusicTransport('play pause')).toBeNull() // two actions
@@ -445,7 +455,8 @@ describe('RingStore + pipeline', () => {
     ctx.transcribe = async () => null
     await processDelivery(ctx, { transcription: null, audio: { data: Buffer.from('x'), contentType: 'audio/mp4' }, recordedAt: null, client: 'ring' })
     const f = store.failures(Date.now() - 60_000)
-    expect(f.map((x) => x.message)).toEqual(['recording could not be transcribed', '"log food two eggs" — no add target called "food" — add it to the ring schema note'])
+    // Same-millisecond recordings order by their random id suffix — compare as a set.
+    expect(f.map((x) => x.message).sort()).toEqual(['"log food two eggs" — no add target called "food" — add it to the ring schema note', 'recording could not be transcribed'])
     expect(store.failures(Date.now() + 1)).toEqual([])
   })
 

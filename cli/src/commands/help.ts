@@ -260,7 +260,8 @@ Commands:
   list         Recent recordings (--limit N): transcript, source, routing outcome
   show <id>    Full recording metadata (sidecar JSON)
   audio <id>   Download the M4A (--out <path>)
-  say "<text>" Simulate a ring transcript through the router (no audio)
+  say "<text>" Simulate a ring transcript (no audio) — runs the FULL pipeline, so a
+               "play" resumes Spotify and a "message" sends; --dry routes only
   schema       Print the effective command tree, every target resolved (--check → exit 1 on problems)
 
 The ring's app POSTs multipart (audio/mp4 + transcription + recordedAt) to
@@ -291,6 +292,7 @@ Examples:
   con ring setup
   con ring say "echo testing one two"
   con ring say "log dream I was escaping a prison made of cheese"
+  con ring say --dry "Music, plays Taylor Swift."     # what WOULD happen, nothing runs
   con ring schema --check
   con ring list --limit 5
 `,

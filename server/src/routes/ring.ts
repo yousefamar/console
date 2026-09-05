@@ -8,7 +8,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createReadStream } from 'node:fs'
 import { multipartBoundary, parseMultipart } from '../ring/multipart.js'
-import { processDelivery, type RingCtx, type RingDelivery } from '../ring/pipeline.js'
+import { processDelivery, dryRun, type RingCtx, type RingDelivery } from '../ring/pipeline.js'
 
 /** 2 min of M4A is well under 5 MB; this is just a sanity ceiling. */
 const MAX_BODY_BYTES = 25 * 1024 * 1024
@@ -78,6 +78,18 @@ export function handleRingRoutes(
       ctx.log(`[ring] webhook rejected: ${err.message}`)
       json({ error: err.message }, 400)
     })
+    return true
+  }
+
+  // `con ring say --dry`: route a transcript, touch nothing. Answers "what
+  // would this phrase do?" without archiving a recording or resuming Spotify.
+  if (path === '/ring/dry-run' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const { transcription, text } = JSON.parse(body || '{}') as { transcription?: string; text?: string }
+      const t = (transcription ?? text ?? '').trim()
+      if (!t) { json({ error: 'transcription required' }, 400); return }
+      json({ ok: true, dry: true, transcription: t, ...(await dryRun(ctx, t)) })
+    }).catch((err: Error) => json({ error: err.message }, 400))
     return true
   }
 

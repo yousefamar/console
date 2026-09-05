@@ -84,6 +84,35 @@ export function buildFallbackEnvelope(text: string, recordingId: string): string
   return `[RING — unclaimed voice command, recording ${recordingId}]\n${text}`
 }
 
+export interface RouteDecision {
+  command: RingCommand
+  via: NonNullable<RingRecording['route']>['via']
+  rule?: string
+}
+
+/** Transcript → command, exactly as the live pipeline decides it (rules, then
+ *  the LLM classifier, then the fallback agent). Pure with respect to the
+ *  world — nothing is archived, executed or pushed. */
+export async function decide(ctx: RingCtx, transcription: string): Promise<RouteDecision> {
+  const { schema } = await ctx.schema()
+  const env = await ctx.env()
+  const hit = routeByRules(transcription, schema, env)
+  if (hit) return { command: hit.command, via: 'rule', rule: hit.rule }
+  if (schema.llmFallback) {
+    const guess = await ctx.classify(transcription, schema, env)
+    if (guess && guess.kind !== 'unknown') return { command: guess, via: 'llm' }
+  }
+  if (schema.fallback) return { command: { kind: 'fallback', agentKey: schema.fallback, text: transcription }, via: 'default' }
+  return { command: { kind: 'unknown', text: transcription }, via: 'none' }
+}
+
+/** `con ring say --dry`: what WOULD happen — the decision plus its one-liner,
+ *  no recording, no side effects. The tuning loop for the schema note. */
+export async function dryRun(ctx: RingCtx, transcription: string): Promise<RouteDecision & { describe: string }> {
+  const d = await decide(ctx, transcription.trim())
+  return { ...d, describe: describeCommand(d.command) }
+}
+
 export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<RingRecording> {
   const receivedAt = Date.now()
   const recordedAt = d.recordedAt ?? receivedAt
@@ -108,20 +137,7 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
     return rec
   }
 
-  const { schema } = await ctx.schema()
-  const env = await ctx.env()
-  let command: RingCommand | null = null
-  let via: NonNullable<RingRecording['route']>['via'] = 'none'
-  let rule: string | undefined
-
-  const hit = routeByRules(transcription, schema, env)
-  if (hit) { command = hit.command; via = 'rule'; rule = hit.rule }
-  else if (schema.llmFallback) {
-    const guess = await ctx.classify(transcription, schema, env)
-    if (guess && guess.kind !== 'unknown') { command = guess; via = 'llm' }
-  }
-  if (!command && schema.fallback) { command = { kind: 'fallback', agentKey: schema.fallback, text: transcription }; via = 'default' }
-  if (!command) command = { kind: 'unknown', text: transcription }
+  const { command, via, rule } = await decide(ctx, transcription)
 
   const outcome = await execute(ctx, command, id)
   rec.route = { command, via, ...(rule ? { rule } : {}), ok: outcome.ok, ...(outcome.detail ? { detail: outcome.detail } : {}) }

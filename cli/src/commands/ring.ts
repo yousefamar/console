@@ -75,11 +75,20 @@ async function ringAudio(args: string[], flags: GlobalFlags): Promise<void> {
   output({ saved: out }, flags)
 }
 
-// con ring say "<text>" — simulate a ring transcript (no audio) through the
-// full router → execution → push path.
+// con ring say "<text>" [--dry] — simulate a ring transcript (no audio). By
+// default it runs the FULL pipeline (archive → route → execute → push): a
+// "play" really resumes Spotify, a "message" really sends. --dry only routes
+// and reports what would happen — the schema-tuning loop.
 async function ringSay(args: string[], flags: GlobalFlags): Promise<void> {
+  const dry = args.includes('--dry') || args.includes('--dry-run')
   const text = args.filter((a) => !a.startsWith('--')).join(' ').trim()
-  if (!text) exitWithError('USAGE', 'Usage: con ring say "<transcript>"', flags)
+  if (!text) exitWithError('USAGE', 'Usage: con ring say "<transcript>" [--dry]', flags)
+  if (dry) {
+    const d = await hubFetch<{ via: string; rule?: string; describe: string; command: unknown }>('/ring/dry-run', { method: 'POST', body: { transcription: text } })
+    if (flags.json) { output(d, flags); return }
+    info(`${d.via}${d.rule ? `/${d.rule}` : ''}  ${d.describe}`)
+    return
+  }
   output(await hubFetch('/ring/webhook', { method: 'POST', body: { transcription: text, client: 'cli' } }), flags)
 }
 

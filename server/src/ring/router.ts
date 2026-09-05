@@ -121,12 +121,28 @@ const MUSIC_ACTIONS: Record<string, 'play' | 'pause' | 'next' | 'previous'> = {
 }
 const MUSIC_FILLER = new Set(['music', 'the', 'spotify', 'song', 'songs', 'track', 'tune', 'tunes', 'playback', 'this', 'that', 'some', 'please', 'go', 'it'])
 
-const MUSIC_VOCATIVE = /^(?:music|spotify)[,.:;!]?\s+/i
+/** "Music, …" / "Spotify: …" / "Music - …" / "Music… …" — the STT punctuates
+ *  an address word every which way. */
+const MUSIC_VOCATIVE = /^(?:music|spotify)(?:[,.:;!…]+|\s+[-–—])?\s+/i
+/** `play <query>` — STT hears "plays" for "play" in the query form too
+ *  ("Music, plays Taylor Swift"). "playing" counts only when the player was
+ *  ADDRESSED ("Music, playing X"): a bare "Playing tennis later" is a note. */
+const MUSIC_PLAY_QUERY = /^plays?\s+(.+)$/i
+const MUSIC_PLAY_QUERY_ADDRESSED = /^play(?:s|ing)?\s+(.+)$/i
+/** A noun spoken AFTER the verb ("play music Radiohead", "play some music,
+ *  Radiohead") addresses the player, not the search — same treatment as the
+ *  word-set filler. A title that genuinely starts with "Music …" (Eno's *Music
+ *  for Airports*) loses its first word; the address form is far more common. */
+const MUSIC_QUERY_NOUN = /^(?:(?:the|some|me)\s+)?(?:music|spotify|song|track|tune)[,.:;]?\s+/i
 
-/** Spoken query → search string: drop "some"/"me", and a quoted title's
- *  wrapping quotes (only a MATCHED pair — an apostrophe inside stays). */
+/** Spoken query → search string: drop a leading "some"/"me" and a spoken
+ *  noun, a trailing "please", and a quoted title's wrapping quotes (only a
+ *  MATCHED pair — an apostrophe inside stays). */
 export function musicQuery(spoken: string): string {
-  const q = spoken.trim().replace(/^(?:some|me)\s+/i, '')
+  const q = spoken.trim()
+    .replace(MUSIC_QUERY_NOUN, '')
+    .replace(/^(?:some|me)\s+/i, '')
+    .replace(/[,.]?\s+please$/i, '')
   const quoted = /^"(.+)"$/.exec(q) ?? /^'(.+)'$/.exec(q)
   return (quoted ? quoted[1]! : q).trim()
 }
@@ -184,7 +200,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
     const unaddressed = cased.replace(MUSIC_VOCATIVE, '')
     const transport = matchMusicTransport(text) ?? matchMusicTransport(unaddressed.toLowerCase())
     if (transport) return { rule: `music.${transport}`, command: { kind: 'music', action: transport } }
-    const play = /^play\s+(.+)$/i.exec(unaddressed)
+    const play = (unaddressed === cased ? MUSIC_PLAY_QUERY : MUSIC_PLAY_QUERY_ADDRESSED).exec(unaddressed)
     if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: musicQuery(play[1]!) } }
   }
 

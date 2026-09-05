@@ -235,7 +235,7 @@ the fallback agent — an \`AL ↔ ring\` fork that knows this tree and files a
 "Ring schema gap" card when a miss should have been a command). Handlers are
 code — this note owns the PHRASING. Every entry is \`canonical: [ways to say it]\`.
 Edit the yaml, the hub hot-reloads it. Check it with \`con ring schema --check\`;
-dry-run a phrase with \`con ring say "…"\`.
+dry-run a phrase with \`con ring say --dry "…"\` (without \`--dry\` it really runs — plays, sends, files).
 
 Shape: \`<verb> <target> <payload>\`. A list and a log are the same thing — a
 note under \`scratch/lists/\` we append a bullet to; \`dated: true\` makes it a log
