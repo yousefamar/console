@@ -26,9 +26,10 @@
 //      including one mid-hibernation-kill, are ours to manage.
 //   3. Either its env carries `CONSOLE_HUB_PID` (every spawn since this module
 //      landed) naming a pid that isn't us — a previous hub generation — or,
-//      for processes spawned before the marker existed, its `--resume <csid>`
-//      names a session we own. NB a fork's process resumes its PARENT's csid
-//      (`--resume <parent> --fork-session`), which is also ours.
+//      for processes spawned before the marker existed, its argv names a csid
+//      we own — `--session-id <own>` (forks since 2a36c43a) or `--resume <x>`.
+//      NB a fork's `--resume` names its PARENT (`--resume <parent>
+//      --fork-session`), which is also ours; pre-2a36c43a forks carry only that.
 //
 // Linux-only by design (reads /proc); the hub runs nowhere else.
 
@@ -69,9 +70,30 @@ export function hasHubSignature(args: string[]): boolean {
   return i >= 0 && args[i + 1] === 'stream-json'
 }
 
-export function resumeTarget(args: string[]): string | null {
-  const i = args.indexOf('--resume')
+function flagValue(args: string[], flag: string): string | null {
+  const i = args.indexOf(flag)
   return i >= 0 && args[i + 1] ? args[i + 1]! : null
+}
+
+export function resumeTarget(args: string[]): string | null {
+  return flagValue(args, '--resume')
+}
+
+/** Every csid the argv refers to. A ticket-fork's argv is
+ *  `--resume <PARENT> --fork-session [--session-id <OWN>]` — the `--session-id`
+ *  pin exists only since 2a36c43a, so pre-restart forks name the parent alone.
+ *  Ownership is tested against ALL of them: an orphaned fork whose parent was
+ *  since deleted still matches on its own id. */
+export function csidRefs(args: string[]): string[] {
+  const refs = [flagValue(args, '--session-id'), flagValue(args, '--resume')]
+  return refs.filter((r): r is string => !!r)
+}
+
+/** The csid the process actually SERVES, for logs: its `--session-id` pin,
+ *  else `--resume` — unless that resume is a `--fork-session` base (then the
+ *  process serves a fork whose id the argv doesn't carry → null). */
+export function servedCsid(args: string[]): string | null {
+  return flagValue(args, '--session-id') ?? (args.includes('--fork-session') ? null : resumeTarget(args))
 }
 
 /** Why `p` is a stale hub child, or null if it is not one. */
@@ -80,8 +102,7 @@ export function classifyStale(p: ProcInfo, opts: ClassifyOpts): StaleReason | nu
   if (!isClaudeArgv(p.args) || !hasHubSignature(p.args)) return null
   const marker = p.env?.[HUB_PID_ENV]
   if (marker !== undefined) return marker !== String(opts.ownPid) ? 'hub-marker' : null
-  const csid = resumeTarget(p.args)
-  return csid && opts.ownedCsids.has(csid) ? 'resume-match' : null
+  return csidRefs(p.args).some((c) => opts.ownedCsids.has(c)) ? 'resume-match' : null
 }
 
 export function findStaleProcesses(procs: ProcInfo[], opts: ClassifyOpts): Array<{ proc: ProcInfo; reason: StaleReason }> {
@@ -205,7 +226,16 @@ export async function terminateAll(pids: number[], graceMs: number): Promise<num
 }
 
 export interface ReapResult {
-  reaped: Array<{ pid: number; reason: StaleReason; resume: string | null; killed: boolean }>
+  reaped: Array<{ pid: number; reason: StaleReason; /** csid served (`--session-id`, else `--resume`; a fork base resume is reported as `<parent>+fork`). */ csid: string | null; killed: boolean }>
+}
+
+/** Human-readable csid for logs: the served id, or `<parent>+fork` for a
+ *  pre-pin fork whose own id the argv never carried. */
+export function describeCsid(args: string[]): string | null {
+  const served = servedCsid(args)
+  if (served) return served
+  const base = resumeTarget(args)
+  return base ? `${base}+fork` : null
 }
 
 /** Boot-time reap: find the dead generation's children and end them BEFORE
@@ -216,7 +246,7 @@ export async function reapStaleProcesses(opts: ClassifyOpts & { graceMs?: number
   if (!stale.length) return { reaped: [] }
   const killed = new Set(await terminateAll(stale.map((s) => s.proc.pid), opts.graceMs ?? 2_000))
   return {
-    reaped: stale.map((s) => ({ pid: s.proc.pid, reason: s.reason, resume: resumeTarget(s.proc.args), killed: killed.has(s.proc.pid) })),
+    reaped: stale.map((s) => ({ pid: s.proc.pid, reason: s.reason, csid: describeCsid(s.proc.args), killed: killed.has(s.proc.pid) })),
   }
 }
 
@@ -261,7 +291,8 @@ export class StaleProcessSweeper {
       const sig: NodeJS.Signals = this.termed.has(proc.pid) ? 'SIGKILL' : 'SIGTERM'
       if (kill(proc.pid, sig)) {
         acted.push({ pid: proc.pid, sig, reason })
-        this.opts.log(`[reaper] ${sig} stale claude pid ${proc.pid} (${reason}${resumeTarget(proc.args) ? `, resume ${resumeTarget(proc.args)!.slice(0, 8)}` : ''}, ppid ${proc.ppid}, age ${Math.round(proc.ageMs / 1000)}s)`)
+        const csid = describeCsid(proc.args)
+        this.opts.log(`[reaper] ${sig} stale claude pid ${proc.pid} (${reason}${csid ? `, csid ${csid.slice(0, 8)}${csid.endsWith('+fork') ? '+fork' : ''}` : ''}, ppid ${proc.ppid}, age ${Math.round(proc.ageMs / 1000)}s)`)
       }
       this.termed.add(proc.pid)
     }

@@ -2158,7 +2158,7 @@ httpServer.listen(port, host, () => {
     try {
       const { reaped } = await reapStaleProcesses({ ownPid: process.pid, ownedCsids: bootCsids })
       for (const r of reaped) {
-        log(`[reaper] ended stale claude pid ${r.pid} (${r.reason}${r.resume ? `, resume ${r.resume.slice(0, 8)}` : ''})${r.killed ? ' — needed SIGKILL' : ''}`)
+        log(`[reaper] ended stale claude pid ${r.pid} (${r.reason}${r.csid ? `, csid ${r.csid.slice(0, 8)}${r.csid.endsWith('+fork') ? '+fork' : ''}` : ''})${r.killed ? ' — needed SIGKILL' : ''}`)
       }
       if (reaped.length) log(`[reaper] ${reaped.length} stale claude process(es) from the previous hub reaped before restore`)
     } catch (err) {
