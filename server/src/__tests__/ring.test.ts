@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
-import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, type RouteEnv } from '../ring/router.js'
+import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, headWords, type RouteEnv } from '../ring/router.js'
 import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
@@ -174,6 +174,29 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('Echo testing one two three')).toMatchObject({ rule: 'echo', command: { kind: 'echo', text: 'testing one two three' } })
     expect(r('ping, is this thing on')).toMatchObject({ command: { kind: 'echo', text: 'is this thing on' } })
     expect(r('echo')).toBeNull()
+  })
+  it('head punctuation is dropped for EVERY rule, payloads keep theirs (^quick-deer review)', () => {
+    // headWords: the one tokeniser every rule reads through.
+    expect(headWords('Log dream. I was late, then early.', 2)).toEqual({ words: ['log', 'dream'], rest: 'I was late, then early.' })
+    expect(headWords('Message Nica — I\'m late', 2)).toEqual({ words: ['message', 'nica'], rest: "I'm late" })
+    expect(headWords('Music… pause', 1)).toEqual({ words: ['music'], rest: 'pause' })
+    expect(headWords('Al?', 1)).toEqual({ words: ['al'], rest: '' })
+    expect(headWords('play', 2)).toBeNull()
+    // Verb tree: ";" "!" "?" and dash separators, not just the old ",.:" set.
+    expect(r('Log; dream! I was flying')).toMatchObject({ rule: 'add.log', command: { item: 'I was flying' } })
+    expect(r('Message Nica — running late, sorry.')).toMatchObject({ rule: 'message', command: { contact: 'nica', text: 'running late, sorry' } })
+    expect(r('Add movies? The Godfather')).toMatchObject({ rule: 'add.list', command: { item: 'The Godfather' } })
+    // Two-word project slug with a comma after its second word.
+    expect(r('Add reflection tools, fix the login')).toMatchObject({ rule: 'add.card', command: { project: 'reflection-tools', text: 'fix the login' } })
+    // AL address and echo with odd punctuation.
+    expect(r('Al… what time is it')).toMatchObject({ rule: 'al.direct', command: { text: 'what time is it' } })
+    expect(r('Echo! testing')).toMatchObject({ rule: 'echo', command: { text: 'testing' } })
+    // Music through the same tokeniser — no music-specific vocative regex.
+    expect(r('Music; play Radiohead')).toMatchObject({ rule: 'music.play-query', command: { query: 'Radiohead' } })
+    expect(r('Spotify — pause!')).toMatchObject({ rule: 'music.pause' })
+    expect(matchMusicTransport('music, next.')).toBe('next')
+    // Payload punctuation survives: the dream keeps its full stop and comma.
+    expect(r('Log dream. I was late, then early.')).toMatchObject({ command: { item: 'I was late, then early' } }) // only the utterance-final "." goes (normalise)
   })
   it('music transport is a word set — any order, one action — plus play <query>', () => {
     expect(r('pause the music')).toMatchObject({ rule: 'music.pause' })

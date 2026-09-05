@@ -110,6 +110,40 @@ export function resolveSpoken(spoken: string, forms: Map<string, string>): strin
 }
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
+
+// The STT decorates the HEAD of a command with punctuation — "Log dream.",
+// "Music, play", "Al: …", "Message Nica — I'm late", "Music… pause" — so every
+// rule reads its head words through one tokeniser that drops that decoration.
+// Payloads are never touched: a dream log keeps its full stops, a message its
+// commas. Only the words a rule inspects (address word, verb, target) are
+// cleaned, and a free-standing dash between head and payload is a separator.
+const HEAD_PUNCT = /[,.:;!?…]+$/
+const DASH_TOKEN = /^[-–—]+$/
+
+/** Peel the first `n` head words off a normalised utterance — lowercased,
+ *  trailing punctuation dropped, dash tokens skipped — with `rest` = the
+ *  payload exactly as spoken (empty when nothing follows). Null when the
+ *  utterance has fewer than `n` words. */
+export function headWords(cased: string, n: number): { words: string[]; rest: string } | null {
+  const tokens = cased.split(' ')
+  const words: string[] = []
+  let i = 0
+  while (words.length < n && i < tokens.length) {
+    const t = tokens[i++]!
+    if (DASH_TOKEN.test(t)) continue
+    const w = t.replace(HEAD_PUNCT, '').toLowerCase()
+    if (w) words.push(w)
+  }
+  if (words.length < n) return null
+  while (i < tokens.length && DASH_TOKEN.test(tokens[i]!)) i++
+  return { words, rest: tokens.slice(i).join(' ').trim() }
+}
+
+/** Every word of a short utterance, head-cleaned — for word-SET matchers. */
+function cleanWords(text: string): string[] {
+  return text.split(' ').map((w) => w.replace(HEAD_PUNCT, '')).filter((w) => w && !DASH_TOKEN.test(w))
+}
+
 /** Music transport is matched as a WORD SET, not an ordered phrase — the STT
  *  gives "Music plays." as readily as "play music". Every word must be either
  *  one action word or filler, and exactly one action may appear. */
@@ -121,14 +155,14 @@ const MUSIC_ACTIONS: Record<string, 'play' | 'pause' | 'next' | 'previous'> = {
 }
 const MUSIC_FILLER = new Set(['music', 'the', 'spotify', 'song', 'songs', 'track', 'tune', 'tunes', 'playback', 'this', 'that', 'some', 'please', 'go', 'it'])
 
-/** "Music, …" / "Spotify: …" / "Music - …" / "Music… …" — the STT punctuates
- *  an address word every which way. */
-const MUSIC_VOCATIVE = /^(?:music|spotify)(?:[,.:;!…]+|\s+[-–—])?\s+/i
+/** An address word before the verb ("Music, play X" / "Spotify: next") —
+ *  head-cleaned like any other head word, so the STT's punctuation is moot. */
+const MUSIC_ADDRESS = new Set(['music', 'spotify'])
 /** `play <query>` — STT hears "plays" for "play" in the query form too
  *  ("Music, plays Taylor Swift"). "playing" counts only when the player was
  *  ADDRESSED ("Music, playing X"): a bare "Playing tennis later" is a note. */
-const MUSIC_PLAY_QUERY = /^plays?\s+(.+)$/i
-const MUSIC_PLAY_QUERY_ADDRESSED = /^play(?:s|ing)?\s+(.+)$/i
+const PLAY_WORD = /^plays?$/
+const PLAY_WORD_ADDRESSED = /^play(?:s|ing)?$/
 /** A noun spoken AFTER the verb ("play music Radiohead", "play some music,
  *  Radiohead") addresses the player, not the search — same treatment as the
  *  word-set filler. A title that genuinely starts with "Music …" (Eno's *Music
@@ -148,7 +182,7 @@ export function musicQuery(spoken: string): string {
 }
 
 export function matchMusicTransport(text: string): 'play' | 'pause' | 'next' | 'previous' | null {
-  const words = text.split(' ').filter(Boolean)
+  const words = cleanWords(text)
   if (!words.length || words.length > 4) return null
   let action: 'play' | 'pause' | 'next' | 'previous' | null = null
   let hasNoun = false
@@ -176,14 +210,6 @@ export function matchVerb(word: string, schema: RingSchema): { verb: VerbName; e
   return fuzzy.length === 1 ? { verb: fuzzy[0]!, exact: false } : null
 }
 
-/** Split "verb target payload" — verb/target lowercased with trailing
- *  punctuation dropped (the STT likes "Log dream. I was…"), payload as spoken. */
-function split3(cased: string): { verb: string; target: string; payload: string } | null {
-  const m = /^(\S+?)[,.:]?\s+(\S+?)[,.:]?\s+(.+)$/.exec(cased)
-  if (!m) return null
-  return { verb: m[1]!.toLowerCase(), target: m[2]!.toLowerCase(), payload: m[3]!.trim() }
-}
-
 /** Deterministic pass. Returns null when no rule fires — the caller decides
  *  whether to consult the LLM and/or the fallback agent. */
 export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv): RouteMatch | null {
@@ -192,33 +218,37 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   if (!text) return null
   const v = schema.verbs
 
+  // "<word> <rest>" and "<verb> <target> <payload>", heads cleaned.
+  const one = headWords(cased, 1)
+  const two = headWords(cased, 2)
+
   // Music: whole-utterance transport words, before the verb tree so a bare
   // "play"/"skip" never gets read as a verb with a missing target.
   if (v.music.enabled) {
-    // "Music, play …" — the STT punctuates an address word; strip the vocative
-    // (with its comma) before either matcher sees it.
-    const unaddressed = cased.replace(MUSIC_VOCATIVE, '')
-    const transport = matchMusicTransport(text) ?? matchMusicTransport(unaddressed.toLowerCase())
+    const transport = matchMusicTransport(text)
     if (transport) return { rule: `music.${transport}`, command: { kind: 'music', action: transport } }
-    const play = (unaddressed === cased ? MUSIC_PLAY_QUERY : MUSIC_PLAY_QUERY_ADDRESSED).exec(unaddressed)
-    if (play) return { rule: 'music.play-query', command: { kind: 'music', action: 'play', query: musicQuery(play[1]!) } }
+    // play <query> — optionally addressed ("Music, play X").
+    const playQuery = (q: string): RouteMatch => ({ rule: 'music.play-query', command: { kind: 'music', action: 'play', query: musicQuery(q) } })
+    if (one && MUSIC_ADDRESS.has(one.words[0]!)) {
+      if (two && PLAY_WORD_ADDRESSED.test(two.words[1]!) && two.rest) return playQuery(two.rest)
+    } else if (one && PLAY_WORD.test(one.words[0]!) && one.rest) {
+      return playQuery(one.rest)
+    }
   }
-
-  const first = /^(\S+?)[,.:]?\s+(.+)$/.exec(cased)
 
   // "al <text>" — addressed to AL by name: straight to his ring fork, no tree,
   // no classifier (that exists to rescue mis-heard TREE commands).
   const alForms = new Set(['al', ...(v.message.contacts[AL_CONTACT] ?? [])])
-  if (first && alForms.has(first[1]!.toLowerCase())) {
-    return { rule: 'al.direct', command: { kind: 'fallback', agentKey: AL_CONTACT, text: first[2]!.trim() } }
+  if (one?.rest && alForms.has(one.words[0]!)) {
+    return { rule: 'al.direct', command: { kind: 'fallback', agentKey: AL_CONTACT, text: one.rest } }
   }
 
   // echo <text> — no target; the whole remainder is the payload.
-  if (first && matchVerb(first[1]!.toLowerCase(), schema)?.verb === 'echo') {
-    return { rule: 'echo', command: { kind: 'echo', text: first[2]!.trim() } }
+  if (one?.rest && matchVerb(one.words[0]!, schema)?.verb === 'echo') {
+    return { rule: 'echo', command: { kind: 'echo', text: one.rest } }
   }
 
-  const parts = split3(cased)
+  const parts = two?.rest ? { verb: two.words[0]!, target: two.words[1]!, payload: two.rest } : null
   const matched = parts ? matchVerb(parts.verb, schema) : null
 
   if (matched && parts) {
@@ -263,11 +293,11 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
  *  two-word names ("reflection tools"), so the payload's first word is tried
  *  as the second half. */
 function projectCard(target: string, payload: string, projects: string[], column: string): RingCommand | null {
-  const [p2, ...restWords] = payload.split(' ')
-  const twoWord = p2 && restWords.length ? pickFuzzy(`${target}-${p2.toLowerCase()}`, projects) : null
+  const second = headWords(payload, 1)
+  const twoWord = second?.rest ? pickFuzzy(`${target}-${second.words[0]!}`, projects) : null
   const project = pickFuzzy(target, projects) ?? twoWord
   if (!project) return null
-  return { kind: 'card', project, column, text: project === twoWord ? restWords.join(' ') : payload }
+  return { kind: 'card', project, column, text: project === twoWord ? second!.rest : payload }
 }
 
 /** Human-readable one-liner for pushes / logs. */
