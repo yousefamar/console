@@ -37,6 +37,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v95 (2026-09-06)
 - **Spaces: quick switcher** (SPA `SpacesQuickSwitcher.tsx`, the `/` command
   bar; ^glad-eel): Search icon in the Spaces top bar opens a dialog that fuzzy-
   ranks spaces + live sessions + every vault file — empty query is recency
@@ -191,8 +194,6 @@ view-mode hub-sync (Room meta is fine on one device).
   payload shapes (place ids are bare `ChIJ…`, `googleMapsUri` present).
   Hub gap, not ported: opening hours / phone aren't in the hub's
   `PlaceResult` field mask, so the card can't show them either.
-
-## Shipped
 
 ### v94 (2026-09-05)
 - **Transcripts: local video paths play inline** (SPA f11f194b, ^neat-duck →

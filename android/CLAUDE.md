@@ -238,7 +238,7 @@ restarts the hub if any fork touched `server/`, then cuts.
 
 ## The Mobile agent and the weekly parity sweep
 
-The durable session for this directory is **"New mobile app"** (agentKey
+The durable session for this directory is **"Mobile app"** (agentKey
 `new-mobile-app`, bound to project `console`, cwd = this `android/` dir since
 2026-09-05 so this file loads natively). Cards on the console board assigned
 `@new-mobile-app` dispatch as forks of it.
@@ -277,8 +277,11 @@ batch and 5 once everything is folded):**
    backlog, per the working agreement above); a sweep card counts as Yousef's
    standing "cut" for its own batch.
 6. Hand back per the board contract: `note` bullets (gaps found / built /
-   released / left Open and why), then `move … "Under Review"`. **There is no
-   emulator or KVM on this box** — UI screenshots come from Yousef's phone
+   released / left Open and why), then `move … "Under Review"`. Write the note
+   as `con spaces board console note "^id" "- bullets"` — a `--` separator
+   before the text is a USAGE error, and the note silently never lands while
+   the following `move` succeeds (five of six v95 forks hit this). **There is
+   no emulator or KVM on this box** — UI screenshots come from Yousef's phone
    after it installs the release: `POST /debug/screenshot?target=apk` (see
    "Debug on the REAL device"). Say so on the card rather than skipping it.
 
