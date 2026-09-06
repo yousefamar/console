@@ -35,7 +35,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE } from '@/kanban/board'
+import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1211,9 +1211,16 @@ function BoardView() {
     }
     return k
   }
+  // Done stays in the FILE (the watcher's transition diff + history need it)
+  // but is rendered nowhere, so it must not feed the chips either — a
+  // Done-only assignee is a chip that filters the board empty.
+  const visibleColumns = board.columns.filter((col) => !DONE_COLUMN_RE.test(col.title))
   const assignees = [...new Set(
-    board.columns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean).map((k) => rootOf(k!)),
+    visibleColumns.flatMap((c) => c.cards.map((card) => card.agentKey)).filter(Boolean).map((k) => rootOf(k!)),
   )] as string[]
+  // A filter set while the board had two parents must stop applying once it
+  // has one — the strip is gone, so there'd be no way to clear it.
+  const activeAssignee = assignees.length > 1 ? assigneeFilter : null
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
@@ -1225,7 +1232,10 @@ function BoardView() {
           </button>
         </div>
       )}
-      {assignees.length > 0 && (
+      {/* One root = nothing to narrow: every card is that parent's, so the
+          strip is pure chrome. It appears only when the board is genuinely
+          shared between parents (each chip then reveals its forks' cards). */}
+      {assignees.length > 1 && (
         <div className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1 overflow-x-auto">
           <span className="text-[9px] uppercase tracking-wide text-text-tertiary flex-shrink-0">Assignee</span>
           <button
@@ -1247,9 +1257,7 @@ function BoardView() {
         </div>
       )}
       <div className="flex flex-1 min-h-0 gap-2 overflow-x-auto p-2">
-      {/* Done stays in the FILE (the watcher's transition diff + history need
-          it) but is noise on screen — a done card was already reviewed. */}
-      {board.columns.filter((col) => !/^(done|complete|completed|shipped)$/i.test(col.title)).map((col) => (
+      {visibleColumns.map((col) => (
         <div
           key={col.title}
           onDragOver={(e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverCol(col.title) } }}
@@ -1303,7 +1311,7 @@ function BoardView() {
             {/* Filter hides non-matching cards but `index` stays the column-
                 relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
-              (assigneeFilter === null || (card.agentKey && rootOf(card.agentKey) === assigneeFilter)) ? (
+              (activeAssignee === null || (card.agentKey && rootOf(card.agentKey) === activeAssignee)) ? (
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}

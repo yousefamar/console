@@ -60,6 +60,9 @@ export interface KanbanBoard {
  *  DISPATCH_COLUMN_RE (kanban/dispatch.ts). Keep the two in sync. */
 export const DISPATCH_COLUMN_RE = /^(in.?progress|doing|active|now)$/i
 
+/** Mirror of the server's DONE_COLUMN_RE (kanban/dispatch.ts). */
+export const DONE_COLUMN_RE = /^(done|complete|completed|shipped)$/i
+
 const CARD_RE = /^- \[( |x|X)\] (.*)$/
 const HEADING_RE = /^## (.+?)\s*$/
 const FOOTER_START = '%% kanban:settings'
