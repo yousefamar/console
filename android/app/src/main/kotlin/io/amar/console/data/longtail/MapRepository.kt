@@ -167,6 +167,23 @@ data class MapUiState(
         BuiltinLayer.MEETUP to true,
     ),
 
+    // Google Maps search + directions (ephemeral — never persisted; mirrors
+    // the gmaps slice of src/store/map.ts). null configured = not yet probed.
+    val gmapsConfigured: Boolean? = null,
+    val gmapsSuggestions: List<GSuggestion> = emptyList(),
+    val gmapsSuggesting: Boolean = false,
+    val gmapsResults: List<GPlace> = emptyList(),
+    val gmapsSelectedPlaceId: String? = null,
+    val gmapsSearching: Boolean = false,
+    val gmapsMode: GTravelMode = GTravelMode.DRIVE,
+    /** Origin the current routes were computed from (my location / map centre). */
+    val gmapsRouteFrom: LatLon? = null,
+    val gmapsRouteTo: GPlace? = null,
+    val gmapsRoutes: List<GRoute> = emptyList(),
+    val gmapsSelectedRoute: Int = 0,
+    val gmapsRouting: Boolean = false,
+    val gmapsError: String? = null,
+
     val error: String? = null,
 ) {
     companion object { const val DAY_MS = 24L * 60 * 60 * 1000 }
@@ -246,6 +263,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         val last = runCatching { hub.get("/owntracks/last") }.getOrNull()?.let { parseFixes(it) } ?: emptyList()
         val gc = runCatching { hub.get("/geocaching/status") }.getOrNull()?.let { parseGcStatus(it) }
         val mu = runCatching { hub.get("/meetup/status") }.getOrNull()?.let { parseMeetupStatus(it) }
+        val gm = runCatching { hub.get("/gmaps/status") }.getOrNull()?.let { parseGmapsStatus(it) }
 
         val devices = last.mapNotNull { it.device }.distinct()
         val cur = _state.value
@@ -255,6 +273,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
             device = if (cur.device != null && devices.contains(cur.device)) cur.device else devices.firstOrNull(),
             gcStatus = gc ?: cur.gcStatus,
             meetupStatus = mu ?: cur.meetupStatus,
+            gmapsConfigured = gm ?: cur.gmapsConfigured,
         )
         loadPins()
         loadEvents()
@@ -456,6 +475,140 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
     }
 
     fun setMeetupDays(days: Int) { _state.value = _state.value.copy(meetupDays = days) }
+
+    // --- Google Maps search + directions (hub /gmaps/* proxy) ---------------- //
+
+    // ONE autocomplete billing session per keystroke run: the same token rides
+    // every /autocomplete call AND the /place details fetch that ends the run,
+    // so Google bills the whole run as one session (store/map.ts parity).
+    private var gmapsSession: String? = null
+    private fun gmapsSessionToken(): String = gmapsSession ?: java.util.UUID.randomUUID().toString().also { gmapsSession = it }
+    private var autocompleteSeq = 0
+
+    /** Type-ahead. Bias = current map centre. Callers debounce (~250 ms); a
+     *  response for a superseded query is dropped, never applied. */
+    suspend fun autocompleteGmaps(query: String, bias: LatLon?) {
+        val q = query.trim()
+        if (q.length < 2) {
+            _state.value = _state.value.copy(gmapsSuggestions = emptyList(), gmapsSuggesting = false)
+            return
+        }
+        val seq = ++autocompleteSeq
+        _state.value = _state.value.copy(gmapsSuggesting = true)
+        val raw = runCatching {
+            val sb = StringBuilder("/gmaps/autocomplete?q=").append(enc(q)).append("&session=").append(gmapsSessionToken())
+            if (bias != null) sb.append("&lat=").append(bias.lat).append("&lon=").append(bias.lon)
+            hub.get(sb.toString())
+        }.getOrNull()
+        if (seq != autocompleteSeq) return // stale — a newer keystroke owns the state
+        _state.value = _state.value.copy(
+            gmapsSuggestions = raw?.let { parseSuggestions(it) } ?: emptyList(),
+            gmapsSuggesting = false,
+        )
+    }
+
+    /** Resolve a suggestion to a full place: it becomes THE result + selection
+     *  (pin + detail). Ends the billing session. */
+    suspend fun pickSuggestion(placeId: String) {
+        ++autocompleteSeq // any in-flight autocomplete is now stale
+        _state.value = _state.value.copy(gmapsSuggestions = emptyList(), gmapsSearching = true, gmapsError = null)
+        try {
+            val raw = hub.get("/gmaps/place/${enc(placeId)}?session=${gmapsSessionToken()}")
+            gmapsSession = null // a details fetch ends the session
+            val place = parsePlaceEnvelope(raw) ?: throw IllegalStateException("place not found")
+            _state.value = _state.value.copy(
+                gmapsResults = listOf(place), gmapsSelectedPlaceId = place.id,
+                gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null,
+            )
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(gmapsError = gmapsErrorText(e.hubBody()))
+        } finally {
+            _state.value = _state.value.copy(gmapsSearching = false)
+        }
+    }
+
+    /** Free-text search (IME "search" on the box) — many pins, first selected. */
+    suspend fun searchGmaps(query: String, bias: LatLon?) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        ++autocompleteSeq
+        _state.value = _state.value.copy(gmapsSuggestions = emptyList(), gmapsSearching = true, gmapsError = null)
+        try {
+            val sb = StringBuilder("/gmaps/search?q=").append(enc(q))
+            if (bias != null) sb.append("&lat=").append(bias.lat).append("&lon=").append(bias.lon)
+            val results = parsePlaces(hub.get(sb.toString()))
+            _state.value = _state.value.copy(
+                gmapsResults = results, gmapsSelectedPlaceId = results.firstOrNull()?.id,
+                gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null,
+            )
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(gmapsError = gmapsErrorText(e.hubBody()), gmapsResults = emptyList())
+        } finally {
+            _state.value = _state.value.copy(gmapsSearching = false)
+        }
+    }
+
+    fun selectPlace(id: String?) {
+        // Selecting a place other than the routed one drops its routes; the
+        // detail panel then offers "Directions" afresh for the new place.
+        val s = _state.value
+        val keepRoutes = id != null && s.gmapsRouteTo?.id == id
+        _state.value = s.copy(
+            gmapsSelectedPlaceId = id,
+            selectedCode = if (id != null) null else s.selectedCode,
+            selectedEventId = if (id != null) null else s.selectedEventId,
+            gmapsRoutes = if (keepRoutes) s.gmapsRoutes else emptyList(),
+            gmapsRouteTo = if (keepRoutes) s.gmapsRouteTo else null,
+            gmapsRouteFrom = if (keepRoutes) s.gmapsRouteFrom else null,
+        )
+    }
+
+    fun clearGmapsSuggestions() { _state.value = _state.value.copy(gmapsSuggestions = emptyList()) }
+
+    fun clearGmapsSearch() {
+        ++autocompleteSeq
+        gmapsSession = null
+        _state.value = _state.value.copy(
+            gmapsSuggestions = emptyList(), gmapsResults = emptyList(), gmapsSelectedPlaceId = null,
+            gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null, gmapsSelectedRoute = 0,
+            gmapsError = null, gmapsSearching = false, gmapsSuggesting = false,
+        )
+    }
+
+    fun setGmapsMode(mode: GTravelMode) { _state.value = _state.value.copy(gmapsMode = mode) }
+
+    /** Routes API via the hub, alternatives on; the selected route renders
+     *  bright, the rest dimmed. Re-run on a mode change. */
+    suspend fun getDirections(from: LatLon, to: GPlace, mode: GTravelMode = _state.value.gmapsMode) {
+        _state.value = _state.value.copy(gmapsRouting = true, gmapsError = null, gmapsMode = mode, gmapsRouteFrom = from, gmapsRouteTo = to)
+        try {
+            val body = buildJsonObject {
+                put("origin", buildJsonObject { put("lat", from.lat); put("lon", from.lon) })
+                put("destination", buildJsonObject { put("lat", to.lat); put("lon", to.lon) })
+                put("mode", mode.name)
+                put("alternatives", true)
+            }
+            val routes = parseRoutes(hub.post("/gmaps/directions", body.toString()))
+            _state.value = _state.value.copy(gmapsRoutes = routes, gmapsSelectedRoute = 0)
+            if (routes.isEmpty()) _state.value = _state.value.copy(gmapsError = "no route found")
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(gmapsError = gmapsErrorText(e.hubBody()), gmapsRoutes = emptyList())
+        } finally {
+            _state.value = _state.value.copy(gmapsRouting = false)
+        }
+    }
+
+    fun selectRoute(idx: Int) {
+        if (idx in _state.value.gmapsRoutes.indices) _state.value = _state.value.copy(gmapsSelectedRoute = idx)
+    }
+
+    fun clearDirections() {
+        _state.value = _state.value.copy(gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null, gmapsSelectedRoute = 0)
+    }
+
+    fun clearGmapsError() { _state.value = _state.value.copy(gmapsError = null) }
+
+    private fun Exception.hubBody(): String? = (this as? HubClient.HttpException)?.body ?: message
 
     // --- agent layers -------------------------------------------------------- //
 

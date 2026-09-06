@@ -1,5 +1,7 @@
 package io.amar.console.ui.longtail
 
+import io.amar.console.data.longtail.GPlace
+import io.amar.console.data.longtail.GRoute
 import io.amar.console.data.longtail.MapCache
 import io.amar.console.data.longtail.MeetupEvent
 import io.amar.console.data.longtail.OtFix
@@ -27,6 +29,25 @@ class MapRendererLogicTest {
         assertTrue(fc.contains("\"dnf\":0"))
         // coordinates are [lon, lat]
         assertTrue(fc.contains("[-0.9,51.4]"))
+    }
+
+    @Test
+    fun `placesFc keys pins by place id`() {
+        val fc = placesFc(listOf(GPlace("places/A", "A", null, 51.4, -0.9), GPlace("places/B", "B", null, 51.5, -0.8)))
+        assertTrue(fc.contains("\"id\":\"places/A\""))
+        assertTrue(fc.contains("[-0.8,51.5]"))
+        assertEquals(MapRenderer.emptyFc(), placesFc(emptyList()))
+    }
+
+    @Test
+    fun `routesFc flags exactly the selected route and routeBbox spans all coords`() {
+        val r1 = GRoute("M4", 100, 1000, listOf(-0.9 to 51.4, -0.8 to 51.5))
+        val r2 = GRoute(null, 200, 2000, listOf(-0.9 to 51.4, -1.0 to 51.3))
+        val fc = routesFc(listOf(r1, r2), 1)
+        assertTrue(fc.contains("\"idx\":0,\"selected\":0"))
+        assertTrue(fc.contains("\"idx\":1,\"selected\":1"))
+        assertEquals(listOf(-0.9, 51.4, -0.8, 51.5), routeBbox(r1))
+        assertEquals(null, routeBbox(GRoute(null, 0, 0, emptyList())))
     }
 
     @Test

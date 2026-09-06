@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import io.amar.console.data.longtail.BuiltinLayer
+import io.amar.console.data.longtail.GPlace
+import io.amar.console.data.longtail.GRoute
 import io.amar.console.data.longtail.MapCache
 import io.amar.console.data.longtail.MapLayerMeta
 import io.amar.console.data.longtail.MapUiState
@@ -52,8 +54,9 @@ class MapRenderer {
     fun attach(map: MapLibreMap, style: Style) {
         this.map = map
         this.style = style
-        // Pre-register the fixed emoji set used by geocache/meetup pins.
-        val fixed = (typeEmoji.values + listOf("📦", "😀", "😟", "📅")).toSet()
+        // Pre-register the fixed emoji set used by geocache/meetup/gmaps pins
+        // (📍 is also pinEmojiExpr's default for unknown cache types).
+        val fixed = (typeEmoji.values + listOf("📦", "😀", "😟", "📅", GMAPS_EMOJI)).toSet()
         for (e in fixed) ensureEmojiImage(e)
         addBaseOverlays(style)
     }
@@ -110,6 +113,31 @@ class MapRenderer {
                 ),
             )
         }
+        // Google directions routes — beneath every pin layer. Casing under the
+        // main line = the classic Google route look; selected route bright blue
+        // + wide, alternates dimmed grey (MapTab.tsx gmaps-routes parity).
+        if (s.getSource("gmaps-routes") == null) {
+            s.addSource(GeoJsonSource("gmaps-routes", emptyFc()))
+            val selected = Expression.eq(Expression.get("selected"), Expression.literal(1L))
+            s.addLayer(
+                LineLayer("gmaps-routes-casing", "gmaps-routes").withProperties(
+                    PropertyFactory.lineColor("#0a0a0a"),
+                    PropertyFactory.lineWidth(Expression.switchCase(selected, Expression.literal(9f), Expression.literal(6f))),
+                    PropertyFactory.lineOpacity(0.5f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                ),
+            )
+            s.addLayer(
+                LineLayer("gmaps-routes", "gmaps-routes").withProperties(
+                    PropertyFactory.lineColor(Expression.switchCase(selected, Expression.literal("#4285F4"), Expression.literal("#9ca3af"))),
+                    PropertyFactory.lineWidth(Expression.switchCase(selected, Expression.literal(6f), Expression.literal(3.5f))),
+                    PropertyFactory.lineOpacity(Expression.switchCase(selected, Expression.literal(0.95f), Expression.literal(0.6f))),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                ),
+            )
+        }
         if (s.getSource("gc-pins") == null) {
             s.addSource(GeoJsonSource("gc-pins", emptyFc()))
             s.addLayer(
@@ -152,6 +180,29 @@ class MapRenderer {
                 ),
             )
         }
+        // Google place search results — topmost pins (they're what the user
+        // just asked for), Google-blue selection ring.
+        if (s.getSource("gmaps-pins") == null) {
+            s.addSource(GeoJsonSource("gmaps-pins", emptyFc()))
+            s.addLayer(
+                CircleLayer("gmaps-selected", "gmaps-pins").apply {
+                    setFilter(Expression.eq(Expression.get("id"), Expression.literal("")))
+                }.withProperties(
+                    PropertyFactory.circleRadius(14f),
+                    PropertyFactory.circleColor("rgba(66,133,244,0.25)"),
+                    PropertyFactory.circleStrokeWidth(2f),
+                    PropertyFactory.circleStrokeColor("#ffffff"),
+                ),
+            )
+            s.addLayer(
+                SymbolLayer("gmaps-pins", "gmaps-pins").withProperties(
+                    PropertyFactory.iconImage("em:$GMAPS_EMOJI"),
+                    PropertyFactory.iconSize(0.6f),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true),
+                ),
+            )
+        }
     }
 
     /** case found→😀, dnf→😟, else match(type)→emoji, default 📍. */
@@ -184,6 +235,11 @@ class MapRenderer {
         )
         (s.getLayer("meetup-selected"))?.setFilter(
             Expression.eq(Expression.get("id"), Expression.literal(state.selectedEventId ?: "")),
+        )
+        (s.getSourceAs<GeoJsonSource>("gmaps-pins"))?.setGeoJson(placesFc(state.gmapsResults))
+        (s.getSourceAs<GeoJsonSource>("gmaps-routes"))?.setGeoJson(routesFc(state.gmapsRoutes, state.gmapsSelectedRoute))
+        (s.getLayer("gmaps-selected"))?.setFilter(
+            Expression.eq(Expression.get("id"), Expression.literal(state.gmapsSelectedPlaceId ?: "")),
         )
         applyBuiltinVisibility(state.builtinVisible)
         reconcileAgentLayers(state)
@@ -350,7 +406,16 @@ class MapRenderer {
         }
     }
 
+    /** Ease the camera to a place (search pick / pin tap). */
+    fun flyTo(lat: Double, lon: Double, zoom: Double = 15.0) {
+        val m = map ?: return
+        runCatching {
+            m.easeCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), zoom), 600)
+        }
+    }
+
     companion object {
+        const val GMAPS_EMOJI = "📍"
         fun emptyFc(): String = """{"type":"FeatureCollection","features":[]}"""
     }
 }
@@ -380,6 +445,35 @@ fun trackFc(track: List<OtFix>): String {
     if (track.size < 2) return MapRenderer.emptyFc()
     val coords = track.joinToString(",") { "[${it.lon},${it.lat}]" }
     return """{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]},"properties":{}}]}"""
+}
+
+/** Google place results → one Point per place, keyed by place id. */
+fun placesFc(places: List<GPlace>): String {
+    val feats = places.joinToString(",") { p ->
+        """{"type":"Feature","geometry":{"type":"Point","coordinates":[${p.lon},${p.lat}]},"properties":{"id":${jsonStr(p.id)}}}"""
+    }
+    return """{"type":"FeatureCollection","features":[$feats]}"""
+}
+
+/** Directions alternatives → LineStrings with `idx` + `selected` (1/0), so the
+ *  layer expressions style the chosen route without a per-route layer. */
+fun routesFc(routes: List<GRoute>, selected: Int): String {
+    val feats = routes.mapIndexed { i, r ->
+        val coords = r.coordinates.joinToString(",") { (lon, lat) -> "[$lon,$lat]" }
+        """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]},"properties":{"idx":$i,"selected":${if (i == selected) 1 else 0}}}"""
+    }.joinToString(",")
+    return """{"type":"FeatureCollection","features":[$feats]}"""
+}
+
+/** [w, s, e, n] bbox of a route's coordinates (for fitBounds); null when empty. */
+fun routeBbox(route: GRoute): List<Double>? {
+    if (route.coordinates.isEmpty()) return null
+    var w = Double.MAX_VALUE; var s = Double.MAX_VALUE; var e = -Double.MAX_VALUE; var n = -Double.MAX_VALUE
+    for ((lon, lat) in route.coordinates) {
+        if (lon < w) w = lon; if (lon > e) e = lon
+        if (lat < s) s = lat; if (lat > n) n = lat
+    }
+    return listOf(w, s, e, n)
 }
 
 fun currentFc(current: List<OtFix>): String {

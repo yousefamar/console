@@ -23,18 +23,25 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Directions
+import androidx.compose.material.icons.filled.DirectionsBike
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.DirectionsTransit
+import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -56,12 +63,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.amar.console.data.longtail.BuiltinLayer
+import io.amar.console.data.longtail.GPlace
+import io.amar.console.data.longtail.GTravelMode
+import io.amar.console.data.longtail.LatLon
+import io.amar.console.data.longtail.fmtDistance
+import io.amar.console.data.longtail.fmtDuration
+import io.amar.console.data.longtail.fmtRating
+import io.amar.console.data.longtail.gmapsDirUrl
+import io.amar.console.data.longtail.placeTypeLabels
 import io.amar.console.data.longtail.MapCache
 import io.amar.console.data.longtail.MapRepository
 import io.amar.console.data.longtail.MapUiState
@@ -106,6 +122,12 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     var navSpot by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     // Tapped agent-layer feature (e.g. a where-to-move town) → info panel.
     var featureInfo by remember { mutableStateOf<AgentFeatureInfo?>(null) }
+    // Google Maps place search (toolbar 🔍 chip toggles the bar).
+    var showSearch by remember { mutableStateOf(false) }
+    // The live MapLibreMap once ready — read synchronously for the camera
+    // centre (search bias, directions origin fallback).
+    var mapObj by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
+    fun mapCentre(): LatLon? = mapObj?.cameraPosition?.target?.let { LatLon(it.latitude, it.longitude) }
 
     fun setMapStyle(dark: Boolean) {
         darkMap = dark
@@ -137,6 +159,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     LaunchedEffect(Unit) {
         repo.hydrate()
         mapView.getMapAsync { map ->
+            mapObj = map
             map.cameraPosition = CameraPosition.Builder().target(LatLng(54.0, -2.0)).zoom(5.0).build()
             map.uiSettings.isCompassEnabled = false
             map.setStyle(org.maplibre.android.maps.Style.Builder().fromUri(basemapStyleUrl(darkMap))) { style ->
@@ -147,9 +170,14 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             // Tap → hit-test the pin/agent layers (topmost wins).
             map.addOnMapClickListener { latLng ->
                 val pt: PointF = map.projection.toScreenLocation(latLng)
+                val gm = map.queryRenderedFeatures(pt, "gmaps-pins")
                 val gc = map.queryRenderedFeatures(pt, "gc-pins")
                 val mu = map.queryRenderedFeatures(pt, "meetup-pins")
+                val route = if (repo.state.value.gmapsRoutes.size > 1) map.queryRenderedFeatures(pt, "gmaps-routes") else emptyList()
                 when {
+                    gm.isNotEmpty() -> {
+                        gm[0].getStringProperty("id")?.let { repo.selectPlace(it) }
+                    }
                     gc.isNotEmpty() -> {
                         val code = gc[0].getStringProperty("code")
                         if (code != null) scope.launch { repo.selectCache(code) }
@@ -157,6 +185,10 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
                     mu.isNotEmpty() -> {
                         val id = mu[0].getStringProperty("id")
                         if (id != null) scope.launch { repo.selectEvent(id) }
+                    }
+                    route.isNotEmpty() -> {
+                        // Tapping an alternate route selects it (SPA gmaps-routes click).
+                        runCatching { route[0].getNumberProperty("idx")?.toInt() }.getOrNull()?.let { repo.selectRoute(it) }
                     }
                     else -> {
                         // Agent layers (towns, airports, flight arcs…): query
@@ -204,6 +236,20 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
                 mapView.getMapAsync { it.easeCamera(CameraUpdateFactory.newLatLngZoom(LatLng(fix.lat, fix.lon), 11.0), 600) }
             }
         }
+    }
+
+    // Search pick / pin tap → ease onto the place. Keyed on the id so tapping
+    // the same pin twice doesn't re-fly.
+    LaunchedEffect(state.gmapsSelectedPlaceId, styleReady) {
+        if (!styleReady) return@LaunchedEffect
+        val p = state.gmapsResults.find { it.id == state.gmapsSelectedPlaceId } ?: return@LaunchedEffect
+        renderer.flyTo(p.lat, p.lon, zoom = if (state.gmapsResults.size > 1) 13.0 else 15.0)
+    }
+    // A fresh set of routes → frame the chosen one (selection changes alone don't re-fit).
+    LaunchedEffect(state.gmapsRoutes, styleReady) {
+        if (!styleReady) return@LaunchedEffect
+        val r = state.gmapsRoutes.getOrNull(state.gmapsSelectedRoute) ?: return@LaunchedEffect
+        routeBbox(r)?.let { renderer.fitBounds(it) }
     }
 
     // fit agent layers with fit:true once, when first visible with data
@@ -264,6 +310,22 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             onMeetupDays = { repo.setMeetupDays(it) },
             darkMap = darkMap,
             onToggleDark = { setMapStyle(!darkMap) },
+            searchActive = showSearch,
+            onToggleSearch = {
+                if (showSearch) repo.clearGmapsSearch()
+                showSearch = !showSearch
+            },
+            searchBar = if (showSearch) ({
+                GmapsSearchBar(
+                    state = state,
+                    onAutocomplete = { q -> scope.launch { repo.autocompleteGmaps(q, mapCentre()) } },
+                    onSearch = { q -> scope.launch { repo.searchGmaps(q, mapCentre()) } },
+                    onPick = { id -> scope.launch { repo.pickSuggestion(id) } },
+                    onSelectResult = { id -> repo.selectPlace(id) },
+                    onClear = { repo.clearGmapsSearch() },
+                    onDismissSuggestions = { repo.clearGmapsSuggestions() },
+                )
+            }) else null,
         )
 
         // Long-press target → confirm chip (bottom-center, above attribution).
@@ -318,7 +380,26 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
 
         val selectedCache = state.pins.find { it.code == state.selectedCode }
         val selectedEvent = state.events.find { it.id == state.selectedEventId }
-        if (selectedCache != null) {
+        val selectedPlace = state.gmapsResults.find { it.id == state.gmapsSelectedPlaceId }
+        if (selectedPlace != null) {
+            PlaceDetailPanel(
+                place = selectedPlace,
+                state = state,
+                onClose = { repo.selectPlace(null) },
+                onDirections = { mode ->
+                    // Origin = my latest OwnTracks fix (the phone's own report),
+                    // else wherever the map is looking.
+                    val from = state.current.firstOrNull()?.let { LatLon(it.lat, it.lon) } ?: mapCentre()
+                    if (from != null) scope.launch { repo.getDirections(from, selectedPlace, mode) }
+                },
+                onSelectRoute = { repo.selectRoute(it) },
+                onClearDirections = { repo.clearDirections() },
+                onClearError = { repo.clearGmapsError() },
+                // Bottom card (Google Maps' own shape) — keeps clear of the
+                // toolbar + search dropdown at the top.
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        } else if (selectedCache != null) {
             CacheDetailPanel(selectedCache, onClose = { scope.launch { repo.selectCache(null) } }, modifier = Modifier.align(Alignment.TopEnd))
         } else if (selectedEvent != null) {
             MeetupEventPanel(selectedEvent, onClose = { scope.launch { repo.selectEvent(null) } }, modifier = Modifier.align(Alignment.TopEnd))
@@ -365,6 +446,10 @@ private fun MapToolbar(
     onMeetupDays: (Int) -> Unit,
     darkMap: Boolean,
     onToggleDark: () -> Unit,
+    searchActive: Boolean,
+    onToggleSearch: () -> Unit,
+    /** The Google Maps search bar, rendered under the chip row while open. */
+    searchBar: (@Composable () -> Unit)?,
 ) {
     Column(
         Modifier
@@ -380,6 +465,17 @@ private fun MapToolbar(
             // App-grid button (this pane is full-screen — no PaneTopBar).
             ToolbarChip(onClick = onGrid) {
                 Icon(Icons.Filled.Apps, "App grid", modifier = Modifier.size(15.dp))
+            }
+
+            // Google Maps place search (Yousef's mobile ask: find places, hand
+            // off to Google Maps for navigation).
+            ToolbarChip(onClick = onToggleSearch) {
+                Icon(
+                    if (searchActive) Icons.Filled.Close else Icons.Filled.Search,
+                    if (searchActive) "Close search" else "Search places",
+                    modifier = Modifier.size(15.dp),
+                    tint = if (searchActive) MaterialTheme.colorScheme.primary else androidx.compose.material3.LocalContentColor.current,
+                )
             }
 
             // Layers button — total count = agent layers + 3 built-ins.
@@ -415,6 +511,7 @@ private fun MapToolbar(
                 MeetupChip(state, onMeetupDays, onFetchMeetupHere)
             }
         }
+        searchBar?.invoke()
         state.error?.let { err ->
             Text(
                 err,
@@ -831,6 +928,296 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
                         Spacer(Modifier.size(4.dp))
                         Text("navigate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                     }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- //
+// Google Maps search + place detail (SPA GmapsPanel / PlaceDetailPanel parity)
+
+/**
+ * Search box under the toolbar: type-ahead via /gmaps/autocomplete (250 ms
+ * debounce, ≥2 chars, one billing session per run), IME Search → free-text
+ * /gmaps/search. The dropdown shows suggestions while typing, else the multi-
+ * result list after a text search. Not configured → a hint, never an error.
+ */
+@Composable
+private fun GmapsSearchBar(
+    state: MapUiState,
+    onAutocomplete: (String) -> Unit,
+    onSearch: (String) -> Unit,
+    onPick: (placeId: String) -> Unit,
+    onSelectResult: (placeId: String) -> Unit,
+    onClear: () -> Unit,
+    onDismissSuggestions: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var showResults by remember { mutableStateOf(false) }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val configured = state.gmapsConfigured
+
+    LaunchedEffect(Unit) { if (configured != false) runCatching { focusRequester.requestFocus() } }
+    // Debounced type-ahead — every keystroke restarts the 250 ms wait.
+    LaunchedEffect(query) {
+        if (query.trim().length < 2) { onDismissSuggestions(); return@LaunchedEffect }
+        kotlinx.coroutines.delay(250)
+        onAutocomplete(query)
+    }
+    // A pick renames the box to the place (SPA gmapsQuery = place.name).
+    LaunchedEffect(state.gmapsSelectedPlaceId) {
+        if (state.gmapsResults.size == 1) state.gmapsResults.firstOrNull()?.let { if (query != it.name) query = it.name }
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            tonalElevation = 2.dp,
+        ) {
+            if (configured == false) {
+                Text(
+                    "Google Maps search isn't configured on the hub — set a Maps Platform key with `con map gmaps credentials --key …`.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+                return@Surface
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(Icons.Filled.Search, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.weight(1f)) {
+                    if (query.isEmpty()) {
+                        Text("Search Google Maps", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = query,
+                        onValueChange = { query = it; showResults = false },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
+                            if (query.isNotBlank()) { onSearch(query); showResults = true; focusManager.clearFocus() }
+                        }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                    )
+                }
+                if (state.gmapsSearching || state.gmapsSuggesting) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
+                } else if (query.isNotEmpty() || state.gmapsResults.isNotEmpty()) {
+                    Icon(
+                        Icons.Filled.Close, "Clear search", modifier = Modifier.size(16.dp).clickable { query = ""; showResults = false; onClear() },
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        val suggestions = state.gmapsSuggestions
+        val results = if (showResults && state.gmapsResults.size > 1) state.gmapsResults else emptyList()
+        if (suggestions.isNotEmpty() || results.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).heightIn(max = 280.dp),
+                shape = RoundedCornerShape(8.dp),
+                tonalElevation = 4.dp,
+                shadowElevation = 6.dp,
+            ) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    for (s in suggestions) {
+                        Column(
+                            Modifier.fillMaxWidth().clickable {
+                                query = s.mainText; showResults = false; focusManager.clearFocus(); onPick(s.placeId)
+                            }.padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(s.mainText, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            s.secondaryText?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        }
+                    }
+                    for (p in results) {
+                        val selected = p.id == state.gmapsSelectedPlaceId
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .background(if (selected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                                .clickable { showResults = false; focusManager.clearFocus(); onSelectResult(p.id) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(p.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val sub = listOfNotNull(fmtRating(p.rating, p.userRatingCount), p.address).joinToString(" · ")
+                            if (sub.isNotBlank()) Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+        // Directions errors render inside the place card instead.
+        state.gmapsError?.takeIf { state.gmapsRouteTo == null }?.let { err ->
+            Text(
+                err,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFFCA5A5),
+                modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0x33EF4444)).padding(horizontal = 8.dp, vertical = 4.dp),
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private val TRAVEL_MODE_ICONS = listOf(
+    GTravelMode.DRIVE to Icons.Filled.DirectionsCar,
+    GTravelMode.WALK to Icons.Filled.DirectionsWalk,
+    GTravelMode.BICYCLE to Icons.Filled.DirectionsBike,
+    GTravelMode.TRANSIT to Icons.Filled.DirectionsTransit,
+)
+
+/**
+ * Bottom card for the selected Google place: name / address / rating / types,
+ * then two hand-offs — "navigate" = the geo: "Open with…" chooser (any maps
+ * app), "Google Maps" = the place's own deep link — and in-app directions
+ * (hub Routes API): travel-mode toggle, selectable alternatives drawn on the
+ * map, "open route in Google Maps" carrying origin + mode.
+ */
+@Composable
+private fun PlaceDetailPanel(
+    place: GPlace,
+    state: MapUiState,
+    onClose: () -> Unit,
+    onDirections: (GTravelMode) -> Unit,
+    onSelectRoute: (Int) -> Unit,
+    onClearDirections: () -> Unit,
+    onClearError: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val routed = state.gmapsRouteTo?.id == place.id
+    val routes = if (routed) state.gmapsRoutes else emptyList()
+    Surface(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp).heightIn(max = 420.dp),
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 4.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(place.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                    place.address?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Close", modifier = Modifier.size(16.dp)) }
+            }
+            val rating = fmtRating(place.rating, place.userRatingCount)
+            val types = placeTypeLabels(place.types)
+            if (rating != null || types.isNotEmpty()) {
+                Row(
+                    Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    rating?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFBBF24)) }
+                    for (t in types) {
+                        Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Text(t, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                    }
+                }
+            }
+            // Hand-offs.
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { openInMaps(ctx, place.lat, place.lon, place.name) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                    Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                    Spacer(Modifier.size(4.dp))
+                    Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                }
+                TextButton(
+                    onClick = { openUrl(ctx, place.googleMapsUri ?: gmapsDirUrl(null, place, state.gmapsMode)) },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(Icons.Filled.OpenInNew, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                    Spacer(Modifier.size(4.dp))
+                    Text("Google Maps", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                }
+                Spacer(Modifier.weight(1f))
+                if (!routed) {
+                    TextButton(onClick = { onDirections(state.gmapsMode) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
+                        Icon(Icons.Filled.Navigation, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.size(4.dp))
+                        Text("Directions", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+            if (routed) {
+                HorizontalDivider(Modifier.padding(vertical = 6.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (state.current.isNotEmpty()) "from my location" else "from map centre",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
+                    )
+                    // Travel mode — switching re-routes immediately.
+                    for ((mode, icon) in TRAVEL_MODE_ICONS) {
+                        val sel = mode == state.gmapsMode
+                        Surface(
+                            onClick = { if (!sel) onDirections(mode) },
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp),
+                        ) {
+                            Icon(
+                                icon, mode.label, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp).size(16.dp),
+                                tint = if (sel) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    IconButton(onClick = onClearDirections, modifier = Modifier.padding(start = 4.dp).size(24.dp)) {
+                        Icon(Icons.Filled.Close, "Clear directions", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (state.gmapsRouting) {
+                    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.5.dp)
+                        Text("routing…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                for ((i, r) in routes.withIndex()) {
+                    val sel = i == state.gmapsSelectedRoute
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (sel) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                            .clickable { onSelectRoute(i) }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(width = 3.dp, height = 28.dp).clip(RoundedCornerShape(2.dp)).background(if (sel) Color(0xFF4285F4) else Color(0xFF9CA3AF)))
+                        Spacer(Modifier.size(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(fmtDuration(r.durationSec), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                Text(fmtDistance(r.distanceMeters), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            r.description?.let { Text("via $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        }
+                    }
+                }
+                state.gmapsRouteFrom?.let { from ->
+                    TextButton(
+                        onClick = { openUrl(ctx, gmapsDirUrl(from, place, state.gmapsMode)) },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) {
+                        Icon(Icons.Filled.OpenInNew, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Spacer(Modifier.size(4.dp))
+                        Text("open route in Google Maps", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    }
+                }
+                state.gmapsError?.let { err ->
+                    Text(
+                        err, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFCA5A5),
+                        modifier = Modifier.padding(top = 4.dp).clickable { onClearError() }, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

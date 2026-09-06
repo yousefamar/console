@@ -20,11 +20,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   action, `overrides` POST), then a Budgets section under Runway; scenarios
   and the ledger editor last.
 
-- Map: Google Maps place search + "Open in Google Maps" — SPA `GmapsPanel`/
-  `PlaceDetailPanel` over hub `/gmaps/*`. Android `MapScreen.kt` has no gmaps
-  at all (the mobile ask in root CLAUDE.md is exactly this). Plan: search box
-  → `/gmaps/autocomplete` → pin + detail sheet → `geo:` deep link.
-
 ## Desktop-only (considered, not gaps)
 
 Inbox day rail · every keybinding (j/k/e/b/p, y/n/a, Ctrl+H/L focus cycling,
@@ -171,6 +166,31 @@ view-mode hub-sync (Room meta is fine on one device).
   `isRedditUrl`/`parseRedditComments`/`isoToEpochSec` in `FeedsLogic.kt`,
   unit-tested; `{error}` bodies parse to null → "Failed to load", never
   "0 Comments".
+- **Map: Google Maps place search + directions** (SPA `GmapsPanel`/
+  `PlaceDetailPanel` over hub `/gmaps/*`; ^green-wren — Yousef's mobile ask:
+  find places, hand off to Google Maps). Toolbar 🔍 chip opens a search bar
+  under the chips: type-ahead via `/gmaps/autocomplete` (250 ms debounce,
+  ≥2 chars, ONE `UUID` billing-session token per keystroke run, rotated after
+  the `/gmaps/place/:id` details fetch — the SPA's session discipline; a
+  response for a superseded query is dropped by sequence number, never
+  applied), IME Search → `/gmaps/search` free text (many pins, first
+  selected, results list in the dropdown). Bias = current camera centre.
+  Picked places render as 📍 pins (`gmaps-pins` source + Google-blue
+  selection ring, topmost) and a BOTTOM card (Google Maps' own shape, keeps
+  clear of the toolbar/dropdown): name / address / ★ rating (count) / type
+  chips, then `navigate` (= the existing `openInMaps` geo: "Open with…"
+  chooser), `Google Maps` (the place's own `googleMapsUri` deep link) and
+  `Directions` → `POST /gmaps/directions` (alternatives on) from my latest
+  OwnTracks fix (else the map centre) — routes drawn as casing + line
+  (`gmaps-routes`, selected #4285F4 wide, alternates grey), tap a row OR the
+  line on the map to select, travel-mode toggle re-routes, "open route in
+  Google Maps" carries origin + mode (`gmapsDirUrl` port). Camera eases onto a
+  pick and frames a fresh route. `gmapsConfigured == false` → a hint naming
+  `con map gmaps credentials`, never an error. `data/longtail/GmapsLogic.kt`
+  = pure models/parsers/URL/formatters, unit-tested against the live hub
+  payload shapes (place ids are bare `ChIJ…`, `googleMapsUri` present).
+  Hub gap, not ported: opening hours / phone aren't in the hub's
+  `PlaceResult` field mask, so the card can't show them either.
 
 ## Shipped
 
@@ -412,7 +432,6 @@ view-mode hub-sync (Room meta is fine on one device).
 
 - **Spaces rail: review-count on the kanban badge + review-hand-back reclassification** (ba742c0, ^teal-finch): SpaceRow shows `reviewCount` beside the ViewKanban glyph; an unread session whose agentKey owns an Under-Review card moves its blue from the Bot badge to the kanban badge (attention red never moves). SpacesRepository parses `reviewCount`/`reviewAgentKeys` from `/blog/spaces` (older hub → 0/empty, safe defaults).
 
-
 ### v89 (2026-08-27)
 - Spaces mobile parity round (post-v88 feedback): CardSheet scrolls as a whole
   (long agent report notes pushed Move/Assign/Open-agent off-screen) with the
@@ -513,7 +532,6 @@ view-mode hub-sync (Room meta is fine on one device).
   unread/attention/working signal; Docs only when there's nothing
   agent-shaped to show.
 
-
 ### v82 (2026-08-19)
 - SPACES pane v1 (project-first nav; the eventual Notes+Agents replacement,
   mobile-shaped): grid gains a Spaces app. L1 = space list (Areas, then
@@ -540,7 +558,6 @@ view-mode hub-sync (Room meta is fine on one device).
   externally-grown text (live transcript) left the cursor stranded mid-text.
   Switched to TextFieldValue with the selection pinned to the end whenever
   the text changes from outside the keyboard.
-
 
 ### v81 (2026-08-17)
 - Property listing pins/pushes: two dead ends, one root cause each. (1) Tapping
@@ -604,7 +621,6 @@ view-mode hub-sync (Room meta is fine on one device).
   back to a FRESH initial sync — the hub skips the backfill walk on isInitial
   so it's fast and bounded, and bulkPut ingestion is idempotent.
 
-
 ### v79 (2026-08-08)
 - Mail unsnooze: the snoozed view's rows now carry an Unsnooze button — wakes
   the thread back into the inbox immediately (clears snooze + re-inbox +
@@ -636,7 +652,6 @@ view-mode hub-sync (Room meta is fine on one device).
   near the log tail), and approval_required dedupes by requestId so the
   replay can't double-add one the live path already delivered.
 
-
 ### v78 (2026-07-28)
 - Perma-"Syncing" (round three, the real one): trigger() cancelled the
   debounce job that run() executed INSIDE — a trigger landing mid-pass
@@ -652,7 +667,6 @@ view-mode hub-sync (Room meta is fine on one device).
   FOREVER (broadcasts are fire-and-forget; resume is the only gap recovery).
   Live deltas now ingest without touching the cursor until this connection's
   resume has completed (per-connection gate, reset on connect). +1 test.
-
 
 ### v77 (2026-07-28)
 - Outbox rows wedged in "processing" (queue clogged until hand-deleted, part
@@ -683,7 +697,6 @@ view-mode hub-sync (Room meta is fine on one device).
   with NAVIGATE. All go through a geo: URI chooser ("Open with…" → Google
   Maps etc.), web-Maps URL fallback if no handler.
 
-
 ### v76 (2026-07-27)
 - Switching apps no longer loses your place (launcher mode): pressing Home
   from ANOTHER app re-delivers MAIN+HOME to Console, which unconditionally
@@ -713,7 +726,6 @@ view-mode hub-sync (Room meta is fine on one device).
   bottom pill. UndoHost now renders the chat-style pill (wrap-content, rounded,
   inverseSurface, coloured UNDO text) for every undo + app toast, and chat/
   calendar's bespoke inline bars were deleted in favour of the shared host.
-
 
 ### v75 (2026-07-27)
 - Garbled agent streamed text ("Found itFound it — …pdf, most — …pdf…"): a
@@ -749,7 +761,6 @@ view-mode hub-sync (Room meta is fine on one device).
   loggable message carries its authoritative index and the APK always upserts.
   One-time purge v75 clears rows duplicated by pre-fix live appends.
 
-
 ### v74 (2026-07-26)
 - Mark-read in a chat now returns you to the chat list (inbox-zero flow:
   ✓✓ = done with this conversation).
@@ -764,7 +775,6 @@ view-mode hub-sync (Room meta is fine on one device).
   unreadCount + watermark both frozen at open so racing read-receipts can't
   move the line. +3 unit tests incl. the skewed-bridge-timestamp case.
 
-
 ### v73 (2026-07-26)
 - Permanent "Syncing…" pill: launcher mode made every home-press trigger a
   reconcile, and (a) a single wedged domain pinned the pass forever — each
@@ -778,7 +788,6 @@ view-mode hub-sync (Room meta is fine on one device).
   acquired ONLY while the proximity sensor reports near, released on far/stop.
   Also android:stateNotNeeded="true" on MainActivity (home apps must render
   without saved state — the standard launcher relaunch path).
-
 
 ### v72 (2026-07-26)
 - LAUNCHER MODE: Console can be set as the Android home app (Settings →
@@ -795,7 +804,6 @@ view-mode hub-sync (Room meta is fine on one device).
   pass is >2 min old — silence means connected AND fresh. (Offline/queued/
   failed states unchanged.) Agents list already shows live/offline per header.
 
-
 ### v71 (2026-07-24)
 - Quick-react row seeds from your REAL reaction history on first open: reactions
   from any device aggregate onto cached message rows ({emoji: [senders]}), so
@@ -806,7 +814,6 @@ view-mode hub-sync (Room meta is fine on one device).
   (Archive · Delete · Unread + ⋯ overflow with Snooze / colour toggle /
   Forward); Reply + Reply-all are full-width chips after the LAST message,
   where replying actually happens (Gmail pattern).
-
 
 ### v70 (2026-07-23)
 - Chat unread counts disagreed (grid badge 4, header 2, room pills 3): three
@@ -834,7 +841,6 @@ view-mode hub-sync (Room meta is fine on one device).
   AsyncImage on the data: URLs silently rendered nothing (v69's fix persisted
   the images but they still didn't show). data: URLs are now base64-decoded
   natively to an ImageBitmap.
-
 
 ### v69 (2026-07-22)
 - Archived/Undo snackbar STILL rendered as a full-width bar at the top: UndoHost was
@@ -881,7 +887,6 @@ view-mode hub-sync (Room meta is fine on one device).
   animated WebP + GIF) / GifDecoder fallback added to the global ImageLoader —
   E2EE stickers render from the decrypted full file, so animation survives.
 
-
 ### v68 (2026-07-22)
 - Chat network badges: real brand glyphs (path data extracted verbatim from the SPA's
   react-icons set, brand colours) on a small chip that OVERHANGS the avatar circle
@@ -905,7 +910,6 @@ view-mode hub-sync (Room meta is fine on one device).
   adopts the new msgtype/media and isn't marked "edited"; notices never diff.
 - Images sent to agents now persist in transcript history (local echo stores
   data-URLs, same shape as the hub broadcast; previously they vanished on reopen).
-
 
 ### v67 (2026-07-21)
 - Map white void: style JSON was passed to setStyle(String) which treats it as a URI —
@@ -936,7 +940,6 @@ view-mode hub-sync (Room meta is fine on one device).
   (SPA ignores it); the APK upserts at that index (REPLACE on the unique
   (sessionId, absIndex)). One-time purge (meta agents:dedupPurgeV67) wipes the
   polluted cache; REST catch-up refills with authoritative indices.
-
 
 ### v66 (2026-07-20)
 - Context meter clamp (interim estimate could exceed window: "391k / 200k")
