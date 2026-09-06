@@ -60,7 +60,7 @@ async function add(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function set(args: string[], flags: GlobalFlags): Promise<void> {
   const id = args[0]
-  if (!id) return exitWithError('USAGE', 'con map property set <id> [--label X] [--enabled true|false] [--notify on|off] [--notify-layer <slug|path|none>] [--notify-* gate flags | --notify-criteria none] [criteria flags]', flags)
+  if (!id) return exitWithError('USAGE', 'con map property set <id> [--label X] [--enabled true|false] [--notify on|off] [--notify-layer <slug|path|none>] [--notify-* gate flags | --notify-criteria none] [--outside-criteria none|notify|<json>] [criteria flags]', flags)
   const o = parseFlags(args.slice(1))
   const body: Record<string, unknown> = {}
   if (o.label) body.label = String(o.label)
@@ -83,7 +83,24 @@ async function set(args: string[], flags: GlobalFlags): Promise<void> {
   // Only send criteria when a criteria flag was actually passed — an empty
   // object would wipe the search's filters and force a re-seed.
   if (Object.keys(criteria).length) body.criteria = criteria
+  // --outside-criteria: the stricter bar for listings outside --notify-layer.
+  // `notify` copies the search's current notify gate, `none` clears, else JSON.
+  if (o['outside-criteria']) body.outsideCriteria = await outsideCriteriaFrom(id, String(o['outside-criteria']), flags)
   output(await hubFetch(`/property/searches/${encodeURIComponent(id)}`, { method: 'PATCH', body }), flags)
+}
+
+async function outsideCriteriaFrom(id: string, raw: string, flags: GlobalFlags): Promise<unknown> {
+  if (raw === 'none') return null
+  if (raw === 'notify') {
+    const s = (await hubFetch(`/property/searches/${encodeURIComponent(id)}`)) as { notifyCriteria?: unknown }
+    if (!s.notifyCriteria) return exitWithError('USAGE', 'search has no notify gate to copy — set --notify-* first or pass JSON', flags)
+    return s.notifyCriteria
+  }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return exitWithError('USAGE', '--outside-criteria expects none | notify | a JSON object like {"maxPrice":250000,"houseSubtypes":["detached"]}', flags)
+  }
 }
 
 async function remove(args: string[], flags: GlobalFlags): Promise<void> {
@@ -169,6 +186,7 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   if (o.channel) c.channel = o.channel
   if (o.type) c.propertyType = o.type
   if (o['house-subtypes']) c.houseSubtypes = String(o['house-subtypes']).split(',').map((s) => s.trim()).filter(Boolean)
+  if (o['exclude-house-subtypes']) c.excludeHouseSubtypes = String(o['exclude-house-subtypes']).split(',').map((s) => s.trim()).filter(Boolean)
   if (o['min-price']) c.minPrice = Number(o['min-price'])
   if (o['max-price']) c.maxPrice = Number(o['max-price'])
   if (o['min-beds']) c.minBedrooms = Number(o['min-beds'])

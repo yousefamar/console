@@ -22,7 +22,7 @@ import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo
 import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
-import { needsAirportDistance, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
+import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
 
 const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
 const LAYER_GROUP = 'property'
@@ -107,7 +107,7 @@ export class PropertySync {
     const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
     const rings = this.rings(s.layer, s.country, s.maxRings)
     const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
-    const listings = postFilter(r.listings, s.criteria, r.unsupported)
+    const listings = this.applyOutsideBar(s, postFilter(r.listings, s.criteria, r.unsupported))
     const updated = this.searches.recordBackfill(id, listings)
     if (!updated) return undefined
     this.bus.broadcast('property', 'polled', updated)
@@ -225,7 +225,7 @@ export class PropertySync {
       total = r.total
       truncated = r.truncated
       unsupported = r.unsupported
-      listings = sortNewestFirst(postFilter(r.listings, s.criteria, r.unsupported))
+      listings = sortNewestFirst(this.applyOutsideBar(s, postFilter(r.listings, s.criteria, r.unsupported)))
     } catch (e) {
       error = (e as Error).message
     }
@@ -347,6 +347,26 @@ export class PropertySync {
    */
   private filterForNotify(s: PropertySearch, fresh: Listing[]): Listing[] {
     return applyNotifyGate(this.filterByGeofence(s, fresh), s.notifyCriteria && withoutAirportGate(s.notifyCriteria))
+  }
+
+  /**
+   * The two-tier bar: inside `notifyLayer` the search criteria are enough;
+   * outside it a listing must ALSO pass `outsideCriteria`. No geofence or no
+   * outside gate → pass-through. Uses the lookup-free part of the gate — this
+   * runs over the whole snapshot every poll, not over a handful of fresh hits.
+   */
+  private applyOutsideBar(s: PropertySearch, listings: Listing[]): Listing[] {
+    if (!s.outsideCriteria || !s.notifyLayer) return listings
+    const geometries = this.geometriesForNotify(s.notifyLayer)
+    if (!geometries.length) return listings
+    const gate = withoutAirportGate(s.outsideCriteria)
+    return listings.filter((l) => {
+      if (l.lat != null && l.lon != null) {
+        const point: [number, number] = [l.lon, l.lat]
+        if (geometries.some((g) => pointInGeometry(point, g))) return true
+      }
+      return notifyRejection(l, gate) === null
+    })
   }
 
   private filterByGeofence(s: PropertySearch, fresh: Listing[]): Listing[] {
@@ -509,6 +529,12 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     }
     if (missing.has('minBathrooms') && c.minBathrooms != null && l.bathrooms != null && l.bathrooms < c.minBathrooms) {
       return false
+    }
+    // Always local, whatever the portal filtered: portal type filters are
+    // coarse and this is an exclusion, so it costs nothing to re-check.
+    if (c.excludeHouseSubtypes?.length) {
+      const types = normaliseHouseType(l.propertyType)
+      if (types.some((t) => c.excludeHouseSubtypes!.includes(t))) return false
     }
     if (missing.has('excludeSchemes') && c.excludeSchemes && matchesAny(l, SCHEME_TERMS)) return false
     if (missing.has('excludeAuctions') && c.excludeAuctions && matchesAny(l, AUCTION_TERMS)) return false

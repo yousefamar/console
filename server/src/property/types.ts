@@ -25,6 +25,15 @@ export interface Criteria {
    * Rightmove, `SINGLE_FAMILY_HOUSE` on IS24, detached/semi-terraced/villa on immobiliare).
    */
   houseSubtypes?: string[]
+  /**
+   * House subtypes that are out regardless of what the portal returns —
+   * enforced LOCALLY on every portal via the listing's own type text
+   * (`normaliseHouseType`), because portal type filters are coarse: Rightmove's
+   * `propertyTypes` omits "terraced" yet still returns "Town House" and
+   * "Terraced Bungalow". Unclassifiable text is kept (fail-open, like every
+   * other local post-filter).
+   */
+  excludeHouseSubtypes?: string[]
   /** Local currency of the portal — GBP for Rightmove, EUR for the other two. */
   minPrice?: number
   maxPrice?: number

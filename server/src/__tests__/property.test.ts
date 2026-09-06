@@ -318,6 +318,66 @@ describe('PortalClient.isLive', () => {
   })
 })
 
+describe('postFilter excludeHouseSubtypes', () => {
+  it('drops listings whose own type text classifies as an excluded subtype, on every portal, fail-open on blank text', () => {
+    const rows = [
+      listing('semi', { propertyType: 'Semi-Detached' }),
+      listing('town', { propertyType: 'Town House' }),
+      listing('tb', { propertyType: 'Terraced Bungalow' }),
+      listing('eot', { propertyType: 'End of Terrace' }),
+      listing('det', { propertyType: 'Detached' }),
+      listing('blank'),
+    ]
+    const kept = postFilter(rows, { excludeHouseSubtypes: ['terraced'] }, [])
+    expect(kept.map((l) => l.id)).toEqual(['semi', 'det', 'blank'])
+    expect(postFilter(rows, {}, []).length).toBe(6)
+  })
+})
+
+describe('PropertySync outside bar', () => {
+  // Search polygon = a UK-sized box; geofence = a box round Heathrow.
+  // inside = Hounslow (-0.45, 51.47), outside = Manchester (-2.5, 53.4).
+  const ukBox = { type: 'Polygon', coordinates: [[[-6, 49.5], [2, 49.5], [2, 59], [-6, 59], [-6, 49.5]]] }
+  const geofence = { type: 'Polygon', coordinates: [[[-0.6, 51.3], [-0.3, 51.3], [-0.3, 51.6], [-0.6, 51.6], [-0.6, 51.3]]] }
+  const harness = () => {
+    const store = tmpStore()
+    const mapLayers = { upsert: () => ({}), getMeta: () => undefined, getGeojson: (slug: string) => (slug === 'fence/heathrow' ? geofence : slug === 'l' ? ukBox : null), list: () => [] }
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 4, truncated: false, unsupported: [], listings: [
+        listing('in-semi', { lat: 51.47, lon: -0.45, price: 290000, propertyType: 'Semi-Detached' }),
+        listing('out-semi', { lat: 53.4, lon: -2.5, price: 200000, propertyType: 'Semi-Detached' }),
+        listing('out-det-ok', { lat: 53.4, lon: -2.5, price: 200000, propertyType: 'Detached' }),
+        listing('out-det-pricey', { lat: 53.4, lon: -2.5, price: 290000, propertyType: 'Detached' }),
+        listing('out-nocoords', { price: 200000, propertyType: 'Detached' }),
+      ] }),
+    }
+    const sync = new PropertySync(
+      { rightmove: client, immoscout24: client, immobiliare: client } as never, store,
+      { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never,
+      { isConfigured: () => false } as never, () => {},
+    )
+    return { store, sync }
+  }
+
+  it('outside the geofence a listing must also pass outsideCriteria; inside, the plain criteria are enough', async () => {
+    const { store, sync } = harness()
+    const s = store.create({ country: 'UK', layer: 'l', notifyLayer: 'fence/heathrow', outsideCriteria: { maxPrice: 250000, houseSubtypes: ['detached'] } })
+    await sync.pollOne(s.id)
+    expect(store.get(s.id)!.lastResults!.map((l) => l.id).sort()).toEqual(['in-semi', 'out-det-ok', 'out-nocoords'])
+  })
+
+  it('no outsideCriteria (or no geofence) → everything the search matched stays', async () => {
+    const { store, sync } = harness()
+    const a = store.create({ country: 'UK', layer: 'l', notifyLayer: 'fence/heathrow' })
+    const b = store.create({ country: 'UK', layer: 'l', outsideCriteria: { maxPrice: 1 } })
+    await sync.pollOne(a.id)
+    await sync.pollOne(b.id)
+    expect(store.get(a.id)!.lastResults!.length).toBe(5)
+    expect(store.get(b.id)!.lastResults!.length).toBe(5)
+  })
+})
+
 describe('PropertySync.pruneGone', () => {
   const harness = (isLive: (l: Listing) => Promise<boolean | null>) => {
     const store = tmpStore()

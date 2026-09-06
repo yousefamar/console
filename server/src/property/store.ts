@@ -84,6 +84,17 @@ export interface PropertySearch {
    * fields fail). Unset = every fresh in-geofence listing notifies.
    */
   notifyCriteria?: NotifyCriteria
+  /**
+   * A second, stricter bar for listings OUTSIDE `notifyLayer`'s geofence
+   * (Yousef, 2026-09-07: "anything outside the Heathrow catchment needs a much
+   * higher bar"). Unlike `notifyCriteria` this is a SEARCH filter: an outside
+   * listing that fails it never reaches `lastResults`/the map. Inside the
+   * geofence the plain `criteria` apply. Same shape + strictness rule as the
+   * notify gate (unknown fields fail); the airport-drive gate is ignored here
+   * (no lookups for the whole snapshot). Requires `notifyLayer`; a verdict
+   * (interested) still carries a listing regardless.
+   */
+  outsideCriteria?: NotifyCriteria
   criteria: Criteria
   enabled?: boolean
   createdAt: number
@@ -121,7 +132,7 @@ export interface PropertySearch {
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria'>>
+  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
 
 export class PropertySearchStore {
   private items: PropertySearch[] = []
@@ -151,6 +162,7 @@ export class PropertySearchStore {
       ...(input.notifyLayer !== undefined ? { notifyLayer: input.notifyLayer } : {}),
       ...(input.notify !== undefined ? { notify: input.notify } : {}),
       ...(input.notifyCriteria !== undefined ? { notifyCriteria: input.notifyCriteria } : {}),
+      ...(input.outsideCriteria !== undefined ? { outsideCriteria: input.outsideCriteria } : {}),
       id: `ps_${randomBytes(5).toString('hex')}`,
       createdAt: Date.now(),
       seeded: false,

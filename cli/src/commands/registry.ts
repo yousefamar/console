@@ -780,6 +780,8 @@ export const COMMANDS: CommandDef[] = [
       'notify-keywords': { type: 'string', description: 'Gate: comma list, any-of, matched in title/summary/address (e.g. acre,paddock,smallholding)' },
       'notify-max-drive': { type: 'number', description: 'Gate: max real drive minutes to the nearest airport (Routes API lookup, ≤10 candidates per poll)' },
       'notify-criteria': { type: 'string', description: '"none" clears the whole gate. Any --notify-* gate flag otherwise REPLACES the gate as one object' },
+      'outside-criteria': { type: 'string', description: 'Second, STRICTER bar for listings OUTSIDE --notify-layer\'s geofence — a SEARCH filter, not a push one: an outside listing that fails it never reaches the map. "notify" copies the current notify gate, "none" clears, or pass a JSON NotifyCriteria object (same fields/strictness as the gate; airport-drive ignored). Inside the geofence the plain criteria still apply' },
+      'exclude-house-subtypes': { type: 'string', description: 'Criteria: comma list of house types that are OUT everywhere, enforced locally on the listing\'s own type text on every portal (e.g. terraced also catches "Town House"). A criteria flag — re-seeds like the others' },
     },
     examples: [
       'con map property set ps_50ec5f2687 --notify-layer where-to-move/lhr-catchment',
