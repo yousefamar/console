@@ -862,7 +862,7 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                       ? <BotCrowned size={10} className={glyphClass} />
                       : <Bot size={10} className={glyphClass} />}
                   <span className="truncate">{displayName}</span>
-                  {stray && <span title={`Runs from ${shortCwd(sess.cwd!)}, not this space's dir ${shortCwd(space.cwd!)} — it reads the wrong CLAUDE.md and its forks inherit the cwd. Recreate it to fix.`}><FolderX size={9} className="flex-shrink-0 text-amber-500" /></span>}
+                  {stray && <span title={`Runs from ${shortCwd(sess.cwd!)}, not this space's dir ${shortCwd(space.cwd!)} — it reads the wrong CLAUDE.md and its forks inherit the cwd. Recreate it to fix.`}><FolderX size={9} className="flex-shrink-0 text-text-tertiary" /></span>}
                   <span className="ml-auto flex items-center gap-1 flex-shrink-0">
                     <SessionBadges session={sess} />
                     {micOwnerId === sess.id && <Mic size={9} className="text-text-primary" />}
