@@ -453,7 +453,7 @@ describe('ListWatcher', () => {
       return '{"title":"","year":"","series":""}'
     }
     let clock = Date.now()
-    const w = new ListWatcher(store, { targets, deps: { llm, exec: noExec }, log: () => {}, now: () => clock, quietMs: 0, retryMs: 60_000 })
+    const w = new ListWatcher(store, { targets, deps: { llm, exec: noExec }, log: () => {}, now: () => clock, quietMs: 0, retryMs: 10 * 60_000 })
     expect(await w.runNow()).toBe(2)
     const t = parseTable(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8').split('\n'))!
     expect(t.rows.map((r) => rowRecord(t, r))).toMatchObject([
@@ -463,13 +463,14 @@ describe('ListWatcher', () => {
     ])
     expect(calls.sort()).toEqual(['Vivarium', 'obscure thing', 'spiderman'])
     // Second pass: the failure is in backoff (poll path), nothing is re-asked.
-    // (Fake clock jumps past the real file mtime so later polls see no change.)
+    // (Fake clock jumps well past the real file mtime so later polls see no change,
+    // however slowly the runner got here.)
     calls.length = 0
-    clock = Date.now() + 5_000
+    clock = Date.now() + 60_000
     await w.poll()
     expect(calls).toEqual([])
     clock += 61_000
-    await w.poll() // listSince reports nothing, pending is empty → still nothing (no change to the file)
+    await w.poll() // still inside the backoff window, file unchanged → nothing
     expect(calls).toEqual([])
     expect(await w.runNow()).toBe(0) // force asks again; still unidentifiable
     expect(calls).toEqual(['obscure thing'])
@@ -484,7 +485,9 @@ describe('ListWatcher', () => {
     await w.start()
     expect(calls).toEqual([])
     writeFileSync(join(dir, 'lists', 'movies.md'), appendRow(null, columnsFor('movie'), rawRow('movie', 'dune', '2026-09-06 10:47')))
-    clock += 1_000
+    // Anchor the fake clock to the REAL write time — the quiet window is
+    // measured against the file's actual mtime.
+    clock = Date.now() + 1_000
     await w.poll() // too fresh → deferred
     expect(calls).toEqual([])
     clock += 10_000
