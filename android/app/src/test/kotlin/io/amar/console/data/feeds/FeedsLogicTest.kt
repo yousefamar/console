@@ -143,6 +143,49 @@ class FeedsLogicTest {
         assertEquals("3d ago", hnTimeAgo(now - 3 * 86400, now))
     }
 
+    // --- Reddit comments (flat) --- //
+
+    @Test
+    fun `isRedditUrl matches post permalinks only`() {
+        assertEquals(true, isRedditUrl("https://www.reddit.com/r/kotlin/comments/abc/title/"))
+        assertEquals(true, isRedditUrl("https://old.reddit.com/r/kotlin/comments/abc/"))
+        assertEquals(false, isRedditUrl("https://www.reddit.com/user/someone"))
+        assertEquals(false, isRedditUrl("https://example.com/r/notreddit"))
+        assertEquals(false, isRedditUrl(null))
+    }
+
+    @Test
+    fun `parse reddit comments keeps hub order and fills deleted author`() {
+        val raw = """
+        [
+          {"id": "t1_a", "author": "alice", "content": "<p>first</p>", "link": "https://reddit.com/r/x/comments/1/_/a", "updated": "2026-09-01T10:00:00+00:00"},
+          {"id": "t1_b", "author": "", "content": "", "link": "", "updated": ""}
+        ]
+        """.trimIndent()
+        val list = parseRedditComments(raw)!!
+        assertEquals(2, list.size)
+        assertEquals("alice", list[0].author)
+        assertEquals("<p>first</p>", list[0].content)
+        assertEquals("(deleted)", list[1].author)
+        assertEquals("", list[1].updated)
+    }
+
+    @Test
+    fun `parse reddit comments returns null on error body or garbage`() {
+        assertNull(parseRedditComments("""{"error": "429"}"""))
+        assertNull(parseRedditComments("not json"))
+        assertNull(parseRedditComments(null))
+        assertEquals(0, parseRedditComments("[]")!!.size)
+    }
+
+    @Test
+    fun `iso updated to epoch seconds`() {
+        assertEquals(1788256800L, isoToEpochSec("2026-09-01T10:00:00+00:00"))
+        assertEquals(1788256800L, isoToEpochSec("2026-09-01T10:00:00Z"))
+        assertNull(isoToEpochSec(""))
+        assertNull(isoToEpochSec("yesterday"))
+    }
+
     // --- stripDomain --- //
 
     @Test

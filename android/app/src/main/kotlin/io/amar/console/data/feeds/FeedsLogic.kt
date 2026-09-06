@@ -133,6 +133,52 @@ fun hnTimeAgo(unixTimeSec: Long, nowSec: Long): String {
     return "${hours / 24}d ago"
 }
 
+// --- Reddit comments (port of FeedItemView's RedditComments) --- //
+
+/** SPA `isRedditUrl` — a post permalink, i.e. something under `/r/`. */
+fun isRedditUrl(url: String?): Boolean = url != null && REDDIT_POST_RE.containsMatchIn(url)
+
+private val REDDIT_POST_RE = Regex("reddit\\.com/r/")
+
+/**
+ * One entry of a Reddit thread's Atom feed. The feed is FLAT — Reddit's RSS
+ * carries no depth/parent field, so there is no tree to reconstruct, and no
+ * score either (RSS omits it; the JSON API 403s anonymously). The hub already
+ * drops entry[0] (the OP) and asks for `sort=top`, so order is the only signal.
+ */
+data class RedditComment(
+    val id: String,
+    val author: String,
+    val content: String,
+    val link: String,
+    /** ISO-8601 from the Atom `updated`, may be empty. */
+    val updated: String,
+)
+
+/** Parse GET /feeds/reddit-comments — a bare JSON array; an `{error}` object or
+ *  garbage yields null so the caller can show a failure rather than "0 comments". */
+fun parseRedditComments(raw: String?): List<RedditComment>? {
+    if (raw.isNullOrBlank()) return null
+    val arr = runCatching { feedsJson.parseToJsonElement(raw) as? JsonArray }.getOrNull() ?: return null
+    return arr.mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        RedditComment(
+            id = o["id"]?.jsonPrimitive?.content ?: "",
+            author = o["author"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: "(deleted)",
+            content = o["content"]?.jsonPrimitive?.content ?: "",
+            link = o["link"]?.jsonPrimitive?.content ?: "",
+            updated = o["updated"]?.jsonPrimitive?.content ?: "",
+        )
+    }
+}
+
+/** ISO-8601 → epoch seconds, or null when unparseable/blank. */
+fun isoToEpochSec(iso: String): Long? =
+    iso.takeIf { it.isNotBlank() }?.let { runCatching { java.time.Instant.parse(it).epochSecond }.getOrNull() }
+        ?: iso.takeIf { it.isNotBlank() }?.let {
+            runCatching { java.time.OffsetDateTime.parse(it).toEpochSecond() }.getOrNull()
+        }
+
 /** www.-stripped hostname for list-item + triage display. */
 fun stripDomain(url: String?): String {
     if (url.isNullOrBlank()) return ""

@@ -76,7 +76,11 @@ import io.amar.console.data.db.FeedItemRow
 import io.amar.console.data.db.FeedRow
 import io.amar.console.data.feeds.FeedsRepository
 import io.amar.console.data.feeds.HnComment
+import io.amar.console.data.feeds.RedditComment
 import io.amar.console.data.feeds.extractHnItemId
+import io.amar.console.data.feeds.isRedditUrl
+import io.amar.console.data.feeds.isoToEpochSec
+import io.amar.console.data.feeds.parseRedditComments
 import io.amar.console.data.feeds.extractYoutubeId
 import io.amar.console.data.feeds.feedUnreadCounts
 import io.amar.console.data.feeds.hnTimeAgo
@@ -830,6 +834,7 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
     }
 
     val hnItemId = remember(item?.content) { extractHnItemId(item?.content) }
+    val isReddit = remember(item?.link) { isRedditUrl(item?.link) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -926,7 +931,7 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
                 )
                 val commentsUrl = when {
                     hnItemId != null -> "https://news.ycombinator.com/item?id=$hnItemId"
-                    it2.link?.contains("reddit.com/r/") == true -> it2.link
+                    isReddit -> it2.link
                     else -> null
                 }
                 if (commentsUrl != null) {
@@ -975,8 +980,11 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
                 }
             }
 
-            // HN comments inline under the article.
+            // HN comments inline under the article; Reddit's flat thread otherwise
+            // (SPA precedence: an HN link inside a Reddit post shows the HN tree).
+            val link = item?.link
             if (hnItemId != null) HnCommentsSection(repo, hnItemId)
+            else if (isReddit && link != null) RedditCommentsSection(repo, link)
         }
     }
 
@@ -1052,7 +1060,7 @@ private fun HnCommentsSection(repo: FeedsRepository, hnItemId: String) {
 }
 
 @Composable
-private fun HnCommentThread(comment: HnComment, depth: Int) {
+private fun HnCommentThread(comment: HnComment, depth: Int, showTime: Boolean = true) {
     if (comment.text == null) return
     var collapsed by remember { mutableStateOf(false) }
     Column(
@@ -1078,12 +1086,14 @@ private fun HnCommentThread(comment: HnComment, depth: Int) {
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Medium,
             )
-            Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                hnTimeAgo(comment.time, System.currentTimeMillis() / 1000),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (showTime) {
+                Text("·", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    hnTimeAgo(comment.time, System.currentTimeMillis() / 1000),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (collapsed && comment.children.isNotEmpty()) {
                 Text(
                     "(${comment.children.size} ${if (comment.children.size == 1) "reply" else "replies"})",
@@ -1104,6 +1114,50 @@ private fun HnCommentThread(comment: HnComment, depth: Int) {
             ) {
                 comment.children.forEach { HnCommentThread(it, depth + 1) }
             }
+        }
+    }
+}
+
+/**
+ * Reddit thread comments — a FLAT list (the Atom feed carries no depth, so
+ * there is nothing to nest; SPA RedditComments parity). Reuses the HN row at
+ * depth 0 with no children; no scores exist anonymously, ordering (`sort=top`
+ * server-side) is the only ranking signal.
+ */
+@Composable
+private fun RedditCommentsSection(repo: FeedsRepository, permalink: String) {
+    var comments by remember { mutableStateOf<List<RedditComment>?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(permalink) {
+        loading = true; error = null
+        val parsed = parseRedditComments(repo.redditComments(permalink))
+        if (parsed == null) { error = "network"; loading = false }
+        else { comments = parsed; loading = false }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        val c = comments
+        Text(
+            when {
+                loading -> "Loading comments…"
+                error != null -> "Failed to load comments: $error"
+                c != null -> "${c.size} Comment${if (c.size == 1) "" else "s"}"
+                else -> ""
+            },
+            style = MaterialTheme.typography.titleSmall,
+            color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
+        c?.forEach { rc ->
+            HnCommentThread(
+                HnComment(
+                    id = rc.id.hashCode().toLong(), by = rc.author, text = rc.content,
+                    time = isoToEpochSec(rc.updated) ?: 0L, score = null, descendants = null, children = emptyList(),
+                ),
+                depth = 0,
+                showTime = isoToEpochSec(rc.updated) != null,
+            )
         }
     }
 }

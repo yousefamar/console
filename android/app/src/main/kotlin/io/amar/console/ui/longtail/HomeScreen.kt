@@ -31,8 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,10 +73,10 @@ import kotlinx.coroutines.launch
 private const val SNAPSHOT_INTERVAL_MS = 30_000L
 private const val ALERTS_INTERVAL_MS = 15_000L
 
-private enum class HomeSubTab(val label: String) { ALERTS("Alerts"), SERVERS("Servers"), BLOG("Blog"), CANVAS("Canvas") }
+private enum class HomeSubTab(val label: String) { ALERTS("Alerts"), SERVERS("Servers"), BLOG("Blog"), CANVAS("Canvas"), COSTS("Costs") }
 
 /**
- * Home dashboard: a sub-tab bar (Alerts | Servers | Blog | Canvas) showing one
+ * Home dashboard: a sub-tab bar (Alerts | Servers | Blog | Canvas | Costs) showing one
  * full-viewport section — mirrors the SPA's mobile HomeTab layout, avoiding
  * scroll-fighting with the sandboxed canvas WebView. Snapshot polls at 30s,
  * alerts at 15s (independent, matching the spec).
@@ -116,7 +116,9 @@ fun HomeScreen(
         // Sub-tab bar with grid button and a live alert-count badge.
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onGrid) { Icon(Icons.Filled.Apps, "App grid", modifier = Modifier.size(20.dp)) }
-            TabRow(selectedTabIndex = subTab.ordinal, modifier = Modifier.weight(1f)) {
+            // Scrollable: five labels + the alert badge no longer fit a narrow
+            // phone at equal widths (fixed TabRow wrapped "Servers" mid-word).
+            ScrollableTabRow(selectedTabIndex = subTab.ordinal, edgePadding = 0.dp, modifier = Modifier.weight(1f)) {
                 for (t in HomeSubTab.entries) {
                     Tab(selected = subTab == t, onClick = { setSubTab(t) }, text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -147,6 +149,7 @@ fun HomeScreen(
                 onNewProjectPost = { slug, title -> scope.launch { repo.createDraft(title, slug) } },
             )
             HomeSubTab.CANVAS -> CanvasSection(repo)
+            HomeSubTab.COSTS -> CostsSection(repo)
         }
     }
 }

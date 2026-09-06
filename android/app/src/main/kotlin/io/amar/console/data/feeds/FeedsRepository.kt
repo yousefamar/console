@@ -144,6 +144,11 @@ class FeedsRepository(
     suspend fun hnComments(itemId: String): String? =
         runCatching { hub.get("/feeds/hn/$itemId?depth=3") }.getOrNull()
 
+    /** Flat Reddit thread comments — raw JSON array from GET /feeds/reddit-comments
+     *  (the hub fetches `<permalink>.rss?sort=top` and drops the OP entry). */
+    suspend fun redditComments(permalink: String): String? =
+        runCatching { hub.get("/feeds/reddit-comments?permalink=" + java.net.URLEncoder.encode(permalink, "UTF-8")) }.getOrNull()
+
     suspend fun isRead(itemId: String): Boolean = db.feeds().readCount(itemId) > 0
 
     suspend fun markRead(itemId: String) {

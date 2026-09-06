@@ -20,18 +20,10 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   action, `overrides` POST), then a Budgets section under Runway; scenarios
   and the ledger editor last.
 
-- Home: Costs sub-tab — SPA `CostsCard.tsx` (`GET /dashboard/costs`, per-day
-  stacked bars by person + $/day). Android `HomeSubTab` = Alerts/Servers/Blog/
-  Canvas. Plan: fifth sub-tab, Compose Canvas bars, same endpoint.
-
 - Map: Google Maps place search + "Open in Google Maps" — SPA `GmapsPanel`/
   `PlaceDetailPanel` over hub `/gmaps/*`. Android `MapScreen.kt` has no gmaps
   at all (the mobile ask in root CLAUDE.md is exactly this). Plan: search box
   → `/gmaps/autocomplete` → pin + detail sheet → `geo:` deep link.
-
-- Feeds: Reddit comments — SPA `RedditComments` via `/feeds/reddit-comments`;
-  Android renders the HN tree only (`FeedsLogic.kt`). Plan: flat comment list
-  under Reddit items, same endpoint, reuse the HN row.
 
 - Inbox: routing-override management (SPA `RouteOverrides`, InboxTab.tsx:517
   — clearable per source). Android has only the per-row `→ feed/→ inbox`
@@ -134,6 +126,32 @@ view-mode hub-sync (Room meta is fine on one device).
   Tests: `LiveBufferTest` (debounce coalescing, clear-only-if-mirrored,
   failing POST doesn't wedge), `DevlogLogicTest` (draft selection by
   project/tag, date trimming, header count).
+- **Home: Costs sub-tab** (SPA `CostsCard.tsx`, `GET /dashboard/costs?days=N`;
+  ^pink-wolf): fifth Home tab — per-day Bedrock spend as stacked bars drawn
+  with a plain Compose `Canvas` (no chart lib), stack by person or model,
+  7/30/90-day window (the SPA's `COST_DAY_OPTIONS`; window + stack-by persist
+  in the `home_view` SharedPreferences beside the sub-tab, the SPA keeps them
+  in localStorage so device-local is the right tier), header `total · $N/day`
+  over complete days, dashed avg line, "no attribution" shade over pre-epoch
+  days, legend + By-person / By-model tables with `~` for region-attributed
+  owners, the SPA's two footnotes, ↻ = `refresh=1` (~$0.01 CE query). Refetches
+  every 30 min while the tab is open. `data/longtail/CostsLogic.kt` is the pure
+  port (parser + stacking + nice y-ticks + `fmtUsd`), unit-tested — every
+  number goes through a finite guard and the average is a separate
+  `hasAverage` flag, so a report cached by an older hub (no `avgPerDayUsd`)
+  omits the `/day` figure instead of rendering `$NaN` as the SPA once did.
+  The Home tab bar became a `ScrollableTabRow`: five labels + the alert badge
+  no longer fit a narrow phone at equal widths.
+- **Feeds: Reddit comments** (SPA `RedditComments`, `GET /feeds/reddit-comments
+  ?permalink=`; ^pink-wolf): a Reddit item shows its thread under the article
+  as a FLAT list (Reddit's Atom carries no depth — nothing to nest — and no
+  scores anonymously; the hub asks `sort=top` and drops entry[0], the OP, so
+  order is the only ranking). Reuses the HN comment row at depth 0; a comment
+  with no parseable `updated` hides its age instead of showing "20000d ago".
+  HN precedence kept: an HN link inside a Reddit post renders the HN tree.
+  `isRedditUrl`/`parseRedditComments`/`isoToEpochSec` in `FeedsLogic.kt`,
+  unit-tested; `{error}` bodies parse to null → "Failed to load", never
+  "0 Comments".
 
 ## Shipped
 

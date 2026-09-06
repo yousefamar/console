@@ -31,6 +31,13 @@ class HomeRepository(private val hub: HubClient) {
         val draftsLoading: Boolean = false,
         val projects: List<BlogProject> = emptyList(),
         val projectsLoading: Boolean = false,
+        val costs: CostReport? = null,
+        /** The window [costs] was fetched for — a stale report for another
+         *  window keeps showing (SPA keeps the last report too) until the new
+         *  one lands, but the header must not claim the new window. */
+        val costsDays: Int = 0,
+        val costsLoading: Boolean = false,
+        val costsError: String? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -147,6 +154,32 @@ class HomeRepository(private val hub: HubClient) {
             )
         }.getOrElse { CreateResult(false, null, it.message) }.also { refreshProjects() }
     }
+
+    // --- bedrock costs --- //
+
+    /** GET /dashboard/costs?days=N (+ `&refresh=1` to force a fresh Cost Explorer
+     *  query, ~$0.01). The hub caches per window with a 6 h TTL and serves a
+     *  stale report on AWS errors; a failure here keeps the last report shown. */
+    suspend fun refreshCosts(days: Int, force: Boolean = false) {
+        _state.value = _state.value.copy(costsLoading = true, costsError = null)
+        val q = "/dashboard/costs?days=$days" + if (force) "&refresh=1" else ""
+        val raw = runCatching { hub.get(q) }
+        raw.fold(
+            onSuccess = { body ->
+                val report = parseCostReport(body)
+                _state.value = if (report != null) {
+                    _state.value.copy(costs = report, costsDays = days, costsLoading = false)
+                } else {
+                    _state.value.copy(costsLoading = false, costsError = errorMessage(body) ?: "Unexpected response")
+                }
+            },
+            onFailure = { _state.value = _state.value.copy(costsLoading = false, costsError = it.message) },
+        )
+    }
+
+    private fun errorMessage(body: String): String? = runCatching {
+        ((Json.parseToJsonElement(body) as? JsonObject)?.get("error") as? JsonPrimitive)?.content
+    }.getOrNull()
 
     /** Pull-to-refresh: everything Home shows, in parallel-ish sequence. */
     suspend fun refreshAll() {
