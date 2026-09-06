@@ -955,6 +955,9 @@ private fun GmapsSearchBar(
 ) {
     var query by remember { mutableStateOf("") }
     var showResults by remember { mutableStateOf(false) }
+    // A query set BY CODE (pick → place name) must not re-trigger type-ahead,
+    // or the dropdown reopens with suggestions for the place just picked.
+    var programmatic by remember { mutableStateOf<String?>(null) }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val configured = state.gmapsConfigured
@@ -962,13 +965,14 @@ private fun GmapsSearchBar(
     LaunchedEffect(Unit) { if (configured != false) runCatching { focusRequester.requestFocus() } }
     // Debounced type-ahead — every keystroke restarts the 250 ms wait.
     LaunchedEffect(query) {
+        if (query == programmatic) return@LaunchedEffect
         if (query.trim().length < 2) { onDismissSuggestions(); return@LaunchedEffect }
         kotlinx.coroutines.delay(250)
         onAutocomplete(query)
     }
     // A pick renames the box to the place (SPA gmapsQuery = place.name).
     LaunchedEffect(state.gmapsSelectedPlaceId) {
-        if (state.gmapsResults.size == 1) state.gmapsResults.firstOrNull()?.let { if (query != it.name) query = it.name }
+        if (state.gmapsResults.size == 1) state.gmapsResults.firstOrNull()?.let { if (query != it.name) { programmatic = it.name; query = it.name } }
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -998,7 +1002,7 @@ private fun GmapsSearchBar(
                     }
                     androidx.compose.foundation.text.BasicTextField(
                         value = query,
-                        onValueChange = { query = it; showResults = false },
+                        onValueChange = { programmatic = null; query = it; showResults = false },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
@@ -1032,7 +1036,7 @@ private fun GmapsSearchBar(
                     for (s in suggestions) {
                         Column(
                             Modifier.fillMaxWidth().clickable {
-                                query = s.mainText; showResults = false; focusManager.clearFocus(); onPick(s.placeId)
+                                programmatic = s.mainText; query = s.mainText; showResults = false; focusManager.clearFocus(); onPick(s.placeId)
                             }.padding(horizontal = 12.dp, vertical = 8.dp),
                         ) {
                             Text(s.mainText, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
