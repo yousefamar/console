@@ -404,7 +404,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       } else {
         newVisible = visibleCalendarIds
       }
-      // The saved visibleIds pref predates overlay sources (Meetup, OutdoorLads),
+      // The saved visibleIds pref predates overlay sources (Meetup, …),
       // so loading it above would drop their visibility even though the user
       // never toggled them off. Re-assert visibility for any overlay the user
       // hasn't explicitly hidden: a first-seen overlay defaults visible (its id

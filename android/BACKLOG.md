@@ -10,6 +10,13 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Remove the OutdoorLads overlay (hub + SPA removed in ^wise-stag, 2026-09-06 —
+  Yousef dropped the group): delete `OUTDOORLADS_*` + `outdoorLadsEventRow` in
+  `data/cal/CalOverlays.kt` (+ its test), the `/outdoorlads/events` fetch in
+  `CalendarRepository.refreshOverlays`, and the `"outdoorlads"` id checks in
+  `CalendarScreen.kt` / `CalendarSidebarSheet.kt`. Harmless today: the fetch
+  404s inside `runCatching`, so the overlay never appears — this is dead code.
+
 - Money: editing parity — the read-only pane shipped (^quick-gull); still
   SPA-only: Budgets (`/finance/budgets` + `/finance/budget-status`), Scenarios
   (`/finance/scenarios`, comparison chart), Categories + rules CRUD, per-tx

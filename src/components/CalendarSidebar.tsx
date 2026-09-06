@@ -18,7 +18,7 @@ export function CalendarSidebar() {
   const addAccount = useCalendarStore((s) => s.addAccount)
 
   // Group calendars by account. All synthetic overlay sources (Meetup,
-  // OutdoorLads, …) collapse into one shared 'Overlays' bucket instead of one
+  // …) collapse into one shared 'Overlays' bucket instead of one
   // group per fake account — otherwise each renders its own 'Overlays' header.
   const OVERLAY_KEY = ' overlays'
   const calendarsByAccount = useMemo(() => {

@@ -87,8 +87,6 @@ import { GeocachingClient } from './geocaching/client.js'
 import { handleMeetupRoutes } from './routes/meetup.js'
 import { MeetupClient } from './meetup/client.js'
 import { MeetupSync } from './meetup/sync.js'
-import { handleOutdoorLadsRoutes } from './routes/outdoorlads.js'
-import { OutdoorLadsStore } from './outdoorlads.js'
 import { handleSpotifyRoutes } from './routes/spotify.js'
 import { SpotifyClient } from './spotify/client.js'
 import { SpotifyStore } from './spotify/store.js'
@@ -199,7 +197,6 @@ const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
 const meetupClient = new MeetupClient(feedsConfigDir)
 const meetupSync = new MeetupSync(meetupClient, (msg: string) => { log(msg) })
 meetupSync.start()
-const outdoorLadsStore = new OutdoorLadsStore()
 const mapLayerStore = new MapLayerStore()
 const prefsStore = new PrefsStore(join(feedsConfigDir, 'prefs.json'))
 const inboxRulesStore = new InboxRulesStore(feedsConfigDir)
@@ -1750,7 +1747,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore, readBody)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
-  if (path.startsWith('/outdoorlads') && handleOutdoorLadsRoutes(req, res, path, outdoorLadsStore)) return
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/property') && handlePropertyRoutes(req, res, path, url, { searches: propertySearches, sync: propertySync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
