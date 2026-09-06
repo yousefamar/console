@@ -70,7 +70,8 @@ import { handleConfigRoutes } from './routes/config.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { RingStore } from './ring/store.js'
-import { classifyWithLlm, enrichMovieWithLlm } from './ring/llm-fallback.js'
+import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
+import { ListWatcher } from './ring/list-watcher.js'
 import { RingSchemaLoader } from './ring/schema-loader.js'
 import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
@@ -1202,6 +1203,7 @@ const ringEnv = async (): Promise<RouteEnv> => {
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
+  enrichNow: () => ringLists.runNow(),
   describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringLiveAgents(), echoConfigured: !!yousefWhatsAppJid() }, (p) => noteStore.read(p).then(() => true, () => false)),
   env: ringEnv,
   // Ring work for AL lives in ONE conversation fork (`AL ↔ ring`, thread key
@@ -1264,12 +1266,19 @@ const ringCtx: RingCtx = {
   },
   transcribe: transcribeAudio,
   classify: (text, schema, env) => classifyWithLlm(text, schema, env, smallFastModel()),
-  enrichMovie: (text) => enrichMovieWithLlm(text, smallFastModel()),
   notify: ({ title, body, id }) => {
     pushServer.broadcast({ type: 'generic', title, body, id: `ring:${id}` })
   },
   log,
 }
+// Enrichment is a property of the list FILE: the watcher fills empty
+// enrichment columns on any row, ring-spoken or hand-typed.
+const ringLists = new ListWatcher(noteStore, {
+  schema: () => ringSchema.load(),
+  deps: { llm: (prompt) => claudeOneShot(prompt, smallFastModel()) },
+  log,
+})
+void ringLists.start()
 const ringWebhookUrl = `${(process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')}/hub/ring/webhook`
 const certCandidates = (() => {
   try {

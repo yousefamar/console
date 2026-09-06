@@ -8,7 +8,6 @@
 import { execFile } from 'node:child_process'
 import type { RingCommand, RouteEnv } from './router.js'
 import type { RingSchema } from './schema.js'
-import type { MovieRow } from './append.js'
 
 const TIMEOUT_MS = 20_000
 
@@ -71,7 +70,7 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
   }
 }
 
-function claudeOneShot(prompt: string, model: string): Promise<string | null> {
+export function claudeOneShot(prompt: string, model: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile('claude', ['-p', prompt, '--output-format', 'text', '--model', model], { timeout: TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout) => {
       if (err) { console.warn(`[ring] llm call failed: ${err.message.slice(0, 200)}`); resolve(null); return }
@@ -83,32 +82,4 @@ function claudeOneShot(prompt: string, model: string): Promise<string | null> {
 export async function classifyWithLlm(text: string, schema: RingSchema, env: RouteEnv, model: string): Promise<RingCommand | null> {
   const reply = await claudeOneShot(buildClassifyPrompt(text, schema, env), model)
   return reply ? parseClassifyReply(reply, schema, env, text) : null
-}
-
-export function buildMoviePrompt(text: string): string {
-  return [
-    'A user spoke the name of a film or TV series to add to their watch list. Identify it and reply with exactly one JSON object, nothing else:',
-    '  {"title":"<canonical title>","year":"<first release year, 4 digits>","series":"No" | "Yes" | "Yes (<network or season note>)"}',
-    'If you genuinely cannot identify it, use the spoken text as the title and "" for year.',
-    '',
-    `Spoken: ${JSON.stringify(text)}`,
-    'JSON:',
-  ].join('\n')
-}
-
-export function parseMovieReply(reply: string, fallbackTitle: string): MovieRow | null {
-  const m = /\{[\s\S]*\}/.exec(reply)
-  if (!m) return null
-  try {
-    const o = JSON.parse(m[0]) as { title?: unknown; year?: unknown; series?: unknown }
-    const title = typeof o.title === 'string' && o.title.trim() ? o.title.trim() : fallbackTitle
-    const year = typeof o.year === 'string' || typeof o.year === 'number' ? String(o.year).trim() : ''
-    const series = typeof o.series === 'string' && o.series.trim() ? o.series.trim() : 'No'
-    return { title, year, series }
-  } catch { return null }
-}
-
-export async function enrichMovieWithLlm(text: string, model: string): Promise<MovieRow | null> {
-  const reply = await claudeOneShot(buildMoviePrompt(text), model)
-  return reply ? parseMovieReply(reply, text) : null
 }

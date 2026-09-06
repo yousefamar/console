@@ -4,10 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
 import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, headWords, type RouteEnv } from '../ring/router.js'
-import { parseClassifyReply, buildClassifyPrompt, parseMovieReply } from '../ring/llm-fallback.js'
+import { parseClassifyReply, buildClassifyPrompt } from '../ring/llm-fallback.js'
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
-import { appendLogEntry, appendBullet, appendMovieRow } from '../ring/append.js'
+import { appendLogEntry } from '../ring/append.js'
+import { parseTable, ensureColumns, appendRow, setCells, rowRecord, stamp } from '../ring/table.js'
+import { ENRICHERS, columnsFor, rawRow } from '../ring/enrichers.js'
+import { ListWatcher } from '../ring/list-watcher.js'
 import { RingStore } from '../ring/store.js'
 import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
@@ -273,11 +276,6 @@ describe('llm fallback parsing', () => {
     expect(p).toContain('yasmina-amar←mum/sister/yasmina')
     expect(p).toContain(JSON.stringify('tel owl buy "milk"'))
   })
-  it('movie reply parsing falls back to the spoken title', () => {
-    expect(parseMovieReply('{"title":"Spider-Man","year":2002,"series":"No"}', 'spiderman')).toEqual({ title: 'Spider-Man', year: '2002', series: 'No' })
-    expect(parseMovieReply('{"series":"Yes (Netflix)"}', 'thing')).toEqual({ title: 'thing', year: '', series: 'Yes (Netflix)' })
-    expect(parseMovieReply('nope', 'x')).toBeNull()
-  })
 })
 
 describe('append helpers', () => {
@@ -290,17 +288,125 @@ describe('append helpers', () => {
     const next = appendLogEntry(second, 'tomorrow', new Date(2026, 8, 3, 8, 0))
     expect(next.endsWith('\n\n## 2026-09-03\n- 08:00 tomorrow\n')).toBe(true)
   })
-  it('bullet append keeps existing content', () => {
-    expect(appendBullet('- a\n- b\n\n', 'c')).toBe('- a\n- b\n- c\n')
-    expect(appendBullet(null, 'c')).toBe('- c\n')
+})
+
+describe('table helpers', () => {
+  const at = new Date(2026, 8, 6, 10, 47)
+  it('appendRow creates the table on first use, after any existing content', () => {
+    const out = appendRow('- old bullet\n', columnsFor(undefined), rawRow(undefined, 'penne au chocolat', stamp(at)))
+    expect(out).toBe('- old bullet\n\n| Item | Added |\n| ---- | ----- |\n| penne au chocolat | 2026-09-06 10:47 |\n')
+    const again = appendRow(out, columnsFor(undefined), rawRow(undefined, 'eggs', stamp(at)))
+    expect(again.trimEnd().split('\n').at(-1)).toBe('| eggs              | 2026-09-06 10:47 |')
   })
-  it('movie row: drops the trailing blank row, pads to the header, escapes pipes', () => {
-    const table = '- misc\n\n| Title      | Year | Series | Watched |\n| ---------- | ---- | ------ | ------- |\n| Vivarium   | 2019 | No     | Yes     |\n|            |      |        |         |\n'
-    const out = appendMovieRow(table, { title: 'Dune | Part Two', year: '2024', series: 'No' })
+  it('appendRow migrates an existing table that lacks columns (movie list gains Added)', () => {
+    const table = '| Title      | Year | Series | Watched |\n| ---------- | ---- | ------ | ------- |\n| Vivarium   | 2019 | No     | Yes     |\n|            |      |        |         |\n'
+    const out = appendRow(table, columnsFor('movie'), rawRow('movie', 'Dune | Part Two', stamp(at)))
     const lines = out.trimEnd().split('\n')
-    expect(lines.at(-1)).toBe('| Dune / Part Two | 2024 | No     | No      |')
-    expect(lines.at(-2)).toBe('| Vivarium   | 2019 | No     | Yes     |')
-    expect(appendMovieRow('- just bullets\n', { title: 'X', year: '1999', series: 'No' })).toBe('- just bullets\n- X (1999)\n')
+    expect(lines[0]).toBe('| Title | Year | Series | Watched | Added |')
+    expect(lines[2]).toMatch(/^\| Vivarium\s+\| 2019 \| No\s+\| Yes\s+\|\s+\|$/) // padded with an empty Added
+    expect(lines.at(-1)).toMatch(/^\| Dune \/ Part Two \|\s+\| \s*\| No\s+\| 2026-09-06 10:47 \|$/) // raw row: Year/Series blank, Watched default
+    const t = parseTable(lines)!
+    expect(t.rows).toHaveLength(2) // the blank editor row is ignored
+    expect(rowRecord(t, t.rows[1]!)).toMatchObject({ title: 'Dune / Part Two', year: '', watched: 'No' })
+  })
+  it('setCells rewrites only the named columns of one row', () => {
+    const md = appendRow(null, columnsFor('movie'), rawRow('movie', 'spiderman', stamp(at)))
+    const t = parseTable(md.split('\n'))!
+    const out = setCells(md, t.rows[0]!.line, { Title: 'Spider-Man', Year: '2002', Series: 'No' })
+    const t2 = parseTable(out.split('\n'))!
+    expect(rowRecord(t2, t2.rows[0]!)).toMatchObject({ title: 'Spider-Man', year: '2002', series: 'No', watched: 'No', added: '2026-09-06 10:47' })
+  })
+  it('ensureColumns is idempotent and case-insensitive', () => {
+    const md = '| item | added |\n| --- | --- |\n| x | y |'
+    const { lines } = ensureColumns(md.split('\n'), ['Item', 'Added'])
+    expect(lines.join('\n')).toBe(md)
+  })
+  it('columnsFor / rawRow per enricher', () => {
+    expect(columnsFor(undefined)).toEqual(['Item', 'Added'])
+    expect(columnsFor('movie')).toEqual(['Title', 'Year', 'Series', 'Watched', 'Added'])
+    expect(rawRow('movie', 'Dune', 'now')).toEqual({ Title: 'Dune', Watched: 'No', Added: 'now' })
+  })
+})
+
+describe('movie enricher', () => {
+  const movie = ENRICHERS.movie!
+  it('pending = has a title, no year', () => {
+    expect(movie.pending({ title: 'Dune', year: '' })).toBe(true)
+    expect(movie.pending({ title: 'Dune', year: '2021' })).toBe(false)
+    expect(movie.pending({ title: '', year: '' })).toBe(false)
+  })
+  it('run parses the LLM reply; rejects a missing/invalid year so the row stays pending', async () => {
+    expect(await movie.run({ title: 'spiderman' }, { llm: async () => 'Sure: {"title":"Spider-Man","year":2002,"series":"No"}' })).toEqual({ Title: 'Spider-Man', Year: '2002', Series: 'No' })
+    expect(await movie.run({ title: 'thing' }, { llm: async () => '{"title":"","year":"","series":""}' })).toBeNull()
+    expect(await movie.run({ title: 'thing' }, { llm: async () => null })).toBeNull()
+  })
+})
+
+describe('ListWatcher', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ring-lists-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const schema = async () => ({ schema: { ...SCHEMA, verbs: { ...SCHEMA.verbs, add: { ...SCHEMA.verbs.add, targets: { movies: { file: 'lists/movies.md', dated: false, enrich: 'movie' as const, aliases: [] }, groceries: { file: 'lists/groceries.md', dated: false, aliases: [] } } } } } })
+
+  it('fills pending rows (ring-written or hand-typed), leaves finished rows alone, backs off failures', async () => {
+    const store = new NoteStore(dir, join(dir, 'tomb.json'))
+    mkdirSync(join(dir, 'lists'), { recursive: true })
+    const at = new Date(2026, 8, 6, 10, 47)
+    let md = appendRow(null, columnsFor('movie'), rawRow('movie', 'spiderman', stamp(at)))
+    md = appendRow(md, columnsFor('movie'), rawRow('movie', 'obscure thing', stamp(at)))
+    md = setCells(md, 2, {}) // no-op, keeps shape
+    // A hand-typed row: no Added, no Watched — still just a title without a year.
+    md = md.trimEnd() + '\n| Vivarium | | | | |\n'
+    writeFileSync(join(dir, 'lists', 'movies.md'), md)
+    const calls: string[] = []
+    const llm = async (prompt: string) => {
+      const spoken = /Spoken: "([^"]+)"/.exec(prompt)?.[1] ?? ''
+      calls.push(spoken)
+      if (spoken === 'spiderman') return '{"title":"Spider-Man","year":"2002","series":"No"}'
+      if (spoken === 'Vivarium') return '{"title":"Vivarium","year":"2019","series":"No"}'
+      return '{"title":"","year":"","series":""}'
+    }
+    let clock = Date.now()
+    const w = new ListWatcher(store, { schema, deps: { llm }, log: () => {}, now: () => clock, quietMs: 0, retryMs: 60_000 })
+    expect(await w.runNow()).toBe(2)
+    const t = parseTable(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8').split('\n'))!
+    expect(t.rows.map((r) => rowRecord(t, r))).toMatchObject([
+      { title: 'Spider-Man', year: '2002', series: 'No', watched: 'No' },
+      { title: 'obscure thing', year: '' },
+      { title: 'Vivarium', year: '2019' },
+    ])
+    expect(calls.sort()).toEqual(['Vivarium', 'obscure thing', 'spiderman'])
+    // Second pass: the failure is in backoff (poll path), nothing is re-asked.
+    // (Fake clock jumps past the real file mtime so later polls see no change.)
+    calls.length = 0
+    clock = Date.now() + 5_000
+    await w.poll()
+    expect(calls).toEqual([])
+    clock += 61_000
+    await w.poll() // listSince reports nothing, pending is empty → still nothing (no change to the file)
+    expect(calls).toEqual([])
+    expect(await w.runNow()).toBe(0) // force asks again; still unidentifiable
+    expect(calls).toEqual(['obscure thing'])
+  })
+
+  it('poll reacts to a changed list note; a file touched within quietMs waits', async () => {
+    const store = new NoteStore(dir, join(dir, 'tomb.json'))
+    mkdirSync(join(dir, 'lists'), { recursive: true })
+    let clock = Date.now()
+    const calls: string[] = []
+    const w = new ListWatcher(store, { schema, deps: { llm: async (p) => { calls.push(p); return '{"title":"Dune","year":"2021","series":"No"}' } }, log: () => {}, now: () => clock, quietMs: 5_000 })
+    await w.start()
+    expect(calls).toEqual([])
+    writeFileSync(join(dir, 'lists', 'movies.md'), appendRow(null, columnsFor('movie'), rawRow('movie', 'dune', '2026-09-06 10:47')))
+    clock += 1_000
+    await w.poll() // too fresh → deferred
+    expect(calls).toEqual([])
+    clock += 10_000
+    await w.poll()
+    expect(calls).toHaveLength(1)
+    expect(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8')).toMatch(/\| Dune\s+\| 2021 \| No\s+\| No\s+\| 2026-09-06 10:47 \|/)
+    w.stop()
   })
 })
 
@@ -365,6 +471,7 @@ describe('RingStore + pipeline', () => {
       store,
       schema: async () => ({ schema, errors: [] }),
       describeSchema: async () => { throw new Error('unused') },
+      enrichNow: async () => 0,
       env: async () => ENV,
       deliverToAl: (envelope) => { toAl.push(envelope); return true },
       deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },
@@ -380,7 +487,6 @@ describe('RingStore + pipeline', () => {
       },
       transcribe: async () => 'weather from stt',
       classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
-      enrichMovie: async (t) => t.toLowerCase() === 'spiderman' ? { title: 'Spider-Man', year: '2002', series: 'No' } : null,
       notify: (m) => notified.push({ title: m.title, body: m.body }),
       now: () => new Date(2026, 8, 2, 23, 7),
       log: () => {},
@@ -422,15 +528,15 @@ describe('RingStore + pipeline', () => {
     expect((await deliver('echo again')).route).toMatchObject({ ok: false, detail: 'WhatsApp not connected' })
   })
 
-  it('add <list>: movie enrichment → table row; other lists → bullet; enrichment failure → bullet', async () => {
+  it('add <list> writes the RAW table row with an Added stamp — enrichment is the watcher\'s job', async () => {
     notes.set('scratch/lists/movie-list.md', '| Title | Year | Series | Watched |\n| --- | --- | --- | --- |\n')
     await deliver('add movies spiderman')
-    expect(notes.get('scratch/lists/movie-list.md')!.trimEnd().split('\n').at(-1)).toBe('| Spider-Man | 2002 | No     | No      |')
-    expect(notified.at(-1)).toMatchObject({ body: 'Spider-Man (2002)' })
+    const movies = notes.get('scratch/lists/movie-list.md')!
+    expect(movies.split('\n')[0]).toBe('| Title | Year | Series | Watched | Added |') // migrated header
+    expect(movies.trimEnd().split('\n').at(-1)).toMatch(/^\| spiderman \|\s+\|\s+\| No\s+\| 2026-09-02 23:07 \|$/)
+    expect(notified.at(-1)).toMatchObject({ title: 'Ring · add movies', body: 'spiderman' })
     await deliver('add groceries eggs')
-    expect(notes.get('scratch/lists/groceries.md')).toBe('- eggs\n')
-    await deliver('add movies some obscure thing')
-    expect(notes.get('scratch/lists/movie-list.md')!.trimEnd().split('\n').at(-1)).toBe('- some obscure thing')
+    expect(notes.get('scratch/lists/groceries.md')).toBe('| Item | Added |\n| ---- | ----- |\n| eggs | 2026-09-02 23:07 |\n')
   })
 
   it('add <project> files a board card', async () => {

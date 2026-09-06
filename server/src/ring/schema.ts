@@ -239,9 +239,11 @@ Edit the yaml, the hub hot-reloads it. Check it with \`con ring schema --check\`
 dry-run a phrase with \`con ring say --dry "…"\` (without \`--dry\` it really runs — plays, sends, files).
 
 Shape: \`<verb> <target> <payload>\`. A list and a log are the same thing — a
-note under \`scratch/lists/\` we append a bullet to; \`dated: true\` makes it a log
-(\`## YYYY-MM-DD\` heading per day, \`- HH:MM text\` bullets). \`add\` and \`log\` are
-the same verb. Examples: \`log dream I was escaping a prison made of cheese\`,
+note under \`scratch/lists/\`; \`dated: true\` makes it a log (\`## YYYY-MM-DD\`
+heading per day, \`- HH:MM text\` bullets), otherwise it is a table
+(\`| Item | Added |\`). A target with \`enrich:\` gets extra columns the hub fills
+in seconds later — rows you type by hand too; an empty column means "not yet".
+\`add\` and \`log\` are the same verb. Examples: \`log dream I was escaping a prison made of cheese\`,
 \`add movies Spiderman\`, \`log journal just finished sowing the seeds\`,
 \`message mum I'll be home in 30 mins\`, \`add console the login button is
 misaligned\` (a project slug → Backlog card), \`start console fix the login

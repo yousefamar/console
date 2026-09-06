@@ -113,6 +113,12 @@ export function handleRingRoutes(
   // GET /ring/schema — the effective command tree with every target resolved
   // (file exists? project known? contact known? agent live?) so a typo in the
   // note is visible before the ring hits it.
+  // POST /ring/enrich — force an enrichment pass over every configured list.
+  if (path === '/ring/enrich' && req.method === 'POST') {
+    ctx.enrichNow().then((changed) => json({ ok: true, changed })).catch((err: Error) => json({ error: err.message }, 500))
+    return true
+  }
+
   if (path === '/ring/schema' && req.method === 'GET') {
     ctx.describeSchema().then((d) => json(d)).catch((err: Error) => json({ error: err.message }, 500))
     return true

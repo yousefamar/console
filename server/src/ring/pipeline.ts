@@ -6,12 +6,16 @@
 import type { RingStore, RingRecording } from './store.js'
 import { routeByRules, describeCommand, type RingCommand, type RouteEnv } from './router.js'
 import { RING_SCHEMA_NOTE, type RingSchema, type SchemaDescription } from './schema.js'
-import { appendLogEntry, appendBullet, appendMovieRow, type MovieRow } from './append.js'
+import { appendLogEntry } from './append.js'
+import { appendRow, stamp } from './table.js'
+import { columnsFor, rawRow } from './enrichers.js'
 
 export interface RingCtx {
   store: RingStore
   schema: () => Promise<{ schema: RingSchema; errors: string[] }>
   describeSchema: () => Promise<SchemaDescription>
+  /** `con ring enrich` — run the list enricher over every configured list now. */
+  enrichNow: () => Promise<number>
   env: () => Promise<RouteEnv>
   /** Deliver ring-originated work to AL — into the `AL ↔ ring` conversation
    *  fork (never AL's main session), falling back to the parent only when the
@@ -41,8 +45,6 @@ export interface RingCtx {
   }
   transcribe: (audio: Buffer, contentType: string) => Promise<string | null>
   classify: (text: string, schema: RingSchema, env: RouteEnv) => Promise<RingCommand | null>
-  /** LLM step for `add movies`: infer title/year/series. null → plain bullet. */
-  enrichMovie: (text: string) => Promise<MovieRow | null>
   notify: (msg: { title: string; body: string; id: string }) => void
   now?: () => Date
   log: (msg: string) => void
@@ -184,14 +186,9 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
           await ctx.notes.write(c.file, appendLogEntry(existing, c.item, now))
           return { ok: true, detail: c.file }
         }
-        if (c.enrich === 'movie') {
-          const row = await ctx.enrichMovie(c.item)
-          if (row) {
-            await ctx.notes.write(c.file, appendMovieRow(existing, row))
-            return { ok: true, detail: `${row.title} (${row.year})${row.series && !/^no$/i.test(row.series) ? ` · ${row.series}` : ''}` }
-          }
-        }
-        await ctx.notes.write(c.file, appendBullet(existing, c.item))
+        // Raw row only — enrichment (e.g. movie year/series) is the
+        // ListWatcher's job, seconds later, and works on hand-typed rows too.
+        await ctx.notes.write(c.file, appendRow(existing, columnsFor(c.enrich), rawRow(c.enrich, c.item, stamp(now))))
         return { ok: true, detail: c.item }
       }
       case 'card': {

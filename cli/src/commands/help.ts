@@ -263,6 +263,7 @@ Commands:
   say "<text>" Simulate a ring transcript (no audio) — runs the FULL pipeline, so a
                "play" resumes Spotify and a "message" sends; --dry routes only
   schema       Print the effective command tree, every target resolved (--check → exit 1 on problems)
+  enrich       Run the list enricher now (watcher does it within ~10 s; this also retries backed-off rows)
 
 The ring's app POSTs multipart (audio/mp4 + transcription + recordedAt) to
 https://con.amar.io/hub/ring/webhook with the bearer from 'setup'. The hub
@@ -272,7 +273,9 @@ text through the command tree in the vault note projects/console/ring-schema.md:
   <verb> <target> <payload>
   add|log <target> <text>    append to a list/log note under scratch/lists/
                              (dated targets = logs: day heading + HH:MM bullet;
-                              movies: LLM-enriched table row)
+                              lists = a stamped table row | Item | Added |; a target
+                              with enrich: gets its extra columns filled by the
+                              hub's ListWatcher seconds later — hand-typed rows too)
   add <project> <text>       board card on that project (Backlog — queued)
   start <project> <text>     board card in In Progress (dispatched — an agent forks now)
   message <person> <text>    sent AS YOU through your own chat (Beeper WhatsApp DM)

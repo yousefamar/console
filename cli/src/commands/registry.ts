@@ -470,6 +470,8 @@ export const COMMANDS: CommandDef[] = [
     args: [{ name: 'text', required: true, description: 'Transcript text' }],
     flags: { dry: { type: 'boolean', description: 'Route only: no recording, no side effects' } },
     examples: ['con ring say "tell al to buy milk"', 'con ring say --dry "Music plays."'] },
+  { name: 'ring enrich', description: 'Run the list enricher over every configured list now (fills empty enrichment columns)', safety: 'write',
+    examples: ['con ring enrich'] },
   { name: 'ring schema', description: 'Print the effective ring command tree with every target resolved', safety: 'read',
     flags: { check: { type: 'boolean', description: 'Exit non-zero on parse errors or unresolved targets' } },
     examples: ['con ring schema', 'con ring schema --check'] },
