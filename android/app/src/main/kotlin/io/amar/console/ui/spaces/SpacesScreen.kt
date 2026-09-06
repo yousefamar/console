@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOff
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Create
@@ -68,6 +70,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.amar.console.data.agents.AgentsRepository
+import io.amar.console.data.agents.isStrayCwd
+import io.amar.console.data.agents.shortCwd
 import io.amar.console.data.db.AgentSessionRow
 import io.amar.console.data.db.areaList
 import io.amar.console.data.spaces.KanbanCodec
@@ -228,6 +232,7 @@ fun SpacesScreen(
             .thenBy { it.title.lowercase() })
 
     var showFleet by remember { mutableStateOf(false) }
+    var showSwitcher by remember { mutableStateOf(false) }
     var newProject by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -249,6 +254,10 @@ fun SpacesScreen(
             title = "Spaces", onGrid = onGrid,
             subtitle = "${projects.size} projects · ${areas.size} areas",
             actions = {
+                // SPA `/` quick switcher — jump to any space / agent / file.
+                IconButton(onClick = { showSwitcher = true }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Jump to space, agent, file", modifier = Modifier.size(20.dp))
+                }
                 IconButton(onClick = { showFleet = true }) {
                     Icon(androidx.compose.material.icons.Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
                 }
@@ -379,6 +388,21 @@ fun SpacesScreen(
         }
     }
     if (showFleet) io.amar.console.ui.agents.FleetModelSheet(agents, onDismiss = { showFleet = false })
+    if (showSwitcher) {
+        SpacesQuickSwitcher(
+            spaces = spaces, sessions = sessions, files = notesFiles,
+            running = activity.filterValues { it.running }.keys,
+            onDismiss = { showSwitcher = false },
+            onPick = { e ->
+                showSwitcher = false
+                when (e.kind) {
+                    io.amar.console.data.spaces.SpacesSwitcher.Kind.SESSION -> onOpenSession(e.target)
+                    io.amar.console.data.spaces.SpacesSwitcher.Kind.FILE -> onOpenNote(e.target)
+                    else -> onOpenSpace(e.target)
+                }
+            },
+        )
+    }
     if (newProject) {
         NewProjectDialog(
             onDismiss = { newProject = false },
@@ -639,7 +663,7 @@ private fun SpaceRow(
 }
 
 @Composable
-private fun Dot(color: Color) {
+internal fun Dot(color: Color) {
     Box(Modifier.size(8.dp).clip(CircleShape).background(color))
 }
 
@@ -806,6 +830,9 @@ private fun BoardView(
     }
     fun cardVisible(c: SpacesRepository.CardView): Boolean =
         rootFilter == null || rootOf(c.agentKey, allSessions) == rootFilter
+    val spacesList by spacesRepo.spaces.collectAsState()
+    val queuedCount = spacesList.firstOrNull { it.slug == slug && it.kind == kind }?.queuedCount ?: 0
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Column(Modifier.fillMaxSize()) {
         // Sticky dismissible mutation-error banner — never a board takeover
@@ -865,8 +892,25 @@ private fun BoardView(
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                         .padding(8.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(col.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(col.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                        // SPA ^tame-bear: cards waiting for a fork slot sit in
+                        // the dispatch column looking ordinary — the chip is
+                        // the only thing that explains the wait. Tap = the
+                        // SPA tooltip text (no hover on a phone).
+                        if (queuedCount > 0 && KanbanCodec.DISPATCH_COLUMN_RE.matches(col.title)) {
+                            Text(
+                                "queued ($queuedCount)",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { android.widget.Toast.makeText(context, queuedTooltip(queuedCount), android.widget.Toast.LENGTH_LONG).show() }
+                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
                         Text("${col.cards.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         IconButton(onClick = { addToColumn = col.title }, modifier = Modifier.size(26.dp)) {
                             Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
@@ -1468,18 +1512,29 @@ private fun SpaceAgentsList(
                             },
                         )
                     }
+                    // A session running outside its space's home — the bug
+                    // class: spawned from the hub's own cwd — reads the wrong
+                    // CLAUDE.md and its forks inherit the cwd. Amber FolderOff
+                    // (SPA FolderX, ^spry-seal) + amber cwd line; the fix is
+                    // "Relocate to …" in the long-press sheet.
+                    val stray = isStrayCwd(s.cwd, spaceCwd)
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            s.name.removeSuffix(" (fork)"),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (s.id == default?.id) FontWeight.Medium else null,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                        // cwd is fixed at spawn (--resume is keyed by it), so a
-                        // session running outside its space's home — the bug
-                        // class: spawned from the hub's own cwd — can only be
-                        // fixed by recreating it. Make it visible (SPA parity).
-                        val stray = isStrayCwd(s.cwd, spaceCwd)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                s.name.removeSuffix(" (fork)"),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (s.id == default?.id) FontWeight.Medium else null,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (stray) {
+                                Icon(
+                                    Icons.Filled.FolderOff,
+                                    contentDescription = "Runs from ${shortCwd(s.cwd!!)}, not this space's dir ${shortCwd(spaceCwd!!)}",
+                                    tint = AMBER, modifier = Modifier.size(12.dp),
+                                )
+                            }
+                        }
                         Text(
                             s.status + (if (s.hibernated) " · hibernated" else "") + (s.cwd?.let { " · " + shortCwd(it) } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
@@ -1632,7 +1687,6 @@ private fun SpaceDocsList(
     }
 }
 
-/** `/home/<user>/x` → `~/x` for display (the hub reports absolute Linux paths). */
 /** A Bot glyph wearing a small crown — the project-owner marker. */
 @Composable
 private fun CrownedBot(tint: Color) {
@@ -1646,9 +1700,6 @@ private fun CrownedBot(tint: Color) {
 internal fun assetUrl(path: String): String =
     io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8")
 
-internal fun shortCwd(path: String): String = path.replace(Regex("^/home/[^/]+(?=/|$)"), "~")
-
-/** A bound session runs somewhere other than its space's home; unknown on
- *  either side (older hub, pre-init session) is never a stray. */
-internal fun isStrayCwd(sessionCwd: String?, spaceCwd: String?): Boolean =
-    !sessionCwd.isNullOrEmpty() && !spaceCwd.isNullOrEmpty() && sessionCwd.trimEnd('/') != spaceCwd.trimEnd('/')
+/** SPA SpacesTab.tsx `queued (N)` tooltip, verbatim. */
+internal fun queuedTooltip(n: Int): String =
+    "$n card(s) waiting for a free slot — the hub caps how many card forks run at once (all worktrees share one disk). They start automatically as slots free."

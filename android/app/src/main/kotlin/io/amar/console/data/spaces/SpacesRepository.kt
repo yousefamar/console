@@ -67,6 +67,10 @@ class SpacesRepository(
          *  vault root) — a bound session on another cwd is a stray. Null on an
          *  older hub. */
         val cwd: String? = null,
+        /** Dispatchable cards waiting for a free fork slot (the hub caps how
+         *  many card forks run at once, machine-wide — ^tame-bear). 0 on an
+         *  older hub. */
+        val queuedCount: Int = 0,
     )
 
     /** Hub CardView (board-ops.ts): detail = trimmed continuation lines. */
@@ -159,6 +163,7 @@ class SpacesRepository(
                     cardAgentKeys = (o["cardAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
                     cwd = o["cwd"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+                    queuedCount = o["queuedCount"]?.jsonPrimitive?.intOrNull ?: 0,
                 )
             } ?: emptyList()
         }

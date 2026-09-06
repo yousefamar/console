@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.DropdownMenu
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.agents.Cron
+import io.amar.console.data.agents.shortCwd
 import io.amar.console.data.db.AgentSessionRow
 
 private val AMBER = Color(0xFFF59E0B)
@@ -47,7 +49,7 @@ private val RED = Color(0xFFF87171)
 
 /**
  * Per-session status bar: model pin picker · permission-mode badge · git
- * branch/stats · sub-agent counter · cron pill · context-usage meter.
+ * cwd · git branch/stats · sub-agent counter · cron pill · context-usage meter.
  * Ported from AgentSessionView.tsx:216-296.
  */
 @Composable
@@ -104,6 +106,16 @@ fun StatusBar(
             val mode = session.permissionMode
             if (mode != null && mode != "default") {
                 Text(mode, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = AMBER)
+            }
+            // Working directory — `--resume` is keyed by it and it can't change
+            // in place, so a session spawned in the wrong dir (the hub's own
+            // cwd instead of its project's — ^spry-seal) must at least be
+            // visible. SPA AgentSessionView status bar parity.
+            session.cwd?.takeIf { it.isNotBlank() }?.let { cwd ->
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Folder, contentDescription = "cwd", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(11.dp))
+                    Text(shortCwd(cwd), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
             }
             // Git branch + stats.
             session.gitBranch?.let { branch ->

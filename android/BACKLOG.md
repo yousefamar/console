@@ -40,9 +40,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   flat path-prefix list, `log/<ts>.md` posts absent. Plan: Drafts/Posts
   section above the tree + New post → `createDraft(project)`.
 
-- Spaces: quick switcher (SPA `SpacesQuickSwitcher.tsx`, `/`) — Android has
-  none (Notes has one). Plan: top-bar search over spaces + live sessions.
-
 - Inbox: routing-override management (SPA `RouteOverrides`, InboxTab.tsx:517
   — clearable per source). Android has only the per-row `→ feed/→ inbox`
   toggle. Plan: "Routing rules" sheet from the top bar, ✕ per override,
@@ -80,7 +77,29 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-(empty)
+- **Spaces: quick switcher** (SPA `SpacesQuickSwitcher.tsx`, the `/` command
+  bar; ^glad-eel): Search icon in the Spaces top bar opens a dialog that fuzzy-
+  ranks spaces + live sessions + every vault file — empty query is recency
+  order (session `max(lastActivityAt, createdAt)`, file mtime, a space inherits
+  its newest member's). `data/spaces/SpacesSwitcher.kt` is a pure port of the
+  SPA entry build + `fuzzyScore` (a contiguous substring always beats a
+  scattered subsequence; recency breaks ties), unit-tested. Session → session
+  screen, file → editor, space → its detail. No create-note escape hatch (the
+  SPA's pre-fills a new-note form that has no L1 home on the phone).
+- **Board: `queued (N)` chip on dispatch columns** (SPA SpacesTab ^tame-bear):
+  `SpaceSummary.queuedCount` parsed from `/blog/spaces` (0 on an older hub);
+  In-Progress-like columns show the chip, tap = the SPA tooltip text as a
+  toast (the hub caps concurrently running card forks; queued cards start as
+  slots free — without the chip a waiting card looks exactly like a running
+  one).
+- **Stray sessions: amber glyph + cwd in the status bar** (the v93 leftover;
+  SPA `src/utils/cwd.ts` + e4779bf9): `isStrayCwd` now treats a cwd INSIDE a
+  subdir of the space home as fine (AL at `projects/al/workspace` was flagged
+  amber under the strict-equality port); moved with `shortCwd` to
+  `data/agents/CwdDisplay.kt` so the session status bar can show
+  `📁 ~/…cwd` beside the git chip (SPA AgentSessionView parity). Agent rows
+  get an amber `FolderOff` beside the name when stray (SPA `FolderX`); the
+  fix stays "Relocate to …" in the long-press sheet.
 
 ## Shipped
 
@@ -148,8 +167,8 @@ view-mode hub-sync (Room meta is fine on one device).
   vault root) and create keyed + project-bound; the sheet prefills from the
   space's new `/blog/spaces` `cwd` field. `AgentsRepository.createSession`
   takes `cwd: String?` and omits it when blank. `SpaceSummary.cwd` parsed
-  (null on an older hub). Not yet ported: the SPA's amber stray glyph on
-  agent rows + cwd in the session status bar.
+  (null on an older hub). The SPA's amber stray glyph on agent rows + cwd in
+  the session status bar followed in the next release (^glad-eel).
 
 ### v92 (2026-09-04)
 - **Approval card: dictate the answer** (89f49d96, ^lime-newt): the
