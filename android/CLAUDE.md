@@ -184,6 +184,9 @@ while the app is foregrounded (plus short background borrows), so a remote
   Kotlin string literal must be `\\d`.
 - `Icons.Outlined.*` imports are explicit per icon (no wildcard) — add the
   import or you get "Unresolved reference".
+- `DateTimeFormatter.ofPattern("MMM", Locale.UK)` renders September as "Sept"
+  (JDK 17+ CLDR en-GB); use `Locale.ENGLISH` for 3-letter months and keep
+  day-before-month order in the pattern (`MoneyFormat.MONTH_LOCALE`).
 
 ## Launcher-mode specifics
 
