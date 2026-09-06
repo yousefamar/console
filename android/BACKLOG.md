@@ -33,25 +33,10 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   Android renders the HN tree only (`FeedsLogic.kt`). Plan: flat comment list
   under Reddit items, same endpoint, reuse the HN row.
 
-- Spaces: area contents = tagged-post history + New post (SPA ^loud-colt
-  `AreaDevlog`, `GET /blog/area/:slug/posts`, `createDraft({area})`). Android
-  `SpaceDetailScreen` gives areas only Agents. Plan: a Devlog tab for areas
-  (posts + drafts + New-post FAB seeding `tags: [<area>]`).
-
-- Spaces: project devlog strip + New post in Docs (SPA ^prim-moth/^bold-hawk:
-  drafts then `postsByProject` above the tree). Android `SpaceDocsList` is a
-  flat path-prefix list, `log/<ts>.md` posts absent. Plan: Drafts/Posts
-  section above the tree + New post → `createDraft(project)`.
-
 - Inbox: routing-override management (SPA `RouteOverrides`, InboxTab.tsx:517
   — clearable per source). Android has only the per-row `→ feed/→ inbox`
   toggle. Plan: "Routing rules" sheet from the top bar, ✕ per override,
   writes `/inbox/rules`.
-
-- Notes: live-buffer mirror (SPA ^tame-hare posts the active buffer to
-  `POST /notes/live` so the Curator's `con notes live` sees it). Android:
-  none — the Curator is blind to phone drafts. Plan: debounced POST from
-  `NoteEditor` while a writing file is active (path, content, cursor line).
 
 - Agents: "Allow all <tool>" on the approval card (SPA `AgentToolApproval`);
   Android `ApprovalCard.kt` is Approve/Deny only. Low — tools auto-approve.
@@ -127,6 +112,28 @@ view-mode hub-sync (Room meta is fine on one device).
   ∞, day labels) + all JSON parsers unit-tested (`MoneyModelsTest`). NOT in
   scope (Open entry above): budgets, scenarios, category/rule/override editing,
   ledger entries.
+
+- **Spaces: writing parity — area Posts tab, project devlog strip, hub live
+  buffer** (^tall-frog; SPA ^loud-colt / ^prim-moth / ^bold-hawk / ^tame-hare).
+  Areas gain a **Posts** tab (`AreaDevlog`, `ui/spaces/SpaceDevlog.kt`): every
+  draft carrying the area tag on top (amber `unsaved` when the file has offline
+  edits or a dirty tab, else blue `draft`), then the area's full post history
+  from `GET /blog/area/:slug/posts` (project posts included, project chip +
+  date); **+ New post** → `createDraft(area=)` seeds `tags: [<area>]`, then
+  reconciles + opens the draft. Project **Docs** gets a collapsed **Devlog (N)**
+  strip above the file tree (drafts by `project` — path- or frontmatter-claimed
+  — then `postsByProject`, + New post → `createDraft(project=)`): `log/<ts>.md`
+  posts live outside the `projects/<slug>/` path scope, so they were simply
+  absent before. `BlogRepository` gained `postsByArea`/`refreshAreaPosts` and
+  the `area` param. `NoteEditorScreen` now mirrors the ON-SCREEN buffer (dirty
+  or clean) to the hub's single `POST /notes/live` slot on a 400 ms debounce
+  (`data/notes/LiveBuffer.kt`: path, content, 1-based cursor line, ≤2000-char
+  selection) and clears it on leaving the editor — but only when this client
+  filled it, so a desktop buffer isn't wiped by a phone glance. The Curator's
+  `con notes live` therefore sees phone drafts, unsaved keystrokes included.
+  Tests: `LiveBufferTest` (debounce coalescing, clear-only-if-mirrored,
+  failing POST doesn't wedge), `DevlogLogicTest` (draft selection by
+  project/tag, date trimming, header count).
 
 ## Shipped
 

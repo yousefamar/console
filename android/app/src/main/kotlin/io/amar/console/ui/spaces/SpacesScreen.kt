@@ -761,6 +761,8 @@ fun SpaceDetailScreen(
                 else if (kind == "project" && !pseudo) add("newboard" to "+ Board")
                 add("agents" to "Agents")
                 if (kind == "project" && !pseudo) add("docs" to "Docs")
+                // Areas are tags with writing: their post history is the content.
+                if (kind == "area") add("devlog" to "Posts")
             }
             for ((id, label) in tabs) {
                 Surface(
@@ -783,6 +785,7 @@ fun SpaceDetailScreen(
             "board" -> BoardView(spacesRepo, sessions, bound, kind, slug, onOpenSession)
             "agents" -> SpaceAgentsList(agents, spacesRepo, sessions, bound, kind, slug, onOpenSession)
             "docs" -> SpaceDocsList(notes, slug, onOpenNote)
+            "devlog" -> AreaDevlog(notes, slug, onOpenNote)
         }
     }
 }
@@ -1666,7 +1669,32 @@ private fun SpaceDocsList(
         files.filter { it.path.startsWith("projects/$slug/") || it.path == "projects/$slug.md" }
             .sortedBy { it.path }
     }
+    // Devlog strip (SPA ProjectDevlog): published posts live at log/<ts>.md,
+    // outside the path-prefix scope above, so they need their own listing.
+    val drafts by notes.blog.drafts.collectAsState()
+    val postsByProject by notes.blog.postsByProject.collectAsState()
+    val tabs by notes.tabs.state.collectAsState()
+    val devlogDrafts = remember(drafts, slug) { DevlogLogic.draftsFor(drafts, slug, "project") }
+    val dirty = remember(files, tabs) {
+        (files.filter { it.dirty }.map { it.path } + tabs.open.filter { it.dirty }.map { it.path }).toHashSet()
+    }
+    var devlogExpanded by remember(slug) { mutableStateOf(false) }
+    var newPost by remember { mutableStateOf(false) }
+    LaunchedEffect(slug) { notes.blog.refreshProjectPosts(slug); notes.blog.refreshDrafts() }
+    if (newPost) NewPostDialog(notes, title = "New devlog post", project = slug, onDismiss = { newPost = false }, onOpenNote = onOpenNote)
     LazyColumn(Modifier.fillMaxSize()) {
+        projectDevlogStrip(
+            slug, devlogDrafts, postsByProject[slug], dirty,
+            expanded = devlogExpanded, onToggle = { devlogExpanded = !devlogExpanded },
+            onNew = { newPost = true }, onOpenNote = onOpenNote,
+        )
+        item(key = "files-header") {
+            Text(
+                "Files", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 2.dp),
+            )
+        }
         items(scoped, key = { it.path }) { f ->
             Row(
                 Modifier.fillMaxWidth().clickable { onOpenNote(f.path) }.padding(horizontal = 16.dp, vertical = 9.dp),

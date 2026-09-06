@@ -101,6 +101,11 @@ class NotesRepository(
     /** Blog tooling (drafts/projects/tags/publish) — shares the hub client. */
     val blog: BlogRepository by lazy { BlogRepository(hub) }
 
+    /** The on-screen buffer → hub `/notes/live` (agents' `con notes live`). */
+    val liveBuffer: LiveBufferMirror by lazy {
+        LiveBufferMirror(tabsPersistScope, post = { body -> hub.post("/notes/live", body) })
+    }
+
     /** Parked conflict rows for the editor's banner. */
     fun observeConflict(path: String): Flow<List<io.amar.console.data.db.OutboxRow>> =
         db.outbox().observeByEntityStatus(TYPE_SAVE, path, "conflict")

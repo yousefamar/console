@@ -73,6 +73,10 @@ class BlogRepository(private val hub: HubClient) {
     val recentPosts: StateFlow<List<Post>> = _recent
     private val _postsByProject = MutableStateFlow<Map<String, List<Post>>>(emptyMap())
     val postsByProject: StateFlow<Map<String, List<Post>>> = _postsByProject
+    /** Every published post carrying an area tag (project posts included) —
+     *  the SPA `postsByArea`. Absent key = never loaded; empty list = none. */
+    private val _postsByArea = MutableStateFlow<Map<String, List<Post>>>(emptyMap())
+    val postsByArea: StateFlow<Map<String, List<Post>>> = _postsByArea
     private val _liveStatus = MutableStateFlow<Map<String, LiveStatus>>(emptyMap())
     val liveStatus: StateFlow<Map<String, LiveStatus>> = _liveStatus
     private val _refreshing = MutableStateFlow(false)
@@ -116,6 +120,15 @@ class BlogRepository(private val hub: HubClient) {
                 hub.get("/blog/project/${enc(slug)}/posts")
             ).jsonArray
             _postsByProject.value = _postsByProject.value + (slug to arr.mapNotNull { toPost(it.jsonObject) })
+        }
+    }
+
+    suspend fun refreshAreaPosts(slug: String) {
+        runCatching {
+            val arr = json.parseToJsonElement(
+                hub.get("/blog/area/${enc(slug)}/posts")
+            ).jsonArray
+            _postsByArea.value = _postsByArea.value + (slug to arr.mapNotNull { toPost(it.jsonObject) })
         }
     }
 
@@ -163,13 +176,16 @@ class BlogRepository(private val hub: HubClient) {
         toPublishResult(json.parseToJsonElement(resp).jsonObject)
     }.getOrElse { PublishResult(false, error = it.message) }
 
-    suspend fun createDraft(title: String, project: String? = null): CreateResult {
+    /** [area] seeds `tags: [<area>]` — the tag IS area membership, which is how
+     *  the hub's area-posts listing finds it later. Project wins when both are set. */
+    suspend fun createDraft(title: String, project: String? = null, area: String? = null): CreateResult {
         val trimmed = title.trim()
         if (trimmed.isEmpty()) return CreateResult(false, error = "Title is required")
         return runCatching {
             val body = buildJsonObject {
                 put("title", trimmed)
                 project?.let { put("project", it) }
+                area?.let { put("area", it) }
             }
             val resp = hub.post("/blog/draft", body.toString())
             toCreateResult(json.parseToJsonElement(resp).jsonObject)

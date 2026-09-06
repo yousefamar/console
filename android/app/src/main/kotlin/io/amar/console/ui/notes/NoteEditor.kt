@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import io.amar.console.core.Dictation
 import io.amar.console.data.notes.EditorActions
 import io.amar.console.data.notes.FrontmatterParser
+import io.amar.console.data.notes.LiveBufferLogic
 import io.amar.console.data.notes.NotesRepository
 import io.amar.console.data.notes.PenPage
 import kotlinx.coroutines.launch
@@ -174,8 +175,22 @@ fun NoteEditorScreen(
     // Feed the glasses notes mirror on tab switch; clear it when the editor
     // leaves composition (mirror falls back to the pane status line).
     LaunchedEffect(activePath) { pushEditorMirror(tfv) }
+    // Hub live-buffer mirror (SPA ^tame-hare): every keystroke/caret move
+    // re-arms the debounced POST /notes/live; leaving the editor clears it.
+    LaunchedEffect(activePath, tfv, loading) {
+        if (loading) return@LaunchedEffect
+        repo.liveBuffer.update(
+            path = activePath,
+            content = tfv.text,
+            cursorLine = LiveBufferLogic.cursorLine(tfv.text, tfv.selection.end),
+            selection = LiveBufferLogic.selectionText(tfv.text, tfv.selection.start, tfv.selection.end),
+        )
+    }
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { mirror?.setEditorCursor(null) }
+        onDispose {
+            mirror?.setEditorCursor(null)
+            repo.liveBuffer.clear()
+        }
     }
 
     fun applyAction(edit: EditorActions.Edit) {
