@@ -10,12 +10,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
-- Money pane — SPA mobile bottom bar includes Money (Cashflow / Net worth /
-  Budgets / Scenarios / Transactions; `src/components/money/*`, hub `/money/*`).
-  Android `AppNav.kt` marks it out of scope and `money` pushes land on Home.
-  Plan: a Money tile → RunwayCard + net-worth line + recent transactions list
-  (read-only first; budgets/scenarios later), `data/money/MoneyRepository`
-  mirroring `/money/summary` + `/money/transactions` into Room.
+- Money: editing parity — the read-only pane shipped (^quick-gull); still
+  SPA-only: Budgets (`/finance/budgets` + `/finance/budget-status`), Scenarios
+  (`/finance/scenarios`, comparison chart), Categories + rules CRUD, per-tx
+  override (recategorise / ignore / mark transfer via `/finance/overrides`),
+  manual-account balance ledger entries (`POST /finance/accounts/:id/balance`),
+  monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: tx detail
+  sheet gains a category picker + ignore/transfer toggles first (one outbox
+  action, `overrides` POST), then a Budgets section under Runway; scenarios
+  and the ledger editor last.
 
 - Home: Costs sub-tab — SPA `CostsCard.tsx` (`GET /dashboard/costs`, per-day
   stacked bars by person + $/day). Android `HomeSubTab` = Alerts/Servers/Blog/
@@ -100,6 +103,30 @@ view-mode hub-sync (Room meta is fine on one device).
   `📁 ~/…cwd` beside the git chip (SPA AgentSessionView parity). Agent rows
   get an amber `FolderOff` beside the name when stray (SPA `FolderX`); the
   fix stays "Relocate to …" in the long-press sheet.
+- **Money pane (read-only)** (^quick-gull, weekly parity sweep): new `Money`
+  tile → `ui/money/MoneyScreen.kt` mirroring the SPA Money tab's Cashflow /
+  Net worth / Transactions views. Runway = the SPA `RunwayCard` five tiles
+  (liquid, investments, monthly net coloured by burn, emergency fund with the
+  months/fixed hint, runway months coloured red < 6 / amber < 12 / green ∞) +
+  total, from `/finance/projection`; net worth = liquid / investments / total
+  tiles + a 12-month stacked liquid+investment area chart (Compose `Canvas`,
+  `/finance/networth/history?months=12`); transactions = `/money/transactions
+  ?limit=500` merged with `/finance/categorise` (effective category, ignored,
+  transfer) into Room `money_transactions` (v15, `AutoMigration 14→15` +
+  `MigrationTest`), grouped by day (Today / Yesterday / `Thu 3 Sep`), SPA row
+  semantics (merchant → counterparty → description; transfer reference as the
+  subtitle; declined/ignored/transfer faded; merchant logo → emoji → category
+  emoji glyph), tap → detail sheet (settled/pending/declined, category, Monzo
+  category, counterparty, notes). Computed blobs cache in the `meta` table so
+  the pane opens offline; refresh = pane open + every sync pass
+  (`syncEngine.addDomain("money")`) + the top-bar refresh — the hub has no
+  SyncBus service for money (the SPA fetches on mount too). `money` pushes
+  (Monzo webhook) now land on the pane instead of Home (`Pane.fromPushPane`).
+  Pure ports (`MoneyFormat.fmtPence` = SPA `fmtPence` incl. the ≥£1000
+  no-pennies rule, display-name/reference, runway labels with JSON-null =
+  ∞, day labels) + all JSON parsers unit-tested (`MoneyModelsTest`). NOT in
+  scope (Open entry above): budgets, scenarios, category/rule/override editing,
+  ledger entries.
 
 ## Shipped
 

@@ -127,6 +127,28 @@ class MigrationTest {
     }
 
     @Test
+    fun `migrate 14 to latest adds the money_transactions table`() {
+        val dbFile = File(context.cacheDir, "migration-14-money.db")
+        dbFile.delete()
+        createAtVersion(14, dbFile)
+        val room = Room.databaseBuilder(context, ConsoleDb::class.java, dbFile.absolutePath).build()
+        try {
+            runBlocking {
+                assertEquals(0, room.money().count())
+                room.money().upsertAll(listOf(MoneyTxRow(
+                    id = "tx_1", amount = -700, currency = "GBP", created = "2026-09-05T14:11:12Z", createdAt = 1L,
+                    settled = "", description = "d", merchantName = "M", merchantEmoji = null, merchantLogo = null,
+                    counterpartyName = null, monzoCategory = "eating_out", declineReason = null, notes = null,
+                    categoryId = "cat_x", ignored = false, isTransfer = false,
+                )))
+                assertEquals("M", room.money().byId("tx_1")?.merchantName)
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    @Test
     fun `migrate 12 to latest with agent session data`() = migrateFrom(12) { db ->
         // v13 adds agent_sessions.lastActivityAt/lastTextSnippet + feed_snooze.
         db.execSQL(

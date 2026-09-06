@@ -56,6 +56,7 @@ class AppGraph(context: Context) {
     val map = MapRepository(db, hub)
     val music = MusicRepository(hub)
     val home = HomeRepository(hub)
+    val money = io.amar.console.data.money.MoneyRepository(db, hub)
     val hardware = io.amar.console.data.longtail.HardwareRepository(hub)
     val mirror = GlassesMirror(context, appScope, db)
 
@@ -131,5 +132,8 @@ class AppGraph(context: Context) {
         // the phone without waiting for a reconnect/poll).
         map.wireLiveDeltas(appScope, syncBus)
         home.wireDashboardBus(syncBus)
+        // Money has no SyncBus service (the SPA fetches on mount) — the sync pass
+        // is its only background refresh; the pane also refreshes on open.
+        syncEngine.addDomain("money") { money.reconcile() }
     }
 }

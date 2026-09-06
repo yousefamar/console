@@ -1414,6 +1414,14 @@ class PushService : Service() {
         // in-app detail route: open its real page directly rather than landing
         // on a generic pane with no indication of which item this was about.
         val url = json.optString("url").takeIf { it.isNotEmpty() }
+        // A money push IS a new Monzo transaction: refresh the Money mirror now
+        // (cheap, one GET set) rather than waiting for the throttled background
+        // pass — so the pane, if open, shows it before the notification is read.
+        if (type == "money") {
+            (application as? ConsoleApp)?.graph?.let { g ->
+                g.appScope.launch { runCatching { g.money.reconcile() } }
+            }
+        }
         // Pane suppression (FEATURES app-wide #77): when the app is foreground on
         // the target pane, drop the notification. Exception — an agent push for a
         // session the user is NOT currently viewing still fires (per SPA), so we

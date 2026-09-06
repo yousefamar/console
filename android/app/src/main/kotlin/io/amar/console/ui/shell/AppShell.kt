@@ -286,6 +286,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                 }
                 composable(Pane.Bookmarks.route) { BookmarksScreen(app.graph.bookmarks, onGrid = toGrid) }
                 composable(Pane.Map.route) { MapScreen(app.graph.map, onGrid = toGrid) }
+                composable(Pane.Money.route) { io.amar.console.ui.money.MoneyScreen(app.graph.money, onGrid = toGrid) }
                 composable(Pane.Home.route) {
                     HomeScreen(
                         app.graph.home,

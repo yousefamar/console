@@ -2,6 +2,7 @@ package io.amar.console.ui.nav
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Email
@@ -50,6 +51,7 @@ enum class Pane(
     Feeds("feeds", "Feeds", Icons.Outlined.RssFeed),
     Bookmarks("bookmarks", "Bookmarks", Icons.Outlined.Bookmarks),
     Map("map", "Map", Icons.Outlined.Map),
+    Money("money", "Money", Icons.Outlined.AccountBalanceWallet),
     Home("home", "Dashboard", Icons.Outlined.Home),
     Music("music", "Music", Icons.Outlined.MusicNote),
     Settings("settings", "Settings", Icons.Outlined.Settings),
@@ -61,7 +63,6 @@ enum class Pane(
         /** Map hub push `pane` values (e.g. "email" legacy) onto panes. */
         fun fromPushPane(pane: String): Pane = when (pane) {
             "email" -> Mail
-            "money" -> Home // Money pane is out of scope; land somewhere sane
             "agents" -> Spaces // Agents tile is gone; sessions live in Spaces
             else -> fromRoute(pane) ?: Home
         }

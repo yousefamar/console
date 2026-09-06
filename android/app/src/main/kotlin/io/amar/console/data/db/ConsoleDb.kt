@@ -34,8 +34,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BookmarkRow::class,
         GeocacheRow::class,
         MeetupEventRow::class,
+        MoneyTxRow::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
@@ -51,6 +52,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AutoMigration(from = 11, to = 12),
         AutoMigration(from = 12, to = 13),
         AutoMigration(from = 13, to = 14, spec = ConsoleDb.Migration13To14::class),
+        AutoMigration(from = 14, to = 15),
     ],
 )
 abstract class ConsoleDb : RoomDatabase() {
@@ -75,6 +77,7 @@ abstract class ConsoleDb : RoomDatabase() {
     abstract fun agents(): AgentsDao
     abstract fun bookmarks(): BookmarksDao
     abstract fun map(): MapDao
+    abstract fun money(): MoneyDao
 
     companion object {
         /**
