@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -100,8 +101,8 @@ fun BlogView(
             items(drafts, key = { it.path }) { d ->
                 val age = System.currentTimeMillis() - d.mtime
                 val color = when (BlogHelpers.ageSeverity(age)) {
-                    BlogHelpers.AgeSeverity.STALE -> Color(0xFFF87171)
-                    BlogHelpers.AgeSeverity.WARN -> Color(0xFFFBBF24)
+                    BlogHelpers.AgeSeverity.STALE -> MaterialTheme.accents.red
+                    BlogHelpers.AgeSeverity.WARN -> MaterialTheme.accents.amber
                     BlogHelpers.AgeSeverity.FRESH -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
                 Row(
@@ -198,8 +199,8 @@ private fun ProjectRow(
     onOpen: (String) -> Unit,
 ) {
     val statusColor = when (project.status) {
-        "active" -> Color(0xFF4ADE80)
-        "dormant" -> Color(0xFFFBBF24)
+        "active" -> MaterialTheme.accents.green
+        "dormant" -> MaterialTheme.accents.amber
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     }
     Column {

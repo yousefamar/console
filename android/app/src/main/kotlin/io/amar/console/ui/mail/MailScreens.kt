@@ -44,6 +44,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.isDark
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -369,7 +370,10 @@ fun MailThreadScreen(
     // app-wide so the choice sticks across threads + restarts.
     val darkPrefs = androidx.compose.ui.platform.LocalContext.current
         .getSharedPreferences("mail_view", android.content.Context.MODE_PRIVATE)
-    var emailDark by remember { mutableStateOf(darkPrefs.getBoolean("emailDark", true)) }
+    // Unset → follow the app theme (the SPA applies its dark email CSS only in
+    // dark mode); an explicit toggle sticks either way.
+    val themeDark = MaterialTheme.isDark
+    var emailDark by remember { mutableStateOf(darkPrefs.getBoolean("emailDark", themeDark)) }
 
     LaunchedEffect(threadId, thread?.isUnread) {
         if (thread?.isUnread == true) repo.markRead(threadId)

@@ -38,6 +38,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import io.amar.console.ui.theme.isDark
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -97,7 +99,9 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
     var showCreds by remember { mutableStateOf(false) }
     // Basemap light/dark, persisted — dark tiles are unreadable in sunlight.
     val mapPrefs = remember { context.getSharedPreferences("console.map", android.content.Context.MODE_PRIVATE) }
-    var darkMap by remember { mutableStateOf(mapPrefs.getBoolean("darkMap", true)) }
+    // Unset → follow the app theme; the map's own toggle still wins once used.
+    val themeDark = MaterialTheme.isDark
+    var darkMap by remember { mutableStateOf(mapPrefs.getBoolean("darkMap", themeDark)) }
     // Long-pressed spot pending a "navigate here" confirmation.
     var navSpot by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     // Tapped agent-layer feature (e.g. a where-to-move town) → info panel.
@@ -415,10 +419,10 @@ private fun MapToolbar(
             Text(
                 err,
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFFCA5A5),
+                color = MaterialTheme.colorScheme.error,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0x33EF4444))
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -665,7 +669,7 @@ private fun CredentialsPanel(
             } else {
                 OutlinedTextField(value = cookie, onValueChange = { cookie = it }, placeholder = { Text("paste your gspkauth cookie value") }, modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(vertical = 2.dp))
             }
-            state.error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFCA5A5), modifier = Modifier.padding(vertical = 2.dp)) }
+            state.error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 2.dp)) }
             TextButton(
                 onClick = {
                     busy = true
@@ -717,9 +721,9 @@ private fun CacheDetailPanel(cache: MapCache, onClose: () -> Unit, modifier: Mod
                 Text("D ${cache.difficulty}", style = MaterialTheme.typography.labelSmall)
                 Text("T ${cache.terrain}", style = MaterialTheme.typography.labelSmall)
                 Text("★ ${cache.favorites}", style = MaterialTheme.typography.labelSmall)
-                if (cache.found) Text("found", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4ADE80))
-                if (cache.dnf) Text("DNF", style = MaterialTheme.typography.labelSmall, color = Color(0xFFF87171))
-                if (cache.pmOnly) Text("premium", style = MaterialTheme.typography.labelSmall, color = Color(0xFFFBBF24))
+                if (cache.found) Text("found", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.green)
+                if (cache.dnf) Text("DNF", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.red)
+                if (cache.pmOnly) Text("premium", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.amber)
             }
             if (cache.owner.isNotBlank()) {
                 Text("by ${cache.owner}${if (cache.hidden.isNotBlank()) " · ${cache.hidden}" else ""}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
@@ -764,13 +768,13 @@ private fun CacheDetailPanel(cache: MapCache, onClose: () -> Unit, modifier: Mod
             val ctx = androidx.compose.ui.platform.LocalContext.current
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { openUrl(ctx, "https://www.geocaching.com/geocache/${cache.code}") }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                    Text("open on geocaching.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    Text("open on geocaching.com", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                 }
                 if (cache.lat != null && cache.lon != null) {
                     TextButton(onClick = { openInMaps(ctx, cache.lat!!, cache.lon!!, cache.name) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.blue)
                         Spacer(Modifier.size(4.dp))
-                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                     }
                 }
             }
@@ -798,8 +802,8 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
             Text(formatEventTime(event.dateTime), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (event.going > 0) Text("${event.going} going", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (event.eventType == "ONLINE") Text("online", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
-                if (event.eventType == "HYBRID") Text("hybrid", style = MaterialTheme.typography.labelSmall, color = Color(0xFFFBBF24))
+                if (event.eventType == "ONLINE") Text("online", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
+                if (event.eventType == "HYBRID") Text("hybrid", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.amber)
             }
             if (venueLine.isNotBlank()) {
                 Text("$venueLine${if (event.venueAddress.isNotBlank()) " · ${event.venueAddress}" else ""}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -818,14 +822,14 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (event.eventUrl.isNotBlank()) {
                     TextButton(onClick = { openUrl(ctx, event.eventUrl) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Text("open on meetup.com", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                        Text("open on meetup.com", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                     }
                 }
                 if (event.lat != null && event.lon != null) {
                     TextButton(onClick = { openInMaps(ctx, event.lat!!, event.lon!!, event.venueName.ifBlank { event.title }) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.blue)
                         Spacer(Modifier.size(4.dp))
-                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                        Text("navigate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                     }
                 }
             }
@@ -926,15 +930,15 @@ private fun AgentFeaturePanel(
             }
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = { openInMaps(ctx, info.lat, info.lon, info.title) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                    Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                    Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.blue)
                     Spacer(Modifier.size(4.dp))
-                    Text("navigate", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                    Text("navigate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                 }
                 if (!info.url.isNullOrEmpty()) {
                     TextButton(onClick = { openUrl(ctx, info.url) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                        Icon(Icons.Filled.OpenInNew, null, modifier = Modifier.size(14.dp), tint = Color(0xFF60A5FA))
+                        Icon(Icons.Filled.OpenInNew, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.blue)
                         Spacer(Modifier.size(4.dp))
-                        Text("open", style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA))
+                        Text("open", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                     }
                 }
             }
@@ -1004,11 +1008,12 @@ private fun pickDate(ctx: android.content.Context, initialMs: Long, onPicked: (L
 }
 
 /** Colour a log entry by its type (mirrors logColor in MapTab.tsx). */
+@Composable
 private fun logColor(type: String): Color = when (type) {
-    "found_it", "attended", "webcam_photo_taken" -> Color(0xFF22C55E)
-    "didnt_find_it" -> Color(0xFFEF4444)
-    "needs_maintenance", "needs_archive", "owner_maintenance" -> Color(0xFFF59E0B)
-    else -> Color(0xFF94A3B8)
+    "found_it", "attended", "webcam_photo_taken" -> MaterialTheme.accents.green
+    "didnt_find_it" -> MaterialTheme.accents.red
+    "needs_maintenance", "needs_archive", "owner_maintenance" -> MaterialTheme.accents.amber
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 /** Strip HTML tags from gc.com log fragments (`<p>…</p>`). */

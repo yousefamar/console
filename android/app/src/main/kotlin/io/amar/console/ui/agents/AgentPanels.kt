@@ -25,6 +25,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -54,10 +56,10 @@ import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
-private val AMBER = Color(0xFFF59E0B)
-private val VIOLET = Color(0xFFA78BFA)
-private val GREEN = Color(0xFF4ADE80)
-private val RED = Color(0xFFF87171)
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
+private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
+private val RED: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.red
 
 // ------------------------------------------------------------------ //
 // Cron sheet

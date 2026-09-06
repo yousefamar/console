@@ -29,6 +29,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,9 +64,9 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private val GREEN = Color(0xFF4ADE80)
-private val RED = Color(0xFFF87171)
-private val AMBER = Color(0xFFFACC15)
+private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
+private val RED: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.red
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 private val LIQUID_BLUE = Color(0xFF3B82F6)
 private val INVEST_VIOLET = Color(0xFFA78BFA)
 

@@ -22,6 +22,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -43,9 +45,9 @@ import io.amar.console.data.agents.Cron
 import io.amar.console.data.agents.shortCwd
 import io.amar.console.data.db.AgentSessionRow
 
-private val AMBER = Color(0xFFF59E0B)
-private val GREEN = Color(0xFF4ADE80)
-private val RED = Color(0xFFF87171)
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
+private val RED: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.red
 
 /**
  * Per-session status bar: model pin picker · permission-mode badge · git

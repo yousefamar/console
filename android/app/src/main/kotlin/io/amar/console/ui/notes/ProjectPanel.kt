@@ -25,6 +25,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -84,7 +85,7 @@ fun ProjectPill(
         if (tracked != null) {
             Text("· $postCount post${if (postCount == 1) "" else "s"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val statusColor = when (tracked.status) {
-                "active" -> Color(0xFF4ADE80); "dormant" -> Color(0xFFFBBF24); else -> MaterialTheme.colorScheme.onSurfaceVariant
+                "active" -> MaterialTheme.accents.green; "dormant" -> MaterialTheme.accents.amber; else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
             Icon(Icons.Filled.Circle, null, Modifier.size(6.dp), tint = statusColor)
         } else {
@@ -188,7 +189,7 @@ fun ProjectPanelDialog(
                         ) {
                             val dotColor = when {
                                 s.needsAttention -> MaterialTheme.colorScheme.error
-                                s.status == "running" -> Color(0xFF4ADE80)
+                                s.status == "running" -> MaterialTheme.accents.green
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
                             Icon(Icons.Filled.Circle, null, Modifier.size(6.dp), tint = dotColor)

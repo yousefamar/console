@@ -418,3 +418,36 @@ fun toggledRules(rules: InboxRules, entry: InboxEntry): InboxRules? {
         InboxSource.AGENT -> null
     }
 }
+
+/** One persisted routing override, resolved for display (SPA `RouteOverrides`). */
+data class RouteOverride(
+    val source: InboxSource,
+    /** The rules-map key: room id / lowercased sender email / feed id. */
+    val key: String,
+    /** Room name / sender email / feed title — the key itself when unresolvable. */
+    val label: String,
+    /** 'feed' | 'inbox' | 'hidden'. */
+    val route: String,
+)
+
+/** Every override in [rules], chat → mail → feeds, each group sorted by label. */
+fun listOverrides(
+    rules: InboxRules,
+    roomNames: Map<String, String>,
+    feedTitles: Map<String, String>,
+): List<RouteOverride> {
+    fun group(source: InboxSource, map: Map<String, String>, label: (String) -> String) =
+        map.map { (k, v) -> RouteOverride(source, k, label(k).ifBlank { k }, v) }
+            .sortedBy { it.label.lowercase() }
+    return group(InboxSource.CHAT, rules.chatRooms) { roomNames[it] ?: it } +
+        group(InboxSource.MAIL, rules.mailSenders) { it } +
+        group(InboxSource.FEED, rules.feedFeeds) { feedTitles[it] ?: it }
+}
+
+/** Drop one override so its source falls back to the section default. */
+fun withoutOverride(rules: InboxRules, source: InboxSource, key: String): InboxRules = when (source) {
+    InboxSource.CHAT -> rules.copy(chatRooms = rules.chatRooms - key)
+    InboxSource.MAIL -> rules.copy(mailSenders = rules.mailSenders - key)
+    InboxSource.FEED -> rules.copy(feedFeeds = rules.feedFeeds - key)
+    InboxSource.AGENT -> rules
+}

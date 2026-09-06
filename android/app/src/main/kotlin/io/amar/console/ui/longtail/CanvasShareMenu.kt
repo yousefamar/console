@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -144,7 +145,7 @@ fun CanvasShareMenu(onClose: () -> Unit) {
                                             modifier = Modifier.weight(1f),
                                         )
                                         IconButton(onClick = { copyToClipboard(ctx, pub); copied = key }, modifier = Modifier.size(28.dp)) {
-                                            Icon(if (copied == key) Icons.Filled.Check else Icons.Filled.ContentCopy, "Copy URL", modifier = Modifier.size(15.dp), tint = if (copied == key) Color(0xFF4ADE80) else MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Icon(if (copied == key) Icons.Filled.Check else Icons.Filled.ContentCopy, "Copy URL", modifier = Modifier.size(15.dp), tint = if (copied == key) MaterialTheme.accents.green else MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                 }

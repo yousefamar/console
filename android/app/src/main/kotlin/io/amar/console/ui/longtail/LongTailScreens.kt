@@ -53,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -979,10 +980,10 @@ fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
             Text(
                 "No playback device. Open Spotify, pick amarhp-spotifyd in the Connect menu and press play, then try again.",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFF59E0B),
+                color = MaterialTheme.accents.amber,
                 modifier = Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0x1AF59E0B))
+                    .background(MaterialTheme.accents.amber.copy(alpha = 0.1f))
                     .padding(10.dp),
             )
         }
@@ -1008,7 +1009,7 @@ fun MusicScreen(repo: MusicRepository, onGrid: () -> Unit = {}) {
                     if (np.liked == true) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                     contentDescription = if (np.liked == true) "Remove from Liked Songs" else "Save to Liked Songs",
                     modifier = Modifier.size(20.dp),
-                    tint = if (np.liked == true) Color(0xFFF87171) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (np.liked == true) MaterialTheme.accents.red else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

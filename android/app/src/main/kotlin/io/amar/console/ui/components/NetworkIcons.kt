@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.luminance
+import io.amar.console.ui.theme.isDark
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -71,7 +73,9 @@ object NetworkIcons {
 @Composable
 fun NetworkBadge(network: String?, size: Dp = 17.dp, modifier: Modifier = Modifier) {
     val spec = NetworkIcons.spec(network) ?: return
-    val vector = remember(network) { NetworkIcons.vector(spec, spec.brand) }
+    // X's brand mark is near-white — invisible on the light scheme's surface.
+    val brand = if (!MaterialTheme.isDark && spec.brand.luminance() > 0.8f) MaterialTheme.colorScheme.onSurface else spec.brand
+    val vector = remember(network, brand) { NetworkIcons.vector(spec, brand) }
     Box(
         modifier
             .size(size)

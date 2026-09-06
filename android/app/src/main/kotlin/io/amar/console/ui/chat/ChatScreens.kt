@@ -55,6 +55,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -1054,7 +1055,7 @@ private fun ForwardRoomPicker(
 /** "— New —" unread divider row. */
 @Composable
 private fun UnreadDivider() {
-    val red = androidx.compose.ui.graphics.Color(0xFFF87171)
+    val red = MaterialTheme.accents.red
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1557,14 +1558,16 @@ private fun MessageBubble(
                         // SPA parity: notices render italic, never as a word-diff.
                         EditDiffText(msg.originalBody!!, bodyText)
                     } else if (msg.formattedBody != null) {
-                        val html = remember(msg.formattedBody) {
+                        val linkColor = MaterialTheme.accents.blue
+                        val html = remember(msg.formattedBody, linkColor) {
                             linkifyBareUrls(
                                 androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
                                     msg.formattedBody!!,
                                     linkStyles = androidx.compose.ui.text.TextLinkStyles(
-                                        style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                                        style = androidx.compose.ui.text.SpanStyle(color = linkColor),
                                     ),
-                                )
+                                ),
+                                linkColor,
                             )
                         }
                         Text(html, style = MaterialTheme.typography.bodyMedium, fontStyle = noticeStyle, color = noticeColor)
@@ -1575,14 +1578,16 @@ private fun MessageBubble(
                     } else {
                         val md = remember(bodyText) { io.amar.console.data.chat.MessageFormat.markdownToHtml(bodyText) }
                         if (md != null) {
-                            val html = remember(md) {
+                            val linkColor = MaterialTheme.accents.blue
+                            val html = remember(md, linkColor) {
                                 linkifyBareUrls(
                                     androidx.compose.ui.text.AnnotatedString.Companion.fromHtml(
                                         md,
                                         linkStyles = androidx.compose.ui.text.TextLinkStyles(
-                                            style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                                            style = androidx.compose.ui.text.SpanStyle(color = linkColor),
                                         ),
-                                    )
+                                    ),
+                                    linkColor,
                                 )
                             }
                             Text(html, style = MaterialTheme.typography.bodyMedium, fontStyle = noticeStyle, color = noticeColor)
@@ -1680,7 +1685,8 @@ private fun MessageBubble(
 @Composable
 private fun LinkifiedText(text: String, strikethrough: Boolean, dim: Boolean, italic: Boolean = false) {
     val urlRegex = remember { Regex("https?://[^\\s]+") }
-    val annotated = remember(text) {
+    val linkColor = MaterialTheme.accents.blue
+    val annotated = remember(text, linkColor) {
         androidx.compose.ui.text.buildAnnotatedString {
             var last = 0
             for (m in urlRegex.findAll(text)) {
@@ -1689,7 +1695,7 @@ private fun LinkifiedText(text: String, strikethrough: Boolean, dim: Boolean, it
                     androidx.compose.ui.text.LinkAnnotation.Url(
                         m.value,
                         androidx.compose.ui.text.TextLinkStyles(
-                            style = androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+                            style = androidx.compose.ui.text.SpanStyle(color = linkColor),
                         ),
                     )
                 ) { append(m.value) }
@@ -1716,7 +1722,7 @@ private fun firstUrlIn(body: String): String? =
  *  formatted_body with URLs as PLAIN TEXT (no <a>), and fromHtml only links
  *  real anchors — so bridge messages with links weren't clickable. Adds a
  *  LinkAnnotation.Url over every URL span not already inside a link. */
-fun linkifyBareUrls(src: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.AnnotatedString {
+fun linkifyBareUrls(src: androidx.compose.ui.text.AnnotatedString, linkColor: androidx.compose.ui.graphics.Color): androidx.compose.ui.text.AnnotatedString {
     val urlRegex = Regex("https?://[^\\s]+")
     val matches = urlRegex.findAll(src.text).toList()
     if (matches.isEmpty()) return src
@@ -1732,7 +1738,7 @@ fun linkifyBareUrls(src: androidx.compose.ui.text.AnnotatedString): androidx.com
             m.range.first, end,
         )
         builder.addStyle(
-            androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF60A5FA)),
+            androidx.compose.ui.text.SpanStyle(color = linkColor),
             m.range.first, end,
         )
     }
@@ -1764,18 +1770,19 @@ private fun EditDiffText(original: String, edited: String) {
     val parts = remember(original, edited) { io.amar.console.data.chat.ChatFormat.wordDiff(original, edited) }
     val tagColor = MaterialTheme.colorScheme.onSurfaceVariant
     val tagSize = MaterialTheme.typography.labelSmall.fontSize
-    val annotated = remember(parts, tagColor, tagSize) {
+    val accents = MaterialTheme.accents
+    val annotated = remember(parts, tagColor, tagSize, accents) {
         androidx.compose.ui.text.buildAnnotatedString {
             for (p in parts) {
                 when (p.kind) {
                     io.amar.console.data.chat.ChatFormat.DiffKind.REMOVED -> withStyle(
                         androidx.compose.ui.text.SpanStyle(
-                            color = androidx.compose.ui.graphics.Color(0xFFF87171),
+                            color = accents.red,
                             textDecoration = TextDecoration.LineThrough,
                         )
                     ) { append(p.text) }
                     io.amar.console.data.chat.ChatFormat.DiffKind.ADDED -> withStyle(
-                        androidx.compose.ui.text.SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF4ADE80))
+                        androidx.compose.ui.text.SpanStyle(color = accents.green)
                     ) { append(p.text) }
                     else -> append(p.text)
                 }
@@ -1819,7 +1826,7 @@ private fun DeletedMessageBody(
         // blank column (same bug as the edited-message padding).
         val tagColor = MaterialTheme.colorScheme.onSurfaceVariant
         val tagSize = MaterialTheme.typography.labelSmall.fontSize
-        val bodyColor = androidx.compose.ui.graphics.Color(0xFFF87171).copy(alpha = 0.7f)
+        val bodyColor = MaterialTheme.accents.red.copy(alpha = 0.7f)
         Text(
             androidx.compose.ui.text.buildAnnotatedString {
                 withStyle(androidx.compose.ui.text.SpanStyle(color = bodyColor, textDecoration = TextDecoration.LineThrough)) {

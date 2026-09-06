@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,8 +83,8 @@ import kotlinx.serialization.json.longOrNull
 
 private val json = Json { ignoreUnknownKeys = true }
 
-private val GREEN = Color(0xFF4ADE80)
-private val RED = Color(0xFFF87171)
+private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
+private val RED: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.red
 
 /**
  * Transcript block renderer — the mobile port of AgentMessageBlock.tsx.
@@ -905,7 +907,10 @@ private fun RenderMdLine(line: String) {
 }
 
 /** Inline `code` + **bold** + *italic* + [links](url) + bare-URL autolink. */
-private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
+@Composable
+private fun inlineMd(s: String): AnnotatedString {
+    val linkColor = MaterialTheme.accents.blue
+    return buildAnnotatedString {
     var i = 0
     while (i < s.length) {
         when {
@@ -916,7 +921,7 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
             }
             s[i] == '`' -> {
                 val end = s.indexOf('`', i + 1)
-                if (end > 0) { withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x33FFFFFF))) { append(s.substring(i + 1, end)) }; i = end + 1 }
+                if (end > 0) { withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x33808080))) { append(s.substring(i + 1, end)) }; i = end + 1 }
                 else { append(s[i]); i++ }
             }
             s[i] == '[' -> {
@@ -930,7 +935,7 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
                             // LinkAnnotation makes the span actually TAPPABLE —
                             // withStyle alone painted it blue but dead.
                             withLink(androidx.compose.ui.text.LinkAnnotation.Url(url)) {
-                                withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(label) }
+                                withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) { append(label) }
                             }
                         } else append(label)
                         i = urlEnd + 1
@@ -947,7 +952,7 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
                 var trailing = ""
                 while (url.isNotEmpty() && url.last() in ".,;:!?") { trailing = url.last() + trailing; url = url.dropLast(1) }
                 withLink(androidx.compose.ui.text.LinkAnnotation.Url(url)) {
-                    withStyle(SpanStyle(color = Color(0xFF60A5FA), textDecoration = TextDecoration.Underline)) { append(url) }
+                    withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) { append(url) }
                 }
                 append(trailing)
                 i = end
@@ -961,6 +966,7 @@ private fun inlineMd(s: String): AnnotatedString = buildAnnotatedString {
                 } else { append(s[i]); i++ }
             }
         }
+    }
     }
 }
 

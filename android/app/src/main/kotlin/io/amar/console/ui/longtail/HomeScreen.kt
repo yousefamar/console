@@ -30,6 +30,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
@@ -163,7 +164,7 @@ private fun CountBadge(count: Int) {
 
 @Composable
 private fun StatusDot(ok: Boolean) {
-    Box(Modifier.size(8.dp).clip(CircleShape).background(if (ok) Color(0xFF4ADE80) else Color(0xFFF87171)))
+    Box(Modifier.size(8.dp).clip(CircleShape).background(if (ok) MaterialTheme.accents.green else MaterialTheme.accents.red))
 }
 
 @Composable
@@ -203,20 +204,20 @@ private fun AlertsSection(alerts: List<DashboardAlert>, loading: Boolean, onOpen
             for (alert in alerts) {
                 when (alert) {
                     is DashboardAlert.Approval -> AlertRow(
-                        glyph = "🛡", glyphColor = Color(0xFFFBBF24),
+                        glyph = "🛡", glyphColor = MaterialTheme.accents.amber,
                         title = if (alert.toolName == "AskUserQuestion") "Agent needs your input" else "Agent needs approval",
                         subtitle = "${alert.sessionName ?: alert.sessionId.take(12)} · ${alert.question ?: alert.toolName}",
                         onClick = { onOpenAgentSession(alert.sessionId) },
                     )
                     is DashboardAlert.Upcoming -> AlertRow(
-                        glyph = "🕐", glyphColor = Color(0xFF60A5FA),
+                        glyph = "🕐", glyphColor = MaterialTheme.accents.blue,
                         title = alert.summary,
                         subtitle = "in ${formatCountdown(alert.startMs - System.currentTimeMillis())}",
                         // Tap → open Calendar pane via deep link (no direct nav handle here).
                         onClick = { openPane(ctx, "calendar") },
                     )
                     is DashboardAlert.Err -> AlertRow(
-                        glyph = "⚠", glyphColor = Color(0xFFF87171),
+                        glyph = "⚠", glyphColor = MaterialTheme.accents.red,
                         title = alert.message,
                         subtitle = "${alert.source} · ${formatAgo(System.currentTimeMillis() - alert.ts)}",
                         onClick = null,
@@ -279,7 +280,7 @@ private fun ServersSection(
             }
             when {
                 snapshot == null && loading -> Text("Loading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp))
-                snapshot == null && error != null -> Text(error, style = MaterialTheme.typography.bodySmall, color = Color(0xFFF87171), modifier = Modifier.padding(12.dp))
+                snapshot == null && error != null -> Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
                 snapshot != null -> ServerRows(snapshot, onRemove)
             }
         }
@@ -411,8 +412,8 @@ private data class PromptSpec(val title: String, val placeholder: String, val on
 
 @Composable
 private fun tintColor(tint: AgeTint): Color = when (tint) {
-    AgeTint.RED -> Color(0xFFF87171)
-    AgeTint.YELLOW -> Color(0xFFFBBF24)
+    AgeTint.RED -> MaterialTheme.accents.red
+    AgeTint.YELLOW -> MaterialTheme.accents.amber
     AgeTint.NORMAL -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 

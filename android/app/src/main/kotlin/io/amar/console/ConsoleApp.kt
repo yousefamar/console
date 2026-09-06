@@ -17,6 +17,7 @@ class ConsoleApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         HubConfig.init(this)
+        io.amar.console.core.AppPrefs.init(this)
         HubTokenStore.init(this)
         AppLifecycle.install()
         InstalledApps.init(this)

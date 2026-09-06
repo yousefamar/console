@@ -63,6 +63,15 @@ import java.util.Locale
  *  - A BellOff indicator in the header appears only while Do Not Disturb is on;
  *    tapping it disables DND (hub-synced pref).
  */
+
+/** The panes the Inbox + Spaces absorb (SPA `console:ui:legacyTabs`). */
+val LEGACY_PANES: Set<Pane> = setOf(Pane.Mail, Pane.Chat, Pane.Feeds, Pane.Notes)
+
+/** Grid tile set for a search [query]; [hideLegacy] only prunes the unsearched grid. */
+fun visibleGridPanes(query: String, hideLegacy: Boolean): List<Pane> =
+    if (query.isBlank()) Pane.entries.filter { !hideLegacy || it !in LEGACY_PANES }
+    else Pane.entries.filter { it.label.contains(query, ignoreCase = true) }
+
 @Composable
 fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
     val chatUnread by app.graph.db.chatRooms()
@@ -154,9 +163,11 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
                     .thenBy { it.label.lowercase() }
             )
         }
-        val visiblePanes = androidx.compose.runtime.remember(query) {
-            if (query.isBlank()) Pane.entries.toList()
-            else Pane.entries.filter { it.label.contains(query, ignoreCase = true) }
+        // Hidden legacy tiles (SPA `console:ui:legacyTabs`) drop off the grid
+        // only — a search still reaches them.
+        val hideLegacy by io.amar.console.core.AppPrefs.hideLegacyTiles.collectAsState()
+        val visiblePanes = androidx.compose.runtime.remember(query, hideLegacy) {
+            visibleGridPanes(query, hideLegacy)
         }
         val ctx = androidx.compose.ui.platform.LocalContext.current
         androidx.compose.material3.OutlinedTextField(

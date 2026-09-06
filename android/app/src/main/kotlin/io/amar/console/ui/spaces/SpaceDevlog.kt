@@ -19,6 +19,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -66,8 +68,8 @@ object DevlogLogic {
         if (posts == null && drafts.isEmpty()) null else drafts.size + (posts?.size ?: 0)
 }
 
-private val DRAFT_BLUE = Color(0xFF3B82F6)
-private val UNSAVED_AMBER = Color(0xFFF59E0B)
+private val DRAFT_BLUE: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.blue
+private val UNSAVED_AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 
 /** Area detail: the writing IS the content — full-height, always expanded. */
 @Composable

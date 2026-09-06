@@ -26,6 +26,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -50,8 +52,8 @@ import androidx.compose.ui.unit.dp
 import io.amar.console.data.agents.AgentsRepository
 import kotlinx.coroutines.launch
 
-private val AMBER = Color(0xFFF59E0B)
-private val VIOLET = Color(0xFFA78BFA)
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
 
 // Known model ids for the fleet picker optgroups (model-config.ts).
 private val FIRST_PARTY = listOf("claude-fable-5-1", "claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001")

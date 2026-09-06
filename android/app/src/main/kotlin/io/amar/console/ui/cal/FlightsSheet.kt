@@ -28,6 +28,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,7 +82,7 @@ fun FlightsSheet(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Icon(Icons.Filled.Warning, null, Modifier.size(16.dp), tint = Color(0xFFF59E0B))
+                    Icon(Icons.Filled.Warning, null, Modifier.size(16.dp), tint = MaterialTheme.accents.amber)
                     Text(
                         "SerpApi key not set. Run con cal flights credentials --key …",
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -139,7 +140,7 @@ private fun WatchlistRow(
                     Text(
                         FlightsFormat.formatPrice(price, wl.currency),
                         style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
-                        color = if (underThreshold) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurface,
+                        color = if (underThreshold) MaterialTheme.accents.green else MaterialTheme.colorScheme.onSurface,
                     )
                 }
                 if (delta != null && delta != 0.0) {
@@ -147,7 +148,7 @@ private fun WatchlistRow(
                     Text(
                         FlightsFormat.deltaLabel(delta),
                         style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
-                        color = if (delta < 0) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (delta < 0) MaterialTheme.accents.green else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

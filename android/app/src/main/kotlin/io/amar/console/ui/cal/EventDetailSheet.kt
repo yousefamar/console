@@ -35,6 +35,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -263,8 +264,8 @@ private fun RsvpChip(label: String, icon: ImageVector, active: Boolean, onClick:
 
 @Composable
 fun rsvpDotColor(status: String): Color = when (status) {
-    "accepted" -> Color(0xFF4ADE80)
-    "tentative" -> Color(0xFFFACC15)
-    "declined" -> Color(0xFFF87171)
+    "accepted" -> MaterialTheme.accents.green
+    "tentative" -> MaterialTheme.accents.amber
+    "declined" -> MaterialTheme.accents.red
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }

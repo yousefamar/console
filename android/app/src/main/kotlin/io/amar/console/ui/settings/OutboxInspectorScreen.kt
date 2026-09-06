@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -106,7 +107,7 @@ fun OutboxInspectorScreen(app: ConsoleApp, onBack: () -> Unit) {
 private fun StatusChip(status: String) {
     val (label, color) = when (status) {
         "failed" -> "failed" to MaterialTheme.colorScheme.error
-        "conflict" -> "conflict" to Color(0xFFFBBF24)
+        "conflict" -> "conflict" to MaterialTheme.accents.amber
         "processing" -> "sending" to MaterialTheme.colorScheme.primary
         else -> "pending" to MaterialTheme.colorScheme.onSurfaceVariant
     }

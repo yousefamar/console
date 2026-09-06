@@ -345,6 +345,51 @@ class InboxLogicTest {
     }
 
     @Test
+    fun `listOverrides labels from local tables, groups chat then mail then feeds, sorts by label`() {
+        val rules = InboxRules(
+            chatRooms = mapOf("!zed" to "feed", "!alpha" to "feed"),
+            mailSenders = mapOf("news@example.com" to "feed"),
+            feedFeeds = mapOf("f1" to "inbox", "gone" to "hidden"),
+        )
+        val out = listOverrides(
+            rules,
+            roomNames = mapOf("!zed" to "Zed", "!alpha" to "Alpha"),
+            feedTitles = mapOf("f1" to "Hacker News"),
+        )
+        assertEquals(
+            listOf(
+                InboxSource.CHAT to "Alpha", InboxSource.CHAT to "Zed",
+                InboxSource.MAIL to "news@example.com",
+                InboxSource.FEED to "gone", InboxSource.FEED to "Hacker News",
+            ),
+            out.map { it.source to it.label },
+        )
+        // An unresolvable key labels as itself; the route rides through verbatim.
+        val gone = out.first { it.key == "gone" }
+        assertEquals("gone", gone.key)
+        assertEquals("hidden", gone.route)
+    }
+
+    @Test
+    fun `withoutOverride drops exactly one key and is a no-op for agents or unknown keys`() {
+        val rules = InboxRules(
+            chatRooms = mapOf("!a" to "feed", "!b" to "feed"),
+            mailSenders = mapOf("x@y.z" to "feed"),
+            feedFeeds = mapOf("f1" to "inbox"),
+        )
+        val cleared = withoutOverride(rules, InboxSource.CHAT, "!a")
+        assertEquals(mapOf("!b" to "feed"), cleared.chatRooms)
+        assertEquals("inbox", cleared.routeForRoom("!a"))
+        assertEquals(rules.mailSenders, cleared.mailSenders)
+        assertEquals(rules.feedFeeds, cleared.feedFeeds)
+
+        assertEquals(emptyMap<String, String>(), withoutOverride(rules, InboxSource.MAIL, "x@y.z").mailSenders)
+        assertEquals(emptyMap<String, String>(), withoutOverride(rules, InboxSource.FEED, "f1").feedFeeds)
+        assertEquals(rules, withoutOverride(rules, InboxSource.AGENT, "anything"))
+        assertEquals(rules, withoutOverride(rules, InboxSource.CHAT, "!missing"))
+    }
+
+    @Test
     fun `mail routes key on lowercased sender`() {
         val rules = InboxRules.DEFAULT.copy(mailSenders = mapOf("bob@example.com" to "feed"))
         val t = threadToEntry(thread(fromEmail = "Bob@Example.com"), rules)

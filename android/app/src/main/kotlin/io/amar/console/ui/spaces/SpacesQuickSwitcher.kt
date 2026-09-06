@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.ViewKanban
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,8 +44,8 @@ import io.amar.console.data.db.NoteFileRow
 import io.amar.console.data.spaces.SpacesRepository
 import io.amar.console.data.spaces.SpacesSwitcher
 
-private val VIOLET = androidx.compose.ui.graphics.Color(0xFFA78BFA)
-private val AMBER = androidx.compose.ui.graphics.Color(0xFFF59E0B)
+private val VIOLET: androidx.compose.ui.graphics.Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
+private val AMBER: androidx.compose.ui.graphics.Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 
 /**
  * Spaces quick switcher — the SPA's `/` command bar (SpacesQuickSwitcher.tsx)

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -135,9 +136,9 @@ fun CalendarInviteCard(event: CalendarInvite) {
 
 @Composable
 private fun statusColor(status: String): Color = when (status) {
-    "accepted" -> Color(0xFF22C55E)
+    "accepted" -> MaterialTheme.accents.green
     "declined" -> MaterialTheme.colorScheme.error
-    "tentative" -> Color(0xFFF59E0B)
+    "tentative" -> MaterialTheme.accents.amber
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 

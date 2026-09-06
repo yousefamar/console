@@ -44,6 +44,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import io.amar.console.ui.theme.toCssHex
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SwipeToDismissBox
@@ -954,11 +956,17 @@ fun FeedItemScreen(repo: FeedsRepository, itemId: String, onBack: () -> Unit) {
             } else {
                 val html = item?.content
                 if (html != null) {
+                    // The article shell follows the app theme (the SPA's body
+                    // inherits the page tokens); the content's own CSS is untouched.
+                    val cs = MaterialTheme.colorScheme
+                    val bg = cs.background.toCssHex(); val fg = cs.onBackground.toCssHex()
+                    val link = MaterialTheme.accents.blue.toCssHex(); val pre = cs.surfaceVariant.toCssHex()
+                    val muted = cs.onSurfaceVariant.toCssHex(); val rule = cs.outline.toCssHex()
                     val doc = """
                         <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-                        <style>body{background:#0a0a0a;color:#e5e5e5;font-family:sans-serif;font-size:15px;line-height:1.5;margin:0;word-break:break-word}
-                        a{color:#60a5fa}img{max-width:100%;height:auto}pre{background:#141414;padding:8px;border-radius:4px;overflow-x:auto}
-                        blockquote{border-left:2px solid #333;padding-left:12px;font-style:italic;color:#aaa}
+                        <style>body{background:$bg;color:$fg;font-family:sans-serif;font-size:15px;line-height:1.5;margin:0;word-break:break-word}
+                        a{color:$link}img{max-width:100%;height:auto}pre{background:$pre;padding:8px;border-radius:4px;overflow-x:auto}
+                        blockquote{border-left:2px solid $rule;padding-left:12px;font-style:italic;color:$muted}
                         /* Reddit RSS wraps thumbnail+text in a table — a 70px cell
                            beside a wall of text reads broken on a phone. Stack cells. */
                         table,tbody,tr,td{display:block;width:100%!important;border:0}

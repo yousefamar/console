@@ -14,6 +14,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -214,6 +217,47 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
         }
         if (status.isNotEmpty()) {
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+
+        HorizontalDivider()
+
+        // ---- Appearance (device-local — the phone is read in sunlight) ---- //
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        val themeMode by io.amar.console.core.AppPrefs.themeMode.collectAsState()
+        Text("Theme", style = MaterialTheme.typography.bodyMedium)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val modes = io.amar.console.core.AppPrefs.ThemeMode.entries
+            modes.forEachIndexed { i, m ->
+                SegmentedButton(
+                    selected = themeMode == m,
+                    onClick = { io.amar.console.core.AppPrefs.setThemeMode(m) },
+                    shape = SegmentedButtonDefaults.itemShape(i, modes.size),
+                ) { Text(m.name.lowercase().replaceFirstChar { it.uppercase() }) }
+            }
+        }
+        Text(
+            "The Map keeps its own light/dark basemap toggle.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val hideLegacy by io.amar.console.core.AppPrefs.hideLegacyTiles.collectAsState()
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Hide Mail / Chat / Feeds / Notes tiles", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Inbox + Spaces cover them. Search still finds them.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = hideLegacy,
+                onCheckedChange = { io.amar.console.core.AppPrefs.setHideLegacyTiles(it) },
+            )
         }
 
         HorizontalDivider()

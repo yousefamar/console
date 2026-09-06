@@ -25,21 +25,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   at all (the mobile ask in root CLAUDE.md is exactly this). Plan: search box
   → `/gmaps/autocomplete` → pin + detail sheet → `geo:` deep link.
 
-- Inbox: routing-override management (SPA `RouteOverrides`, InboxTab.tsx:517
-  — clearable per source). Android has only the per-row `→ feed/→ inbox`
-  toggle. Plan: "Routing rules" sheet from the top bar, ✕ per override,
-  writes `/inbox/rules`.
-
-- Agents: "Allow all <tool>" on the approval card (SPA `AgentToolApproval`);
-  Android `ApprovalCard.kt` is Approve/Deny only. Low — tools auto-approve.
-
-- Theme: light mode — SPA Shift+T; Android `Theme.kt` is dark-only (map has
-  its own light toggle). Plan: follow the system theme.
-
-- Grid: `legacyTabs` hide pref — SPA hides Mail/Chat/Feeds/Notes tabs once
-  the Inbox/Spaces absorb them; Android grid always shows the tiles. Plan:
-  read the hub pref and hide those tiles when set.
-
 ## Desktop-only (considered, not gaps)
 
 Inbox day rail · every keybinding (j/k/e/b/p, y/n/a, Ctrl+H/L focus cycling,
@@ -104,6 +89,40 @@ view-mode hub-sync (Room meta is fine on one device).
   ∞, day labels) + all JSON parsers unit-tested (`MoneyModelsTest`). NOT in
   scope (Open entry above): budgets, scenarios, category/rule/override editing,
   ledger entries.
+- **Light theme + system-follow** (card ^plum-lark; SPA `Shift+T`): `Theme.kt`
+  gains `ConsoleLight` (the SPA's `:root` tokens — white/#f7f7f7/#efefef,
+  text #171717/#525252, accent #2563eb; every M3 container role pinned neutral
+  because the defaults are purple-tinted and leak into chips/sheets/dialogs)
+  and resolves dark/light from `AppPrefs.themeMode` (System/Dark/Light,
+  device-local SharedPreferences — the phone is read in sunlight, so NOT a hub
+  pref; Settings → Appearance) with `isSystemInDarkTheme()` as the SYSTEM
+  source. System bars flip at runtime (`WindowInsetsControllerCompat` light
+  icons + bar colour; themes.xml can't see the in-app override, so the cold
+  splash stays dark). Contrast sweep: the Tailwind-400 status colours sit at
+  ~2:1 on white, so `MaterialTheme.accents` (green/red/amber/violet/blue) now
+  carries dark = the old 400s (byte-identical in dark) / light = the SPA's
+  success/warning/destructive tokens; the per-file `private val GREEN/RED/…`
+  became composable getters (call sites untouched), inline `Color(0xFF60A5FA)`
+  links/tints across Chat, Map, Spaces, Notes, Home, Cal, Feeds moved onto it.
+  Also theme-aware now: the X (twitter) badge (near-white brand mark → onSurface
+  on light), CirclesView folder covers + labels, the Feeds article HTML shell
+  (was baked `#0a0a0a`), the Mail "Dark colours" default and the Map basemap
+  default (both follow the theme until toggled; the map's own toggle stays).
+  Tests: `AppPrefsTest` (resolveDark/parseThemeMode).
+- **Hide legacy tiles** (SPA `console:ui:legacyTabs`, Layout.tsx:234 — that's
+  localStorage, so the phone twin is a local Settings switch, not a hub pref):
+  Settings → Appearance → "Hide Mail / Chat / Feeds / Notes tiles" prunes
+  `LEGACY_PANES` from the grid (`visibleGridPanes`, pure + tested); a launcher
+  search still reaches them. Default off.
+- **Inbox: routing-rules sheet** (SPA `RouteOverrides`, InboxTab.tsx:517):
+  Tune icon in the Inbox top bar → `ModalBottomSheet` listing every persisted
+  override from `/inbox/rules` grouped chat → mail → feeds, labelled from the
+  local room/feed tables (`InboxRepository.overrides`, `listOverrides` pure),
+  ✕ per row → `withoutOverride` (pure) → optimistic + `POST /inbox/rules`.
+  Android previously had only the per-row → feed / → inbox toggle with no way
+  to see or undo what it had written. Tests in `InboxLogicTest`.
+- **Allow all <tool>** — already shipped (`ApprovalCard.kt` "Always
+  <tool>" → `approveAlways`); the Open entry was stale and is removed.
 
 - **Spaces: writing parity — area Posts tab, project devlog strip, hub live
   buffer** (^tall-frog; SPA ^loud-colt / ^prim-moth / ^bold-hawk / ^tame-hare).

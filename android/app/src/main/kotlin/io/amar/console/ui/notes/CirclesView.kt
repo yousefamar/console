@@ -16,6 +16,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.isDark
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,6 +55,7 @@ fun CirclesView(
     modifier: Modifier = Modifier,
 ) {
     val root = remember(files) { CirclesLayout.build(files) }
+    val dark = MaterialTheme.isDark
     // World→screen transform: scale k + translate (tx,ty). Fit root initially.
     var k by remember(root) { mutableStateOf(1.0) }
     var tx by remember(root) { mutableStateOf(0.0) }
@@ -137,7 +139,7 @@ fun CirclesView(
                 k = kk; tx = size.width / 2.0 - root.x * kk; ty = size.height / 2.0 - root.y * kk
                 initialised = true
             }
-            drawCircles(root, k, tx, ty, fadeThreshold, accent, search)
+            drawCircles(root, k, tx, ty, fadeThreshold, accent, search, dark)
         }
 
         // Breadcrumb + up button.
@@ -180,6 +182,7 @@ private fun DrawScope.drawCircles(
     fadeThreshold: Double,
     accent: Color,
     search: String,
+    dark: Boolean,
 ) {
     // Painter's algorithm: draw shallow → deep, folders as translucent covers
     // that fade past the threshold to reveal children.
@@ -203,20 +206,23 @@ private fun DrawScope.drawCircles(
             val faded = apparentR > fadeThreshold
             if (!faded) {
                 val alpha = if (dim) 0.15f else 0.5f
-                drawCircle(Color(0xFF2A2A2A).copy(alpha = alpha), apparentR, Offset(cx, cy))
-                drawCircle(Color(0x33FFFFFF), apparentR, Offset(cx, cy), style = Stroke(1f))
+                // Cover + hairline flip with the scheme: dark grey on a dark
+                // canvas, light grey on a light one.
+                drawCircle((if (dark) Color(0xFF2A2A2A) else Color(0xFFD4D4D4)).copy(alpha = alpha), apparentR, Offset(cx, cy))
+                drawCircle(if (dark) Color(0x33FFFFFF) else Color(0x33000000), apparentR, Offset(cx, cy), style = Stroke(1f))
             }
         }
         // Labels for sufficiently-large circles.
         if (apparentR >= 22f && (n.isFile || (n.r * k) <= fadeThreshold)) {
-            drawLabel(n.name, cx, cy, apparentR, dim)
+            drawLabel(n.name, cx, cy, apparentR, dim, dark)
         }
     }
 }
 
-private fun DrawScope.drawLabel(name: String, cx: Float, cy: Float, r: Float, dim: Boolean) {
+private fun DrawScope.drawLabel(name: String, cx: Float, cy: Float, r: Float, dim: Boolean, dark: Boolean) {
     val paint = android.graphics.Paint().apply {
-        color = if (dim) android.graphics.Color.argb(60, 220, 220, 220) else android.graphics.Color.argb(230, 230, 230, 230)
+        val v = if (dark) 230 else 23
+        color = if (dim) android.graphics.Color.argb(60, v, v, v) else android.graphics.Color.argb(230, v, v, v)
         textSize = 13f * density
         textAlign = android.graphics.Paint.Align.CENTER
         isAntiAlias = true

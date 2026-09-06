@@ -49,6 +49,8 @@ import androidx.compose.material.icons.filled.ViewKanban
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,9 +80,9 @@ import io.amar.console.data.spaces.KanbanCodec
 import io.amar.console.data.spaces.SpacesRepository
 import kotlinx.coroutines.launch
 
-private val VIOLET = Color(0xFFA78BFA)
-private val AMBER = Color(0xFFF59E0B)
-private val GREEN = Color(0xFF4ADE80)
+private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
 
 /** The single shared writing agent (SPA `CURATOR_AGENT_KEY`, src/spaces/scope.ts). */
 const val CURATOR_AGENT_KEY = "curator"
@@ -1035,8 +1037,8 @@ private fun CardChip(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
                         Row(Modifier.padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Icon(Icons.Filled.Link, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(10.dp))
-                            Text(u.label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF60A5FA), maxLines = 1)
+                            Icon(Icons.Filled.Link, null, tint = MaterialTheme.accents.blue, modifier = Modifier.size(10.dp))
+                            Text(u.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue, maxLines = 1)
                         }
                     }
                 }
@@ -1165,8 +1167,8 @@ private fun CardSheet(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
-                            Icon(Icons.Filled.Link, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(12.dp))
-                            Text(u.label, style = MaterialTheme.typography.labelMedium, color = Color(0xFF60A5FA), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Icon(Icons.Filled.Link, null, tint = MaterialTheme.accents.blue, modifier = Modifier.size(12.dp))
+                            Text(u.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.accents.blue, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }

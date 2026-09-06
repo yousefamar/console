@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -140,9 +141,9 @@ private fun RenderNoteLine(
         t.startsWith("###### ") -> Heading(t.removePrefix("###### "), MaterialTheme.typography.titleSmall.fontSize)
         t.startsWith("##### ") -> Heading(t.removePrefix("##### "), MaterialTheme.typography.titleSmall.fontSize)
         t.startsWith("#### ") -> Heading(t.removePrefix("#### "), MaterialTheme.typography.titleMedium.fontSize)
-        t.startsWith("### ") -> Text(annotate(t.removePrefix("### "), allPaths), style = MaterialTheme.typography.titleSmall)
-        t.startsWith("## ") -> Text(annotate(t.removePrefix("## "), allPaths), style = MaterialTheme.typography.titleMedium)
-        t.startsWith("# ") -> Text(annotate(t.removePrefix("# "), allPaths), style = MaterialTheme.typography.titleLarge)
+        t.startsWith("### ") -> Text(annotate(t.removePrefix("### "), allPaths, MaterialTheme.accents.blue), style = MaterialTheme.typography.titleSmall)
+        t.startsWith("## ") -> Text(annotate(t.removePrefix("## "), allPaths, MaterialTheme.accents.blue), style = MaterialTheme.typography.titleMedium)
+        t.startsWith("# ") -> Text(annotate(t.removePrefix("# "), allPaths, MaterialTheme.accents.blue), style = MaterialTheme.typography.titleLarge)
         t == "---" || t == "***" -> Box(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Box(Modifier.fillMaxWidth().size(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
         }
@@ -193,7 +194,7 @@ private fun ClickableInline(
         val u = url.groupValues[2]
         fun() { onOpenUrl(u) }
     } else null
-    val ann = annotate(raw, allPaths)
+    val ann = annotate(raw, allPaths, MaterialTheme.accents.blue)
     Text(
         ann,
         style = MaterialTheme.typography.bodyMedium.copy(fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal),
@@ -210,10 +211,14 @@ private fun resolveAndOpen(target: String, allPaths: List<String>, onOpenNote: (
 }
 
 /** Inline markdown → styled AnnotatedString: bold/italic/strike/code + link pills. */
-internal fun annotate(text: String, allPaths: List<String>): androidx.compose.ui.text.AnnotatedString = buildAnnotatedString {
+internal fun annotate(
+    text: String,
+    allPaths: List<String>,
+    linkColor: Color = Color(0xFF6AA0FF),
+): androidx.compose.ui.text.AnnotatedString = buildAnnotatedString {
     var i = 0
     val codeStyle = SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x33808080))
-    val linkStyle = SpanStyle(color = Color(0xFF6AA0FF), textDecoration = TextDecoration.Underline)
+    val linkStyle = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
     while (i < text.length) {
         // Wiki link [[target|alias]]
         val wiki = Regex("""\[\[([^\]]+)]]""").matchAt(text, i)

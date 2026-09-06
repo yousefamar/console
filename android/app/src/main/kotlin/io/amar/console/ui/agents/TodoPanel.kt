@@ -20,6 +20,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -98,7 +99,7 @@ private fun TodoRow(t: AgentsRepository.TodoItem) {
         verticalAlignment = Alignment.Top,
     ) {
         when (t.status) {
-            "completed" -> Icon(Icons.Filled.Check, contentDescription = null, tint = androidx.compose.ui.graphics.Color(0xFF4ADE80), modifier = Modifier.size(12.dp).padding(top = 1.dp))
+            "completed" -> Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.accents.green, modifier = Modifier.size(12.dp).padding(top = 1.dp))
             "in_progress" -> CircularProgressIndicator(modifier = Modifier.size(11.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.tertiary)
             else -> Icon(Icons.Filled.Circle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(9.dp).padding(top = 2.dp))
         }

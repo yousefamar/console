@@ -31,8 +31,14 @@ import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Spacer
+import io.amar.console.data.inbox.RouteOverride
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -115,6 +121,7 @@ fun InboxScreen(
     var inboxFilter by remember { mutableStateOf<InboxSource?>(null) }
     var feedFilter by remember { mutableStateOf<FeedKind?>(null) }
     var snoozeTarget by remember { mutableStateOf<InboxEntry?>(null) }
+    var showRules by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { repo.refreshRules(); spaces.refreshSpaces() }
 
     val timeFmt = remember { SimpleDateFormat("EEE HH:mm", Locale.UK) }
@@ -154,6 +161,13 @@ fun InboxScreen(
                         )
                         Text(" ${lists.snoozed.size}", fontSize = 13.sp)
                     }
+                }
+                IconButton(onClick = { showRules = true }) {
+                    Icon(
+                        Icons.Outlined.Tune, "Routing rules",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
             },
         )
@@ -279,6 +293,78 @@ fun InboxScreen(
             onPick = { until -> repo.launch { snooze(entry, until) }; snoozeTarget = null },
         )
     }
+    if (showRules) RoutingRulesSheet(repo, onDismiss = { showRules = false })
+}
+
+/**
+ * Every persisted routing override (SPA `RouteOverrides`, InboxTab.tsx) — the
+ * per-row → feed / → inbox toggles write these; this is where they're
+ * inspected and cleared. ✕ drops the override so the source falls back to
+ * its section default, written straight to `/inbox/rules`.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun RoutingRulesSheet(repo: InboxRepository, onDismiss: () -> Unit) {
+    val overrides by repo.overrides.collectAsState(initial = emptyList())
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Routing rules", style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+        )
+        Text(
+            "Overrides of the default routing (chat + mail → Inbox, feeds → Feed). Set from a row's → feed / → inbox action; ✕ restores the default.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+        )
+        if (overrides.isEmpty()) {
+            Text(
+                "No overrides — everything follows the defaults.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+            )
+        } else {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+                var lastSource: InboxSource? = null
+                for (o in overrides) {
+                    if (o.source != lastSource) {
+                        lastSource = o.source
+                        item(key = "hdr:${o.source}") {
+                            Text(
+                                sourceLabel(o.source).uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 2.dp),
+                            )
+                        }
+                    }
+                    item(key = "${o.source}:${o.key}") {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(o.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (o.label != o.key) {
+                                    Text(o.key, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            Text(
+                                "→ ${o.route}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                            IconButton(onClick = { repo.clearOverride(o.source, o.key) }) {
+                                Icon(Icons.Filled.Close, "Clear override", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
 }
 
 private suspend fun unsnooze(entry: InboxEntry, repo: InboxRepository, onUnsnooze: suspend (InboxEntry) -> Unit) {
@@ -362,9 +448,9 @@ private fun InboxRow(
                     Text(
                         "OVERDUE",
                         fontSize = 9.sp,
-                        color = Color(0xFFF59E0B),
+                        color = MaterialTheme.accents.amber,
                         modifier = Modifier
-                            .background(Color(0x33F59E0B), RoundedCornerShape(3.dp))
+                            .background(MaterialTheme.accents.amber.copy(alpha = 0.2f), RoundedCornerShape(3.dp))
                             .padding(horizontal = 3.dp),
                     )
                 }

@@ -126,6 +126,24 @@ class InboxRepository(
         scope.launch { runCatching { hub.post("/inbox/rules", next.toJson()) } }
     }
 
+    /** Every persisted override, labelled from the local room/feed tables
+     *  (an override can name a room that's no longer in the inbox lists). */
+    val overrides: Flow<List<RouteOverride>> = combine(
+        rules,
+        db.chatRooms().observeAll(),
+        db.feeds().observeFeeds(),
+    ) { r, rooms, feeds ->
+        listOverrides(r, rooms.associate { it.id to it.name }, feeds.associate { it.id to it.title })
+    }.catch { }
+
+    /** Remove one override (the ✕ in the routing-rules sheet); optimistic, then hub-persisted. */
+    fun clearOverride(source: InboxSource, key: String) {
+        val next = withoutOverride(rules.value, source, key)
+        if (next == rules.value) return
+        rules.value = next
+        scope.launch { runCatching { hub.post("/inbox/rules", next.toJson()) } }
+    }
+
     /** Snooze a feed item or agent session by Inbox key — local-only (SPA
      *  `itemSnooze` parity; mail/chat snooze through their own repositories). */
     fun snoozeItem(key: String, untilMs: Long) {

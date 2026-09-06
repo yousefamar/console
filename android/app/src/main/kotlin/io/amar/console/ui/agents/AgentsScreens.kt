@@ -44,6 +44,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,8 +80,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 private val jsonLenient = Json { ignoreUnknownKeys = true }
-private val AMBER = Color(0xFFF59E0B)
-private val VIOLET = Color(0xFFA78BFA)
+private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
 
 @Composable
 private fun ReviewHandbackStrip(hb: io.amar.console.data.spaces.SpacesRepository.ReviewHandback, onApprove: () -> Unit) {

@@ -31,6 +31,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.ui.theme.accents
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -341,9 +342,9 @@ private suspend fun waitForSiteUpdate(repo: NotesRepository, url: String, baseli
 @Composable
 private fun LiveStatusChip(status: BlogRepository.LiveStatus, onClick: () -> Unit) {
     val (label, color) = when (status) {
-        BlogRepository.LiveStatus.LIVE -> "live" to androidx.compose.ui.graphics.Color(0xFF4ADE80)
-        BlogRepository.LiveStatus.STALE -> "stale" to androidx.compose.ui.graphics.Color(0xFFF5C542)
-        BlogRepository.LiveStatus.BUILDING -> "building" to androidx.compose.ui.graphics.Color(0xFF60A5FA)
+        BlogRepository.LiveStatus.LIVE -> "live" to MaterialTheme.accents.green
+        BlogRepository.LiveStatus.STALE -> "stale" to MaterialTheme.accents.amber
+        BlogRepository.LiveStatus.BUILDING -> "building" to MaterialTheme.accents.blue
         BlogRepository.LiveStatus.UNKNOWN -> "?" to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(
