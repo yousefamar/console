@@ -207,6 +207,11 @@ green there = fine. Headless `autowt cleanup` needs `--mode merged|all`; it can
 leave an unregistered dir under `~/proj/code/console-worktrees/` — verify with
 `git worktree list` before deleting.
 
+Coroutine-test trap: `advanceUntilIdle()` stops as soon as no FOREGROUND task
+is pending, so a debounced job launched in `backgroundScope` silently never
+runs (`LiveBufferTest` read as "second post never happened"). Hand the unit
+under test the `TestScope` itself (`this`), or drive time with `advanceTimeBy`.
+
 ## Board-driven work
 
 Cards on `projects/console/board.md` assigned to `@new-mobile-app` (or forks of
