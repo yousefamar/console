@@ -11,8 +11,9 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
 - Map: property listing review state (hub + SPA ^soft-goat, 2026-09-07) —
-  pins carry `review: 'interested'` + `_color` (green) when Yousef marked them;
-  dismissed pins are absent. `AgentFeaturePanel`/`agentFeatureInfo` in
+  every pin carries `_icon` (🏠 unreviewed, 🏡 interested — SPA draws agent
+  points with an `_icon` as that emoji); interested pins also carry
+  `review: 'interested'` + `_color` (green); dismissed pins are absent. `AgentFeaturePanel`/`agentFeatureInfo` in
   `MapScreen.kt` has "not interested" (`MapRepository.dismissListing` →
   `/dismiss`); add an "interested" toggle → `POST /property/searches/:id/review
   {listingId, state: interested|dismissed|none}` and honour the per-feature

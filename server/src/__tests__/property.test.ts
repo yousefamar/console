@@ -359,7 +359,8 @@ describe('PropertySync.pruneGone', () => {
     expect(after.lastResults?.map((l) => l.id).sort()).toEqual(['flaky', 'fresh', 'live', 'plain'])
     expect(after.interestedIds?.sort()).toEqual(['flaky', 'fresh', 'live'])
     const p = pins(layers)
-    expect(p.find((x) => x.listingId === 'live')).toMatchObject({ review: 'interested', _color: expect.any(String) })
+    expect(p.find((x) => x.listingId === 'live')).toMatchObject({ review: 'interested', _color: expect.any(String), _icon: '🏡' })
+    expect(p.find((x) => x.listingId === 'plain')).toMatchObject({ _icon: '🏠' })
     expect(p.find((x) => x.listingId === 'plain')?.review).toBeUndefined()
   })
 

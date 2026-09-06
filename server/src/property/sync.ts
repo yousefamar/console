@@ -41,6 +41,8 @@ const MAX_PINS = 600
 const LIVENESS_MAX_PROBES = 30
 // Interested pins: green on the orange layer, distinct from every other Map layer colour.
 const INTERESTED_COLOR = '#22c55e'
+const LISTING_ICON = '🏠'
+const INTERESTED_ICON = '🏡'
 /** Notifications per poll per search — beyond this, one summary push. */
 const MAX_ALERTS = 5
 /**
@@ -414,8 +416,13 @@ export class PropertySync {
           // Needed for the review actions, not shown in the popup.
           listingId: l.id,
           searchId: s.id,
-          // Yousef's verdict; unreviewed pins carry neither key. `_color` is
-          // the renderer's per-feature override (MapTab reads it directly).
+          // House glyphs, not dots (Yousef, 2026-09-07): `_icon` is the
+          // renderer's per-feature emoji hook (`em:<emoji>`, drawn on demand).
+          // An emoji can't be recoloured, so "interested" is a different house —
+          // 🏡 with its green garden reads as the good one. `_color` stays for
+          // renderers that draw points as circles (Android) and the label layer.
+          _icon: interested.has(l.id) ? INTERESTED_ICON : LISTING_ICON,
+          // Yousef's verdict; unreviewed pins carry neither key.
           ...(interested.has(l.id) ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
         },
       })),
