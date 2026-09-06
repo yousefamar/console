@@ -275,7 +275,10 @@ batch and 5 once everything is folded):**
    `timeout`, which kills the run AFTER it wipes `build/test-results/`).
 5. Release when anything user-visible shipped (bump + build + roll the
    backlog, per the working agreement above); a sweep card counts as Yousef's
-   standing "cut" for its own batch.
+   standing "cut" for its own batch. Then re-baseline the guard's state file
+   (`~/.cache/mobile-parity-sweep.json` → current HEAD + Done-card count): the
+   guard writes it at the START of a fire, so the sweep's own Done cards would
+   otherwise wake the agent again next Sunday.
 6. Hand back per the board contract: `note` bullets (gaps found / built /
    released / left Open and why), then `move … "Under Review"`. Write the note
    as `con spaces board console note "^id" "- bullets"` — a `--` separator
