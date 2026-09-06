@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGeometry } from '../property/geo.js'
-import { PropertySearchStore, PORTAL_BY_COUNTRY } from '../property/store.js'
-import { postFilter, applyNotifyGate } from '../property/sync.js'
+import { PropertySearchStore, PORTAL_BY_COUNTRY, withInterestedCarried } from '../property/store.js'
+import { postFilter, applyNotifyGate, PropertySync } from '../property/sync.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
-import { asEntryArray } from '../property/immoscout24.js'
-import { isTooSmall } from '../property/immobiliare.js'
+import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
+import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
+import { RightmoveClient } from '../property/rightmove.js'
+import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
 import type { Listing } from '../property/types.js'
 
@@ -202,6 +204,174 @@ describe('PropertySearchStore.dismiss', () => {
   it('returns undefined for an unknown search', () => {
     const store = tmpStore()
     expect(store.dismiss('ps_nope', 'a')).toBeUndefined()
+  })
+})
+
+describe('PropertySearchStore.review', () => {
+  it('interested and dismissed are mutually exclusive; none clears both', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    let r = store.review(s.id, 'a', 'interested')!
+    expect(r.interestedIds).toEqual(['a'])
+    expect(r.dismissedIds).toEqual([])
+    r = store.review(s.id, 'a', 'dismissed')!
+    expect(r.interestedIds).toEqual([])
+    expect(r.dismissedIds).toEqual(['a'])
+    r = store.review(s.id, 'a', 'interested')!
+    expect(r.dismissedIds).toEqual([])
+    expect(r.interestedIds).toEqual(['a'])
+    r = store.review(s.id, 'a', 'none')!
+    expect(r.interestedIds).toEqual([])
+    expect(r.dismissedIds).toEqual([])
+  })
+
+  it('survives a criteria edit like dismissals do (a verdict is about the listing, not the query)', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l', criteria: { maxPrice: 1 } })
+    store.review(s.id, 'a', 'interested')
+    const after = store.update(s.id, { criteria: { maxPrice: 2 } })!
+    expect(after.seenIds).toEqual([])
+    expect(after.interestedIds).toEqual(['a'])
+  })
+
+  it('removeListing drops the snapshot copy and the interested mark, keeps a dismissal', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: [listing('a'), listing('b')] })
+    store.review(s.id, 'a', 'interested')
+    store.review(s.id, 'b', 'dismissed')
+    const r1 = store.removeListing(s.id, 'a')!
+    expect(r1.lastResults?.map((l) => l.id)).toEqual(['b'])
+    expect(r1.interestedIds).toEqual([])
+    const r2 = store.removeListing(s.id, 'b')!
+    expect(r2.lastResults).toEqual([])
+    expect(r2.dismissedIds).toEqual(['b'])
+  })
+})
+
+describe('withInterestedCarried', () => {
+  it('carries interested listings that aged out of the snapshot; the snapshot copy wins when present', () => {
+    const prev = [listing('old', { price: 1 }), listing('keep', { price: 1 }), listing('unmarked')]
+    const snap = [listing('new'), listing('keep', { price: 2 })]
+    const out = withInterestedCarried({ interestedIds: ['old', 'keep'], lastResults: prev }, snap)
+    expect(out.map((l) => l.id)).toEqual(['new', 'keep', 'old'])
+    expect(out.find((l) => l.id === 'keep')?.price).toBe(2)
+  })
+
+  it('no interested ids → the snapshot as-is', () => {
+    expect(withInterestedCarried({}, [listing('a')]).map((l) => l.id)).toEqual(['a'])
+  })
+
+  it('recordPoll keeps an interested listing across a snapshot that dropped it', () => {
+    const store = tmpStore()
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: [listing('a'), listing('b')] })
+    store.review(s.id, 'a', 'interested')
+    const { current } = store.recordPoll(s.id, { listings: [listing('c')] })!
+    expect(current.lastResults?.map((l) => l.id).sort()).toEqual(['a', 'c'])
+  })
+})
+
+describe('boxAround', () => {
+  it('is a closed 5-vertex ring centred on the point', () => {
+    const r = boxAround(51.5, -0.1, 100)
+    expect(r).toHaveLength(5)
+    expect(r[0]).toEqual(r[4])
+    const lats = r.map((p) => p[1]), lons = r.map((p) => p[0])
+    expect((Math.min(...lats) + Math.max(...lats)) / 2).toBeCloseTo(51.5, 6)
+    expect((Math.min(...lons) + Math.max(...lons)) / 2).toBeCloseTo(-0.1, 6)
+  })
+})
+
+describe('PortalClient.isLive', () => {
+  const res = (status: number, body = ''): Response => new Response(body, { status })
+  const fetchOf = (fn: (url: string) => Response | Promise<Response>) => ((url: string | URL | Request) => Promise.resolve(fn(String(url)))) as unknown as typeof fetch
+
+  it('rightmove: 410/404 → gone, 200 → live unless the body says removed, other → unknown', async () => {
+    const l = listing('1')
+    expect(await new RightmoveClient(fetchOf(() => res(410))).isLive(l)).toBe(false)
+    expect(await new RightmoveClient(fetchOf(() => res(404))).isLive(l)).toBe(false)
+    expect(await new RightmoveClient(fetchOf(() => res(200, '<html>lovely house</html>'))).isLive(l)).toBe(true)
+    expect(await new RightmoveClient(fetchOf(() => res(200, 'This property has been removed by the agent'))).isLive(l)).toBe(false)
+    expect(await new RightmoveClient(fetchOf(() => res(503))).isLive(l)).toBeNull()
+    expect(await new RightmoveClient(fetchOf(() => { throw new Error('net') })).isLive(l)).toBeNull()
+  })
+
+  it('immoscout24: 410 → gone, deactivated flag → gone, WAF rejection → unknown', async () => {
+    const waf = { get: async () => 'tok', invalidate: () => {} } as unknown as ConstructorParameters<typeof ImmoScout24Client>[0]
+    const l = listing('1', { portal: 'immoscout24' })
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(410))).isLive(l)).toBe(false)
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(200, '"exposeState":{"isDeactivatedRedesign":false}'))).isLive(l)).toBe(true)
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(200, '"exposeState":{"isDeactivatedRedesign":true}'))).isLive(l)).toBe(false)
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(401))).isLive(l)).toBeNull()
+  })
+
+  it('immobiliare: re-queries a box around the listing and looks for its id; no coords → unknown', async () => {
+    const body = (ids: number[]) => JSON.stringify({ count: ids.length, results: ids.map((id) => ({ realEstate: { id, title: 't', price: { value: 1 }, properties: [{ location: { latitude: 45, longitude: 9 } }] } })) })
+    const l = listing('7', { portal: 'immobiliare', lat: 45, lon: 9 })
+    const seen: string[] = []
+    expect(await new ImmobiliareClient(fetchOf((u) => { seen.push(u); return res(200, body([7, 8])) })).isLive(l, {})).toBe(true)
+    expect(seen[0]).toContain('vrt=')
+    expect(await new ImmobiliareClient(fetchOf(() => res(200, body([8])))).isLive(l, {})).toBe(false)
+    expect(await new ImmobiliareClient(fetchOf(() => res(403))).isLive(l, {})).toBeNull()
+    expect(await new ImmobiliareClient(fetchOf(() => res(200, body([7])))).isLive(listing('7', { portal: 'immobiliare' }), {})).toBeNull()
+  })
+})
+
+describe('PropertySync.pruneGone', () => {
+  const harness = (isLive: (l: Listing) => Promise<boolean | null>) => {
+    const store = tmpStore()
+    const layers = new Map<string, unknown>()
+    const mapLayers = {
+      upsert: (slug: string, gj: unknown) => { layers.set(slug, gj); return { slug } },
+      getMeta: (slug: string) => (layers.has(slug) ? { slug } : undefined),
+      getGeojson: () => null,
+      list: () => [...layers.keys()].map((slug) => ({ slug })),
+    }
+    const broadcasts: string[] = []
+    const client = { portal: 'rightmove' as const, currency: 'GBP', count: async () => 0, newest: async () => ({ portal: 'rightmove' as const, total: 0, listings: [], truncated: false, unsupported: [] }), isLive }
+    const sync = new PropertySync(
+      { rightmove: client, immoscout24: client, immobiliare: client } as never,
+      store,
+      { broadcast: () => {} } as never,
+      { broadcast: (_svc: string, op: string) => { broadcasts.push(op) } } as never,
+      mapLayers as never,
+      { isConfigured: () => false } as never,
+      () => {},
+    )
+    return { store, sync, layers, broadcasts }
+  }
+  const pins = (layers: Map<string, unknown>) => {
+    const gj = [...layers.values()][0] as { features: Array<{ properties: Record<string, unknown> }> }
+    return gj.features.map((f) => f.properties)
+  }
+
+  it('removes interested listings the portal says are gone; keeps unknown and still-snapshotted ones', async () => {
+    const probed: string[] = []
+    const { store, sync, layers } = harness(async (l) => { probed.push(l.id); return l.id === 'gone' ? false : l.id === 'flaky' ? null : true })
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: ['gone', 'flaky', 'live', 'fresh', 'plain'].map((id) => listing(id, { lat: 1, lon: 1 })) })
+    for (const id of ['gone', 'flaky', 'live', 'fresh']) store.review(s.id, id, 'interested')
+    const removed = await sync.pruneGone(s.id, new Set(['fresh']))
+    expect(removed).toEqual(['gone'])
+    expect(probed.sort()).toEqual(['flaky', 'gone', 'live'])
+    const after = store.get(s.id)!
+    expect(after.lastResults?.map((l) => l.id).sort()).toEqual(['flaky', 'fresh', 'live', 'plain'])
+    expect(after.interestedIds?.sort()).toEqual(['flaky', 'fresh', 'live'])
+    const p = pins(layers)
+    expect(p.find((x) => x.listingId === 'live')).toMatchObject({ review: 'interested', _color: expect.any(String) })
+    expect(p.find((x) => x.listingId === 'plain')?.review).toBeUndefined()
+  })
+
+  it('review repaints immediately: dismissed pins vanish, interested pins carry the colour', async () => {
+    const { store, sync, layers, broadcasts } = harness(async () => true)
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: ['a', 'b'].map((id) => listing(id, { lat: 1, lon: 1 })) })
+    sync.review(s.id, 'a', 'interested')
+    expect(pins(layers).find((x) => x.listingId === 'a')?.review).toBe('interested')
+    sync.review(s.id, 'b', 'dismissed')
+    expect(pins(layers).map((x) => x.listingId)).toEqual(['a'])
+    expect(broadcasts.filter((b) => b === 'updated')).toHaveLength(2)
   })
 })
 

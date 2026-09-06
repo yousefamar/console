@@ -160,4 +160,11 @@ export interface PortalClient {
    * needs the freshest page or two, not the whole result set.
    */
   newest(rings: import('./geo.js').Ring[], criteria: Criteria, limit: number): Promise<SearchResult>
+  /**
+   * Is this listing still on the portal? `false` = the portal removed it
+   * (delisted/deactivated/404), `true` = still there, `null` = couldn't tell
+   * (WAF/network) — callers must treat null as "keep". Optional: a portal
+   * without a cheap probe simply never prunes.
+   */
+  isLive?(listing: Listing, criteria: Criteria): Promise<boolean | null>
 }

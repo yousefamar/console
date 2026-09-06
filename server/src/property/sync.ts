@@ -19,7 +19,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
 import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo.js'
-import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore } from './store.js'
+import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
@@ -37,6 +37,10 @@ const FETCH_LIMIT = 50
 const BACKFILL_LIMIT = 5000
 /** Pins kept on the map per search — keep at or below store.ts's RESULTS_LIMIT. */
 const MAX_PINS = 600
+// Interested-listing liveness probes per search per poll (one request each).
+const LIVENESS_MAX_PROBES = 30
+// Interested pins: green on the orange layer, distinct from every other Map layer colour.
+const INTERESTED_COLOR = '#22c55e'
 /** Notifications per poll per search — beyond this, one summary push. */
 const MAX_ALERTS = 5
 /**
@@ -116,11 +120,50 @@ export class PropertySync {
    * is to make the pin disappear the moment Yousef says no to it.
    */
   dismiss(id: string, listingId: string, dismissed = true): PropertySearch | undefined {
-    const s = this.searches.dismiss(id, listingId, dismissed)
+    return this.review(id, listingId, dismissed ? 'dismissed' : 'none')
+  }
+
+  /** Yousef's verdict on a listing — repaints the pin (or removes it) at once. */
+  review(id: string, listingId: string, state: ReviewState): PropertySearch | undefined {
+    const s = this.searches.review(id, listingId, state)
     if (!s) return undefined
     this.updateLayer(s)
     this.bus.broadcast('property', 'updated', s)
     return s
+  }
+
+  /**
+   * Interested listings outlive the newest-per-ring snapshot, so the snapshot
+   * can't tell us when the portal drops one — ask the portal directly for each
+   * interested listing the poll did NOT re-surface. `null` (WAF/network) keeps
+   * the pin; only a definite "gone" removes it. Capped per poll so a large
+   * shortlist can't turn the hourly tick into a scrape.
+   */
+  async pruneGone(id: string, snapshotIds: Set<string>): Promise<string[]> {
+    const s = this.searches.get(id)
+    if (!s?.interestedIds?.length) return []
+    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    if (!client.isLive) return []
+    const byId = new Map((s.lastResults ?? []).map((l) => [l.id, l]))
+    const gone: string[] = []
+    let probes = 0
+    for (const listingId of s.interestedIds) {
+      if (snapshotIds.has(listingId)) continue
+      const listing = byId.get(listingId)
+      if (!listing) continue
+      if (probes++ >= LIVENESS_MAX_PROBES) break
+      const live = await client.isLive(listing, s.criteria)
+      if (live === false) gone.push(listingId)
+    }
+    if (!gone.length) return []
+    let current: PropertySearch | undefined
+    for (const listingId of gone) current = this.searches.removeListing(id, listingId)
+    this.log(`[property-sync] ${id}: ${gone.length} interested listing(s) gone from the portal, removed: ${gone.join(', ')}`)
+    if (current) {
+      this.updateLayer(current)
+      this.bus.broadcast('property', 'updated', current)
+    }
+    return gone
   }
 
   /**
@@ -194,6 +237,8 @@ export class PropertySync {
       this.log(`[property-sync] ${s.id} error: ${error}`)
       return
     }
+    // A poll that returned nothing tells us nothing about liveness — don't probe.
+    if (listings.length) await this.pruneGone(s.id, new Set(listings.map((l) => l.id)))
     if (update.seeding) {
       this.log(`[property-sync] ${s.id} seeded with ${listings.length} existing listings (no alerts)`)
       return
@@ -334,6 +379,7 @@ export class PropertySync {
   /** One pin layer per search, so each toggles independently on the Map tab. */
   private updateLayer(s: PropertySearch): void {
     const dismissed = new Set(s.dismissedIds ?? [])
+    const interested = new Set(s.interestedIds ?? [])
     const listings = (s.lastResults ?? [])
       .filter((l) => l.lat != null && l.lon != null && !dismissed.has(l.id))
       .slice(0, MAX_PINS)
@@ -365,9 +411,12 @@ export class PropertySync {
           agent: l.agent,
           image: l.image,
           portal: l.portal,
-          // Needed for the "not interested" dismiss action, not shown in the popup.
+          // Needed for the review actions, not shown in the popup.
           listingId: l.id,
           searchId: s.id,
+          // Yousef's verdict; unreviewed pins carry neither key. `_color` is
+          // the renderer's per-feature override (MapTab reads it directly).
+          ...(interested.has(l.id) ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
         },
       })),
     }

@@ -168,3 +168,16 @@ export function clampRingToCountry(ring: Ring, country: keyof typeof COUNTRY_BBO
     Math.min(Math.max(lat, bs), bn),
   ] as [number, number])
 }
+
+/** Closed square ring of ±`metres` around a point — a liveness-probe search area. */
+export function boxAround(lat: number, lon: number, metres: number): Ring {
+  const dLat = metres / 111_320
+  const dLon = metres / (111_320 * Math.cos((lat * Math.PI) / 180))
+  return [
+    [lon - dLon, lat - dLat],
+    [lon + dLon, lat - dLat],
+    [lon + dLon, lat + dLat],
+    [lon - dLon, lat + dLat],
+    [lon - dLon, lat - dLat],
+  ]
+}

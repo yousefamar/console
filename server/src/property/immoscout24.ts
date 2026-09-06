@@ -23,6 +23,7 @@ const ORIGIN = 'https://www.immobilienscout24.de'
 const MAX_VERTICES = 120
 const PAGE = 20
 const SORT_NEWEST = '2' // "Aktualität (neueste zuerst)"
+const DEACTIVATED_RE = /"isDeactivated[A-Za-z]*"\s*:\s*true/
 /** German listings count Zimmer (incl. living rooms), so bedrooms + 1. */
 const ROOM_OFFSET = 1
 
@@ -149,6 +150,38 @@ export class ImmoScout24Client implements PortalClient {
       }
       throw new Error(`immoscout24: HTTP ${res.status} on ${path}`)
     }
+  }
+
+  /**
+   * The expose page answers 410 once an id is gone (verified live 2026-09-07)
+   * and embeds `"exposeState":{"isDeactivatedRedesign":false}` while up —
+   * a withdrawn-but-still-reachable expose flips that flag. A WAF rejection
+   * (even after one re-mint) is "don't know", never "gone".
+   */
+  async isLive(listing: Listing): Promise<boolean | null> {
+    const url = `${ORIGIN}/expose/${encodeURIComponent(listing.id)}`
+    let token = await this.waf.get()
+    if (!token) return null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res: Response
+      try {
+        res = await this.fetchImpl(url, { headers: { 'user-agent': UA, cookie: `aws-waf-token=${token}`, accept: 'text/html' } })
+      } catch {
+        return null
+      }
+      if (res.status === 404 || res.status === 410) return false
+      if (res.status === 401 || res.status === 403) {
+        this.waf.invalidate()
+        const next = await this.waf.get()
+        if (!next) return null
+        token = next
+        continue
+      }
+      if (!res.ok) return null
+      const html = await res.text()
+      return !DEACTIVATED_RE.test(html)
+    }
+    return null
   }
 
   private async getHtml(url: string, token: string): Promise<string> {

@@ -18,6 +18,7 @@ const MAX_VERTICES = 90 // the server simplifies to ~85 anyway
 const LIST_PAGE = 24 // fixed server-side; numberOfPropertiesPerPage is ignored on the HTML view
 const INDEX_MAX = 1000 // index > 1000 is a 400
 const SORT_NEWEST = '6'
+const REMOVED_RE = /property has been removed|no longer (?:available|on the market)/i
 
 export class RightmoveClient implements PortalClient {
   readonly portal = 'rightmove' as const
@@ -102,6 +103,27 @@ export class RightmoveClient implements PortalClient {
       truncated,
       unsupported,
     }
+  }
+
+  /**
+   * A removed listing's page answers 410 (verified live 2026-09-07 — an
+   * unknown id gives 410 Gone, a live one 200). Rightmove also serves a
+   * 200 "removed by the agent" page for a while after withdrawal, so the body
+   * is checked too. Anything else (WAF, 5xx, network) is "don't know".
+   */
+  async isLive(listing: Listing): Promise<boolean | null> {
+    let res: Response
+    try {
+      res = await this.fetchImpl(`https://www.rightmove.co.uk/properties/${encodeURIComponent(listing.id)}`, {
+        headers: { 'user-agent': UA, accept: 'text/html' },
+      })
+    } catch {
+      return null
+    }
+    if (res.status === 404 || res.status === 410) return false
+    if (!res.ok) return null
+    const html = await res.text()
+    return !REMOVED_RE.test(html)
   }
 
   private async getJson(url: string): Promise<unknown> {

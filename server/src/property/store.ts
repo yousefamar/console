@@ -26,6 +26,23 @@ const HISTORY_LIMIT = 60
 
 export type Country = 'UK' | 'DE' | 'IT'
 
+export type ReviewState = 'interested' | 'dismissed' | 'none'
+
+/**
+ * A poll snapshot replaces `lastResults` wholesale (it IS "the newest N per
+ * ring"), so an interested listing that has aged out of that window would
+ * silently leave the map. Carry those forward — the snapshot's own copy wins
+ * when the listing is still in it — and let the newest listings, not the
+ * carried ones, absorb the RESULTS_LIMIT cap.
+ */
+export function withInterestedCarried(s: Pick<PropertySearch, 'interestedIds' | 'lastResults'>, snapshot: Listing[]): Listing[] {
+  const interested = new Set(s.interestedIds ?? [])
+  if (interested.size === 0) return snapshot.slice(0, RESULTS_LIMIT)
+  const inSnapshot = new Set(snapshot.map((l) => l.id))
+  const carried = (s.lastResults ?? []).filter((l) => interested.has(l.id) && !inSnapshot.has(l.id))
+  return [...snapshot.slice(0, Math.max(0, RESULTS_LIMIT - carried.length)), ...carried]
+}
+
 /** Each portal covers exactly one of our three countries. */
 export const PORTAL_BY_COUNTRY: Record<Country, Portal> = {
   UK: 'rightmove',
@@ -90,6 +107,14 @@ export interface PropertySearch {
    * about whether the current query happens to still match it.
    */
   dismissedIds?: string[]
+  /**
+   * Listing ids Yousef marked "interested". Mutually exclusive with
+   * `dismissedIds`. Like dismissals these survive criteria edits. An
+   * interested listing is carried across polls even once it drops out of the
+   * newest-per-ring snapshot, until a liveness probe says the portal removed
+   * it (see PropertySync.pruneGone).
+   */
+  interestedIds?: string[]
   /** Most recent hits, newest first — what the SPA renders. */
   lastResults?: Listing[]
   history?: Array<{ at: number; total: number }>
@@ -177,13 +202,41 @@ export class PropertySearchStore {
 
   /** Hide a listing from this search's map layer, permanently (until undismiss). */
   dismiss(id: string, listingId: string, dismissed = true): PropertySearch | undefined {
+    return this.review(id, listingId, dismissed ? 'dismissed' : 'none')
+  }
+
+  /**
+   * Yousef's verdict on one listing. `interested` and `dismissed` are
+   * mutually exclusive; `none` clears both (back to unreviewed). Opening a
+   * listing never changes this — only an explicit verdict does.
+   */
+  review(id: string, listingId: string, state: ReviewState): PropertySearch | undefined {
     this.load()
     const s = this.items.find((x) => x.id === id)
     if (!s) return undefined
-    const set = new Set(s.dismissedIds ?? [])
-    if (dismissed) set.add(listingId)
-    else set.delete(listingId)
-    s.dismissedIds = [...set]
+    const dismissed = new Set(s.dismissedIds ?? [])
+    const interested = new Set(s.interestedIds ?? [])
+    dismissed.delete(listingId)
+    interested.delete(listingId)
+    if (state === 'dismissed') dismissed.add(listingId)
+    if (state === 'interested') interested.add(listingId)
+    s.dismissedIds = [...dismissed]
+    s.interestedIds = [...interested]
+    this.save()
+    return s
+  }
+
+  /**
+   * The portal no longer has this listing: drop it from the snapshot and from
+   * the interested set (a verdict on a vanished listing is moot). Dismissals
+   * are left alone — if the id ever resurfaces it should stay hidden.
+   */
+  removeListing(id: string, listingId: string): PropertySearch | undefined {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s) return undefined
+    s.lastResults = (s.lastResults ?? []).filter((l) => l.id !== listingId)
+    s.interestedIds = (s.interestedIds ?? []).filter((x) => x !== listingId)
     this.save()
     return s
   }
@@ -248,7 +301,7 @@ export class PropertySearchStore {
         history.push({ at: s.lastCheckedAt, total: poll.total })
         s.history = history.slice(-HISTORY_LIMIT)
       }
-      if (poll.listings.length) s.lastResults = poll.listings.slice(0, RESULTS_LIMIT)
+      if (poll.listings.length) s.lastResults = withInterestedCarried(s, poll.listings)
     }
 
     this.save()

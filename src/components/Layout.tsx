@@ -92,6 +92,8 @@ import { useFeedStore } from '@/store/feeds'
 import { useAgentStore } from '@/store/agent'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
+import { useMapStore } from '@/store/map'
+import { countUnreviewedListings } from '@/map/property-review'
 import { useMoneyStore } from '@/store/money'
 
 // ---------- MailTab (isolates inbox store subscriptions) ----------
@@ -556,7 +558,7 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
 }) {
   const isActive = activePane === pane
 
-  // Tabs with counts: Inbox (must-handle items), Mail (inbox), Chat (unread rooms), Feeds (unread items), Spaces (unread sessions + unsaved files)
+  // Tabs with counts: Inbox (must-handle items), Mail (inbox), Chat (unread rooms), Feeds (unread items), Spaces (unread sessions + unsaved files), Map (property listings without a verdict)
   const count = pane === 'email'
     ? useInboxStore((s) => s.threads.length)
     : pane === 'inbox'
@@ -569,7 +571,9 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
             ? useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
             : pane === 'spaces'
               ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
-              : 0
+              : pane === 'map'
+                ? useMapStore((s) => countUnreviewedListings(s.layerData))
+                : 0
   // Red dot on a tab: Spaces when a session emits @amar; Inbox when such a
   // session sits in its list; Notes when the pen is streaming new strokes
   // you haven't seen. Visible from any other pane.

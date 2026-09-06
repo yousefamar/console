@@ -3,7 +3,7 @@ import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
-import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Search, Navigation, ExternalLink, Car, Footprints, Bike, Train, Locate } from 'lucide-react'
+import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Search, Navigation, ExternalLink, Car, Footprints, Bike, Train, Locate, Heart } from 'lucide-react'
 import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type LayerFeatureSel, type MeetupEvent, type BuiltinLayerId, type GPlace, type GRoute, type GTravelMode } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { basemapStyleUrl } from '@/map/basemap-style'
@@ -504,7 +504,13 @@ export function MapTab() {
       {showGmaps && <GmapsPanel isMobile={isMobile} configured={gmapsConfigured} onClose={() => setShowGmaps(false)} />}
       {selected && <CacheDetailPanel cache={selected} onClose={() => void selectCache(null)} />}
       {selectedLayerFeature && (
-        <LayerFeaturePanel sel={selectedLayerFeature} onClose={() => selectLayerFeature(null)} />
+        <LayerFeaturePanel
+          // Keyed per feature: the panel holds optimistic review state, which
+          // must not leak from one pin to the next when the selection changes.
+          key={`${selectedLayerFeature.slug}:${String(selectedLayerFeature.props.listingId ?? selectedLayerFeature.props.title ?? '')}`}
+          sel={selectedLayerFeature}
+          onClose={() => selectLayerFeature(null)}
+        />
       )}
       {selectedEvent && <MeetupEventPanel event={selectedEvent} onClose={() => void selectEvent(null)} />}
       {selectedPlace && !showGmaps && (
@@ -958,8 +964,8 @@ function CredentialsPanel({ onClose }: { onClose: () => void }) {
 const PANEL_SPECIAL = new Set([
   'image', 'title', 'address', 'url', 'price', 'portal', 'summary',
   '_color', '_size', '_icon', '_label',
-  // Property-only plumbing for the dismiss action below — not for display.
-  'listingId', 'searchId',
+  // Property-only plumbing for the review actions below — not for display.
+  'listingId', 'searchId', 'review',
 ])
 
 function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: () => void }) {
@@ -969,20 +975,24 @@ function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: ()
   const url = s('url')
   const listingId = s('listingId')
   const searchId = s('searchId')
-  const [dismissing, setDismissing] = useState(false)
+  // Opening a listing never changes its state — only these two verdicts do.
+  // `interested` is optimistic: the layer repaint arrives via SyncBus later.
+  const [interested, setInterested] = useState(s('review') === 'interested')
+  const [busy, setBusy] = useState<'interested' | 'dismissed' | null>(null)
 
-  const dismiss = async () => {
-    if (!listingId || !searchId || dismissing) return
-    setDismissing(true)
+  const review = async (state: 'interested' | 'dismissed' | 'none') => {
+    if (!listingId || !searchId || busy) return
+    setBusy(state === 'dismissed' ? 'dismissed' : 'interested')
     try {
-      await hubFetch(`/property/searches/${encodeURIComponent(searchId)}/dismiss`, {
+      await hubFetch(`/property/searches/${encodeURIComponent(searchId)}/review`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ listingId }),
+        body: JSON.stringify({ listingId, state }),
       })
-      onClose()
-    } catch {
-      setDismissing(false)
+      if (state === 'dismissed') onClose()
+      else setInterested(state === 'interested')
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -1020,14 +1030,24 @@ function LayerFeaturePanel({ sel, onClose }: { sel: LayerFeatureSel; onClose: ()
             </a>
           )}
           {listingId && searchId && (
-            <button
-              onClick={dismiss}
-              disabled={dismissing}
-              className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-red-400 disabled:opacity-50 shrink-0"
-              title="Hide this listing from the map — permanent, survives future polls"
-            >
-              <X size={11} /> {dismissing ? 'hiding…' : 'not interested'}
-            </button>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                onClick={() => review(interested ? 'none' : 'interested')}
+                disabled={busy !== null}
+                className={`inline-flex items-center gap-1 text-xs disabled:opacity-50 ${interested ? 'text-green-500 hover:text-text-tertiary' : 'text-text-tertiary hover:text-green-500'}`}
+                title={interested ? 'Back to unreviewed' : 'Keep this one — pin turns green and stays until the portal removes it'}
+              >
+                <Heart size={11} fill={interested ? 'currentColor' : 'none'} /> {busy === 'interested' ? '…' : 'interested'}
+              </button>
+              <button
+                onClick={() => review('dismissed')}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-red-400 disabled:opacity-50"
+                title="Hide this listing from the map — permanent, survives future polls"
+              >
+                <X size={11} /> {busy === 'dismissed' ? 'hiding…' : 'not interested'}
+              </button>
+            </div>
           )}
         </div>
       </div>

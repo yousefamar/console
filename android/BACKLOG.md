@@ -10,6 +10,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Map: property listing review state (hub + SPA ^soft-goat, 2026-09-07) —
+  pins carry `review: 'interested'` + `_color` (green) when Yousef marked them;
+  dismissed pins are absent. `AgentFeaturePanel`/`agentFeatureInfo` in
+  `MapScreen.kt` has "not interested" (`MapRepository.dismissListing` →
+  `/dismiss`); add an "interested" toggle → `POST /property/searches/:id/review
+  {listingId, state: interested|dismissed|none}` and honour the per-feature
+  `_color` when drawing agent-layer points if the Kotlin renderer doesn't yet.
+  Map grid tile badge = unreviewed count (SPA `countUnreviewedListings`: pins
+  on `property/*` layers with a `listingId` and no `review`). Opening a
+  listing never changes state.
+
 - Remove the OutdoorLads overlay (hub + SPA removed in ^wise-stag, 2026-09-06 —
   Yousef dropped the group): delete `OUTDOORLADS_*` + `outdoorLadsEventRow` in
   `data/cal/CalOverlays.kt` (+ its test), the `/outdoorlads/events` fetch in

@@ -7,16 +7,19 @@
 // DELETE /property/searches/:id           — remove (drops its map layer too)
 // POST   /property/searches/:id/run       — poll now
 // POST   /property/searches/:id/backfill  — one-off deeper pull, merges silently
-// POST   /property/searches/:id/dismiss   — hide (or restore) one listing's pin
+// POST   /property/searches/:id/dismiss   — hide (or restore) one listing's pin (= review dismissed|none)
+// POST   /property/searches/:id/review    — {listingId, state: interested|dismissed|none}
 // POST   /property/searches/:id/reseed    — force re-seed after a map-layer content fix
 // POST   /property/count                  — ad-hoc count, nothing saved
 // GET    /property/listings               — merged newest listings across searches
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MapLayerStore } from '../map-layers/store.js'
-import type { PropertySearchStore, CreatePropertySearchInput, Country } from '../property/store.js'
+import type { PropertySearchStore, CreatePropertySearchInput, Country, ReviewState } from '../property/store.js'
 import type { PropertySync } from '../property/sync.js'
 import type { Criteria, Listing } from '../property/types.js'
+
+const REVIEW_STATES = new Set<ReviewState>(['interested', 'dismissed', 'none'])
 
 const COUNTRIES = ['UK', 'DE', 'IT'] as const
 
@@ -82,17 +85,22 @@ export function handlePropertyRoutes(
   if (path === '/property/listings' && req.method === 'GET') {
     const limit = parseInt(url.searchParams.get('limit') ?? '60', 10) || 60
     const country = url.searchParams.get('country')
-    const rows: Array<Listing & { searchId: string }> = []
+    const rows: Array<Listing & { searchId: string; review?: 'interested' }> = []
     for (const s of searches.list()) {
       if (country && s.country !== country) continue
-      for (const l of s.lastResults ?? []) rows.push({ ...l, searchId: s.id })
+      const dismissed = new Set(s.dismissedIds ?? [])
+      const interested = new Set(s.interestedIds ?? [])
+      for (const l of s.lastResults ?? []) {
+        if (dismissed.has(l.id)) continue
+        rows.push({ ...l, searchId: s.id, ...(interested.has(l.id) ? { review: 'interested' as const } : {}) })
+      }
     }
     rows.sort((a, b) => (b.listedAt ?? '').localeCompare(a.listedAt ?? ''))
     json({ listings: rows.slice(0, limit) })
     return true
   }
 
-  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|reseed))?$/)
+  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|review|reseed))?$/)
   if (match) {
     const id = decodeURIComponent(match[1]!)
     const verb = match[3]
@@ -118,6 +126,17 @@ export function handlePropertyRoutes(
         const body = JSON.parse((await readBody(req)) || '{}') as { listingId?: string; dismissed?: boolean }
         if (!body.listingId) return error(400, 'listingId required')
         const updated = sync.dismiss(id, body.listingId, body.dismissed ?? true)
+        if (!updated) return error(404, 'search not found')
+        json(updated)
+      })
+    }
+
+    if (verb === 'review' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const body = JSON.parse((await readBody(req)) || '{}') as { listingId?: string; state?: string }
+        if (!body.listingId) return error(400, 'listingId required')
+        if (!REVIEW_STATES.has(body.state as ReviewState)) return error(400, 'state must be interested | dismissed | none')
+        const updated = sync.review(id, body.listingId, body.state as ReviewState)
         if (!updated) return error(404, 'search not found')
         json(updated)
       })

@@ -6,7 +6,7 @@
 // `isResultsLimitReached` so we never have to guess at truncation.
 
 import type { Ring } from './geo.js'
-import { simplifyToLatLng } from './geo.js'
+import { boxAround, simplifyToLatLng } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
@@ -14,6 +14,8 @@ const BASE = 'https://www.immobiliare.it/api-next'
 // Counts converge by ~100 vertices; 400 vertices is an HTTP 414.
 const MAX_VERTICES = 120
 const PAGE = 25
+// Liveness probe box half-width; IT coordinates are exact, so this is generous.
+const PROBE_BOX_M = 120
 // immobiliare 422s `vrt` with fewer than 4 points ("This collection should
 // contain 4 elements or more"). A ring with a duplicated closing vertex can
 // simplify down to a 3-point sliver (~15m triangle seen in the wild, almost
@@ -85,6 +87,24 @@ export class ImmobiliareClient implements PortalClient {
     if (criteria.excludePriceOnRequest) unsupported.push('excludePriceOnRequest')
 
     return { portal: this.portal, total, listings: [...seen.values()], truncated, unsupported }
+  }
+
+  /**
+   * Immobiliare's listing pages are bot-walled (403 to anything but a real
+   * browser) and api-next has no per-id endpoint, so liveness is a targeted
+   * re-query: search a ~120 m box around the listing's own coordinates with
+   * only the channel constraint (price/size may have changed) and look for
+   * its id. Verified live 2026-09-07 on two listings: both found, 3–8 hits in
+   * the box. No coordinates → can't probe → "don't know".
+   */
+  async isLive(listing: Listing, criteria: Criteria): Promise<boolean | null> {
+    if (listing.lat == null || listing.lon == null) return null
+    try {
+      const r = await this.newest([boxAround(listing.lat, listing.lon, PROBE_BOX_M)], { channel: criteria.channel }, PAGE)
+      return r.listings.some((l) => l.id === listing.id)
+    } catch {
+      return null
+    }
   }
 
   private async get(
