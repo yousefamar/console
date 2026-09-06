@@ -19,9 +19,8 @@ export async function ring(verb: string | undefined, args: string[], flags: Glob
     case 'audio': return ringAudio(args, flags)
     case 'say': return ringSay(args, flags)
     case 'schema': return ringSchema(args, flags)
-    case 'enrich': return ringEnrich(flags)
     default:
-      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, schema, enrich. Run 'con help ring'.`, flags)
+      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, schema. Run 'con help ring'.`, flags)
   }
 }
 
@@ -116,10 +115,4 @@ async function ringSchema(args: string[], flags: GlobalFlags): Promise<void> {
   if (check && (d.stale || d.errors.length || broken.length || (d.fallback.agentKey && !d.fallback.live))) {
     exitWithError('SCHEMA', `${d.errors.length} error(s), ${broken.length} unresolved target(s)`, flags)
   }
-}
-
-// con ring enrich — run the list enricher now (normally the watcher does it
-// within ~10 s of a change; this is for testing and for rows that backed off).
-async function ringEnrich(flags: GlobalFlags): Promise<void> {
-  output(await hubFetch('/ring/enrich', { method: 'POST', timeout: 120_000 }), flags)
 }

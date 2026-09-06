@@ -8,9 +8,9 @@ import { parseClassifyReply, buildClassifyPrompt } from '../ring/llm-fallback.js
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry } from '../ring/append.js'
-import { parseTable, ensureColumns, appendRow, setCells, rowRecord, stamp } from '../ring/table.js'
-import { ENRICHERS, columnsFor, rawRow } from '../ring/enrichers.js'
-import { ListWatcher } from '../ring/list-watcher.js'
+import { parseTable, ensureColumns, appendRow, setCells, removeRow, rowRecord, stamp } from '../lists/table.js'
+import { ENRICHERS, columnsFor, rawRow, GROCERIES_ORDERED_LOG, type EnricherDeps } from '../lists/enrichers.js'
+import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
 import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
@@ -96,7 +96,7 @@ describe('schema note', () => {
     expect(p.errors).toEqual([])
     expect(p.schema.fallback).toBe('al')
     expect(p.schema.verbs.add.targets.movies).toEqual({ file: 'scratch/lists/movie-list.md', dated: false, enrich: 'movie', aliases: ['movie', 'film', 'films'] })
-    expect(p.schema.verbs.add.targets.groceries).toEqual({ file: 'scratch/lists/groceries.md', dated: false, aliases: ['grocery', 'shopping'] })
+    expect(p.schema.verbs.add.targets.groceries).toEqual({ file: 'scratch/lists/groceries.md', dated: false, enrich: 'grocery-order', aliases: ['grocery', 'shopping'] })
     expect(p.schema.verbs.add.targets.dream).toMatchObject({ file: 'scratch/lists/dream.md', dated: true })
     expect(p.schema.verbs.add.aliases).toContain('log')
     expect(p.schema.verbs.echo.aliases).toContain('ping')
@@ -330,15 +330,99 @@ describe('table helpers', () => {
 
 describe('movie enricher', () => {
   const movie = ENRICHERS.movie!
+  const deps = (llm: (p: string) => Promise<string | null>): EnricherDeps => ({ llm, exec: async () => ({ code: 1, stdout: '', stderr: 'unused' }), log: () => {} })
   it('pending = has a title, no year', () => {
     expect(movie.pending({ title: 'Dune', year: '' })).toBe(true)
     expect(movie.pending({ title: 'Dune', year: '2021' })).toBe(false)
     expect(movie.pending({ title: '', year: '' })).toBe(false)
   })
-  it('run parses the LLM reply; rejects a missing/invalid year so the row stays pending', async () => {
-    expect(await movie.run({ title: 'spiderman' }, { llm: async () => 'Sure: {"title":"Spider-Man","year":2002,"series":"No"}' })).toEqual({ Title: 'Spider-Man', Year: '2002', Series: 'No' })
-    expect(await movie.run({ title: 'thing' }, { llm: async () => '{"title":"","year":"","series":""}' })).toBeNull()
-    expect(await movie.run({ title: 'thing' }, { llm: async () => null })).toBeNull()
+  it('run fills from the LLM reply; an unidentifiable/invalid reply leaves the row pending with retry', async () => {
+    expect(await movie.run([{ title: 'spiderman' }], deps(async () => 'Sure: {"title":"Spider-Man","year":2002,"series":"No"}'))).toEqual([{ kind: 'fill', cells: { Title: 'Spider-Man', Year: '2002', Series: 'No' } }])
+    expect(await movie.run([{ title: 'thing' }], deps(async () => '{"title":"","year":"","series":""}'))).toMatchObject([{ kind: 'skip', retry: true }])
+    expect(await movie.run([{ title: 'thing' }], deps(async () => null))).toMatchObject([{ kind: 'skip', retry: true }])
+  })
+})
+
+describe('grocery-order enricher (queue drain)', () => {
+  const g = ENRICHERS['grocery-order']!
+  type Call = { cmd: string; args: string[] }
+  function fakeSainsburys(status: object | null, opts: { searchHits?: Record<string, Array<{ product_uid: string; name: string }>>; checkoutCode?: number; addCode?: number } = {}) {
+    const calls: Call[] = []
+    const exec: EnricherDeps['exec'] = async (cmd, args) => {
+      calls.push({ cmd, args })
+      const sub = args.slice(0, 2).join(' ')
+      if (sub === 'order status') return status ? { code: 0, stdout: JSON.stringify(status), stderr: '' } : { code: 1, stdout: '', stderr: '401' }
+      if (sub === 'auth login') return { code: 0, stdout: 'ok', stderr: '' }
+      if (sub === 'order amend') return { code: 0, stdout: '', stderr: '' }
+      if (sub === 'product search') return { code: 0, stdout: JSON.stringify({ products: opts.searchHits?.[args[2]!] ?? [] }), stderr: '' }
+      if (sub === 'basket add') return { code: opts.addCode ?? 0, stdout: '', stderr: '' }
+      if (args[0] === 'checkout') return { code: opts.checkoutCode ?? 0, stdout: '', stderr: opts.checkoutCode ? 'boom' : '' }
+      return { code: 1, stdout: '', stderr: `unexpected ${cmd} ${args.join(' ')}` }
+    }
+    return { calls, exec }
+  }
+  const llmPick = async (p: string) => (p.includes('none fits') ? (p.includes('Crunchy Nut') ? '{"index": 1}' : '{"index": 0}') : null)
+  const OPEN = { active: true, order_uid: '1342297016', is_in_amend_mode: false, is_cutoff: false }
+
+  it('pending = any item present', () => {
+    expect(g.pending({ item: 'eggs' })).toBe(true)
+    expect(g.pending({ item: '' })).toBe(false)
+  })
+  it('no open order → rows stay, no retry backoff, nothing added', async () => {
+    const f = fakeSainsburys({ active: false })
+    expect(await g.run([{ item: 'eggs' }], { llm: llmPick, exec: f.exec, log: () => {} })).toEqual([{ kind: 'skip', retry: false, reason: 'no open order' }])
+    expect(f.calls.map((c) => c.args[0])).toEqual(['order'])
+  })
+  it('open order past cutoff → stay', async () => {
+    const f = fakeSainsburys({ ...OPEN, is_cutoff: true })
+    expect(await g.run([{ item: 'eggs' }], { llm: llmPick, exec: f.exec, log: () => {} })).toMatchObject([{ kind: 'skip', retry: false }])
+  })
+  it('open order → amend, search + pick, add each, ONE checkout, rows drained with a log note', async () => {
+    const f = fakeSainsburys(OPEN, { searchHits: { eggs: [{ product_uid: '111', name: 'Free Range Eggs x6' }], cereal: [{ product_uid: '221', name: 'Corn Flakes' }, { product_uid: '222', name: 'Crunchy Nut' }] } })
+    const out = await g.run([{ item: 'eggs' }, { item: 'cereal' }, { item: 'unobtainium' }], { llm: llmPick, exec: f.exec, log: () => {} })
+    expect(out).toEqual([
+      { kind: 'remove', note: 'eggs → Free Range Eggs x6 (order 1342297016)', logTo: GROCERIES_ORDERED_LOG },
+      { kind: 'remove', note: 'cereal → Crunchy Nut (order 1342297016)', logTo: GROCERIES_ORDERED_LOG },
+      { kind: 'skip', retry: true, reason: 'no product matched "unobtainium"' },
+    ])
+    const seq = f.calls.map((c) => c.args.slice(0, 2).join(' '))
+    expect(seq).toEqual(['order status', 'order amend', 'product search', 'basket add', 'product search', 'basket add', 'product search', 'checkout --yes'])
+    expect(f.calls.find((c) => c.args[0] === 'basket')!.args).toEqual(['basket', 'add', '111', '-q', '1', '--slot-booked'])
+    expect(f.calls.filter((c) => c.args[0] === 'checkout')).toHaveLength(1)
+  })
+  it('already in amend mode → no second amend; checkout failure → nothing leaves the list', async () => {
+    const f = fakeSainsburys({ ...OPEN, is_in_amend_mode: true }, { searchHits: { eggs: [{ product_uid: '111', name: 'Eggs' }] }, checkoutCode: 1 })
+    const out = await g.run([{ item: 'eggs' }], { llm: llmPick, exec: f.exec, log: () => {} })
+    expect(out).toMatchObject([{ kind: 'skip', retry: true, reason: expect.stringMatching(/checkout failed/) }])
+    expect(f.calls.some((c) => c.args[1] === 'amend')).toBe(false)
+  })
+  it('expired session → login once, then proceed', async () => {
+    let first = true
+    const f = fakeSainsburys(OPEN, { searchHits: { eggs: [{ product_uid: '111', name: 'Eggs' }] } })
+    const exec: EnricherDeps['exec'] = async (cmd, args) => {
+      if (args.slice(0, 2).join(' ') === 'order status' && first) { first = false; return { code: 1, stdout: '', stderr: '401' } }
+      return f.exec(cmd, args)
+    }
+    const out = await g.run([{ item: 'eggs' }], { llm: llmPick, exec, log: () => {} })
+    expect(out).toMatchObject([{ kind: 'remove' }])
+    expect(f.calls.some((c) => c.args[0] === 'auth')).toBe(true)
+  })
+  it('never books a slot or places a fresh order', async () => {
+    const f = fakeSainsburys(OPEN, { searchHits: { eggs: [{ product_uid: '111', name: 'Eggs' }] } })
+    await g.run([{ item: 'eggs' }], { llm: llmPick, exec: f.exec, log: () => {} })
+    expect(f.calls.some((c) => c.args[0] === 'slot')).toBe(false)
+    expect(f.calls.filter((c) => c.args[0] === 'checkout').every((c) => c.args.includes('--slot-booked'))).toBe(true)
+  })
+})
+
+describe('table removeRow', () => {
+  it('drops exactly the row, keeps header and neighbours', () => {
+    const md = appendRow(appendRow(null, ['Item', 'Added'], { Item: 'a', Added: 't' }), ['Item', 'Added'], { Item: 'b', Added: 't' })
+    const t = parseTable(md.split('\n'))!
+    const out = removeRow(md, t.rows[0]!.line)
+    const t2 = parseTable(out.split('\n'))!
+    expect(t2.rows.map((r) => rowRecord(t2, r).item)).toEqual(['b'])
+    expect(removeRow(md, 999)).toBe(md)
   })
 })
 
@@ -347,7 +431,8 @@ describe('ListWatcher', () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ring-lists-')) })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  const schema = async () => ({ schema: { ...SCHEMA, verbs: { ...SCHEMA.verbs, add: { ...SCHEMA.verbs.add, targets: { movies: { file: 'lists/movies.md', dated: false, enrich: 'movie' as const, aliases: [] }, groceries: { file: 'lists/groceries.md', dated: false, aliases: [] } } } } } })
+  const targets = async () => ({ movies: { file: 'lists/movies.md', dated: false, enrich: 'movie' }, groceries: { file: 'lists/groceries.md', dated: false, enrich: 'grocery-order' } })
+  const noExec: EnricherDeps['exec'] = async () => ({ code: 1, stdout: '', stderr: 'unused' })
 
   it('fills pending rows (ring-written or hand-typed), leaves finished rows alone, backs off failures', async () => {
     const store = new NoteStore(dir, join(dir, 'tomb.json'))
@@ -368,7 +453,7 @@ describe('ListWatcher', () => {
       return '{"title":"","year":"","series":""}'
     }
     let clock = Date.now()
-    const w = new ListWatcher(store, { schema, deps: { llm }, log: () => {}, now: () => clock, quietMs: 0, retryMs: 60_000 })
+    const w = new ListWatcher(store, { targets, deps: { llm, exec: noExec }, log: () => {}, now: () => clock, quietMs: 0, retryMs: 60_000 })
     expect(await w.runNow()).toBe(2)
     const t = parseTable(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8').split('\n'))!
     expect(t.rows.map((r) => rowRecord(t, r))).toMatchObject([
@@ -395,7 +480,7 @@ describe('ListWatcher', () => {
     mkdirSync(join(dir, 'lists'), { recursive: true })
     let clock = Date.now()
     const calls: string[] = []
-    const w = new ListWatcher(store, { schema, deps: { llm: async (p) => { calls.push(p); return '{"title":"Dune","year":"2021","series":"No"}' } }, log: () => {}, now: () => clock, quietMs: 5_000 })
+    const w = new ListWatcher(store, { targets, deps: { llm: async (p) => { calls.push(p); return '{"title":"Dune","year":"2021","series":"No"}' }, exec: noExec }, log: () => {}, now: () => clock, quietMs: 5_000 })
     await w.start()
     expect(calls).toEqual([])
     writeFileSync(join(dir, 'lists', 'movies.md'), appendRow(null, columnsFor('movie'), rawRow('movie', 'dune', '2026-09-06 10:47')))
@@ -407,6 +492,25 @@ describe('ListWatcher', () => {
     expect(calls).toHaveLength(1)
     expect(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8')).toMatch(/\| Dune\s+\| 2021 \| No\s+\| No\s+\| 2026-09-06 10:47 \|/)
     w.stop()
+  })
+
+  it('queue drain: removed rows leave the table and land in the dated ordered-log; skipped rows stay', async () => {
+    const store = new NoteStore(dir, join(dir, 'tomb.json'))
+    mkdirSync(join(dir, 'lists'), { recursive: true })
+    let md = appendRow(null, columnsFor('grocery-order'), rawRow('grocery-order', 'eggs', '2026-09-06 10:47'))
+    md = appendRow(md, columnsFor('grocery-order'), rawRow('grocery-order', 'unobtainium', '2026-09-06 10:48'))
+    writeFileSync(join(dir, 'lists', 'groceries.md'), md)
+    const exec: EnricherDeps['exec'] = async (_cmd, args) => {
+      const sub = args.slice(0, 2).join(' ')
+      if (sub === 'order status') return { code: 0, stdout: JSON.stringify({ active: true, order_uid: '42', is_in_amend_mode: true, is_cutoff: false }), stderr: '' }
+      if (sub === 'product search') return { code: 0, stdout: JSON.stringify({ products: args[2] === 'eggs' ? [{ product_uid: '1', name: 'Eggs x6' }] : [] }), stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    const w = new ListWatcher(store, { targets, deps: { llm: async () => '{"index": 0}', exec }, log: () => {}, now: () => new Date(2026, 8, 6, 11, 0).getTime(), quietMs: 0 })
+    expect(await w.runNow()).toBe(1)
+    const t = parseTable(readFileSync(join(dir, 'lists', 'groceries.md'), 'utf8').split('\n'))!
+    expect(t.rows.map((r) => rowRecord(t, r).item)).toEqual(['unobtainium'])
+    expect(readFileSync(join(dir, GROCERIES_ORDERED_LOG), 'utf8')).toBe('## 2026-09-06\n- 11:00 eggs → Eggs x6 (order 42)\n')
   })
 })
 
@@ -471,7 +575,6 @@ describe('RingStore + pipeline', () => {
       store,
       schema: async () => ({ schema, errors: [] }),
       describeSchema: async () => { throw new Error('unused') },
-      enrichNow: async () => 0,
       env: async () => ENV,
       deliverToAl: (envelope) => { toAl.push(envelope); return true },
       deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },

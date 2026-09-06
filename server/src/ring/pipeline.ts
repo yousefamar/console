@@ -7,15 +7,13 @@ import type { RingStore, RingRecording } from './store.js'
 import { routeByRules, describeCommand, type RingCommand, type RouteEnv } from './router.js'
 import { RING_SCHEMA_NOTE, type RingSchema, type SchemaDescription } from './schema.js'
 import { appendLogEntry } from './append.js'
-import { appendRow, stamp } from './table.js'
-import { columnsFor, rawRow } from './enrichers.js'
+import { appendRow, stamp } from '../lists/table.js'
+import { columnsFor, rawRow } from '../lists/enrichers.js'
 
 export interface RingCtx {
   store: RingStore
   schema: () => Promise<{ schema: RingSchema; errors: string[] }>
   describeSchema: () => Promise<SchemaDescription>
-  /** `con ring enrich` — run the list enricher over every configured list now. */
-  enrichNow: () => Promise<number>
   env: () => Promise<RouteEnv>
   /** Deliver ring-originated work to AL — into the `AL ↔ ring` conversation
    *  fork (never AL's main session), falling back to the parent only when the

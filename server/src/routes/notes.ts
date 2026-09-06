@@ -29,6 +29,8 @@ export interface NoteOpenBridge {
   broadcast: (data: { path: string; anchor?: string }) => void
   /** How many SPA clients are listening — 0 means nobody can act on it. */
   clientCount: () => number
+  /** `con notes enrich` — run the list enrichers over every configured list now (lists/watcher.ts). */
+  enrichLists?: () => Promise<number>
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,17 @@ export function handleNoteRoutes(
   // Tell the running SPA to switch to the Notes pane and open a file. The hub
   // is a relay only — it holds no UI state, so with no connected client this
   // is a 409, never a silent success (the caller must know it didn't land).
+  // POST /notes/lists/enrich — force an enrichment pass over every configured
+  // list (the watcher does it within ~10 s of a change; this also retries
+  // backed-off rows and drains queues when an order has just opened).
+  if (path === '/notes/lists/enrich' && req.method === 'POST') {
+    if (!openBridge?.enrichLists) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'list enricher not wired' })); return true }
+    openBridge.enrichLists().then((changed) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, changed }))
+    }).catch((err: Error) => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: err.message })) })
+    return true
+  }
+
   if (path === '/notes/open' && req.method === 'POST') {
     readBody(req).then(async (body) => {
       const parsed = JSON.parse(body || '{}') as { path?: string; anchor?: string; create?: boolean }

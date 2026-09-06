@@ -20,8 +20,8 @@ export const LISTS_DIR = 'scratch/lists'
 export interface ListTarget {
   file: string
   dated: boolean
-  /** Optional LLM enrichment step ("movie" → title/year/series table row). */
-  enrich?: 'movie'
+  /** Optional enricher (lists/enrichers.ts): `movie` fills year/series; `grocery-order` drains rows into the open Sainsbury's order. */
+  enrich?: 'movie' | 'grocery-order'
   aliases: string[]
 }
 
@@ -60,7 +60,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
         movies: { file: `${LISTS_DIR}/movie-list.md`, dated: false, enrich: 'movie', aliases: ['movie', 'film', 'films'] },
         reading: { file: `${LISTS_DIR}/reading-list.md`, dated: false, aliases: ['books', 'book', 'read'] },
         games: { file: `${LISTS_DIR}/game-list.md`, dated: false, aliases: ['game'] },
-        groceries: { file: defaultListFile('groceries'), dated: false, aliases: ['grocery', 'shopping'] },
+        groceries: { file: defaultListFile('groceries'), dated: false, enrich: 'grocery-order', aliases: ['grocery', 'shopping'] },
       },
       projectColumn: 'Backlog',
     },
@@ -115,8 +115,8 @@ function parseTargets(v: unknown, errors: string[]): Record<string, ListTarget> 
       aliases: strList(t.aliases, `verbs.add.targets.${k}.aliases`, errors),
     }
     if (t.enrich !== undefined) {
-      if (t.enrich === 'movie') target.enrich = 'movie'
-      else errors.push(`verbs.add.targets.${k}.enrich: unknown enricher "${String(t.enrich)}" (known: movie)`)
+      if (t.enrich === 'movie' || t.enrich === 'grocery-order') target.enrich = t.enrich
+      else errors.push(`verbs.add.targets.${k}.enrich: unknown enricher "${String(t.enrich)}" (known: movie, grocery-order)`)
     }
     out[name] = target
   }
@@ -241,8 +241,12 @@ dry-run a phrase with \`con ring say --dry "…"\` (without \`--dry\` it really 
 Shape: \`<verb> <target> <payload>\`. A list and a log are the same thing — a
 note under \`scratch/lists/\`; \`dated: true\` makes it a log (\`## YYYY-MM-DD\`
 heading per day, \`- HH:MM text\` bullets), otherwise it is a table
-(\`| Item | Added |\`). A target with \`enrich:\` gets extra columns the hub fills
-in seconds later — rows you type by hand too; an empty column means "not yet".
+(\`| Item | Added |\`). A target with \`enrich:\` is worked by the hub seconds later
+— rows you type by hand too: \`movie\` fills Year/Series (empty = not yet);
+\`grocery-order\` treats the list as a queue — items are added to the open
+Sainsbury's order and the row moves to \`groceries-ordered.md\` (no open order →
+it waits; the weekly cron drains it right after placing one). \`con notes enrich\`
+forces a pass.
 \`add\` and \`log\` are the same verb. Examples: \`log dream I was escaping a prison made of cheese\`,
 \`add movies Spiderman\`, \`log journal just finished sowing the seeds\`,
 \`message mum I'll be home in 30 mins\`, \`add console the login button is
@@ -265,7 +269,7 @@ verbs:
       movies:    { file: scratch/lists/movie-list.md, enrich: movie, aliases: [movie, film, films] }
       reading:   { file: scratch/lists/reading-list.md, aliases: [books, book, read] }
       games:     { file: scratch/lists/game-list.md, aliases: [game] }
-      groceries: { aliases: [grocery, shopping] }
+      groceries: { enrich: grocery-order, aliases: [grocery, shopping] }   # a QUEUE: drained into the open Sainsbury's order, rows leave the list
     project_column: Backlog   # add <project> … lands here (queued for triage)
 
   start:                # start <project> <text> → card straight into the dispatch column

@@ -113,3 +113,12 @@ export function stamp(now: Date): string {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`
 }
+
+/** Drop the row at `line` (queue semantics — the item left the list). */
+export function removeRow(existing: string, line: number): string {
+  const lines = existing.split('\n')
+  const table = parseTable(lines)
+  if (!table || !table.rows.some((r) => r.line === line)) return existing
+  lines.splice(line, 1)
+  return lines.join('\n')
+}

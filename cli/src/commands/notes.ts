@@ -16,6 +16,7 @@ export async function notes(verb: string | undefined, args: string[], flags: Glo
     case 'daily': return notesDaily(args, flags)
     case 'open': return notesOpen(args, flags)
     case 'live': return notesLive(flags)
+    case 'enrich': return notesEnrich(flags)
     default:
       exitWithError('USAGE', `Unknown notes command: ${verb}. Run 'con help notes'.`, flags)
   }
@@ -240,4 +241,13 @@ async function notesDaily(args: string[], flags: GlobalFlags): Promise<void> {
       process.stdout.write(data.content + '\n')
     }
   }
+}
+
+// con notes enrich — run the list enrichers over every configured list now
+// (scratch/lists/*: movie year/series, groceries → the open Sainsbury's order).
+// The hub's ListWatcher does this within ~10 s of a change and on a periodic
+// sweep; this forces it — e.g. right after an order is placed — and retries
+// rows that backed off after a failure. Can take minutes (a checkout).
+async function notesEnrich(flags: GlobalFlags): Promise<void> {
+  output(await hubFetch('/notes/lists/enrich', { method: 'POST', timeout: 10 * 60_000 }), flags)
 }

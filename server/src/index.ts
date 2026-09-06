@@ -71,7 +71,8 @@ import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { RingStore } from './ring/store.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
-import { ListWatcher } from './ring/list-watcher.js'
+import { ListWatcher } from './lists/watcher.js'
+import { execFile as execFileCb } from 'node:child_process'
 import { RingSchemaLoader } from './ring/schema-loader.js'
 import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
@@ -1203,7 +1204,6 @@ const ringEnv = async (): Promise<RouteEnv> => {
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
-  enrichNow: () => ringLists.runNow(),
   describeSchema: async () => describeRingSchema(await ringSchema.load(), { ...(await ringEnv()), agents: ringLiveAgents(), echoConfigured: !!yousefWhatsAppJid() }, (p) => noteStore.read(p).then(() => true, () => false)),
   env: ringEnv,
   // Ring work for AL lives in ONE conversation fork (`AL ↔ ring`, thread key
@@ -1272,13 +1272,21 @@ const ringCtx: RingCtx = {
   log,
 }
 // Enrichment is a property of the list FILE: the watcher fills empty
-// enrichment columns on any row, ring-spoken or hand-typed.
-const ringLists = new ListWatcher(noteStore, {
-  schema: () => ringSchema.load(),
-  deps: { llm: (prompt) => claudeOneShot(prompt, smallFastModel()) },
+// enrichment columns (or drains queue rows) on any row, spoken or hand-typed.
+const listWatcher = new ListWatcher(noteStore, {
+  targets: async () => (await ringSchema.load()).schema.verbs.add.targets,
+  deps: {
+    llm: (prompt) => claudeOneShot(prompt, smallFastModel()),
+    exec: (cmd, args, opts) => new Promise((resolve) => {
+      execFileCb(cmd, args, { timeout: opts?.timeoutMs ?? 60_000, maxBuffer: 8 << 20, env: process.env }, (err, stdout, stderr) => {
+        const code = err ? ((err as NodeJS.ErrnoException & { code?: number | string }).code as number | undefined) ?? 1 : 0
+        resolve({ code: typeof code === 'number' ? code : 1, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') })
+      })
+    }),
+  },
   log,
 })
-void ringLists.start()
+void listWatcher.start()
 const ringWebhookUrl = `${(process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')}/hub/ring/webhook`
 const certCandidates = (() => {
   try {
@@ -1748,6 +1756,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/notes') && handleNoteRoutes(req, res, path, noteStore, readBody, {
     broadcast: (data) => syncBus.broadcast('notes', 'open_file', data),
     clientCount: () => syncBus.subscriberCount('notes'),
+    enrichLists: () => listWatcher.runNow(),
   })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody, (bp) => boardWatcher.queuedCards().filter((q) => q.boardPath === bp).length)) return
   if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
