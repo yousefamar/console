@@ -165,6 +165,21 @@ while the app is foregrounded (plus short background borrows), so a remote
 - Same wire shape ≠ same rendering: check `ui/<domain>/*.kt`, not just the
   React component — e.g. map features live in `MapScreen.kt`/`MapRenderer.kt`.
 
+**Theme (light + dark since ^plum-lark)**
+- Never hardcode a status/link colour (`Color(0xFF4ADE80)` etc.) in `ui/` —
+  the Tailwind-400s sit at ~2:1 on white. Use `MaterialTheme.accents`
+  (`green/red/amber/violet/blue`, `ui/theme/Theme.kt`): dark = the 400s, light
+  = the SPA's success/warning/destructive tokens. A file wanting a short name
+  declares `private val GREEN: Color @Composable @ReadOnlyComposable get() =
+  MaterialTheme.accents.green` — call sites read like a constant, but only
+  inside composition (a `Canvas {}` draw lambda or `remember {}` body must
+  hoist the value first). `MaterialTheme.isDark` for WebView CSS / basemap
+  defaults; `Color.toCssHex()` for injected CSS. Theme mode lives in
+  `core/AppPrefs` (device-local SharedPreferences, NOT a hub pref — the phone
+  is read in sunlight); `hideLegacyTiles` is there too, mirroring the SPA's
+  localStorage `console:ui:legacyTabs`. `themes.xml` stays dark: it can't see
+  the in-app override, so the cold splash is dark and Compose repaints.
+
 ## Compose traps hit here
 
 - A second `Text` in a `Row` beside a long one gets ~0 width and wraps one
