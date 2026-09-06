@@ -683,6 +683,13 @@ export const COMMANDS: CommandDef[] = [
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'card', required: true, description: '^id or unique text' }],
     examples: ['con board console redispatch "^ab12cd"'] },
 
+  { name: 'spaces board history', description: 'List the hub-side journal of pre-write board copies (last 100 per board, ~/.config/console/board-journal/) — the recovery path when a board loses cards', safety: 'read',
+    args: [{ name: 'project', required: true, description: 'Project slug' }],
+    examples: ['con spaces board astera history'] },
+  { name: 'spaces board restore', description: 'HUMAN-ONLY: overwrite the live board with a journal copy from `history`. The current file is journaled first (reversible). Agents never run this.', safety: 'write',
+    args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'ts', required: true, description: 'Journal entry epoch-ms from `history`' }],
+    flags: { confirm: { type: 'boolean', description: 'Required — acknowledges the overwrite' } },
+    examples: ['con spaces board astera restore 1788690000000 --confirm'] },
   // map (Map pane — geocaching.com scraper + offline basemap)
   { name: 'map geocaching status', description: 'Login state, daily request budget, and cached-cache count', safety: 'read' },
   { name: 'map geocaching config', description: 'Set geocaching.com credentials (--username/--password or --cookie <gspkauth>)', safety: 'write',

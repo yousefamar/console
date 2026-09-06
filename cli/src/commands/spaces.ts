@@ -145,7 +145,22 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/redispatch`, { method: 'POST', body: { card } }), flags)
       return
     }
+    case 'history': {
+      const r = await hubFetch<{ path: string; entries: Array<{ ts: number; bytes: number }> }>(`/board/${enc}/history`)
+      if (flags.json) { output(r, flags); return }
+      console.log(`${r.path} — ${r.entries.length} journal cop${r.entries.length === 1 ? 'y' : 'ies'} (pre-write, newest first)`)
+      for (const e of r.entries) console.log(`  ${e.ts}  ${new Date(e.ts).toISOString()}  ${e.bytes} bytes`)
+      if (r.entries.length) console.log(`restore one (HUMAN-ONLY): con spaces board ${project} restore <ts> --confirm`)
+      return
+    }
+    case 'restore': {
+      const ts = Number(pos[0])
+      if (!Number.isFinite(ts) || ts <= 0) { exitWithError('USAGE', 'Usage: con spaces board <project> restore <ts> --confirm   (ts from `history`; HUMAN-ONLY — overwrites the live board, the current file is journaled first)', flags); return }
+      if (!opts.confirm) { exitWithError('USAGE', 'restore overwrites the live board — HUMAN-ONLY. Re-run with --confirm.', flags); return }
+      output(await hubFetch(`/board/${enc}/restore`, { method: 'POST', body: { ts, confirm: true } }), flags)
+      return
+    }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, block, unblock, note, edit, remove, redispatch — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
   }
 }

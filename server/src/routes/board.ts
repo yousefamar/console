@@ -14,6 +14,8 @@
 //   POST /board/:project/edit               {card, text?, detail?}
 //   POST /board/:project/remove             {card}
 //   POST /board/:project/redispatch         {card}   re-wake/re-fork a stamped card
+//   GET  /board/:project/history            → pre-write journal copies, newest first
+//   POST /board/:project/restore            {ts, confirm: true}   HUMAN-ONLY: overwrite the board with a journal copy
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { BoardOps } from '../kanban/board-ops.js'
@@ -57,6 +59,12 @@ export function handleBoardRoutes(
 
   if (!verb && req.method === 'GET') {
     ops.show(project)
+      .then((r) => json(res, 200, r))
+      .catch((e) => json(res, 404, { error: (e as Error).message }))
+    return true
+  }
+  if (verb === 'history' && req.method === 'GET') {
+    ops.history(project)
       .then((r) => json(res, 200, r))
       .catch((e) => json(res, 404, { error: (e as Error).message }))
     return true
@@ -110,6 +118,14 @@ export function handleBoardRoutes(
       return true
     case 'remove':
       run((b) => ops.remove(project, String(b.card ?? '')))
+      return true
+    case 'restore':
+      run(async (b) => {
+        const ts = Number(b.ts)
+        if (!Number.isFinite(ts) || ts <= 0) throw new Error('restore needs {ts: <journal epoch ms>} — see history')
+        if (b.confirm !== true) throw new Error('restore overwrites the live board — HUMAN-ONLY; pass {confirm: true} (CLI: --confirm)')
+        return ops.restore(project, ts)
+      })
       return true
     case 'redispatch':
       if (!redispatch) return false

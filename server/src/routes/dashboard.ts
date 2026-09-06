@@ -24,6 +24,9 @@ export interface DashboardCtx {
   costs: AwsCostStore
   /** Failed ring deliveries for the alerts log (ring/store.ts failures()). */
   ringFailures?: () => Array<{ ts: number; message: string }>
+  /** Board writes the integrity guard refused (kanban/board-files.ts) — a
+   *  board that would have shrunk suspiciously; the human decides. */
+  boardRefusals?: () => Array<{ ts: number; message: string }>
 }
 
 /**
@@ -70,7 +73,7 @@ export function handleDashboardRoutes(
   // ---- alerts ----
   if (path === '/dashboard/alerts' && req.method === 'GET') {
     try {
-      const alerts = gatherAlerts({ sessions: ctx.sessions, cal: ctx.cal, debugLog: ctx.debugLog, ...(ctx.ringFailures ? { ringFailures: ctx.ringFailures } : {}) })
+      const alerts = gatherAlerts({ sessions: ctx.sessions, cal: ctx.cal, debugLog: ctx.debugLog, ...(ctx.ringFailures ? { ringFailures: ctx.ringFailures } : {}), ...(ctx.boardRefusals ? { boardRefusals: ctx.boardRefusals } : {}) })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ alerts }))
     } catch (err) {

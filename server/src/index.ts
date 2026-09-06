@@ -41,6 +41,7 @@ import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
+import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
@@ -796,7 +797,13 @@ cronScheduler.start()
 // re-derives everything (the ^id stamp marks already-dispatched).
 // Software mutation layer over boards — the CLI/agents edit via /board/*
 // instead of hand-editing markdown (single writer, per-board lock).
-const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json'))
+// ONE lock/guard/journal for every board write — BoardOps (CLI/SPA verbs) and
+// the BoardWatcher (stamp/reassign/reopen) share it, so they serialize rather
+// than interleave (2026-09-06: a watcher stamp wrote back a 64 KiB prefix of
+// the astera board read mid-`move`; 106 Done cards gone). The journal under
+// board-journal/ keeps the last 100 pre-write copies per board.
+const boardFiles = new BoardFiles(noteStore, { journalDir: join(feedsConfigDir, 'board-journal'), log: (m) => log(m) })
+const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json'), boardFiles)
 // How long an assignee's own /board/* write masks the watcher's echo of it
 // (onCardEdited / onReopen). The watcher polls every 10 s, so its own edit is
 // observed within ~20 s; anything longer risks swallowing a genuine human
@@ -1075,6 +1082,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // A card only holds a slot while its worker is actually alive — a dead fork
   // (crashed, killed, ended without moving its card) must not block the queue.
   isWorkerAlive: (agentKey) => !!liveSessionForRole(agentCtx, agentKey),
+  files: boardFiles,
 })
 void boardWatcher.start()
 
@@ -1762,6 +1770,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
     ringFailures: () => ringStore.failures(Date.now() - 24 * 60 * 60_000),
+    boardRefusals: () => boardFiles.guard.refusals(Date.now() - 24 * 60 * 60_000).map((r) => ({ ts: r.ts, message: `refused a suspicious write to ${r.path}: ${r.message} — check \`con board <project> history\`` })),
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,

@@ -2,14 +2,18 @@
 //
 // Agents (and the CLI) should never hand-edit board markdown: one short
 // command → parse, mutate, serialize, write. Atomic against concurrent
-// callers via a per-board-path promise queue — every mutation re-reads the
-// file inside the lock, so two agents moving cards "at the same time" get
-// serialized read-modify-write cycles, never lost updates. (The SPA still
+// callers via BoardFiles' per-board-path lock — SHARED with the BoardWatcher's
+// stamp/reassign/reopen writes (index.ts passes one instance to both), so a
+// CLI mutation and a watcher stamp serialize instead of interleaving (the
+// 2026-09-06 astera truncation). Every mutation re-reads inside the lock,
+// writes atomically + conditionally on that read's mtime, is journaled first,
+// and is refused if it would shrink the board suspiciously. (The SPA still
 // writes whole files via /notes/file/; the watcher's duplicate-fork guard
 // covers that residual race.)
 
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import type { NoteStore } from '../notes.js'
+import { BoardFiles, type JournalEntry } from './board-files.js'
 import { boardDefaultOwner, setBoardDefaultOwner,
   isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
   type KanbanBoard, type BoardCard, type CardRef,
@@ -116,8 +120,8 @@ function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array
 }
 
 export class BoardOps {
-  /** Per-board-path write queue — mutations on the same board serialize. */
-  private locks = new Map<string, Promise<unknown>>()
+  /** Lock + guard + journal shared with the BoardWatcher (see board-files.ts). */
+  readonly files: BoardFiles
 
   /** Last actor per card — `"<boardPath>#<blockId>" → {actor, ts}`. Lets
    *  notifiers (e.g. the Astera board-change guard) skip echoing an agent's
@@ -126,7 +130,8 @@ export class BoardOps {
   private actors: Record<string, ActorRecord> = {}
   private readonly actorFile?: string
 
-  constructor(private store: NoteStore, actorFile?: string) {
+  constructor(private store: NoteStore, actorFile?: string, files?: BoardFiles) {
+    this.files = files ?? new BoardFiles(store)
     this.actorFile = actorFile
     if (actorFile && existsSync(actorFile)) {
       try { this.actors = JSON.parse(readFileSync(actorFile, 'utf-8')) } catch { this.actors = {} }
@@ -155,19 +160,41 @@ export class BoardOps {
     } catch { /* best effort */ }
   }
 
-  /** Run `fn` with exclusive access to the board (fresh parse inside the lock). */
+  /** Run `fn` with exclusive access to the board (fresh parse inside the lock;
+   *  `fn` may run twice if the file changed under the first attempt). */
   private async mutate<T>(project: string, fn: (board: KanbanBoard, path: string) => T | Promise<T>): Promise<T> {
     const path = await resolveBoardPath(this.store, project)
     if (!path) throw new Error(`no kanban board found for "${project}"`)
-    const prev = this.locks.get(path) ?? Promise.resolve()
-    const run = prev.catch(() => {}).then(async () => {
-      const board = parseBoard(await this.store.read(path))
+    return this.files.mutate(path, async (io) => {
+      const board = parseBoard((await io.read()).content)
       const result = await fn(board, path)
-      await this.store.write(path, serializeBoard(board))
+      await io.write(serializeBoard(board))
       return result
     })
-    this.locks.set(path, run)
-    return run
+  }
+
+  /** Pre-write journal copies of the board, newest first (`con board <p> history`). */
+  async history(project: string): Promise<{ path: string; entries: JournalEntry[] }> {
+    const path = await resolveBoardPath(this.store, project)
+    if (!path) throw new Error(`no kanban board found for "${project}"`)
+    if (!this.files.journal) return { path, entries: [] }
+    return { path, entries: await this.files.journal.list(path) }
+  }
+
+  /** HUMAN-ONLY: overwrite the board with a journal entry. The current file is
+   *  journaled first (so a restore is itself reversible) and the shrink guard
+   *  is bypassed — restoring is the one deliberate shrink. */
+  async restore(project: string, ts: number): Promise<{ path: string; restored: number; bytes: number }> {
+    const path = await resolveBoardPath(this.store, project)
+    if (!path) throw new Error(`no kanban board found for "${project}"`)
+    if (!this.files.journal) throw new Error('board journal is not configured on this hub')
+    const content = await this.files.journal.read(path, ts).catch(() => null)
+    if (content === null) throw new Error(`no journal entry ${ts} for ${path} — see \`history\``)
+    return this.files.locked(path, async (io) => {
+      await io.read()
+      await io.write(content, { allowShrink: true })
+      return { path, restored: ts, bytes: Buffer.byteLength(content) }
+    })
   }
 
   async show(project: string): Promise<{ path: string } & ReturnType<typeof view>> {

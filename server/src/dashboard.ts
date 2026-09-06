@@ -292,10 +292,19 @@ export function gatherAlerts(args: {
   debugLog: DebugLog
   /** Ring deliveries that failed to route/execute (last 24h) — see ring/pipeline.ts. */
   ringFailures?: () => Array<{ ts: number; message: string }>
+  /** Board writes refused by the shrink guard (kanban/board-files.ts). */
+  boardRefusals?: () => Array<{ ts: number; message: string }>
   upcomingWindowMs?: number
 }): DashboardAlert[] {
   const alerts: DashboardAlert[] = []
   const dayAgo = Date.now() - 24 * 60 * 60_000
+
+  // Boards: a refused write means a board would have shrunk suspiciously —
+  // the agent's command failed loudly, but the human must look (journal,
+  // `con board <p> history`) before anyone re-runs it.
+  for (const r of args.boardRefusals?.() ?? []) {
+    if (r.ts >= dayAgo) alerts.push({ kind: 'error', ts: r.ts, source: 'boards', message: r.message })
+  }
 
   // Ring: a voice command that didn't land is exactly the kind of silent
   // failure Home exists to surface (the ring shows no response itself).

@@ -3,6 +3,7 @@
 import { readdir, readFile, writeFile, unlink, mkdir, rename, stat, utimes } from 'fs/promises'
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs'
 import { join, relative, extname, basename, dirname } from 'path'
+import { randomBytes } from 'crypto'
 
 export interface NoteFile {
   path: string    // relative to vault root
@@ -127,21 +128,37 @@ export class NoteStore {
     return readFile(absPath, 'utf-8')
   }
 
-  /** Read + mtime, the base for conditional writes (writeConditional). */
-  async readWithMeta(relPath: string): Promise<{ content: string; mtime: number }> {
+  /** Read + mtime + size, the base for conditional writes (writeConditional).
+   *  `size` is the stat size: a caller comparing it to the content's byte
+   *  length can tell it caught a third-party (non-atomic) write in flight. */
+  async readWithMeta(relPath: string): Promise<{ content: string; mtime: number; size: number }> {
     this.validatePath(relPath)
     const absPath = join(this.vaultPath, relPath)
     const [content, st] = await Promise.all([readFile(absPath, 'utf-8'), stat(absPath)])
-    return { content, mtime: st.mtimeMs }
+    return { content, mtime: st.mtimeMs, size: st.size }
+  }
+
+  /** Every write is temp-file + rename in the target's directory: POSIX-atomic,
+   *  so a concurrent reader sees the old file or the new one, never a prefix.
+   *  fs.writeFile is O_TRUNC then chunked writes — the astera board lost 106
+   *  Done cards (2026-09-06) when the BoardWatcher read such a prefix and
+   *  wrote it back as the whole file. */
+  private async atomicWrite(absPath: string, data: string | Buffer): Promise<void> {
+    await mkdir(dirname(absPath), { recursive: true })
+    const tmp = join(dirname(absPath), `.${basename(absPath)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
+    try {
+      await writeFile(tmp, data)
+      await rename(tmp, absPath)
+    } catch (e) {
+      await unlink(tmp).catch(() => {})
+      throw e
+    }
   }
 
   /** Write file content (create or update) */
   async write(relPath: string, content: string): Promise<void> {
     this.validatePath(relPath)
-    const absPath = join(this.vaultPath, relPath)
-    // Ensure directory exists
-    await mkdir(dirname(absPath), { recursive: true })
-    await writeFile(absPath, content, 'utf-8')
+    await this.atomicWrite(join(this.vaultPath, relPath), content)
   }
 
   /**
@@ -166,8 +183,7 @@ export class NoteStore {
         }
       }
     }
-    await mkdir(dirname(absPath), { recursive: true })
-    await writeFile(absPath, content, 'utf-8')
+    await this.atomicWrite(absPath, content)
     const st = await stat(absPath)
     return { mtime: st.mtimeMs }
   }
@@ -215,9 +231,7 @@ export class NoteStore {
   /** Write raw bytes (images etc.) */
   async writeBinary(relPath: string, data: Buffer): Promise<void> {
     this.validatePath(relPath)
-    const absPath = join(this.vaultPath, relPath)
-    await mkdir(dirname(absPath), { recursive: true })
-    await writeFile(absPath, data)
+    await this.atomicWrite(join(this.vaultPath, relPath), data)
   }
 
   // -------------------------------------------------------------------------

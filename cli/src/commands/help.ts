@@ -352,6 +352,8 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> edit "<card>"         Rewrite text/detail [--text "new"] [--detail "a|b"]
   board <project> remove "<card>"       Delete a card (human judgment — agents move, never delete)
   board <project> redispatch "<card>"   Re-wake a stamped card's assignee (re-forks if its session is gone)
+  board <project> history               Pre-write journal copies of the board (last 100, hub-side)
+  board <project> restore <ts> --confirm  HUMAN-ONLY: overwrite the board with a journal copy (reversible)
 
 Notes:
   <project> is a slug resolved like the Spaces UI (board.md/kanban.md by name,
