@@ -90,6 +90,15 @@ describe('pointInGeometry', () => {
     expect(pointInGeometry([0, 52], multi)).toBe(true)
     expect(pointInGeometry([50, 50], multi)).toBe(false)
   })
+
+  it('false inside a hole, true elsewhere in the same polygon', () => {
+    const hole: [number, number][] = [[-0.5, 51.5], [0.5, 51.5], [0.5, 52.5], [-0.5, 52.5], [-0.5, 51.5]]
+    const withHole = { type: 'Polygon', coordinates: [square.coordinates[0], hole] }
+    expect(pointInGeometry([0, 52], withHole)).toBe(false)
+    expect(pointInGeometry([0.8, 52.8], withHole)).toBe(true)
+    const multi = { type: 'MultiPolygon', coordinates: [withHole.coordinates] }
+    expect(pointInGeometry([0, 52], multi)).toBe(false)
+  })
 })
 
 describe('ringsInCountry', () => {

@@ -107,7 +107,7 @@ export class PropertySync {
     const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
     const rings = this.rings(s.layer, s.country, s.maxRings)
     const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
-    const listings = this.applyOutsideBar(s, postFilter(r.listings, s.criteria, r.unsupported))
+    const listings = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported)))
     const updated = this.searches.recordBackfill(id, listings)
     if (!updated) return undefined
     this.bus.broadcast('property', 'polled', updated)
@@ -225,7 +225,7 @@ export class PropertySync {
       total = r.total
       truncated = r.truncated
       unsupported = r.unsupported
-      listings = sortNewestFirst(this.applyOutsideBar(s, postFilter(r.listings, s.criteria, r.unsupported)))
+      listings = sortNewestFirst(this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported))))
     } catch (e) {
       error = (e as Error).message
     }
@@ -347,6 +347,22 @@ export class PropertySync {
    */
   private filterForNotify(s: PropertySearch, fresh: Listing[]): Listing[] {
     return applyNotifyGate(this.filterByGeofence(s, fresh), s.notifyCriteria && withoutAirportGate(s.notifyCriteria))
+  }
+
+  /**
+   * The portal query is only an approximation of the layer: portals take outer
+   * rings only (no holes), and some clip or simplify further. So every listing
+   * that comes back is re-tested against the real geometry, holes included.
+   * Listings without coordinates can't be tested and are kept.
+   */
+  private clipToLayer(layer: string, listings: Listing[]): Listing[] {
+    const geometries = this.geometriesOf(layer)
+    if (!geometries.length) return listings
+    return listings.filter((l) => {
+      if (l.lat == null || l.lon == null) return true
+      const point: [number, number] = [l.lon, l.lat]
+      return geometries.some((g) => pointInGeometry(point, g))
+    })
   }
 
   /**

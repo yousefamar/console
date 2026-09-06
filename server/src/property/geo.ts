@@ -153,9 +153,21 @@ function pointInRing(point: [number, number], ring: Ring): boolean {
   return inside
 }
 
-/** True if the point falls inside any outer ring of the geometry (holes ignored — none of our polygons have any). */
+/**
+ * True if the point falls inside any polygon of the geometry — inside its outer
+ * ring and not inside any of its holes. Holes matter: the livable zone carves
+ * out ruled-out places (Luton) as holes, and the portals can't express those
+ * (they only take outer rings), so this is the only place they take effect.
+ */
 export function pointInGeometry(point: [number, number], geometry: Geometry): boolean {
-  return outerRings(geometry).some((ring) => pointInRing(point, ring))
+  const polys = (geometry.type === 'MultiPolygon'
+    ? (geometry.coordinates as Ring[][])
+    : [geometry.coordinates as Ring[]]) as Ring[][]
+  return polys.some((poly) => {
+    const [outer, ...holes] = poly
+    if (!Array.isArray(outer) || outer.length < 4) return false
+    return pointInRing(point, outer) && !holes.some((h) => pointInRing(point, h))
+  })
 }
 
 /** Clamp a ring's coordinates into a country bbox — trims cross-border lobes. */
