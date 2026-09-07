@@ -148,6 +148,17 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('add reflection tools export to csv')).toMatchObject({ command: { kind: 'card', project: 'reflection-tools', text: 'export to csv' } })
     expect(r('add nonsense thing')).toMatchObject({ command: { kind: 'unknown-target', verb: 'add', target: 'nonsense' } })
   })
+  it('trailing target: "<item> to [the|my] <target> [list]" — natural speech puts the target last', () => {
+    expect(r('Add Count of Monte Cristo to movie list')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Count of Monte Cristo', dated: false, enrich: 'movie' } })
+    expect(r('add eggs to the shopping list')).toMatchObject({ command: { kind: 'list', target: 'groceries', item: 'eggs' } })
+    expect(r('log I was flying to dreams')).toMatchObject({ rule: 'add.log', command: { kind: 'list', target: 'dream', item: 'I was flying', dated: true } })
+    expect(r('add note to self to movie list')).toMatchObject({ command: { target: 'movies', item: 'note to self' } }) // several "to"s — the resolving split wins
+    expect(r('add the login button is misaligned to console')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'console', text: 'the login button is misaligned' } })
+    expect(r('add export to csv to reflection tools')).toMatchObject({ command: { kind: 'card', project: 'reflection-tools', text: 'export to csv' } })
+    // Fallback only: a first-word target keeps the whole payload as the item.
+    expect(r('add movies Journey to the Center of the Earth')).toMatchObject({ rule: 'add.list', command: { target: 'movies', item: 'Journey to the Center of the Earth' } })
+    expect(r('add nonsense to whatever')).toMatchObject({ command: { kind: 'unknown-target', verb: 'add' } })
+  })
   it('start <project> <text> goes straight to the dispatch column; lists are not startable', () => {
     expect(r('Start console fix the login button')).toMatchObject({ rule: 'start.card', command: { kind: 'card', project: 'console', column: 'In Progress', text: 'fix the login button' } })
     expect(r('kick astera chase the invoice')).toMatchObject({ command: { kind: 'card', project: 'astera', column: 'In Progress' } })
@@ -287,6 +298,12 @@ describe('append helpers', () => {
     expect(second).toBe('## 2026-09-02\n- 23:07 cheese prison\n- 23:07 again\n')
     const next = appendLogEntry(second, 'tomorrow', new Date(2026, 8, 3, 8, 0))
     expect(next.endsWith('\n\n## 2026-09-03\n- 08:00 tomorrow\n')).toBe(true)
+  })
+  it('log: the day heading is the LOCAL date, so a post-midnight BST entry is not filed a day early', () => {
+    // 2026-09-06T23:16Z = 00:16 on the 7th in BST — the bullet says 00:16, so
+    // the heading must say the 7th (it used to be the UTC 6th).
+    const pastMidnightBst = new Date('2026-09-06T23:16:24.423Z')
+    expect(appendLogEntry(null, 'late thought', pastMidnightBst)).toBe('## 2026-09-07\n- 00:16 late thought\n')
   })
 })
 

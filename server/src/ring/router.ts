@@ -268,6 +268,19 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         }
         const card = projectCard(target, payload, env.projects, v.add.projectColumn)
         if (card) return { rule: 'add.card', command: card }
+        // Trailing-target phrasing, tried only now: "add Count of Monte Cristo
+        // to movie list" puts the target at the END, so the second word is the
+        // start of the ITEM. First-word target wins, so "add movies Journey to
+        // the Center of the Earth" keeps its full title.
+        for (const { item, spoken } of splitTrailingTarget(one?.rest ?? '')) {
+          const t2 = resolveSpoken(spoken, spokenForms(v.add.targets))
+          if (t2) {
+            const t = v.add.targets[t2]!
+            return { rule: t.dated ? 'add.log' : 'add.list', command: { kind: 'list', target: t2, file: t.file, item, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } }
+          }
+          const project = pickFuzzy(spoken, env.projects) ?? pickFuzzy(spoken.replace(/\s+/g, '-'), env.projects)
+          if (project) return { rule: 'add.card', command: { kind: 'card', project, column: v.add.projectColumn, text: item } }
+        }
         return unknown('add')
       }
       case 'start': {
@@ -287,6 +300,27 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   }
 
   return null
+}
+
+const TRAILING_ARTICLE = /^(?:the|my|your|a)$/i
+
+/** Every "<item> to [the|my] <target> [list]" reading of a payload, left to
+ *  right — natural speech puts the target last ("Count of Monte Cristo to
+ *  movie list"). The caller resolves each `spoken` and takes the first hit, so
+ *  a payload with several "to"s ("note to self to movie list") still lands. */
+export function splitTrailingTarget(payload: string): Array<{ item: string; spoken: string }> {
+  const words = payload.split(' ').filter(Boolean)
+  const out: Array<{ item: string; spoken: string }> = []
+  for (let i = 1; i < words.length - 1; i++) {
+    if (words[i]!.replace(HEAD_PUNCT, '').toLowerCase() !== 'to') continue
+    let tail = words.slice(i + 1)
+    if (tail.length > 1 && TRAILING_ARTICLE.test(tail[0]!.replace(HEAD_PUNCT, ''))) tail = tail.slice(1)
+    if (tail.length > 1 && tail.at(-1)!.replace(HEAD_PUNCT, '').toLowerCase() === 'list') tail = tail.slice(0, -1)
+    const item = words.slice(0, i).join(' ').trim()
+    const spoken = tail.join(' ').replace(HEAD_PUNCT, '').trim().toLowerCase()
+    if (item && spoken) out.push({ item, spoken })
+  }
+  return out
 }
 
 /** `<target> <payload>` against the project slugs — slugs may be hyphenated
