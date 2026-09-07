@@ -193,3 +193,100 @@ export function boxAround(lat: number, lon: number, metres: number): Ring {
     [lon - dLon, lat - dLat],
   ]
 }
+
+/** Great-circle distance in km between two [lng, lat] points. */
+export function haversineKm(a: [number, number], b: [number, number]): number {
+  const R = 6371
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(b[1] - a[1])
+  const dLon = toRad(b[0] - a[0])
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a[1])) * Math.cos(toRad(b[1])) * Math.sin(dLon / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+export interface Circle {
+  lat: number
+  lon: number
+  radiusKm: number
+}
+
+/**
+ * Cover a ring with search circles for portals that only take lat/lon +
+ * radius (Sparkasse, Subito, Kleinanzeigen). One circle when the ring fits
+ * inside `maxRadiusKm`; otherwise the bbox is quartered and each quarter that
+ * touches the ring is covered recursively. Circles overlap by design — callers
+ * dedupe by id and clip to the real geometry afterwards.
+ */
+export function coverRingWithCircles(ring: Ring, maxRadiusKm: number): Circle[] {
+  const out: Circle[] = []
+  const cover = (w: number, s: number, e: number, n: number, depth: number): void => {
+    const pts = ring.filter(([x, y]) => x >= w && x <= e && y >= s && y <= n)
+    const centre: [number, number] = [(w + e) / 2, (s + n) / 2]
+    const centreInside = pointInRing(centre, ring)
+    if (pts.length === 0 && !centreInside && !ringCrossesBox(ring, w, s, e, n)) return
+    // Radius that reaches every corner of this box (plus a margin for the arc).
+    const cornerKm = Math.max(haversineKm(centre, [w, s]), haversineKm(centre, [e, n]), haversineKm(centre, [w, n]), haversineKm(centre, [e, s]))
+    if (cornerKm * 1.05 <= maxRadiusKm || depth >= 6) {
+      out.push({ lat: centre[1], lon: centre[0], radiusKm: Math.min(maxRadiusKm, Math.ceil(cornerKm * 1.05)) })
+      return
+    }
+    const mx = (w + e) / 2
+    const my = (s + n) / 2
+    cover(w, s, mx, my, depth + 1)
+    cover(mx, s, e, my, depth + 1)
+    cover(w, my, mx, n, depth + 1)
+    cover(mx, my, e, n, depth + 1)
+  }
+  const [w, s, e, n] = ringBbox(ring)
+  cover(w, s, e, n, 0)
+  return out
+}
+
+/** Does any ring edge pass through the box? (bbox-overlap test per edge — cheap and good enough for tiling) */
+function ringCrossesBox(ring: Ring, w: number, s: number, e: number, n: number): boolean {
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [x1, y1] = ring[i]!
+    const [x2, y2] = ring[j]!
+    if (Math.max(x1, x2) < w || Math.min(x1, x2) > e || Math.max(y1, y2) < s || Math.min(y1, y2) > n) continue
+    return true
+  }
+  return false
+}
+
+/**
+ * Inside the geometry, OR within `bufferKm` of one of its edges — for
+ * listings whose coordinates are a comune/PLZ centroid rather than the house.
+ */
+export function nearGeometry(point: [number, number], geometry: Geometry, bufferKm: number): boolean {
+  if (pointInGeometry(point, geometry)) return true
+  const polys = (geometry.type === 'MultiPolygon' ? (geometry.coordinates as Ring[][]) : [geometry.coordinates as Ring[]]) as Ring[][]
+  const pad = bufferKm / 100 // ~1° ≈ 111 km; generous bbox pre-filter
+  for (const poly of polys) {
+    for (const ring of poly) {
+      const [w, s, e, n] = ringBbox(ring)
+      if (point[0] < w - pad || point[0] > e + pad || point[1] < s - pad || point[1] > n + pad) continue
+      if (distanceToRingKm(point, ring) <= bufferKm) return true
+    }
+  }
+  return false
+}
+
+/** Shortest distance from a point to any edge of the ring, km (local equirectangular projection). */
+export function distanceToRingKm(point: [number, number], ring: Ring): number {
+  const kx = 111.32 * Math.cos((point[1] * Math.PI) / 180)
+  const ky = 110.574
+  const px = point[0] * kx
+  const py = point[1] * ky
+  let best = Infinity
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const ax = ring[j]![0] * kx, ay = ring[j]![1] * ky
+    const bx = ring[i]![0] * kx, by = ring[i]![1] * ky
+    const dx = bx - ax, dy = by - ay
+    const len2 = dx * dx + dy * dy
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
+    const cx = ax + t * dx, cy = ay + t * dy
+    const d = Math.hypot(px - cx, py - cy)
+    if (d < best) best = d
+  }
+  return best
+}

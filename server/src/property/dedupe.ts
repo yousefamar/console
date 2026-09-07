@@ -19,6 +19,8 @@ export interface DedupeCandidate {
    * separate pins.
    */
   source?: string
+  /** Coordinates are an area centroid, not the house — never a dedupe match. */
+  fuzzy?: boolean
 }
 
 /** Same house if within this many metres… */
@@ -40,6 +42,7 @@ function metres(a: DedupeCandidate, b: DedupeCandidate): number {
 
 function sameHouse(a: DedupeCandidate, b: DedupeCandidate): boolean {
   if (a.source != null && a.source === b.source) return false
+  if (a.fuzzy || b.fuzzy) return false
   if (metres(a, b) > RADIUS_M) return false
   if (a.price != null && b.price != null) {
     const tol = Math.max(PRICE_TOLERANCE_ABS, PRICE_TOLERANCE * Math.max(a.price, b.price))

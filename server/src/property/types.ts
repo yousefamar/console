@@ -5,7 +5,22 @@
 // Each speaks a different dialect; `Criteria` is the one declarative shape WE
 // own, and each client compiles it into its own query.
 
-export type Portal = 'rightmove' | 'immobiliare' | 'immoscout24'
+// Primary portals (one per country) plus the extra sources surveyed 2026-09-07
+// (^spry-tern; protocol notes: ~/sync/brain/root/projects/home/<portal>-api.md).
+// A name here does not mean a client exists yet — PropertySync errors clearly
+// when a search names a portal with no client wired in index.ts.
+export type Portal =
+  | 'rightmove'
+  | 'immobiliare'
+  | 'immoscout24'
+  | 'onthemarket'
+  | 'smallholdings'
+  | 'sparkasse'
+  | 'kleinanzeigen'
+  | 'immowelt'
+  | 'wikicasa'
+  | 'subito'
+  | 'casa'
 
 export type Channel = 'buy' | 'rent'
 
@@ -125,11 +140,23 @@ export interface Listing {
   propertyType?: string
   lat?: number
   lon?: number
+  /**
+   * How much to trust lat/lon. `exact` (default) = the property itself.
+   * `area` = a comune/PLZ/place centroid (Subito, Kleinanzeigen, geocoded
+   * feeds) — the zone clip allows a buffer for these, and dedupe ignores them.
+   */
+  coordsPrecision?: 'exact' | 'area'
   /** ISO timestamp the portal first listed it, where exposed. */
   listedAt?: string
   /** Portal's own "this is new" flag, where exposed. */
   isNew?: boolean
   summary?: string
+  /** Bullet features from the detail page, where a client's `detail()` has run. */
+  keyFeatures?: string[]
+  /** Full description from the detail page, where a client's `detail()` has run. */
+  description?: string
+  /** When `detail()` last enriched this row (epoch ms). */
+  detailAt?: number
   agent?: string
   image?: string
   /**
@@ -176,4 +203,12 @@ export interface PortalClient {
    * without a cheap probe simply never prunes.
    */
   isLive?(listing: Listing, criteria: Criteria): Promise<boolean | null>
+  /**
+   * Optional: fetch the listing's own page and return the fields the search
+   * results don't carry — `keyFeatures`, `description`, a parsed `plotArea`,
+   * exact coordinates, a real `listedAt`. One request per listing, so the
+   * caller paces it (PropertySync.enrich). Return null when the page is gone
+   * or unreadable; throw only for "stop calling me" conditions (WAF, ban).
+   */
+  detail?(listing: Listing): Promise<Partial<Listing> | null>
 }

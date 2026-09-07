@@ -7,6 +7,7 @@ import { PropertySearchStore, PORTAL_BY_COUNTRY, withInterestedCarried } from '.
 import { postFilter, applyNotifyGate, PropertySync } from '../property/sync.js'
 import { PropertyInventoryStore, fetchAll } from '../property/inventory.js'
 import { groupDuplicates } from '../property/dedupe.js'
+import { coverRingWithCircles, nearGeometry, haversineKm } from '../property/geo.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
@@ -973,5 +974,76 @@ describe('PropertySync cross-portal dedupe', () => {
     expect(layers.get('property/house')!.features[0]!.properties.review).toBe('interested')
     sync.review(otm.id, 'otm1', 'dismissed')
     expect(layers.get('property/house')!.features.length).toBe(0)
+  })
+})
+
+describe('coverRingWithCircles', () => {
+  // ~110 km × 110 km square around 50°N 8°E
+  const big: [number, number][] = [[7.2, 49.5], [8.8, 49.5], [8.8, 50.5], [7.2, 50.5], [7.2, 49.5]]
+
+  it('covers a small ring with one circle', () => {
+    const small: [number, number][] = [[8, 50], [8.2, 50], [8.2, 50.1], [8, 50.1], [8, 50]]
+    const circles = coverRingWithCircles(small, 100)
+    expect(circles).toHaveLength(1)
+    expect(circles[0]!.radiusKm).toBeLessThan(20)
+    for (const v of small) expect(haversineKm([circles[0]!.lon, circles[0]!.lat], v)).toBeLessThanOrEqual(circles[0]!.radiusKm)
+  })
+
+  it('splits a ring larger than the radius cap and every vertex ends up inside some circle', () => {
+    const circles = coverRingWithCircles(big, 40)
+    expect(circles.length).toBeGreaterThan(1)
+    for (const c of circles) expect(c.radiusKm).toBeLessThanOrEqual(40)
+    for (const v of big) expect(circles.some((c) => haversineKm([c.lon, c.lat], v) <= c.radiusKm)).toBe(true)
+    // and interior points too
+    expect(circles.some((c) => haversineKm([c.lon, c.lat], [8, 50]) <= c.radiusKm)).toBe(true)
+  })
+
+  it('skips quarters the ring never touches', () => {
+    // An L-shaped ring: the top-right quarter of its bbox is empty.
+    const L: [number, number][] = [[7, 49], [8, 49], [8, 49.5], [7.5, 49.5], [7.5, 50], [7, 50], [7, 49]]
+    const circles = coverRingWithCircles(L, 30)
+    const topRight = circles.filter((c) => c.lon > 7.75 && c.lat > 49.75)
+    expect(topRight).toHaveLength(0)
+  })
+})
+
+describe('nearGeometry', () => {
+  const square = { type: 'Polygon', coordinates: [[[8, 50], [8.2, 50], [8.2, 50.2], [8, 50.2], [8, 50]]] }
+  it('true inside, true just outside within the buffer, false well outside', () => {
+    expect(nearGeometry([8.1, 50.1], square, 5)).toBe(true)
+    expect(nearGeometry([8.25, 50.1], square, 5)).toBe(true) // ~3.6 km east of the edge
+    expect(nearGeometry([8.4, 50.1], square, 5)).toBe(false) // ~14 km
+  })
+})
+
+describe('clipToLayer with area-precision coordinates', () => {
+  it('keeps a centroid-located listing near the zone edge but drops an exact one at the same spot', async () => {
+    const zone = { type: 'Polygon', coordinates: [[[10, 44], [10.2, 44], [10.2, 44.2], [10, 44.2], [10, 44]]] }
+    const store = tmpStore()
+    const layers = new Map<string, { features: unknown[] }>()
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson as never); return {} },
+      getMeta: () => undefined, getGeojson: (slug: string) => (slug === 'zone' ? zone : null), list: () => [], remove: () => true,
+    }
+    const client = {
+      portal: 'subito' as const, currency: 'EUR', count: async () => 0,
+      newest: async () => ({ portal: 'subito' as const, total: 2, truncated: false, unsupported: [], listings: [
+        listing('fuzzy', { lat: 44.1, lon: 10.24, price: 100000, portal: 'subito' as const, coordsPrecision: 'area' }), // ~3 km east of the edge
+        listing('exact', { lat: 44.1, lon: 10.24, price: 100000, portal: 'subito' as const }),
+      ] }),
+    }
+    const sync = new PropertySync({ subito: client } as never, store, tmpInventory(), { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {})
+    const s = store.create({ country: 'IT', layer: 'zone', portal: 'subito' })
+    await sync.fullSync(s.id)
+    const ids = (layers.get('property/house')!.features as Array<{ properties: { listingId: string } }>).map((f) => f.properties.listingId)
+    expect(ids).toEqual(['fuzzy'])
+  })
+
+  it('a search naming a portal with no client fails loudly, not silently', async () => {
+    const store = tmpStore()
+    const sync = new PropertySync({} as never, store, tmpInventory(), { broadcast: () => {} } as never, { broadcast: () => {} } as never, { getGeojson: () => null, list: () => [], getMeta: () => undefined } as never, { isConfigured: () => false } as never, () => {})
+    const s = store.create({ country: 'UK', layer: 'zone', portal: 'onthemarket' })
+    const after = await sync.fullSync(s.id)
+    expect(after?.inventory?.error).toMatch(/no client wired for portal 'onthemarket'/)
   })
 })

@@ -18,7 +18,7 @@ import type { PushServer } from '../push.js'
 import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
-import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo.js'
+import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring } from './geo.js'
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
@@ -37,6 +37,12 @@ const FETCH_LIMIT = 50
  * to be large enough to never be the thing that cuts a backfill short.
  */
 const BACKFILL_LIMIT = 5000
+/**
+ * Listings whose coordinates are a comune/PLZ centroid (Subito, Kleinanzeigen,
+ * geocoded feeds) get this much slack against the zone edge — a house can sit
+ * this far from its town's centre and still be inside.
+ */
+const AREA_COORDS_BUFFER_KM = 6
 /** Pins per kind layer. The inventory is the whole portal (UK ~8k), so this is a safety net, not a budget. */
 const MAX_PINS = 25_000
 /**
@@ -69,7 +75,7 @@ export class PropertySync {
   private readonly INTERVAL_MS = 60 * 60 * 1000
 
   constructor(
-    private readonly clients: Record<Portal, PortalClient>,
+    private readonly clients: Partial<Record<Portal, PortalClient>>,
     private readonly searches: PropertySearchStore,
     private readonly inventory: PropertyInventoryStore,
     private readonly push: PushServer,
@@ -113,7 +119,7 @@ export class PropertySync {
   async backfill(id: string): Promise<PropertySearch | undefined> {
     const s = this.searches.get(id)
     if (!s) return undefined
-    const client = this.clients[portalOf(s)]
+    const client = this.clientFor(s)
     const rings = this.rings(s.layer, s.country, s.maxRings)
     const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
     const listings = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported)))
@@ -153,7 +159,7 @@ export class PropertySync {
   async pruneGone(id: string, snapshotIds: Set<string>): Promise<string[]> {
     const s = this.searches.get(id)
     if (!s?.interestedIds?.length) return []
-    const client = this.clients[portalOf(s)]
+    const client = this.clientFor(s)
     if (!client.isLive) return []
     const byId = new Map<string, Listing>(this.inventory.get(id).entries.map((l) => [l.id, l]))
     for (const l of s.lastResults ?? []) if (!byId.has(l.id)) byId.set(l.id, l)
@@ -203,10 +209,10 @@ export class PropertySync {
   async fullSync(id: string): Promise<PropertySearch | undefined> {
     const s = this.searches.get(id)
     if (!s) return undefined
-    const client = this.clients[portalOf(s)]
     const started = Date.now()
     this.log(`[property-sync] ${s.id} full sync starting`)
     try {
+      const client = this.clientFor(s)
       const rings = this.rings(s.layer, s.country, s.maxRings)
       const r = await fetchAll(client, rings, s.criteria)
       const snap = this.inventory.upsert(s.id, r.listings, { full: true })
@@ -270,7 +276,7 @@ export class PropertySync {
   /** Ad-hoc count for a candidate criteria set, without saving anything. */
   async count(country: keyof typeof PORTAL_BY_COUNTRY, layer: string, criteria: Criteria, maxRings?: number, portal?: Portal): Promise<number> {
     const rings = this.rings(layer, country, maxRings)
-    return this.clients[portal ?? PORTAL_BY_COUNTRY[country]].count(rings, criteria)
+    return this.clientFor({ portal, country }).count(rings, criteria)
   }
 
   broadcastChange(op: 'created' | 'updated' | 'deleted', data: unknown): void {
@@ -304,7 +310,6 @@ export class PropertySync {
   }
 
   private async pollSearch(s: PropertySearch): Promise<void> {
-    const client = this.clients[portalOf(s)]
     let listings: Listing[] = []
     let total: number | undefined
     let truncated = false
@@ -312,6 +317,7 @@ export class PropertySync {
     let error: string | undefined
 
     try {
+      const client = this.clientFor(s)
       const rings = this.rings(s.layer, s.country, s.maxRings)
       const r = await client.newest(rings, s.criteria, FETCH_LIMIT)
       total = r.total
@@ -400,6 +406,13 @@ export class PropertySync {
         : [gj as unknown as Geometry]
   }
 
+  private clientFor(s: Pick<PropertySearch, 'portal' | 'country'>): PortalClient {
+    const portal = portalOf(s)
+    const client = this.clients[portal]
+    if (!client) throw new Error(`no client wired for portal '${portal}' (see server/src/index.ts)`)
+    return client
+  }
+
   /** Resolve a search's polygon from the map-layer store. */
   private rings(layer: string, country: keyof typeof PORTAL_BY_COUNTRY, maxRings?: number): Ring[] {
     const rings = this.geometriesOf(layer).flatMap((g) => ringsInCountry(g, country))
@@ -457,6 +470,7 @@ export class PropertySync {
     return listings.filter((l) => {
       if (l.lat == null || l.lon == null) return true
       const point: [number, number] = [l.lon, l.lat]
+      if (l.coordsPrecision === 'area') return geometries.some((g) => nearGeometry(point, g, AREA_COORDS_BUFFER_KM))
       return geometries.some((g) => pointInGeometry(point, g))
     })
   }
@@ -528,7 +542,7 @@ export class PropertySync {
     // Every fine-filtered listing of this kind, across searches and portals,
     // BEFORE verdicts — duplicates are grouped first so a verdict on one copy
     // covers the others.
-    type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; source: string; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
+    type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; source: string; fuzzy: boolean; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
     const candidates: Candidate[] = []
     for (const s of this.searches.list()) {
       if (kindOf(s) !== kind) continue
@@ -541,7 +555,7 @@ export class PropertySync {
       const kept = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? [])))
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
-        candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, source: s.id, l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
+        candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
     }
     // Primary-portal copies first so they win the "which one do we draw" call.
