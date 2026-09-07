@@ -795,6 +795,17 @@ describe('PropertyInventoryStore', () => {
     expect(b.lastSeenAt).toBe(4000)
   })
 
+  it('applyDetail() stays in memory until flush() — one write per batch, not per row', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'property-inv-'))
+    dirs.push(dir)
+    const a = new PropertyInventoryStore(dir)
+    a.upsert('s1', [listing('a')], { full: true, now: 1 })
+    a.applyDetail('s1', 'a', { description: 'hello' })
+    expect(new PropertyInventoryStore(dir).get('s1').entries[0]!.description).toBeUndefined()
+    a.flush('s1')
+    expect(new PropertyInventoryStore(dir).get('s1').entries[0]!.description).toBe('hello')
+  })
+
   it('persists to disk and keeps nearestAirport across a re-pull that lacks it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'property-inv-'))
     dirs.push(dir)

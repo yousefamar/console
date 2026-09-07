@@ -304,6 +304,7 @@ export class PropertySync {
       }
       await new Promise((r) => setTimeout(r, DETAIL_DELAY_MS))
     }
+    if (enriched) this.inventory.flush(s.id)
     if (goneIds.length) this.inventory.markRemoved(s.id, goneIds)
     const pending = Math.max(0, due.length - enriched - gone)
     if (enriched || gone) {

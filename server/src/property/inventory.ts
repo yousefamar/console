@@ -147,13 +147,22 @@ export class PropertyInventoryStore {
     return snap
   }
 
-  /** Merge detail-page fields into one row (see PortalClient.detail). */
+  /**
+   * Merge detail-page fields into one row (see PortalClient.detail). Does NOT
+   * persist — the inventory file is megabytes and a batch touches hundreds of
+   * rows, so the caller `flush()`es once at the end. (Persisting per row was a
+   * synchronous multi-MB write per listing that stalled the hub's event loop.)
+   */
   applyDetail(searchId: string, listingId: string, fields: Partial<Listing>): void {
     const snap = this.get(searchId)
     const e = snap.entries.find((x) => x.id === listingId)
     if (!e) return
     Object.assign(e, fields, { id: e.id, portal: e.portal, url: e.url })
-    this.save(snap)
+  }
+
+  /** Persist in-memory changes made by applyDetail(). */
+  flush(searchId: string): void {
+    this.save(this.get(searchId))
   }
 
   /** A liveness probe said the portal dropped these. */
@@ -172,6 +181,7 @@ export class PropertyInventoryStore {
     const e = snap.entries.find((x) => x.id === listingId)
     if (!e) return
     e.nearestAirport = nearestAirport
+    // ≤ MAX_ALERTS of these per poll — one write each is fine.
     this.save(snap)
   }
 
