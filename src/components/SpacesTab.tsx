@@ -253,7 +253,8 @@ interface SpaceAlert {
   label: string
   /** 'context' = a non-alerted parent shown only so its alerted fork nests
    *  under it (neutral icon — it isn't itself unread). */
-  level: 'attention' | 'working' | 'unread' | 'context' | 'dirty' | 'draft'
+  /** 'stale' = a published post saved after the site's last build (edits not live). */
+  level: 'attention' | 'working' | 'unread' | 'context' | 'dirty' | 'stale' | 'draft'
   fork?: boolean
   /** Fork-lineage depth within the space (manager edges) — indents the row. */
   depth?: number
@@ -274,6 +275,7 @@ function SpaceListRail() {
   const sessions = useAgentStore((s) => s.sessions)
   const openFiles = useNotesStore((s) => s.openFiles)
   const blogDrafts = useBlogStore((s) => s.drafts)
+  const stalePosts = useBlogStore((s) => s.stalePosts)
   const { agentBadges, alertsBySlug, unassignedCount, curatorForks } = useMemo(() => {
     const badges = new Map<string, { count: number; unread: boolean; attention: boolean; reviewUnread: boolean }>()
     const alerts = new Map<string, SpaceAlert[]>()
@@ -381,6 +383,16 @@ function SpaceListRail() {
         if (t !== proj && areaSlugs.has(t)) push(t, { kind: 'file', id: d.path, label: d.title, level: dirty ? 'dirty' : 'draft' })
       }
     }
+    // Stale published posts (saved after the site's last build) row exactly
+    // like drafts: under their project and every area their tags name. A
+    // dirty one already has an amber row (unsaved beats not-live).
+    for (const p of stalePosts) {
+      const dirty = !!openFiles[p.path] && openFiles[p.path]!.content !== openFiles[p.path]!.savedContent
+      if (p.project && !dirty) push(p.project, { kind: 'file', id: p.path, label: p.title, level: 'stale' })
+      for (const t of p.tags) {
+        if (t !== p.project && areaSlugs.has(t)) push(t, { kind: 'file', id: p.path, label: p.title, level: dirty ? 'dirty' : 'stale' })
+      }
+    }
     // Unassigned pseudo-space: live sessions with no space binding
     // (chat forks, one-off creates).
     let unassigned = 0
@@ -409,7 +421,7 @@ function SpaceListRail() {
     // itself alerted still appears — as a neutral 'context' row — when one of
     // its forks is. Siblings sort attention > working > unread > context;
     // dirty-file rows trail.
-    const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4, draft: 5 }
+    const rank = { attention: 0, working: 1, unread: 2, context: 3, dirty: 4, stale: 5, draft: 6 }
     // Project owner per slug (frontmatter or convention) — the same pick the
     // hub makes when an unassigned card lands in In Progress.
     const ownerBySlug = new Map(spaces.filter((sp) => sp.kind === 'project').map((sp) => [sp.slug, effectiveOwnerKey(sp.slug, sp.defaultOwner, sessions)]))
@@ -468,7 +480,7 @@ function SpaceListRail() {
     }
     curatorForkRows.sort((x, y) => rank[x.level] - rank[y.level] || x.label.localeCompare(y.label))
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned, curatorForks: curatorForkRows }
-  }, [sessions, openFiles, blogDrafts, spaces])
+  }, [sessions, openFiles, blogDrafts, stalePosts, spaces])
 
   const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
     const ad = alertsBySlug.has(a.slug) ? 0 : 1
@@ -530,7 +542,7 @@ function SpaceListRail() {
       <SpaceListItem
         space={s}
         badge={agentBadges.get(s.slug)}
-        draftCount={(alertsBySlug.get(s.slug) ?? []).filter((a) => a.level === 'draft').length}
+        draftCount={(alertsBySlug.get(s.slug) ?? []).filter((a) => a.level === 'draft' || a.level === 'stale').length}
         active={s.slug === activeSlug}
         onClick={() => selectSpace(s.slug)}
       />
@@ -540,10 +552,10 @@ function SpaceListRail() {
             onClick={() => openAlert(s, a)}
             className="flex w-full items-center gap-2 py-0.5 pr-3 text-left text-[11px] text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary"
             style={{ paddingLeft: `${32 + (a.depth ?? 0) * 14}px` }}
-            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : a.level === 'context' ? 'Parent of an alerted fork' : a.level === 'draft' ? 'Unpublished draft' : 'Unsaved changes'}
+            title={a.level === 'attention' ? 'Needs you' : a.level === 'working' ? 'Working' : a.level === 'unread' ? 'Unread' : a.level === 'context' ? 'Parent of an alerted fork' : a.level === 'draft' ? 'Unpublished draft' : a.level === 'stale' ? 'Edits not live yet' : 'Unsaved changes'}
           >
             {a.kind === 'file'
-              ? <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', a.level === 'draft' ? 'bg-blue-500' : 'bg-amber-500')} />
+              ? <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', a.level === 'draft' ? 'bg-blue-500' : a.level === 'stale' ? 'bg-yellow-400' : 'bg-amber-500')} />
               : a.fork
                 ? <GitBranch size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
                 : a.owner
@@ -656,7 +668,7 @@ function SpaceListItem({ space, badge, draftCount = 0, active, onClick }: { spac
         {draftCount > 0 && (
           <span
             className="flex items-center gap-0.5 text-[9px] text-blue-500"
-            title={`${draftCount} unpublished draft${draftCount > 1 ? 's' : ''}`}
+            title={`${draftCount} not live`}
           >
             <FileText size={9} />{draftCount}
           </span>
@@ -919,6 +931,8 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
   const loading = useBlogStore((s) => s.areaPostsLoading)
   // `?? []` — a pre-restart hub serves drafts without `tags`; crashing here darkened the whole app.
   const drafts = useBlogStore((s) => s.drafts).filter((d) => (d.tags ?? []).includes(slug))
+  const stalePaths = useBlogStore((s) => s.stalePosts)
+  const isStale = (path: string) => stalePaths.some((p) => p.path === path)
   const openFiles = useNotesStore((s) => s.openFiles)
   const isDirty = (path: string) => !!openFiles[path] && openFiles[path]!.content !== openFiles[path]!.savedContent
   useEffect(() => {
@@ -970,7 +984,11 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
             <span className="truncate">{p.title}</span>
             <span className="ml-auto flex flex-shrink-0 items-center gap-1.5">
               {p.project && <span className="rounded-sm bg-surface-2 px-1 text-[9px] text-text-tertiary">{p.project}</span>}
-              {p.date && <span className="text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
+              {isDirty(p.path)
+                ? <span className="text-[9px] text-amber-500" title="Unsaved changes">unsaved</span>
+                : isStale(p.path)
+                  ? <span className="text-[9px] text-yellow-400" title="Edits not live yet">stale</span>
+                  : p.date && <span className="text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
             </span>
           </button>
         ))}
@@ -988,6 +1006,8 @@ function AreaDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) 
 function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void }) {
   const posts = useBlogStore((s) => s.postsByProject[slug])
   const drafts = useBlogStore((s) => s.drafts).filter((d) => d.project === slug)
+  const stalePaths = useBlogStore((s) => s.stalePosts)
+  const isStale = (path: string) => stalePaths.some((p) => p.path === path)
   const openFiles = useNotesStore((s) => s.openFiles)
   const isDirty = (path: string) => !!openFiles[path] && openFiles[path]!.content !== openFiles[path]!.savedContent
   const [expanded, setExpanded] = useState(false)
@@ -1035,7 +1055,11 @@ function ProjectDevlog({ slug, onOpened }: { slug: string; onOpened: () => void 
         >
           <FileText size={9} className="flex-shrink-0 opacity-50" />
           <span className="truncate">{p.title}</span>
-          {p.date && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
+          {isDirty(p.path)
+            ? <span className="ml-auto flex-shrink-0 text-[9px] text-amber-500" title="Unsaved changes">unsaved</span>
+            : isStale(p.path)
+              ? <span className="ml-auto flex-shrink-0 text-[9px] text-yellow-400" title="Edits not live yet">stale</span>
+              : p.date && <span className="ml-auto flex-shrink-0 text-[9px] text-text-tertiary">{p.date.slice(0, 10)}</span>}
         </button>
       ))}
       {expanded && (posts ?? []).length === 0 && drafts.length === 0 && (

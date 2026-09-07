@@ -3,6 +3,10 @@
 
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
+import { stalePostCandidates, projectForPostPath } from '@/blog/stale'
+
+/** Any page works as the build clock; the memo index is small and always rebuilt. */
+const SITE_PROBE_URL = 'https://yousefamar.com/memo/'
 
 export interface DraftSummary {
   path: string
@@ -82,6 +86,15 @@ export interface CreateProjectResult {
 
 export type LiveStatus = 'live' | 'stale' | 'building' | 'unknown'
 
+/** A published post saved after the site's last build — its edits aren't live. */
+export interface StalePost {
+  path: string
+  title: string
+  project: string | null
+  tags: string[]
+  mtime: number
+}
+
 interface BlogState {
   drafts: DraftSummary[]
   projects: ProjectSummary[]
@@ -117,6 +130,17 @@ interface BlogState {
    *  not yet on the site; 'building' = a queued build is being polled. */
   liveStatusByPath: Record<string, LiveStatus>
   setLiveStatus: (path: string, status: LiveStatus) => void
+  /** Last-Modified of the live site (ms) — every page shares it, a rebuild
+   *  rewrites them all. null = not probed / unreachable. */
+  siteBuiltAt: number | null
+  /** Probe the site's build time and recompute `stalePosts`. */
+  refreshSiteBuiltAt: () => Promise<void>
+  /** Published posts whose vault file is newer than `siteBuiltAt` — the
+   *  sidebar twin of drafts ("saved, not live"). */
+  stalePosts: StalePost[]
+  /** Re-derive `stalePosts` from the notes store's file list (cheap; frontmatter
+   *  is fetched only for new stale paths). */
+  recomputeStalePosts: () => Promise<void>
   /** Probe the permalink and compare its Last-Modified against the local
    *  file's mtime; updates liveStatusByPath. */
   checkLiveStatus: (path: string) => Promise<void>
@@ -135,7 +159,7 @@ interface BlogState {
   createProject: (args: CreateProjectArgs) => Promise<CreateProjectResult>
 }
 
-export const useBlogStore = create<BlogState>((set) => ({
+export const useBlogStore = create<BlogState>((set, get) => ({
   drafts: [],
   projects: [],
   tags: [],
@@ -288,6 +312,50 @@ export const useBlogStore = create<BlogState>((set) => ({
     set((s) => ({ liveStatusByPath: { ...s.liveStatusByPath, [path]: status } }))
   },
 
+  siteBuiltAt: null,
+  stalePosts: [],
+
+  refreshSiteBuiltAt: async () => {
+    try {
+      const r = await hubFetch<{ lastModified: string | null }>(`/blog/page-etag?url=${encodeURIComponent(SITE_PROBE_URL)}`, { timeoutMs: 12000 })
+      const ms = r.lastModified ? Date.parse(r.lastModified) : NaN
+      set({ siteBuiltAt: Number.isNaN(ms) ? null : ms })
+    } catch {
+      set({ siteBuiltAt: null })
+    }
+    await useBlogStore.getState().recomputeStalePosts()
+  },
+
+  recomputeStalePosts: async () => {
+    const { useNotesStore } = await import('./notes')
+    const files = useNotesStore.getState().files
+    const candidates = stalePostCandidates(files, get().siteBuiltAt)
+    const prev = new Map(get().stalePosts.map((p) => [p.path, p]))
+    const next: StalePost[] = []
+    for (const c of candidates) {
+      const cached = prev.get(c.path)
+      if (cached && cached.mtime === c.mtime) { next.push(cached); continue }
+      try {
+        const { parseFrontmatter } = await import('@/utils/frontmatter')
+        const r = await hubFetch<{ content: string }>(`/notes/file/${encodeURIComponent(c.path)}`, { timeoutMs: 8000 })
+        const { fm } = parseFrontmatter(r.content)
+        next.push({
+          path: c.path,
+          title: fm.title?.trim() || c.path.split('/').pop()!.replace(/\.md$/, ''),
+          project: projectForPostPath(c.path) ?? fm.project ?? null,
+          tags: fm.tags ?? [],
+          mtime: c.mtime,
+        })
+      } catch {
+        next.push({ path: c.path, title: c.path.split('/').pop()!.replace(/\.md$/, ''), project: projectForPostPath(c.path), tags: [], mtime: c.mtime })
+      }
+    }
+    // Skip the set() when nothing changed — this runs on every file-list tick.
+    const cur = get().stalePosts
+    if (cur.length === next.length && cur.every((p, i) => p.path === next[i]!.path && p.mtime === next[i]!.mtime)) return
+    set({ stalePosts: next })
+  },
+
   checkLiveStatus: async (path: string) => {
     const { permalinkForLogPath } = await import('@/utils/frontmatter')
     const url = permalinkForLogPath(path)
@@ -321,7 +389,10 @@ export const useBlogStore = create<BlogState>((set) => ({
     for (let i = 0; i < MAX_TRIES; i++) {
       await new Promise((r) => setTimeout(r, INTERVAL_MS))
       const etag = await useBlogStore.getState().fetchPageEtag(url)
-      if (etag && etag !== baselineEtag) return true
+      if (etag && etag !== baselineEtag) {
+        void useBlogStore.getState().refreshSiteBuiltAt()
+        return true
+      }
     }
     return false
   },

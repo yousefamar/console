@@ -106,6 +106,11 @@ const LazyApp = lazy(async () => {
   const { wireBoardSubscription } = await import('./kanban/board-subscribe')
   wireBoardSubscription()
 
+  // Stale published posts (saved after the site's last build) — the Spaces
+  // rail counts them beside drafts, so the probe runs before Spaces mounts.
+  const { wireStalePosts } = await import('./blog/stale-subscribe')
+  wireStalePosts()
+
   // Unified Inbox composition — boot-wired so the tab badge counts without
   // the pane ever having been opened.
   const { wireUnifiedInbox } = await import('./inbox/subscribe')
