@@ -1233,3 +1233,29 @@ describe('shared fixes for the extra sources', () => {
     expect(groupDuplicates([a, c]).length).toBe(2)
   })
 })
+
+describe('PropertySync layer geometry cache', () => {
+  it('parses a search layer once per layer version, not once per clip', async () => {
+    const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+    const store = tmpStore()
+    let reads = 0
+    let version = 1
+    const mapLayers = {
+      upsert: () => ({}), getMeta: (slug: string) => (slug === 'zone' ? { updatedAt: version } : undefined),
+      getGeojson: (slug: string) => { if (slug === 'zone') reads++; return slug === 'zone' ? box : null }, list: () => [], remove: () => true,
+    }
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 1, truncated: false, unsupported: [], listings: [listing('a', { lat: 51, lon: -1 })] }),
+    }
+    const sync = new PropertySync({ rightmove: client } as never, store, tmpInventory(), { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {})
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    await sync.fullSync(s.id)
+    sync.review(s.id, 'a', 'interested')
+    expect(reads).toBe(1)
+    version = 2 // the layer was re-pushed
+    sync.review(s.id, 'a', 'none')
+    expect(reads).toBe(2)
+  })
+})

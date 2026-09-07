@@ -82,6 +82,16 @@ const DRIVE_GATE_MAX_LOOKUPS = 10
 export class PropertySync {
   private timer: ReturnType<typeof setInterval> | null = null
   private running = false
+  /**
+   * Layer geometry, parsed once per layer version. `MapLayerStore.getGeojson`
+   * reads + parses the file every call (the zone is ~1.2 MB) and the clip used
+   * to call it per search per redraw — over a hundred parses a tick, which is
+   * what stalled the hub's event loop for 30 s+ every hour.
+   */
+  private readonly geomCache = new Map<string, { version: number; geometries: Geometry[]; inZone: Map<string, boolean> }>()
+  /** During tick(), redraws are coalesced into one at the end instead of one per search. */
+  private deferRedraw = false
+  private redrawPending = false
   // Hourly. "I want to be the first to know" — but portal listings appear in
   // batches during agent working hours, and all three are free public servers
   // we're being a polite guest on.
@@ -355,6 +365,8 @@ export class PropertySync {
   private async tick(): Promise<void> {
     if (this.running) return
     this.running = true
+    this.deferRedraw = true
+    this.redrawPending = false
     try {
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
@@ -376,7 +388,12 @@ export class PropertySync {
         await this.enrich(s.id, this.pacingOf(s).enrichPerTick ?? ENRICH_PER_TICK)
       }
     } finally {
+      this.deferRedraw = false
       this.running = false
+      if (this.redrawPending) {
+        this.redrawPending = false
+        for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+      }
     }
   }
 
@@ -464,17 +481,28 @@ export class PropertySync {
 
   /** Every Polygon/MultiPolygon geometry in a map layer, FeatureCollection or bare Feature/Geometry. */
   private geometriesOf(layer: string): Geometry[] {
+    return this.layerGeometry(layer).geometries
+  }
+
+  private layerGeometry(layer: string): { version: number; geometries: Geometry[]; inZone: Map<string, boolean> } {
+    const version = this.mapLayers.getMeta(layer)?.updatedAt ?? 0
+    const cached = this.geomCache.get(layer)
+    if (cached && cached.version === version) return cached
     const gj = this.mapLayers.getGeojson(layer) as
       | { type?: string; features?: Array<{ geometry?: Geometry }>; geometry?: Geometry }
       | null
-    if (!gj) return []
-    return gj.type === 'FeatureCollection'
-      ? (gj.features ?? []).map((f) => f.geometry).filter((g): g is Geometry => !!g)
-      : gj.type === 'Feature'
-        ? gj.geometry
-          ? [gj.geometry]
-          : []
-        : [gj as unknown as Geometry]
+    const geometries: Geometry[] = !gj
+      ? []
+      : gj.type === 'FeatureCollection'
+        ? (gj.features ?? []).map((f) => f.geometry).filter((g): g is Geometry => !!g)
+        : gj.type === 'Feature'
+          ? gj.geometry
+            ? [gj.geometry]
+            : []
+          : [gj as unknown as Geometry]
+    const entry = { version, geometries, inZone: new Map<string, boolean>() }
+    this.geomCache.set(layer, entry)
+    return entry
   }
 
   private pacingOf(s: PropertySearch): NonNullable<PortalClient['pacing']> {
@@ -544,13 +572,22 @@ export class PropertySync {
    * Listings without coordinates can't be tested and are kept.
    */
   private clipToLayer(layer: string, listings: Listing[]): Listing[] {
-    const geometries = this.geometriesOf(layer)
+    const { geometries, inZone } = this.layerGeometry(layer)
     if (!geometries.length) return listings
     return listings.filter((l) => {
       if (l.lat == null || l.lon == null) return true
+      // Verdicts are cached per layer version — the same 27k coordinates are
+      // re-tested on every redraw otherwise.
+      const key = `${l.coordsPrecision === 'area' ? 'a' : 'p'}${l.lon},${l.lat}`
+      const hit = inZone.get(key)
+      if (hit !== undefined) return hit
       const point: [number, number] = [l.lon, l.lat]
-      if (l.coordsPrecision === 'area') return geometries.some((g) => nearGeometry(point, g, AREA_COORDS_BUFFER_KM))
-      return geometries.some((g) => pointInGeometry(point, g))
+      const verdict =
+        l.coordsPrecision === 'area'
+          ? geometries.some((g) => nearGeometry(point, g, AREA_COORDS_BUFFER_KM))
+          : geometries.some((g) => pointInGeometry(point, g))
+      inZone.set(key, verdict)
+      return verdict
     })
   }
 
@@ -603,8 +640,12 @@ export class PropertySync {
     return applyNotifyGate(candidates, { maxAirportDriveMinutes: s.notifyCriteria!.maxAirportDriveMinutes })
   }
 
-  /** A search changed — redraw every kind layer (its rows can split across them). */
+  /** A search changed — redraw every kind layer (its rows can split across them). Coalesced during tick(). */
   private updateLayer(_s: PropertySearch): void {
+    if (this.deferRedraw) {
+      this.redrawPending = true
+      return
+    }
     for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
   }
 
