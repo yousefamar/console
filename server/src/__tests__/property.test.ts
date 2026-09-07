@@ -1130,9 +1130,20 @@ describe('listingKind', () => {
     expect(listingKind({ propertyType: 'Equestrian Facility' }, 'house')).toBe('farmland')
     expect(listingKind({ propertyType: 'Bauernhaus' }, 'house')).toBe('farmland')
     expect(listingKind({ propertyType: 'Detached', plotArea: 2500 }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', plotArea: 1200 }, 'house')).toBe('farmland') // floor is 1,000 m²
     expect(listingKind({ propertyType: 'Detached', plotArea: 900 }, 'house')).toBe('house')
     expect(listingKind({ propertyType: 'Detached', keyFeatures: ['Approx 1 acre'] }, 'house')).toBe('farmland')
     expect(listingKind({ propertyType: 'Detached', summary: 'large garden' }, 'house')).toBe('house')
+  })
+
+  it('keywords promote when no size is stated; a stated size below the floor wins over a keyword', () => {
+    expect(listingKind({ propertyType: 'Detached', summary: 'Cottage with paddock and stables' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', description: 'mature orchard to the rear' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', summary: 'set in half an acre' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Einfamilienhaus', description: 'mit Streuobstwiese' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Villa', description: 'con uliveto' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Semi-Detached', description: 'orchard-style planting', plotArea: 300 }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Semi-Detached', summary: 'Scotland; building plot; landscaped garden' }, 'house')).toBe('house')
   })
 })
 

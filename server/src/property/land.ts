@@ -10,11 +10,22 @@ export const HECTARE_M2 = 10_000
 /**
  * Plot size from which a house counts as a smallholding and moves to the
  * `property/farmland` layer. Yousef, 2026-09-07: "enough for a food forest /
- * permaculture garden, not becoming a full-on farmer" — 2,000 m² (half an
- * acre) is the floor, no upper cap (the ≤300k price already caps it); the
- * target band is 0.2–2 ha of house-with-land, not working farms.
+ * permaculture garden, not becoming a full-on farmer" — first 2,000 m², then
+ * lowered the same evening to 1,000 m² (a quarter acre) because UK
+ * house-with-land ≤ £300k barely exists above that. No upper cap (the price
+ * already caps it); the target is house-with-land, not working farms.
  */
-export const FARMLAND_MIN_PLOT_M2 = 2000
+export const FARMLAND_MIN_PLOT_M2 = 1000
+
+/**
+ * Words that mean "there is land here" even when nobody wrote a number —
+ * paddocks, orchards, stables — checked over title, summary, key features and
+ * description (Yousef, 2026-09-07: "try some keywords as well"). Deliberately
+ * NOT "garden", "land" or "plot" alone: every semi has a garden, "Scotland"
+ * and "building plot" would match.
+ */
+export const FARMLAND_TEXT_RE =
+  /\bpaddocks?\b|\borchards?\b|\bstables?\b|\bstable block\b|\bequestrian\b|\bsmallholding\b|\bsmall holding\b|\bwoodland\b|\bpasture\b|\bgrazing\b|\bmenage\b|\bmanège\b|\bpolytunnel\b|\bhalf an acre\b|\bquarter of an acre\b|\bthird of an acre\b|\bacre\b|\bacres\b|\bhectares?\b|\bweide\b|\bwiese\b|obstwiese|obstgarten|streuobst|pferdehaltung|pferdestall|\bstallungen?\b|nebengebäude|\bgrundstück (?:von|mit) (?:über |ca\.? ?)?\d|\bfrutteto\b|\buliveto\b|\bvigneto\b|\bterreno agricolo\b|\bstalla\b|\bpascolo\b/i
 
 const FARMLAND_TYPE_RE =
   /smallholding|small holding|equestrian|farm\s?house|\bfarm\b|\bcroft\b|bauernhaus|resthof|hofstelle|landhaus|reiterhof|\brustico\b|casale|podere|cascina|masseria|agricol/i
@@ -53,7 +64,11 @@ export function plotAreaFromText(text: string): number | undefined {
 export function listingKind(l: Pick<Listing, 'propertyType' | 'title' | 'plotArea' | 'summary' | 'keyFeatures' | 'description' | 'bedrooms'>, searchKind: PropertyKind): PropertyKind {
   if (searchKind === 'farmland') return 'farmland'
   if (FARMLAND_TYPE_RE.test(`${l.propertyType ?? ''} ${l.title ?? ''}`)) return 'farmland'
-  const plot = l.plotArea ?? plotAreaFromText([l.summary ?? '', ...(l.keyFeatures ?? []), l.description ?? ''].join('\n'))
+  const text = [l.title ?? '', l.summary ?? '', ...(l.keyFeatures ?? []), l.description ?? ''].join('\n')
+  const plot = l.plotArea ?? plotAreaFromText(text)
   if (plot != null && plot >= FARMLAND_MIN_PLOT_M2) return 'farmland'
+  // A stated plot BELOW the floor is the author telling us the size — believe
+  // it over a keyword ("orchard" in a 300 m² garden is a fruit tree).
+  if (plot == null && FARMLAND_TEXT_RE.test(text)) return 'farmland'
   return 'house'
 }
