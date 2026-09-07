@@ -1,0 +1,366 @@
+{
+  "_note": "Recorded 2026-09-07 from POST /api-nuxt/realEstate/getListRealEstate?limit=25&offset=0&format=INSERTION&lang=it&maxPhotos=1 with the Tuscany ring as polygonFromMap + filterOrder MOST_RECENT; trimmed to 5 rows and the fields the client reads (agency/reImages cut down). Rows 1 and 5 have publishMap:false (hidden address → cityDto is not the house).",
+  "count": 1428,
+  "results": [
+    {
+      "realEstateID": 30768831,
+      "agencyID": 27247,
+      "priceRent": 0,
+      "priceSale": 285000,
+      "price": 285000,
+      "reservedPrice": false,
+      "originalPrice": 0,
+      "auctionMissingDays": 0,
+      "bareOwnership": false,
+      "contractType": "SALE",
+      "sqm": 170,
+      "rooms": 6,
+      "bathrooms": 2,
+      "typologyID": 2,
+      "macroTypologyID": 1,
+      "title": "Villa, Massarosa",
+      "address": "",
+      "cityName": "Massarosa",
+      "cityDto": {
+        "cityId": 46018,
+        "cityName": "Massarosa",
+        "cityDisplayName": null,
+        "istatCode": null,
+        "longitude": 10.3397917,
+        "latitude": 43.8715382,
+        "hasHomonymy": false,
+        "area": null,
+        "province": {
+          "provinceId": 46,
+          "region": {},
+          "provinceName": "Lucca",
+          "provinceAcronym": null
+        }
+      },
+      "placeDto": {
+        "cityID": 46018,
+        "latitude": 43.8715382,
+        "longitude": 10.3397917,
+        "placeType": "\u0000",
+        "priority": 0,
+        "provinceID": 46
+      },
+      "publishMap": false,
+      "date": "2026-09-07T00:00:00.000+0000",
+      "recent": true,
+      "insertionQuality": "GOLD",
+      "luxury": false,
+      "url": "/annuncio/30768831",
+      "description": "Nel centro del paese di Massarosa, vicina a tutti i servizi, villetta di recente costruzione, libera su 3 lati corredata da giardino con possibilità di parcheggio interno. Si accede al piano terreno direttamente nel soggiorno d'ingresso con cottura a vista, dalla quale si esce nel pratico porticato che conduce al giardino attrezzato per i vostri pranzi all'aperto nella bella stagione, dal disimpegno si raggiungono la camera matrimoniale ed il bagno con vasca; al piano seminterrato vi accoglie una bella taverna con salone e grande cucina a vista oltre lavanderia; al piano mansardato prendono posto altre 2 camere matrimoniali ed il secondo bagno con doccia. Ottime condizioni.",
+      "reImages": [
+        {
+          "imageId": 1520063862,
+          "position": 0,
+          "images": [
+            {
+              "format": 0,
+              "storagePath": "https://images.wk-cdn.it/925ee0b44a2197170f7d83779c029e3b297998034118e78daca4b9f54041f899//original"
+            },
+            {
+              "format": 1,
+              "storagePath": "https://images.wk-cdn.it/925ee0b44a2197170f7d83779c029e3b297998034118e78daca4b9f54041f899/webp/640x480.webp"
+            }
+          ]
+        }
+      ],
+      "agency": {
+        "id": 27247,
+        "name": "Studio Immobiliare La Soffitta",
+        "cityName": "Massarosa"
+      }
+    },
+    {
+      "realEstateID": 30762939,
+      "agencyID": 90451,
+      "priceRent": 0,
+      "priceSale": 245000,
+      "price": 245000,
+      "reservedPrice": false,
+      "originalPrice": 0,
+      "auctionMissingDays": 0,
+      "bareOwnership": false,
+      "contractType": "SALE",
+      "sqm": 100,
+      "rooms": 4,
+      "bathrooms": 2,
+      "typologyID": 172,
+      "macroTypologyID": 1,
+      "title": "Terratetto in Via Padule, Campi Bisenzio",
+      "address": "Via Padule",
+      "cityName": "Campi Bisenzio",
+      "cityDto": {
+        "cityId": 48006,
+        "cityName": "Campi Bisenzio",
+        "cityDisplayName": null,
+        "istatCode": null,
+        "longitude": 11.138646,
+        "latitude": 43.81214,
+        "hasHomonymy": false,
+        "area": null,
+        "province": {
+          "provinceId": 48,
+          "region": {},
+          "provinceName": "Firenze",
+          "provinceAcronym": null
+        }
+      },
+      "placeDto": {
+        "cityID": 48006,
+        "latitude": 43.81214,
+        "longitude": 11.138646,
+        "placeType": "\u0000",
+        "priority": 0,
+        "provinceID": 48
+      },
+      "publishMap": true,
+      "date": "2026-09-06T00:00:00.000+0000",
+      "recent": false,
+      "insertionQuality": "GOLD",
+      "luxury": false,
+      "url": "/annuncio/30762939",
+      "description": "NOSTRA ESCLUSIVA. Campi Bisenzio, zona San Giusto, nei pressi del centro commerciale Coop, in contesto tranquillo e riservato, nonchè vicino al centro, proponiamo in vendita un grazioso TERRATETTO QUADRIVANI di 100mq catastali, corredato da un GIARDINO TERGALE privato di 76mq. L'immobile, disposto su due livelli fuori terra, si distingue per i suoi ambienti spaziosi e ben distribuiti. Al piano terra si sviluppa la zona giorno, composta da un pratico disimpegno -ingresso, un accogliente salotto, disimpegno, un comodo sottoscala-ripostiglio e un'ampia cucina abitabile con accesso diretto al suddetto GIARDINO TERGALE: un piacevole spazio esterno, in parte verde e in parte piastrellato, ove poter trascorrere momenti di convivialità in compagnia di amici e parenti, corredato di un annesso lavanderia con secondo bagno di servizio. Salendo al primo piano si sviluppa invece la zona notte, composta da due spaziose camere da letto matrimoniali impreziosite da travi a vista in legno e il bagno padronale finestrato con doccia. L'abitazione viene ceduta nello stato di fatto in cui si trova, parzialmente restaurata: i principali e più importanti lavori strutturali sono già stati completati. Il tetto è stato interamente rifatto a nuovo con finitura a travi a vista, mentre gli impianti elettrico e idraulico dei bagni sono totalmente nuovi.  Vi è inoltre la predisposizione per realizzare in giardino un accesso carrabile privato, in modo tale da potervi parcheggiare l'auto in tutta sicurezza. La zona in cui è ubicato l'immobile è davvero ben fornita, con centri commerciali e servizi a breve distanza, rendendo ogni spostamento agevole. Richiesti euro 245.000. LIBERO SUBITO, VENDESI.\n\nPrezzo richiesto: 245.000 euro\nDisponibilità: Libero subito Classe Energetica: G",
+      "reImages": [
+        {
+          "imageId": 1519400205,
+          "position": 0,
+          "images": [
+            {
+              "format": 0,
+              "storagePath": "https://images.wk-cdn.it/cc3d4bafe51b4a4e7721815700314da7a8cf1aa020dda87e2c7202f90e132e2b//original"
+            },
+            {
+              "format": 1,
+              "storagePath": "https://images.wk-cdn.it/cc3d4bafe51b4a4e7721815700314da7a8cf1aa020dda87e2c7202f90e132e2b/webp/640x480.webp"
+            }
+          ]
+        }
+      ],
+      "agency": {
+        "id": 90451,
+        "name": "Casabella Immobiliare",
+        "cityName": "Campi Bisenzio"
+      }
+    },
+    {
+      "realEstateID": 30758874,
+      "agencyID": 69426,
+      "priceRent": 0,
+      "priceSale": 288000,
+      "price": 288000,
+      "reservedPrice": false,
+      "originalPrice": 0,
+      "auctionMissingDays": 0,
+      "bareOwnership": false,
+      "contractType": "SALE",
+      "sqm": 138,
+      "rooms": 6,
+      "bathrooms": 2,
+      "typologyID": 2,
+      "macroTypologyID": 1,
+      "title": "Villa in Via Palmiro Togliatti 100, Pieve a Nievole",
+      "address": "Via Palmiro Togliatti 100",
+      "cityName": "Pieve a Nievole",
+      "cityDto": {
+        "cityId": 47013,
+        "cityName": "Pieve a Nievole",
+        "cityDisplayName": null,
+        "istatCode": null,
+        "longitude": 10.8019,
+        "latitude": 43.8824,
+        "hasHomonymy": false,
+        "area": null,
+        "province": {
+          "provinceId": 47,
+          "region": {},
+          "provinceName": "Pistoia",
+          "provinceAcronym": null
+        }
+      },
+      "placeDto": {
+        "cityID": 47013,
+        "latitude": 43.8824,
+        "longitude": 10.8019,
+        "placeType": "\u0000",
+        "priority": 0,
+        "provinceID": 47
+      },
+      "publishMap": true,
+      "date": "2026-09-05T00:00:00.000+0000",
+      "recent": false,
+      "insertionQuality": "GOLD",
+      "luxury": false,
+      "url": "/annuncio/30758874",
+      "description": "[Rif. DV-14038] In una delle zone residenziali più apprezzate di Pieve a Nievole, in Via Palmiro Togliatti 100, proponiamo in vendita una villetta a schiera di circa 138 mq commerciali, distribuita su tre livelli e dotata di giardino privato, ideale per chi desidera vivere in un contesto tranquillo senza rinunciare alla comodità dei servizi.\nL'abitazione si trova all'interno di una strada a fondo chiuso, lontana dal traffico, in un contesto curato e familiare, perfetto per famiglie e per chi cerca privacy e sicurezza.\nL'ingresso si apre su un ampio e luminoso soggiorno, valorizzato da una grande finestra tripla che dona luce naturale durante tutto il giorno. La zona giorno prosegue con una spaziosa cucina abitabile, impreziosita da un camino funzionante e con accesso diretto al balcone, dove trova spazio una pratica zona lavanderia esterna. La distribuzione degli ambienti è resa ancora più funzionale dalla presenza di un ampio sottoscala e di armadiature su misura.\nAl primo piano si sviluppa la zona notte, composta da tre camere da letto: una spaziosa matrimoniale con balcone privato, una seconda camera di ottime dimensioni anch'essa con balcone e una terza stanza ideale come cameretta, studio o camera per gli ospiti. Il piano è completato da un bagno finestrato con doccia e da un comodo ripostiglio.\nAl piano seminterrato si trova una taverna accogliente e versatile, perfetta per trascorrere momenti conviviali con amici e familiari. L'ambiente è dotato di camino, forno a legna, cucinotto attrezzato, bagno finestrato e ulteriori spazi di servizio, risultando ideale anche come zona hobby o area relax.\nAl piano seminterrato è presente anche un box auto con portone in legno, attualmente adibito a salotto. \n<La casa si presenta in ottime condizioni ed è stata oggetto di interventi di miglioramento che ne aumentano comfort ed efficienza. Tra le dotazioni troviamo: impianto elettrico parzialmente rinnovato, caldaia a condensazione sostituita recentemente, climatizzazione con 5 split distribuiti nei principali ambienti, infissi in legno con doppio vetro, zanzariere nelle camere, addolcitore d'acqua con doppio serbatoio e riserve idriche supplementari. \nIl giardino privato di circa 30 mq, completamente recintato, rappresenta uno spazio ideale per pranzi all'aperto, momenti di relax o per far giocare i bambini in totale sicurezza.\n\nLa posizione costituisce uno dei principali punti di forza dell'immobile. Nel raggio di pochi minuti a piedi sono presenti scuole, asilo, Misericordia, diversi aree verdi e la fermata dell'autobus, mentre la stazione ferroviaria è raggiungibile in circa 10 minuti. La vicinanza alla SS436 e all'autostrada A11 permette inoltre di raggiungere rapidamente Montecatini Terme, Lucca, Pisa e Firenze, rendendo questa soluzione ideale anche per chi si sposta quotidianamente per lavoro.",
+      "reImages": [
+        {
+          "imageId": 1518970794,
+          "position": 0,
+          "images": [
+            {
+              "format": 0,
+              "storagePath": "https://images.wk-cdn.it/fb45e20af905e7cd45b93eb7ac9dcaf034a6b5dcce39226a2e7c4f89a1f3f268//original"
+            },
+            {
+              "format": 1,
+              "storagePath": "https://images.wk-cdn.it/fb45e20af905e7cd45b93eb7ac9dcaf034a6b5dcce39226a2e7c4f89a1f3f268/webp/640x480.webp"
+            }
+          ]
+        }
+      ],
+      "agency": {
+        "id": 69426,
+        "name": "DOVE.IT",
+        "cityName": "Milano"
+      }
+    },
+    {
+      "realEstateID": 30738606,
+      "agencyID": 114242,
+      "priceRent": 0,
+      "priceSale": 250000,
+      "price": 250000,
+      "reservedPrice": false,
+      "originalPrice": 0,
+      "auctionMissingDays": 0,
+      "bareOwnership": false,
+      "contractType": "SALE",
+      "sqm": 860,
+      "rooms": 6,
+      "bathrooms": 3,
+      "typologyID": 6,
+      "macroTypologyID": 1,
+      "title": "Rustico in Via Marlianese, Serravalle Pistoiese",
+      "address": "Via Marlianese",
+      "cityName": "Serravalle Pistoiese",
+      "cityDto": {
+        "cityId": 47020,
+        "cityName": "Serravalle Pistoiese",
+        "cityDisplayName": null,
+        "istatCode": null,
+        "longitude": 10.8215,
+        "latitude": 43.9042,
+        "hasHomonymy": false,
+        "area": null,
+        "province": {
+          "provinceId": 47,
+          "region": {},
+          "provinceName": "Pistoia",
+          "provinceAcronym": null
+        }
+      },
+      "placeDto": {
+        "cityID": 47020,
+        "latitude": 43.9042,
+        "longitude": 10.8215,
+        "placeType": "\u0000",
+        "priority": 0,
+        "provinceID": 47
+      },
+      "publishMap": true,
+      "date": "2026-09-03T00:00:00.000+0000",
+      "recent": false,
+      "insertionQuality": "SILVER",
+      "luxury": false,
+      "url": "/annuncio/30738606",
+      "description": "Questa straordinaria proprietà è composta da tre casali indipendenti e separati, che attualmente necessitano di una ristrutturazione completa. Alcuni edifici versano in condizioni tali da richiedere la demolizione, mentre altre parti sono ancora recuperabili. L’immobile offre quindi interessanti opportunità di sviluppo personalizzato, in particolare per chi è interessato alla ristrutturazione e per gli investitori.\nLa tenuta gode di una splendida esposizione a sud e comprende circa 12 ettari di terreno, interamente orientati verso sud. Gli ampi spazi sono costituiti da boschi, uliveti e terreni coltivabili e offrono molto spazio oltre a un panorama mozzafiato. Dagli edifici e dal terreno si godono splendide vedute sul paesaggio circostante.\nSu un lato, la proprietà confina con una villa che non fa parte del terreno. L’autostrada è visibile a circa 1 km di distanza e in parte anche udibile. Tuttavia, non appena ci si trova all’interno dell’ampio terreno, questa impressione passa rapidamente in secondo piano e la tranquillità dell’ambiente rurale diventa protagonista.\nGli edifici esistenti rientrano nelle categorie F2 e C2 e, grazie alle loro dimensioni e all’ampia superficie del terreno, offrono un interessante potenziale di sviluppo. È soprattutto il prezzo vantaggioso a rendere questa proprietà un’opportunità interessante per gli investitori o per tutti coloro che apprezzano il fascino particolare dei vecchi edifici rurali e desiderano ristrutturarli secondo le proprie idee.",
+      "reImages": [
+        {
+          "imageId": 1517363757,
+          "position": 0,
+          "images": [
+            {
+              "format": 0,
+              "storagePath": "https://images.wk-cdn.it/c291be9c19957a3a67856632404db0268cbeb51642486036185119294d7bf538//original"
+            },
+            {
+              "format": 1,
+              "storagePath": "https://images.wk-cdn.it/c291be9c19957a3a67856632404db0268cbeb51642486036185119294d7bf538/webp/640x480.webp"
+            }
+          ]
+        }
+      ],
+      "agency": {
+        "id": 114242,
+        "name": "Rimmo Immobili Alto Adige",
+        "cityName": "Bolzano"
+      }
+    },
+    {
+      "realEstateID": 30756441,
+      "agencyID": 4652,
+      "priceRent": 0,
+      "priceSale": 145000,
+      "price": 145000,
+      "reservedPrice": false,
+      "originalPrice": 0,
+      "auctionMissingDays": 0,
+      "bareOwnership": false,
+      "contractType": "SALE",
+      "sqm": 100,
+      "rooms": 3,
+      "bathrooms": 1,
+      "typologyID": 172,
+      "macroTypologyID": 1,
+      "title": "Terratetto, Cascina",
+      "address": "",
+      "cityName": "Cascina",
+      "cityDto": {
+        "cityId": 50008,
+        "cityName": "Cascina",
+        "cityDisplayName": null,
+        "istatCode": null,
+        "longitude": 10.4651,
+        "latitude": 43.6882867,
+        "hasHomonymy": false,
+        "area": null,
+        "province": {
+          "provinceId": 50,
+          "region": {},
+          "provinceName": "Pisa",
+          "provinceAcronym": null
+        }
+      },
+      "placeDto": {
+        "cityID": 50008,
+        "latitude": 43.6882867,
+        "longitude": 10.4651,
+        "placeType": "\u0000",
+        "priority": 0,
+        "provinceID": 50
+      },
+      "publishMap": false,
+      "date": "2026-09-05T00:00:00.000+0000",
+      "recent": false,
+      "insertionQuality": "SILVER",
+      "luxury": false,
+      "url": "/annuncio/30756441",
+      "description": "Cod.01026 Rif.Ag. MA3425 - Terratetto indipendente con terrazza abitabile a Titignano – A pochi minuti da Pisa e dal Polo Ospedaliero di Cisanello\n\n\n\nSe desideri una casa accogliente, indipendente e pronta da abitare, questa è un'opportunità da non perdere.\n\n\n\nNel tranquillo e ben servito borgo di Titignano, nel comune di Cascina, a soli 5 km da Pisa e nelle immediate vicinanze del Polo Ospedaliero di Cisanello, proponiamo in vendita un grazioso terratetto con ingresso indipendente, ideale per chi cerca comfort, privacy e una posizione strategica.\n\n\n\nL'abitazione si sviluppa su due livelli. Al piano terra ci accoglie un ampio ingresso, perfetto anche come zona soggiorno o angolo relax, seguito da una spaziosa cucina abitabile, cuore della casa, e da un pratico ripostiglio.\n\n\n\nSalendo la scala interna si raggiunge il piano superiore, dove un ampio disimpegno distribuisce gli ambienti della zona notte. Qui troviamo un bagno finestrato e due camere matrimoniali di generose dimensioni, luminose e confortevoli.\n\n\n\nIl vero valore aggiunto dell'immobile è la splendida terrazza abitabile di circa 15-18 mq, uno spazio riservato dove rilassarsi leggendo un buon libro, organizzare cene all'aperto con amici o semplicemente godersi momenti di tranquillità.\n\n\n\nL'immobile è dotato di riscaldamento autonomo, è libero da subito e pronto per essere abitato senza dover attendere.\n\n\n\nPunti di forza\n\nIngresso indipendente\n\nDue ampie camere matrimoniali\n\nCucina abitabile\n\nBagno finestrato\n\nTerrazza abitabile di 15-18 mq\n\nRiscaldamento autonomo\n\nLibero e immediatamente disponibile\n\nPosizione strategica, a pochi minuti da Pisa e dal Polo Ospedaliero di Cisanello\n\n\n\nUna soluzione ideale per giovani coppie, famiglie, professionisti o anche come investimento, grazie alla vicinanza con Pisa e con uno dei principali poli ospedalieri della Toscana.\n\n\n\nContattaci per maggiori informazioni o per prenotare una visita: questa casa potrebbe essere proprio quella che stavi cercando.\n\n\n\nImmagina la tua nuova casa: Per permettervi di cogliere a pieno il valore e la disposizione di questa proprietà, abbiamo affiancato alle foto reali della casa vuota alcune immagini arredate tramite intelligenza artificiale. Guardate come la terrazza e le stanze possono trasformarsi nel vostro angolo di paradiso!\n\n\n\nAPE G rif. MA3425 rich 145.000",
+      "reImages": [
+        {
+          "imageId": 1518823653,
+          "position": 0,
+          "images": [
+            {
+              "format": 0,
+              "storagePath": "https://images.wk-cdn.it/ce3f47b78d0696d2043b1a8cb60776cb05cc2139326b177851923f0aaeb462f4//original"
+            },
+            {
+              "format": 1,
+              "storagePath": "https://images.wk-cdn.it/ce3f47b78d0696d2043b1a8cb60776cb05cc2139326b177851923f0aaeb462f4/webp/640x480.webp"
+            }
+          ]
+        }
+      ],
+      "agency": {
+        "id": 4652,
+        "name": "SALVADORI Immobiliare",
+        "cityName": "Cascina"
+      }
+    }
+  ]
+}
