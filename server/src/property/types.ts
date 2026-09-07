@@ -138,6 +138,13 @@ export interface Listing {
   /** m² — plot/land. */
   plotArea?: number
   propertyType?: string
+  /**
+   * Normalised tenure where the portal states it: `freehold`,
+   * `share-of-freehold`, `leasehold`, `commonhold`, or the raw text. Leasehold
+   * is an automatic disqualification for Yousef; enforced in postFilter
+   * whenever `freeholdOnly` is set, for every portal.
+   */
+  tenure?: string
   lat?: number
   lon?: number
   /**

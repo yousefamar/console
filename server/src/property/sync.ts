@@ -846,6 +846,15 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     // IS24 sends price.value: 0 for these (verified: the live page shows "Auf
     // Anfrage", not a data error), and normalise() already reads 0 as absent.
     if (missing.has('excludePriceOnRequest') && c.excludePriceOnRequest && l.price == null) return false
+    // Leasehold is an automatic disqualification (Yousef, 2026-09-07): enforced
+    // on every portal whenever freeholdOnly is set, from the stated tenure or,
+    // failing that, the text. Unknown tenure passes — we can't know.
+    if (c.freeholdOnly) {
+      const tenure = l.tenure ?? tenureFromText(`${l.title ?? ''} ${l.summary ?? ''} ${(l.keyFeatures ?? []).join(' ')} ${l.description ?? ''}`)
+      if (tenure === 'leasehold') return false
+      if (tenure === 'commonhold' && c.excludeCommonhold) return false
+      if (tenure === 'share-of-freehold' && c.excludeCommonhold) return false
+    }
     // Bedrooms and house sub-type are enforced locally when a portal can't
     // (Subito's rustici, Wikicasa's locali); fail-open when the row lacks the
     // field or its type text can't be classified.
@@ -887,6 +896,13 @@ function matchesAny(l: Listing, terms: string[]): boolean {
 
 function sortNewestFirst(listings: Listing[]): Listing[] {
   return listings.slice().sort((a, b) => (b.listedAt ?? '').localeCompare(a.listedAt ?? ''))
+}
+
+/** Only trust prose for tenure when it's unambiguous: says leasehold and never freehold. */
+function tenureFromText(text: string): string | undefined {
+  const t = text.toLowerCase()
+  if (/\bleasehold\b/.test(t) && !/freehold/.test(t)) return 'leasehold'
+  return undefined
 }
 
 function kindOf(s: PropertySearch): PropertyKind {

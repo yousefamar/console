@@ -11,7 +11,7 @@
 import type { Ring } from './geo.js'
 import { encodePolyline, simplifyToLatLng } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
-import { plotAreaFromText } from './land.js'
+import { plotAreaFromText, normaliseTenure } from './land.js'
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
 const MAP_ENDPOINT = 'https://www.rightmove.co.uk/api/property-search/map/search'
@@ -343,6 +343,7 @@ interface DetailPropertyData {
   location?: { latitude?: number; longitude?: number }
   listingHistory?: { listingUpdateReason?: string }
   status?: { published?: boolean; archived?: boolean }
+  tenure?: { tenureType?: string }
   address?: { displayAddress?: string; outcode?: string; incode?: string }
   bedrooms?: number
   bathrooms?: number
@@ -364,6 +365,8 @@ export function detailFields(p: DetailPropertyData): Partial<Listing> {
   if (keyFeatures.length) out.keyFeatures = keyFeatures
   if (description) out.description = description
   if (p.propertySubType) out.propertyType = p.propertySubType
+  const tenure = normaliseTenure(p.tenure?.tenureType)
+  if (tenure) out.tenure = tenure
   if (p.bedrooms != null) out.bedrooms = p.bedrooms
   if (p.bathrooms != null) out.bathrooms = p.bathrooms
   if (p.address?.displayAddress && p.address.outcode && p.address.incode) out.address = `${p.address.displayAddress}, ${p.address.outcode} ${p.address.incode}`

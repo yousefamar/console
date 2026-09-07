@@ -12,7 +12,8 @@ import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirpo
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
-import { plotAreaFromText, listingKind } from '../property/land.js'
+import { plotAreaFromText, listingKind, normaliseTenure } from '../property/land.js'
+import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
 import type { Listing } from '../property/types.js'
@@ -1268,5 +1269,36 @@ describe('PropertySync layer geometry cache', () => {
     version = 2 // the layer was re-pushed
     sync.review(s.id, 'a', 'none')
     expect(reads).toBe(2)
+  })
+})
+
+describe('tenure — leasehold is an automatic disqualification', () => {
+  it('normaliseTenure maps portal wording to tokens', () => {
+    expect(normaliseTenure('Tenure: Freehold')).toBe('freehold')
+    expect(normaliseTenure('FREEHOLD')).toBe('freehold')
+    expect(normaliseTenure('Share of Freehold')).toBe('share-of-freehold')
+    expect(normaliseTenure('Leasehold (125 years remaining)')).toBe('leasehold')
+    expect(normaliseTenure('Commonhold')).toBe('commonhold')
+    expect(normaliseTenure(undefined)).toBeUndefined()
+  })
+
+  it('OnTheMarket rows carry the tenure bullet; Rightmove detail pages carry tenureType', () => {
+    const row = otmNormalise({ id: 1, features: ['Tenure: Leasehold', 'Garden'], price: '£200,000', location: { lat: 51, lon: -1 } } as never)
+    expect(row?.tenure).toBe('leasehold')
+    expect(detailFields({ tenure: { tenureType: 'FREEHOLD' } }).tenure).toBe('freehold')
+  })
+
+  it('postFilter drops leasehold (and share-of-freehold/commonhold when excludeCommonhold) on every portal, passes unknown', () => {
+    const rows = [
+      listing('fh', { tenure: 'freehold' }),
+      listing('lh', { tenure: 'leasehold' }),
+      listing('sof', { tenure: 'share-of-freehold' }),
+      listing('text-lh', { summary: 'Leasehold flat with 90 years' }),
+      listing('text-both', { summary: 'Freehold. Leasehold garage nearby' }),
+      listing('unknown', {}),
+    ]
+    expect(postFilter(rows, { freeholdOnly: true, excludeCommonhold: true }, []).map((l) => l.id)).toEqual(['fh', 'text-both', 'unknown'])
+    expect(postFilter(rows, { freeholdOnly: true }, []).map((l) => l.id)).toEqual(['fh', 'sof', 'text-both', 'unknown'])
+    expect(postFilter(rows, {}, []).length).toBe(6)
   })
 })

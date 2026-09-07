@@ -4,6 +4,18 @@
 import type { Listing } from './types.js'
 import type { PropertyKind } from './store.js'
 
+/** "Tenure: Freehold", "FREEHOLD", "Share of Freehold", "Leasehold (99 years)" → a normalised token. */
+export function normaliseTenure(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const t = raw.toLowerCase()
+  if (/share\s*of\s*freehold|share_of_freehold|flying\s*freehold/.test(t)) return 'share-of-freehold'
+  if (/commonhold/.test(t)) return 'commonhold'
+  if (/leasehold/.test(t)) return 'leasehold'
+  if (/freehold/.test(t)) return 'freehold'
+  if (/feudal|absolute ownership|heritable|ownership/.test(t)) return 'freehold' // Scottish outright ownership
+  return t.trim() || undefined
+}
+
 export const ACRE_M2 = 4046.86
 export const HECTARE_M2 = 10_000
 

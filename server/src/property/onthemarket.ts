@@ -33,6 +33,7 @@ import type { Ring } from './geo.js'
 import { encodePolyline, simplifyToLatLng } from './geo.js'
 import { pageModel } from './rightmove.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
+import { normaliseTenure } from './land.js'
 
 const UA = 'ConsoleHub-PropertyWatch/1.0 (+https://yousefamar.com; personal house-hunt poller)'
 const ORIGIN = 'https://www.onthemarket.com'
@@ -348,8 +349,10 @@ export function normalise(p: RawRow): Listing | null {
     .join(' · ')
   const lat = p.location?.lat
   const lon = p.location?.lon
+  const tenureBullet = features.find((f) => /^tenure:/i.test(f))
   return {
     portal: 'onthemarket',
+    tenure: normaliseTenure(tenureBullet?.replace(/^tenure:\s*/i, '')),
     id: String(p.id),
     url: ORIGIN + (p['details-url'] ?? `/details/${p.id}/`),
     title: p['property-title'],
