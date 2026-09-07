@@ -2437,6 +2437,10 @@ function shutdown() {
   if (shuttingDown) return
   shuttingDown = true
   log('\nShutting down — saving manifest...')
+  // Freeze state BEFORE the save: a child dying mid-save (pm2 treekills the
+  // whole tree, children included) would otherwise flip its session to 'ended'
+  // and the manifest would lose the mid-turn flag it needs for the nudge.
+  for (const session of sessions.values()) session.markShuttingDown()
   saveManifestSync(sessions)
   flushReadState()
   cronScheduler.flush()

@@ -22,7 +22,10 @@ export interface ManifestEntry {
   project?: string
   /** PARA area tags this session is bound to. */
   areas?: string[]
-  /** True if the session was actively running (mid-turn) when the manifest was last saved. */
+  /** True if the session had an UNFINISHED turn when the manifest was last
+   *  saved — the restore loop resumes these live and sends the "hub was
+   *  restarted … Continue." nudge (everything else restores hibernated and
+   *  silent). Derived from `Session.midTurn`, not from `status`: see below. */
   wasRunning?: boolean
   /** True if the USER explicitly ended this session (kill/delete). Restore
    *  skips + prunes these — an explicit "End session" must survive restarts.
@@ -70,7 +73,11 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.agentKey ? { agentKey: session.agentKey } : {}),
       ...(session.project ? { project: session.project } : {}),
       ...(session.areas?.length ? { areas: session.areas } : {}),
-      wasRunning: session.status === 'running',
+      // `midTurn` is the durable half: pm2's treekill SIGINTs the claude
+      // children too, so they can exit (→ status 'ended') before the hub saves
+      // this file, which is how mid-turn sessions came back with no restart
+      // nudge. See Session.midTurn.
+      wasRunning: session.status === 'running' || session.midTurn,
       ...(session.endedByUser ? { ended: true } : {}),
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
       ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),

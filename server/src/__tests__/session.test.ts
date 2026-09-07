@@ -359,6 +359,59 @@ describe('Session terminateForShutdown', () => {
     mockProcess.emit('exit', 0)
     expect(session.terminateForShutdown()).toBeNull()
   })
+
+  it('markShuttingDown freezes state without killing the process', () => {
+    const session = new Session({ prompt: 'test' })
+    session.status = 'running'
+    session.markShuttingDown()
+    expect(mockProcess.killed).toBe(false)
+    mockProcess.emit('exit', 0) // pm2 treekilled the child during the save
+    expect(session.status).toBe('running')
+    expect(session.midTurn).toBe(true)
+  })
+})
+
+// The restart nudge ("The hub was restarted … Continue.") only fires for
+// manifest entries whose wasRunning is true, and pm2 SIGINTs the claude
+// CHILDREN as well as the hub — a child that exits first flips status to
+// 'ended', which silently killed the nudge for every mid-turn session.
+describe('Session midTurn (restart-nudge survival)', () => {
+  it('survives an external child death mid-turn', () => {
+    const session = new Session({ prompt: 'test' })
+    expect(session.midTurn).toBe(true)
+    mockProcess.emit('exit', 130) // SIGINT from pm2's treekill
+    expect(session.status).toBe('ended')
+    expect(session.midTurn).toBe(true) // ← the manifest still says "resume + nudge"
+  })
+
+  it('clears when the turn actually finishes', async () => {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({
+      type: 'result', subtype: 'success', duration_ms: 10, session_id: 'x', total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.status).toBe('idle')
+    expect(session.midTurn).toBe(false)
+  })
+
+  it('clears on a user interrupt — a stopped turn is never resurrected', () => {
+    const session = new Session({ prompt: 'test' })
+    session.status = 'running'
+    session.interrupt()
+    expect(session.midTurn).toBe(false)
+  })
+
+  it('is set again by the next message (including the nudge itself)', async () => {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({
+      type: 'result', subtype: 'success', duration_ms: 10, session_id: 'x', total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    session.sendMessage('The hub was restarted, which interrupted you. Continue.')
+    expect(session.midTurn).toBe(true)
+  })
 })
 
 describe('Session control_request handling', () => {

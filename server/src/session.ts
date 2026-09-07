@@ -172,6 +172,17 @@ export class Session extends EventEmitter {
   readonly project?: string
   readonly areas?: string[]
   status: 'running' | 'idle' | 'ended' = 'running'
+  /** Durable "a turn is unfinished" bit, and the ONLY thing the manifest's
+   *  `wasRunning` may trust. `status` is not enough: pm2 restarts the hub with
+   *  treekill, so SIGINT reaches the claude CHILDREN too and they EXIT — often
+   *  before the hub's own signal handler runs. Those exits flip `status` to
+   *  'ended', so the manifest saved moments later recorded every mid-turn
+   *  session as not-running and the restore never sent the "hub was restarted,
+   *  continue" nudge (silent since ~Sept 2026, proven by SIGINTing a live
+   *  child: status → 'ended', wasRunning → false). Set when a turn starts;
+   *  cleared ONLY by a turn actually finishing (`result`) or a user interrupt —
+   *  never by a process death, which is the whole point. */
+  midTurn = false
   readonly createdAt = Date.now()
   readonly initialPrompt: string
   /** Fixed at spawn (`--resume` is keyed by it) — changes only via relocate(),
@@ -576,6 +587,7 @@ export class Session extends EventEmitter {
   /** Send a follow-up user prompt, optionally with images */
   sendMessage(content: string, images?: ImageAttachment[]) {
     this.lastActivityAt = Date.now()
+    this.midTurn = true
     // Hibernated (or mid-hibernation) — bring the subprocess back first.
     if (this.hibernating) {
       // SIGKILL in flight; the exit handler wakes + sends this for us.
@@ -761,6 +773,9 @@ export class Session extends EventEmitter {
   interrupt() {
     if (this.process && this.status === 'running') {
       this.interrupted = true
+      // Yousef asked for this turn to stop — it must NOT be resurrected by the
+      // next hub restart's "continue" nudge.
+      this.midTurn = false
       this.process.kill('SIGINT')
     }
   }
@@ -907,6 +922,14 @@ export class Session extends EventEmitter {
    *  manifest keeps status/wasRunning as they were, so the next hub resumes
    *  it). Returns the pid so the caller can wait and SIGKILL a survivor —
    *  a child left alive reparents to init as a live twin of the resumed one. */
+  /** Freeze session state for an imminent shutdown WITHOUT killing anything —
+   *  called for every session before the manifest is written, so a child that
+   *  dies during the save (pm2's treekill SIGINTs the children too) can't flip
+   *  `status` to 'ended' underneath it. */
+  markShuttingDown(): void {
+    this.shuttingDown = true
+  }
+
   terminateForShutdown(): number | null {
     this.shuttingDown = true
     if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
@@ -1314,6 +1337,7 @@ export class Session extends EventEmitter {
     // A completed turn = the API is healthy; reset auto-resume backoff.
     this.transientResumeAttempt = 0
     this.status = 'idle'
+    this.midTurn = false
     this.lastActivityAt = Date.now()
     // total_cost_usd is cumulative (session total), not per-turn
     this.totalCost = msg.total_cost_usd
