@@ -138,6 +138,7 @@ import { SparkasseClient } from './property/sparkasse.js'
 import { WikicasaClient } from './property/wikicasa.js'
 import { SubitoClient } from './property/subito.js'
 import { SmallholdingsClient } from './property/smallholdings.js'
+import { KleinanzeigenClient } from './property/kleinanzeigen.js'
 import { PropertySync } from './property/sync.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
@@ -370,6 +371,10 @@ const propertySync = new PropertySync(
     wikicasa: new WikicasaClient(),
     subito: new SubitoClient(),
     smallholdings: new SmallholdingsClient({ log: (msg: string) => { log(msg) } }),
+    // Paced crawler (25 s/request). Wired so a search CAN be created, but none
+    // exists yet: our IP range was blocked on 2026-09-07 and the parser is only
+    // fixture-tested — enable after re-recording against real markup.
+    kleinanzeigen: new KleinanzeigenClient(),
   },
   propertySearches,
   propertyInventory,

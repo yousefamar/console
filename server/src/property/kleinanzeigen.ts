@@ -351,6 +351,9 @@ export interface KleinanzeigenClientOptions {
 export class KleinanzeigenClient implements PortalClient {
   readonly portal = 'kleinanzeigen' as const
   readonly currency = 'EUR'
+  // A full pull is hours at 25 s/request; once a day is plenty. 40 detail
+  // pages per tick ≈ 17 min — leaves the hourly budget for the skim.
+  readonly pacing = { fullSyncIntervalMs: 24 * 60 * 60 * 1000, enrichPerTick: 40 }
 
   private readonly minIntervalMs: number
   private readonly maxRequestsPerRun: number

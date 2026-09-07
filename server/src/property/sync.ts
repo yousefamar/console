@@ -39,7 +39,7 @@ const FETCH_LIMIT = 50
  */
 const BACKFILL_LIMIT = 5000
 /** Portals whose `bedrooms` is really locali (rooms) — dedupe must not compare it against real bedroom counts. */
-const LOCALI_PORTALS = new Set<string>(['wikicasa', 'subito'])
+const LOCALI_PORTALS = new Set<string>(['wikicasa', 'subito', 'kleinanzeigen'])
 
 /**
  * Listings whose coordinates are a comune/PLZ centroid (Subito, Kleinanzeigen,
@@ -228,7 +228,10 @@ export class PropertySync {
       const client = this.clientFor(s)
       const rings = this.rings(s.layer, s.country, s.maxRings)
       const r = await fetchAll(client, rings, s.criteria)
-      const snap = this.inventory.upsert(s.id, r.listings, { full: true })
+      // A truncated pull (portal cap we couldn't split past, or a paced client's
+      // run budget) is not the portal's complete answer — merge it, but don't
+      // mark what it didn't reach as removed.
+      const snap = this.inventory.upsert(s.id, r.listings, { full: !r.truncated })
       const live = snap.entries.filter((e) => e.removedAt == null).length
       const summary = {
         syncedAt: Date.now(),
@@ -365,12 +368,12 @@ export class PropertySync {
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
         const last = s.inventory?.syncedAt ?? 0
-        if (Date.now() - last < FULL_SYNC_INTERVAL_MS) continue
+        if (Date.now() - last < (this.pacingOf(s).fullSyncIntervalMs ?? FULL_SYNC_INTERVAL_MS)) continue
         await this.fullSync(s.id)
       }
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
-        await this.enrich(s.id, ENRICH_PER_TICK)
+        await this.enrich(s.id, this.pacingOf(s).enrichPerTick ?? ENRICH_PER_TICK)
       }
     } finally {
       this.running = false
@@ -472,6 +475,14 @@ export class PropertySync {
           ? [gj.geometry]
           : []
         : [gj as unknown as Geometry]
+  }
+
+  private pacingOf(s: PropertySearch): NonNullable<PortalClient['pacing']> {
+    try {
+      return this.clientFor(s).pacing ?? {}
+    } catch {
+      return {}
+    }
   }
 
   private clientFor(s: Pick<PropertySearch, 'portal' | 'country'>): PortalClient {

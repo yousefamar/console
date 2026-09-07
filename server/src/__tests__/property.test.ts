@@ -867,6 +867,25 @@ describe('PropertySync kind layers', () => {
     expect([...layers.keys()]).toEqual(['property/house'])
   })
 
+  it('a truncated full pull merges but never marks the unreached rows removed', async () => {
+    const store = tmpStore()
+    const inventory = tmpInventory()
+    const mapLayers = { upsert: () => ({}), getMeta: () => undefined, getGeojson: (slug: string) => (slug === 'zone' ? box : null), list: () => [], remove: () => true }
+    let truncated = false
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 2, truncated, unsupported: [], listings: truncated ? [listing('a', { lat: 51, lon: -1 })] : [listing('a', { lat: 51, lon: -1 }), listing('b', { lat: 51, lon: -1 })] }),
+    }
+    const sync = new PropertySync({ rightmove: client } as never, store, inventory, { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {})
+    const s = store.create({ country: 'UK', layer: 'zone', criteria: { minPrice: 100000, maxPrice: 103000 } }) // band too narrow to split
+    await sync.fullSync(s.id)
+    expect(inventory.live(s.id).length).toBe(2)
+    truncated = true
+    await sync.fullSync(s.id)
+    expect(inventory.live(s.id).map((e) => e.id).sort()).toEqual(['a', 'b'])
+    expect(store.get(s.id)?.inventory?.truncated).toBe(true)
+  })
+
   it('a farmland search feeds property/farmland, not the house layer', async () => {
     const { store, sync, layers } = harness()
     const s = store.create({ country: 'DE', layer: 'zone', kind: 'farmland' })

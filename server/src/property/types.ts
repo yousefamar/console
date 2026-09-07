@@ -211,4 +211,11 @@ export interface PortalClient {
    * or unreadable; throw only for "stop calling me" conditions (WAF, ban).
    */
   detail?(listing: Listing): Promise<Partial<Listing> | null>
+  /**
+   * Optional cadence hints for sources that must be crawled slowly
+   * (Kleinanzeigen: one request per 25 s). PropertySync uses them in place
+   * of its defaults: how often to run the exhaustive pull, and how many
+   * detail pages to fetch per hourly tick.
+   */
+  readonly pacing?: { fullSyncIntervalMs?: number; enrichPerTick?: number }
 }
