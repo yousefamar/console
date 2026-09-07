@@ -16,6 +16,7 @@ export async function cal(verb: string | undefined, args: string[], flags: Globa
     case 'add-account': return calAddAccount(flags)
     case 'remove-account': return calRemoveAccount(args, flags)
     case 'flights': return calFlights(args, flags)
+    case 'eventbrite': return calEventbrite(args, flags)
     default:
       exitWithError('USAGE', `Unknown cal command: ${verb}. Run 'con help cal'.`, flags)
   }
@@ -348,4 +349,45 @@ function parseDate(input: string, relativeTo?: Date): Date {
 
   // ISO date
   return new Date(input)
+}
+
+// --------------------------------------------------------------------------
+// Eventbrite subcommand — follow organisers; their live events become the
+// read-only "Eventbrite" calendar overlay
+// --------------------------------------------------------------------------
+
+async function calEventbrite(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case 'status': {
+      output(await hubFetch('/eventbrite/status'), flags)
+      return
+    }
+    case 'events': {
+      const force = rest.includes('--force')
+      output(await hubFetch(`/eventbrite/events${force ? '?force=1' : ''}`), flags)
+      return
+    }
+    case 'follow': {
+      const ref = rest.find((a) => !a.startsWith('--'))
+      if (!ref) exitWithError('USAGE', 'Usage: con cal eventbrite follow <organiser URL | event URL | organiser id>', flags)
+      output(await hubFetch('/eventbrite/organizers', { method: 'POST', body: { ref } }), flags)
+      return
+    }
+    case 'unfollow': {
+      const id = rest[0]
+      if (!id) exitWithError('USAGE', 'Usage: con cal eventbrite unfollow <organiser id>', flags)
+      output(await hubFetch(`/eventbrite/organizers/${encodeURIComponent(id)}`, { method: 'DELETE' }), flags)
+      return
+    }
+    case 'token': {
+      const token = rest[0]
+      if (!token) exitWithError('USAGE', 'Usage: con cal eventbrite token <personal OAuth token>', flags)
+      output(await hubFetch('/eventbrite/token', { method: 'POST', body: { token } }), flags)
+      return
+    }
+    default:
+      exitWithError('USAGE', 'Usage: con cal eventbrite {status|events [--force]|follow <url|id>|unfollow <id>|token <token>}', flags)
+  }
 }

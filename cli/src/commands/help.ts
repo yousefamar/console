@@ -193,9 +193,13 @@ Commands:
   accounts      List calendar accounts
   add-account   Add a calendar account
   remove-account Remove a calendar account
+  flights       SerpApi flight search + watchlists (con cal flights …)
+  eventbrite    Follow Eventbrite organisers → read-only "Eventbrite" calendar overlay
+                status | events [--force] | follow <organiser|event URL|id> | unfollow <id> | token <token>
 
 Examples:
   con cal events --from today --to +7d
+  con cal eventbrite follow https://www.eventbrite.co.uk/o/wilding-with-harry-121041407049
   con cal create --calendar primary --title "Lunch" --start 2026-04-05T12:00 --end 2026-04-05T13:00
   con cal rsvp event123 --calendar primary --status accept
 `.trim(),

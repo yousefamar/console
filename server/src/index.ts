@@ -87,6 +87,8 @@ import { handleOwntracksRoutes } from './routes/owntracks.js'
 import { handleGeocachingRoutes } from './routes/geocaching.js'
 import { GeocachingClient } from './geocaching/client.js'
 import { handleMeetupRoutes } from './routes/meetup.js'
+import { handleEventbriteRoutes } from './routes/eventbrite.js'
+import { EventbriteStore } from './eventbrite.js'
 import { MeetupClient } from './meetup/client.js'
 import { MeetupSync } from './meetup/sync.js'
 import { handleSpotifyRoutes } from './routes/spotify.js'
@@ -203,6 +205,7 @@ const monzoStore = new MonzoStore(
 const financeStore = new FinanceStore(feedsConfigDir)
 const geocachingClient = new GeocachingClient(authStore, feedsConfigDir)
 const meetupClient = new MeetupClient(feedsConfigDir)
+const eventbriteStore = new EventbriteStore(feedsConfigDir)
 const meetupSync = new MeetupSync(meetupClient, (msg: string) => { log(msg) })
 meetupSync.start()
 const mapLayerStore = new MapLayerStore()
@@ -1797,6 +1800,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore, readBody)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return
   if (path.startsWith('/meetup') && handleMeetupRoutes(req, res, path, meetupClient, readBody)) return
+  if (path.startsWith('/eventbrite') && handleEventbriteRoutes(req, res, path, eventbriteStore, readBody)) return
   if (path.startsWith('/spotify') && handleSpotifyRoutes(req, res, path, url, spotifyClient, spotifyStore, spotifySync, readBody)) return
   if (path.startsWith('/property') && handlePropertyRoutes(req, res, path, url, { searches: propertySearches, sync: propertySync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return

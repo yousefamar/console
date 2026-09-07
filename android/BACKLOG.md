@@ -22,6 +22,13 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   on `property/*` layers with a `listingId` and no `review`). Opening a
   listing never changes state.
 
+- Calendar: Eventbrite organiser overlay (SPA `src/eventbrite/calendar-overlay.ts`,
+  ^wise-stag) — hub `GET /eventbrite/events` returns `{events:[{id,title,url,
+  start,end,organizerName,venueName,address,online,summary}]}`; add an
+  `EVENTBRITE_ID = "eventbrite"` overlay (#f05537, real end times, location =
+  venueName + address or "Online") beside Meetup in `CalOverlays.kt` +
+  `CalendarRepository.refreshOverlays`. Can replace the OutdoorLads slot below.
+
 - Remove the OutdoorLads overlay (hub + SPA removed in ^wise-stag, 2026-09-06 —
   Yousef dropped the group): delete `OUTDOORLADS_*` + `outdoorLadsEventRow` in
   `data/cal/CalOverlays.kt` (+ its test), the `/outdoorlads/events` fetch in
