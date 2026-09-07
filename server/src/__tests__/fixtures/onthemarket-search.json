@@ -1,0 +1,246 @@
+{
+  "total-results": 268,
+  "pagination-controls": {
+    "from": "1",
+    "to": "30",
+    "total-count": 268
+  },
+  "criteria-pills": [
+    {
+      "text": "£300k max",
+      "criteria": "price"
+    },
+    {
+      "text": "2 beds +",
+      "criteria": "bedrooms"
+    },
+    {
+      "criteria": "prop-types",
+      "type": "bungalows",
+      "text": "Bungalow"
+    },
+    {
+      "criteria": "prop-types",
+      "type": "detached",
+      "text": "Detached house"
+    },
+    {
+      "criteria": "prop-types",
+      "type": "semi-detached",
+      "text": "Semi detached house"
+    }
+  ],
+  "recently-added": {
+    "total": "59",
+    "total-raw": 59
+  },
+  "geo-location": {
+    "location-id": "wychavon"
+  },
+  "url": "/for-sale/property/wychavon/?max-price=300000&min-bedrooms=2&polygons0=o_u%7CHno%7DMosw%40%3F%3FoxzAnsw%40%3F%3FnxzA&prop-types=bungalows&prop-types=detached&prop-types=semi-detached&sort-field=update_date",
+  "properties": [
+    {
+      "features": [
+        "Tenure: Freehold",
+        "Sale by Modern Auction (T&Cs apply)",
+        "Subject to an undisclosed Reserve Price",
+        "Buyers fees apply"
+      ],
+      "address": "Orchard Street, Worcester",
+      "humanised-property-type": "Semi-detached house",
+      "price-qualifier": "Guide price",
+      "images": [
+        {
+          "default": "https://media.onthemarket.com/properties/19551202/1630381393/image-0-480x320.jpg",
+          "portrait?": false,
+          "webp": "https://media.onthemarket.com/properties/19551202/1630381393/image-0-480x320.webp"
+        }
+      ],
+      "details-url": "/details/19551202/",
+      "main-label": "Spotlight Property",
+      "agent": {
+        "id": 73699,
+        "name": "Connells - Worcester",
+        "telephone": "01905 388816"
+      },
+      "property-title": "4 bedroom semi-detached house for sale",
+      "short-price": "£280k",
+      "bedrooms": 4,
+      "id": "19551202",
+      "days-since-added-reduced": "Added > 14 days",
+      "spotlight?": true,
+      "bathrooms": 1,
+      "cover-image": {
+        "default": "https://media.onthemarket.com/properties/19551202/1630381393/image-0-480x320.jpg",
+        "portrait?": false,
+        "webp": "https://media.onthemarket.com/properties/19551202/1630381393/image-0-480x320.webp"
+      },
+      "location": {
+        "lon": -2.215824,
+        "lat": 52.176133
+      },
+      "price": "£280,000"
+    },
+    {
+      "features": [
+        "Tenure: Leasehold (120 years remaining)",
+        "Shared Ownership Property"
+      ],
+      "address": "Charlock Road, Malvern",
+      "humanised-property-type": "Semi-detached house",
+      "price-qualifier": "Shared ownership",
+      "data-label-id": "recent",
+      "images": [
+        {
+          "default": "https://media.onthemarket.com/properties/20282318/1642419535/image-0-480x320.jpg",
+          "portrait?": false,
+          "webp": "https://media.onthemarket.com/properties/20282318/1642419535/image-0-480x320.webp"
+        }
+      ],
+      "details-url": "/details/20282318/",
+      "main-label": "Added today",
+      "agent": {
+        "id": 49746,
+        "name": "Denny & Salmond - Malvern",
+        "telephone": "01684 321899"
+      },
+      "property-title": "3 bedroom semi-detached house for sale",
+      "short-price": "£192k",
+      "bedrooms": 3,
+      "id": "20282318",
+      "days-since-added-reduced": "Added today",
+      "bathrooms": 1,
+      "icon-labels": [
+        {
+          "title": "Greener choice",
+          "type": "eco-friendly",
+          "matched-terms": [
+            "EPC rating: A",
+            "Solar panels"
+          ]
+        }
+      ],
+      "recently-added?": true,
+      "cover-image": {
+        "default": "https://media.onthemarket.com/properties/20282318/1642419535/image-0-480x320.jpg",
+        "portrait?": false,
+        "webp": "https://media.onthemarket.com/properties/20282318/1642419535/image-0-480x320.webp"
+      },
+      "location": {
+        "lon": -2.298533,
+        "lat": 52.10391
+      },
+      "price": "£191,750",
+      "data-link-position": 1
+    },
+    {
+      "features": [
+        "Tenure: Freehold",
+        "No onward chain",
+        "Chain-free"
+      ],
+      "reduced?": true,
+      "address": "15 Exbury Place, St. Peter's, Worcester.  WR5 3TP",
+      "humanised-property-type": "Terraced bungalow",
+      "price-qualifier": "Offers in region of",
+      "data-label-id": "reduced",
+      "images": [
+        {
+          "default": "https://media.onthemarket.com/properties/19993746/1642409749/image-0-480x320.jpg",
+          "portrait?": false,
+          "webp": "https://media.onthemarket.com/properties/19993746/1642409749/image-0-480x320.webp"
+        }
+      ],
+      "details-url": "/details/19993746/",
+      "main-label": "Reduced today",
+      "agent": {
+        "id": 26488,
+        "name": "Allan Morris - Worcester",
+        "telephone": "01905 417790"
+      },
+      "property-title": "3 bedroom terraced bungalow for sale",
+      "short-price": "£275k",
+      "bedrooms": 3,
+      "id": "19993746",
+      "days-since-added-reduced": "Reduced today",
+      "bathrooms": 1,
+      "icon-labels": [
+        {
+          "title": "Greener choice",
+          "type": "eco-friendly",
+          "matched-terms": [
+            "EV charger"
+          ]
+        }
+      ],
+      "cover-image": {
+        "default": "https://media.onthemarket.com/properties/19993746/1642409749/image-0-480x320.jpg",
+        "portrait?": false,
+        "webp": "https://media.onthemarket.com/properties/19993746/1642409749/image-0-480x320.webp"
+      },
+      "location": {
+        "lon": -2.2023234367370605,
+        "lat": 52.17141342163086
+      },
+      "price": "£275,000",
+      "data-link-position": 2
+    },
+    {
+      "features": [
+        "Tenure: Freehold",
+        "Stunning 2, 3 & 4 Bedroom Homes",
+        "*5% Deposit Boost, Upgraded Kitchen & Flooring Package On This Plot*",
+        "Ready to Move Into",
+        "New build"
+      ],
+      "reduced?": true,
+      "address": "The Pearls, Dunley, Stourport-On-Severn",
+      "premium?": true,
+      "humanised-property-type": "Detached house",
+      "price-qualifier": null,
+      "data-label-id": "reduced",
+      "premium-text": "Featured",
+      "images": [
+        {
+          "default": "https://media.onthemarket.com/properties/19852661/1626611088/image-0-480x320.jpg",
+          "portrait?": false,
+          "webp": "https://media.onthemarket.com/properties/19852661/1626611088/image-0-480x320.webp"
+        }
+      ],
+      "details-url": "/details/19852661/",
+      "main-label": "Reduced",
+      "agent": {
+        "id": 74110,
+        "name": "Shipways - Redditch",
+        "telephone": "01527 329630"
+      },
+      "lazy-load-image?": true,
+      "property-title": "2 bedroom detached house for sale",
+      "short-price": "£227k",
+      "bedrooms": 2,
+      "id": "19852661",
+      "days-since-added-reduced": "Reduced < 7 days",
+      "bathrooms": 1,
+      "icon-labels": [
+        {
+          "title": "Greener choice",
+          "type": "eco-friendly",
+          "matched-terms": [
+            "Energy-Efficient"
+          ]
+        }
+      ],
+      "cover-image": {
+        "default": "https://media.onthemarket.com/properties/19852661/1626611088/image-0-480x320.jpg",
+        "portrait?": false,
+        "webp": "https://media.onthemarket.com/properties/19852661/1626611088/image-0-480x320.webp"
+      },
+      "location": {
+        "lon": -2.306313,
+        "lat": 52.326693
+      },
+      "price": "£226,995",
+      "data-link-position": 11
+    }
+  ]
+}
