@@ -1,0 +1,479 @@
+{
+  "_note": "Recorded 2026-09-07 from hades.subito.it/v1/search/items (c=29 rs=3 and c=30 q=rustico / q=terreno, 20 km around Pisa, pe=300000). Trimmed to the fields the client reads; private sellers anonymised (advertiser.name/user_id removed), emails/phones masked.",
+  "count_all": 5,
+  "lines": 5,
+  "start": 5,
+  "ads": [
+    {
+      "urn": "id:ad:612144312:list:658544195",
+      "type": {
+        "key": "s",
+        "value": "In vendita"
+      },
+      "category": {
+        "key": "29",
+        "value": "Ville singole e a schiera",
+        "friendly_name": "ville-singole-e-a-schiera"
+      },
+      "subject": "Terratetto Lari",
+      "body": "NOSTRA ESCLUSIVA: Immerso nel verde della tranquilla località di Boschi di Lari a Casciana Terme Lari, proponiamo in vendita un incantevole terratetto di 165 mq. La proprietà, disposta su più livelli, gode di un ingresso indipendente che conferisce privacy e autonomia.\nL'immobile, composto da 5 locali e 2 bagni, si presenta in ottimo stato, pronto per essere abitato e personalizzato secondo i propri gusti. L'ampia metratura e la disposizione degli spazi lo rendono ideale sia per una famiglia numerosa che per chi desidera avere ampi spazi a disposizione. A completare la proprietà è presente un fabbricato accessorio ex rurale, separato dal corpo principale, composto da due locali ad uso deposito, una loggia, un forno e un ripostiglio seminterrato.\nLa proprietà dispone inoltre di giardino esclusivo, che offre uno spazio esterno privato e ulteriori possibilità di utilizzo.\nUna soluzione interessante per chi desidera indipendenza, spazi generosi e la possibilità di personalizzare gli ambienti, in un contesto caratteristico delle colline pisane\n\nLa classe energetica A3 garantisce un'elevata efficienza energetica, sinonimo di risparmio sui consumi e rispetto per l'ambiente.\nNon perdere l'occasione di visitare questo splendido terratetto, un'oasi di tranquillità a un passo da tutti i servizi.\n\nRiferimento: 1417. [Classe energetica: A3]",
+      "dates": {
+        "display": "2026-09-06 13:30:23",
+        "display_iso8601": "2026-09-06T13:30:23.987+0200"
+      },
+      "images": [
+        {
+          "cdn_base_url": "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/85/85229e2f-22d8-4509-842e-4f6b6697d4da"
+        }
+      ],
+      "features": [
+        {
+          "uri": "/garden",
+          "values": [
+            {
+              "key": "1",
+              "value": "Sì"
+            }
+          ]
+        },
+        {
+          "uri": "/bathrooms",
+          "values": [
+            {
+              "key": "2",
+              "value": "2"
+            }
+          ]
+        },
+        {
+          "uri": "/building_condition",
+          "values": [
+            {
+              "key": "20",
+              "value": "Ottimo - ristrutturato"
+            }
+          ]
+        },
+        {
+          "uri": "/nosalesman",
+          "values": [
+            {
+              "key": "0",
+              "value": "No"
+            }
+          ]
+        },
+        {
+          "uri": "/price",
+          "values": [
+            {
+              "key": "190000",
+              "value": "190000 €"
+            }
+          ]
+        },
+        {
+          "uri": "/room",
+          "values": [
+            {
+              "key": "6",
+              "value": "6"
+            }
+          ]
+        },
+        {
+          "uri": "/size",
+          "values": [
+            {
+              "key": "165",
+              "value": "165 mq"
+            }
+          ]
+        }
+      ],
+      "advertiser": {
+        "company": true,
+        "type": 1,
+        "name": "AGENZIA IMMOBILIARE LA SPINA",
+        "shop_name": "AGENZIA IMMOBILIARE LA SPINA"
+      },
+      "geo": {
+        "region": {
+          "value": "Toscana"
+        },
+        "city": {
+          "key": "7",
+          "value": "Pisa"
+        },
+        "town": {
+          "key": "050040",
+          "value": "Casciana Terme Lari",
+          "istat": "050040",
+          "lat": 43.566445,
+          "lon": 10.59237
+        },
+        "map": {
+          "address": "Via delle Vigne, 35, 56035 Boschi PI, Italia",
+          "latitude": "43.5871789",
+          "longitude": "10.5849739",
+          "zoom": "16"
+        }
+      },
+      "urls": {
+        "default": "https://www.subito.it/ville-singole-e-a-schiera/terratetto-lari-pisa-658544195.htm"
+      }
+    },
+    {
+      "urn": "id:ad:612278566:list:659305203",
+      "type": {
+        "key": "s",
+        "value": "In vendita"
+      },
+      "category": {
+        "key": "29",
+        "value": "Ville singole e a schiera",
+        "friendly_name": "ville-singole-e-a-schiera"
+      },
+      "subject": "Viareggina a - MarcianaCascina",
+      "body": "VIC.ZE SAN FREDIANO: Villetta su di un unico piano tipo viareggina, di prossima ristrutturazione con possibilità di personalizzazione, con giardino di proprietà esclusiva, composta da soggiorno, cucina, camera matrimoniale, camera doppia , bagno con la possibilità di un secondo servizio. Prezzo: 229.000 Euro.",
+      "dates": {
+        "display": "2026-09-02 21:30:09",
+        "display_iso8601": "2026-09-02T21:30:09.699+0200"
+      },
+      "images": [
+        {
+          "cdn_base_url": "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/e3/e34f2cb2-4a22-4b61-b446-00f63b827817"
+        }
+      ],
+      "features": [
+        {
+          "uri": "/building_condition",
+          "values": [
+            {
+              "key": "20",
+              "value": "Ottimo - ristrutturato"
+            }
+          ]
+        },
+        {
+          "uri": "/price",
+          "values": [
+            {
+              "key": "229000",
+              "value": "229000 €"
+            }
+          ]
+        },
+        {
+          "uri": "/room",
+          "values": [
+            {
+              "key": "4",
+              "value": "4"
+            }
+          ]
+        },
+        {
+          "uri": "/size",
+          "values": [
+            {
+              "key": "90",
+              "value": "90 mq"
+            }
+          ]
+        },
+        {
+          "uri": "/garden",
+          "values": [
+            {
+              "key": "1",
+              "value": "Sì"
+            }
+          ]
+        },
+        {
+          "uri": "/bathrooms",
+          "values": [
+            {
+              "key": "1",
+              "value": "1"
+            }
+          ]
+        }
+      ],
+      "advertiser": {
+        "company": true,
+        "type": 1,
+        "name": "IMMOBILIARE DEI CAVALIERI",
+        "shop_name": "IMMOBILIARE DEI CAVALIERI"
+      },
+      "geo": {
+        "region": {
+          "value": "Toscana"
+        },
+        "city": {
+          "key": "7",
+          "value": "Pisa"
+        },
+        "town": {
+          "key": "050008",
+          "value": "Cascina",
+          "istat": "050008",
+          "lat": 43.676577,
+          "lon": 10.548645
+        },
+        "map": {
+          "latitude": "43.678641",
+          "longitude": "10.525623",
+          "zoom": "10"
+        }
+      },
+      "urls": {
+        "default": "https://www.subito.it/ville-singole-e-a-schiera/viareggina-a-marcianacascina-pisa-659305203.htm"
+      }
+    },
+    {
+      "urn": "id:ad:612333006:list:659672083",
+      "type": {
+        "key": "s",
+        "value": "In vendita"
+      },
+      "category": {
+        "key": "30",
+        "value": "Terreni e rustici",
+        "friendly_name": "terreni-e-rustici"
+      },
+      "subject": "RUSTICO A SAN GIULIANO TERME",
+      "body": "TERRATETTO INDIPENDENTE - RIPAFRATTA\nProponiamo in vendita un terratetto indipendente di circa 240 mq situato a Ripafratta.\nL'immobile si sviluppa su più livelli e offre ampi spazi interni. Al piano terra troviamo un grande ingresso che conduce a tre bagni finestrati, al soggiorno e alla cucina abitabile con camino. Sempre su questo livello sono presenti due camere.\nSalendo al primo piano si accede a un'ampia stanza di passaggio di circa 25 mq e a una camera matrimoniale.\nIl secondo piano, caratterizzato dalla presenza di lucernari, ospita un'ulteriore camera matrimoniale e una spaziosa stanza di circa 33 mq.\nCompletano la proprietà un locale di sgombero di circa 50 mq, un giardino di circa 100 mq, una resede esclusiva di 25 mq e un ulteriore giardino laterale di circa 50 mq.\nFissa un appuntamento per vedere questo immobile e chiama lo ###phonenumber### oppure manda un'email a ###email### \nAssumiamo ragazzi/e giovani, anche senza esperienza, da avviare alla professione di Agente Immobiliare. Contattaci per maggiori informazioni.",
+      "dates": {
+        "display": "2026-09-06 02:34:03",
+        "display_iso8601": "2026-09-06T02:34:03.797+0200"
+      },
+      "images": [
+        {
+          "cdn_base_url": "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/5f/5f83c8ba-83d5-4a6b-94fb-70f317d9c16d"
+        }
+      ],
+      "features": [
+        {
+          "uri": "/size",
+          "values": [
+            {
+              "key": "240",
+              "value": "240 mq"
+            }
+          ]
+        },
+        {
+          "uri": "/price",
+          "values": [
+            {
+              "key": "59000",
+              "value": "59000 €"
+            }
+          ]
+        },
+        {
+          "uri": "/nosalesman",
+          "values": [
+            {
+              "key": "1",
+              "value": "Sì"
+            }
+          ]
+        }
+      ],
+      "advertiser": {
+        "company": true,
+        "type": 1,
+        "name": "STUDIO VECCHIANO srl"
+      },
+      "geo": {
+        "region": {
+          "value": "Toscana"
+        },
+        "city": {
+          "key": "7",
+          "value": "Pisa"
+        },
+        "town": {
+          "key": "050031",
+          "value": "San Giuliano Terme",
+          "istat": "050031",
+          "lat": 43.763446,
+          "lon": 10.443199
+        },
+        "map": {
+          "latitude": "43.8183702",
+          "longitude": "10.4146745",
+          "zoom": "13"
+        }
+      },
+      "urls": {
+        "default": "https://www.subito.it/terreni-e-rustici/rustico-a-san-giuliano-terme-pisa-659672083.htm"
+      }
+    },
+    {
+      "urn": "id:ad:606351411:list:628421062",
+      "type": {
+        "key": "s",
+        "value": "In vendita"
+      },
+      "category": {
+        "key": "30",
+        "value": "Terreni e rustici",
+        "friendly_name": "terreni-e-rustici"
+      },
+      "subject": "Terreno agricolo uso oliveto",
+      "body": "Per motivi di sopraggiunta età vendesi direttamente dal proprietario un terreno adibito ad oliveto con piante autoctone, posto al di sopra del paese di Monte Magno Calci con accesso direttamente dalla strada agricola.\nL'oliveto si estende per una superficie di mq. 6580 ed è in una posizione ottima al sole dalla mattina alla sera e beneficia dell'influenza marina producendo olive di ottima qualità.\nSe interessati contattare per visite in loco il proprietario:\n###name### Cel: ###phonenumber###",
+      "dates": {
+        "display": "2026-08-26 15:04:19",
+        "display_iso8601": "2026-08-26T15:04:19.81+0200"
+      },
+      "images": [
+        {
+          "cdn_base_url": "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/0b/0b79ada9-3200-4570-8071-73ce70722e66"
+        }
+      ],
+      "features": [
+        {
+          "uri": "/price",
+          "values": [
+            {
+              "key": "25000",
+              "value": "25000 €"
+            }
+          ]
+        },
+        {
+          "uri": "/nosalesman",
+          "values": [
+            {
+              "key": "0",
+              "value": "No"
+            }
+          ]
+        },
+        {
+          "uri": "/size",
+          "values": [
+            {
+              "key": "6580",
+              "value": "6580 mq"
+            }
+          ]
+        }
+      ],
+      "advertiser": {
+        "company": false,
+        "type": 0
+      },
+      "geo": {
+        "region": {
+          "value": "Toscana"
+        },
+        "city": {
+          "key": "7",
+          "value": "Pisa"
+        },
+        "town": {
+          "key": "050003",
+          "value": "Calci",
+          "istat": "050003",
+          "lat": 43.725824,
+          "lon": 10.515638
+        },
+        "map": {
+          "address": "56011 Montemagno PI, Italia",
+          "latitude": "43.7204282",
+          "longitude": "10.5369946",
+          "zoom": "16"
+        }
+      },
+      "urls": {
+        "default": "https://www.subito.it/terreni-e-rustici/terreno-agricolo-uso-oliveto-pisa-628421062.htm"
+      }
+    },
+    {
+      "urn": "id:ad:612231737:list:659013868",
+      "type": {
+        "key": "s",
+        "value": "In vendita"
+      },
+      "category": {
+        "key": "30",
+        "value": "Terreni e rustici",
+        "friendly_name": "terreni-e-rustici"
+      },
+      "subject": "Rustico indipendente",
+      "body": "Vendo lungo la via delle erbe e dei fiori a Massarosa rustico categoria catastale A4 di mq 28 con giardino di circa 1300mq . ASTENERSI PERDITEMPO prezzo trattabile",
+      "dates": {
+        "display": "2026-08-31 18:23:34",
+        "display_iso8601": "2026-08-31T18:23:34.536+0200"
+      },
+      "images": [
+        {
+          "cdn_base_url": "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/d0/d0e2e67d-91e5-4ea0-8db9-002ed61c008f"
+        }
+      ],
+      "features": [
+        {
+          "uri": "/size",
+          "values": [
+            {
+              "key": "28",
+              "value": "28 mq"
+            }
+          ]
+        },
+        {
+          "uri": "/price",
+          "values": [
+            {
+              "key": "175000",
+              "value": "175000 €"
+            }
+          ]
+        },
+        {
+          "uri": "/nosalesman",
+          "values": [
+            {
+              "key": "1",
+              "value": "Sì"
+            }
+          ]
+        }
+      ],
+      "advertiser": {
+        "company": false,
+        "type": 0
+      },
+      "geo": {
+        "region": {
+          "value": "Toscana"
+        },
+        "city": {
+          "key": "5",
+          "value": "Lucca"
+        },
+        "town": {
+          "key": "046018",
+          "value": "Massarosa",
+          "istat": "046018",
+          "lat": 43.868438,
+          "lon": 10.342258
+        },
+        "map": {
+          "address": "Via Sottomonte, 258, 55054 Massarosa LU, Italia",
+          "latitude": "43.8713748",
+          "longitude": "10.3302338",
+          "zoom": "16"
+        }
+      },
+      "urls": {
+        "default": "https://www.subito.it/terreni-e-rustici/rustico-indipendente-lucca-659013868.htm"
+      }
+    }
+  ]
+}
