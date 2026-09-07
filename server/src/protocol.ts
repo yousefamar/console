@@ -313,7 +313,10 @@ export interface StructuredPatchHunk {
 
 export interface ClaudeResultMessage {
   type: 'result'
-  subtype: 'success' | 'error' | 'error_max_turns'
+  /** `error_during_execution` is what a SIGINT mid-tool-call produces (the CLI
+   *  emits it, then exits 0) — an aborted turn, not a finished one. */
+  subtype: 'success' | 'error' | 'error_max_turns' | 'error_during_execution' | string
+  is_error?: boolean
   duration_ms: number
   session_id: string
   total_cost_usd: number

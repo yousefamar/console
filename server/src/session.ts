@@ -1337,7 +1337,13 @@ export class Session extends EventEmitter {
     // A completed turn = the API is healthy; reset auto-resume backoff.
     this.transientResumeAttempt = 0
     this.status = 'idle'
-    this.midTurn = false
+    // Only a FINISHED turn clears the mid-turn bit. pm2's treekill SIGINTs the
+    // claude child, which emits `result/error_during_execution is_error=true`
+    // and exits 0 (measured 2026-09-07) — that result reached here first and
+    // cleared midTurn, so every mid-turn session was saved wasRunning=false
+    // and came back without its "continue" nudge (^neat-wren). A user
+    // interrupt() clears the bit itself before sending SIGINT.
+    if (!msg.is_error && !msg.subtype.startsWith('error')) this.midTurn = false
     this.lastActivityAt = Date.now()
     // total_cost_usd is cumulative (session total), not per-turn
     this.totalCost = msg.total_cost_usd

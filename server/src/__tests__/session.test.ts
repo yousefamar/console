@@ -395,6 +395,23 @@ describe('Session midTurn (restart-nudge survival)', () => {
     expect(session.midTurn).toBe(false)
   })
 
+  // Measured 2026-09-07 (^neat-wren): SIGINT mid-tool-call makes the CLI emit
+  // `result/error_during_execution is_error=true` and THEN exit 0. That result
+  // reached handleResultMessage before the exit and cleared the bit — which is
+  // how the 22:44 restart saved the mid-turn ring fork as wasRunning=false.
+  it('survives the error result the CLI emits on SIGINT before it exits', async () => {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({
+      type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 10,
+      session_id: 'x', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.status).toBe('idle')
+    expect(session.midTurn).toBe(true)
+    mockProcess.emit('exit', 0)
+    expect(session.midTurn).toBe(true)
+  })
+
   it('clears on a user interrupt — a stopped turn is never resurrected', () => {
     const session = new Session({ prompt: 'test' })
     session.status = 'running'
