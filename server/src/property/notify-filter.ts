@@ -51,8 +51,8 @@ export function normaliseHouseType(propertyType: string | undefined): HouseType[
   const t = (propertyType ?? '').toLowerCase()
   if (!t) return []
   const out = new Set<HouseType>()
-  const semi = /semi[- ]?detached|doppelhaus|reihenend|bifamiliare/.test(t)
-  const terraced = /terrace|end of terrace|mid terrace|reihenhaus|a schiera|townhouse|town house/.test(t)
+  const semi = /semi[- ]?detached|doppelhaus|reihenend|bifamiliare|semi-?i?ndipendente/.test(t)
+  const terraced = /terrace|end of terrace|mid terrace|reihenhaus|a schiera|townhouse|town house|terratetto/.test(t)
   if (semi) out.add('semi-detached')
   if (terraced) out.add('terraced')
   if (!semi && !terraced && /detached|einfamilienhaus|freistehend|indipendente|unifamiliare/.test(t)) out.add('detached')

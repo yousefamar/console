@@ -38,6 +38,9 @@ const FETCH_LIMIT = 50
  * to be large enough to never be the thing that cuts a backfill short.
  */
 const BACKFILL_LIMIT = 5000
+/** Portals whose `bedrooms` is really locali (rooms) — dedupe must not compare it against real bedroom counts. */
+const LOCALI_PORTALS = new Set<string>(['wikicasa', 'subito'])
+
 /**
  * Listings whose coordinates are a comune/PLZ centroid (Subito, Kleinanzeigen,
  * geocoded feeds) get this much slack against the zone edge — a house can sit
@@ -606,7 +609,7 @@ export class PropertySync {
     // Every fine-filtered listing of this kind, across searches and portals,
     // BEFORE verdicts — duplicates are grouped first so a verdict on one copy
     // covers the others.
-    type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; source: string; fuzzy: boolean; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
+    type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; bedroomsApprox: boolean; source: string; fuzzy: boolean; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
     const candidates: Candidate[] = []
     for (const s of this.searches.list()) {
       const searchKind = kindOf(s)
@@ -623,7 +626,7 @@ export class PropertySync {
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
         if (listingKind(l, searchKind) !== kind) continue
-        candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
+        candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, bedroomsApprox: LOCALI_PORTALS.has(l.portal), source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
     }
     // Primary-portal copies first so they win the "which one do we draw" call.
@@ -790,6 +793,15 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     // IS24 sends price.value: 0 for these (verified: the live page shows "Auf
     // Anfrage", not a data error), and normalise() already reads 0 as absent.
     if (missing.has('excludePriceOnRequest') && c.excludePriceOnRequest && l.price == null) return false
+    // Bedrooms and house sub-type are enforced locally when a portal can't
+    // (Subito's rustici, Wikicasa's locali); fail-open when the row lacks the
+    // field or its type text can't be classified.
+    if (missing.has('minBedrooms') && c.minBedrooms != null && l.bedrooms != null && l.bedrooms < c.minBedrooms) return false
+    if (missing.has('maxBedrooms') && c.maxBedrooms != null && l.bedrooms != null && l.bedrooms > c.maxBedrooms) return false
+    if (missing.has('houseSubtypes') && c.houseSubtypes?.length) {
+      const types = normaliseHouseType(l.propertyType)
+      if (types.length && !types.some((t) => c.houseSubtypes!.includes(t))) return false
+    }
     if (missing.has('keywords') && c.keywords?.length) {
       const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''} ${(l.keyFeatures ?? []).join(' ')} ${l.description ?? ''}`.toLowerCase()
       if (!c.keywords.some((k) => hay.includes(k.toLowerCase()))) return false

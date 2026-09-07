@@ -1162,3 +1162,42 @@ describe('postFilter keywords over detail text', () => {
     expect(postFilter(rows, { keywords: ['paddock', 'orchard'] }, ['keywords']).map((l) => l.id)).toEqual(['kf', 'desc'])
   })
 })
+
+describe('shared fixes for the extra sources', () => {
+  it('nearGeometry pads longitude in real degrees — a point 4.7 km EAST of a ring at 53°N passes like one 4.7 km north', () => {
+    // ~11 km square around Manchester
+    const sq = { type: 'Polygon', coordinates: [[[-2.3, 53.4], [-2.15, 53.4], [-2.15, 53.5], [-2.3, 53.5], [-2.3, 53.4]]] }
+    const east: [number, number] = [-2.15 + 4.7 / (111.32 * Math.cos((53.45 * Math.PI) / 180)), 53.45]
+    const north: [number, number] = [-2.22, 53.5 + 4.7 / 110.574]
+    expect(nearGeometry(north, sq, 6)).toBe(true)
+    expect(nearGeometry(east, sq, 6)).toBe(true)
+    expect(nearGeometry([-2.0, 53.45], sq, 6)).toBe(false) // ~10 km east
+  })
+
+  it('normaliseHouseType: semindipendente is semi, terratetto is terraced', () => {
+    expect(normaliseHouseType('Casa semindipendente')).toEqual(['semi-detached'])
+    expect(normaliseHouseType('Terratetto')).toEqual(['terraced'])
+    expect(normaliseHouseType('Casa indipendente')).toEqual(['detached'])
+  })
+
+  it('postFilter enforces minBedrooms and houseSubtypes locally when the portal could not, fail-open on missing data', () => {
+    const rows = [
+      listing('ok', { bedrooms: 3, propertyType: 'Casa indipendente' }),
+      listing('few', { bedrooms: 1, propertyType: 'Casa indipendente' }),
+      listing('terr', { bedrooms: 3, propertyType: 'Terratetto' }),
+      listing('blank', {}),
+    ]
+    const kept = postFilter(rows, { minBedrooms: 2, houseSubtypes: ['detached', 'semi-detached'] }, ['minBedrooms', 'houseSubtypes'])
+    expect(kept.map((l) => l.id)).toEqual(['ok', 'blank'])
+    // …and does nothing when the portal already applied them.
+    expect(postFilter(rows, { minBedrooms: 2, houseSubtypes: ['detached'] }, []).length).toBe(4)
+  })
+
+  it('groupDuplicates skips the bedroom comparison when a side counts locali', () => {
+    const a = { lat: 43.7, lon: 10.4, price: 200000, bedrooms: 3, id: 'immobiliare' }
+    const b = { lat: 43.7, lon: 10.4, price: 200000, bedrooms: 5, bedroomsApprox: true, id: 'wikicasa' }
+    expect(groupDuplicates([a, b]).length).toBe(1)
+    const c = { lat: 43.7, lon: 10.4, price: 200000, bedrooms: 5, id: 'other' }
+    expect(groupDuplicates([a, c]).length).toBe(2)
+  })
+})

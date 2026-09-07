@@ -131,6 +131,11 @@ import { FlightSync } from './flights/sync.js'
 import { handleFlightRoutes } from './routes/flights.js'
 import { PropertySearchStore } from './property/store.js'
 import { PropertyInventoryStore } from './property/inventory.js'
+import { OnTheMarketClient } from './property/onthemarket.js'
+import { SparkasseClient } from './property/sparkasse.js'
+import { WikicasaClient } from './property/wikicasa.js'
+import { SubitoClient } from './property/subito.js'
+import { SmallholdingsClient } from './property/smallholdings.js'
 import { PropertySync } from './property/sync.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
@@ -355,6 +360,13 @@ const propertySync = new PropertySync(
     rightmove: new RightmoveClient(),
     immobiliare: new ImmobiliareClient(),
     immoscout24: new ImmoScout24Client(wafTokenStore),
+    // Extra sources surveyed 2026-09-07 (^spry-tern) — each is just another
+    // search's `portal`; they all feed the same property/<kind> layers.
+    onthemarket: new OnTheMarketClient(),
+    sparkasse: new SparkasseClient(),
+    wikicasa: new WikicasaClient(),
+    subito: new SubitoClient(),
+    smallholdings: new SmallholdingsClient({ log: (msg: string) => { log(msg) } }),
   },
   propertySearches,
   propertyInventory,

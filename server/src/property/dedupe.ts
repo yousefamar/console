@@ -21,6 +21,8 @@ export interface DedupeCandidate {
   source?: string
   /** Coordinates are an area centroid, not the house — never a dedupe match. */
   fuzzy?: boolean
+  /** `bedrooms` is a room count (Italian locali), not bedrooms — skip the bedroom comparison. */
+  bedroomsApprox?: boolean
 }
 
 /** Same house if within this many metres… */
@@ -44,14 +46,15 @@ function sameHouse(a: DedupeCandidate, b: DedupeCandidate): boolean {
   if (a.source != null && a.source === b.source) return false
   if (a.fuzzy || b.fuzzy) return false
   if (metres(a, b) > RADIUS_M) return false
+  const compareBeds = !a.bedroomsApprox && !b.bedroomsApprox && a.bedrooms != null && b.bedrooms != null
   if (a.price != null && b.price != null) {
     const tol = Math.max(PRICE_TOLERANCE_ABS, PRICE_TOLERANCE * Math.max(a.price, b.price))
     if (Math.abs(a.price - b.price) > tol) return false
-  } else if (a.bedrooms != null && b.bedrooms != null && a.bedrooms !== b.bedrooms) {
+  } else if (compareBeds && a.bedrooms !== b.bedrooms) {
     // No price to compare on — fall back to bedrooms, which every portal has.
     return false
   }
-  if (a.bedrooms != null && b.bedrooms != null && Math.abs(a.bedrooms - b.bedrooms) > 1) return false
+  if (compareBeds && Math.abs(a.bedrooms! - b.bedrooms!) > 1) return false
   return true
 }
 

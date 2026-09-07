@@ -260,11 +260,14 @@ function ringCrossesBox(ring: Ring, w: number, s: number, e: number, n: number):
 export function nearGeometry(point: [number, number], geometry: Geometry, bufferKm: number): boolean {
   if (pointInGeometry(point, geometry)) return true
   const polys = (geometry.type === 'MultiPolygon' ? (geometry.coordinates as Ring[][]) : [geometry.coordinates as Ring[]]) as Ring[][]
-  const pad = bufferKm / 100 // ~1° ≈ 111 km; generous bbox pre-filter
+  // bbox pre-filter in real degrees: a degree of longitude shrinks with latitude
+  // (only ~66 km at 53°N), so pad it separately or east/west misses get rejected.
+  const padLat = bufferKm / 110.574
+  const padLon = bufferKm / (111.32 * Math.cos((point[1] * Math.PI) / 180))
   for (const poly of polys) {
     for (const ring of poly) {
       const [w, s, e, n] = ringBbox(ring)
-      if (point[0] < w - pad || point[0] > e + pad || point[1] < s - pad || point[1] > n + pad) continue
+      if (point[0] < w - padLon || point[0] > e + padLon || point[1] < s - padLat || point[1] > n + padLat) continue
       if (distanceToRingKm(point, ring) <= bufferKm) return true
     }
   }

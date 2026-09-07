@@ -23,13 +23,14 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { nearGeometry, type Geometry, type Ring } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
+import { ACRE_M2 } from './land.js'
 
 const BASE = 'https://smallholdingsforsale.co.uk'
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 const PAGE = 100
 const PAGE_DELAY_MS = 1000
 const POST_FIELDS = 'id,date_gmt,modified_gmt,link,title,categories,tags,excerpt'
-export const M2_PER_ACRE = 4046.86
+export const M2_PER_ACRE = ACRE_M2
 /**
  * Coordinates are a place centroid, so a listing counts as inside a ring when
  * within this many km of it — same slack PropertySync.clipToLayer gives
