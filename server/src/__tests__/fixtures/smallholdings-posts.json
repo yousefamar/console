@@ -1,0 +1,181 @@
+{
+  "_source": "https://smallholdingsforsale.co.uk/wp-json/wp/v2/posts?include=…&_fields=id,date_gmt,modified_gmt,link,title,categories,tags,excerpt — fetched 2026-09-07; categories/tags trimmed to the ids these posts use",
+  "posts": [
+    {
+      "id": 60057,
+      "date_gmt": "2026-09-07T05:46:23",
+      "modified_gmt": "2026-09-07T05:46:23",
+      "link": "https://smallholdingsforsale.co.uk/4-bed-farmhouse-smallholding-for-sale-inc-1-bed-annexe-outbuildings-6-37-acres-of-paddocks-in-hardwick-750k/",
+      "title": {
+        "rendered": "4 Bed Farmhouse Smallholding For Sale Inc. 1 Bed Annexe, Outbuildings &#038; 6.37 Acres of Paddocks in Hardwick (£750K)"
+      },
+      "excerpt": {
+        "rendered": "<p>Norfolk 4 bed (inc. 1 bed annexe) 6.37 acres £750K [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/4-bed-farmhouse-smallholding-for-sale-inc-1-bed-annexe-outbuildings-6-37-acres-of-paddocks-in-hardwick-750k/\">Read More&#8230;<span class=\"screen-reader-text\"> from 4 Bed Farmhouse Smallholding For Sale Inc. 1 Bed Annexe, Outbuildings &#038; 6.37 Acres of Paddocks in Hardwick (£750K)</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [
+        191,
+        1267
+      ],
+      "tags": [
+        834
+      ]
+    },
+    {
+      "id": 59924,
+      "date_gmt": "2026-08-31T03:30:18",
+      "modified_gmt": "2026-08-31T03:30:18",
+      "link": "https://smallholdingsforsale.co.uk/4-bed-derelict-smallholding-for-sale-with-planning-permission-6-acres-of-pasture-in-moelfre-oswestry-295k/",
+      "title": {
+        "rendered": "4 Bed Derelict Smallholding For Sale With Planning Permission &#038; 6 Acres of Pasture in Moelfre, Oswestry (£295K)"
+      },
+      "excerpt": {
+        "rendered": "<p>Shropshire 4 bed (derelict with planning permission) 6 acres £295K &nbsp; [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/4-bed-derelict-smallholding-for-sale-with-planning-permission-6-acres-of-pasture-in-moelfre-oswestry-295k/\">Read More&#8230;<span class=\"screen-reader-text\"> from 4 Bed Derelict Smallholding For Sale With Planning Permission &#038; 6 Acres of Pasture in Moelfre, Oswestry (£295K)</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [
+        199,
+        1267
+      ],
+      "tags": [
+        492,
+        495,
+        852,
+        837
+      ]
+    },
+    {
+      "id": 59911,
+      "date_gmt": "2026-08-30T17:16:22",
+      "modified_gmt": "2026-08-30T17:16:22",
+      "link": "https://smallholdingsforsale.co.uk/2-bed-semi-detached-smallholding-for-sale-with-stables-0-29-acre-paddock-nr-cheswardine-315k/",
+      "title": {
+        "rendered": "2 Bed Semi-Detached Smallholding For Sale With Stables &#038; 0.29 Acre Paddock Nr. Cheswardine (£315K)"
+      },
+      "excerpt": {
+        "rendered": "<p>Shropshire 2 bed semi-detached 0.29 acre £315K [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/2-bed-semi-detached-smallholding-for-sale-with-stables-0-29-acre-paddock-nr-cheswardine-315k/\">Read More&#8230;<span class=\"screen-reader-text\"> from 2 Bed Semi-Detached Smallholding For Sale With Stables &#038; 0.29 Acre Paddock Nr. Cheswardine (£315K)</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [
+        199,
+        1267
+      ],
+      "tags": [
+        834,
+        1420
+      ]
+    },
+    {
+      "id": 59853,
+      "date_gmt": "2026-08-23T17:54:02",
+      "modified_gmt": "2026-08-23T17:54:02",
+      "link": "https://smallholdingsforsale.co.uk/36-7-acres-of-grassland-for-sale-nr-whitchurch-295k/",
+      "title": {
+        "rendered": "36.7 Acres of Grassland For Sale Nr. Whitchurch (£295K)"
+      },
+      "excerpt": {
+        "rendered": "<p>Cheshire parcel of grassland 36.7 acres £295K [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/36-7-acres-of-grassland-for-sale-nr-whitchurch-295k/\">Read More&#8230;<span class=\"screen-reader-text\"> from 36.7 Acres of Grassland For Sale Nr. Whitchurch (£295K)</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [
+        169,
+        1267
+      ],
+      "tags": [
+        490
+      ]
+    },
+    {
+      "id": 55977,
+      "date_gmt": "2026-04-26T06:34:31",
+      "modified_gmt": "2026-07-25T23:22:54",
+      "link": "https://smallholdingsforsale.co.uk/uk-smallholder-group-directory/",
+      "title": {
+        "rendered": "UK Smallholder Group Directory"
+      },
+      "excerpt": {
+        "rendered": "<p>The List Our ever-growing list of UK smallholder groups and societies. A work in progress&#8230; Add a smallholder group Did we miss you out? Feel free to submit your group, or one you know to the list. [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/uk-smallholder-group-directory/\">Read More&#8230;<span class=\"screen-reader-text\"> from UK Smallholder Group Directory</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [],
+      "tags": []
+    },
+    {
+      "id": 55823,
+      "date_gmt": "2026-04-10T16:47:51",
+      "modified_gmt": "2026-04-10T16:47:51",
+      "link": "https://smallholdingsforsale.co.uk/derelict-cottage-smallholding-for-sale-with-0-5-acre-land-in-newbridge-135k-opening-bid/",
+      "title": {
+        "rendered": "Derelict Cottage Smallholding For Sale With 0.5 Acre Land in Newbridge (£135K opening bid)"
+      },
+      "excerpt": {
+        "rendered": "<p>Cornwall Derelict 0.5 acre £135K opening bid (auction = 12 noon Monday 13th April 2026) [&#8230;]</p>\n<p><a class=\"btn btn-secondary understrap-read-more-link\" href=\"https://smallholdingsforsale.co.uk/derelict-cottage-smallholding-for-sale-with-0-5-acre-land-in-newbridge-135k-opening-bid/\">Read More&#8230;<span class=\"screen-reader-text\"> from Derelict Cottage Smallholding For Sale With 0.5 Acre Land in Newbridge (£135K opening bid)</span></a></p>\n",
+        "protected": false
+      },
+      "categories": [
+        115,
+        1267
+      ],
+      "tags": [
+        1414,
+        492
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "id": 169,
+      "name": "Cheshire"
+    },
+    {
+      "id": 115,
+      "name": "Cornwall"
+    },
+    {
+      "id": 1267,
+      "name": "ENGLAND"
+    },
+    {
+      "id": 191,
+      "name": "Norfolk"
+    },
+    {
+      "id": 199,
+      "name": "Shropshire"
+    }
+  ],
+  "tags": [
+    {
+      "id": 1414,
+      "slug": "auction"
+    },
+    {
+      "id": 492,
+      "slug": "derelict"
+    },
+    {
+      "id": 495,
+      "slug": "development"
+    },
+    {
+      "id": 490,
+      "slug": "land"
+    },
+    {
+      "id": 834,
+      "slug": "paddock"
+    },
+    {
+      "id": 852,
+      "slug": "pasture"
+    },
+    {
+      "id": 837,
+      "slug": "planning-permission"
+    },
+    {
+      "id": 1420,
+      "slug": "stables"
+    }
+  ]
+}
