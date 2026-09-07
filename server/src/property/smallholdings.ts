@@ -249,11 +249,23 @@ export class SmallholdingsClient implements PortalClient {
     return this.terms
   }
 
-  /** GET with back-off on 429/5xx. `attempts: 1` for probes, where "don't know" is a fine answer. */
+  /**
+   * GET with back-off on 429/5xx AND on network-level failures — the WordPress
+   * host is slow (7 s a page) and dropped a connection mid-catalogue on the
+   * first live run ("fetch failed" is undici's TypeError, not an HTTP status).
+   * `attempts: 1` for probes, where "don't know" is a fine answer.
+   */
   private async get(url: string, attempts = 3): Promise<Response> {
     for (let attempt = 1; ; attempt++) {
       this.requests++
-      const res = await this.fetchImpl(url, { headers: { 'user-agent': UA, accept: 'application/json' } })
+      let res: Response
+      try {
+        res = await this.fetchImpl(url, { headers: { 'user-agent': UA, accept: 'application/json' }, signal: AbortSignal.timeout(45_000) })
+      } catch (e) {
+        if (attempt >= attempts) throw e
+        await sleep(3000 * attempt)
+        continue
+      }
       if ((res.status === 429 || res.status >= 500) && attempt < attempts) {
         await sleep(2000 * attempt)
         continue

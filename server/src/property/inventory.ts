@@ -61,7 +61,8 @@ export async function fetchAll(client: PortalClient, rings: Ring[], criteria: Cr
     // re-query both halves. Boundary overlap is harmless — dedupe by id.
     for (const l of r.listings) seen.set(l.id, l)
     const mid = Math.round((lo + hi) / 2 / 1000) * 1000
-    await pull(ring, { ...band, minPrice: lo, maxPrice: mid }, depth + 1)
+    // A zero floor is "no floor" — some portals (OnTheMarket) 400 on min-price=0.
+    await pull(ring, { ...band, minPrice: lo > 0 ? lo : undefined, maxPrice: mid }, depth + 1)
     await pull(ring, { ...band, minPrice: mid, maxPrice: hi }, depth + 1)
   }
 

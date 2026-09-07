@@ -9,8 +9,10 @@ export const HECTARE_M2 = 10_000
 
 /**
  * Plot size from which a house counts as a smallholding and moves to the
- * `property/farmland` layer. PLACEHOLDER — Yousef has not yet given the
- * minimum land size (asked 2026-09-07); 2,000 m² ≈ half an acre.
+ * `property/farmland` layer. Yousef, 2026-09-07: "enough for a food forest /
+ * permaculture garden, not becoming a full-on farmer" — 2,000 m² (half an
+ * acre) is the floor, no upper cap (the ≤300k price already caps it); the
+ * target band is 0.2–2 ha of house-with-land, not working farms.
  */
 export const FARMLAND_MIN_PLOT_M2 = 2000
 

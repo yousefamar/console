@@ -757,6 +757,8 @@ describe('fetchAll', () => {
     expect(r.total).toBe(6) // only the depth-0 query counts toward total
     expect(calls[0]).toEqual([undefined, 300000])
     expect(calls.length).toBeGreaterThan(1)
+    // The lower half of a split never carries a zero floor (OnTheMarket 400s on min-price=0).
+    expect(calls.every(([lo]) => lo !== 0)).toBe(true)
   })
 
   it('gives up splitting below the minimum band width and reports truncation', async () => {

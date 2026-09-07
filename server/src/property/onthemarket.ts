@@ -241,7 +241,7 @@ const RECENTLY_ADDED: Record<number, string> = { 1: '24-hours', 3: '3-days', 7: 
 export function compile(c: Criteria): Array<[string, string]> {
   const rent = c.channel === 'rent'
   const p: Array<[string, string]> = []
-  if (c.minPrice != null) p.push(['min-price', String(c.minPrice)])
+  if (c.minPrice != null && c.minPrice > 0) p.push(['min-price', String(c.minPrice)]) // 0 is a 400 ("must be positive")
   if (c.maxPrice != null) p.push(['max-price', String(c.maxPrice)])
   if (c.minBedrooms != null) p.push(['min-bedrooms', String(c.minBedrooms)])
   if (c.maxBedrooms != null) p.push(['max-bedrooms', String(c.maxBedrooms)])
