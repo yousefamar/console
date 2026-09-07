@@ -44,7 +44,7 @@ async function get(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function add(args: string[], flags: GlobalFlags): Promise<void> {
   const o = parseFlags(args)
-  if (!o.country) return exitWithError('USAGE', 'con map property add --country UK|DE|IT --layer <group/name> [criteria flags]', flags)
+  if (!o.country) return exitWithError('USAGE', 'con map property add --country UK|DE|IT --layer <group/name> [--kind house|farmland] [--portal <name>] [criteria flags]', flags)
   if (!o.layer) return exitWithError('USAGE', '--layer <map-layer-slug> required (supplies the search polygon)', flags)
   const body: Record<string, unknown> = {
     country: String(o.country).toUpperCase(),
@@ -52,6 +52,8 @@ async function add(args: string[], flags: GlobalFlags): Promise<void> {
     criteria: criteriaFrom(o),
   }
   if (o.label) body.label = String(o.label)
+  if (o.kind) body.kind = String(o.kind)
+  if (o.portal) body.portal = String(o.portal)
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
   if (o['notify-layer']) body.notifyLayer = String(o['notify-layer'])
   if (o.notify) body.notify = o.notify !== 'off' && o.notify !== 'false'
@@ -68,6 +70,8 @@ async function set(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.label) body.label = String(o.label)
   if (o.layer) body.layer = String(o.layer)
   if (o.country) body.country = String(o.country).toUpperCase()
+  if (o.kind) body.kind = String(o.kind)
+  if (o.portal) body.portal = String(o.portal)
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
   if (o.enabled) body.enabled = o.enabled !== 'false'
   // --notify-layer none clears the filter (push on everything again).
@@ -167,6 +171,7 @@ async function count(args: string[], flags: GlobalFlags): Promise<void> {
     criteria: criteriaFrom(o),
   }
   if (o['max-rings']) body.maxRings = Number(o['max-rings'])
+  if (o.portal) body.portal = String(o.portal)
   output(await hubFetch('/property/count', { method: 'POST', body }), flags)
 }
 

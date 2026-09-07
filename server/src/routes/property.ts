@@ -19,7 +19,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { PropertySearchStore, CreatePropertySearchInput, Country, ReviewState } from '../property/store.js'
 import type { PropertySync } from '../property/sync.js'
-import type { Criteria, Listing } from '../property/types.js'
+import type { Criteria, Listing, Portal } from '../property/types.js'
 
 const REVIEW_STATES = new Set<ReviewState>(['interested', 'dismissed', 'none'])
 
@@ -74,10 +74,11 @@ export function handlePropertyRoutes(
         layer?: string
         maxRings?: number
         criteria?: Criteria
+        portal?: Portal
       }
       if (!body.country || !COUNTRIES.includes(body.country)) return error(400, `country must be one of ${COUNTRIES.join('|')}`)
       if (!body.layer) return error(400, 'layer required')
-      const total = await sync.count(body.country, body.layer, body.criteria ?? {}, body.maxRings)
+      const total = await sync.count(body.country, body.layer, body.criteria ?? {}, body.maxRings, body.portal)
       json({ country: body.country, total })
     })
   }

@@ -721,7 +721,9 @@ export const COMMANDS: CommandDef[] = [
   { name: 'map property list', description: 'List saved property searches with last-poll state', safety: 'read' },
   { name: 'map property add', description: 'Create a saved property search. Polled hourly; pushes a notification per genuinely-new listing (first poll seeds silently).', safety: 'write',
     flags: {
-      country: { type: 'string', description: 'UK | DE | IT — picks the portal' },
+      country: { type: 'string', description: 'UK | DE | IT — picks the default portal' },
+      portal: { type: 'string', description: 'Portal client to run on (rightmove | immoscout24 | immobiliare | any aggregator client added later). Default: the country\'s primary portal. Several searches per country are fine — duplicates across portals collapse to one pin.' },
+      kind: { type: 'string', description: 'house (default) | farmland — the map layer this search feeds (layers are sliced by kind only, never by country or portal)' },
       layer: { type: 'string', description: 'Map-layer slug supplying the search polygon, e.g. where-to-move/livable-zone' },
       label: { type: 'string', description: 'Display label' },
       'max-rings': { type: 'number', description: 'Query at most N of the layer\'s rings, largest first' },

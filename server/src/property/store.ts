@@ -67,6 +67,13 @@ export interface PropertySearch {
   country: Country
   /** Defaults to `house`. */
   kind?: PropertyKind
+  /**
+   * Which portal client runs this search. Defaults to the country's primary
+   * portal (PORTAL_BY_COUNTRY); set explicitly for aggregators and specialist
+   * sources so one country can have several searches feeding the same kind
+   * layer. Cross-portal duplicates collapse at draw time (see dedupe in sync.ts).
+   */
+  portal?: Portal
   /** Map-layer slug supplying the search polygon (e.g. `where-to-move/livable-zone`). */
   layer: string
   /** Query at most this many of the layer's rings, largest first. */
@@ -159,7 +166,7 @@ export interface PropertySearch {
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'kind' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
+  Partial<Pick<PropertySearch, 'label' | 'kind' | 'portal' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
 
 export class PropertySearchStore {
   private items: PropertySearch[] = []
@@ -183,6 +190,7 @@ export class PropertySearchStore {
       label: input.label,
       country: input.country,
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.portal !== undefined ? { portal: input.portal } : {}),
       layer: input.layer,
       maxRings: input.maxRings,
       criteria: input.criteria ?? {},
@@ -211,7 +219,8 @@ export class PropertySearchStore {
     const requeried =
       (patch.criteria && JSON.stringify(patch.criteria) !== JSON.stringify(before.criteria)) ||
       (patch.layer && patch.layer !== before.layer) ||
-      (patch.country && patch.country !== before.country)
+      (patch.country && patch.country !== before.country) ||
+      (patch.portal && patch.portal !== (before.portal ?? PORTAL_BY_COUNTRY[before.country]))
     if (requeried && patch.seeded === undefined) {
       next.seeded = false
       next.seenIds = []
@@ -413,4 +422,9 @@ export class PropertySearchStore {
     mkdirSync(dirname(this.file), { recursive: true })
     writeFileSync(this.file, JSON.stringify({ searches: this.items }, null, 2), 'utf8')
   }
+}
+
+/** The client a search runs on: its explicit portal, else the country's primary one. */
+export function portalOf(s: Pick<PropertySearch, 'portal' | 'country'>): Portal {
+  return s.portal ?? PORTAL_BY_COUNTRY[s.country]
 }

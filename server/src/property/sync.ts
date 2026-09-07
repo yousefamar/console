@@ -19,8 +19,9 @@ import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
 import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo.js'
-import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
+import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
+import { groupDuplicates } from './dedupe.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
@@ -112,7 +113,7 @@ export class PropertySync {
   async backfill(id: string): Promise<PropertySearch | undefined> {
     const s = this.searches.get(id)
     if (!s) return undefined
-    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const client = this.clients[portalOf(s)]
     const rings = this.rings(s.layer, s.country, s.maxRings)
     const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
     const listings = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported)))
@@ -152,7 +153,7 @@ export class PropertySync {
   async pruneGone(id: string, snapshotIds: Set<string>): Promise<string[]> {
     const s = this.searches.get(id)
     if (!s?.interestedIds?.length) return []
-    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const client = this.clients[portalOf(s)]
     if (!client.isLive) return []
     const byId = new Map<string, Listing>(this.inventory.get(id).entries.map((l) => [l.id, l]))
     for (const l of s.lastResults ?? []) if (!byId.has(l.id)) byId.set(l.id, l)
@@ -202,7 +203,7 @@ export class PropertySync {
   async fullSync(id: string): Promise<PropertySearch | undefined> {
     const s = this.searches.get(id)
     if (!s) return undefined
-    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const client = this.clients[portalOf(s)]
     const started = Date.now()
     this.log(`[property-sync] ${s.id} full sync starting`)
     try {
@@ -267,9 +268,9 @@ export class PropertySync {
   }
 
   /** Ad-hoc count for a candidate criteria set, without saving anything. */
-  async count(country: keyof typeof PORTAL_BY_COUNTRY, layer: string, criteria: Criteria, maxRings?: number): Promise<number> {
+  async count(country: keyof typeof PORTAL_BY_COUNTRY, layer: string, criteria: Criteria, maxRings?: number, portal?: Portal): Promise<number> {
     const rings = this.rings(layer, country, maxRings)
-    return this.clients[PORTAL_BY_COUNTRY[country]].count(rings, criteria)
+    return this.clients[portal ?? PORTAL_BY_COUNTRY[country]].count(rings, criteria)
   }
 
   broadcastChange(op: 'created' | 'updated' | 'deleted', data: unknown): void {
@@ -303,7 +304,7 @@ export class PropertySync {
   }
 
   private async pollSearch(s: PropertySearch): Promise<void> {
-    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const client = this.clients[portalOf(s)]
     let listings: Listing[] = []
     let total: number | undefined
     let truncated = false
@@ -524,53 +525,71 @@ export class PropertySync {
    */
   private updateKindLayer(kind: PropertyKind): void {
     const slug = `${LAYER_GROUP}/${kind}`
-    const features: unknown[] = []
+    // Every fine-filtered listing of this kind, across searches and portals,
+    // BEFORE verdicts — duplicates are grouped first so a verdict on one copy
+    // covers the others.
+    type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; source: string; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
+    const candidates: Candidate[] = []
     for (const s of this.searches.list()) {
       if (kindOf(s) !== kind) continue
       const dismissed = new Set(s.dismissedIds ?? [])
       const interested = new Set(s.interestedIds ?? [])
+      const primary = portalOf(s) === PORTAL_BY_COUNTRY[s.country]
       const pool = this.inventory.live(s.id)
       // A search that has never been pulled in full still shows its skims.
       const source: Listing[] = pool.length ? pool : (s.lastResults ?? [])
       const kept = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? [])))
       for (const l of kept) {
-        if (l.lat == null || l.lon == null || dismissed.has(l.id)) continue
-        features.push({
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
-          properties: {
-            price: l.price != null ? formatPrice(l.price, l.currency) : undefined,
-            address: l.address ?? l.title,
-            beds: l.bedrooms,
-            area: l.floorArea,
-            plot: l.plotArea,
-            listed: l.listedAt?.slice(0, 10),
-            country: s.country,
-            portal: l.portal,
-            airport: l.nearestAirport
-              ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
-              : undefined,
-            url: l.url,
-            // Extra detail for the SPA's property panel (not shown in the popup).
-            title: l.title,
-            baths: l.bathrooms,
-            summary: l.summary,
-            agent: l.agent,
-            image: l.image,
-            // Needed for the review actions, not shown in the popup.
-            listingId: l.id,
-            searchId: s.id,
-            // House glyphs, not dots (Yousef, 2026-09-07): `_icon` is the
-            // renderer's per-feature emoji hook (`em:<emoji>`, drawn on demand).
-            // An emoji can't be recoloured, so "interested" is a different house —
-            // 🏡 with its green garden reads as the good one. `_color` stays for
-            // renderers that draw points as circles (Android) and the label layer.
-            _icon: interested.has(l.id) ? INTERESTED_ICON : LISTING_ICON,
-            // Yousef's verdict; unreviewed pins carry neither key.
-            ...(interested.has(l.id) ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
-          },
-        })
+        if (l.lat == null || l.lon == null) continue
+        candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, source: s.id, l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
+    }
+    // Primary-portal copies first so they win the "which one do we draw" call.
+    candidates.sort((a, b) => Number(b.primary) - Number(a.primary))
+
+    const features: unknown[] = []
+    for (const group of groupDuplicates(candidates)) {
+      if (group.some((c) => c.dismissed)) continue
+      const top = group[0]!
+      const { l, s } = top
+      const isInterested = group.some((c) => c.interested)
+      const alsoOn = [...new Set(group.slice(1).map((c) => c.l.portal))]
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
+        properties: {
+          price: l.price != null ? formatPrice(l.price, l.currency) : undefined,
+          address: l.address ?? l.title,
+          beds: l.bedrooms,
+          area: l.floorArea,
+          plot: l.plotArea,
+          listed: l.listedAt?.slice(0, 10),
+          country: s.country,
+          portal: l.portal,
+          alsoOn: alsoOn.length ? alsoOn.join(', ') : undefined,
+          airport: l.nearestAirport
+            ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
+            : undefined,
+          url: l.url,
+          // Extra detail for the SPA's property panel (not shown in the popup).
+          title: l.title,
+          baths: l.bathrooms,
+          summary: l.summary,
+          agent: l.agent,
+          image: l.image,
+          // Needed for the review actions, not shown in the popup.
+          listingId: l.id,
+          searchId: s.id,
+          // House glyphs, not dots (Yousef, 2026-09-07): `_icon` is the
+          // renderer's per-feature emoji hook (`em:<emoji>`, drawn on demand).
+          // An emoji can't be recoloured, so "interested" is a different house —
+          // 🏡 with its green garden reads as the good one. `_color` stays for
+          // renderers that draw points as circles (Android) and the label layer.
+          _icon: isInterested ? INTERESTED_ICON : LISTING_ICON,
+          // Yousef's verdict; unreviewed pins carry neither key.
+          ...(isInterested ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
+        },
+      })
     }
     // Skip only when there's genuinely never been anything to draw. A dismiss
     // that empties an already-populated layer must still write through.
@@ -578,7 +597,7 @@ export class PropertySync {
     const geojson = { type: 'FeatureCollection', features: features.slice(0, MAX_PINS) }
     try {
       this.mapLayers.upsert(slug, geojson, {
-        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'airport', 'url'] },
+        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'url'] },
         fit: false,
         updatedBy: 'property',
       })

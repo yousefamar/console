@@ -6,6 +6,7 @@ import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGe
 import { PropertySearchStore, PORTAL_BY_COUNTRY, withInterestedCarried } from '../property/store.js'
 import { postFilter, applyNotifyGate, PropertySync } from '../property/sync.js'
 import { PropertyInventoryStore, fetchAll } from '../property/inventory.js'
+import { groupDuplicates } from '../property/dedupe.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
@@ -880,5 +881,97 @@ describe('PropertySync kind layers', () => {
     expect(sync.remove(uk.id)).toBe(true)
     expect(inventory.get(uk.id).entries.length).toBe(0)
     expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['de1'])
+  })
+})
+
+describe('groupDuplicates', () => {
+  it('groups same-position same-price listings, keeps input order, leaves others alone', () => {
+    const a = { lat: 51.5, lon: -0.1, price: 250000, bedrooms: 3, id: 'a' }
+    const b = { lat: 51.5002, lon: -0.1, price: 251000, bedrooms: 3, id: 'b' } // ~22 m away, price within 1.5%
+    const c = { lat: 51.5, lon: -0.1, price: 199000, bedrooms: 3, id: 'c' } // same spot, different price
+    const d = { lat: 51.51, lon: -0.1, price: 250000, bedrooms: 3, id: 'd' } // 1.1 km away
+    const groups = groupDuplicates([a, b, c, d]).map((g) => g.map((x) => x.id))
+    expect(groups).toEqual([['a', 'b'], ['c'], ['d']])
+  })
+
+  it('never groups two rows from the same source, however close', () => {
+    const a = { lat: 51.5, lon: -0.1, price: 250000, source: 's1', id: 'a' }
+    const b = { lat: 51.5, lon: -0.1, price: 250000, source: 's1', id: 'b' }
+    const c = { lat: 51.5, lon: -0.1, price: 250000, source: 's2', id: 'c' }
+    expect(groupDuplicates([a, b, c]).map((g) => g.map((x) => x.id))).toEqual([['a', 'c'], ['b']])
+  })
+
+  it('falls back to bedrooms when a price is missing, and splits on a bedroom mismatch', () => {
+    const a = { lat: 45.4, lon: 9.2, bedrooms: 3, id: 'a' }
+    const b = { lat: 45.4, lon: 9.2, price: 200000, bedrooms: 3, id: 'b' }
+    const c = { lat: 45.4, lon: 9.2, bedrooms: 5, id: 'c' }
+    expect(groupDuplicates([a, b, c]).map((g) => g.map((x) => x.id))).toEqual([['a', 'b'], ['c']])
+  })
+
+  it('handles a cell boundary — neighbours in adjacent grid cells still match', () => {
+    const a = { lat: 50.0019, lon: 8.0019, price: 100000, id: 'a' }
+    const b = { lat: 50.0021, lon: 8.0021, price: 100000, id: 'b' } // ~27 m, other side of the 0.002° cell edge
+    expect(groupDuplicates([a, b]).length).toBe(1)
+  })
+})
+
+describe('PropertySync cross-portal dedupe', () => {
+  const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+  const harness = (byPortal: Record<string, Listing[]>) => {
+    const store = tmpStore()
+    const inventory = tmpInventory()
+    const layers = new Map<string, { features: Array<{ properties: Record<string, unknown> }> }>()
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson as never); return {} },
+      getMeta: (slug: string) => (layers.has(slug) ? {} : undefined),
+      getGeojson: (slug: string) => (slug === 'zone' ? box : null),
+      list: () => [...layers.keys()].map((slug) => ({ slug, group: 'property', name: slug.split('/')[1] })),
+      remove: (slug: string) => layers.delete(slug),
+    }
+    const mk = (portal: string) => ({
+      portal, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal, total: byPortal[portal]!.length, truncated: false, unsupported: [], listings: byPortal[portal]! }),
+    })
+    const clients = Object.fromEntries(Object.keys(byPortal).map((p) => [p, mk(p)]))
+    const sync = new PropertySync(
+      clients as never, store, inventory,
+      { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never,
+      { isConfigured: () => false } as never, () => {},
+    )
+    return { store, sync, layers }
+  }
+
+  it('the same house on two portals is one pin, drawn from the primary portal, naming the other', async () => {
+    const { store, sync, layers } = harness({
+      rightmove: [listing('rm1', { lat: 51.5, lon: -1, price: 250000, bedrooms: 3 })],
+      onthemarket: [
+        listing('otm1', { lat: 51.5001, lon: -1, price: 250000, bedrooms: 3, portal: 'onthemarket' as never }),
+        listing('otm-only', { lat: 52, lon: -1.5, price: 180000, bedrooms: 2, portal: 'onthemarket' as never }),
+      ],
+    })
+    const rm = store.create({ country: 'UK', layer: 'zone' })
+    const otm = store.create({ country: 'UK', layer: 'zone', portal: 'onthemarket' as never })
+    await sync.fullSync(otm.id) // aggregator first: order of arrival must not decide who wins
+    await sync.fullSync(rm.id)
+    const props = layers.get('property/house')!.features.map((f) => f.properties)
+    expect(props.map((p) => p.listingId).sort()).toEqual(['otm-only', 'rm1'])
+    const pin = props.find((p) => p.listingId === 'rm1')!
+    expect(pin).toMatchObject({ portal: 'rightmove', alsoOn: 'onthemarket', searchId: rm.id })
+    expect(props.find((p) => p.listingId === 'otm-only')!.alsoOn).toBeUndefined()
+  })
+
+  it('a verdict on any copy applies to the whole group', async () => {
+    const { store, sync, layers } = harness({
+      rightmove: [listing('rm1', { lat: 51.5, lon: -1, price: 250000, bedrooms: 3 })],
+      onthemarket: [listing('otm1', { lat: 51.5, lon: -1, price: 250000, bedrooms: 3, portal: 'onthemarket' as never })],
+    })
+    const rm = store.create({ country: 'UK', layer: 'zone' })
+    const otm = store.create({ country: 'UK', layer: 'zone', portal: 'onthemarket' as never })
+    await sync.fullSync(rm.id)
+    await sync.fullSync(otm.id)
+    sync.review(otm.id, 'otm1', 'interested')
+    expect(layers.get('property/house')!.features[0]!.properties.review).toBe('interested')
+    sync.review(otm.id, 'otm1', 'dismissed')
+    expect(layers.get('property/house')!.features.length).toBe(0)
   })
 })
