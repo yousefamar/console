@@ -22,6 +22,13 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   on `property/*` layers with a `listingId` and no `review`). Opening a
   listing never changes state.
 
+- Calendar: multi-day TIMED events (SPA bd2fa2cb, `src/calendar/multi-day.ts`) —
+  an event crossing local midnight (Fri 16:00 → Sun 15:00) rendered as a 15-min
+  sliver on its start day; the SPA now re-shapes it into the all-day bar as a
+  spanning block (end exclusive; ending exactly at 00:00 stays single-day) and
+  the popover prints both days. Check `CalendarScreen.kt`'s week grid for the
+  same bucketing and mirror `multiDaySpan`.
+
 - Calendar: Eventbrite organiser overlay (SPA `src/eventbrite/calendar-overlay.ts`,
   ^wise-stag) — hub `GET /eventbrite/events` returns `{events:[{id,title,url,
   start,end,organizerName,venueName,address,online,summary}]}`; add an
