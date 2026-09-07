@@ -11,6 +11,7 @@
 import type { Ring } from './geo.js'
 import { encodePolyline, simplifyToLatLng } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
+import { plotAreaFromText } from './land.js'
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
 const MAP_ENDPOINT = 'https://www.rightmove.co.uk/api/property-search/map/search'
@@ -127,6 +128,38 @@ export class RightmoveClient implements PortalClient {
     if (!res.ok) return null
     const html = await res.text()
     return !REMOVED_RE.test(html)
+  }
+
+  /**
+   * The listing's own page: key features, the full description, the agent's
+   * exact property sub-type, tenure, listing history and (rarely) sizings —
+   * none of which the search rows carry. The page embeds a SvelteKit
+   * `devalue`-flattened model (`window.__PAGE_MODEL = {"data": "[…]"}`), so it
+   * is unflattened rather than parsed as plain JSON. Land size is parsed from
+   * the text ("3.2 acres", "0.5 ha", "plot of 1,200 sq m"). Verified live
+   * 2026-09-07.
+   */
+  async detail(listing: Listing): Promise<Partial<Listing> | null> {
+    const res = await this.fetchImpl(`https://www.rightmove.co.uk/properties/${encodeURIComponent(listing.id)}`, {
+      headers: { 'user-agent': UA, accept: 'text/html' },
+    })
+    if (res.status === 404 || res.status === 410) return null
+    if (res.status === 403 || res.status === 429) throw new Error(`rightmove: detail page ${res.status} — backing off`)
+    if (!res.ok) return null
+    const html = await res.text()
+    if (REMOVED_RE.test(html)) return null
+    const outer = pageModel(html, 'window.__PAGE_MODEL = ') as { data?: string } | null
+    if (!outer?.data) return null
+    let model: { propertyData?: DetailPropertyData } | null = null
+    try {
+      model = unflatten(JSON.parse(outer.data) as unknown[]) as { propertyData?: DetailPropertyData }
+    } catch {
+      return null
+    }
+    const p = model?.propertyData
+    if (!p) return null
+    if (p.status && (p.status.archived || p.status.published === false)) return null
+    return detailFields(p)
   }
 
   private async getJson(url: string): Promise<unknown> {
@@ -301,3 +334,87 @@ export function pageModel(html: string, marker: string): unknown | null {
 }
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+interface DetailPropertyData {
+  propertySubType?: string
+  keyFeatures?: string[]
+  text?: { description?: string; propertyPhrase?: string }
+  sizings?: Array<{ unit?: string; minimumSize?: number; maximumSize?: number }>
+  location?: { latitude?: number; longitude?: number }
+  listingHistory?: { listingUpdateReason?: string }
+  status?: { published?: boolean; archived?: boolean }
+  address?: { displayAddress?: string; outcode?: string; incode?: string }
+  bedrooms?: number
+  bathrooms?: number
+}
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', pound: '£', euro: '€' }
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+    if (e[0] === '#') return String.fromCodePoint(e[1]?.toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10))
+    return ENTITIES[e.toLowerCase()] ?? m
+  })
+}
+
+/** Pick the fields we keep from a detail model. Exported for tests. */
+export function detailFields(p: DetailPropertyData): Partial<Listing> {
+  const keyFeatures = (p.keyFeatures ?? []).map((k) => decodeEntities(k).trim()).filter(Boolean)
+  const description = decodeEntities(p.text?.description?.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '') ?? '').trim() || undefined
+  const out: Partial<Listing> = { detailAt: Date.now() }
+  if (keyFeatures.length) out.keyFeatures = keyFeatures
+  if (description) out.description = description
+  if (p.propertySubType) out.propertyType = p.propertySubType
+  if (p.bedrooms != null) out.bedrooms = p.bedrooms
+  if (p.bathrooms != null) out.bathrooms = p.bathrooms
+  if (p.address?.displayAddress && p.address.outcode && p.address.incode) out.address = `${p.address.displayAddress}, ${p.address.outcode} ${p.address.incode}`
+  const added = p.listingHistory?.listingUpdateReason?.match(/Added on (\d{2})\/(\d{2})\/(\d{4})/)
+  if (added) out.listedAt = `${added[3]}-${added[2]}-${added[1]}T00:00:00Z`
+  // `sizings` is the FLOOR area restated in sqft/sqm/acres (100 m² shows up as
+  // 0.0247 ac — verified live 2026-09-07), so it is useless for land. Prose is
+  // the only signal: agents always write the acreage out.
+  const plot = plotAreaFromText([...keyFeatures, description ?? ''].join('\n'))
+  if (plot != null) out.plotArea = plot
+  return out
+}
+
+/**
+ * SvelteKit `devalue` unflatten: the page model is a flat array where every
+ * value is an index into that array (negative = undefined/NaN/±Infinity/-0).
+ * Only the shapes Rightmove actually emits are handled (plain objects, arrays,
+ * Date/Set/Map/RegExp/null-prototype tags).
+ */
+export function unflatten(values: unknown[]): unknown {
+  const cache = new Map<number, unknown>()
+  const hyd = (i: number): unknown => {
+    if (i === -1 || i === -6) return undefined
+    if (i === -2) return NaN
+    if (i === -3) return Infinity
+    if (i === -4) return -Infinity
+    if (i === -5) return -0
+    if (cache.has(i)) return cache.get(i)
+    const v = values[i]
+    if (v === null || typeof v !== 'object') {
+      cache.set(i, v)
+      return v
+    }
+    if (Array.isArray(v)) {
+      if (typeof v[0] === 'string') {
+        const t = v[0]
+        if (t === 'Date') { const d = new Date(v[1] as string); cache.set(i, d); return d }
+        if (t === 'Set') { const set = new Set<unknown>(); cache.set(i, set); for (const x of v.slice(1)) set.add(hyd(x as number)); return set }
+        if (t === 'Map') { const map = new Map<unknown, unknown>(); cache.set(i, map); for (let k = 1; k < v.length; k += 2) map.set(hyd(v[k] as number), hyd(v[k + 1] as number)); return map }
+        if (t === 'RegExp') { const r = new RegExp(v[1] as string, v[2] as string | undefined); cache.set(i, r); return r }
+        if (t === 'null') { const o: Record<string, unknown> = Object.create(null); cache.set(i, o); for (let k = 1; k < v.length; k += 2) o[v[k] as string] = hyd(v[k + 1] as number); return o }
+      }
+      const arr: unknown[] = []
+      cache.set(i, arr)
+      for (const x of v) arr.push(hyd(x as number))
+      return arr
+    }
+    const o: Record<string, unknown> = {}
+    cache.set(i, o)
+    for (const [k, x] of Object.entries(v as Record<string, number>)) o[k] = hyd(x)
+    return o
+  }
+  return hyd(0)
+}

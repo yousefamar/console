@@ -12,6 +12,7 @@
 // POST   /property/searches/:id/reseed    — force re-seed after a map-layer content fix
 // POST   /property/searches/:id/sync      — exhaustive pull into the inventory (every match, not the newest 50)
 // GET    /property/searches/:id/inventory — the inventory: every coarse match, live + removed
+// POST   /property/searches/:id/enrich?limit=N — fetch detail pages for rows that lack them (paced)
 // POST   /property/count                  — ad-hoc count, nothing saved
 // GET    /property/listings               — merged newest listings across searches
 
@@ -103,7 +104,7 @@ export function handlePropertyRoutes(
     return true
   }
 
-  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|review|reseed|sync|inventory))?$/)
+  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|review|reseed|sync|inventory|enrich))?$/)
   if (match) {
     const id = decodeURIComponent(match[1]!)
     const verb = match[3]
@@ -158,6 +159,15 @@ export function handlePropertyRoutes(
         const updated = await sync.fullSync(id)
         if (!updated) return error(404, 'search not found')
         json(updated)
+      })
+    }
+
+    if (verb === 'enrich' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const limit = parseInt(url.searchParams.get('limit') ?? '', 10)
+        const r = await sync.enrich(id, Number.isFinite(limit) && limit > 0 ? limit : undefined)
+        if (!r) return error(404, 'search not found')
+        json(r)
       })
     }
 

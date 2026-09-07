@@ -21,12 +21,13 @@ export async function mapProperty(verb: string | undefined, args: string[], flag
     case 'reseed': return reseed(args, flags)
     case 'sync': return syncVerb(args, flags)
     case 'inventory': return inventory(args, flags)
+    case 'enrich': return enrich(args, flags)
     case 'count': return count(args, flags)
     case 'listings': return listings(args, flags)
     default:
       exitWithError(
         'USAGE',
-        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | interested | reseed | sync | inventory | count | listings.`,
+        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | interested | reseed | sync | inventory | enrich | count | listings.`,
         flags,
       )
   }
@@ -147,6 +148,14 @@ async function syncVerb(args: string[], flags: GlobalFlags): Promise<void> {
   const id = args[0]
   if (!id) return exitWithError('USAGE', 'con map property sync <id>', flags)
   output(await hubFetch(`/property/searches/${encodeURIComponent(id)}/sync`, { method: 'POST' }), flags)
+}
+
+async function enrich(args: string[], flags: GlobalFlags): Promise<void> {
+  const id = args[0]
+  if (!id) return exitWithError('USAGE', 'con map property enrich <id> [--limit N]', flags)
+  const o = parseFlags(args.slice(1))
+  const q = o.limit ? `?limit=${encodeURIComponent(String(o.limit))}` : ''
+  output(await hubFetch(`/property/searches/${encodeURIComponent(id)}/enrich${q}`, { method: 'POST' }), flags)
 }
 
 async function inventory(args: string[], flags: GlobalFlags): Promise<void> {

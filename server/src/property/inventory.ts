@@ -146,6 +146,15 @@ export class PropertyInventoryStore {
     return snap
   }
 
+  /** Merge detail-page fields into one row (see PortalClient.detail). */
+  applyDetail(searchId: string, listingId: string, fields: Partial<Listing>): void {
+    const snap = this.get(searchId)
+    const e = snap.entries.find((x) => x.id === listingId)
+    if (!e) return
+    Object.assign(e, fields, { id: e.id, portal: e.portal, url: e.url })
+    this.save(snap)
+  }
+
   /** A liveness probe said the portal dropped these. */
   markRemoved(searchId: string, ids: string[], now = Date.now()): void {
     const snap = this.get(searchId)

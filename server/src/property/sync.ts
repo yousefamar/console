@@ -22,6 +22,7 @@ import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
+import { listingKind } from './land.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
@@ -43,6 +44,15 @@ const BACKFILL_LIMIT = 5000
  * this far from its town's centre and still be inside.
  */
 const AREA_COORDS_BUFFER_KM = 6
+/**
+ * Detail-page enrichment (PortalClient.detail): one request per listing, so
+ * it is paced and budgeted per tick. UK's ~8k rows take ~20 ticks to cover
+ * from cold; after that only new rows need it. Re-read after DETAIL_TTL_MS so
+ * price/status changes on the page get picked up.
+ */
+const DETAIL_DELAY_MS = 1100
+const ENRICH_PER_TICK = 400
+const DETAIL_TTL_MS = 30 * 24 * 60 * 60 * 1000
 /** Pins per kind layer. The inventory is the whole portal (UK ~8k), so this is a safety net, not a budget. */
 const MAX_PINS = 25_000
 /**
@@ -251,6 +261,56 @@ export class PropertySync {
     return this.inventory.get(id)
   }
 
+  /**
+   * Fetch detail pages for up to `limit` inventory rows that lack one (or
+   * whose detail is older than DETAIL_TTL_MS), newest first. A `null` from the
+   * client means the page is gone → the row is marked removed. A thrown error
+   * (WAF / rate limit) ends the batch; the rest wait for the next tick.
+   */
+  async enrich(id: string, limit = ENRICH_PER_TICK): Promise<{ enriched: number; gone: number; pending: number } | undefined> {
+    const s = this.searches.get(id)
+    if (!s) return undefined
+    let client: PortalClient
+    try {
+      client = this.clientFor(s)
+    } catch {
+      return { enriched: 0, gone: 0, pending: 0 }
+    }
+    if (!client.detail) return { enriched: 0, gone: 0, pending: 0 }
+    const now = Date.now()
+    const due = this.inventory
+      .live(s.id)
+      .filter((e) => e.detailAt == null || now - e.detailAt > DETAIL_TTL_MS)
+      .sort((a, b) => (b.listedAt ?? '').localeCompare(a.listedAt ?? '') || b.firstSeenAt - a.firstSeenAt)
+    let enriched = 0
+    let gone = 0
+    const goneIds: string[] = []
+    for (const e of due.slice(0, limit)) {
+      try {
+        const fields = await client.detail(e)
+        if (fields === null) {
+          goneIds.push(e.id)
+          gone++
+        } else {
+          this.inventory.applyDetail(s.id, e.id, fields)
+          enriched++
+        }
+      } catch (err) {
+        this.log(`[property-sync] ${s.id} enrich stopped after ${enriched}: ${(err as Error).message}`)
+        break
+      }
+      await new Promise((r) => setTimeout(r, DETAIL_DELAY_MS))
+    }
+    if (goneIds.length) this.inventory.markRemoved(s.id, goneIds)
+    const pending = Math.max(0, due.length - enriched - gone)
+    if (enriched || gone) {
+      this.log(`[property-sync] ${s.id} enriched ${enriched} listing(s) from detail pages, ${gone} gone, ${pending} still pending`)
+      const current = this.searches.get(id)
+      if (current) this.updateLayer(current)
+    }
+    return { enriched, gone, pending }
+  }
+
   /** Edit a search; a coarse (criteria/layer/country) change also drops its inventory. */
   update(id: string, patch: Partial<Omit<PropertySearch, 'id' | 'createdAt'>>): PropertySearch | undefined {
     const before = this.searches.get(id)
@@ -268,7 +328,7 @@ export class PropertySync {
     if (!s) return false
     this.searches.remove(id)
     this.inventory.clear(id)
-    this.updateKindLayer(kindOf(s))
+    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
     this.bus.broadcast('property', 'deleted', { id })
     return true
   }
@@ -303,6 +363,10 @@ export class PropertySync {
         const last = s.inventory?.syncedAt ?? 0
         if (Date.now() - last < FULL_SYNC_INTERVAL_MS) continue
         await this.fullSync(s.id)
+      }
+      for (const s of this.searches.list()) {
+        if (s.enabled === false) continue
+        await this.enrich(s.id, ENRICH_PER_TICK)
       }
     } finally {
       this.running = false
@@ -524,9 +588,9 @@ export class PropertySync {
     return applyNotifyGate(candidates, { maxAirportDriveMinutes: s.notifyCriteria!.maxAirportDriveMinutes })
   }
 
-  /** A search changed — redraw the kind layer it feeds. */
-  private updateLayer(s: PropertySearch): void {
-    this.updateKindLayer(kindOf(s))
+  /** A search changed — redraw every kind layer (its rows can split across them). */
+  private updateLayer(_s: PropertySearch): void {
+    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
   }
 
   /**
@@ -545,7 +609,10 @@ export class PropertySync {
     type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; source: string; fuzzy: boolean; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
     const candidates: Candidate[] = []
     for (const s of this.searches.list()) {
-      if (kindOf(s) !== kind) continue
+      const searchKind = kindOf(s)
+      // A house search still contributes to the farmland layer (and vice
+      // versa never): only walk searches that could feed this kind.
+      if (kind === 'house' && searchKind === 'farmland') continue
       const dismissed = new Set(s.dismissedIds ?? [])
       const interested = new Set(s.interestedIds ?? [])
       const primary = portalOf(s) === PORTAL_BY_COUNTRY[s.country]
@@ -555,6 +622,7 @@ export class PropertySync {
       const kept = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? [])))
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
+        if (listingKind(l, searchKind) !== kind) continue
         candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
     }
@@ -723,7 +791,7 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
     // Anfrage", not a data error), and normalise() already reads 0 as absent.
     if (missing.has('excludePriceOnRequest') && c.excludePriceOnRequest && l.price == null) return false
     if (missing.has('keywords') && c.keywords?.length) {
-      const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''}`.toLowerCase()
+      const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.address ?? ''} ${(l.keyFeatures ?? []).join(' ')} ${l.description ?? ''}`.toLowerCase()
       if (!c.keywords.some((k) => hay.includes(k.toLowerCase()))) return false
     }
     return true

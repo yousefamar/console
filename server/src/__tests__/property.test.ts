@@ -11,7 +11,8 @@ import { coverRingWithCircles, nearGeometry, haversineKm } from '../property/geo
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
-import { RightmoveClient } from '../property/rightmove.js'
+import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
+import { plotAreaFromText, listingKind } from '../property/land.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
 import type { Listing } from '../property/types.js'
@@ -1045,5 +1046,119 @@ describe('clipToLayer with area-precision coordinates', () => {
     const s = store.create({ country: 'UK', layer: 'zone', portal: 'onthemarket' })
     const after = await sync.fullSync(s.id)
     expect(after?.inventory?.error).toMatch(/no client wired for portal 'onthemarket'/)
+  })
+})
+
+describe('Rightmove detail model', () => {
+  it('unflatten() rebuilds a devalue-flattened object graph', () => {
+    // {"a": 1, "b": [true, "x"], "c": {"d": null}, "e": undefined}
+    const flat = [{ a: 1, b: 2, c: 5, e: -1 }, 1, [3, 4], true, 'x', { d: 6 }, null]
+    expect(unflatten(flat)).toEqual({ a: 1, b: [true, 'x'], c: { d: null }, e: undefined })
+  })
+
+  it('detailFields() keeps features, description, sub-type, postcode, added date and parses land from text', () => {
+    const f = detailFields({
+      propertySubType: 'Smallholding',
+      keyFeatures: [' Approx 3.5 acres ', 'Stables &amp; barn', ''],
+      text: { description: 'A cottage<br>with paddocks<br/>totalling <b>3.5 acres</b> in all.' },
+      sizings: [],
+      listingHistory: { listingUpdateReason: 'Added on 03/09/2026' },
+      address: { displayAddress: 'Lane, Village', outcode: 'HR1', incode: '2AB' },
+      bedrooms: 3,
+    })
+    expect(f.keyFeatures).toEqual(['Approx 3.5 acres', 'Stables & barn'])
+    expect(f.description).toBe('A cottage\nwith paddocks\ntotalling 3.5 acres in all.')
+    expect(f.propertyType).toBe('Smallholding')
+    expect(f.address).toBe('Lane, Village, HR1 2AB')
+    expect(f.listedAt).toBe('2026-09-03T00:00:00Z')
+    expect(f.plotArea).toBe(Math.round(3.5 * 4046.86))
+    expect(f.detailAt).toBeGreaterThan(0)
+  })
+
+  it('detailFields() ignores sizings (floor area restated in acres) and ignores "Reduced on"', () => {
+    const f = detailFields({ sizings: [{ unit: 'ac', minimumSize: 0.0247, maximumSize: 0.0247 }, { unit: 'sqm', minimumSize: 100, maximumSize: 100 }], text: { description: 'a lovely house' }, listingHistory: { listingUpdateReason: 'Reduced on 01/01/2026' } })
+    expect(f.plotArea).toBeUndefined()
+    expect(f.listedAt).toBeUndefined()
+  })
+
+  it('plotAreaFromText() takes the largest plausible land figure and ignores floor areas', () => {
+    expect(plotAreaFromText('Set in about 0.75 acres with a further 2 acre paddock')).toBe(Math.round(2 * 4046.86))
+    expect(plotAreaFromText('1.5 ha of orchard')).toBe(15000)
+    expect(plotAreaFromText('plot of approx 1,200 sq m')).toBe(1200)
+    expect(plotAreaFromText('1,450 sq ft of accommodation')).toBeUndefined()
+    expect(plotAreaFromText('over 900 acres of common land nearby')).toBeUndefined() // implausible for a house
+    expect(plotAreaFromText('no land mentioned')).toBeUndefined()
+  })
+})
+
+describe('listingKind', () => {
+  it('a farmland search is always farmland; a house search promotes on type, plot or text', () => {
+    expect(listingKind({}, 'farmland')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Semi-Detached' }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Equestrian Facility' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Bauernhaus' }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', plotArea: 2500 }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', plotArea: 900 }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Detached', keyFeatures: ['Approx 1 acre'] }, 'house')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Detached', summary: 'large garden' }, 'house')).toBe('house')
+  })
+})
+
+describe('PropertySync.enrich', () => {
+  const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+  it('applies detail fields, marks gone rows removed, stops on a thrown error, and re-splits the layers', async () => {
+    const store = tmpStore()
+    const inventory = tmpInventory()
+    const layers = new Map<string, { features: Array<{ properties: Record<string, unknown> }> }>()
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson as never); return {} },
+      getMeta: (slug: string) => (layers.has(slug) ? {} : undefined),
+      getGeojson: (slug: string) => (slug === 'zone' ? box : null),
+      list: () => [...layers.keys()].map((slug) => ({ slug, group: 'property', name: slug.split('/')[1] })),
+      remove: (slug: string) => layers.delete(slug),
+    }
+    const rows = [
+      listing('big', { lat: 51, lon: -1, price: 250000, bedrooms: 3, listedAt: '2026-09-03' }),
+      listing('gone', { lat: 51.1, lon: -1, price: 250000, bedrooms: 3, listedAt: '2026-09-02' }),
+      listing('plain', { lat: 51.2, lon: -1, price: 250000, bedrooms: 3, listedAt: '2026-09-01' }),
+      listing('later', { lat: 51.3, lon: -1, price: 250000, bedrooms: 3, listedAt: '2026-08-01' }),
+    ]
+    const detailCalls: string[] = []
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 4, truncated: false, unsupported: [], listings: rows }),
+      detail: async (l: Listing) => {
+        detailCalls.push(l.id)
+        if (l.id === 'big') return { keyFeatures: ['Set in 2 acres'], plotArea: 8094, detailAt: Date.now() }
+        if (l.id === 'gone') return null
+        if (l.id === 'plain') return { description: 'a house', detailAt: Date.now() }
+        throw new Error('429 — backing off')
+      },
+    }
+    const sync = new PropertySync({ rightmove: client } as never, store, inventory, { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {})
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    expect(layers.get('property/house')!.features.length).toBe(4)
+
+    const r = await sync.enrich(s.id, 10)
+    expect(detailCalls).toEqual(['big', 'gone', 'plain', 'later']) // newest first, stopped by the throw
+    expect(r).toEqual({ enriched: 2, gone: 1, pending: 1 })
+    expect(inventory.live(s.id).map((e) => e.id).sort()).toEqual(['big', 'later', 'plain'])
+    expect(inventory.live(s.id).find((e) => e.id === 'big')?.keyFeatures).toEqual(['Set in 2 acres'])
+    // 'big' moved to the farmland layer; 'gone' left the map; the rest stay houses.
+    expect(layers.get('property/farmland')!.features.map((f) => f.properties.listingId)).toEqual(['big'])
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId).sort()).toEqual(['later', 'plain'])
+
+    // Second pass only touches what is still due.
+    detailCalls.length = 0
+    await sync.enrich(s.id, 10)
+    expect(detailCalls).toEqual(['later'])
+  }, 20_000)
+})
+
+describe('postFilter keywords over detail text', () => {
+  it('matches in keyFeatures and description too', () => {
+    const rows = [listing('kf', { keyFeatures: ['Paddock'] }), listing('desc', { description: 'a small orchard' }), listing('none', { summary: 'flat' })]
+    expect(postFilter(rows, { keywords: ['paddock', 'orchard'] }, ['keywords']).map((l) => l.id)).toEqual(['kf', 'desc'])
   })
 })
