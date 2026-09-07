@@ -14,6 +14,8 @@ const BASE = 'https://www.immobiliare.it/api-next'
 // Counts converge by ~100 vertices; 400 vertices is an HTTP 414.
 const MAX_VERTICES = 120
 const PAGE = 25
+const DEEP_PAGE_DELAY_MS = 300
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // Liveness probe box half-width; IT coordinates are exact, so this is generous.
 const PROBE_BOX_M = 120
 // immobiliare 422s `vrt` with fewer than 4 points ("This collection should
@@ -65,6 +67,7 @@ export class ImmobiliareClient implements PortalClient {
           if (l) seen.set(l.id, l)
         }
         if (rows.length === 0 || page >= (d.maxPages ?? 1)) break
+        if (limit > PAGE * 4) await sleep(DEEP_PAGE_DELAY_MS)
       }
     }
 

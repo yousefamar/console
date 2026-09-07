@@ -10,6 +10,8 @@
 // POST   /property/searches/:id/dismiss   — hide (or restore) one listing's pin (= review dismissed|none)
 // POST   /property/searches/:id/review    — {listingId, state: interested|dismissed|none}
 // POST   /property/searches/:id/reseed    — force re-seed after a map-layer content fix
+// POST   /property/searches/:id/sync      — exhaustive pull into the inventory (every match, not the newest 50)
+// GET    /property/searches/:id/inventory — the inventory: every coarse match, live + removed
 // POST   /property/count                  — ad-hoc count, nothing saved
 // GET    /property/listings               — merged newest listings across searches
 
@@ -100,7 +102,7 @@ export function handlePropertyRoutes(
     return true
   }
 
-  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|review|reseed))?$/)
+  const match = path.match(/^\/property\/searches\/([^/]+)(\/(run|backfill|dismiss|review|reseed|sync|inventory))?$/)
   if (match) {
     const id = decodeURIComponent(match[1]!)
     const verb = match[3]
@@ -150,6 +152,26 @@ export function handlePropertyRoutes(
       })
     }
 
+    if (verb === 'sync' && req.method === 'POST') {
+      return handleAsync(async () => {
+        const updated = await sync.fullSync(id)
+        if (!updated) return error(404, 'search not found')
+        json(updated)
+      })
+    }
+
+    if (verb === 'inventory' && req.method === 'GET') {
+      const s = searches.get(id)
+      if (!s) {
+        error(404, 'search not found')
+        return true
+      }
+      const includeRemoved = url.searchParams.get('removed') === '1'
+      const snap = sync.inventoryOf(id)
+      json({ ...snap, entries: includeRemoved ? snap.entries : snap.entries.filter((e) => e.removedAt == null) })
+      return true
+    }
+
     if (!verb && req.method === 'GET') {
       const s = searches.get(id)
       if (!s) {
@@ -163,9 +185,8 @@ export function handlePropertyRoutes(
     if (!verb && req.method === 'PATCH') {
       return handleAsync(async () => {
         const body = JSON.parse((await readBody(req)) || '{}')
-        const s = searches.update(id, body)
+        const s = sync.update(id, body)
         if (!s) return error(404, 'search not found')
-        sync.broadcastChange('updated', s)
         json(s)
       })
     }
@@ -176,13 +197,8 @@ export function handlePropertyRoutes(
         error(404, 'search not found')
         return true
       }
-      searches.remove(id)
-      // Its pins are meaningless without the search.
-      for (const layer of mapLayers.list()) {
-        if (layer.group === 'property' && layer.name.endsWith(id.slice(3))) mapLayers.remove(layer.slug)
-      }
+      sync.remove(id)
       onLayersChange()
-      sync.broadcastChange('deleted', { id })
       json({ ok: true })
       return true
     }

@@ -22,6 +22,8 @@ const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Geck
 const ORIGIN = 'https://www.immobilienscout24.de'
 const MAX_VERTICES = 120
 const PAGE = 20
+const DEEP_PAGE_DELAY_MS = 300
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 const SORT_NEWEST = '2' // "Aktualität (neueste zuerst)"
 const DEACTIVATED_RE = /"isDeactivated[A-Za-z]*"\s*:\s*true/
 /** German listings count Zimmer (incl. living rooms), so bedrooms + 1. */
@@ -111,6 +113,7 @@ export class ImmoScout24Client implements PortalClient {
           truncated = true
           break
         }
+        if (limit > PAGE * 4) await sleep(DEEP_PAGE_DELAY_MS)
       }
     }
 

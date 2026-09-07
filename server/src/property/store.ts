@@ -16,7 +16,9 @@ import { randomBytes } from 'node:crypto'
 import type { Criteria, Listing, Portal } from './types.js'
 import type { NotifyCriteria } from './notify-filter.js'
 
-const SEEN_LIMIT = 4000
+// Must exceed the largest inventory (UK ~8k) or the hourly trim evicts ids a
+// full sync just marked seen, and they come back as "new".
+const SEEN_LIMIT = 20000
 // The map pins are drawn from `lastResults`, so this also caps how many pins a
 // search can ever show — keep it at or above sync.ts's MAX_PINS. Bumped from
 // 200 so a backfill's whole point (showing more of what's actually out there,
@@ -50,10 +52,21 @@ export const PORTAL_BY_COUNTRY: Record<Country, Portal> = {
   IT: 'immobiliare',
 }
 
+/**
+ * What kind of property a search is after. Map layers are sliced by kind ONLY
+ * (Yousef, 2026-09-07: "do not slice by country … do not slice by source
+ * either. Only slice by type") — every search of a kind feeds one
+ * `property/<kind>` layer; country and portal are popup fields.
+ */
+export type PropertyKind = 'house' | 'farmland'
+export const PROPERTY_KINDS: readonly PropertyKind[] = ['house', 'farmland']
+
 export interface PropertySearch {
   id: string
   label?: string
   country: Country
+  /** Defaults to `house`. */
+  kind?: PropertyKind
   /** Map-layer slug supplying the search polygon (e.g. `where-to-move/livable-zone`). */
   layer: string
   /** Query at most this many of the layer's rings, largest first. */
@@ -126,13 +139,27 @@ export interface PropertySearch {
    * it (see PropertySync.pruneGone).
    */
   interestedIds?: string[]
-  /** Most recent hits, newest first — what the SPA renders. */
+  /** Most recent newest-first skim. The map is drawn from the inventory, not this. */
   lastResults?: Listing[]
   history?: Array<{ at: number; total: number }>
+  /** Summary of the last exhaustive pull (the inventory itself lives in PropertyInventoryStore). */
+  inventory?: {
+    syncedAt: number
+    /** Listings the portal returned on that pull. */
+    live: number
+    /** Ids marked removed since (still stored, hidden from the map). */
+    removed: number
+    /** The portal's own total across rings — a gap vs `live` means a cap we couldn't split past. */
+    total: number
+    truncated: boolean
+    queries: number
+    durationMs: number
+    error?: string
+  }
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
+  Partial<Pick<PropertySearch, 'label' | 'kind' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
 
 export class PropertySearchStore {
   private items: PropertySearch[] = []
@@ -155,6 +182,7 @@ export class PropertySearchStore {
     const search: PropertySearch = {
       label: input.label,
       country: input.country,
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       layer: input.layer,
       maxRings: input.maxRings,
       criteria: input.criteria ?? {},
@@ -187,10 +215,30 @@ export class PropertySearchStore {
     if (requeried && patch.seeded === undefined) {
       next.seeded = false
       next.seenIds = []
+      // The inventory describes the old query too — PropertySync drops it and
+      // schedules a fresh full pull when it sees this flag.
+      next.inventory = undefined
     }
     this.items[idx] = next
     this.save()
     return next
+  }
+
+  /** Record the outcome of an exhaustive pull (see PropertySync.fullSync). */
+  recordInventory(id: string, summary: NonNullable<PropertySearch['inventory']>, ids: string[]): PropertySearch | undefined {
+    this.load()
+    const s = this.items.find((x) => x.id === id)
+    if (!s) return undefined
+    s.inventory = summary
+    if (!summary.error) {
+      // Everything the portal holds is now known — none of it may ever alert as "new".
+      const seen = new Set(s.seenIds ?? [])
+      for (const id of ids) seen.add(id)
+      s.seenIds = [...seen].slice(-SEEN_LIMIT)
+      s.seeded = true
+    }
+    this.save()
+    return s
   }
 
   /**

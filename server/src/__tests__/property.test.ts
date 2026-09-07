@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGeometry } from '../property/geo.js'
 import { PropertySearchStore, PORTAL_BY_COUNTRY, withInterestedCarried } from '../property/store.js'
 import { postFilter, applyNotifyGate, PropertySync } from '../property/sync.js'
+import { PropertyInventoryStore, fetchAll } from '../property/inventory.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
@@ -18,6 +19,11 @@ const tmpStore = (): PropertySearchStore => {
   const dir = mkdtempSync(join(tmpdir(), 'property-test-'))
   dirs.push(dir)
   return new PropertySearchStore(join(dir, 'searches.json'))
+}
+const tmpInventory = (): PropertyInventoryStore => {
+  const dir = mkdtempSync(join(tmpdir(), 'property-inv-'))
+  dirs.push(dir)
+  return new PropertyInventoryStore(dir)
 }
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -362,7 +368,7 @@ describe('PropertySync outside bar', () => {
       ] }),
     }
     const sync = new PropertySync(
-      { rightmove: client, immoscout24: client, immobiliare: client } as never, store,
+      { rightmove: client, immoscout24: client, immobiliare: client } as never, store, tmpInventory(),
       { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never,
       { isConfigured: () => false } as never, () => {},
     )
@@ -402,6 +408,7 @@ describe('PropertySync.pruneGone', () => {
     const sync = new PropertySync(
       { rightmove: client, immoscout24: client, immobiliare: client } as never,
       store,
+      tmpInventory(),
       { broadcast: () => {} } as never,
       { broadcast: (_svc: string, op: string) => { broadcasts.push(op) } } as never,
       mapLayers as never,
@@ -708,5 +715,170 @@ describe('nextWeekdayMorningUtc', () => {
   it('skips a Saturday-morning "now" straight to Monday, not Sunday', () => {
     const now = new Date('2026-08-22T05:00:00Z') // Saturday
     expect(nextWeekdayMorningUtc(now)).toBe('2026-08-24T09:00:00Z') // Monday
+  })
+})
+
+describe('fetchAll', () => {
+  const ring: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+
+  it('returns every row when the portal does not truncate', async () => {
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 3, truncated: false, unsupported: ['minPlotArea'], listings: [listing('a'), listing('b'), listing('c')] }),
+    }
+    const r = await fetchAll(client as never, [ring, ring], {})
+    expect(r.listings.map((l) => l.id).sort()).toEqual(['a', 'b', 'c'])
+    expect(r.total).toBe(6)
+    expect(r.truncated).toBe(false)
+    expect(r.unsupported).toEqual(['minPlotArea'])
+    expect(r.queries).toBe(2)
+  })
+
+  it('splits the price range when a query is truncated and unions the bands', async () => {
+    // Portal holds 6 listings priced 50k..300k; any single query returning
+    // more than 2 rows is "capped": it returns only the first 2 and flags it.
+    const stock = [50, 100, 150, 200, 250, 300].map((k) => listing(`p${k}`, { price: k * 1000 }))
+    const calls: Array<[number | undefined, number | undefined]> = []
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async (_r: unknown, c: { minPrice?: number; maxPrice?: number }) => {
+        calls.push([c.minPrice, c.maxPrice])
+        const hits = stock.filter((l) => (c.minPrice == null || l.price! >= c.minPrice) && (c.maxPrice == null || l.price! <= c.maxPrice))
+        const truncated = hits.length > 2
+        return { portal: 'rightmove' as const, total: hits.length, truncated, unsupported: [], listings: truncated ? hits.slice(0, 2) : hits }
+      },
+    }
+    const r = await fetchAll(client as never, [ring], { maxPrice: 300000 })
+    expect(r.listings.map((l) => l.id).sort()).toEqual(stock.map((l) => l.id).sort())
+    expect(r.truncated).toBe(false)
+    expect(r.total).toBe(6) // only the depth-0 query counts toward total
+    expect(calls[0]).toEqual([undefined, 300000])
+    expect(calls.length).toBeGreaterThan(1)
+  })
+
+  it('gives up splitting below the minimum band width and reports truncation', async () => {
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 99, truncated: true, unsupported: [], listings: [listing('x')] }),
+    }
+    const r = await fetchAll(client as never, [ring], { minPrice: 100000, maxPrice: 103000 })
+    expect(r.truncated).toBe(true)
+    expect(r.listings.map((l) => l.id)).toEqual(['x'])
+    expect(r.queries).toBe(1)
+  })
+})
+
+describe('PropertyInventoryStore', () => {
+  it('a full upsert marks missing ids removed; a skim never does; a return clears the mark', () => {
+    const inv = tmpInventory()
+    inv.upsert('s1', [listing('a'), listing('b')], { full: true, now: 1000 })
+    expect(inv.live('s1').map((l) => l.id).sort()).toEqual(['a', 'b'])
+
+    inv.upsert('s1', [listing('a')], { full: true, now: 2000 })
+    expect(inv.live('s1').map((l) => l.id)).toEqual(['a'])
+    expect(inv.get('s1').entries.find((e) => e.id === 'b')?.removedAt).toBe(2000)
+    expect(inv.get('s1').syncedAt).toBe(2000)
+
+    inv.upsert('s1', [listing('c')], { full: false, now: 3000 })
+    expect(inv.live('s1').map((l) => l.id).sort()).toEqual(['a', 'c'])
+    expect(inv.get('s1').syncedAt).toBe(2000)
+
+    inv.upsert('s1', [listing('a'), listing('b'), listing('c')], { full: true, now: 4000 })
+    const b = inv.get('s1').entries.find((e) => e.id === 'b')!
+    expect(b.removedAt).toBeUndefined()
+    expect(b.firstSeenAt).toBe(1000)
+    expect(b.lastSeenAt).toBe(4000)
+  })
+
+  it('persists to disk and keeps nearestAirport across a re-pull that lacks it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'property-inv-'))
+    dirs.push(dir)
+    const a = new PropertyInventoryStore(dir)
+    a.upsert('s1', [listing('a', { price: 1 })], { full: true, now: 1 })
+    a.setNearestAirport('s1', 'a', { iata: 'LHR', name: 'Heathrow', driveMinutes: 30, transitMinutes: null })
+    a.upsert('s1', [listing('a', { price: 2 })], { full: true, now: 2 })
+    const b = new PropertyInventoryStore(dir)
+    const e = b.get('s1').entries[0]!
+    expect(e.price).toBe(2)
+    expect(e.nearestAirport?.iata).toBe('LHR')
+  })
+})
+
+describe('PropertySync kind layers', () => {
+  const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+  const harness = () => {
+    const store = tmpStore()
+    const inventory = tmpInventory()
+    const layers = new Map<string, { type: string; features: Array<{ properties: Record<string, unknown> }> }>()
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson as never); return {} },
+      getMeta: (slug: string) => (layers.has(slug) ? {} : undefined),
+      getGeojson: (slug: string) => (slug === 'zone' ? box : null),
+      list: () => [...layers.keys()].map((slug) => ({ slug, group: slug.split('/')[0], name: slug.split('/')[1] })),
+      remove: (slug: string) => layers.delete(slug),
+    }
+    const byCountry: Record<string, Listing[]> = {
+      UK: [listing('uk1', { lat: 51, lon: -1, price: 100000 }), listing('uk-far', { lat: 30, lon: -1, price: 100000 })],
+      DE: [listing('de1', { lat: 50, lon: 8, price: 200000, portal: 'immoscout24' })],
+    }
+    const mk = (country: string) => ({
+      portal: 'rightmove' as const, currency: 'EUR', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: byCountry[country]!.length, truncated: false, unsupported: [], listings: byCountry[country]! }),
+    })
+    const sync = new PropertySync(
+      { rightmove: mk('UK'), immoscout24: mk('DE'), immobiliare: mk('IT') } as never, store, inventory,
+      { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never,
+      { isConfigured: () => false } as never, () => {},
+    )
+    return { store, inventory, sync, layers }
+  }
+
+  it('fullSync fills the inventory and one property/<kind> layer holds every country, clipped to the zone', async () => {
+    const { store, sync, layers, inventory } = harness()
+    const uk = store.create({ country: 'UK', layer: 'zone' })
+    const de = store.create({ country: 'DE', layer: 'zone' })
+    await sync.fullSync(uk.id)
+    await sync.fullSync(de.id)
+    expect(inventory.live(uk.id).length).toBe(2)
+    expect(store.get(uk.id)?.inventory?.live).toBe(2)
+    expect(store.get(uk.id)?.seeded).toBe(true)
+    expect(store.get(uk.id)?.seenIds?.sort()).toEqual(['uk-far', 'uk1'])
+    const layer = layers.get('property/house')!
+    expect(layer).toBeDefined()
+    const props = layer.features.map((f) => f.properties)
+    expect(props.map((p) => p.listingId).sort()).toEqual(['de1', 'uk1']) // uk-far is outside the zone
+    expect(props.find((p) => p.listingId === 'de1')).toMatchObject({ country: 'DE', portal: 'immoscout24', searchId: de.id })
+    expect([...layers.keys()]).toEqual(['property/house'])
+  })
+
+  it('a farmland search feeds property/farmland, not the house layer', async () => {
+    const { store, sync, layers } = harness()
+    const s = store.create({ country: 'DE', layer: 'zone', kind: 'farmland' })
+    await sync.fullSync(s.id)
+    expect([...layers.keys()]).toEqual(['property/farmland'])
+    expect(layers.get('property/farmland')!.features.length).toBe(1)
+  })
+
+  it('a coarse criteria edit drops the inventory; a review redraws without one', async () => {
+    const { store, sync, layers, inventory } = harness()
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    expect(layers.get('property/house')!.features.length).toBe(1)
+    sync.review(s.id, 'uk1', 'dismissed')
+    expect(layers.get('property/house')!.features.length).toBe(0)
+    sync.update(s.id, { criteria: { maxPrice: 50000 } })
+    expect(inventory.get(s.id).entries.length).toBe(0)
+    expect(store.get(s.id)?.inventory).toBeUndefined()
+  })
+
+  it('removing a search clears its inventory and its pins', async () => {
+    const { store, sync, layers, inventory } = harness()
+    const uk = store.create({ country: 'UK', layer: 'zone' })
+    const de = store.create({ country: 'DE', layer: 'zone' })
+    await sync.fullSync(uk.id)
+    await sync.fullSync(de.id)
+    expect(sync.remove(uk.id)).toBe(true)
+    expect(inventory.get(uk.id).entries.length).toBe(0)
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['de1'])
   })
 })

@@ -19,7 +19,8 @@ import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
 import { ringsInCountry, pointInGeometry, type Geometry, type Ring } from './geo.js'
-import { PORTAL_BY_COUNTRY, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
+import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
+import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
@@ -35,8 +36,13 @@ const FETCH_LIMIT = 50
  * to be large enough to never be the thing that cuts a backfill short.
  */
 const BACKFILL_LIMIT = 5000
-/** Pins kept on the map per search — keep at or below store.ts's RESULTS_LIMIT. */
-const MAX_PINS = 600
+/** Pins per kind layer. The inventory is the whole portal (UK ~8k), so this is a safety net, not a budget. */
+const MAX_PINS = 25_000
+/**
+ * How often each search's inventory is re-pulled exhaustively. The hourly skim
+ * catches new stock in between; this is what notices removals and price cuts.
+ */
+const FULL_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000
 // Interested-listing liveness probes per search per poll (one request each).
 const LIVENESS_MAX_PROBES = 30
 // Interested pins: green on the orange layer, distinct from every other Map layer colour.
@@ -64,6 +70,7 @@ export class PropertySync {
   constructor(
     private readonly clients: Record<Portal, PortalClient>,
     private readonly searches: PropertySearchStore,
+    private readonly inventory: PropertyInventoryStore,
     private readonly push: PushServer,
     private readonly bus: SyncBus,
     private readonly mapLayers: MapLayerStore,
@@ -74,6 +81,7 @@ export class PropertySync {
   start(): void {
     if (this.timer) return
     this.log('[property-sync] starting (1h interval)')
+    this.migrateLayers()
     setTimeout(() => {
       this.tick().catch((e) => this.log(`[property-sync] initial tick failed: ${e}`))
     }, 30_000)
@@ -146,7 +154,8 @@ export class PropertySync {
     if (!s?.interestedIds?.length) return []
     const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
     if (!client.isLive) return []
-    const byId = new Map((s.lastResults ?? []).map((l) => [l.id, l]))
+    const byId = new Map<string, Listing>(this.inventory.get(id).entries.map((l) => [l.id, l]))
+    for (const l of s.lastResults ?? []) if (!byId.has(l.id)) byId.set(l.id, l)
     const gone: string[] = []
     let probes = 0
     for (const listingId of s.interestedIds) {
@@ -160,6 +169,7 @@ export class PropertySync {
     if (!gone.length) return []
     let current: PropertySearch | undefined
     for (const listingId of gone) current = this.searches.removeListing(id, listingId)
+    this.inventory.markRemoved(id, gone)
     this.log(`[property-sync] ${id}: ${gone.length} interested listing(s) gone from the portal, removed: ${gone.join(', ')}`)
     if (current) {
       this.updateLayer(current)
@@ -180,6 +190,80 @@ export class PropertySync {
     if (!s) return undefined
     this.bus.broadcast('property', 'updated', s)
     return s
+  }
+
+  /**
+   * Exhaustive pull: everything the portal holds in the polygon for the
+   * search's coarse criteria, into the inventory. Marks what the portal no
+   * longer returns as removed, never notifies (the hourly skim owns "new"),
+   * and redraws the kind layer. Runs every FULL_SYNC_INTERVAL_MS from tick(),
+   * or on demand (`con map property sync <id>`).
+   */
+  async fullSync(id: string): Promise<PropertySearch | undefined> {
+    const s = this.searches.get(id)
+    if (!s) return undefined
+    const client = this.clients[PORTAL_BY_COUNTRY[s.country]]
+    const started = Date.now()
+    this.log(`[property-sync] ${s.id} full sync starting`)
+    try {
+      const rings = this.rings(s.layer, s.country, s.maxRings)
+      const r = await fetchAll(client, rings, s.criteria)
+      const snap = this.inventory.upsert(s.id, r.listings, { full: true })
+      const live = snap.entries.filter((e) => e.removedAt == null).length
+      const summary = {
+        syncedAt: Date.now(),
+        live,
+        removed: snap.entries.length - live,
+        total: r.total,
+        truncated: r.truncated,
+        queries: r.queries,
+        durationMs: Date.now() - started,
+      }
+      const updated = this.searches.recordInventory(s.id, summary, r.listings.map((l) => l.id))
+      if (updated && r.unsupported.length) this.searches.update(s.id, { unsupported: r.unsupported })
+      this.log(
+        `[property-sync] ${s.id} full sync: ${live} live (portal total ${r.total}${r.truncated ? ', TRUNCATED' : ''}), ${summary.removed} removed, ${r.queries} queries, ${Math.round(summary.durationMs / 1000)}s`,
+      )
+    } catch (e) {
+      const error = (e as Error).message
+      this.log(`[property-sync] ${s.id} full sync failed: ${error}`)
+      const prev = s.inventory
+      this.searches.update(s.id, {
+        inventory: { syncedAt: prev?.syncedAt ?? 0, live: prev?.live ?? 0, removed: prev?.removed ?? 0, total: prev?.total ?? 0, truncated: prev?.truncated ?? false, queries: 0, durationMs: Date.now() - started, error },
+      })
+    }
+    const current = this.searches.get(id)
+    if (current) {
+      this.updateLayer(current)
+      this.bus.broadcast('property', 'updated', current)
+    }
+    return current
+  }
+
+  inventoryOf(id: string): ReturnType<PropertyInventoryStore['get']> {
+    return this.inventory.get(id)
+  }
+
+  /** Edit a search; a coarse (criteria/layer/country) change also drops its inventory. */
+  update(id: string, patch: Partial<Omit<PropertySearch, 'id' | 'createdAt'>>): PropertySearch | undefined {
+    const before = this.searches.get(id)
+    const s = this.searches.update(id, patch)
+    if (!s) return undefined
+    if (before?.inventory && !s.inventory) this.inventory.clear(id)
+    this.updateLayer(s)
+    this.bus.broadcast('property', 'updated', s)
+    return s
+  }
+
+  /** Delete a search and everything it contributed to its kind layer. */
+  remove(id: string): boolean {
+    const s = this.searches.get(id)
+    if (!s) return false
+    this.searches.remove(id)
+    this.inventory.clear(id)
+    this.updateKindLayer(kindOf(s))
+    this.bus.broadcast('property', 'deleted', { id })
+    return true
   }
 
   /** Ad-hoc count for a candidate criteria set, without saving anything. */
@@ -206,6 +290,13 @@ export class PropertySync {
           this.log(`[property-sync] ${s.id} failed: ${(e as Error).message}`)
         }
       }
+      // Full pulls after the skims, so a slow one never delays "what's new".
+      for (const s of this.searches.list()) {
+        if (s.enabled === false) continue
+        const last = s.inventory?.syncedAt ?? 0
+        if (Date.now() - last < FULL_SYNC_INTERVAL_MS) continue
+        await this.fullSync(s.id)
+      }
     } finally {
       this.running = false
     }
@@ -225,6 +316,9 @@ export class PropertySync {
       total = r.total
       truncated = r.truncated
       unsupported = r.unsupported
+      // The inventory takes the coarse rows (fine filters re-run at draw time);
+      // a skim only adds/refreshes — it can't know what's gone.
+      this.inventory.upsert(s.id, r.listings, { full: false })
       listings = sortNewestFirst(this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported))))
     } catch (e) {
       error = (e as Error).message
@@ -278,6 +372,7 @@ export class PropertySync {
         }
         l.nearestAirport = nearestAirportField
         this.searches.setNearestAirport(s.id, l.id, nearestAirportField)
+        this.inventory.setNearestAirport(s.id, l.id, nearestAirportField)
         changed = true
       } catch (e) {
         this.log(`[property-sync] airport distance failed for ${l.id}: ${(e as Error).message}`)
@@ -414,65 +509,101 @@ export class PropertySync {
     return applyNotifyGate(candidates, { maxAirportDriveMinutes: s.notifyCriteria!.maxAirportDriveMinutes })
   }
 
-  /** One pin layer per search, so each toggles independently on the Map tab. */
+  /** A search changed — redraw the kind layer it feeds. */
   private updateLayer(s: PropertySearch): void {
-    const dismissed = new Set(s.dismissedIds ?? [])
-    const interested = new Set(s.interestedIds ?? [])
-    const listings = (s.lastResults ?? [])
-      .filter((l) => l.lat != null && l.lon != null && !dismissed.has(l.id))
-      .slice(0, MAX_PINS)
-    // Skip only when there's genuinely never been anything to draw (a
-    // brand-new search's very first poll can be empty before any listing
-    // exists). A dismiss that empties an already-populated layer must still
-    // write through — otherwise the last-hidden pin would stick around stale.
-    if (listings.length === 0 && !this.mapLayers.getMeta(`${LAYER_GROUP}/${slugFor(s)}`)) return
-    const geojson = {
-      type: 'FeatureCollection',
-      features: listings.map((l) => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
-        properties: {
-          price: l.price != null ? formatPrice(l.price, l.currency) : undefined,
-          address: l.address ?? l.title,
-          beds: l.bedrooms,
-          area: l.floorArea,
-          plot: l.plotArea,
-          listed: l.listedAt?.slice(0, 10),
-          url: l.url,
-          airport: l.nearestAirport
-            ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
-            : undefined,
-          // Extra detail for the SPA's property panel (not shown in the popup).
-          title: l.title,
-          baths: l.bathrooms,
-          summary: l.summary,
-          agent: l.agent,
-          image: l.image,
-          portal: l.portal,
-          // Needed for the review actions, not shown in the popup.
-          listingId: l.id,
-          searchId: s.id,
-          // House glyphs, not dots (Yousef, 2026-09-07): `_icon` is the
-          // renderer's per-feature emoji hook (`em:<emoji>`, drawn on demand).
-          // An emoji can't be recoloured, so "interested" is a different house —
-          // 🏡 with its green garden reads as the good one. `_color` stays for
-          // renderers that draw points as circles (Android) and the label layer.
-          _icon: interested.has(l.id) ? INTERESTED_ICON : LISTING_ICON,
-          // Yousef's verdict; unreviewed pins carry neither key.
-          ...(interested.has(l.id) ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
-        },
-      })),
+    this.updateKindLayer(kindOf(s))
+  }
+
+  /**
+   * One pin layer per KIND (`property/house`, `property/farmland`), fed by
+   * every search of that kind across all countries — Yousef wants to toggle
+   * "houses", not "UK houses on Rightmove". Country and portal ride along as
+   * popup fields. Pins come from the inventory (the whole portal), with the
+   * fine filters, the zone clip and the outside-geofence bar applied at draw
+   * time so a criteria tweak redraws without a re-pull.
+   */
+  private updateKindLayer(kind: PropertyKind): void {
+    const slug = `${LAYER_GROUP}/${kind}`
+    const features: unknown[] = []
+    for (const s of this.searches.list()) {
+      if (kindOf(s) !== kind) continue
+      const dismissed = new Set(s.dismissedIds ?? [])
+      const interested = new Set(s.interestedIds ?? [])
+      const pool = this.inventory.live(s.id)
+      // A search that has never been pulled in full still shows its skims.
+      const source: Listing[] = pool.length ? pool : (s.lastResults ?? [])
+      const kept = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? [])))
+      for (const l of kept) {
+        if (l.lat == null || l.lon == null || dismissed.has(l.id)) continue
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
+          properties: {
+            price: l.price != null ? formatPrice(l.price, l.currency) : undefined,
+            address: l.address ?? l.title,
+            beds: l.bedrooms,
+            area: l.floorArea,
+            plot: l.plotArea,
+            listed: l.listedAt?.slice(0, 10),
+            country: s.country,
+            portal: l.portal,
+            airport: l.nearestAirport
+              ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
+              : undefined,
+            url: l.url,
+            // Extra detail for the SPA's property panel (not shown in the popup).
+            title: l.title,
+            baths: l.bathrooms,
+            summary: l.summary,
+            agent: l.agent,
+            image: l.image,
+            // Needed for the review actions, not shown in the popup.
+            listingId: l.id,
+            searchId: s.id,
+            // House glyphs, not dots (Yousef, 2026-09-07): `_icon` is the
+            // renderer's per-feature emoji hook (`em:<emoji>`, drawn on demand).
+            // An emoji can't be recoloured, so "interested" is a different house —
+            // 🏡 with its green garden reads as the good one. `_color` stays for
+            // renderers that draw points as circles (Android) and the label layer.
+            _icon: interested.has(l.id) ? INTERESTED_ICON : LISTING_ICON,
+            // Yousef's verdict; unreviewed pins carry neither key.
+            ...(interested.has(l.id) ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
+          },
+        })
+      }
     }
+    // Skip only when there's genuinely never been anything to draw. A dismiss
+    // that empties an already-populated layer must still write through.
+    if (features.length === 0 && !this.mapLayers.getMeta(slug)) return
+    const geojson = { type: 'FeatureCollection', features: features.slice(0, MAX_PINS) }
     try {
-      this.mapLayers.upsert(`${LAYER_GROUP}/${slugFor(s)}`, geojson, {
-        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'airport', 'url'] },
+      this.mapLayers.upsert(slug, geojson, {
+        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'airport', 'url'] },
         fit: false,
         updatedBy: 'property',
       })
       this.bus.broadcast('map-layers', 'delta', { layers: this.mapLayers.list() })
     } catch (e) {
-      this.log(`[property-sync] layer update failed for ${s.id}: ${(e as Error).message}`)
+      this.log(`[property-sync] layer update failed for ${slug}: ${(e as Error).message}`)
     }
+  }
+
+  /**
+   * Layers used to be one per search (`property/<label>-<id>`). Drop those and
+   * draw the kind layers once, so a restart on the new code leaves no ghosts.
+   */
+  private migrateLayers(): void {
+    const kinds = new Set<string>(PROPERTY_KINDS)
+    let removed = 0
+    for (const layer of this.mapLayers.list()) {
+      if (layer.group === LAYER_GROUP && !kinds.has(layer.name)) {
+        this.mapLayers.remove(layer.slug)
+        removed++
+      }
+    }
+    if (removed) this.log(`[property-sync] removed ${removed} legacy per-search layer(s)`)
+    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+    if (removed) this.bus.broadcast('map-layers', 'delta', { layers: this.mapLayers.list() })
   }
 
   private async notify(s: PropertySearch, allFresh: Listing[]): Promise<void> {
@@ -592,9 +723,8 @@ function sortNewestFirst(listings: Listing[]): Listing[] {
   return listings.slice().sort((a, b) => (b.listedAt ?? '').localeCompare(a.listedAt ?? ''))
 }
 
-function slugFor(s: PropertySearch): string {
-  const base = (s.label || s.country).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-  return `${base || s.country.toLowerCase()}-${s.id.slice(3)}`
+function kindOf(s: PropertySearch): PropertyKind {
+  return s.kind ?? 'house'
 }
 
 function describe(l: Listing): string {

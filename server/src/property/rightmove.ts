@@ -19,6 +19,8 @@ const LIST_PAGE = 24 // fixed server-side; numberOfPropertiesPerPage is ignored 
 const INDEX_MAX = 1000 // index > 1000 is a 400
 const SORT_NEWEST = '6'
 const REMOVED_RE = /property has been removed|no longer (?:available|on the market)/i
+// Exhaustive pulls page through hundreds of rows per ring — space them out.
+const DEEP_PAGE_DELAY_MS = 300
 
 export class RightmoveClient implements PortalClient {
   readonly portal = 'rightmove' as const
@@ -72,6 +74,7 @@ export class RightmoveClient implements PortalClient {
           if (l) seen.set(l.id, l)
         }
         if (rows.length < LIST_PAGE) break
+        if (limit > LIST_PAGE * 4) await sleep(DEEP_PAGE_DELAY_MS)
       }
     }
 

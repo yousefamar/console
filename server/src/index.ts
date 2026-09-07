@@ -130,6 +130,7 @@ import { WatchlistStore } from './flights/store.js'
 import { FlightSync } from './flights/sync.js'
 import { handleFlightRoutes } from './routes/flights.js'
 import { PropertySearchStore } from './property/store.js'
+import { PropertyInventoryStore } from './property/inventory.js'
 import { PropertySync } from './property/sync.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
@@ -348,6 +349,7 @@ flightSync.start()
 // House hunt — one portal per country, polygons come from Map-tab layers.
 const wafTokenStore = new WafTokenStore(join(feedsConfigDir, 'is24-waf-token.json'), (msg: string) => { log(msg) })
 const propertySearches = new PropertySearchStore(join(feedsConfigDir, 'property-searches.json'))
+const propertyInventory = new PropertyInventoryStore(join(feedsConfigDir, 'property-inventory'))
 const propertySync = new PropertySync(
   {
     rightmove: new RightmoveClient(),
@@ -355,6 +357,7 @@ const propertySync = new PropertySync(
     immoscout24: new ImmoScout24Client(wafTokenStore),
   },
   propertySearches,
+  propertyInventory,
   pushServer,
   syncBus,
   mapLayerStore,
