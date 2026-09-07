@@ -2441,11 +2441,17 @@ let shuttingDown = false
 function shutdown() {
   if (shuttingDown) return
   shuttingDown = true
-  log('\nShutting down — saving manifest...')
   // Freeze state BEFORE the save: a child dying mid-save (pm2 treekills the
   // whole tree, children included) would otherwise flip its session to 'ended'
   // and the manifest would lose the mid-turn flag it needs for the nudge.
   for (const session of sessions.values()) session.markShuttingDown()
+  // Name the sessions being saved as mid-turn: a lost "continue" nudge is
+  // otherwise invisible (nothing errors, the agent just sits), so the restart
+  // must be provable from this line + the restore log's "Resumed + continued".
+  const midTurn = [...sessions.values()]
+    .filter((s) => s.status === 'running' || s.midTurn)
+    .map((s) => `${s.name ?? s.id} (${s.claudeSessionId?.slice(0, 8) ?? 'no csid'})`)
+  log(`\nShutting down — saving manifest (${midTurn.length} mid-turn${midTurn.length ? ': ' + midTurn.join(', ') : ''})...`)
   saveManifestSync(sessions)
   flushReadState()
   cronScheduler.flush()
