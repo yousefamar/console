@@ -35,6 +35,10 @@ export interface RingCtx {
   }
   /** Add a board card; returns a one-line description of what landed. */
   addCard: (project: string, text: string, column: string) => Promise<string>
+  /** File a `Ring miss:` card on the console board for a failed delivery,
+   *  unless an open one for the same transcript already exists. Returns what
+   *  happened, for the sidecar. */
+  fileMissCard: (miss: RingMiss, column: string) => Promise<'filed' | 'exists' | 'failed'>
   music: {
     play: (query?: string) => Promise<string>
     pause: () => Promise<string>
@@ -46,6 +50,27 @@ export interface RingCtx {
   notify: (msg: { title: string; body: string; id: string }) => void
   now?: () => Date
   log: (msg: string) => void
+}
+
+export interface RingMiss {
+  recordingId: string
+  transcription: string
+  rule?: string
+  via: string
+  detail: string
+}
+
+/** The card a failed delivery files — self-contained: the fork that picks it
+ *  up has never seen the ring. */
+export function buildMissCard(m: RingMiss): { text: string; detail: string[] } {
+  return {
+    text: `Ring miss: "${m.transcription}" → ${m.detail}`,
+    detail: [
+      `Recording ${m.recordingId} (\`con ring show ${m.recordingId}\`), routed via ${m.via}${m.rule ? `/${m.rule}` : ''}.`,
+      '1. FIRST, interpret the transcript and DO what Yousef asked, if at all possible — the command was spoken to be done, not filed. Check `con ring show` first so you do not double an action that partly happened (e.g. items already in a basket). Say in your hand-back what you did or why it could not be done.',
+      '2. THEN fix the cause so it routes next time: a mis-heard verb/target/contact → add the spoken form to projects/console/ring-schema.md (the yaml fence; hot-reloads); a missing list/log → add the target there; a router or handler bug → server/src/ring/ (router.ts, pipeline.ts) or server/src/lists/. Verify with `con ring say --dry "<the transcript>"` and `con ring schema --check`.',
+    ],
+  }
 }
 
 export interface RingDelivery {
@@ -145,6 +170,17 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
   ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}`)
 
   ctx.notify({ id, ...notification(command, outcome) })
+
+  // A miss is a bug in the tree or the code — file it where a fork will pick
+  // it up, the moment it happens. Not for `unknown` (no fallback configured)
+  // — that is a choice, not a failure.
+  const { schema } = await ctx.schema()
+  if (!outcome.ok && command.kind !== 'unknown' && schema.onFailure.column) {
+    const filed = await ctx.fileMissCard({ recordingId: id, transcription, via, ...(rule ? { rule } : {}), detail: outcome.detail ?? 'not delivered' }, schema.onFailure.column)
+    rec.route.card = filed
+    ctx.store.update(rec)
+    ctx.log(`[ring] ${id} miss card: ${filed}`)
+  }
   return rec
 }
 

@@ -39,7 +39,7 @@ import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBac
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
-import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
@@ -78,7 +78,7 @@ import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.
 import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import type { RouteEnv } from './ring/router.js'
-import { buildRingForkSeed } from './ring/pipeline.js'
+import { buildRingForkSeed, buildMissCard } from './ring/pipeline.js'
 import { ContactRoomResolver, expandIdentifiers } from './ring/chat-room.js'
 import { DebugLog } from './debug-log.js'
 import { handleDebugRoutes, handleDebugClientMessage } from './routes/debug.js'
@@ -1264,6 +1264,23 @@ const ringCtx: RingCtx = {
   addCard: async (project, text, column) => {
     const card = await boardOps.add(project, text, { column, top: false })
     return `"${card.text}" → ${card.column}`
+  },
+  // A failed delivery becomes a `Ring miss:` card on the console board — one
+  // per transcript: an OPEN card (any column except Done) for the same text
+  // means the fork already has it, however many times the phrase fails.
+  fileMissCard: async (miss, column) => {
+    try {
+      const { text, detail } = buildMissCard(miss)
+      const board = await boardOps.show('console')
+      const needle = `ring miss: "${miss.transcription.toLowerCase()}"`
+      const open = board.columns.some((col) => !DONE_COLUMN_RE.test(col.title) && col.cards.some((c) => !c.checked && c.text.toLowerCase().startsWith(needle)))
+      if (open) return 'exists'
+      await boardOps.add('console', text, { column, detail, top: true })
+      return 'filed'
+    } catch (e) {
+      log(`[ring] miss card failed: ${(e as Error).message}`)
+      return 'failed'
+    }
   },
   music: {
     play: async (query) => {

@@ -30,6 +30,9 @@ export interface RingSchema {
   fallback: string | null
   /** Consult the LLM classifier before falling back. */
   llmFallback: boolean
+  /** A failed delivery files a `Ring miss:` card on the console board in this
+   *  column (In Progress = a fork fixes it now; Backlog = triage; null = off). */
+  onFailure: { column: string | null }
   verbs: {
     /** add|log <target> <text> — a list target, or a project slug (→ card). */
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
@@ -50,6 +53,7 @@ export function defaultListFile(name: string): string {
 export const DEFAULT_SCHEMA: RingSchema = {
   fallback: 'al',
   llmFallback: true,
+  onFailure: { column: 'In Progress' },
   verbs: {
     add: {
       aliases: ['log', 'ad', 'at', 'lock', 'blog', 'note'],
@@ -123,6 +127,20 @@ function parseTargets(v: unknown, errors: string[]): Record<string, ListTarget> 
   return out
 }
 
+function parseOnFailure(v: unknown, errors: string[]): RingSchema['onFailure'] {
+  if (v === undefined) return { ...DEFAULT_SCHEMA.onFailure }
+  if (v === null || v === false) return { column: null }
+  if (typeof v === 'string') return { column: v.trim() || null }
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    const c = (v as { column?: unknown }).column
+    if (c === null || c === false) return { column: null }
+    if (typeof c === 'string') return { column: c.trim() || null }
+    if (c === undefined) return { ...DEFAULT_SCHEMA.onFailure }
+  }
+  errors.push('on_failure: expected `column: <board column>` or null')
+  return { ...DEFAULT_SCHEMA.onFailure }
+}
+
 /** Parse the ```yaml fence out of the schema note. Missing fence → defaults
  *  (found:false); malformed → defaults + errors (callers keep last-good). */
 export function parseSchemaNote(md: string): SchemaParse {
@@ -146,6 +164,7 @@ export function parseSchemaNote(md: string): SchemaParse {
   const schema: RingSchema = {
     fallback: r.fallback === null ? null : typeof r.fallback === 'string' ? r.fallback.toLowerCase().trim() || null : DEFAULT_SCHEMA.fallback,
     llmFallback: typeof r.llm_fallback === 'boolean' ? r.llm_fallback : DEFAULT_SCHEMA.llmFallback,
+    onFailure: parseOnFailure(r.on_failure, errors),
     verbs: {
       add: {
         aliases: add.aliases === undefined ? [...d.add.aliases] : strList(add.aliases, 'verbs.add.aliases', errors),
@@ -258,6 +277,8 @@ to AL's ring fork, skipping the tree). Failed deliveries show in Home → Alerts
 \`\`\`yaml
 fallback: al            # agentKey for anything no verb claims; null = only notify
 llm_fallback: true      # consult the LLM classifier before falling back
+on_failure:             # a delivery that fails files a "Ring miss:" card on the console board…
+  column: In Progress   # …here — In Progress = a fork fixes the note/code now; Backlog = triage later; null = off
 
 verbs:
   add:                  # add|log <target> <text>

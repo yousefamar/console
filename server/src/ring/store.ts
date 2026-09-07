@@ -27,6 +27,8 @@ export interface RingRecording {
     rule?: string
     ok: boolean
     detail?: string
+    /** For a failed route: whether a `Ring miss:` board card was filed. */
+    card?: 'filed' | 'exists' | 'failed'
   }
 }
 

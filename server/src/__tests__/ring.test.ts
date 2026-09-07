@@ -12,7 +12,7 @@ import { parseTable, ensureColumns, appendRow, setCells, removeRow, rowRecord, s
 import { ENRICHERS, columnsFor, rawRow, GROCERIES_ORDERED_LOG, type EnricherDeps } from '../lists/enrichers.js'
 import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
-import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, type RingCtx } from '../ring/pipeline.js'
+import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
@@ -100,6 +100,16 @@ describe('schema note', () => {
     expect(p.schema.verbs.add.targets.dream).toMatchObject({ file: 'scratch/lists/dream.md', dated: true })
     expect(p.schema.verbs.add.aliases).toContain('log')
     expect(p.schema.verbs.echo.aliases).toContain('ping')
+    expect(p.schema.onFailure).toEqual({ column: 'In Progress' })
+  })
+  it('on_failure: column, string shorthand, null = off', () => {
+    expect(parseSchemaNote('```yaml\non_failure: { column: Backlog }\n```').schema.onFailure).toEqual({ column: 'Backlog' })
+    expect(parseSchemaNote('```yaml\non_failure: Backlog\n```').schema.onFailure).toEqual({ column: 'Backlog' })
+    expect(parseSchemaNote('```yaml\non_failure: null\n```').schema.onFailure).toEqual({ column: null })
+    expect(parseSchemaNote('```yaml\non_failure: { column: null }\n```').schema.onFailure).toEqual({ column: null })
+    const bad = parseSchemaNote('```yaml\non_failure: [x]\n```')
+    expect(bad.schema.onFailure).toEqual({ column: 'In Progress' })
+    expect(bad.errors.join()).toMatch(/on_failure/)
   })
   it('missing fence → defaults + found:false; bad yaml → error', () => {
     expect(parseSchemaNote('# nothing here')).toMatchObject({ found: false, schema: DEFAULT_SCHEMA })
@@ -578,6 +588,7 @@ describe('RingStore + pipeline', () => {
   let toAgent: Array<{ key: string; content: string }>
   let echoed: string[]
   let sentAsYousef: Array<{ contact: string; text: string }>
+  let missCards: Array<{ text: string; column: string }>
   let notified: Array<{ title: string; body: string }>
   let music: string[]
   let notes: Map<string, string>
@@ -588,7 +599,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; notified = []; music = []; cards = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -602,6 +613,7 @@ describe('RingStore + pipeline', () => {
       chatSendAsYousef: async (contact, text) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); sentAsYousef.push({ contact, text }); return `${contact} (dm)` },
       notes: { read: async (p) => notes.get(p) ?? null, write: async (p, c) => { notes.set(p, c) } },
       addCard: async (project, text, column) => { cards.push(`${project}/${column}: ${text}`); return `"${text}" → ${column}` },
+      fileMissCard: async (miss, column) => { missCards.push({ text: buildMissCard(miss).text, column }); return 'filed' },
       music: {
         play: async (q) => { music.push(`play:${q ?? ''}`); return 'ok' },
         pause: async () => { music.push('pause'); return 'ok' },
@@ -679,11 +691,19 @@ describe('RingStore + pipeline', () => {
     ENV.contacts.pop()
   })
 
-  it('a verb with an unknown target is actionable feedback, not a fallback', async () => {
+  it('a verb with an unknown target is actionable feedback, not a fallback — and files a Ring miss card', async () => {
     const rec = await deliver('log food two eggs')
-    expect(rec.route).toMatchObject({ rule: 'add.unknown-target', ok: false })
+    expect(rec.route).toMatchObject({ rule: 'add.unknown-target', ok: false, card: 'filed' })
     expect(toAl).toHaveLength(0)
     expect(notified[0]!.body).toMatch(/no add target called "food"/)
+    expect(missCards).toEqual([{ text: 'Ring miss: "log food two eggs" → no add target called "food" — add it to the ring schema note', column: 'In Progress' }])
+    // A successful delivery files nothing; with on_failure off, neither does a failure.
+    await deliver('echo fine')
+    expect(missCards).toHaveLength(1)
+    schema.onFailure = { column: null }
+    const again = await deliver('log food two eggs')
+    expect(again.route?.card).toBeUndefined()
+    expect(missCards).toHaveLength(1)
   })
 
   it('falls back to hub STT when the ring sent no transcript', async () => {
@@ -724,12 +744,21 @@ describe('RingStore + pipeline', () => {
     schema.fallback = null; schema.llmFallback = false
     const none = await deliver('remind me to water the plants')
     expect(none.route).toMatchObject({ via: 'none', ok: false, command: { kind: 'unknown' } })
+    expect(none.route?.card).toBeUndefined() // no fallback configured is a choice, not a miss
     expect(notified.at(-1)!.title).toBe('Ring: not delivered')
   })
 
   it('reports a dead AL instead of pretending', async () => {
     ctx.deliverToAl = () => false
     expect((await deliver('what is the weather like')).route).toMatchObject({ via: 'default', ok: false, detail: 'AL is not live' })
+  })
+
+  it('the miss card handles-first, fixes-second, and points at the recording', () => {
+    const c = buildMissCard({ recordingId: 'r1', transcription: 'Message Al High', via: 'rule', rule: 'message', detail: 'no WhatsApp DM room found for al' })
+    expect(c.text).toBe('Ring miss: "Message Al High" → no WhatsApp DM room found for al')
+    expect(c.detail[0]).toContain('con ring show r1')
+    expect(c.detail[1]).toMatch(/^1\. FIRST, interpret the transcript and DO what Yousef asked/)
+    expect(c.detail[2]).toMatch(/^2\. THEN fix the cause/)
   })
 
   it('the ring fork seed carries the tree and the schema-gap instruction', () => {
