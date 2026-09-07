@@ -5,6 +5,7 @@ import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { ChevronLeft, ChevronRight, Plus, MapPin, Square, Bell } from 'lucide-react'
 import { CalendarMobileControls } from './CalendarMobileControls'
 import type { CalendarEvent } from '@/calendar/types'
+import { multiDaySpan, asAllDaySpan } from '@/calendar/multi-day'
 
 // Host-mode props (all optional — the Calendar pane renders <CalendarGrid />
 // bare). The Inbox day rail reuses the grid verbatim by pinning the day set
@@ -215,8 +216,11 @@ export function CalendarGrid({ daysOverride, eventsOverride, hideHeader, onEvent
     const allDay: typeof events = []
     const timed: typeof events = []
     for (const e of events) {
-      if (e.eventType === 'workingLocation') locations.push(e)
-      else if (e.start.date && !e.start.dateTime) allDay.push(e)
+      if (e.eventType === 'workingLocation') { locations.push(e); continue }
+      if (e.start.date && !e.start.dateTime) { allDay.push(e); continue }
+      // Timed but crossing midnight → the all-day bar, as a spanning block.
+      const span = multiDaySpan(e)
+      if (span) allDay.push(asAllDaySpan(e, span))
       else timed.push(e)
     }
     return { locationEvents: locations, allDayEvents: allDay, timedEvents: timed }

@@ -66,10 +66,16 @@ export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: Cale
   const endDate = event.end.dateTime ? new Date(event.end.dateTime) : null
   const isAllDay = !event.start.dateTime && !!event.start.date
 
+  const fmtDay = (d: Date) => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+  const fmtTime = (d: Date) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  // Multi-day timed events name both days: "Fri 11 Sep 16:00 – Sun 13 Sep 15:00",
+  // not "Fri 11 Sep · 16:00 – 15:00" (which reads as a negative-length event).
   const timeStr = isAllDay
     ? 'All day'
     : startDate && endDate
-      ? `${startDate.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} · ${startDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })} – ${endDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })}`
+      ? startDate.toDateString() === endDate.toDateString()
+        ? `${fmtDay(startDate)} · ${fmtTime(startDate)} – ${fmtTime(endDate)}`
+        : `${fmtDay(startDate)} ${fmtTime(startDate)} – ${fmtDay(endDate)} ${fmtTime(endDate)}`
       : ''
 
   const selfAttendee = event.attendees?.find((a) => a.self)
