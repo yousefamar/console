@@ -1,0 +1,282 @@
+{
+  "estates": [
+    {
+      "id": "FID-F13-595-354",
+      "estateSubTypeId": 59,
+      "estateTypeGroupingId": 396,
+      "objectType": "house",
+      "marketingType": "buy",
+      "usageType": "residential",
+      "offererCategory": 32,
+      "title": "++ KRAG Immobilien ++ Kleines Familienhaus mit Sanierungsspielraum ++",
+      "subtitle": "Dautphetal",
+      "images": [
+        "https://cdnihddipa.cloudimg.io/6/a/5/a/6a5aed5d-6130-4e4f-9333-52a0646eaad6.jpg?ci_seal=c0b82c8c931478990c1769722819af1c782e2f72"
+      ],
+      "priceData": {
+        "name": "purchasePrice",
+        "label": "Kaufpreis",
+        "value": "9.900 €",
+        "numeric": 9900,
+        "category": "AREA"
+      },
+      "price": "9.900 €",
+      "eyeCatcher": [
+        {
+          "type": "default",
+          "label": "immowelt Kooperationsangebot"
+        }
+      ],
+      "mainFacts": [
+        {
+          "name": "livingSpace",
+          "label": "Wohnfläche",
+          "value": "70 m²",
+          "numeric": 70,
+          "category": "AREA"
+        },
+        {
+          "name": "propertySpace",
+          "label": "Grundstücksfläche",
+          "value": null,
+          "numeric": null,
+          "category": "AREA"
+        },
+        {
+          "name": "roomNumber",
+          "label": "Zimmer",
+          "value": "3.5",
+          "numeric": 35,
+          "category": "ROOMS"
+        }
+      ],
+      "partnerLogo": null,
+      "lat": 50.8120994567871,
+      "lng": 8.52698993682861,
+      "isUserEstate": false
+    },
+    {
+      "id": "FID-F13-500-795",
+      "estateSubTypeId": 59,
+      "estateTypeGroupingId": 396,
+      "objectType": "house",
+      "marketingType": "buy",
+      "usageType": "residential",
+      "offererCategory": 32,
+      "title": "Vielseitiges Fachwerkhaus mit Charakter in Wetter-Amönau - Wohnen und Vermieten unter einem Dach",
+      "subtitle": "Wetter",
+      "images": [
+        "https://cdnihddipa.cloudimg.io/d/d/2/4/dd247a1b-ee23-4e47-9f9d-ebafd12d3cf0.jpg?ci_seal=3a1609742be0396d60f258fdf6411b7ee1a18085"
+      ],
+      "priceData": {
+        "name": "purchasePrice",
+        "label": "Kaufpreis",
+        "value": "189.000 €",
+        "numeric": 189000,
+        "category": "AREA"
+      },
+      "price": "189.000 €",
+      "eyeCatcher": [
+        {
+          "type": "default",
+          "label": "immowelt Kooperationsangebot"
+        }
+      ],
+      "mainFacts": [
+        {
+          "name": "livingSpace",
+          "label": "Wohnfläche",
+          "value": "174,3 m²",
+          "numeric": 1743,
+          "category": "AREA"
+        },
+        {
+          "name": "propertySpace",
+          "label": "Grundstücksfläche",
+          "value": null,
+          "numeric": null,
+          "category": "AREA"
+        },
+        {
+          "name": "roomNumber",
+          "label": "Zimmer",
+          "value": "10",
+          "numeric": 10,
+          "category": "ROOMS"
+        }
+      ],
+      "partnerLogo": null,
+      "lat": 50.9072647094727,
+      "lng": 8.68220901489258,
+      "isUserEstate": false
+    },
+    {
+      "id": "FID-F13-552-695",
+      "estateSubTypeId": 61,
+      "estateTypeGroupingId": 396,
+      "objectType": "house",
+      "marketingType": "buy",
+      "usageType": "residential",
+      "offererCategory": 32,
+      "title": "Haina: Lifetime 1 - energieeffizient und komfortabel",
+      "subtitle": "Haina",
+      "images": [
+        "https://cdnihddipa.cloudimg.io/f/d/9/c/fd9cc3df-80a0-4d02-9d03-e0069e895c67.jpg?ci_seal=964d503b3d4979fbefbb6fc9a17dc449758ae1ab"
+      ],
+      "priceData": {
+        "name": "purchasePrice",
+        "label": "Kaufpreis",
+        "value": "285.065,45 €",
+        "numeric": 28506545,
+        "category": "AREA"
+      },
+      "price": "285.065,45 €",
+      "eyeCatcher": [
+        {
+          "type": "default",
+          "label": "immowelt Kooperationsangebot"
+        }
+      ],
+      "mainFacts": [
+        {
+          "name": "livingSpace",
+          "label": "Wohnfläche",
+          "value": "88,34 m²",
+          "numeric": 8834,
+          "category": "AREA"
+        },
+        {
+          "name": "propertySpace",
+          "label": "Grundstücksfläche",
+          "value": null,
+          "numeric": null,
+          "category": "AREA"
+        },
+        {
+          "name": "roomNumber",
+          "label": "Zimmer",
+          "value": "3",
+          "numeric": 3,
+          "category": "ROOMS"
+        }
+      ],
+      "partnerLogo": null,
+      "lat": 51.0267639160156,
+      "lng": 8.96741580963135,
+      "isUserEstate": false
+    },
+    {
+      "id": "FID-F13-588-147",
+      "estateSubTypeId": 59,
+      "estateTypeGroupingId": 396,
+      "objectType": "house",
+      "marketingType": "buy",
+      "usageType": "residential",
+      "offererCategory": 4,
+      "title": "Außergewöhnliche Immobilie für \"kleines\" Geld!",
+      "subtitle": "Biebertal",
+      "images": [
+        "https://portal.fio.de/cdn/media/apiv1?token=aZ3Y95hU4klN2IEeVP6-2bCtv1W6-2fIIXLNjkREbAqnQVvB0-2fA8HkTApzAWCykDC0YI"
+      ],
+      "priceData": {
+        "name": "purchasePrice",
+        "label": "Kaufpreis",
+        "value": "220.000 €",
+        "numeric": 220000,
+        "category": "AREA"
+      },
+      "price": "220.000 €",
+      "eyeCatcher": [
+        {
+          "type": "highlighted",
+          "label": "Sparkassenangebot"
+        }
+      ],
+      "mainFacts": [
+        {
+          "name": "livingSpace",
+          "label": "Wohnfläche",
+          "value": "125,92 m²",
+          "numeric": 12592,
+          "category": "AREA"
+        },
+        {
+          "name": "propertySpace",
+          "label": "Grundstücksfläche",
+          "value": "861 m²",
+          "numeric": 861,
+          "category": "AREA"
+        },
+        {
+          "name": "roomNumber",
+          "label": "Zimmer",
+          "value": "6",
+          "numeric": 6,
+          "category": "ROOMS"
+        }
+      ],
+      "partnerLogo": null,
+      "lat": 50.64365,
+      "lng": 8.535085,
+      "isUserEstate": false
+    },
+    {
+      "id": "FID-F13-422-979",
+      "estateSubTypeId": 59,
+      "estateTypeGroupingId": 396,
+      "objectType": "house",
+      "marketingType": "buy",
+      "usageType": "residential",
+      "offererCategory": 4,
+      "title": "Solides Einfamilienhaus mit tollem Grundstück in Wetter!",
+      "subtitle": "Wetter",
+      "images": [
+        "https://portal.fio.de/cdn/media/apiv1?token=aZ3Y95hU4klN2IEeVP6-2bCrwzX2AXljXeouBaLmlqpiuJllX-2fGt1o3-2fxZO4kbsbOO"
+      ],
+      "priceData": {
+        "name": "purchasePrice",
+        "label": "Kaufpreis",
+        "value": "280.000 €",
+        "numeric": 280000,
+        "category": "AREA"
+      },
+      "price": "280.000 €",
+      "eyeCatcher": [
+        {
+          "type": "highlighted",
+          "label": "Sparkassenangebot"
+        }
+      ],
+      "mainFacts": [
+        {
+          "name": "livingSpace",
+          "label": "Wohnfläche",
+          "value": "135 m²",
+          "numeric": 135,
+          "category": "AREA"
+        },
+        {
+          "name": "propertySpace",
+          "label": "Grundstücksfläche",
+          "value": "1.098 m²",
+          "numeric": 1098,
+          "category": "AREA"
+        },
+        {
+          "name": "roomNumber",
+          "label": "Zimmer",
+          "value": "6",
+          "numeric": 6,
+          "category": "ROOMS"
+        }
+      ],
+      "partnerLogo": null,
+      "lat": 50.9072838,
+      "lng": 8.72889,
+      "isUserEstate": false
+    }
+  ],
+  "page": 1,
+  "pageCount": 2,
+  "totalItems": 135
+}
