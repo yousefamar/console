@@ -238,7 +238,7 @@ restarts the hub if any fork touched `server/`, then cuts.
 
 ## The Mobile agent and the weekly parity sweep
 
-The durable session for this directory is **"Mobile app"** (agentKey
+The durable session for this directory is **"Console mobile"** (agentKey
 `new-mobile-app`, bound to project `console`, cwd = this `android/` dir since
 2026-09-05 so this file loads natively). Cards on the console board assigned
 `@new-mobile-app` dispatch as forks of it.
