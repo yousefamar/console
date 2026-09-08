@@ -35,7 +35,7 @@ vi.mock('../session.js', () => {
   return { Session: StubSession }
 })
 
-import { createSession, mintAgentKey, type AgentContext } from '../routes/agents.js'
+import { createSession, mintAgentKey, forkRoleSessionForTicket, type AgentContext } from '../routes/agents.js'
 
 function ctxOf(sessions: Map<string, unknown>): AgentContext {
   return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, modelConfig: {} } as unknown as AgentContext
@@ -72,5 +72,17 @@ describe('mintAgentKey', () => {
     expect(mintAgentKey(ctx, 'Feeds Tab')).toBe('feeds-tab')
     sessions.set('a', { agentKey: 'feeds-tab', status: 'idle' })
     expect(mintAgentKey(ctx, 'Feeds Tab')).toBe('feeds-tab-1')
+  })
+})
+
+describe('forkRoleSessionForTicket key shape', () => {
+  it('prefixes the fork key with the SOURCE KEY, not its name — rootOf()/reopen peel `-<id>-fork` and expect the key', () => {
+    const sessions = new Map<string, unknown>()
+    const ctx = ctxOf(sessions)
+    const source = { id: 'src', name: 'Console mobile', agentKey: 'new-mobile-app', claudeSessionId: 'c1', cwd: '/tmp', status: 'idle' }
+    sessions.set('src', source)
+    const fork = forkRoleSessionForTicket(ctx, source as never, 'kind-pony') as unknown as { agentKey: string; name: string }
+    expect(fork.agentKey).toBe('new-mobile-app-kind-pony-fork')
+    expect(fork.name).toBe('Kind pony (fork)')
   })
 })

@@ -286,7 +286,12 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   // stays parent-prefixed (`console-general-bold-fox-fork`): the board's
   // assignee filter groups fork keys under their root by that shape.
   const title = `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
-  const forkKey = mintAgentKey(ctx, `${baseTitle} ${blockId} fork`)
+  // Prefix with the source's KEY, not its name: rootOf()/the reopen peel-back
+  // strip `-<blockId>-fork` and expect the remainder to BE the source key. A
+  // name-derived prefix only matched when the slug happened to coincide —
+  // "Console mobile" (@new-mobile-app) minted `console-mobile-…-fork`, a fork
+  // no rail group or reopen could resolve.
+  const forkKey = mintAgentKey(ctx, `${source.agentKey ?? baseTitle} ${blockId} fork`)
   // `--fork-session` resumes the source's transcript, which the CLI keys by
   // cwd — so the fork MUST inherit source.cwd even when that is wrong for the
   // project. Flag it: the only fix is recreating the source in the right dir.
