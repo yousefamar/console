@@ -92,6 +92,9 @@ describe('local-only criteria never trigger a re-pull', () => {
     expect(fine.seeded).toBe(true)
     expect(fine.seenIds).toEqual(['a'])
     expect(fine.inventory).toBeDefined()
+    const excl = store.update(s.id, { criteria: { maxPrice: 300000, maxHighStreetM: 400, excludeHouseSubtypes: ['terraced'] } })!
+    expect(excl.seeded).toBe(true)
+    expect(excl.inventory).toBeDefined()
     const coarse = store.update(s.id, { criteria: { maxPrice: 250000, maxHighStreetM: 400 } })!
     expect(coarse.seeded).toBe(false)
     expect(coarse.seenIds).toEqual([])

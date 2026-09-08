@@ -172,9 +172,12 @@ export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'
  * Criteria that never reach a portal — enforced only at draw time from the
  * inventory. Editing them must NOT count as a new query: dropping the
  * inventory would also drop hours of detail-page enrichment for a filter the
- * portal never saw.
+ * portal never saw. `excludeHouseSubtypes` is enforced locally on every
+ * portal regardless of what it filtered (postFilter), so it is local-only too —
+ * adding `terraced` to the Italian searches on 2026-09-08 dropped three
+ * inventories for nothing.
  */
-export const LOCAL_ONLY_CRITERIA = ['maxHighStreetM'] as const
+export const LOCAL_ONLY_CRITERIA = ['maxHighStreetM', 'excludeHouseSubtypes'] as const
 
 function coarseCriteria(c: Criteria | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = { ...(c ?? {}) }
