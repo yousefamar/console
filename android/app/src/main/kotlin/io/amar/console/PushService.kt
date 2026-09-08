@@ -1142,6 +1142,18 @@ class PushService : Service() {
                         )
                     }
                 }
+                // Native countdown timer (0x07, §21). Reply = right arm's ack;
+                // statusIndex 1 exposes the 0xC9/0xCA marker byte.
+                "countdownTimer" -> {
+                    val enable = params.optBoolean("enable", true)
+                    val seconds = params.optInt("seconds", -1)
+                    if (enable && seconds !in 1..G1Protocol.COUNTDOWN_MAX_SECONDS) {
+                        replyRpcError(id, "seconds 1..${G1Protocol.COUNTDOWN_MAX_SECONDS} required"); return
+                    }
+                    GlassesController.countdownTimer(if (enable) seconds else 0, enable) {
+                        replyRpc(id, navAckJson(it, statusIndex = 1).put("seconds", if (enable) seconds else 0).put("enable", enable))
+                    }
+                }
                 "unpairGlasses" -> {
                     // Destructive: the glasses drop the bond and re-pairing
                     // needs the physical case. Hub must pass confirm.

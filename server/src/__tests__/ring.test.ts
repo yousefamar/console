@@ -199,6 +199,18 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('ping, is this thing on')).toMatchObject({ command: { kind: 'echo', text: 'is this thing on' } })
     expect(r('echo')).toBeNull()
   })
+  it('timer <duration> → the glasses countdown; cancel words clear it; a non-duration falls through (^wavy-crow)', () => {
+    expect(r('Timer 10 minutes.')).toMatchObject({ rule: 'timer.start', command: { kind: 'timer', seconds: 600 } })
+    expect(r('set a timer for ten minutes')).toMatchObject({ rule: 'timer.start', command: { kind: 'timer', seconds: 600 } })
+    expect(r('countdown 1:30')).toMatchObject({ rule: 'timer.start', command: { kind: 'timer', seconds: 90 } })
+    expect(r('timer an hour and a half')).toMatchObject({ command: { kind: 'timer', seconds: 5400 } })
+    expect(r('timer cancel')).toMatchObject({ rule: 'timer.cancel', command: { kind: 'timer', seconds: null } })
+    expect(r('Set the timer off.')).toMatchObject({ rule: 'timer.cancel' })
+    expect(r('stop the timer')).toBeNull()               // verb-first only: "stop" is not a timer alias
+    expect(r('set the mood')).toBeNull()                  // exact verb, remainder is not a duration → LLM/fallback, never an error
+    expect(r('time to leave for the station')).toBeNull() // time ≈ timer fuzzily; not a duration
+    expect(r('timer')).toBeNull()
+  })
   it('head punctuation is dropped for EVERY rule, payloads keep theirs (^quick-deer review)', () => {
     // headWords: the one tokeniser every rule reads through.
     expect(headWords('Log dream. I was late, then early.', 2)).toEqual({ words: ['log', 'dream'], rest: 'I was late, then early.' })
@@ -591,6 +603,7 @@ describe('RingStore + pipeline', () => {
   let missCards: Array<{ text: string; column: string }>
   let notified: Array<{ title: string; body: string }>
   let music: string[]
+  let timers: Array<number | null>
   let notes: Map<string, string>
   let cards: string[]
   let schema: RingSchema
@@ -599,7 +612,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []; timers = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -620,6 +633,7 @@ describe('RingStore + pipeline', () => {
         next: async () => { music.push('next'); return 'ok' },
         previous: async () => { music.push('prev'); return 'ok' },
       },
+      glassesTimer: async (seconds) => { timers.push(seconds); return seconds === null ? 'timer cancelled' : `timer running` },
       transcribe: async () => 'weather from stt',
       classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
       notify: (m) => notified.push({ title: m.title, body: m.body }),
@@ -652,6 +666,17 @@ describe('RingStore + pipeline', () => {
     expect(notified[0]).toMatchObject({ title: 'Ring · log dream', body: 'I was escaping a prison made of cheese' })
     await deliver('add journal sowed the seeds')
     expect(notes.get('scratch/lists/journal.md')).toBe('## 2026-09-02\n- 23:07 sowed the seeds\n')
+  })
+
+  it('timer runs the glasses countdown through ctx.glassesTimer; a refused frame is a failed delivery', async () => {
+    const rec = await deliver('timer 10 minutes')
+    expect(rec.route).toMatchObject({ rule: 'timer.start', ok: true, detail: 'timer running' })
+    expect(timers).toEqual([600])
+    expect(notified[0]).toMatchObject({ title: 'Ring · timer', body: 'timer running' })
+    await deliver('timer cancel')
+    expect(timers).toEqual([600, null])
+    ctx.glassesTimer = async () => { throw new Error('glasses APK not connected') }
+    expect((await deliver('timer 5 minutes')).route).toMatchObject({ ok: false, detail: 'glasses APK not connected' })
   })
 
   it('echo goes straight to WhatsApp, no LLM', async () => {

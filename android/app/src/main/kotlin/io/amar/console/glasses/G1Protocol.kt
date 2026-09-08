@@ -20,6 +20,8 @@ object G1Protocol {
     // --- Opcodes ------------------------------------------------------------
 
     const val OP_APP_WHITELIST: Byte = 0x04
+    /** Native countdown timer (`BLE_REQ_PUT_COUNTDOWN_TIMER`) — docs/g1-protocol.md §21. */
+    const val OP_COUNTDOWN_TIMER: Byte = 0x07
     /** Native teleprompter (`BLE_REQ_PUT_TELEPROMPTER_INFO`) — docs/g1-protocol.md §20. */
     const val OP_TELEPROMPTER: Byte = 0x09
     /** Native turn-by-turn card (`BLE_REQ_PUT_NAVIGATION_INFO`) — docs/g1-protocol.md §18. */
@@ -871,4 +873,31 @@ object G1Protocol {
      * physical access to the case.
      */
     fun encodeBtUnpair(): ByteArray = byteArrayOf(OP_BT_UNPAIR)
+
+    /** Largest countdown the lens formats as `hh:mm:ss` with two-digit hours (99:59:59). */
+    const val COUNTDOWN_MAX_SECONDS = 99 * 3600 + 59 * 60 + 59
+
+    /**
+     * Native countdown timer — `[0x07, seconds u32 LE, enable]` (6 bytes, no
+     * length header). `seconds` is a DURATION: the firmware's UI thread logs it
+     * as `expect_ts/3600 : (expect_ts%3600)/60 : expect_ts%60` and its screen
+     * loop decrements the stored value once a second, exiting at 0 — so no
+     * clock-sync packet is involved. `enable = false` cancels (the UI thread
+     * returns without switching to `E_ID_SCREEN_COUNTDOWN_TIMER`). Ack is the
+     * plain `[0x07, 0xC9, …]`.
+     */
+    fun encodeCountdownTimer(seconds: Int, enable: Boolean = true): ByteArray {
+        require(seconds in 0..COUNTDOWN_MAX_SECONDS) { "seconds must be 0..$COUNTDOWN_MAX_SECONDS" }
+        return byteArrayOf(
+            OP_COUNTDOWN_TIMER,
+            (seconds and 0xFF).toByte(),
+            ((seconds shr 8) and 0xFF).toByte(),
+            ((seconds shr 16) and 0xFF).toByte(),
+            ((seconds shr 24) and 0xFF).toByte(),
+            if (enable) 0x01 else 0x00,
+        )
+    }
+
+    /** Cancel a running countdown: `enable = 0`, duration 0. */
+    fun encodeCountdownCancel(): ByteArray = encodeCountdownTimer(0, enable = false)
 }

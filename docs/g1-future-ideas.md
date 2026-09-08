@@ -30,7 +30,7 @@ pipe (text / BMP / notification / mic / touchbar) exposed to hub, SPA, and
   (`PUT_COUNTDOWN_TIMER`) and **teleprompter** (`PUT_TELEPROMPTER_INFO`).
   Byte layouts are one per-handler read away in g1-reverse — cheaper than
   re-implementing these as `0x4E` text mirrors.
-- **Stopwatch / timer / alarm** — simple HUD utilities.
+- **Stopwatch / alarm** — simple HUD utilities. (The **countdown timer** is DONE natively — `con glasses timer`, protocol §21, ^wavy-crow.)
 - **SSH / terminal mirror** — port `g1-term` ideas in as a Console pane;
   see `docs/g1-ssh-client-recipe.md`.
 - **App-wide mirror** — *generalized 2026-04-22 (v0.1.17).* Single

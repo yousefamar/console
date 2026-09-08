@@ -26,6 +26,10 @@
 //                                         paginate + show page 1; touchbar taps page from then on
 //   POST /glasses/teleprompt/next|prev|exit
 //   POST /glasses/teleprompt/goto  {page}  (1-based)
+//   POST /glasses/timer        {duration:"10m"|seconds:600} — native countdown (0x07, §21);
+//                                         reply = firmware ack + {seconds, display}; 400 when
+//                                         the duration doesn't parse or exceeds 99:59:59
+//   POST /glasses/timer/cancel            — enable=0: the lens leaves the countdown screen
 //
 // All require the APK to be connected on /push (the phone is the BLE owner).
 // If the APK isn't connected we 503 so the CLI/caller can present a useful
@@ -35,6 +39,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GlassesHub, GlassesNotifyRequest, GlassesNavStep } from '../glasses-hub.js'
 import type { GlassesConfig } from '../glasses/config.js'
 import type { TeleprompterController } from '../glasses/teleprompter.js'
+import { parseDuration, formatDuration, COUNTDOWN_MAX_SECONDS } from '../glasses/timer.js'
 
 export function handleGlassesRoutes(
   req: IncomingMessage,
@@ -46,6 +51,29 @@ export function handleGlassesRoutes(
   teleprompter: TeleprompterController | null = null,
 ): boolean {
   if (!path.startsWith('/glasses')) return false
+
+  // --- native countdown timer (0x07) — docs/g1-protocol.md §21 ------------------
+  if ((path === '/glasses/timer' || path === '/glasses/timer/cancel') && req.method === 'POST') {
+    ;(async () => {
+      const json = (code: number, body: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      try {
+        let seconds: number | null = null
+        if (path === '/glasses/timer') {
+          const body = JSON.parse(await readBody(req) || '{}')
+          seconds = typeof body.seconds === 'number' ? body.seconds : parseDuration(String(body.duration ?? ''))
+          if (seconds === null || !Number.isInteger(seconds) || seconds < 1 || seconds > COUNTDOWN_MAX_SECONDS) {
+            return json(400, { error: `duration required — "10m", "1h30m", "90 seconds" or seconds 1..${COUNTDOWN_MAX_SECONDS} (99:59:59)` })
+          }
+        }
+        if (!glassesHub.hasClient()) return json(503, { error: 'APK not connected' })
+        const ack = await glassesHub.countdownTimer(seconds)
+        return json(200, { ...ack, display: seconds === null ? null : formatDuration(seconds) })
+      } catch (err) {
+        return json(502, { error: (err as Error).message })
+      }
+    })()
+    return true
+  }
 
   // --- native teleprompter (0x09) — hub-side session, firmware ack in replies -
   if (path === '/glasses/teleprompt' && req.method === 'GET') {

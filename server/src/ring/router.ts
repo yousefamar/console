@@ -10,6 +10,7 @@
 // agents. AL is reached only as the fallback for text no verb claims.
 
 import { spokenForms, contactForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
+import { parseDuration, formatDuration } from '../glasses/timer.js'
 
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
@@ -30,6 +31,8 @@ export type RingCommand =
    *  …` forks a card), not to agents. */
   | { kind: 'fallback'; agentKey: string; text: string }
   | { kind: 'music'; action: 'play' | 'pause' | 'next' | 'previous'; query?: string }
+  /** The glasses' native countdown (0x07): `seconds` runs one, null cancels. */
+  | { kind: 'timer'; seconds: number | null; spoken: string }
   /** A verb matched but its target didn't — actionable feedback, not a fallback. */
   | { kind: 'unknown-target'; verb: string; target: string; text: string }
   | { kind: 'unknown'; text: string }
@@ -158,6 +161,8 @@ const MUSIC_FILLER = new Set(['music', 'the', 'spotify', 'song', 'songs', 'track
 /** An address word before the verb ("Music, play X" / "Spotify: next") —
  *  head-cleaned like any other head word, so the STT's punctuation is moot. */
 const MUSIC_ADDRESS = new Set(['music', 'spotify'])
+/** "timer cancel|stop|off|clear|reset|end" — with or without a lead-in ("the timer"). */
+const TIMER_CANCEL = /^(?:(?:the|my|a)\s+)?(?:(?:countdown|timer)\s+)?(?:cancel|stop|off|clear|reset|end|kill)\b/i
 /** `play <query>` — STT hears "plays" for "play" in the query form too
  *  ("Music, plays Taylor Swift"). "playing" counts only when the player was
  *  ADDRESSED ("Music, playing X"): a bare "Playing tennis later" is a note. */
@@ -248,6 +253,16 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
     return { rule: 'echo', command: { kind: 'echo', text: one.rest } }
   }
 
+  // timer <duration> | timer cancel — the glasses' native countdown (0x07).
+  // No target word: the remainder IS the duration ("timer 10 minutes", "set a
+  // timer for ten minutes", "countdown 1:30"). A remainder that is not a
+  // duration is NOT an error — "set the mood" must fall through to the LLM.
+  if (v.timer.enabled && one?.rest && matchVerb(one.words[0]!, schema)?.verb === 'timer') {
+    if (TIMER_CANCEL.test(one.rest)) return { rule: 'timer.cancel', command: { kind: 'timer', seconds: null, spoken: one.rest } }
+    const seconds = parseDuration(one.rest)
+    if (seconds !== null) return { rule: 'timer.start', command: { kind: 'timer', seconds, spoken: one.rest } }
+  }
+
   const parts = two?.rest ? { verb: two.words[0]!, target: two.words[1]!, payload: two.rest } : null
   const matched = parts ? matchVerb(parts.verb, schema) : null
 
@@ -295,6 +310,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
       }
       case 'echo':
       case 'music':
+      case 'timer':
         break
     }
   }
@@ -343,6 +359,7 @@ export function describeCommand(c: RingCommand): string {
     case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
     case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
+    case 'timer': return c.seconds === null ? 'timer cancel' : `timer ${formatDuration(c.seconds)} (${c.spoken})`
     case 'unknown-target': return `${c.verb}: no target called "${c.target}"`
     case 'unknown': return `unrecognised: ${c.text}`
   }

@@ -25,6 +25,7 @@ export async function glasses(verb: string | undefined, args: string[], flags: G
     case 'config': return glassesConfig(args, flags)
     case 'nav': return glassesNav(args, flags)
     case 'teleprompt': return glassesTeleprompt(args, flags)
+    case 'timer': return glassesTimer(args, flags)
     default:
       exitWithError('USAGE', `Unknown glasses command: ${verb}. Run 'con help glasses'.`, flags)
   }
@@ -287,6 +288,20 @@ const TELEPROMPT_USAGE = [
   'Pages are 5 rows of ≤38 chars; blank lines are paragraph breaks. --multipart forces every page across two',
   'BLE packets (live fallback if a one-packet init ever fails to open the teleprompter app).',
 ].join('\n')
+
+// con glasses timer <duration> | cancel — native countdown (0x07, docs/g1-protocol.md §21)
+async function glassesTimer(args: string[], flags: GlobalFlags): Promise<void> {
+  const positional = args.filter((a) => !a.startsWith('--'))
+  const spoken = positional.join(' ').trim()
+  if (!spoken) {
+    exitWithError('USAGE', 'Usage: con glasses timer <duration>  (10m, 1h30m, "90 seconds", 12:30 — max 99:59:59)  |  con glasses timer cancel', flags)
+  }
+  if (/^(cancel|stop|off|clear)$/i.test(spoken)) {
+    output(await hubFetch('/glasses/timer/cancel', { method: 'POST', body: {} }), flags)
+    return
+  }
+  output(await hubFetch('/glasses/timer', { method: 'POST', body: { duration: spoken } }), flags)
+}
 
 async function glassesTeleprompt(args: string[], flags: GlobalFlags): Promise<void> {
   const positional = args.filter((a) => !a.startsWith('--'))

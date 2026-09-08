@@ -62,6 +62,10 @@ object GlassesController {
     fun sendBtUnpair(onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
         requireBle().sendBtUnpair(onResult)
 
+    /** Native countdown (0x07): `seconds` runs a timer, `enable = false` cancels it. */
+    fun countdownTimer(seconds: Int, enable: Boolean, onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
+        requireBle().countdownTimer(seconds, enable, onResult)
+
     fun setMic(enable: Boolean, onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
         requireBle().setMic(enable, onResult)
 

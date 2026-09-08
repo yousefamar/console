@@ -39,6 +39,9 @@ export interface RingCtx {
    *  unless an open one for the same transcript already exists. Returns what
    *  happened, for the sidecar. */
   fileMissCard: (miss: RingMiss, column: string) => Promise<'filed' | 'exists' | 'failed'>
+  /** `timer` — the glasses' native countdown (0x07). Returns a one-line
+   *  outcome; throws when the APK is not connected or the frame is refused. */
+  glassesTimer: (seconds: number | null) => Promise<string>
   music: {
     play: (query?: string) => Promise<string>
     pause: () => Promise<string>
@@ -193,6 +196,7 @@ function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { ti
     case 'echo': return { title: 'Ring · echo → WhatsApp', body: c.text }
     case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
     case 'music': return { title: 'Ring · music', body: o.detail ?? describeCommand(c) }
+    case 'timer': return { title: 'Ring · timer', body: o.detail ?? describeCommand(c) }
     default: return { title: 'Ring', body: describeCommand(c) }
   }
 }
@@ -227,6 +231,10 @@ async function execute(ctx: RingCtx, c: RingCommand, recordingId: string): Promi
       }
       case 'card': {
         const detail = await ctx.addCard(c.project, c.text, c.column)
+        return { ok: true, detail }
+      }
+      case 'timer': {
+        const detail = await ctx.glassesTimer(c.seconds)
         return { ok: true, detail }
       }
       case 'music': {

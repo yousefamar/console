@@ -77,6 +77,7 @@ import { RingSchemaLoader } from './ring/schema-loader.js'
 import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
 import { transcribeAudio } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
+import { formatDuration } from './glasses/timer.js'
 import type { RouteEnv } from './ring/router.js'
 import { buildRingForkSeed, buildMissCard } from './ring/pipeline.js'
 import { ContactRoomResolver, expandIdentifiers } from './ring/chat-room.js'
@@ -1298,6 +1299,12 @@ const ringCtx: RingCtx = {
       log(`[ring] miss card failed: ${(e as Error).message}`)
       return 'failed'
     }
+  },
+  glassesTimer: async (seconds) => {
+    if (!glassesHub.hasClient()) throw new Error('glasses APK not connected')
+    const ack = await glassesHub.countdownTimer(seconds)
+    if (!ack.ok) throw new Error(`glasses refused the timer frame${ack.error ? ` — ${ack.error}` : ''}${ack.ack ? ` (ack ${ack.ack})` : ''}`)
+    return seconds === null ? 'timer cancelled' : `timer ${formatDuration(seconds)} running on the glasses`
   },
   music: {
     play: async (query) => {

@@ -70,6 +70,17 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **G1: native countdown timer encoder** (^wavy-crow): `G1Protocol.OP_COUNTDOWN_TIMER`
+  (0x07) + `encodeCountdownTimer(seconds, enable)` / `encodeCountdownCancel()` —
+  `[0x07, seconds u32 LE, enable]`, 6 bytes, no length header; `seconds` is a
+  duration the firmware counts down itself (cap 99:59:59 =
+  `COUNTDOWN_MAX_SECONDS`). `BleManager.countdownTimer` sequences L→R and relays
+  the right arm's 0xC9 ack; PushService RPC `countdownTimer {seconds, enable}`
+  replies `{ok, status, ack, seconds, enable}` (statusIndex 1 = the 0xC9/0xCA
+  marker). Driven by hub `POST /glasses/timer` / `con glasses timer 10m|cancel`
+  and the ring's `timer <duration>`. Layout from the firmware decompile — no
+  frame on the wire yet (docs/g1-protocol.md §21). Tests: `G1CountdownTimerTest` (4).
+
 - **G1: dismiss a card, read what's on the lens, un-pair** (^glad-vole):
   `G1Protocol.encodeDeleteNotification` (0x4C `[op, msgId]`),
   `encodeSystemStatusQuery`/`parseSystemStatus` (0x39 — bytes[1..2] echo the

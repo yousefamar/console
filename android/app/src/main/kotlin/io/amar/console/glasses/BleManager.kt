@@ -420,6 +420,21 @@ class BleManager(private val app: Context) {
         }
     }
 
+    /**
+     * Start (or cancel, `enable = false`) the glasses' native countdown timer
+     * (0x07, docs/g1-protocol.md §21). Both arms L→R like every display op —
+     * each arm renders its own lens; the ack relayed is the RIGHT arm's.
+     */
+    fun countdownTimer(seconds: Int, enable: Boolean, onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            enqueueSequenced(
+                G1Protocol.encodeCountdownTimer(seconds, enable),
+                expectAck = G1Protocol.OP_COUNTDOWN_TIMER,
+                onResult = onResult,
+            )
+        }
+    }
+
     private fun startNavSync() {
         if (navSyncRunnable != null) return
         val r = object : Runnable {

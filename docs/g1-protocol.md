@@ -109,6 +109,7 @@ All opcodes are a single leading byte. Response payloads for
 | 0x03 | Silent mode         | → glasses | `[0x03, 0x0A off / 0x0C on]`; see §9 |
 | 0x04 | App whitelist JSON  | → glasses | 176-byte chunks, `[0x04, totalChunks, seq, ...json...]` |
 | 0x06 | Dashboard show      | → glasses | Force dashboard visible. MentraOS constant; untested in Console. |
+| 0x07 | Countdown timer     | → glasses | `[0x07, seconds u32 LE, enable]` — 6 bytes, no length header; `seconds` is a DURATION the firmware counts down itself; `enable=0` cancels; see §21 |
 | 0x09 | Teleprompter        | → glasses | `[0x09, len16, seq, action, total16, pkt16, p9, p10, p11, text…, ts64]`; native teleprompter, one 512-B page per buffer; see §20 |
 | 0x0B | Head-up angle       | → glasses | `[0x0B, angle 0-60]`; configures the pitch threshold that triggers dashboard-on. MentraOS verified. |
 | 0x0E | Mic enable/disable  | → glasses | `[0x0E, 0x01 or 0x00]`, **right arm only** |
@@ -755,7 +756,8 @@ mark specific GET successes):
 
 **PUT (`ble_process_put_req`)** — `0x01`–`0x08` handled in `put_ops_01_08.inc`
 (`0x01` brightness, `0x03` silent, `0x04` whitelist, `0x06` multipart with
-sub-ops `01..05` — all documented in §14); the rest map to handlers:
+sub-ops `01..05` — all documented in §14; **`0x07` = `PUT_COUNTDOWN_TIMER`,
+`ble_put_op07`, §21**); the rest map to handlers:
 `0x0B`+`0x14` → `ble_put_op0b_14` (head-up angle family), `0x0C`/`0x11`/`0x12`/`0x13`
 → one handler, `0x0D`/`0x0F` → one handler (their completion is acked by
 `0xF5 0xF0` / `0xF1`), `0x0E`, `0x10` → `ble_put_op10_media`, `0x15`–`0x18`
@@ -766,8 +768,8 @@ translate start/pause (`received start/Pause command, origin language type…`),
 (`received teleprompter suspend packet`, `dashboard information packet`,
 `ble set lum gear`, sync ids). Named PUT requests in the string table:
 `PUT_NAVIGATION_INFO` = **`0x0A`, fully laid out in §18** (turn direction, x/y,
-road name, remaining km/time, panoramic + overview map chunks); still undocumented: `PUT_COUNTDOWN_TIMER`
-(`countdown expect_ts:%d, enable:%d`), `PUT_SCHEDULE_TASK`, `PUT_TELEPROMPTER_INFO`,
+road name, remaining km/time, panoramic + overview map chunks); `PUT_COUNTDOWN_TIMER` = **`0x07`, §21**
+(`countdown expect_ts:%d, enable:%d`); still undocumented: `PUT_SCHEDULE_TASK`, `PUT_TELEPROMPTER_INFO`,
 `PUT_WAKEUP_ANGLE`, `PUT_ANTI_SHAKE_ENABLE`, `PUT_DISPLAY_MODE`, `PUT_NOTIFY_EN`,
 `PUT_GLASSES_SETTING`, `PUT_INTERNAL_DEBUG`, `PUT_DEVICE_SN`, plus news/stocks
 feeds (`news source : %s`, `current stocks index num`). **These are the
@@ -1185,3 +1187,74 @@ EXIT         09 06 00 03 05 00                      (then 0x18)
 ack (page)   09 <len16> <seq> <act> 01 00 01 00 00  — 10 B, byte 9: 0 ok / 1 order error
 ack (exit)   09 06 00 03 05 00                      — 6 B echo
 ```
+
+## 21. Native countdown timer — PUT `0x07` (`BLE_REQ_PUT_COUNTDOWN_TIMER`)
+
+Card ^wavy-crow (2026-09-08). Firmware-derived, from `g1-reverse`: the handler
+is `ble_put_op07` in `ble/ble_process_put_ops_01_08.inc` (the `0x07` case of
+`ble_process_put_req` = `sub_1A75C`, whose string table holds
+`#BLE_REQ_PUT_COUNTDOWN_TIMER:` and `countdown expect_ts:%d, enable:%d` — the
+refactored copy stripped that log's format string, so the case was found via
+the rodata address `0x9baaa` in `recon/emulator/scripts/app_flash_literal_ledger.json`,
+which names the `.inc`). Console: `G1Protocol.encodeCountdownTimer` /
+`encodeCountdownCancel`, `BleManager.countdownTimer` (L→R), APK RPC
+`countdownTimer {seconds, enable}`, hub `POST /glasses/timer {duration|seconds}`
++ `/glasses/timer/cancel` (`server/src/glasses/timer.ts` owns `parseDuration`),
+CLI `con glasses timer 10m | cancel`, ring verb `timer <duration>` /
+`timer cancel` (`ring-schema.md` → `verbs.timer`).
+
+### Frame
+
+```
+[0x07, s0, s1, s2, s3, enable]      6 bytes, NO length header
+       └── seconds, u32 little-endian ──┘  └ 0x01 run / 0x00 cancel
+```
+
+`ble_put_op07` reads `*(u32*)(request+1)` and `request[5]` straight off the
+frame (no `len16` at bytes 1–2 — unlike `0x06`/`0x08`/`0x09`/`0x0A`), copies them
+into its 9-byte internal message (`[op, ?, len=5 u16, seconds u32, enable]`,
+`transfer_length = 9`), hands it to the UI thread and acks `[0x07, 0xC9, 0…]`
+(20 bytes) unconditionally — an ok ack means "delivered", not "a screen changed".
+
+### Semantics — `expect_ts` is a DURATION, not an epoch
+
+Three places in the firmware agree, so no clock-sync packet is involved:
+
+1. The UI thread (`master_process_audio_fw_load_req` = `sub_2AF4C`, message
+   type 6) logs the value as `update->BLE_REQ_PUT_COUNTDOWN_TIMER: %d(%02d:%02d:%02d), enable:%d`
+   with `v/3600`, `(v%3600)/60`, `v%60` — hh:mm:ss of the value itself. An epoch
+   would print a five-digit hour.
+2. It stores `seconds` at the countdown record (`ctx+0xff0`), `enable` at `+5`,
+   a "new" flag at `+6`, and **returns without switching screens when
+   `enable == 0`** (cancel); otherwise it posts the switch to
+   `E_ID_SCREEN_COUNTDOWN_TIMER` (`process_for_new_task` `CASE2`).
+3. The countdown screen loop (`notify/process_for_new_task.c`, "switch ->
+   E_ID_SCREEN_COUNTDOWN_TIMER") polls the record every ~0x667 ticks: it exits
+   when `enable` drops to 0 (`#4 … I will go to suspend, goodbye!`) or when the
+   stored value reaches 0 (`#5 … expect_ts == 0, I will go to suspend`) — a
+   per-second ticker (`display_idle_countdown_tick`) decrements it. The lens
+   therefore shows the remaining time and leaves the screen at zero; nothing
+   is pushed back to the phone at expiry (no `0xF5` event named for it).
+
+The card's suspicion that `received app send timestamp = %lld, current system
+timestamp = %lld` belongs here is wrong: that string is the **teleprompter**'s
+(`ble_put_op9_action1_single`, an int64 app timestamp on the last packet, §20)
+and has nothing to do with the timer.
+
+### Limits
+
+`hh` is formatted `%02d`, so 99:59:59 (359 999 s) is the largest value the
+lens renders as intended; Console refuses more (`COUNTDOWN_MAX_SECONDS`) and
+refuses 0 as a start (0 = cancel). `parseDuration` accepts `10m`, `1h30m`,
+`1:30:00`, `90 seconds`, `ten minutes`, `an hour and a half`, `for 10 minutes`;
+a bare number is minutes.
+
+### Live verification — NOT YET ON THE WIRE
+
+The APK was not connected while this was built ("glasses controller not
+initialized"), so the layout is firmware-derived and unconfirmed, like §18–§20.
+First `con glasses timer 1m` is the check: expect `{ok:true, status:201}`
+(0xC9) in the reply and a `01:00` countdown on both lenses that disappears at
+zero; `con glasses timer cancel` must clear it early. If the lens shows a
+wall-clock-looking number instead of `01:00`, the duration reading is wrong
+and the field is an absolute timestamp after all — re-read `sub_2AF4C` type 6.

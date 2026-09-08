@@ -43,6 +43,8 @@ export interface RingSchema {
     /** echo <text> → the payload lands on Yousef's WhatsApp, no LLM — the smoke test. */
     echo: { aliases: string[] }
     music: { aliases: string[]; enabled: boolean }
+    /** timer <duration> → the glasses' native countdown (0x07); timer cancel|stop|off clears it. */
+    timer: { aliases: string[]; enabled: boolean }
   }
 }
 
@@ -72,6 +74,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
     message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {} },
     echo: { aliases: ['test', 'ping', 'repeat'] },
     music: { aliases: [], enabled: true },
+    timer: { aliases: ['countdown', 'set'], enabled: true },
   },
 }
 
@@ -160,6 +163,7 @@ export function parseSchemaNote(md: string): SchemaParse {
   const message = verbs.message ?? {}
   const echo = verbs.echo ?? {}
   const music = verbs.music ?? {}
+  const timer = verbs.timer ?? {}
 
   const schema: RingSchema = {
     fallback: r.fallback === null ? null : typeof r.fallback === 'string' ? r.fallback.toLowerCase().trim() || null : DEFAULT_SCHEMA.fallback,
@@ -185,6 +189,10 @@ export function parseSchemaNote(md: string): SchemaParse {
       music: {
         aliases: strList(music.aliases, 'verbs.music.aliases', errors),
         enabled: typeof music.enabled === 'boolean' ? music.enabled : true,
+      },
+      timer: {
+        aliases: timer.aliases === undefined ? [...d.timer.aliases] : strList(timer.aliases, 'verbs.timer.aliases', errors),
+        enabled: typeof timer.enabled === 'boolean' ? timer.enabled : true,
       },
     },
   }
@@ -308,6 +316,10 @@ verbs:
     aliases: [test, ping, repeat]
 
   music:                # play | pause | next | previous | play <query>
+    enabled: true
+
+  timer:                # timer <duration> → the glasses' native countdown (hh:mm:ss on the lens); timer cancel|stop|off clears it
+    aliases: [countdown, set]   # "set a timer for ten minutes" works — a remainder that is not a duration falls through
     enabled: true
 \`\`\`
 `

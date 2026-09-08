@@ -246,6 +246,9 @@ Commands:
   teleprompt   The glasses' NATIVE teleprompter: <file|-> starts (5-line pages; right tap = next,
                left tap = previous, double-tap ends), then next | prev | goto <n> | exit | status
                (docs/g1-protocol.md section 20)
+  timer        The glasses' NATIVE countdown: timer 10m | 1h30m | "90 seconds" | 12:30, then
+               timer cancel. The lens shows hh:mm:ss and leaves the screen at zero
+               (docs/g1-protocol.md section 21)
 
 status also reports runningApp / runningAppLabel — the feature drawing on the
 lens (idle | app <n> | none), read live with a 0x39 query.
@@ -272,6 +275,8 @@ Examples:
   con glasses nav step --dir 5 --road "High St" --dist "200 m" --eta "12 min" --remaining "3.4 km"
   con glasses nav arrived --prompt "You have arrived" --complete
   con glasses nav exit
+  con glasses timer 10m
+  con glasses timer cancel
 `.trim(),
 
   ring: `

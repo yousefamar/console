@@ -478,6 +478,9 @@ export const COMMANDS: CommandDef[] = [
       multipart: { type: 'boolean', description: 'start: force every page across two BLE packets (fallback if a one-packet init does not open the app)' },
     },
     examples: ['con glasses teleprompt ~/talk.md', 'cat notes.txt | con glasses teleprompt -', 'con glasses teleprompt next', 'con glasses teleprompt goto 3', 'con glasses teleprompt exit'] },
+  { name: 'glasses timer', description: 'Native countdown timer (0x07): <duration> starts it on the lens as hh:mm:ss (10m, 1h30m, "90 seconds", 12:30 — max 99:59:59; a bare number is minutes), cancel stops it. Reply carries the firmware ack + {seconds, display}', safety: 'write',
+    args: [{ name: 'duration', required: true, description: '10m | 1h30m | "90 seconds" | 12:30 | cancel' }],
+    examples: ['con glasses timer 10m', 'con glasses timer "1 hour 30 minutes"', 'con glasses timer cancel'] },
   { name: 'glasses nav', description: "Native turn-by-turn card (0x0A): start | step | arrived | exit | map. Layout primitive only — no route source yet. Replies carry the firmware ack {ok, status, ack}", safety: 'write',
     args: [{ name: 'verb', required: true, description: 'start | step | arrived | exit | map <planes.bin>' }],
     flags: {

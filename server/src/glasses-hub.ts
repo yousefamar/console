@@ -361,6 +361,14 @@ export class GlassesHub {
     return await this.rpc<GlassesNavAck>('teleprompterExit')
   }
 
+  // --- Native countdown timer (0x07) — docs/g1-protocol.md §21 --------------
+  /** Run a countdown for `seconds` (1..99:59:59); `null` cancels the running one. Reply = right arm's ack. */
+  async countdownTimer(seconds: number | null): Promise<GlassesNavAck & { seconds: number; enable: boolean }> {
+    return seconds === null
+      ? await this.rpc('countdownTimer', { enable: false })
+      : await this.rpc('countdownTimer', { seconds, enable: true })
+  }
+
   // --- Native navigation card (0x0A) ---------------------------------------
   async navStart(): Promise<GlassesNavAck> {
     return await this.rpc<GlassesNavAck>('navStart')
