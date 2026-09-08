@@ -24,6 +24,12 @@ pipe (text / BMP / notification / mic / touchbar) exposed to hub, SPA, and
 - **Inbox glance** — unread count per source.
 - **Teleprompter** — long-form text paginated by touchbar, 5 lines at a time.
 - **Walking nav** — next-turn chevron once Console has a live route source.
+  *Firmware has a NATIVE handler for this* (`BLE_REQ_PUT_NAVIGATION_INFO`:
+  direction, x/y, road name, remaining km/time, panoramic + overview map
+  chunks — protocol §17), as it does for **countdown timer**
+  (`PUT_COUNTDOWN_TIMER`) and **teleprompter** (`PUT_TELEPROMPTER_INFO`).
+  Byte layouts are one per-handler read away in g1-reverse — cheaper than
+  re-implementing these as `0x4E` text mirrors.
 - **Stopwatch / timer / alarm** — simple HUD utilities.
 - **SSH / terminal mirror** — port `g1-term` ideas in as a Console pane;
   see `docs/g1-ssh-client-recipe.md`.
@@ -95,9 +101,11 @@ i.e. the last source to push content. Concrete mapping to revisit later:
 
 ## Open protocol questions to investigate later
 
-- G1 battery opcode (candidate sources: community Python `even_glasses`,
-  sniffed Even Realities app traffic, `i-soxi/even-g2-protocol`).
-- Firmware version query.
+- ~~G1 battery opcode~~ — `0x2C` (protocol §12), long resolved.
+- ~~Firmware version query~~ — **resolved 2026-09-07**: it is IN the `0x2C`
+  reply (bytes [7..12], master/slave triples; v1.6.6 on our pair). Firmware
+  source in protocol §17. Android parity (re-populate `GlassesState.firmware`)
+  is a BACKLOG Open entry for the Mobile agent.
 - Whether `rnnoise` (bundled but unused in EvenDemoApp) is useful for us.
 - Whether multi-page AI scroll modes (`0x30` / `0x40` / `0x50`) give us
   cheaper pagination than manual re-sends.

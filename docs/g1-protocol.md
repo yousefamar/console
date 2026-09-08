@@ -22,6 +22,11 @@ Compiled from:
   `api.md` mislabels `0x0F` as battery — that's the *subcmd* of `0xF5` for
   case-battery level, not a top-level opcode. The authoritative battery path
   is `0x2C` (below).
+- **`FreedomCoder-dev/g1-reverse`** — a buildable decompilation of the shipped
+  G1 firmware itself (nRF5340, Zephyr). **Primary source**: when it and any
+  app-side reference disagree, the firmware wins. Opcode map + where to look
+  in §17 (added 2026-09-07, ^snug-elk). Its sibling `g1-fw` is a flashing
+  toolchain — read §17's safety boundary before touching anything from it.
 - Community notes at https://github.com/nickustinov/even-g2-notes (actually
   documents the G2 Even Hub SDK, not the raw G1 BLE protocol — of limited use
   for this integration but referenced for completeness).
@@ -312,20 +317,36 @@ Per MentraOS `G1.java` lines 573-605, plus Console findings for 0x09 and
 
 | Subcmd | Payload | Meaning |
 |--------|---------|---------|
-| 0x06   | —       | Glasses removed from case (variant A) |
-| 0x07   | —       | Glasses removed from case (variant B) |
-| 0x08   | —       | Case lid opened |
+| 0x06   | —       | Glasses removed from case (variant A) — **firmware name `EVENT_ENTER_WARED`**: the arm decided it is being WORN (out of box + on head). So wear detection IS reachable via `0xF5`, independent of the silent `0x27` detector (§12) — not yet observed live in our 5K-line log window; verify before relying on it |
+| 0x07   | —       | Glasses removed from case (variant B) — **firmware name `EVENT_UNWARED_OUTBOX`**: out of the box but NOT worn |
+| 0x08   | —       | Case lid opened — firmware `EVENT_PUT_IN_GLASS_BOX_OPEN` (in the box, lid open) |
 | 0x09   | byte[2] | **Per-arm charging-pin contact:** `1` = arm sitting on its case charging pin, `0` = lifted off. Fires on each arm independently. Distinct from 0x0E (whole-case charging state). Not in MentraOS — Console finding. |
-| 0x0A   | byte[2] | **Unsolicited arm battery push (0–100 %).** Fires when the arm docks onto its charging pin — complements the polled `0x2C` reply. Not in MentraOS — Console finding. |
-| 0x0B   | —       | Case lid closed |
-| 0x0E   | byte[2] | Case charging status; `1` = charging, `0` = not |
-| 0x0F   | byte[2] | Case battery level (0–100) |
+| 0x0A   | byte[2] | **Unsolicited arm battery push (0–100 %)** — firmware `EVENT_STATE_BATTERY_PERCENT`: emitted whenever the arm's percent CHANGES (value < 0x65 and ≠ last sent), not only on docking. Complements the polled `0x2C` reply. |
+| 0x0B   | —       | Case lid closed — firmware `EVENT_PUT_IN_GLASS_BOX_CLOSE` |
+| 0x0E   | byte[2] | Case charging status; `1` = charging, `0` = not — firmware `EVENT_STATE_CHARGING` |
+| 0x0F   | byte[2] | Case battery level (0–100) — firmware `EVENT_GLASS_BOX_SOC` |
+
+Firmware names are from `check_work_mode.c` in the g1-reverse reconstruction
+(§17); the case/worn events are all decided by one state machine there
+(`param_1` = in box?, `param_2` = lid?, worn flag), which is why they arrive
+as one consistent family.
 
 ### 8c. Unclassified
 
 | Subcmd | Status |
 |--------|--------|
-| 0x12   | Seen on right arm when long-press-right is triggered *while the mic is already armed* (e.g. from a prior manual `setMic(true)`). Semantics TBD — possibly "gesture rejected, feature busy". Not in MentraOS or emingenc. |
+| 0x12   | **Resolved (firmware, 2026-09-07): auto-brightness lux bucket changed** — `check_work_mode` emits it when `compute_lux_brightness_bucket()` returns a new bucket. Earlier "long-press while mic armed" reading was a coincidence. |
+| 0x11   | Firmware `EVENT_GLASS_HAS_FINISH_BIND` — matches our "connected / handshake complete" reading in §8a |
+| 0x13–0x16 | Onboarding screen steps (`onboarding_render_step_screen`) — first-run flow only |
+| 0x18   | ESB (arm↔arm radio) link event (`g1_esb_02`) — not the long-press release when it arrives outside a mic session |
+| 0x1e / 0x1f | Dashboard shown / hidden (`ui_DashBoard_task`) — confirms §8a |
+| 0xF0 / 0xF1 / 0xF2 | **Render-complete acks**: the display thread emits `0xF5 0xF0` after processing a `0x0D` command, `0xF1` after `0x0F`, `0xF2` after a `0x4E` text send. A cheap "text is on the lens" signal we don't use yet. |
+
+Every `0xF5` event is built by one firmware function, `send_event(id)` →
+`[0xF5, id, 0xCB]` — so the third byte `0xCB` is a constant marker, not
+data, and the full id space is whatever the firmware passes to `send_event`.
+Ids `0x00`–`0x04` come from the key thread (`0x01` = touch key), IMU
+(`0x02`/`0x03` head up/down) and fuel gauge (`0x04`).
 
 Note: the `[0x03, 0x0A]` byte sequence is the phone→glasses silent-mode-off
 command (see §9), **not** a `0xF5` subcmd — don't confuse the two when
@@ -404,6 +425,33 @@ Reply  (G1→phone): [0x2C, 0x66, pct, ...]   # byte[2] = 0-100 percent
 Sent to **both arms** (each arm tracks its own battery). Replies arrive
 independently on L and R.
 
+**The reply is the firmware's `BLE_REQ_GET_DEVICE_INFO`, not just battery**
+(firmware handler `ble_process_get_req` case `0x2c`, see §17). Its log
+format names the payload — `CHG:%02x×5 M_SW_VER:v%d.%d.%d S_SW_VER:v%d.%d.%d
+BLE_SW_VER:v%d.%d…` — and our own captures match it exactly:
+
+```
+right: 2c 66 | 45 3f cd 83 1b | 01 06 06 | 01 06 06 | 00 00 00 | 00…   (20 bytes)
+left:  2c 66 | 3f 00 c7 88 1c | 00 00 00 | 01 06 06 | 00 00 00 | 00…
+        │  │   │  │  └──┬──┘ │   └─M_SW─┘  └─S_SW─┘  └BLE_SW┘
+        │  │   │  │     │    └ CHG[4] = 0x1b/0x1c → 27/28, plausibly °C (inference)
+        │  │   │  │     └ CHG[2..3] = 0x83cd / 0x88c7 → 3374 / 3503, plausibly mV big-endian (inference)
+        │  │   │  └ CHG[1] flags — 0x3f on the master arm, 0x00 on the slave (unknown)
+        │  │   └ CHG[0] = battery percent (what Console parses today)
+        │  └ 0x66 = success marker for this GET
+        └ opcode
+```
+
+So **firmware version = bytes [7..9] (master, `M_SW_VER`) and [10..12] (slave,
+`S_SW_VER`)** — `01 06 06` = v1.6.6 on this pair (2026-06). Only the RIGHT
+arm (master, hardware strap P0.26 — see §17) fills `M_SW_VER`; the left
+reports zeros there and its own version under `S_SW_VER`. `BLE_SW_VER` read
+0.0.0 on both. Console has been receiving this every ~80 s and discarding
+everything after byte[2] — the `firmware` snapshot slot dropped in v0.1.16
+can be re-populated from here with no new traffic (Android BACKLOG, Mobile
+agent's). The `[0x2C, 0x01|0x02]` request byte is stored by the firmware as
+the phone platform ("`%s mobile phone is connected`" — Android/iOS).
+
 ### Wear detection — `0x27`
 
 Glasses fire unsolicited events when put on / taken off the head:
@@ -429,12 +477,19 @@ See §8b — charging case events piggy-back on `0xF5` subcmds (0x06-0x0F).
 
 ### Residual unknowns
 
-- `0xF5` subcmd `0x12` — fires on long-press-right when the mic is already
-  armed. Exact semantics TBD.
-- Firmware version query — **G1 doesn't expose one.** MentraOS `G1.java` line
-  1761 explicitly states "G1 doesn't support version info requests"; `0x34`
-  retrieves the serial but that's it. Treat the `firmware` slot on snapshots
-  as permanently null (or drop it — Console dropped it in v0.1.16).
+- ~~`0xF5` subcmd `0x12` — fires on long-press-right when the mic is already
+  armed. Exact semantics TBD.~~ **RESOLVED 2026-09-07 from firmware** (§17):
+  `0x12` is the auto-brightness **lux bucket changed** event
+  (`check_work_mode` → `compute_lux_brightness_bucket`, emitted when the
+  bucket differs from the last one sent). The long-press correlation was
+  coincidence — lifting the arm to press changed the light.
+- ~~Firmware version query — **G1 doesn't expose one.**~~ **WRONG — corrected
+  2026-09-07.** MentraOS `G1.java` line 1761 ("G1 doesn't support version
+  info requests") is an app-side assumption; the firmware's `0x2C` reply IS
+  `BLE_REQ_GET_DEVICE_INFO` and carries `M_SW_VER`/`S_SW_VER`/`BLE_SW_VER`
+  at bytes [7..15] — see §12 Battery for the byte map and our captured
+  v1.6.6 sample. Primary source (firmware + our own frames) beats the
+  secondary (MentraOS comment).
 
 ### In-repo reverse-engineering path
 
@@ -637,3 +692,115 @@ per-note metadata is fully mapped.
 | Text wrapping    | `src/glasses/textLayout.ts`                                        |
 | Hub RPC          | `server/src/routes/glasses.ts`, `server/src/push/rpc.ts`           |
 | CLI              | `cli/src/glasses/*.ts`                                             |
+
+## 17. Firmware-derived opcode map (FreedomCoder-dev/g1-reverse, 2026-09-07)
+
+`https://github.com/FreedomCoder-dev/g1-reverse` is a **buildable Zephyr/NCS
+reconstruction of the shipped G1 firmware** (nRF5340, `app_update.bin` +
+`netcore_image.bin`), decompiled function-by-function and refactored into
+named modules; its sibling `g1-fw` is an nRF5340 Renode emulator plus a
+real-hardware OTA/flash toolchain. Investigated for card ^snug-elk. For our
+purposes the firmware is the **primary source** — it outranks MentraOS
+`G1.java`, which is an app-side re-implementation with its own guesses
+(the "no firmware version query" claim in §12 was one).
+
+Where to look (paths under `recon/refactor/stage_09_call_cohesion/tree/recon/symbolized/app/`):
+
+| File | What it is |
+|------|------------|
+| `ble/ble_process_get_req.c` | GET requests `0x29`–`0x3E` (the `0x2C` battery/device-info handler lives here) |
+| `ble/ble_process_put_req.c` + `ble_process_put_ops_*.inc` | PUT/settings requests `0x01`–`0x27` (brightness, dashboard, nav, news, quick notes, teleprompter, timers, whitelist…) |
+| `ble/ble_process_req_dispatch.c` | POST requests `0x47`–`0x50` (unpair, notification push/delete, `0x4E` text) and the `0xF1`/`0xF4`/`0xF5` fast path |
+| `core/send_event.c`, `core/check_work_mode.c` | the `0xF5` event emitter and the case/worn/charging state machine that names its ids |
+| `../../../../../../debug_strings.txt` (repo root) | every log string in the binary, grouped by function — the fastest way to name an opcode (`BLE_REQ_GET_*`, `BLE_REQ_PUT_*`, `EVENT_*`) |
+| `recon/app/src/FUN_<addr>.c` | untouched per-function evidence when the refactored copy has stripped log arguments |
+
+The three request families the firmware distinguishes (reply byte[1] `0xC9` =
+ok, `0xCA` = error with an ASCII reason; `0x66`/`0x67`/`0x68`/`0x69`/`0x6D`
+mark specific GET successes):
+
+**GET (`ble_process_get_req`)** — request `[op, id16…]`, reply `[op, marker, payload…]`
+
+| Op | Reply marker | Payload | Firmware meaning (from log strings) / status |
+|----|--------------|---------|------------------------------|
+| 0x29 | 0x65 | 2 B | settings record #1 — `BLE_REQ_GET_BRIGHTNESS` or `GET_ANTI_SHAKE_ENABLE` (both log 2 bytes; not yet disambiguated) |
+| 0x2A | 0x68 | 1 B | 1-byte setting (`GET_ESB_CHANNEL` logs `%d`) |
+| 0x2B | 0x69 | 2 B | 2-byte setting (`GET_DISPLAY_MODE` logs 2 bytes) |
+| 0x2C | 0x66 | 17 B | **`BLE_REQ_GET_DEVICE_INFO`** — battery % + charge fields + M/S/BLE firmware versions (§12). Request byte[1] `1`=Android `2`=iOS is stored as the phone platform |
+| 0x2D | 0x67 | 12 B | **`BLE_REQ_GET_M_N_S_MAC`** — master + slave BLE MACs (6 + 6), `debug_print_hex_dump("get_mn_mac")` |
+| 0x2E | chunked | JSON | **GET the notification app whitelist** (`send_whitelist_json_chunked`) — the read side of `0x04` (§14) |
+| 0x2F–0x31 | — | — | reserved in stock firmware (error reply). `0x2F` is what g1-fw's *patched* firmware repurposes as a QSPI exporter — never send it to stock glasses expecting anything |
+| 0x32 | 0x6D | 2 B | 2-byte setting (unnamed) |
+| 0x33 / 0x34 | 0x33 / 0x34 | 16 B | 16-byte records — `0x34` is the serial (§11, `BLE_REQ_GET_DEVICE_SN`); `0x33` is the other 16-byte record (unnamed) |
+| 0x35 | 0xC9 | 1 B | 1-byte setting (unnamed) |
+| 0x36 | — | — | **notification counts** (`get_notification_counts_cmd_process`) |
+| 0x37 | 0x37 | 5 B | 5-byte record (unnamed) |
+| 0x38 / 0x3A / 0x3C | 0xC9 | 1 B | runtime flags read straight from the connection context (one logs `globle->check_mode %d`) |
+| 0x39 | — | 6 B | **system status / current running app**: `[…, app_id]` or `0xFF` when idle (`return system status to app, current running app is %d / E_ID_SCREEN_IDLE`) — tells you whether the lens is showing the dashboard, a feature, or nothing |
+| 0x3B | 0xC9 | 2 B | two context bytes (unnamed) |
+| 0x3D | echo | — | language info, forwarded to the slave arm (`SendSystemLanguageInfoToSlave`) |
+| 0x3E | 0xC9 | **192 B** | large device-info blob (`get_device_info()+0x10c6`, 0xC0 bytes) — untyped; worth a capture |
+
+**PUT (`ble_process_put_req`)** — `0x01`–`0x08` handled in `put_ops_01_08.inc`
+(`0x01` brightness, `0x03` silent, `0x04` whitelist, `0x06` multipart with
+sub-ops `01..05` — all documented in §14); the rest map to handlers:
+`0x0B`+`0x14` → `ble_put_op0b_14` (head-up angle family), `0x0C`/`0x11`/`0x12`/`0x13`
+→ one handler, `0x0D`/`0x0F` → one handler (their completion is acked by
+`0xF5 0xF0` / `0xF1`), `0x0E`, `0x10` → `ble_put_op10_media`, `0x15`–`0x18`
+(BMP upload §7 / exit feature §14), `0x19`/`0x1A`/`0x1B`/`0x1D` → quick-note +
+translate start/pause (`received start/Pause command, origin language type…`),
+`0x1C`, `0x1E` (+`_note`), `0x1F` (onboarding init), `0x20` (font upgrade —
+`recv upgrade font success/failed`), `0x21`–`0x27` → dashboard/teleprompter
+(`received teleprompter suspend packet`, `dashboard information packet`,
+`ble set lum gear`, sync ids). Named PUT requests in the string table that we
+have no doc for yet: `PUT_NAVIGATION_INFO` (turn direction, x/y, road name,
+remaining km/time, panoramic + overview map chunks), `PUT_COUNTDOWN_TIMER`
+(`countdown expect_ts:%d, enable:%d`), `PUT_SCHEDULE_TASK`, `PUT_TELEPROMPTER_INFO`,
+`PUT_WAKEUP_ANGLE`, `PUT_ANTI_SHAKE_ENABLE`, `PUT_DISPLAY_MODE`, `PUT_NOTIFY_EN`,
+`PUT_GLASSES_SETTING`, `PUT_INTERNAL_DEBUG`, `PUT_DEVICE_SN`, plus news/stocks
+feeds (`news source : %s`, `current stocks index num`). **These are the
+native features our "future ideas" (nav chevron, timer, teleprompter) would
+ride on** — each is a per-handler read away from a byte layout.
+
+**POST (`ble_process_req_dispatch`)**
+
+| Op | Meaning |
+|----|---------|
+| 0x47 | **`BLE_REQ_POST_BT_UNPAIR`** — glasses forget the bond and disconnect (`will unbond current bt connection`). Programmatic un-pair for a broken bond; nothing else does this |
+| 0x49 / 0x4A / 0x4D | write an 8-byte record via the settings store (`0x4A` carries a payload) — unnamed |
+| 0x4B | notification push (§9, `BLE_REQ_POST_NOTIFICATION_MSG`) |
+| 0x4C | **`BLE_REQ_POST_DELETE_NOTIFICATION_MSG`** — dismiss a pushed card. Console pushes cards and never clears them |
+| 0x4E | text display (§6) — ack `0xC9`; the render-complete follow-up is `0xF5 0xF2` |
+| 0x4F / 0x50 | multi-page AI text modes (§6 mentions `0x50`) |
+
+Fast path before the switch: `0xF4` flushes queued indications, `0xF5`
+(phone→glasses direction) builds a status-notify packet, `0xF1` with
+byte[2]==`0xCC` triggers `send_dmic_msg` (mic frames — §10).
+
+### Hardware facts that explain wire behaviour
+
+- **Master/slave is a hardware strap**: `P0.26 == 0` → `device_info[0] = 1`
+  → RIGHT arm is master; LEFT is slave (`g1-fw/docs/g1-leg-identity.md`,
+  watchpoint-verified in Renode). That is why only the right arm fills
+  `M_SW_VER`, why head-tilt events come from the right arm, and why L-then-R
+  ordering matters (§3).
+- The `0xF5` third byte `0xCB` is a constant; every event goes through
+  `send_event()` (§8c).
+
+### ⛔ Safety boundary — what NOT to take from these repos
+
+- **Firmware update rides a separate GATT service** — SMP `8d53dc1d-…`
+  (char `da2e7828-…`), stock Zephyr mcumgr/MCUboot — not NUS. **Console
+  must never write to that service.** The G1's MCUboot is
+  `MCUBOOT_OVERWRITE_ONLY`: the primary slot is erased before the new image
+  is copied, there is no backup slot, no serial/USB/ROM recovery, no
+  button-gated boot mode, and APPROTECT is on — a bad image means SWD
+  `ERASEALL` after physically opening the arm (`g1-fw/README.md`,
+  `docs/g1-bootloader-failure-recovery.md`).
+- g1-fw's "ephemeral slot", QSPI exporter (`0x2F`) and memory-read variants
+  all require THEIR patched firmware on the glasses. None of it applies to
+  stock glasses and none of it is for us.
+- The reconstruction is a decompile of the owner's own binaries; treat
+  byte layouts as strong evidence, confirm against our research log
+  (`~/.config/console/glasses-research.log`) before coding to them — which
+  is exactly how the `0x2C` firmware-version layout above was confirmed.

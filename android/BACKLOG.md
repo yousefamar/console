@@ -10,6 +10,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Glasses: populate `GlassesState.firmware` from the `0x2C` reply (^snug-elk,
+  2026-09-07) — the battery poll reply is the firmware's `GET_DEVICE_INFO`:
+  `[0x2C, 0x66, pct, flags, v_hi?, v_lo?, temp?, M1, M2, M3, S1, S2, S3, B1, B2, B3, …]`.
+  Master (right arm) fills `M_SW_VER` at bytes [7..9]; the slave (left) reports
+  zeros there and its own version at [10..12] — so per-arm firmware =
+  right→[7..9], left→[10..12] (our pair reads 01 06 06 = v1.6.6). Parse in
+  `G1Protocol.parseBattery` (rename or add `parseDeviceInfo`), keep the pct
+  path unchanged, surface in the glasses settings snapshot. Layout evidence:
+  `docs/g1-protocol.md` §12 + §17. No new traffic — the poll already runs
+  every ~80 s.
+
 - Map: property listing review state (hub + SPA ^soft-goat, 2026-09-07) —
   every pin carries `_icon` (🏠 unreviewed, 🏡 interested — SPA draws agent
   points with an `_icon` as that emoji); interested pins also carry
