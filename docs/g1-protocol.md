@@ -727,6 +727,7 @@ Where to look (paths under `recon/refactor/stage_09_call_cohesion/tree/recon/sym
 | `core/send_event.c`, `core/check_work_mode.c` | the `0xF5` event emitter and the case/worn/charging state machine that names its ids |
 | `../../../../../../debug_strings.txt` (repo root) | every log string in the binary, grouped by function — the fastest way to name an opcode (`BLE_REQ_GET_*`, `BLE_REQ_PUT_*`, `EVENT_*`) |
 | `recon/app/src/FUN_<addr>.c` | untouched per-function evidence when the refactored copy has stripped log arguments |
+| `recon/emulator/scripts/app_flash_literal_ledger.json` (repo root) | rodata address → the `.inc`/`.c` that references it. **The way to find a handler whose log string the refactor stripped**: `debug_strings.txt` names the string's owning function (a whole inlined dispatcher, e.g. `sub_1A75C` = `ble_process_put_req`), grep the string in this ledger for its `0x9xxxx` address, then grep that address in the refactored tree — it lands on the exact `log_message((const void *)0x…)` call inside the right `ble_put_opNN` (how `0x07` was pinned, §21). `recon/catalogs/function_names_app.json` → `by_address` resolves `sub_XXXXX` to its refactored name |
 
 The three request families the firmware distinguishes (reply byte[1] `0xC9` =
 ok, `0xCA` = error with an ASCII reason; `0x66`/`0x67`/`0x68`/`0x69`/`0x6D`
