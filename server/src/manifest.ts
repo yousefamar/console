@@ -16,6 +16,8 @@ export interface ManifestEntry {
   name?: string
   /** claudeSessionId of the parent session (forks) — restores sidebar nesting. */
   parentClaudeSessionId?: string
+  /** Ticket-fork context mode (fresh | inherited) — see SessionOptions.forkContext. */
+  forkContext?: 'fresh' | 'inherited'
   /** Stable slug for board `@key` addressing + CONSOLE_AGENT_KEY actor attribution. */
   agentKey?: string
   /** Vault project slug this session is bound to (Spaces agent panel). */
@@ -73,6 +75,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       prompt: session.initialPrompt,
       name: session.name,
       ...(session.parentClaudeSessionId ? { parentClaudeSessionId: session.parentClaudeSessionId } : {}),
+      ...(session.forkContext ? { forkContext: session.forkContext } : {}),
       ...(session.agentKey ? { agentKey: session.agentKey } : {}),
       ...(session.project ? { project: session.project } : {}),
       ...(session.areas?.length ? { areas: session.areas } : {}),

@@ -81,7 +81,7 @@ export interface ActorRecord {
   actor: string
   ts: number
   /** Which /board/* verb wrote this (absent on records from before ^shy-boar). */
-  op?: 'move' | 'assign' | 'block' | 'model' | 'nofork' | 'note'
+  op?: 'move' | 'assign' | 'block' | 'model' | 'nofork' | 'inherit' | 'note'
   /** Target column of a `move`. */
   column?: string
 }
@@ -95,12 +95,23 @@ export interface CardView {
   checked: boolean
   /** `#nofork` — dispatch wakes the role directly, no per-ticket fork. */
   nofork: boolean
+  /** `#inherit` — the ticket-fork inherits the parent's transcript (default: fresh context + digest). */
+  inherit: boolean
   /** `#model/<alias>` — ticket-fork model pin (haiku/sonnet/opus or id). */
   model: string | null
   detail: string[]
   /** Set on a move into Under Review when the card carries no `- ` summary
    *  bullets — the CLI surfaces it to the agent at hand-back time. */
   warning?: string
+}
+
+/** The CardView of one card as it now stands (post-mutation) in `column`. */
+function cardView(card: BoardCard, column: string): CardView {
+  return {
+    text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked,
+    nofork: card.nofork, inherit: card.inherit, model: card.model,
+    detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean),
+  }
 }
 
 function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array<{ title: string; cards: CardView[] }> } {
@@ -112,7 +123,7 @@ function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array
       title: col.title,
       cards: col.cards.map((c) => ({
         text: c.text, column: col.title, agentKey: c.agentKey, blockId: c.blockId,
-        blocked: c.blocked, checked: c.checked, nofork: c.nofork, model: c.model,
+        blocked: c.blocked, checked: c.checked, nofork: c.nofork, inherit: c.inherit, model: c.model,
         detail: c.lines.slice(1).map((l) => l.trim()).filter(Boolean),
       })),
     })),
@@ -225,7 +236,7 @@ export class BoardOps {
       })
       if (!card) throw new Error(`no column "${column}" on this board`)
       if (opts.detail?.length) card.lines.push(...opts.detail.flatMap(detailLines))
-      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, model: card.model, detail: opts.detail ?? [] }
+      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, detail: opts.detail ?? [] }
     })
   }
 
@@ -241,7 +252,7 @@ export class BoardOps {
       this.recordActor(path, card.blockId, actor, { op: 'move', column: target.title })
       const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
       const warning = REVIEW_COLUMN_RE.test(target.title) && !hasSummaryBullets(detail) ? handbackWarning(project, card.blockId) : undefined
-      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, model: card.model, detail, ...(warning ? { warning } : {}) }
+      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, detail, ...(warning ? { warning } : {}) }
     })
   }
 
@@ -252,7 +263,7 @@ export class BoardOps {
       hit.card.agentKey = agentKey
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor, { op: 'assign' })
-      return { text: hit.card.text, column: hit.ref.column, agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
     })
   }
 
@@ -264,7 +275,7 @@ export class BoardOps {
       refreshCardLine(hit.card)
       if (blocked && note?.trim()) hit.card.lines.push(...detailLines(note))
       this.recordActor(path, hit.card.blockId, actor, { op: 'block' })
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
     })
   }
 
@@ -275,7 +286,7 @@ export class BoardOps {
       hit.card.model = model
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor, { op: 'model' })
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
     })
   }
 
@@ -286,7 +297,19 @@ export class BoardOps {
       hit.card.nofork = nofork
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor, { op: 'nofork' })
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
+    })
+  }
+
+  /** `#inherit` on/off — whether this card's ticket-fork inherits the parent's transcript. */
+  setInherit(project: string, query: string, inherit: boolean, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      hit.card.inherit = inherit
+      refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor, { op: 'inherit' })
+      return cardView(hit.card, hit.ref.column)
     })
   }
 
@@ -305,7 +328,7 @@ export class BoardOps {
       if ('error' in hit) throw new Error(hit.error)
       hit.card.lines.push(...detailLines(note))
       this.recordActor(path, hit.card.blockId, actor, { op: 'note' })
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
     })
   }
 
@@ -343,7 +366,7 @@ export class BoardOps {
       if (updates.detail) {
         hit.card.lines = [hit.card.lines[0]!, ...updates.detail.flatMap(detailLines)]
       }
-      return { text: hit.card.text, column: hit.ref.column, agentKey: hit.card.agentKey, blockId: hit.card.blockId, blocked: hit.card.blocked, checked: hit.card.checked, nofork: hit.card.nofork, model: hit.card.model, detail: hit.card.lines.slice(1).map((l) => l.trim()).filter(Boolean) }
+      return cardView(hit.card, hit.ref.column)
     })
   }
 

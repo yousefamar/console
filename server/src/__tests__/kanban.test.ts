@@ -3,7 +3,7 @@ import {
   cardUrls,
   isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
-  boardDefaultOwner, setBoardDefaultOwner,
+  boardDefaultOwner, setBoardDefaultOwner, boardForkContext,
 } from '../kanban/board.js'
 
 // Mirrors a real Obsidian-Kanban file: blank line inside the frontmatter
@@ -51,33 +51,44 @@ describe('isKanbanBoard', () => {
 
 describe('parseCardTokens', () => {
   it('plain text', () => {
-    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix the thing')).toEqual({ text: 'Fix the thing', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
   })
   it('agent only', () => {
-    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix the thing @al')).toEqual({ text: 'Fix the thing', agentKey: 'al', blockId: null, blocked: false, nofork: false, inherit: false, model: null })
   })
   it('agent + block id, either order', () => {
-    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, model: null })
-    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix @scribe ^abc123')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, inherit: false, model: null })
+    expect(parseCardTokens('Fix ^abc123 @scribe')).toEqual({ text: 'Fix', agentKey: 'scribe', blockId: 'abc123', blocked: false, nofork: false, inherit: false, model: null })
   })
   it('mid-text @ / ^ are not tokens', () => {
     expect(parseCardTokens('Email alice@example.com about it')).toEqual({
-      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false, nofork: false, model: null,
+      text: 'Email alice@example.com about it', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null,
     })
-    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('2^10 is 1024')).toEqual({ text: '2^10 is 1024', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
   })
   it('#nofork is a trailing property; blocked/nofork/key/id compose', () => {
-    expect(parseCardTokens('Fix it #nofork @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: false, nofork: true, model: null })
-    expect(parseCardTokens('Fix it #nofork #blocked @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: true, model: null })
-    expect(parseCardTokens('The #nofork policy is fine')).toEqual({ text: 'The #nofork policy is fine', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
-    expect(parseCardTokens('Quick fix #model/haiku @al ^ab12')).toEqual({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', blocked: false, nofork: false, model: 'haiku' })
-    expect(parseCardTokens('Pin full id #model/us.anthropic.claude-haiku-4-5-20251001-v1:0')).toEqual({ text: 'Pin full id', agentKey: null, blockId: null, blocked: false, nofork: false, model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' })
-    expect(parseCardTokens('Discussing the #model/haiku tag here today')).toEqual({ text: 'Discussing the #model/haiku tag here today', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix it #nofork @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: false, nofork: true, inherit: false, model: null })
+    expect(parseCardTokens('Fix it #nofork #blocked @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: true, inherit: false, model: null })
+    expect(parseCardTokens('The #nofork policy is fine')).toEqual({ text: 'The #nofork policy is fine', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
+    expect(parseCardTokens('Quick fix #model/haiku @al ^ab12')).toEqual({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', blocked: false, nofork: false, inherit: false, model: 'haiku' })
+    expect(parseCardTokens('Pin full id #model/us.anthropic.claude-haiku-4-5-20251001-v1:0')).toEqual({ text: 'Pin full id', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' })
+    expect(parseCardTokens('Discussing the #model/haiku tag here today')).toEqual({ text: 'Discussing the #model/haiku tag here today', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
+  })
+
+  it('#inherit is a trailing property like #nofork; round-trips through the line writer', () => {
+    expect(parseCardTokens('Continue what we discussed #inherit @console-general ^ab12')).toEqual({ text: 'Continue what we discussed', agentKey: 'console-general', blockId: 'ab12', blocked: false, nofork: false, inherit: true, model: null })
+    expect(parseCardTokens('Fix it #inherit #model/sonnet @al')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: false, nofork: false, inherit: true, model: 'sonnet' })
+    // mid-text is not a token
+    expect(parseCardTokens('#inherit is the tag').inherit).toBe(false)
+    const board = parseBoard('## In Progress\n- [ ] Fix it #inherit @al ^ab12\n')
+    expect(board.columns[0]!.cards[0]!.inherit).toBe(true)
+    expect(serializeBoard(board)).toContain('- [ ] Fix it #inherit @al ^ab12')
+    expect(sanitizeCardText('needs #inherit')).toBe('needs `#inherit`')
   })
   it('#blocked is a trailing property, any order with other tokens', () => {
-    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false, model: null })
-    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: false, model: null })
-    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false, inherit: false, model: null })
+    expect(parseCardTokens('Fix it @al #blocked')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: null, blocked: true, nofork: false, inherit: false, model: null })
+    expect(parseCardTokens('The #blocked drain is fine')).toEqual({ text: 'The #blocked drain is fine', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
   })
 })
 
@@ -104,7 +115,7 @@ describe('sanitizeCardText (write-path token-collision guard)', () => {
     // parseCardTokens never touches it.
     expect(sanitizeCardText('both @al #blocked')).toBe('both @al `#blocked`')
     const round = parseCardTokens(sanitizeCardText('both @al #blocked'))
-    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false, nofork: false, model: null })
+    expect(round).toEqual({ text: 'both @al `#blocked`', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
   })
   it('leaves mid-text and non-token tails alone', () => {
     expect(sanitizeCardText('email alice@example.com')).toBe('email alice@example.com')
@@ -262,5 +273,13 @@ describe('setBoardDefaultOwner (frontmatter default_owner)', () => {
     setBoardDefaultOwner(board, 'k')
     expect(serializeBoard(board).startsWith('---\ndefault_owner: k\n---\n')).toBe(true)
     expect(owner(board)).toBe('k')
+  })
+})
+
+describe('boardForkContext (frontmatter)', () => {
+  it("reads `fork_context: inherit`; anything else is null", () => {
+    expect(boardForkContext('---\nkanban-plugin: board\nfork_context: inherit\n---\n## Backlog\n')).toBe('inherit')
+    expect(boardForkContext('---\nkanban-plugin: board\nfork_context: fresh\n---\n## Backlog\n')).toBeNull()
+    expect(boardForkContext('## Backlog\n- [ ] fork_context: inherit\n')).toBeNull()
   })
 })

@@ -239,6 +239,35 @@ describe('buildBoardEnvelope fork identity', () => {
     })
     expect(env).not.toContain('IDENTITY')
   })
+
+  it('fresh-context fork: identity says NO --resume, and the parent digest rides the envelope (^tall-colt)', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/vault/projects/console/board.md',
+      card: { text: 'Fix nav', blockId: 'tall-colt', lines: ['- [ ] Fix nav @console-general-tall-colt-fork ^tall-colt'] },
+      column: 'In Progress',
+      forkIdentity: { key: 'console-general-tall-colt-fork', sourceKey: 'console-general', claudeSessionId: '9011740b-0000-0000-0000-000000000000', context: 'fresh' },
+      parentDigest: 'Parent: Console general @console-general.\n- Yousef: what map do we use?\n  ↳ parent: OpenFreeMap.',
+    })
+    expect(env).toContain('--session-id 9011740b-0000-0000-0000-000000000000')
+    expect(env).toContain('NO `--resume`/`--fork-session`')
+    expect(env).not.toContain("`--resume` id beside it is your PARENT's")
+    expect(env).toContain('CONTEXT FROM YOUR PARENT (a digest, not a transcript')
+    expect(env).toContain('- Yousef: what map do we use?')
+    // digest sits between the identity block and the card
+    expect(env.indexOf('CONTEXT FROM YOUR PARENT')).toBeLessThan(env.indexOf('Card (in "In Progress"'))
+  })
+
+  it('inherited fork (explicit) keeps the --resume wording and carries no digest section', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/v/b.md',
+      card: { text: 'x', blockId: 'aa', lines: ['- [ ] x @eng-aa-fork ^aa'] },
+      column: 'In Progress',
+      forkIdentity: { key: 'eng-aa-fork', sourceKey: 'eng', claudeSessionId: '1', context: 'inherited' },
+      parentDigest: null,
+    })
+    expect(env).toContain("`--resume` id beside it is your PARENT's")
+    expect(env).not.toContain('CONTEXT FROM YOUR PARENT')
+  })
 })
 
 describe('buildWindDownEnvelope', () => {
@@ -280,6 +309,41 @@ describe('transition deployGate threading', () => {
       expect(transitions).toHaveLength(1)
       expect(transitions[0]!.done).toBe(true)
       expect(transitions[0]!.deployGate).toBe('review')
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('BoardWatcher fork context (^tall-colt)', () => {
+  it('dispatch carries inherit from the card tag OR board frontmatter; the in-flight ledger keeps it for reopen', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'a'), { recursive: true })
+    mkdirSync(join(dir, 'projects', 'b'), { recursive: true })
+    // Board A: plain — one tagged card, one not. Board B: fork_context: inherit — every card inherits.
+    writeFileSync(join(dir, 'projects', 'a', 'board.md'), `---\nkanban-plugin: board\n---\n\n## In Progress\n\n- [ ] Plain @eng\n- [ ] Continue our chat #inherit @eng\n## Done\n`)
+    writeFileSync(join(dir, 'projects', 'b', 'board.md'), `---\nkanban-plugin: board\nfork_context: inherit\n---\n\n## In Progress\n\n- [ ] Anything @eng\n## Done\n`)
+    const seen: Array<{ text: string; inherit: boolean }> = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: (d) => { seen.push({ text: d.card.text, inherit: d.inherit }); return true }, pollMs: 999_999,
+    })
+    try {
+      await watcher.start()
+      expect(seen.sort((x, y) => x.text.localeCompare(y.text))).toEqual([
+        { text: 'Anything', inherit: true },
+        { text: 'Continue our chat', inherit: true },
+        { text: 'Plain', inherit: false },
+      ])
+      // The stamped in-flight state (what a reopen re-dispatch reads) carries the same flag.
+      const flight = (watcher as unknown as { inFlight: Map<string, { text: string; inherit: boolean }> }).inFlight
+      const byText = new Map([...flight.values()].map((t) => [t.text, t.inherit]))
+      expect(byText.get('Plain')).toBe(false)
+      expect(byText.get('Continue our chat')).toBe(true)
+      expect(byText.get('Anything')).toBe(true)
     } finally {
       watcher.stop()
       rmSync(dir, { recursive: true, force: true })

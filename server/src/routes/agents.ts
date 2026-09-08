@@ -18,6 +18,7 @@ import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
+import type { ForkCostLedger } from '../agents/fork-cost.js'
 import { getLastReadIndex, pinRead, setLastReadIndex, unpinRead } from '../read-state.js'
 
 // Session order persistence
@@ -138,6 +139,9 @@ export interface AgentContext {
    *  the board dispatcher should re-scan its queue (BoardWatcher.onWorkerEnded).
    *  The 10 s poll would find it anyway; this just makes it immediate. */
   onWorkerEnded?: () => void
+  /** Fresh-vs-inherited fork cost ledger (agents/fork-cost.ts) — a fork's
+   *  totals are appended when it ends. */
+  forkCost?: ForkCostLedger
 }
 
 /** What the MODEL receives for a human message: the text plus, when the
@@ -278,8 +282,16 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
  *  claudeSessionId yet (pre-init) — caller falls back to waking the source
  *  directly. The ENVELOPE must be sent immediately after this returns:
  *  `claude --fork-session` emits no init until its first message. */
-export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null): Session | null {
+export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null, opts: { inherit?: boolean } = {}): Session | null {
   if (!source.claudeSessionId) return null
+  // Context mode (^tall-colt): FRESH by default — a new session at the
+  // parent's cwd (CLAUDE.md + auto-memory arrive natively, the envelope
+  // carries a digest of the parent's conversation). `#inherit` / board
+  // `fork_context: inherit` opts back into the `--fork-session` transcript
+  // copy, which re-read the parent's whole history (~130k tokens) on every
+  // message. Identity, key shape, lineage and merge-back are identical in
+  // both modes — only the transcript differs.
+  const inherit = opts.inherit === true
   const baseTitle = (source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '').replace(/\s*\^[a-z0-9-]+$/, '')
   // Title = just the readable ticket id ("Bold fox (fork)") — the parent is
   // already visible via indent/filter, so repeating its name is noise. The KEY
@@ -302,8 +314,10 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   const session = createSession(ctx, {
     prompt: '',
     cwd: source.cwd,
-    resume: source.claudeSessionId,
-    fork: true,
+    ...(inherit
+      ? { resume: source.claudeSessionId, fork: true as const }
+      : { pinSessionId: true as const }),
+    forkContext: inherit ? 'inherited' : 'fresh',
     silent: true,
     name: title,
     parentClaudeSessionId: source.claudeSessionId,
@@ -458,7 +472,10 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
 
   session.on('exit', () => {
     saveManifest(ctx.sessions)
-    if (session.status === 'ended') ctx.onWorkerEnded?.()
+    if (session.status === 'ended') {
+      if (session.parentClaudeSessionId) ctx.forkCost?.record(session)
+      ctx.onWorkerEnded?.()
+    }
   })
 
   // A session hit a model-unavailable error. Advance the fallback chain (once

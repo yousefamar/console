@@ -375,6 +375,8 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus)
   board <project> nofork "<card>"       Dispatch wakes the assignee directly (no ticket-fork)
   board <project> forkok "<card>"       Undo nofork
+  board <project> inherit "<card>"      Ticket-fork inherits the parent's whole transcript (default: fresh context + digest)
+  board <project> fresh "<card>"        Undo inherit
   board <project> block "<card>"        Tag #blocked (keeps column position) [--note "why"]
   board <project> unblock "<card>"
   board <project> note "<card>" "text"  Append note lines under a card (newlines → one line each)
@@ -419,6 +421,7 @@ Commands:
   wait          Block until session completes
   chat          Talk to another agent (forks it, returns its reply)
   merge         Merge a fork back into its parent (summary folded in), then close it
+  fork-cost     Per-turn spend of ticket-forks, fresh vs inherited context [--days N]
   model         Inspect/switch the model all agents spawn with
 
 Examples:

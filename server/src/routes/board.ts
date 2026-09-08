@@ -96,6 +96,9 @@ export function handleBoardRoutes(
     case 'nofork':
       run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))
       return true
+    case 'inherit':
+      run((b) => ops.setInherit(project, String(b.card ?? ''), b.inherit !== false, actor))
+      return true
     case 'note':
       run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? ''), actor))
       return true

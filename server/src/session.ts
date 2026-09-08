@@ -74,6 +74,14 @@ export interface SessionOptions {
   silent?: boolean
   /** If true, fork the resumed session (new session ID, same conversation history) */
   fork?: boolean
+  /** Fresh spawn with a HUB-minted claudeSessionId pinned via `--session-id`
+   *  (no --resume): the id is known — and in the manifest — from birth, and
+   *  the process argv names itself. Fresh-context ticket-forks use this. */
+  pinSessionId?: boolean
+  /** How a ticket-fork got its context — `fresh` (new session + digest) or
+   *  `inherited` (`--fork-session` transcript copy). Persisted; feeds the
+   *  fork-cost ledger that compares the two (^tall-colt). */
+  forkContext?: 'fresh' | 'inherited'
   /** claudeSessionId of the session this was forked from — used to nest forks
    *  under their parent in the sidebar. Persisted across restarts. */
   parentClaudeSessionId?: string
@@ -177,6 +185,10 @@ export class Session extends EventEmitter {
   name?: string
   /** claudeSessionId of the parent session if this is a fork (else undefined). */
   readonly parentClaudeSessionId?: string
+  /** See SessionOptions.forkContext. Undefined for non-forks / pre-^tall-colt forks. */
+  readonly forkContext?: 'fresh' | 'inherited'
+  /** Completed turns (`result` messages) — the denominator for per-turn cost. */
+  turnCount = 0
   /** Durable org-chart role key (agents/registry.ts), if this session embodies one. */
   readonly agentKey?: string
   readonly project?: string
@@ -266,6 +278,7 @@ export class Session extends EventEmitter {
     this.initialPrompt = options.prompt
     this.name = options.name
     this.parentClaudeSessionId = options.parentClaudeSessionId
+    this.forkContext = options.forkContext
     this.agentKey = options.agentKey
     this.project = options.project
     this.areas = options.areas
@@ -291,6 +304,11 @@ export class Session extends EventEmitter {
     if (options.resume) {
       this.claudeSessionId = options.fork ? randomUUID() : options.resume
       if (options.fork) this.forkPin = this.claudeSessionId
+    } else if (options.pinSessionId) {
+      // Fresh spawn, hub-minted id: same pin mechanism as a fork, no parent
+      // transcript. spawn() passes `--session-id` alone.
+      this.claudeSessionId = randomUUID()
+      this.forkPin = this.claudeSessionId
     }
     // Silent resumes (hub restart restore) start idle — no prompt will be sent
     if (options.silent) {
@@ -392,6 +410,8 @@ export class Session extends EventEmitter {
       // identifies a fork and a reaper can match it without confusing it with
       // its parent (whose id sits in --resume).
       args.push('--fork-session', '--session-id', this.claudeSessionId!)
+    } else if (options.pinSessionId && !options.resume && this.claudeSessionId) {
+      args.push('--session-id', this.claudeSessionId)
     }
 
     if (options.name) {
@@ -1156,6 +1176,7 @@ export class Session extends EventEmitter {
       claudeSessionId: this.claudeSessionId,
       name: this.name,
       parentClaudeSessionId: this.parentClaudeSessionId,
+      forkContext: this.forkContext,
       agentKey: this.agentKey,
       project: this.project,
       areas: this.areas,
@@ -1201,11 +1222,11 @@ export class Session extends EventEmitter {
         // A pre-set csid that differs from what the CLI minted means this live
         // session was re-keyed: a pruned-transcript fresh respawn, or a CLI that
         // ignored a fork's `--session-id` pin (log it — the pin is load-bearing
-        // for identity). Fresh spawns never pre-set, so they can't trip this.
+        // for identity). Un-pinned fresh spawns never pre-set, so they can't trip this.
         const prevCsid = this.claudeSessionId
         const rekeyedFrom = prevCsid && prevCsid !== msg.session_id ? prevCsid : undefined
         if (rekeyedFrom && rekeyedFrom === this.forkPin) {
-          this.emitHub({ type: 'status', sessionId: this.id, text: `fork csid pin ignored by the CLI: pinned ${rekeyedFrom}, got ${msg.session_id}` })
+          this.emitHub({ type: 'status', sessionId: this.id, text: `csid pin ignored by the CLI: pinned ${rekeyedFrom}, got ${msg.session_id}` })
         }
         this.claudeSessionId = msg.session_id
         // Binds the todo watcher to the confirmed csid (idempotent when the
@@ -1398,6 +1419,7 @@ export class Session extends EventEmitter {
     // interrupt() clears the bit itself before sending SIGINT.
     if (!msg.is_error && !msg.subtype.startsWith('error')) this.midTurn = false
     this.lastActivityAt = Date.now()
+    this.turnCount++
     // total_cost_usd is cumulative (session total), not per-turn
     this.totalCost = msg.total_cost_usd
     this.totalTokens.input += msg.usage.input_tokens

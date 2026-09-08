@@ -29,6 +29,12 @@ export interface BoardCard {
   /** `#nofork` tag present — dispatch wakes the role DIRECTLY instead of
    *  forking it (trivial cards skip the fork+worktree+merge ceremony). */
   nofork: boolean
+  /** `#inherit` tag present — the ticket-fork is spawned WITH the parent's
+   *  whole transcript (`--fork-session`), for cards that need "what we
+   *  discussed". Default (absent) = a FRESH session at the parent's cwd that
+   *  gets CLAUDE.md + auto-memory natively plus a digest in the envelope; the
+   *  inherited transcript re-read ~130k tokens per message (^tall-colt). */
+  inherit: boolean
   /** `#model/<alias-or-id>` tag — the ticket-fork spawns pinned to this model
    *  (e.g. `#model/haiku` for a fast fix). Aliases stay portable across
    *  backends (they resolve via the ANTHROPIC_DEFAULT_*_MODEL env). */
@@ -89,6 +95,14 @@ export function boardDefaultOwner(content: string): string | null {
  *  board's running cards), so a board can only narrow or widen its own
  *  headroom against that shared total; `0` disables dispatch for the board.
  *  Absent = the hub-wide default. */
+/** Board-level frontmatter: `fork_context: inherit` — every ticket-fork on
+ *  THIS board inherits its parent's transcript (the per-card `#inherit` tag
+ *  does the same for one card). Absent = fresh-context forks. */
+export function boardForkContext(content: string): 'inherit' | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  return /^fork_context:\s*inherit\s*$/m.test(fence?.[1] ?? '') ? 'inherit' : null
+}
+
 export function boardMaxForks(content: string): number | null {
   const fence = content.match(/^---\n([\s\S]*?)\n---/)
   const m = (fence?.[1] ?? '').match(/^max_forks:\s*(\d+)\s*$/m)
@@ -115,15 +129,16 @@ export function setBoardDefaultOwner(board: KanbanBoard, agentKey: string | null
 }
 
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
-export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; model: string | null } {
+export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; model: string | null } {
   let text = rawText.trimEnd()
   let agentKey: string | null = null
   let blockId: string | null = null
   let blocked = false
   let nofork = false
+  let inherit = false
   let model: string | null = null
   // Up to one of each, trailing, any order.
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     const block = text.match(/^(.*?)\s+\^([A-Za-z0-9-]+)$/)
     if (block && blockId === null) {
       text = block[1]!.trimEnd()
@@ -148,6 +163,12 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
       nofork = true
       continue
     }
+    const inh = text.match(/^(.*?)\s+#inherit$/)
+    if (inh && !inherit) {
+      text = inh[1]!.trimEnd()
+      inherit = true
+      continue
+    }
     const mdl = text.match(/^(.*?)\s+#model\/([\w.:-]+)$/)
     if (mdl && model === null) {
       text = mdl[1]!.trimEnd()
@@ -156,7 +177,7 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
     }
     break
   }
-  return { text, agentKey, blockId, blocked, nofork, model }
+  return { text, agentKey, blockId, blocked, nofork, inherit, model }
 }
 
 /** Trailing `#tag` run on a card's (token-stripped) text — display-layer
@@ -206,8 +227,8 @@ export function parseBoard(content: string): KanbanBoard {
     if (!col) { header.push(line); continue }
     const card = line.match(CARD_RE)
     if (card) {
-      const { text, agentKey, blockId, blocked, nofork, model } = parseCardTokens(card[2]!)
-      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, model, lines: [line] })
+      const { text, agentKey, blockId, blocked, nofork, inherit, model } = parseCardTokens(card[2]!)
+      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, model, lines: [line] })
       continue
     }
     // Indented continuation attaches to the previous card.
@@ -256,7 +277,7 @@ export function sanitizeCardText(text: string): string {
   let t = text
   // Repeat: "foo @a #blocked" collides twice.
   for (;;) {
-    const m = t.match(/(\s)(#blocked|#nofork|#model\/[\w.:-]+|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
+    const m = t.match(/(\s)(#blocked|#nofork|#inherit|#model\/[\w.:-]+|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
     if (!m) return t
     t = `${t.slice(0, m.index! + m[1]!.length)}\`${m[2]!}\``
   }
@@ -267,6 +288,7 @@ function cardFirstLine(card: BoardCard): string {
   const tokens = [card.text]
   if (card.model) tokens.push(`#model/${card.model}`)
   if (card.nofork) tokens.push('#nofork')
+  if (card.inherit) tokens.push('#inherit')
   if (card.blocked) tokens.push('#blocked')
   if (card.agentKey) tokens.push(`@${card.agentKey}`)
   if (card.blockId) tokens.push(`^${card.blockId}`)
@@ -378,6 +400,7 @@ export function addCard(board: KanbanBoard, columnTitle: string, text: string, o
     blockId: opts?.blockId ?? null,
     blocked: false,
     nofork: false,
+    inherit: false,
     model: null,
     lines: [''],
   }

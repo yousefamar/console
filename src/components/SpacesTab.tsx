@@ -1127,6 +1127,7 @@ function BoardView() {
   const assignCard = useSpacesStore((s) => s.assignCard)
   const toggleBlocked = useSpacesStore((s) => s.toggleBlocked)
   const toggleNofork = useSpacesStore((s) => s.toggleNofork)
+  const toggleInherit = useSpacesStore((s) => s.toggleInherit)
   const setCardModel = useSpacesStore((s) => s.setCardModel)
   const editCard = useSpacesStore((s) => s.editCard)
   const deleteCard = useSpacesStore((s) => s.deleteCard)
@@ -1398,6 +1399,7 @@ function BoardView() {
           onAssignKey={(key) => void assignCard(detailTarget.ref, key)}
           onToggleBlockedNow={() => void toggleBlocked(detailTarget.ref)}
           onToggleNoforkNow={() => void toggleNofork(detailTarget.ref)}
+          onToggleInheritNow={() => void toggleInherit(detailTarget.ref)}
           onSetModel={(m) => void setCardModel(detailTarget.ref, m)}
           onMoveColumn={(to) => {
             const { ref } = detailTarget
@@ -1459,7 +1461,7 @@ function BoardView() {
  *  properties (column, assignee, #blocked) are pills that apply INSTANTLY;
  *  title + description are borderless editors that autosave on blur/close.
  *  Esc / backdrop / X close (committing any pending text). */
-function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onSetModel, onMoveColumn, onDelete }: {
+function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onToggleInheritNow, onSetModel, onMoveColumn, onDelete }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
@@ -1470,6 +1472,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   onAssignKey: (key: string | null) => void
   onToggleBlockedNow: () => void
   onToggleNoforkNow: () => void
+  onToggleInheritNow: () => void
   onSetModel: (model: string | null) => void
   /** Moves the card; parent updates the tracked ref. */
   onMoveColumn: (to: string) => void
@@ -1491,6 +1494,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
   const [agentKey, setAgentKey] = useState<string | null>(card.agentKey)
   const [blocked, setBlocked] = useState(card.blocked)
   const [nofork, setNofork] = useState(card.nofork)
+  const [inherit, setInherit] = useState(card.inherit)
   const [model, setModel] = useState(card.model)
   const [column, setColumn] = useState(currentColumn)
   const bodyRef = useRef(body)
@@ -1583,6 +1587,15 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
             title={nofork ? 'Dispatch will wake the role directly (no fork) — click to restore fork-per-ticket' : 'Opt this card out of fork-per-ticket dispatch'}
           >
             ⑂̸ {nofork ? 'nofork' : 'fork ok'}
+          </button>
+          {/* Inherit pill — the ticket-fork gets the parent's whole transcript
+              (#inherit) instead of the default fresh context + digest. */}
+          <button
+            onClick={() => { setInherit(!inherit); onToggleInheritNow() }}
+            className={clsx(pill, inherit && 'border-sky-500/50 bg-sky-500/10 text-sky-400')}
+            title={inherit ? "The ticket-fork inherits the parent's whole transcript — click for a fresh-context fork" : "Fresh-context fork (CLAUDE.md + memory + a digest of the parent's chat) — click to inherit the parent's transcript"}
+          >
+            ⧉ {inherit ? 'inherit' : 'fresh'}
           </button>
           {/* Model pill — pins the ticket-fork's model at dispatch (#model/… token).
               Aliases stay valid on both backends; no-op for #nofork direct wakes. */}
@@ -1935,6 +1948,7 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
         </button>
         {card.blocked && <span className="rounded-sm bg-red-500/15 px-1 py-px text-[9px] text-red-500">blocked</span>}
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}
+        {card.inherit && <span className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400" title="Ticket-fork inherits the parent's whole transcript">inherit</span>}
         {card.model && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400" title="Ticket-fork spawns pinned to this model">{card.model}</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>

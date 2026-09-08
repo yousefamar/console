@@ -197,6 +197,9 @@ export interface SessionInfo {
   /** claudeSessionId of the parent session if this is a fork — nests forks
    *  under their parent in the sidebar. */
   parentClaudeSessionId?: string
+  /** Ticket-fork context mode — `fresh` (new session + parent digest, the
+   *  default since ^tall-colt) or `inherited` (`--fork-session` transcript). */
+  forkContext?: 'fresh' | 'inherited'
   /** Stable slug for this session — board `@key` addressing + the CONSOLE_AGENT_KEY
    *  env the `con` CLI forwards for actor attribution. Pure identifier, no file. */
   agentKey?: string

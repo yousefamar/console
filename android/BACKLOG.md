@@ -10,6 +10,14 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Board: `#inherit` card token (hub + SPA ^tall-colt, 2026-09-08) — ticket-forks
+  are now FRESH-context by default; a trailing `#inherit` tag opts a card back
+  into the parent-transcript copy. `CardContent.kt`'s token parser must strip
+  `#inherit` like `#nofork` (else it renders as card text), the card sheet
+  wants an inherit/fresh toggle beside the nofork pill (`POST
+  /board/:project/inherit {card, inherit}`), and the tile a small `inherit`
+  badge. `CardView` from the hub now carries `inherit: boolean`.
+
 - Map: property listing review state (hub + SPA ^soft-goat, 2026-09-07) —
   every pin carries `_icon` (🏠 unreviewed, 🏡 interested — SPA draws agent
   points with an `_icon` as that emoji); interested pins also carry

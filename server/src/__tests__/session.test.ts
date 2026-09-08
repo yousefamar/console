@@ -735,6 +735,38 @@ describe('Session rich protocol', () => {
     expect(lastSpawnArgs!.args).not.toContain('--session-id')
   })
 
+  it('a FRESH-context fork (pinSessionId) mints + pins its csid with NO --resume/--fork-session (^tall-colt)', async () => {
+    const fresh = new Session({ prompt: '', silent: true, pinSessionId: true, forkContext: 'fresh', parentClaudeSessionId: 'parent_csid', agentKey: 'eng-aa-fork' })
+    expect(fresh.claudeSessionId).toMatch(/^[0-9a-f]{8}-/)
+    const args = lastSpawnArgs!.args
+    expect(args[args.indexOf('--session-id') + 1]).toBe(fresh.claudeSessionId)
+    expect(args).not.toContain('--resume')
+    expect(args).not.toContain('--fork-session')
+    // Lineage + mode are on the session (manifest + SessionInfo carry them).
+    expect(fresh.parentClaudeSessionId).toBe('parent_csid')
+    expect(fresh.forkContext).toBe('fresh')
+    expect(fresh.getInfo().forkContext).toBe('fresh')
+    // Init echoing the pin is NOT a re-key.
+    const msgs = collectHubMessages(fresh)
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: fresh.claudeSessionId!, model: 'claude-opus-4-8', slash_commands: [] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect((msgs.find((m) => m.type === 'session_init') as any).rekeyedFrom).toBeUndefined()
+    // Un-pinned fresh spawns are unchanged: no csid until init, no --session-id.
+    const plain = new Session({ prompt: 'x' })
+    expect(plain.claudeSessionId).toBeUndefined()
+    expect(lastSpawnArgs!.args).not.toContain('--session-id')
+  })
+
+  it('counts completed turns for the fork-cost ledger', async () => {
+    const s = new Session({ prompt: 'x' })
+    expect(s.turnCount).toBe(0)
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, session_id: 'x', total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 500 } })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, session_id: 'x', total_cost_usd: 0.02, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 700 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(s.turnCount).toBe(2)
+    expect(s.totalTokens.cacheRead).toBe(1200)
+  })
+
   it('logs a status when the CLI ignores a fork\'s --session-id pin', async () => {
     const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true })
     const msgs = collectHubMessages(fork)

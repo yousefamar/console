@@ -19,7 +19,9 @@ vi.mock('../session.js', () => {
     killed = false
     cwd: string; agentKey?: string; name?: string; parentClaudeSessionId?: string
     systemPrompt?: string; initialPrompt: string
+    opts: Record<string, unknown>
     constructor(opts: { cwd: string; agentKey?: string; name?: string; parentClaudeSessionId?: string; systemPrompt?: string; prompt: string }) {
+      this.opts = opts
       this.cwd = opts.cwd; this.agentKey = opts.agentKey; this.name = opts.name
       this.parentClaudeSessionId = opts.parentClaudeSessionId; this.systemPrompt = opts.systemPrompt; this.initialPrompt = opts.prompt
     }
@@ -85,6 +87,22 @@ describe('forkRoleSessionForTicket key shape', () => {
     const fork = forkRoleSessionForTicket(ctx, source as never, 'kind-pony') as unknown as { agentKey: string; name: string }
     expect(fork.agentKey).toBe('new-mobile-app-kind-pony-fork')
     expect(fork.name).toBe('Kind pony (fork)')
+  })
+
+  it('FRESH by default: pinned csid, no --resume/--fork-session, lineage + binding kept; #inherit restores the transcript copy (^tall-colt)', () => {
+    const sessions = new Map<string, unknown>()
+    const ctx = ctxOf(sessions)
+    const source = { id: 'src', name: 'Console general', agentKey: 'console-general', claudeSessionId: 'c1', cwd: '/vault/projects/console', project: 'console', status: 'idle' }
+    sessions.set('src', source)
+    const fresh = forkRoleSessionForTicket(ctx, source as never, 'tall-colt') as unknown as { opts: Record<string, unknown>; systemPrompt?: string }
+    expect(fresh.opts).toMatchObject({ pinSessionId: true, forkContext: 'fresh', parentClaudeSessionId: 'c1', agentKey: 'console-general-tall-colt-fork', project: 'console', cwd: '/vault/projects/console', silent: true })
+    expect(fresh.opts.resume).toBeUndefined()
+    expect(fresh.opts.fork).toBeUndefined()
+    // A fresh spawn is a keyed spawn → it gets the board protocol + its own identity natively.
+    expect(fresh.systemPrompt).toContain('`console-general-tall-colt-fork`')
+    const inherited = forkRoleSessionForTicket(ctx, source as never, 'odd-owl', null, { inherit: true }) as unknown as { opts: Record<string, unknown> }
+    expect(inherited.opts).toMatchObject({ resume: 'c1', fork: true, forkContext: 'inherited', parentClaudeSessionId: 'c1', agentKey: 'console-general-odd-owl-fork' })
+    expect(inherited.opts.pinSessionId).toBeUndefined()
   })
 })
 

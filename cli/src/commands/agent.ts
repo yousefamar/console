@@ -21,9 +21,21 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'model': return agentModel(args, flags)
     case 'cwd': return agentCwd(args, flags)
     case 'backend': return agentBackend(args, flags)
+    case 'fork-cost': return agentForkCost(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
+}
+
+// --------------------------------------------------------------------------
+// agent fork-cost — fresh vs inherited ticket-fork spend per turn.
+// --------------------------------------------------------------------------
+
+async function agentForkCost(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const days = typeof opts.days === 'string' ? Number(opts.days) : 0
+  const qs = days > 0 ? `?days=${days}` : ''
+  output(await hubFetch(`/agents/fork-cost${qs}`), flags)
 }
 
 // --------------------------------------------------------------------------

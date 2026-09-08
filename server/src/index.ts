@@ -41,6 +41,8 @@ import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { buildParentDigest } from './kanban/fork-digest.js'
+import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
@@ -856,21 +858,36 @@ const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json
 // follow-up made through the SPA (which leaves no actor record).
 const SELF_ECHO_WINDOW_MS = 60_000
 
-// A fresh ticket-fork compacts its inherited transcript before reading its card
-// (see DEFAULT_COMPACT_FORKS_ON_SPAWN). Live pref so it can be switched off
-// without a restart: `boards.compactForksOnSpawn: false`.
+// An INHERITED ticket-fork (`#inherit` / `fork_context: inherit`) compacts its
+// copied transcript before reading its card (see DEFAULT_COMPACT_FORKS_ON_SPAWN,
+// ^brisk-wolf). The default FRESH fork (^tall-colt) has nothing to compact — a
+// /compact there would be a wasted turn — so it takes the plain wake. Live
+// pref so it can be switched off without a restart: `boards.compactForksOnSpawn: false`.
 const compactForksOnSpawn = (): boolean => {
   const v = prefsStore.getAll()['boards.compactForksOnSpawn']
   return typeof v === 'boolean' ? v : DEFAULT_COMPACT_FORKS_ON_SPAWN
 }
 const wakeWorker = (worker: Session, forked: boolean, envelope: string, images: ImageAttachment[]) => {
-  if (forked && compactForksOnSpawn()) wakeForkCompacted(agentCtx, worker, envelope, images)
+  if (forked && worker.forkContext === 'inherited' && compactForksOnSpawn()) wakeForkCompacted(agentCtx, worker, envelope, images)
   else wakeSession(agentCtx, worker, envelope, images)
 }
+// What a FRESH-context ticket-fork gets to know about its parent: a template
+// digest of the parent's recent human conversation + open plan (fork-digest.ts).
+// CLAUDE.md/auto-memory need no carrying — the fork runs from the same cwd.
+function parentDigestFor(parent: Session): string | null {
+  return buildParentDigest(parent.messageLog, {
+    parent: { name: parent.name, agentKey: parent.agentKey, cwd: parent.cwd },
+    todos: parent.getInfo().todos ?? null,
+  })
+}
+// Fresh-vs-inherited fork cost ledger — every fork that ends appends a line;
+// GET /agents/fork-cost folds them with the live forks (^tall-colt's measure).
+const forkCostLedger = new ForkCostLedger(join(feedsConfigDir, 'fork-cost.jsonl'))
+agentCtx.forkCost = forkCostLedger
 
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
-  onDispatch: ({ boardPath, card, column, project, deployGate, load }) => {
+  onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit }) => {
     // Assigning a ticket to a LIVE session forks it: the fork inherits the
     // session's context, works just this ticket (in its own worktree, per
     // the envelope), and is merged after — the main session stays free for
@@ -886,8 +903,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // the session directly (trivial cards; Yousef's opt-OUT call — fork
     // stays the default).
     if (!isFork && live.claudeSessionId && !card.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model)
-      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey}${card.model ? ` (model ${card.model})` : ''}`) }
+      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, { inherit })
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''})`) }
     } else if (card.nofork) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
@@ -918,7 +935,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // A ticket-fork inherits the SOURCE role's self-identity prompt — tell
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null } : null,
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null, context: inherit ? 'inherited' : 'fresh' } : null,
+      parentDigest: forked && !inherit ? parentDigestFor(live) : null,
       load,
     }), images)
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
@@ -1063,8 +1081,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
     let worker: Session | null = null
     let forked = false
     if (!source.parentClaudeSessionId && source.claudeSessionId && !t.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model)
-      if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey}`) }
+      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model, { inherit: t.inherit })
+      if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey} (${t.inherit ? 'inherited transcript' : 'fresh context'})`) }
     }
     if (!worker) worker = source
     const images: ImageAttachment[] = []
@@ -1083,7 +1101,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
       column: t.column,
       project: projectForBoardPath(t.boardPath),
       deployGate: t.deployGate,
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: worker.claudeSessionId ?? null } : null,
+      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: worker.claudeSessionId ?? null, context: t.inherit ? 'inherited' : 'fresh' } : null,
+      parentDigest: forked && !t.inherit ? parentDigestFor(source) : null,
     }), images)
     if (worker.agentKey && worker.agentKey !== t.agentKey) return worker.agentKey
     return true
@@ -1477,6 +1496,19 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
       }))
       return
     }
+  }
+
+  // Fresh-vs-inherited ticket-fork cost (^tall-colt's measurement): ended forks
+  // from the JSONL ledger + live forks, bucketed by context mode. `?days=N`
+  // narrows the ended set (default all).
+  if (path === '/agents/fork-cost' && req.method === 'GET') {
+    const days = Number(url.searchParams.get('days') ?? '0')
+    const sinceTs = days > 0 ? Date.now() - days * 86_400_000 : 0
+    const live = [...sessions.values()].filter((s) => s.parentClaudeSessionId && s.status !== 'ended')
+    const buckets = aggregateForkCost(forkCostLedger.read(), live, { sinceTs })
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ sinceTs: sinceTs || null, liveForks: live.length, buckets }))
+    return
   }
 
   // Local-file media bridge: agents drop `![x](/abs/path.png)` in their output
@@ -2351,6 +2383,7 @@ httpServer.listen(port, host, () => {
             needsAttention: entry.needsAttention,
             restoreMessageLogLength: entry.messageLogLength,
             modelOverride: entry.modelOverride,
+            forkContext: entry.forkContext,
             queuedMessage: entry.queuedMessage,
             cacheTtl: entry.cacheTtl,
             // The restore spawn of a mid-turn session is "being worked" for the

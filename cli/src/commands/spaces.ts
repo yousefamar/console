@@ -37,13 +37,13 @@ interface CardView {
  *  the hub body's field name and the one people reach for. */
 const BOARD_FLAGS: Record<string, readonly string[]> = {
   show: [], add: ['to', 'column', 'assign', 'detail', 'bottom'], move: [], assign: [], owner: [], model: [],
-  nofork: [], forkok: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
+  nofork: [], forkok: [], inherit: [], fresh: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
   edit: ['text', 'detail'], remove: [], redispatch: [], history: [], restore: ['confirm'],
 }
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|inherit|fresh|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -121,6 +121,13 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/nofork`, { method: 'POST', body: { card, nofork: action === 'nofork' } }), flags)
       return
     }
+    case 'inherit':
+    case 'fresh': {
+      const card = pos[0]
+      if (!card) { exitWithError('USAGE', `Usage: con spaces board <project> ${action} "<card>"`, flags); return }
+      output(await hubFetch(`/board/${enc}/inherit`, { method: 'POST', body: { card, inherit: action === 'inherit' } }), flags)
+      return
+    }
     case 'block':
     case 'unblock': {
       const card = pos[0]
@@ -178,6 +185,6 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, inherit, fresh, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
   }
 }

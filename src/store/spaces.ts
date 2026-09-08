@@ -78,6 +78,9 @@ interface SpacesState {
   assignCard: (ref: CardRef, agentKey: string | null) => Promise<void>
   /** Flip the `#blocked` tag on a card (a property, not a column move). */
   toggleBlocked: (ref: CardRef) => Promise<void>
+  /** Flip the `#inherit` tag — the ticket-fork inherits the parent's transcript
+   *  instead of the default fresh context + digest. */
+  toggleInherit: (ref: CardRef) => Promise<void>
   /** Flip the `#nofork` tag — dispatch wakes the role directly, no fork. */
   toggleNofork: (ref: CardRef) => Promise<void>
   setCardModel: (ref: CardRef, model: string | null) => Promise<void>
@@ -415,6 +418,20 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     refreshCardLine(card)
     set({ board: { ...board } })
     if (q) await get().boardApi('nofork', { card: q, nofork: now })
+  },
+
+  toggleInherit: async (ref) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card) return
+    const q = cardQuery(board, ref)
+    const now = !card.inherit
+    card.inherit = now
+    refreshCardLine(card)
+    set({ board: { ...board } })
+    if (q) await get().boardApi('inherit', { card: q, inherit: now })
   },
 
   setDefaultOwner: async (slug, agentKey) => {

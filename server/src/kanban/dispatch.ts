@@ -69,6 +69,9 @@ export interface InFlightCard {
   /** Carried so a REOPEN re-dispatch honours the same fork/model choices the
    *  original dispatch would have made. */
   nofork: boolean
+  /** `#inherit` (or board `fork_context: inherit`) — the fork gets the
+   *  parent's transcript instead of fresh context + digest. */
+  inherit: boolean
   model: string | null
   /** Original card lines (text + indented notes) — a reopen re-dispatch sends
    *  the full envelope, and the accumulated notes ARE the handover. */
@@ -78,7 +81,8 @@ export interface InFlightCard {
 /** Every stamped card and where it currently sits — the whole dispatch state,
  *  derived from the file. Used to seed the in-flight ledger on boot and to
  *  detect completion by diffing consecutive parses. */
-export function inFlightCards(board: KanbanBoard): InFlightCard[] {
+export function inFlightCards(board: KanbanBoard, opts: { boardInherit?: boolean } = {}): InFlightCard[] {
+  const boardInherit = opts.boardInherit ?? false
   const out: InFlightCard[] = []
   for (const col of board.columns) {
     for (const card of col.cards) {
@@ -93,6 +97,7 @@ export function inFlightCards(board: KanbanBoard): InFlightCard[] {
         done: DONE_COLUMN_RE.test(col.title) || card.checked,
         blocked: card.blocked || BLOCKED_COLUMN_RE.test(col.title),
         nofork: card.nofork,
+        inherit: card.inherit || boardInherit,
         model: card.model,
         lines: card.lines,
       })
@@ -233,13 +238,22 @@ export function buildBoardEnvelope(opts: {
      *  claims, and a mis-routed or twin-delivered wake should be loud, not
      *  silently worked (^blue-vole). */
     claudeSessionId?: string | null
+    /** `inherited` = spawned with `--fork-session` (argv also carries the
+     *  parent's `--resume`); `fresh` (default since ^tall-colt) = a new
+     *  session that knows the parent only through `parentDigest`. */
+    context?: 'fresh' | 'inherited'
   } | null
+  /** Fresh-context forks: what the parent knows that matters for this card,
+   *  as a compact digest (buildParentDigest) — CLAUDE.md and auto-memory
+   *  arrive natively via the cwd, so this carries only the conversation. */
+  parentDigest?: string | null
   /** How many cards (including this one) now have a live worker, and the cap.
    *  Every worktree lives on the same disk, so a fork starting under load must
    *  serialise its heavy steps instead of adding a parallel tsc/vitest. */
   load?: { running: number; cap: number } | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest } = opts
+  const inherited = forkIdentity?.context !== 'fresh'
   // Image detail lines are delivered as REAL image attachments on the wake —
   // echoing them as text renders a broken ![img] box in the transcript.
   const detail = card.lines.slice(1).map((l) => l.trim())
@@ -251,8 +265,17 @@ export function buildBoardEnvelope(opts: {
       (forkIdentity.sourceKey ? ` (no longer \`${forkIdentity.sourceKey}\` — your system prompt predates the fork)` : '') +
       `. The board line's \`@${forkIdentity.key}\` means YOU. Do not stand down or defer to "the fork" — you ARE it.`,
       ...(forkIdentity.claudeSessionId ? [
-        `Your claudeSessionId is \`${forkIdentity.claudeSessionId}\` — your own process argv carries \`--session-id ${forkIdentity.claudeSessionId}\` (\`ps -o args= -p $PPID\`); the \`--resume\` id beside it is your PARENT's, not yours. If your argv does NOT carry this --session-id, this wake reached the wrong process: do not work the card — say so and stop.`,
+        `Your claudeSessionId is \`${forkIdentity.claudeSessionId}\` — your own process argv carries \`--session-id ${forkIdentity.claudeSessionId}\` (\`ps -o args= -p $PPID\`)` +
+        (inherited
+          ? `; the \`--resume\` id beside it is your PARENT's, not yours.`
+          : ` and NO \`--resume\`/\`--fork-session\` — you are a fresh session, not a transcript copy; your parent's context reaches you only as the digest below.`) +
+        ' If your argv does NOT carry this --session-id, this wake reached the wrong process: do not work the card — say so and stop.',
       ] : []),
+      '',
+    ] : []),
+    ...(parentDigest ? [
+      'CONTEXT FROM YOUR PARENT (a digest, not a transcript — CLAUDE.md and auto-memory you already have natively):',
+      parentDigest,
       '',
     ] : []),
     `Board: ${boardAbsPath}${project ? `   Project: ${project}` : ''}`,
