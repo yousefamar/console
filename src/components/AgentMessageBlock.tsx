@@ -4,6 +4,7 @@ import { useAgentStore } from '@/store/agent'
 import { getHubUrl } from '@/hub'
 import { useUiStore } from '@/store/ui'
 import { TodoList, todoLabel, todoProgress } from './agent/TodoList'
+import { segmentBlocks } from '@/agents/markdown-blocks'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
   Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft, Volume2, Square,
@@ -798,39 +799,31 @@ export function renderMarkdownLite(text: string): React.ReactNode[] {
   return parts.length > 0 ? parts : [<span key={0}>{text}</span>]
 }
 
-/** Parse tables and inline markdown from non-code-fence text */
+/** Parse tables, blockquotes and inline markdown from non-code-fence text */
 function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
   const parts: React.ReactNode[] = []
   let key = startKey
 
-  // Split into lines to detect tables
-  const lines = text.split('\n')
-  let i = 0
-
-  while (i < lines.length) {
-    // Detect table: line with |, followed by separator line (|---|---|), followed by more | lines
-    if (
-      lines[i]!.includes('|') &&
-      i + 1 < lines.length &&
-      /^\s*\|?\s*[-:]+[-| :]*$/.test(lines[i + 1]!)
-    ) {
-      // Collect all table lines
-      const headerLine = lines[i]!
-      i += 2 // skip header + separator
-      const bodyLines: string[] = []
-      while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim() !== '') {
-        bodyLines.push(lines[i]!)
-        i++
-      }
-
+  for (const seg of segmentBlocks(text)) {
+    if (seg.kind === 'quote') {
+      // `>` lines → a real blockquote; recurse so nested `> >` quotes and
+      // tables inside a quote render too. Block-level, so it never inherits
+      // the `>` glyphs into the pre-wrap text run.
+      parts.push(
+        <blockquote key={key++} className="my-1 border-l-2 border-text-tertiary/50 pl-3 text-text-secondary">
+          {renderBlockContent(seg.lines.join('\n'), key)}
+        </blockquote>,
+      )
+      key += 100
+    } else if (seg.kind === 'table') {
       const parseRow = (line: string) =>
         line.split('|').map((c) => c.trim()).filter((c, idx, arr) =>
           // Filter empty first/last from leading/trailing |
           !(c === '' && (idx === 0 || idx === arr.length - 1)),
         )
 
-      const headers = parseRow(headerLine)
-      const rows = bodyLines.map(parseRow)
+      const headers = parseRow(seg.header)
+      const rows = seg.body.map(parseRow)
 
       parts.push(
         <div key={key++} className="my-1 overflow-x-auto max-w-[calc(100vw-24px)]">
@@ -859,15 +852,7 @@ function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
         </div>,
       )
     } else {
-      // Non-table line — collect consecutive non-table lines
-      const lineStart = i
-      while (
-        i < lines.length &&
-        !(lines[i]!.includes('|') && i + 1 < lines.length && /^\s*\|?\s*[-:]+[-| :]*$/.test(lines[i + 1]!))
-      ) {
-        i++
-      }
-      const chunk = lines.slice(lineStart, i).join('\n')
+      const chunk = seg.lines.join('\n')
       if (chunk) {
         parts.push(<span key={key++}>{renderInlineMarkdown(chunk)}</span>)
       }
