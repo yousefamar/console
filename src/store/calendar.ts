@@ -6,7 +6,7 @@ import * as api from '@/calendar/api'
 import { getAccounts, addCalendarAccount, removeCalendarAccount, type CalendarAccount } from '@/calendar/accounts'
 import { optimisticallyDeleted, pendingTempIds } from '@/calendar/sync'
 import { useUiStore } from '@/store/ui'
-import { getPref, setPref, isPrefsLoaded } from '@/prefs'
+import { getPref, setPref, isPrefsLoaded, prefsReady } from '@/prefs'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 
 const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
@@ -215,6 +215,9 @@ interface CalendarState {
   toggleCalendarVisibility: (calId: string) => void
   setDefaultCalendar: (calId: string | null) => void
   registerOverlaySource: (id: string, info: CalendarInfo, events: CalendarEvent[]) => void
+  /** Apply the ONE overlay-visibility rule against LOADED prefs: seen → exactly
+   *  what the saved set says; unseen → default visible + persist seen/visible. */
+  settleOverlayVisibility: (id: string) => void
   unregisterOverlaySource: (id: string) => void
 
   // CRUD
@@ -404,16 +407,17 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       } else {
         newVisible = visibleCalendarIds
       }
-      // The saved visibleIds pref predates overlay sources (Meetup, …),
-      // so loading it above would drop their visibility even though the user
-      // never toggled them off. Re-assert visibility for any overlay the user
-      // hasn't explicitly hidden: a first-seen overlay defaults visible (its id
-      // is absent from OVERLAY_SEEN_PREF), which the register step already added
-      // to the in-memory set — union that back in so fetchCalendars can't clobber it.
-      const seenOverlays = getPref<string[]>(OVERLAY_SEEN_PREF, [])
-      for (const id of Object.keys(get().overlaySources)) {
-        // Visible if: not yet seen (defaults on) OR currently in the live set.
-        if (!seenOverlays.includes(id) || visibleCalendarIds.has(id)) newVisible.add(id)
+      // Overlays (Meetup, …): the saved set is authoritative for any overlay the
+      // user has SEEN; only a first-seen overlay (absent from OVERLAY_SEEN_PREF)
+      // defaults visible. Never "or currently in the live set" — the in-memory
+      // set used to carry a pre-prefs guess, and unioning it here is how a
+      // hidden Meetup came back after every slow boot (^tame-ibis). Before prefs
+      // load we can't tell hidden from new, so decide nothing.
+      if (isPrefsLoaded()) {
+        const seenOverlays = getPref<string[]>(OVERLAY_SEEN_PREF, [])
+        for (const id of Object.keys(get().overlaySources)) {
+          if (!seenOverlays.includes(id)) newVisible.add(id)
+        }
       }
 
       set({ calendars: withOverlays, connected: true, visibleCalendarIds: newVisible })
@@ -599,34 +603,45 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       // Merge the synthetic info into `calendars` (dedupe by id) so colour
       // lookup + the sidebar toggle work. fetchCalendars re-derives this too.
       const calendars = [...s.calendars.filter((c) => c.id !== id), { ...info, synthetic: true }]
-      // First time we've ever seen this source → default it visible (the user's
-      // curated visibleIds pref predates the overlay, so its absence isn't an
-      // opt-out). On every subsequent register we respect the live set, so a
-      // later toggle-off sticks across reloads.
-      const seen = getPref<string[]>(OVERLAY_SEEN_PREF, [])
-      // Seed from the PERSISTED set as well as the in-memory one: the store is
-      // created at import time (before the prefs cache is populated) and App
-      // hydrates it a few ticks later, so an overlay registering in that window
-      // would otherwise persist a set missing every real calendar — shrinking
-      // the user's selection to just this overlay. A register may only ever ADD.
-      const next = new Set([...getPref<string[]>(VISIBLE_CAL_IDS_PREF, []), ...s.visibleCalendarIds])
-      if (!seen.includes(id)) {
-        next.add(id)
-        // Mark seen and persist visibility ATOMICALLY — both or neither. The old
-        // code marked seen unconditionally but only persisted visibleIds when
-        // prefs were loaded; at boot the register runs before initPrefs resolves,
-        // so the overlay got recorded as "seen" while its visibility was never
-        // saved. Next boot it was seen-but-absent-from-visibleIds → treated as an
-        // intentional opt-out and its toggle silently vanished. Gating both on
-        // isPrefsLoaded keeps them consistent; if prefs aren't ready we defer
-        // marking seen (a later register once prefs load will do it).
-        if (isPrefsLoaded()) {
-          setPref(OVERLAY_SEEN_PREF, [...seen, id])
-          setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
-        }
-      }
-      return { overlaySources, calendars, visibleCalendarIds: next }
+      return { overlaySources, calendars }
     })
+    // Visibility is decided ONLY against loaded prefs. Deciding here with an
+    // empty cache made every overlay look first-seen, added it to the in-memory
+    // set, and hydration/fetchCalendars then unioned that guess over the saved
+    // pref — a hidden Meetup resurfaced whenever this register beat /config
+    // (every slow boot / hub restart). Defer until prefs are actually loaded.
+    if (isPrefsLoaded()) get().settleOverlayVisibility(id)
+    else void prefsReady().then(() => { if (get().overlaySources[id]) get().settleOverlayVisibility(id) })
+    get().loadEventsFromDb()
+  },
+
+  settleOverlayVisibility: (id) => {
+    if (!isPrefsLoaded()) return
+    const seen = getPref<string[]>(OVERLAY_SEEN_PREF, [])
+    const saved = getPref<string[]>(VISIBLE_CAL_IDS_PREF, [])
+    if (seen.includes(id)) {
+      // Already known to the user: the saved set says everything. Absent =
+      // an explicit toggle-off, which must survive reloads and restarts.
+      // Seed from saved ∪ memory (settle may run before App's hydration, and a
+      // register may only ever ADD real calendars) — then apply the verdict.
+      set((s) => {
+        const next = new Set([...saved, ...s.visibleCalendarIds])
+        if (saved.includes(id)) next.add(id)
+        else next.delete(id)
+        return { visibleCalendarIds: next }
+      })
+    } else {
+      // First time we've ever seen this source → default it visible (the
+      // user's curated visibleIds pref predates the overlay, so its absence
+      // isn't an opt-out). Seed from the PERSISTED set as well as the
+      // in-memory one — a register may only ever ADD — and mark seen + persist
+      // visibility ATOMICALLY: both or neither, or the next boot reads
+      // seen-but-absent as an opt-out and the toggle silently vanishes.
+      const next = new Set([...saved, ...get().visibleCalendarIds, id])
+      setPref(OVERLAY_SEEN_PREF, [...seen, id])
+      setPref(VISIBLE_CAL_IDS_PREF, Array.from(next))
+      set({ visibleCalendarIds: next })
+    }
     get().loadEventsFromDb()
   },
 

@@ -63,7 +63,7 @@ describe('registerOverlaySource cannot shrink the persisted visibility set', () 
     expect(getPref<string[]>(VISIBLE, [])).toEqual(REAL_IDS)
   })
 
-  it('persists nothing while the prefs load is still failing', async () => {
+  it('decides nothing while the prefs load is still failing — no write, not shown', async () => {
     __resetPrefsForTests()
     mockHub(new Error('timeout'))
     void initPrefs()
@@ -71,7 +71,60 @@ describe('registerOverlaySource cannot shrink the persisted visibility set', () 
     const before = putCount()
     useCalendarStore.getState().registerOverlaySource('meetup', OVERLAY, [])
     expect(putCount()).toBe(before)
-    // …but it is visible in memory, so the user still sees it this session.
+    // Before prefs load we cannot tell "hidden by the user" from "new": the
+    // source is registered (sidebar row exists) but its visibility is deferred.
+    expect(useCalendarStore.getState().overlaySources.meetup).toBeDefined()
+    expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(false)
+  })
+
+  it('a HIDDEN overlay stays hidden when the register beats the prefs load (the ^tame-ibis bug)', async () => {
+    __resetPrefsForTests()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    hubFetch.mockImplementation((_path: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') return Promise.resolve({})
+      return gate.then(() => ({ [VISIBLE]: REAL_IDS, 'calendar.overlaySeen': ['meetup'] }))
+    })
+    const ready = initPrefs()
+    const before = putCount()
+    // Meetup events are in Dexie at boot, so the overlay registers before /config answers.
+    useCalendarStore.getState().registerOverlaySource('meetup', OVERLAY, [])
+    expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(false)
+    release()
+    await ready
+    await Promise.resolve()
+    // The user hid it (seen + absent from the saved set): still hidden, nothing persisted.
+    expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(false)
+    expect(getPref<string[]>(VISIBLE, [])).toEqual(REAL_IDS)
+    expect(putCount()).toBe(before)
+  })
+
+  it('a FIRST-SEEN overlay registered before the prefs load becomes visible + persisted once they land', async () => {
+    __resetPrefsForTests()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    hubFetch.mockImplementation((_path: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') return Promise.resolve({})
+      return gate.then(() => ({ [VISIBLE]: REAL_IDS, 'calendar.overlaySeen': [] }))
+    })
+    const ready = initPrefs()
+    useCalendarStore.getState().registerOverlaySource('meetup', OVERLAY, [])
+    release()
+    await ready
+    await Promise.resolve()
     expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(true)
+    expect(getPref<string[]>(VISIBLE, [])).toEqual([...REAL_IDS, 'meetup'])
+    expect(getPref<string[]>('calendar.overlaySeen', [])).toEqual(['meetup'])
+  })
+
+  it('settle: seen + present in the saved set → visible; a later toggle-off persists and sticks', async () => {
+    await loadPrefs({ [VISIBLE]: [...REAL_IDS, 'meetup'], 'calendar.overlaySeen': ['meetup'] })
+    useCalendarStore.getState().registerOverlaySource('meetup', OVERLAY, [])
+    expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(true)
+    useCalendarStore.getState().toggleCalendarVisibility('meetup')
+    expect(getPref<string[]>(VISIBLE, [])).toEqual(REAL_IDS)
+    // A re-register (events refreshed) must not undo the toggle.
+    useCalendarStore.getState().registerOverlaySource('meetup', OVERLAY, [])
+    expect(useCalendarStore.getState().visibleCalendarIds.has('meetup')).toBe(false)
   })
 })

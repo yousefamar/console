@@ -178,12 +178,16 @@ export function App() {
           const patch: Partial<{ defaultCalendarId: string | null; visibleCalendarIds: Set<string> }> = {}
           if (defaultCalId !== null) patch.defaultCalendarId = defaultCalId
           if (visibleCalIds && Array.isArray(visibleCalIds)) {
-            // Keep overlays registered during the load window: the pref predates
-            // them (a first-seen overlay defaults visible in memory and defers its
-            // write), so a plain replace would hide it until something re-asserted.
-            const { visibleCalendarIds, overlaySources } = useCalendarStore.getState()
-            const liveOverlays = Object.keys(overlaySources).filter((id) => visibleCalendarIds.has(id))
-            patch.visibleCalendarIds = new Set([...visibleCalIds, ...liveOverlays])
+            // The saved set is authoritative. The only additions are FIRST-SEEN
+            // overlays (registered during the load window, absent from
+            // overlaySeen) — their deferred settle persists them right after
+            // this. Never union the in-memory set: it once carried a pre-prefs
+            // "unseen" guess for every overlay, which re-showed a hidden
+            // Meetup on every slow boot (^tame-ibis).
+            const { overlaySources } = useCalendarStore.getState()
+            const seen = getPref<string[]>('calendar.overlaySeen', [])
+            const firstSeen = Object.keys(overlaySources).filter((id) => !seen.includes(id))
+            patch.visibleCalendarIds = new Set([...visibleCalIds, ...firstSeen])
           }
           useCalendarStore.setState(patch)
         })
