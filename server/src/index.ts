@@ -114,7 +114,6 @@ import { syncVoiceAuth } from './al/voice.js'
 import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
-import { startDeprecationShim } from './al/shim-18789.js'
 import { routeInbound, startConversationForks } from './al/conversation-forks.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
@@ -2486,10 +2485,6 @@ httpServer.listen(port, host, () => {
           },
         })
         log('Baileys WhatsApp started')
-
-        // Deprecation shim on :18789 — translates old POST /message → wa.sendText
-        // until every caller migrates to `con whatsapp send`. Logs every caller.
-        startDeprecationShim()
       } catch (err) {
         console.error('[al/boot] failed:', (err as Error)?.message)
       }

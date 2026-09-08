@@ -296,3 +296,6 @@ note opens on the phone (`NotesRepository.wireNotesEvents`). Room migrations
 that rename/transform (not just add) use an `AutoMigrationSpec` —
 `ConsoleDb.Migration13To14` is the pattern, with a `MigrationTest` seeding the
 OLD table.
+
+## Test-isolation gotchas
+- **Repository-level Room flows must use `WhileSubscribed`, never `SharingStarted.Eagerly`** — an eagerly-collected Room StateFlow breaks Robolectric test isolation: Room silently reopens a closed DB on the next query, so one test class's corrupt-DB scenario leaks into later classes (found building the native Inbox, v91).
