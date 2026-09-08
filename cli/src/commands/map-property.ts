@@ -242,6 +242,7 @@ function criteriaFrom(o: Record<string, string>): Record<string, unknown> {
   if (o['exclude-schemes']) c.excludeSchemes = o['exclude-schemes'] !== 'false'
   if (o['exclude-auctions']) c.excludeAuctions = o['exclude-auctions'] !== 'false'
   if (o['exclude-new-build']) c.excludeNewBuild = o['exclude-new-build'] !== 'false'
+  if (o['max-high-street-m']) c.maxHighStreetM = o['max-high-street-m'] === 'none' ? null : Number(o['max-high-street-m'])
   if (o['no-buyer-fee']) c.noBuyerFee = o['no-buyer-fee'] !== 'false'
   if (o['exclude-price-on-request']) c.excludePriceOnRequest = o['exclude-price-on-request'] !== 'false'
   return c

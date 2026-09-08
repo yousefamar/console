@@ -23,6 +23,7 @@ import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, type PropertyKind, type Pr
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
 import { listingKind } from './land.js'
+import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
@@ -106,6 +107,8 @@ export class PropertySync {
     private readonly mapLayers: MapLayerStore,
     private readonly gmaps: GoogleMapsClient,
     private readonly log: (msg: string) => void,
+    /** Nearest-high-street lookups for `criteria.maxHighStreetM`; null = filter passes everything. */
+    private readonly highStreets: HighStreetIndex | null = null,
   ) {}
 
   start(): void {
@@ -145,7 +148,7 @@ export class PropertySync {
     const client = this.clientFor(s)
     const rings = this.rings(s.layer, s.country, s.maxRings)
     const r = await client.newest(rings, s.criteria, BACKFILL_LIMIT)
-    const listings = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported)))
+    const listings = this.applyPlaceFilter(s, this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported))))
     const updated = this.searches.recordBackfill(id, listings)
     if (!updated) return undefined
     this.bus.broadcast('property', 'polled', updated)
@@ -414,7 +417,7 @@ export class PropertySync {
       // The inventory takes the coarse rows (fine filters re-run at draw time);
       // a skim only adds/refreshes — it can't know what's gone.
       this.inventory.upsert(s.id, r.listings, { full: false })
-      listings = sortNewestFirst(this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported))))
+      listings = sortNewestFirst(this.applyPlaceFilter(s, this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(r.listings, s.criteria, r.unsupported)))))
     } catch (e) {
       error = (e as Error).message
     }
@@ -566,6 +569,37 @@ export class PropertySync {
   }
 
   /**
+   * Where the house sits: `maxHighStreetM` (straight-line to the nearest
+   * high-street cell) and, for portals that can't filter it themselves,
+   * `excludeNewBuild` from the text. Both are properties no portal exposes, so
+   * they run here at draw time next to the zone clip. Rows without coordinates
+   * or without an index pass — this filter only ever says no when it knows.
+   */
+  private applyPlaceFilter(s: PropertySearch, listings: Listing[]): Listing[] {
+    const c = s.criteria
+    const unsupported = new Set(s.unsupported ?? [])
+    const checkNewBuild = !!c.excludeNewBuild && unsupported.has('excludeNewBuild')
+    const max = c.maxHighStreetM
+    if (!checkNewBuild && max == null) return listings
+    return listings.filter((l) => {
+      if (checkNewBuild && newBuildLike(l)) return false
+      if (max != null && this.highStreets && l.lat != null && l.lon != null) {
+        const m = this.highStreets.nearestM(l.lat, l.lon)
+        if (m != null && m > max) return false
+      }
+      return true
+    })
+  }
+
+  /** "320 m to shops" for the popup; undefined without coordinates or an index. */
+  private highStreetLabel(l: Listing): string | undefined {
+    if (!this.highStreets || l.lat == null || l.lon == null) return undefined
+    const m = this.highStreets.nearestM(l.lat, l.lon)
+    if (m == null) return undefined
+    return m >= 5000 ? '>5 km to shops' : `${m} m to shops`
+  }
+
+  /**
    * The portal query is only an approximation of the layer: portals take outer
    * rings only (no holes), and some clip or simplify further. So every listing
    * that comes back is re-tested against the real geometry, holes included.
@@ -675,7 +709,7 @@ export class PropertySync {
       const pool = this.inventory.live(s.id)
       // A search that has never been pulled in full still shows its skims.
       const source: Listing[] = pool.length ? pool : (s.lastResults ?? [])
-      const kept = this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? [])))
+      const kept = this.applyPlaceFilter(s, this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? []))))
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
         if (listingKind(l, searchKind) !== kind) continue
@@ -708,6 +742,7 @@ export class PropertySync {
           airport: l.nearestAirport
             ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
             : undefined,
+          highStreet: this.highStreetLabel(l),
           url: l.url,
           // Extra detail for the SPA's property panel (not shown in the popup).
           title: l.title,

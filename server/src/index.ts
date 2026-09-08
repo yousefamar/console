@@ -140,6 +140,7 @@ import { SubitoClient } from './property/subito.js'
 import { SmallholdingsClient } from './property/smallholdings.js'
 import { KleinanzeigenClient } from './property/kleinanzeigen.js'
 import { PropertySync } from './property/sync.js'
+import { HighStreetIndex } from './property/place.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
 import { ImmoScout24Client } from './property/immoscout24.js'
@@ -383,6 +384,9 @@ const propertySync = new PropertySync(
   mapLayerStore,
   googleMapsClient,
   (msg: string) => { log(msg) },
+  // High-street cells for `criteria.maxHighStreetM` — built by the vault's OSM
+  // shop pipeline (build-high-streets.mjs), re-read whenever the file changes.
+  new HighStreetIndex(process.env.PROPERTY_HIGH_STREETS ?? join(homedir(), 'sync/brain/root/projects/home/data/high-streets.geojson'), (msg: string) => { log(msg) }),
 )
 propertySync.start()
 const keyBackupStore = new KeyBackupStore(

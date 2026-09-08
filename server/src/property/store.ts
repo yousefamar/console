@@ -168,6 +168,20 @@ export interface PropertySearch {
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
   Partial<Pick<PropertySearch, 'label' | 'kind' | 'portal' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
 
+/**
+ * Criteria that never reach a portal — enforced only at draw time from the
+ * inventory. Editing them must NOT count as a new query: dropping the
+ * inventory would also drop hours of detail-page enrichment for a filter the
+ * portal never saw.
+ */
+export const LOCAL_ONLY_CRITERIA = ['maxHighStreetM'] as const
+
+function coarseCriteria(c: Criteria | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(c ?? {}) }
+  for (const k of LOCAL_ONLY_CRITERIA) delete out[k]
+  return out
+}
+
 export class PropertySearchStore {
   private items: PropertySearch[] = []
   private loaded = false
@@ -217,7 +231,7 @@ export class PropertySearchStore {
     // Changing the criteria or region invalidates the seen set — the old ids
     // describe a different query, so re-seed rather than alert on the delta.
     const requeried =
-      (patch.criteria && JSON.stringify(patch.criteria) !== JSON.stringify(before.criteria)) ||
+      (patch.criteria && JSON.stringify(coarseCriteria(patch.criteria)) !== JSON.stringify(coarseCriteria(before.criteria))) ||
       (patch.layer && patch.layer !== before.layer) ||
       (patch.country && patch.country !== before.country) ||
       (patch.portal && patch.portal !== (before.portal ?? PORTAL_BY_COUNTRY[before.country]))

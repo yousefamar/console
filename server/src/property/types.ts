@@ -104,8 +104,19 @@ export interface Criteria {
    * always enforced by matching listing text, on all three portals.
    */
   excludeAuctions?: boolean
-  /** Drop new-builds. Rightmove only (`dontShow=newHome`). */
+  /**
+   * Drop new-builds. Server-side on Rightmove (`dontShow=newHome`) and
+   * OnTheMarket; everywhere else enforced locally from developer/new-build
+   * wording (`place.ts newBuildLike`) when the portal reports it unsupported.
+   */
   excludeNewBuild?: boolean
+  /**
+   * Straight-line metres from the listing to the nearest high-street cell
+   * (`place.ts`, data from the vault's OSM shop pipeline). ~400 = five minutes
+   * on foot. Always local, at draw time; no portal can express it. Listings
+   * without coordinates pass (can't be measured); no index loaded = pass.
+   */
+  maxHighStreetM?: number
   /** No buyer-side agent commission (IS24 `onlyWithoutCourtage`). Germany only. */
   noBuyerFee?: boolean
   /** Only listings added within N days. Rightmove only, and only 1 | 3 | 7 | 14. */
