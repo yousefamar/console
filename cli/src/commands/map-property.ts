@@ -87,9 +87,14 @@ async function set(args: string[], flags: GlobalFlags): Promise<void> {
     if (Object.keys(nc).length) body.notifyCriteria = nc
   }
   const criteria = criteriaFrom(o)
-  // Only send criteria when a criteria flag was actually passed — an empty
-  // object would wipe the search's filters and force a re-seed.
-  if (Object.keys(criteria).length) body.criteria = criteria
+  // Criteria flags MERGE into the search's current criteria — the hub's PATCH
+  // replaces the object wholesale, and a bare `--exclude-house-subtypes
+  // terraced` once wiped price/beds/plot/types off three live searches
+  // (2026-09-08). Only fetch + send when a criteria flag was actually passed.
+  if (Object.keys(criteria).length) {
+    const current = (await hubFetch(`/property/searches/${encodeURIComponent(id)}`)) as { criteria?: Record<string, unknown> }
+    body.criteria = { ...(current.criteria ?? {}), ...criteria }
+  }
   // --outside-criteria: the stricter bar for listings outside --notify-layer.
   // `notify` copies the search's current notify gate, `none` clears, else JSON.
   if (o['outside-criteria']) body.outsideCriteria = await outsideCriteriaFrom(id, String(o['outside-criteria']), flags)
