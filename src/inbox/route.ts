@@ -54,9 +54,10 @@ export function isOverdue(r: DbChatRoom, rules: InboxRules, now: number): boolea
 // ---------------------------------------------------------------------------
 // Adapters: source rows → InboxItem. Membership is derived — callers pass
 // only rows that are currently "live" per the source's own semantics.
-// Row shape: header = who/where (person, group, feed), body = what (message,
-// subject, item title). A DM's body drops the redundant sender prefix — the
-// header already names them.
+// Row shape: header = who/where (person, group), body = what (message,
+// subject). FEEDS invert it — header = article title, body = feed name — the
+// platform glyph/favicon already say where it came from. A DM's body drops the
+// redundant sender prefix — the header already names them.
 // ---------------------------------------------------------------------------
 
 export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
@@ -107,6 +108,17 @@ export interface AgentSessionLike {
   needsAttention?: { ts: number; snippet: string } | null
   isAl?: boolean
   agentKey?: string
+  project?: string
+  areas?: string[]
+}
+
+/** Which space a session belongs to, for display: its project, else its
+ *  first area, else nothing (chat forks / one-off creates). `titleOf` maps a
+ *  slug to the space's title; an unknown slug falls back to the slug. */
+export function sessionContext(s: Pick<AgentSessionLike, 'project' | 'areas'>, titleOf?: (slug: string) => string | undefined): string | undefined {
+  const slug = s.project ?? s.areas?.[0]
+  if (!slug) return undefined
+  return titleOf?.(slug) ?? slug
 }
 
 /** Agent sessions that demand handling (mark read / reply / review) are
@@ -183,8 +195,11 @@ export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, 
     key: itemKey('feed', i.id),
     source: 'feed',
     sourceId: i.id,
-    header: feed?.title ?? '',
-    body: i.title,
+    // Feeds invert the who/what shape: the article title is what Yousef scans
+    // for, the feed name is context — and the platform glyph + favicon on the
+    // row already say where it came from (^shy-ant).
+    header: i.title,
+    body: feed?.title ?? '',
     ts: Date.parse(i.publishedAt) || 0,
     route,
     routeKey: i.feedId,

@@ -147,10 +147,10 @@ describe('row shape', () => {
     expect(i.body).toBe('Subject')
   })
 
-  it('feed: header = feed title, body = item title', () => {
+  it('feed: header = ARTICLE title, body = feed name (the glyph already names the source)', () => {
     const i = feedItemToItem(feedItem(), { id: 'feed-a', title: 'HN', xmlUrl: '', folder: null, addedAt: '' }, DEFAULT_RULES)
-    expect(i?.header).toBe('HN')
-    expect(i?.body).toBe('Post')
+    expect(i?.header).toBe('Post')
+    expect(i?.body).toBe('HN')
   })
 })
 
