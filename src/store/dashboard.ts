@@ -91,6 +91,13 @@ export interface CostReport {
    *  tag (the only way to attribute days predating a workload's tagged profile).
    *  Absent on reports cached by an older hub. */
   regionAttributedUsd: Record<string, number>
+  /** Hub-side prompt-cache ledger (server/src/agents/cache-ttl.ts): cache-write
+   *  tokens per TTL class per local day, from the CLI's own usage reports.
+   *  Absent on a hub older than the ledger — guard every read. */
+  cacheTtl?: {
+    days: Array<{ day: string; written1h: number; written5m: number; read: number; spawns1h: number; spawns5m: number }>
+    totals: { written1h: number; written5m: number; read: number; spawns1h: number; spawns5m: number }
+  }
 }
 
 export type CostStackBy = 'owner' | 'model'

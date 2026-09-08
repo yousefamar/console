@@ -273,6 +273,10 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
         </p>
       ) : null}
 
+      {report.cacheTtl && (report.cacheTtl.totals.written1h + report.cacheTtl.totals.written5m) > 0 ? (
+        <CacheTtlLine totals={report.cacheTtl.totals} days={report.cacheTtl.days.length} />
+      ) : null}
+
       {report.totalByOwner.untagged ? (
         <p className="px-3 text-[10px] leading-snug text-text-tertiary">
           <span className="text-text-secondary">untagged</span> = everything before{' '}
@@ -284,6 +288,28 @@ function CostBody({ report, stackBy }: { report: CostReport; stackBy: CostStackB
       ) : null}
     </div>
   )
+}
+
+/** Prompt-cache write split — the hub picks a 1h or 5m cache per spawn
+ *  (server/src/agents/cache-ttl.ts); this is the CLI's own count of what got
+ *  written under each, so the policy's effect is measurable. */
+function CacheTtlLine({ totals, days }: { totals: NonNullable<CostReport['cacheTtl']>['totals']; days: number }) {
+  const all = totals.written1h + totals.written5m
+  const pct1h = all > 0 ? Math.round((totals.written1h / all) * 100) : 0
+  return (
+    <div className="px-3 text-[10px] leading-snug text-text-tertiary" title={`Cache writes over the last ${days} day(s), from the CLI's usage reports. 1h writes cost 2× a 5m write but survive gaps of up to an hour; the hub picks per spawn.`}>
+      <span className="text-text-secondary">Cache writes</span>{' '}
+      1h {fmtTokens(totals.written1h)} ({pct1h}%) · 5m {fmtTokens(totals.written5m)} · reads {fmtTokens(totals.read)}
+      {' '}· spawns 1h {totals.spawns1h} / 5m {totals.spawns5m}
+    </div>
+  )
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`
+  return String(n)
 }
 
 function BreakdownTable({

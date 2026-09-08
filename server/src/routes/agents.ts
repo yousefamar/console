@@ -310,6 +310,9 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
     agentKey: forkKey,
     project: source.project,
     areas: source.areas,
+    // A card is worked for an hour or more with think/test gaps the 5m
+    // prompt cache lapses across — pin the 1h TTL for the fork's life.
+    cacheTtl: '1h',
     // Card `#model/<alias-or-id>` → per-fork model pin (a fast fix on haiku,
     // a cheap one on sonnet). Same plumbing as the session-status-bar pin.
     ...(model ? { modelOverride: model } : {}),

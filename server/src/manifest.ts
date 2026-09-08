@@ -39,6 +39,9 @@ export interface ManifestEntry {
   /** Per-session model pin — survives restart so a pinned session resumes on
    *  its own model, not the hub-wide one. */
   modelOverride?: string
+  /** Lifetime prompt-cache TTL pin (ticket forks = '1h') — survives a restart
+   *  so the fork keeps its hour cache across the resume. */
+  cacheTtl?: '5m' | '1h'
   /** A prompt queued for turn-end that hadn't flushed yet. Surviving a restart
    *  mid-turn is the reason the queue lives hub-side at all. */
   queuedMessage?: string
@@ -82,6 +85,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.needsAttention ? { needsAttention: session.needsAttention } : {}),
       ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),
       ...(session.modelOverride ? { modelOverride: session.modelOverride } : {}),
+      ...(session.cacheTtlPin ? { cacheTtl: session.cacheTtlPin } : {}),
       ...(session.queuedMessage ? { queuedMessage: session.queuedMessage } : {}),
     })
   }

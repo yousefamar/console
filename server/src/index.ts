@@ -25,6 +25,7 @@ import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
+import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
@@ -220,6 +221,23 @@ const inboxRulesStore = new InboxRulesStore(feedsConfigDir)
 // resolves the configured model rather than a hardcoded const.
 const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
 setAgentModelResolver(() => modelConfig.getModel())
+// Prompt-cache TTL policy (agents/cache-ttl.ts): decided per spawn, so install
+// before the first spawn too. `cache.ttlRecentMinutes` (prefs, default 30 —
+// the hibernation threshold) is how recently a session must have been active
+// for a respawn to keep the 1h cache; ticket forks pin 1h regardless. The
+// ledger counts what the CLI reports per TTL class → /dashboard/costs.
+const cacheTtlLedger = new CacheTtlLedger(join(feedsConfigDir, 'cache-ttl-ledger.json'))
+setCacheTtlHooks({
+  recentMinutes: () => {
+    const v = prefsStore.getAll()['cache.ttlRecentMinutes']
+    return typeof v === 'number' && v >= 0 ? v : DEFAULT_RECENT_MINUTES
+  },
+  onSpawn: (ttl, reason, label) => {
+    cacheTtlLedger.recordSpawn(ttl)
+    log(`[cache] ${label}: prompt-cache TTL ${ttl} (${reason})`)
+  },
+  onUsage: (usage) => cacheTtlLedger.recordUsage(usage),
+})
 // Bedrock cost attribution: the chain stays bare, human-readable model ids, and
 // session.ts swaps in this owner's `owner`-tagged inference-profile ARN at the
 // `--model` boundary. The built-in table is spawn-verified, so translation works
@@ -1843,6 +1861,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/dashboard') && handleDashboardRoutes(req, res, path, url, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
     ringFailures: () => ringStore.failures(Date.now() - 24 * 60 * 60_000),
+    cacheTtl: (days) => cacheTtlLedger.summary(days),
     boardRefusals: () => boardFiles.guard.refusals(Date.now() - 24 * 60 * 60_000).map((r) => ({ ts: r.ts, message: `refused a suspicious write to ${r.path}: ${r.message} — check \`con board <project> history\`` })),
   }, readBody)) return
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
@@ -2321,6 +2340,10 @@ httpServer.listen(port, host, () => {
             restoreMessageLogLength: entry.messageLogLength,
             modelOverride: entry.modelOverride,
             queuedMessage: entry.queuedMessage,
+            cacheTtl: entry.cacheTtl,
+            // The restore spawn of a mid-turn session is "being worked" for the
+            // cache-TTL decision (the nudge below continues its turn).
+            resumeMidTurn: entry.wasRunning,
             // Idle sessions restore straight into hibernation — no subprocess
             // until their first message (a restart used to thunder-herd 40+
             // claude spawns ≈ 12GB RSS). Mid-turn sessions (wasRunning → the

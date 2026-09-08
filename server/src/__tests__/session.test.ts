@@ -1226,3 +1226,65 @@ describe('projectDirEnv — memory follows the cwd, not the git root', () => {
     expect(projectDirEnv('/' + 'a'.repeat(70))).toEqual({})
   })
 })
+
+// --------------------------------------------------------------------------
+// Prompt-cache TTL — decided per spawn, carried in the env (agents/cache-ttl.ts)
+// --------------------------------------------------------------------------
+
+describe('Session prompt-cache TTL', () => {
+  const ttlOf = () => (lastSpawnArgs!.options.env as Record<string, string>).CLAUDE_CODE_PROMPT_CACHE_TTL
+
+  async function initedIdle(): Promise<Session> {
+    const session = new Session({ prompt: 'test' })
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: 'claude_ttl', model: 'claude-opus-4-8', slash_commands: [] })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_ttl', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    return session
+  }
+
+  it('a fresh spawn runs the 5m cache and reports why', () => {
+    const s = new Session({ prompt: 'test' })
+    expect(ttlOf()).toBe('5m')
+    expect(s.getInfo().cacheTtl).toBe('5m')
+    expect(s.getInfo().cacheTtlReason).toBe('fresh')
+  })
+
+  it('a ticket fork pins 1h for life — including its hibernation wake', async () => {
+    const fork = new Session({ prompt: 'x', resume: 'parent_csid', fork: true, cacheTtl: '1h' })
+    expect(ttlOf()).toBe('1h')
+    expect(fork.getInfo().cacheTtlReason).toBe('pinned')
+    sendStdoutJson({ type: 'system', subtype: 'init', session_id: fork.claudeSessionId, model: 'claude-opus-4-8', slash_commands: [] })
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: fork.claudeSessionId, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    fork.hibernate()
+    await new Promise((r) => setTimeout(r, 10))
+    fork.sendMessage('feedback from the review')
+    expect(ttlOf()).toBe('1h')
+  })
+
+  it('a hibernated session woken by a message runs 5m (it sat idle ≥30 min by definition)', async () => {
+    const session = await initedIdle()
+    session.hibernate()
+    await new Promise((r) => setTimeout(r, 10))
+    session.sendMessage('wake up')
+    expect(ttlOf()).toBe('5m')
+    expect(session.getInfo().cacheTtlReason).toBe('woken')
+  })
+
+  it('a hub-restart resume of a mid-turn session runs 1h', () => {
+    new Session({ prompt: '', resume: 'was_running', silent: true, resumeMidTurn: true })
+    expect(ttlOf()).toBe('1h')
+  })
+
+  it('a hub-restart resume of an idle session that spawns live (Al) runs 5m', () => {
+    new Session({ prompt: '', resume: 'idle_al', silent: true })
+    expect(ttlOf()).toBe('5m')
+  })
+
+  it('getInfo drops the TTL once the process is gone (hibernated)', async () => {
+    const session = await initedIdle()
+    session.hibernate()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.getInfo().cacheTtl).toBeUndefined()
+  })
+})

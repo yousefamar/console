@@ -218,6 +218,10 @@ export interface SessionInfo {
   /** Per-session model pin — set when this session is pinned to a model other
    *  than the hub-wide one (undefined = follows the hub model). */
   modelOverride?: string
+  /** Prompt-cache TTL the current process runs on + why the hub chose it
+   *  (agents/cache-ttl.ts). Absent before the first spawn / while hibernated. */
+  cacheTtl?: '5m' | '1h'
+  cacheTtlReason?: string
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null
@@ -334,6 +338,9 @@ export interface ClaudeResultMessage {
     output_tokens: number
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
+    /** Split of the cache writes by TTL class (CLI ≥2.1.263 on a CLI that
+     *  runs `CLAUDE_CODE_PROMPT_CACHE_TTL`; absent on older CLIs = all 5m). */
+    cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number }
   }
   result?: string
   // -- Rich metadata (present on current CLIs; all optional for back-compat)

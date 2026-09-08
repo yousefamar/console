@@ -35,6 +35,7 @@ import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
 import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
+import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 
 let sessionCounter = 0
 
@@ -117,6 +118,15 @@ export interface SessionOptions {
   /** Restore a prompt that was queued for turn-end but never flushed (hub
    *  restarted mid-turn). Persisted in the manifest. */
   queuedMessage?: string | null
+  /** Pin the prompt-cache TTL for this session's whole life (every spawn,
+   *  incl. hibernation wakes). Ticket forks pin `1h`: they work a card for an
+   *  hour or more with think-gaps the 5m cache keeps lapsing across. Unset =
+   *  the hub decides per spawn (agents/cache-ttl.ts). */
+  cacheTtl?: CacheTtl
+  /** Restore-loop hint: the manifest said this session was mid-turn, so the
+   *  restore spawn counts as "being worked" for the TTL decision even though
+   *  the fresh instance has no activity yet. */
+  resumeMidTurn?: boolean
 }
 
 /** Pin the CLI's per-project directory (transcripts + auto-memory) to the
@@ -292,6 +302,7 @@ export class Session extends EventEmitter {
     // explicitly once its listeners are attached. Flushing from the ctor would
     // race the nudge and turn the queued prompt into steering.
     if (options.queuedMessage) this.queuedMessage = options.queuedMessage
+    if (options.cacheTtl) this.cacheTtlPin = options.cacheTtl
     // Restore-into-hibernation: skip the spawn entirely — the first message
     // wakes the session with --resume (sendMessage → wakeFromHibernation).
     // Keeps hub restarts light: 40+ idle sessions = zero claude processes.
@@ -313,7 +324,26 @@ export class Session extends EventEmitter {
     if (this.status === 'idle') this.flushQueuedMessage()
   }
 
-  private spawn(options: SessionOptions) {
+  private spawn(options: SessionOptions, spawnCtx: { wake?: boolean } = {}) {
+    // Prompt-cache TTL for every request this process will make — decided
+    // here because the CLI reads the env var once at start. See
+    // agents/cache-ttl.ts for the policy; the reason is logged per spawn and
+    // the ledger there counts what the CLI actually wrote per TTL class.
+    const hooks = cacheTtlHooks()
+    const ttlChoice = resolveCacheTtl({
+      pin: this.cacheTtlPin,
+      wake: spawnCtx.wake,
+      // `status` is 'running' on every fresh instance, so it says nothing here;
+      // midTurn is the durable "turn unfinished" bit (set by sendMessage,
+      // cleared only by a success result / interrupt).
+      midTurn: options.resumeMidTurn || this.midTurn,
+      everActive: this.everActive,
+      lastActivityAt: this.lastActivityAt,
+      recentMs: hooks.recentMinutes() * 60_000,
+    })
+    this.cacheTtl = ttlChoice.ttl
+    this.cacheTtlReason = ttlChoice.reason
+    hooks.onSpawn?.(ttlChoice.ttl, ttlChoice.reason, this.name ?? this.id)
     // Extended thinking moved from prompt-keywords to an explicit CLI flag in
     // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
     // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
@@ -388,6 +418,7 @@ export class Session extends EventEmitter {
         // agent's own edits back at it.
         ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}),
         ...projectDirEnv(cwd),
+        CLAUDE_CODE_PROMPT_CACHE_TTL: ttlChoice.ttl,
         // Which hub generation spawned this process — the reaper kills claude
         // children whose marker names a dead hub (process-reaper.ts).
         [HUB_PID_ENV]: String(process.pid),
@@ -588,6 +619,7 @@ export class Session extends EventEmitter {
   sendMessage(content: string, images?: ImageAttachment[]) {
     this.lastActivityAt = Date.now()
     this.midTurn = true
+    this.everActive = true
     // Hibernated (or mid-hibernation) — bring the subprocess back first.
     if (this.hibernating) {
       // SIGKILL in flight; the exit handler wakes + sends this for us.
@@ -820,6 +852,13 @@ export class Session extends EventEmitter {
   private hibernating = false
   /** True when the subprocess is dead by hibernation (not ended). */
   hibernated = false
+  /** Prompt-cache TTL this session's current process runs on, and why. */
+  cacheTtl: CacheTtl | null = null
+  cacheTtlReason: CacheTtlReason | null = null
+  /** Lifetime pin from SessionOptions.cacheTtl (ticket forks). */
+  cacheTtlPin: CacheTtl | null = null
+  /** A fresh instance has no activity to judge by; flips on the first sendMessage. */
+  private everActive = false
   /** Message that arrived during the hibernating window — sent after exit→wake. */
   private pendingWakeMessage: { content: string; images?: ImageAttachment[] } | null = null
   /** stderr said "No conversation found with session ID" — the --resume
@@ -911,7 +950,7 @@ export class Session extends EventEmitter {
    *  system-prompt re-append — spawn() only appends on fresh starts). */
   private wakeFromHibernation() {
     this.hibernated = false
-    this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId!, silent: true, name: this.name })
+    this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId!, silent: true, name: this.name }, { wake: true })
   }
 
   /** Set by terminateForShutdown(): the exit handler must not reinterpret
@@ -1117,6 +1156,8 @@ export class Session extends EventEmitter {
       totalCost: this.totalCost,
       totalTokens: { ...this.totalTokens },
       modelOverride: this.modelOverride,
+      cacheTtl: this.processAlive && this.cacheTtl ? this.cacheTtl : undefined,
+      cacheTtlReason: this.processAlive && this.cacheTtlReason ? this.cacheTtlReason : undefined,
       messageLogLength: this.messageLogLength,
       lastReadIndex: this.readPinned ? this.messageLogLength : getLastReadIndex(this.claudeSessionId),
       readPinned: this.readPinned || undefined,
@@ -1356,6 +1397,7 @@ export class Session extends EventEmitter {
     if (msg.usage.cache_creation_input_tokens) {
       this.totalTokens.cacheCreation = (this.totalTokens.cacheCreation ?? 0) + msg.usage.cache_creation_input_tokens
     }
+    cacheTtlHooks().onUsage?.(msg.usage)
 
     // Per-model breakdown (modelUsage keys are model ids incl. Bedrock ARNs).
     const modelUsage = msg.modelUsage

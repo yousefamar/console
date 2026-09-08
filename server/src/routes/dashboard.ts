@@ -13,6 +13,7 @@ import type { CalendarSync } from '../cal/sync.js'
 import type { DebugLog } from '../debug-log.js'
 import type { CanvasPublicRegistry, PublicKind } from '../canvas-public.js'
 import type { AwsCostStore } from '../aws-costs.js'
+import type { CacheTtlDay } from '../agents/cache-ttl.js'
 
 export interface DashboardCtx {
   servers: ServersConfig
@@ -27,6 +28,9 @@ export interface DashboardCtx {
   /** Board writes the integrity guard refused (kanban/board-files.ts) — a
    *  board that would have shrunk suspiciously; the human decides. */
   boardRefusals?: () => Array<{ ts: number; message: string }>
+  /** Prompt-cache write split (1h vs 5m) per local day, from the CLI's own
+   *  usage reports (agents/cache-ttl.ts) — rides on /dashboard/costs. */
+  cacheTtl?: (days: number) => { days: CacheTtlDay[]; totals: Omit<CacheTtlDay, 'day'> }
 }
 
 /**
@@ -91,9 +95,12 @@ export function handleDashboardRoutes(
   if (path === '/dashboard/costs' && req.method === 'GET') {
     const days = Number(url.searchParams.get('days') ?? '30')
     const refresh = url.searchParams.get('refresh') === '1'
-    ctx.costs.get(Number.isFinite(days) ? days : 30, { refresh }).then((report) => {
+    const window = Number.isFinite(days) ? days : 30
+    ctx.costs.get(window, { refresh }).then((report) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(report))
+      // Hub-side cache-TTL ledger rides along: Cost Explorer can't split 1h
+      // from 5m cache writes, the CLI's usage reports can.
+      res.end(JSON.stringify({ ...report, cacheTtl: ctx.cacheTtl?.(window) }))
     }).catch((err) => {
       res.writeHead(502, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
