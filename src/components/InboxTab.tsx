@@ -19,6 +19,7 @@ import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Bot, Check, Clipboard
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
+import { useAgentStore } from '@/store/agent'
 import { useFeedStore } from '@/store/feeds'
 import { useChatStore } from '@/store/chat'
 import { useSpacesStore } from '@/store/spaces'
@@ -220,7 +221,7 @@ export const InboxTab = memo(function InboxTab() {
                 <span>Open in Spaces</span>
               </button>
             </div>
-            <ReviewHandbackStrip agentKey={selected.agentKey} />
+            <ReviewHandbackStrip item={selected} />
             <AgentSessionView />
           </>
         )}
@@ -242,15 +243,27 @@ export const InboxTab = memo(function InboxTab() {
 // board's Done column. Yousef is the sole reviewer, so this is where a
 // review verdict lands mid-triage — the Done transition then fires the
 // fork's wind-down hub-side, exactly as a drag on the Spaces board would.
-function ReviewHandbackStrip({ agentKey }: { agentKey?: string }) {
+// Approving is also HANDLING the item (^fond-yak): the session is marked read
+// and pinned so the wind-down turn can't re-flag it before the fold, and the
+// selection advances to the next item, as `e` would.
+function ReviewHandbackStrip({ item }: { item: InboxItem }) {
   const spaces = useSpacesStore((s) => s.spaces)
-  const handbacks = reviewHandbacksFor(agentKey, spaces)
+  const handbacks = reviewHandbacksFor(item.agentKey, spaces)
   if (handbacks.length === 0) return null
   return (
     <div className="border-b border-border bg-surface-1">
-      {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} />)}
+      {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} item={item} />)}
     </div>
   )
+}
+
+/** After the card is Done: mark the fork read for good and move on. Only the
+ *  LAST of several cards owned by the same fork handles the item — the fork
+ *  isn't finished with Yousef while another of its cards still awaits review. */
+export function afterApprove(item: InboxItem, remainingHandbacks: number) {
+  if (remainingHandbacks > 0) return
+  useUnifiedInboxStore.getState().dropAndAdvance(item.key)
+  useAgentStore.getState().markSessionRead(item.sourceId, { sticky: true })
 }
 
 /** Row marker: this agent has a card waiting for review — the same blue the
@@ -277,13 +290,15 @@ function hubErrorText(e: unknown): string {
   return m
 }
 
-function ReviewHandbackRow({ handback: h }: { handback: ReviewHandback }) {
+function ReviewHandbackRow({ handback: h, item }: { handback: ReviewHandback; item: InboxItem }) {
   const [busy, setBusy] = useState(false)
   const approve = async () => {
     if (!h.doneColumn || busy) return
     setBusy(true)
     try {
       await useSpacesStore.getState().moveCardOnBoard(h.project, h.query, h.doneColumn)
+      const remaining = reviewHandbacksFor(item.agentKey, useSpacesStore.getState().spaces).filter((o) => !(o.project === h.project && o.query === h.query)).length
+      afterApprove(item, remaining)
     } catch (e) {
       void showAlert(`Couldn't move the card to ${h.doneColumn}: ${hubErrorText(e)}`)
     } finally {

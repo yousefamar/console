@@ -18,7 +18,7 @@ import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
-import { getLastReadIndex, setLastReadIndex } from '../read-state.js'
+import { getLastReadIndex, pinRead, setLastReadIndex, unpinRead } from '../read-state.js'
 
 // Session order persistence
 const CONFIG_DIR = join(homedir(), '.config', 'console')
@@ -353,15 +353,20 @@ function sendTo(ws: WebSocket, msg: HubMessage) {
  *  that asked for Yousef IS the acknowledgement, so the red rail and the phone
  *  notification must both go. Done hub-side (not per-client) so every client,
  *  the APK included, inherits it from one place. */
-export function markSessionRead(ctx: AgentContext, session: Session) {
+export function markSessionRead(ctx: AgentContext, session: Session, opts: { sticky?: boolean } = {}) {
   const key = session.claudeSessionId ?? session.id
   const idx = session.messageLogLength
   setLastReadIndex(key, idx)
+  // Sticky = the Inbox approve verdict: read for good until the fork is
+  // folded into its parent (mergeIntoParent unpins), deleted, marked unread
+  // or its card is reopened. Its wind-down turn then never re-flags it.
+  if (opts.sticky) pinRead(key)
   broadcast(ctx.clients, {
     type: 'session_read_state',
     sessionId: session.id,
     lastReadIndex: idx,
     messageLogLength: idx,
+    ...(opts.sticky ? { readPinned: true } : {}),
   })
   if (session.needsAttention) {
     session.clearAttention() // emits session_attention(null) → broadcast + manifest
@@ -371,6 +376,8 @@ export function markSessionRead(ctx: AgentContext, session: Session) {
 
 export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
   const key = session.claudeSessionId ?? session.id
+  // Yousef wants it unread: that overrides an approve pin.
+  const wasPinned = unpinRead(key)
   // Roll the pointer back so the latest message counts as unread, but no further.
   const len = session.messageLogLength
   const idx = Math.max(0, len - 1)
@@ -380,6 +387,7 @@ export function markSessionUnread(session: Session, clients: Set<WebSocket>) {
     sessionId: session.id,
     lastReadIndex: idx,
     messageLogLength: len,
+    ...(wasPinned ? { readPinned: false } : {}),
   })
 }
 
@@ -583,6 +591,8 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
 
   try { child.kill() } catch { /* ignore */ }
   ctx.sessions.delete(child.id)
+  // Folded in: the approve pin has done its job.
+  unpinRead(child.claudeSessionId)
   saveManifest(ctx.sessions)
   broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
   ctx.log(`[merge] fork ${child.id} → parent ${parent.id} (${summary.length}-char summary)`)
@@ -671,7 +681,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
     case 'mark_session_read': {
       const session = sessions.get(msg.sessionId)
       if (!session) return
-      markSessionRead(ctx, session)
+      markSessionRead(ctx, session, { sticky: msg.sticky === true })
       break
     }
 
@@ -785,6 +795,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       try { session.kill() } catch {}
       sessions.delete(msg.sessionId)
+      unpinRead(session.claudeSessionId)
       // Duplicate guard: resume_session can create a second hub session for
       // the same claudeSessionId. Deleting only one would let the survivor
       // re-write the manifest entry and resurrect the session on restart.

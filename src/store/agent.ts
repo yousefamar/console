@@ -132,6 +132,9 @@ export interface SessionInfo {
   /** Set when the session emitted `@amar` (wants Yousef's eyes). Sticky red
    *  marker in the sidebar; cleared on open / mark-read. */
   needsAttention?: { ts: number; snippet: string } | null
+  /** Hub-pinned read (hand-back approved): new messages never make it unread
+   *  and it raises no attention, until it is folded into its parent. */
+  readPinned?: boolean
   /** A prompt held hub-side until the current turn FULLY ends (Ctrl+Enter /
    *  long-press send). Editable until it flushes. */
   queuedMessage?: string | null
@@ -293,7 +296,9 @@ interface AgentState {
   /** Return to Al after a hand-off (clears the return marker). */
   returnFromHandoff: () => void
   toggleThinkingCollapsed: (messageId: string) => void
-  markSessionRead: (id?: string) => void
+  /** `sticky` = the Inbox approve verdict: read for good until the fork is
+   *  folded into its parent (hub-pinned; see SessionInfo.readPinned). */
+  markSessionRead: (id?: string, opts?: { sticky?: boolean }) => void
   markSessionUnread: (id?: string) => void
   loadOlderMessages: (sessionId: string) => void
   /** Drop the in-memory message view and re-pull the full transcript from the
@@ -655,7 +660,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })
   },
 
-  markSessionRead: (id) => {
+  markSessionRead: (id, opts) => {
     const sessionId = id ?? get().activeSessionId
     if (!sessionId) return
     const sess = get().sessions.find((s) => s.id === sessionId)
@@ -675,8 +680,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // on every client (including this one) for cross-device sync.
     // Marking read also acknowledges any @amar marker — the hub does that as
     // part of mark_session_read, so this is only the optimistic local half.
-    if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false, ...(sess.needsAttention ? { needsAttention: null } : {}) })
-    sendWs({ type: 'mark_session_read', sessionId })
+    if (sess) updateSession(sessionId, { lastReadIndex: sess.messageLogLength ?? 0, hasUnread: false, ...(sess.needsAttention ? { needsAttention: null } : {}), ...(opts?.sticky ? { readPinned: true } : {}) })
+    sendWs(opts?.sticky ? { type: 'mark_session_read', sessionId, sticky: true } : { type: 'mark_session_read', sessionId })
   },
 
   markSessionUnread: (id) => {
@@ -685,7 +690,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const sess = get().sessions.find((s) => s.id === sessionId)
     if (sess) {
       const len = sess.messageLogLength ?? 0
-      updateSession(sessionId, { lastReadIndex: Math.max(0, len - 1), hasUnread: len > 0 })
+      updateSession(sessionId, { lastReadIndex: Math.max(0, len - 1), hasUnread: len > 0, readPinned: false })
     }
     sendWs({ type: 'mark_session_unread', sessionId })
   },
@@ -1011,7 +1016,7 @@ function handleHubMessage(msg: Record<string, unknown>) {
         // always false and Al leaked into the Inbox as a clearable item.
         const isAl = s.id === 'al' || s.agentKey === 'al'
         const local = existingMap.get(s.id) ?? (s.claudeSessionId ? existingMap.get(claudeToOldId.get(s.claudeSessionId) ?? '') : undefined)
-        const hasUnread = (s.messageLogLength ?? 0) > (s.lastReadIndex ?? 0)
+        const hasUnread = !s.readPinned && (s.messageLogLength ?? 0) > (s.lastReadIndex ?? 0)
         return local
           ? { ...s, isAl, name: local.name ?? s.name, model: local.model, contextWindow: local.contextWindow ?? 200_000, contextUsed: local.contextUsed ?? 0, statusText: local.statusText, hasUnread }
           : { ...s, isAl, contextWindow: s.contextWindow ?? 200_000, contextUsed: s.contextUsed ?? 0, hasUnread }
@@ -1397,10 +1402,13 @@ function handleHubMessage(msg: Record<string, unknown>) {
       const sessionId = msg.sessionId as string
       const lastReadIndex = msg.lastReadIndex as number
       const messageLogLength = msg.messageLogLength as number
+      const pinned = msg.readPinned as boolean | undefined
       useAgentStore.setState((s) => ({
-        sessions: s.sessions.map((sess) => sess.id === sessionId
-          ? { ...sess, lastReadIndex, messageLogLength: Math.max(sess.messageLogLength ?? 0, messageLogLength), hasUnread: Math.max(sess.messageLogLength ?? 0, messageLogLength) > lastReadIndex }
-          : sess),
+        sessions: s.sessions.map((sess) => {
+          if (sess.id !== sessionId) return sess
+          const readPinned = pinned ?? sess.readPinned
+          return { ...sess, lastReadIndex, readPinned, messageLogLength: Math.max(sess.messageLogLength ?? 0, messageLogLength), hasUnread: !readPinned && Math.max(sess.messageLogLength ?? 0, messageLogLength) > lastReadIndex }
+        }),
       }))
       break
     }
@@ -1542,7 +1550,8 @@ function bumpMessageLog(sessionId: string) {
     sessions: s.sessions.map((sess) => {
       if (sess.id !== sessionId) return sess
       const newLen = (sess.messageLogLength ?? 0) + 1
-      return { ...sess, messageLogLength: newLen, hasUnread: newLen > (sess.lastReadIndex ?? 0) }
+      // A pinned-read session (approved hand-back) never flips back to unread; the hub confirms a beat later.
+      return { ...sess, messageLogLength: newLen, hasUnread: !sess.readPinned && newLen > (sess.lastReadIndex ?? 0) }
     }),
   }))
 }

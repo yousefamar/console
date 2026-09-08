@@ -44,7 +44,7 @@ import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
-import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState } from './read-state.js'
+import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState, unpinRead } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
 import { handleCronRoutes } from './routes/cron.js'
 import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, pushCapped, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
@@ -1013,6 +1013,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
         log(`[boards] ^${t.blockId} reopened by its own assignee @${t.agentKey} — no nudge`)
         return true
       }
+      // A reopened card means more work: an approve pin on the fork no longer holds.
+      if (unpinRead(live.claudeSessionId)) log(`[boards] ^${t.blockId} reopened — read pin on ${live.id} lifted`)
       wakeSession(agentCtx, live, buildReopenNudge({ boardAbsPath, text: t.text, blockId: t.blockId, column: t.column }))
       return true
     }

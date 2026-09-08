@@ -583,7 +583,61 @@ describe('markSessionRead', () => {
     const del = msgs.find((m: Record<string, unknown>) => m.type === 'delete_session')
     expect(del).toEqual({ type: 'delete_session', sessionId: 'sess_dead' })
   })
+
+  it('sticky read (hand-back approved) pins the session: new messages never flip it back to unread', async () => {
+    useAgentStore.getState().connect()
+    await flush()
+    const ws = MockWebSocket.latest()!
+    useAgentStore.setState({
+      sessions: [{
+        id: 'sess_fork', status: 'idle', createdAt: 1, prompt: '', totalCost: 0,
+        totalTokens: { input: 0, output: 0 }, contextWindow: 200_000, contextUsed: 0,
+        messageLogLength: 5, lastReadIndex: 0, hasUnread: true, needsAttention: { ts: 1, snippet: 'x' },
+      }],
+    })
+
+    useAgentStore.getState().markSessionRead('sess_fork', { sticky: true })
+    let sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_fork')!
+    expect(sess.hasUnread).toBe(false)
+    expect(sess.readPinned).toBe(true)
+    expect(sess.needsAttention).toBeNull()
+    const sent = ws.sentMessages.map((m) => JSON.parse(m) as Record<string, unknown>)
+    expect(sent.find((m) => m.type === 'mark_session_read')).toEqual({ type: 'mark_session_read', sessionId: 'sess_fork', sticky: true })
+
+    // The wind-down turn logs more — locally counted, still read.
+    ws.receiveMessage({ type: 'text', sessionId: 'sess_fork', content: 'Merging my summary…', absIndex: 5 })
+    await flush()
+    sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_fork')!
+    expect(sess.messageLogLength).toBeGreaterThanOrEqual(6)
+    expect(sess.hasUnread).toBe(false)
+
+    // The hub's own read-state echo carries the pin too.
+    ws.receiveMessage({ type: 'session_read_state', sessionId: 'sess_fork', lastReadIndex: 6, messageLogLength: 6, readPinned: true })
+    sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_fork')!
+    expect(sess.hasUnread).toBe(false)
+    expect(sess.readPinned).toBe(true)
+
+    // Yousef marks it unread on purpose → the pin is gone and unread works again.
+    useAgentStore.getState().markSessionUnread('sess_fork')
+    sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_fork')!
+    expect(sess.readPinned).toBe(false)
+    expect(sess.hasUnread).toBe(true)
+  })
+
+  it('a sessions_list refresh keeps a pinned session read even when the hub count outruns lastReadIndex', () => {
+    ws_receive_sessions_list([{ id: 'sess_p', status: 'idle', createdAt: 1, prompt: '', totalCost: 0, totalTokens: { input: 0, output: 0 }, messageLogLength: 9, lastReadIndex: 3, readPinned: true }])
+    const sess = useAgentStore.getState().sessions.find((s) => s.id === 'sess_p')!
+    expect(sess.hasUnread).toBe(false)
+  })
 })
+
+/** Push a sessions_list from the hub through the live mock socket. */
+function ws_receive_sessions_list(sessions: Array<Record<string, unknown>>) {
+  useAgentStore.getState().connect()
+  const ws = MockWebSocket.latest()!
+  ws.onopen?.()
+  ws.receiveMessage({ type: 'sessions_list', sessions })
+}
 
 describe('queued messages', () => {
   function seedRunning(ws: MockWebSocket) {

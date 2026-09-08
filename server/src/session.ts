@@ -26,7 +26,7 @@ import { parseModelString, cwdToProjectDir } from './utils.js'
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { getLastReadIndex } from './read-state.js'
+import { getLastReadIndex, isReadPinned, setLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { HUB_PID_ENV } from './agents/process-reaper.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
@@ -1118,7 +1118,8 @@ export class Session extends EventEmitter {
       totalTokens: { ...this.totalTokens },
       modelOverride: this.modelOverride,
       messageLogLength: this.messageLogLength,
-      lastReadIndex: getLastReadIndex(this.claudeSessionId),
+      lastReadIndex: this.readPinned ? this.messageLogLength : getLastReadIndex(this.claudeSessionId),
+      readPinned: this.readPinned || undefined,
       hibernated: this.hibernated || undefined,
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
@@ -1673,6 +1674,33 @@ export class Session extends EventEmitter {
     // it carries authoritative positioning (clients upsert, not append —
     // the transcript-duplication fix). Callers must log BEFORE broadcasting.
     ;(msg as unknown as { absIndex?: number }).absIndex = this.messageLogLength - 1
+    this.holdReadIfPinned()
+  }
+
+  /** Pinned read (hand-back approved): the session stays read until it is
+   *  folded into its parent, whatever its wind-down turn logs. */
+  get readPinned(): boolean {
+    return isReadPinned(this.claudeSessionId)
+  }
+
+  /** While pinned, every logged message advances the read pointer to the end
+   *  and tells every client so — clients bump their own message count per
+   *  message, so this lands a beat AFTER the message itself is broadcast. */
+  private holdReadIfPinned() {
+    const key = this.claudeSessionId
+    if (!key || !isReadPinned(key)) return
+    const len = this.messageLogLength
+    setLastReadIndex(key, len)
+    setImmediate(() => {
+      if (!isReadPinned(key)) return
+      this.emit('hub_message', {
+        type: 'session_read_state',
+        sessionId: this.id,
+        lastReadIndex: len,
+        messageLogLength: len,
+        readPinned: true,
+      } satisfies HubMessage)
+    })
   }
 
   /** Absolute message count ever logged (monotonic, equals what would have
@@ -1767,6 +1795,9 @@ export class Session extends EventEmitter {
   /** Raise the red attention marker. `wantPush:false` for callers whose event
    *  already has its own notification (pending AskUserQuestion/ExitPlanMode). */
   flagAttention(snippet: string, wantPush: boolean) {
+    // An approved hand-back is read for good: its wind-down must not pull
+    // Yousef back in. No marker, no push.
+    if (this.readPinned) return
     const now = Date.now()
     this.needsAttention = { ts: now, snippet }
 

@@ -33,7 +33,9 @@ export type ClientMessage =
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
   | { type: 'set_collapsed_groups'; collapsed: string[] }
-  | { type: 'mark_session_read'; sessionId: string }
+  /** `sticky`: pin the session read until it is folded into its parent (the
+   *  Inbox approve verdict) — its wind-down turn must not re-flag it. */
+  | { type: 'mark_session_read'; sessionId: string; sticky?: boolean }
   | { type: 'mark_session_unread'; sessionId: string }
   | { type: 'clear_attention'; sessionId: string }
   /** Queue a prompt to be delivered when the CURRENT TURN FULLY ENDS, not at
@@ -92,7 +94,7 @@ export type HubMessage =
   | { type: 'session_renamed'; sessionId: string; name: string }
   | { type: 'session_order'; order: string[] }
   | { type: 'collapsed_groups'; collapsed: string[] }
-  | { type: 'session_read_state'; sessionId: string; lastReadIndex: number; messageLogLength: number }
+  | { type: 'session_read_state'; sessionId: string; lastReadIndex: number; messageLogLength: number; readPinned?: boolean }
   | { type: 'older_messages'; sessionId: string; messages: HubMessage[]; hasMore: boolean }
   /** A session emitted `@amar` and wants Yousef's eyes. `needsAttention: null`
    *  clears the marker. `push` is a transport-only hint (not persisted) telling
@@ -219,6 +221,9 @@ export interface SessionInfo {
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null
+  /** Pinned read (hand-back approved): stays read, and raises no attention,
+   *  until it is folded into its parent. */
+  readPinned?: boolean
   /** A prompt waiting for the current turn to fully end. Editable/cancellable
    *  until it flushes. Persisted in the manifest. */
   queuedMessage?: string | null
