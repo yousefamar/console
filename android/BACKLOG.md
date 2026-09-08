@@ -10,6 +10,14 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Inbox: agent rows lead with their SPACE (SPA 7b0aec47, ^glad-finch) —
+  `sessionToItem` sets `InboxItem.context` = the session's project title (else
+  first area; slug if the spaces list isn't loaded) and the row renders it as a
+  muted prefix + small chevron before the name ("Console › Rosy owl"). Port
+  `sessionContext()` into `InboxLogic.kt` (sessions carry `project`/`areasCsv`
+  since Room v12; titles from `SpacesRepository.spaces`) and add the prefix to
+  the agent row composable.
+
 - Inbox: feed rows lead with the ARTICLE title, feed name beneath (SPA
   40dd715f, ^shy-ant) — `feedItemToItem` in `src/inbox/route.ts` now sets
   header = item title, body = feed name (the platform glyph + favicon already
