@@ -18,10 +18,12 @@ import { useSpacesStore } from '@/store/spaces'
 import { useUiStore } from '@/store/ui'
 import { activeLocalSnoozes, unsnoozeItem } from '@/inbox/snooze'
 import {
-  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type FeedMode,
 } from '@/inbox/route'
+import { approveHandbacks, hubErrorText } from '@/inbox/approve'
+import { showAlert } from '@/dialog'
 import type { FeedKind } from '@/feeds/feed-kind'
 
 interface UnifiedInboxState {
@@ -73,6 +75,8 @@ interface UnifiedInboxState {
    *  store; `snooze` = open the shared picker for it (the picker's commit
    *  path, `applySnooze`, does the dropping). */
   handleSelected: (verb: 'done' | 'snooze') => void
+  /** `e` on an agent row: move its Under Review card(s) to Done, then mark read. */
+  approveAndMarkRead: (item: InboxItem) => Promise<void>
   /** Remove an item from the composed lists NOW and move the selection to its
    *  neighbour. The rebuild would drop it anyway, but that is a 300 ms
    *  trailing debounce that every source-store write resets — a busy agent
@@ -336,8 +340,32 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // store must not step to ITS list neighbour and mark that one read.
     if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId, { advance: false })
     else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
-    else if (item.source === 'agent') useAgentStore.getState().markSessionRead(item.sourceId)
+    else if (item.source === 'agent') void get().approveAndMarkRead(item)
     else void useFeedStore.getState().markRead(item.sourceId)
+  },
+
+  approveAndMarkRead: async (item) => {
+    // `e` on an agent that handed a card back IS the approval — the same
+    // move the viewer's "Approve → Done" strip makes. A board without a Done
+    // column has nowhere to move to, so those rows just mark read as before.
+    const handbacks = reviewHandbacksFor(item.agentKey, useSpacesStore.getState().spaces)
+    if (handbacks.length === 0) {
+      useAgentStore.getState().markSessionRead(item.sourceId)
+      return
+    }
+    const outcome = await approveHandbacks(handbacks, useSpacesStore.getState().moveCardOnBoard)
+    if (outcome.error) {
+      // The row is already gone from the list; put it back so the failed
+      // approval is visible rather than silently swallowed.
+      get().restore(item.key)
+      void get().rebuild()
+      void showAlert(`Couldn't move "${outcome.error.handback.text}" to ${outcome.error.handback.doneColumn}: ${hubErrorText(outcome.error.cause)}`)
+      return
+    }
+    // Sticky only when something was approved: the Done transition winds the
+    // fork down, whose farewell would otherwise re-flag the row unread (same
+    // as the strip's afterApprove). Nothing moved = the fork is still live.
+    useAgentStore.getState().markSessionRead(item.sourceId, outcome.moved.length > 0 ? { sticky: true } : undefined)
   },
 }))
 

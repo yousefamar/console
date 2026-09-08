@@ -35,6 +35,7 @@ import { feedKindsPresent, reviewHandbacksFor, routeForFeed, type ReviewHandback
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 import { snoozeLabel, unsnoozeItem } from '@/inbox/snooze'
+import { approveHandbacks, hubErrorText } from '@/inbox/approve'
 
 // Composition wiring (source-store subscriptions → rebuild) lives in
 // src/inbox/subscribe.ts, wired at boot from GatedBoot — the tab badge needs
@@ -279,31 +280,21 @@ function HandbackGlyph({ agentKey }: { agentKey?: string }) {
   )
 }
 
-/** HubError.message is the raw response body — `{"error":"…"}` for board
- *  routes. Unwrap it for the dialog (pen.ts still parses the raw form). */
-function hubErrorText(e: unknown): string {
-  const m = e instanceof Error ? e.message : String(e)
-  try {
-    const j = JSON.parse(m) as { error?: unknown }
-    if (typeof j?.error === 'string') return j.error
-  } catch { /* not JSON */ }
-  return m
-}
-
 function ReviewHandbackRow({ handback: h, item }: { handback: ReviewHandback; item: InboxItem }) {
   const [busy, setBusy] = useState(false)
   const approve = async () => {
     if (!h.doneColumn || busy) return
     setBusy(true)
-    try {
-      await useSpacesStore.getState().moveCardOnBoard(h.project, h.query, h.doneColumn)
+    // Same primitive as `e` on the row (approveAndMarkRead) — this button
+    // approves ONE card, so the read/drop step waits for the last one.
+    const outcome = await approveHandbacks([h], useSpacesStore.getState().moveCardOnBoard)
+    if (outcome.error) {
+      void showAlert(`Couldn't move the card to ${h.doneColumn}: ${hubErrorText(outcome.error.cause)}`)
+    } else {
       const remaining = reviewHandbacksFor(item.agentKey, useSpacesStore.getState().spaces).filter((o) => !(o.project === h.project && o.query === h.query)).length
       afterApprove(item, remaining)
-    } catch (e) {
-      void showAlert(`Couldn't move the card to ${h.doneColumn}: ${hubErrorText(e)}`)
-    } finally {
-      setBusy(false)
     }
+    setBusy(false)
   }
   return (
     <div className="flex items-center gap-2 px-3 py-1 text-xs">
