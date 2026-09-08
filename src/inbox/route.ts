@@ -109,10 +109,16 @@ export interface AgentSessionLike {
   agentKey?: string
 }
 
-/** Unread agent sessions demand handling (mark read / reply / review), so
- *  they're inbox-shaped by definition — no routing rules apply. */
+/** Agent sessions that demand handling (mark read / reply / review) are
+ *  inbox-shaped by definition — no routing rules apply. A RUNNING session is
+ *  not one of them: its unread text is a turn still being typed, nothing for
+ *  Yousef to act on yet (^neat-fawn: "Inbox is only for things that require
+ *  my attention"). The exception is `needsAttention` — a question or approval
+ *  can block a still-running turn, and that IS his to answer. */
 export function sessionIsLive(s: AgentSessionLike): boolean {
-  return !s.isAl && (!!s.hasUnread || !!s.needsAttention)
+  if (s.isAl) return false
+  if (s.needsAttention) return true
+  return s.status !== 'running' && !!s.hasUnread
 }
 
 /** `reviewKeys` = every `@key` owning an Under Review card across all
@@ -209,10 +215,11 @@ export function roomIsLive(r: DbChatRoom, now: number): boolean {
 // ---------------------------------------------------------------------------
 // Inbox ordering. "Blocked on Yousef" bands first — overdue DMs, agents
 // asking for him, review hand-backs (turn ended + card Under Review) — then
-// chat+mail by recency, then the remaining unread agents split finished
-// (idle) above still-running, then promoted/inbox-routed feed reading;
-// recency within each band. Agent tiers per Yousef (^lean-deer): a
-// hand-back beats a merely-finished agent, which beats one still typing.
+// chat+mail by recency, then the remaining finished-unread agents, then
+// promoted/inbox-routed feed reading; recency within each band. Agent tiers
+// per Yousef (^lean-deer): a hand-back beats a merely-finished agent. A
+// still-running agent never reaches the list unless it needs attention
+// (^neat-fawn), so there is no "still typing" band.
 // ---------------------------------------------------------------------------
 
 function band(i: InboxItem): number {
@@ -220,7 +227,7 @@ function band(i: InboxItem): number {
   if (i.source === 'agent') {
     if (i.attention) return 1
     if (i.review) return 2
-    return i.idle ? 4 : 5
+    return 4
   }
   // Chat and mail share ONE recency band — fresh mail beats stale chats
   // (a strict chat-above-mail split buried today's mail under week-old

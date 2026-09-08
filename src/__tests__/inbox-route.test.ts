@@ -159,11 +159,20 @@ describe('agent sessions', () => {
     return { id: 's1', name: 'Console general', prompt: 'do things', status: 'idle', createdAt: NOW - 5000, ...over }
   }
 
-  it('live = unread or attention, Al excluded', () => {
+  it('live = finished-unread or attention, Al excluded', () => {
     expect(sessionIsLive(session())).toBe(false)
     expect(sessionIsLive(session({ hasUnread: true }))).toBe(true)
     expect(sessionIsLive(session({ needsAttention: { ts: NOW, snippet: 'help' } }))).toBe(true)
     expect(sessionIsLive(session({ hasUnread: true, isAl: true }))).toBe(false)
+  })
+
+  it('a RUNNING session stays out of the inbox unless it needs attention (^neat-fawn)', () => {
+    // Unread text on a running session is a turn still being typed — nothing to act on.
+    expect(sessionIsLive(session({ hasUnread: true, status: 'running' }))).toBe(false)
+    // A question/approval blocking a running turn IS his to answer.
+    expect(sessionIsLive(session({ status: 'running', needsAttention: { ts: NOW, snippet: 'ok to push?' } }))).toBe(true)
+    // Ended sessions with unread text still surface (finished, unreviewed).
+    expect(sessionIsLive(session({ hasUnread: true, status: 'ended' }))).toBe(true)
   })
 
   it('adapts: header = name sans (fork), body = attention snippet, always inbox', () => {
@@ -202,16 +211,17 @@ describe('agent sessions', () => {
     expect(sessionToItem(session({ hasUnread: true, agentKey: 'console-general-lean-deer-fork' })).review).toBeUndefined()
   })
 
-  it('agent tiers: attention → review hand-back → chat+mail → finished → still running', () => {
+  it('agent tiers: attention → review hand-back → chat+mail → finished (running ones never get this far)', () => {
     const review = new Set(['reviewer'])
     const items = [
-      sessionToItem(session({ id: 's-running', hasUnread: true, status: 'running', lastActivityAt: NOW }), review),
+      // A running session that still made it in is one needing attention — it bands with attention, not below mail.
+      sessionToItem(session({ id: 's-running-attn', status: 'running', needsAttention: { ts: NOW, snippet: 'y' }, lastActivityAt: NOW }), review),
       sessionToItem(session({ id: 's-idle', hasUnread: true, lastActivityAt: NOW }), review),
       threadToItem(thread({ date: NOW - 1000 }), DEFAULT_RULES),
       sessionToItem(session({ id: 's-review', hasUnread: true, agentKey: 'reviewer', lastActivityAt: NOW - 9000 }), review),
       sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW - 9000 }), review),
     ]
-    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-attn', 's-review', 't1', 's-idle', 's-running'])
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-running-attn', 's-attn', 's-review', 't1', 's-idle'])
   })
 
   it('attention outranks a review hand-back, and recency orders within a tier', () => {

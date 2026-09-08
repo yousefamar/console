@@ -10,6 +10,14 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Inbox: running agents stay OUT of the inbox list (SPA ^neat-fawn, 2026-09-08,
+  `sessionIsLive` in `src/inbox/route.ts`) — a session with `status ==
+  "running"` is admitted only when it carries `needsAttention`; unread text on
+  a running turn is not actionable. `InboxLogic.kt`'s agent admission
+  (`sessionToEntry`/`composeInbox`) still lets running+unread sessions in and
+  bands them last; drop that band, keep the attention exception. Tile badge =
+  list size, so it shrinks with it.
+
 - Board: `#inherit` card token (hub + SPA ^tall-colt, 2026-09-08) — ticket-forks
   are now FRESH-context by default; a trailing `#inherit` tag opts a card back
   into the parent-transcript copy. `CardContent.kt`'s token parser must strip
