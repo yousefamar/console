@@ -764,16 +764,46 @@ object G1Protocol {
     fun encodeBatteryQuery(): ByteArray = byteArrayOf(OP_BATTERY, 0x01)
 
     /**
-     * Parse a 0x2C reply. Wire format per MentraOS: `[0x2C, 0x66, pct, ...]`.
-     * The 0x66 magic is required; firmware versions that don't match it emit
-     * a different shape we don't yet understand.
+     * The 0x2C reply is the firmware's GET_DEVICE_INFO, not just battery
+     * (docs/g1-protocol.md §12): `[0x2C, 0x66, CHG×5, M_SW_VER×3, S_SW_VER×3,
+     * BLE_SW_VER×3, …]`. Only the master (right) arm fills `M_SW_VER`; the
+     * slave (left) reports zeros there and its own version under `S_SW_VER`.
      */
-    fun parseBatteryReply(data: ByteArray): Int? {
+    data class DeviceInfo(
+        val batteryPct: Int?,
+        /** `M_SW_VER` bytes [7..9] as "1.6.6", null when absent or all-zero. */
+        val masterFirmware: String?,
+        /** `S_SW_VER` bytes [10..12], same encoding. */
+        val slaveFirmware: String?,
+    ) {
+        /** The version the REPLYING arm runs: right = master slot, left = slave slot. */
+        fun firmwareFor(arm: Arm): String? = when (arm) {
+            Arm.RIGHT -> masterFirmware ?: slaveFirmware
+            Arm.LEFT -> slaveFirmware ?: masterFirmware
+        }
+    }
+
+    fun parseDeviceInfo(data: ByteArray): DeviceInfo? {
         if (data.size < 3 || data[0] != OP_BATTERY) return null
         if (data[1] != 0x66.toByte()) return null
-        val pct = data[2].toInt() and 0xFF
-        return if (pct in 0..100) pct else null
+        val pct = (data[2].toInt() and 0xFF).takeIf { it in 0..100 }
+        return DeviceInfo(pct, versionAt(data, 7), versionAt(data, 10))
     }
+
+    private fun versionAt(data: ByteArray, off: Int): String? {
+        if (data.size < off + 3) return null
+        val a = data[off].toInt() and 0xFF
+        val b = data[off + 1].toInt() and 0xFF
+        val c = data[off + 2].toInt() and 0xFF
+        if (a == 0 && b == 0 && c == 0) return null
+        return "$a.$b.$c"
+    }
+
+    /**
+     * Battery percent from a 0x2C reply, or null. The 0x66 magic is required;
+     * firmware versions that don't match it emit a shape we don't understand.
+     */
+    fun parseBatteryReply(data: ByteArray): Int? = parseDeviceInfo(data)?.batteryPct
 
     // --- Wear detection (0x27) ----------------------------------------------
 

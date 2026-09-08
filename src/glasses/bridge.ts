@@ -59,6 +59,8 @@ export interface ArmSnapshot {
   /** True when the arm is sitting on its case charging pin (from `0xF5 0x09`). */
   charging: boolean | null
   serial: string | null
+  /** Arm firmware ("1.6.6") from the 0x2C GET_DEVICE_INFO reply; absent on older APKs. */
+  firmware?: string | null
 }
 
 export interface GlassesSnapshot {

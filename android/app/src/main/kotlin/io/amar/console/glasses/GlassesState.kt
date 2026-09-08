@@ -72,6 +72,13 @@ object GlassesState {
     @Volatile var serialRight: String? = null
         private set
 
+    /** Per-arm firmware version ("1.6.6") from the 0x2C GET_DEVICE_INFO reply
+     *  that also carries battery — no extra traffic. Null until the first poll. */
+    @Volatile var firmwareLeft: String? = null
+        private set
+    @Volatile var firmwareRight: String? = null
+        private set
+
     @Volatile var micActive: Boolean = false
         private set
 
@@ -98,6 +105,7 @@ object GlassesState {
                     batteryLeft = null
                     chargingLeft = null
                     serialLeft = null
+                    firmwareLeft = null
                 }
             }
             G1Protocol.Arm.RIGHT -> {
@@ -109,6 +117,7 @@ object GlassesState {
                     serialRight = null
                     // Master-arm fact: unknowable once it's gone.
                     runningApp = null
+                    firmwareRight = null
                 }
             }
         }
@@ -143,6 +152,15 @@ object GlassesState {
         when (arm) {
             G1Protocol.Arm.LEFT -> chargingLeft = docked
             G1Protocol.Arm.RIGHT -> chargingRight = docked
+        }
+        touch()
+    }
+
+    @Synchronized
+    internal fun setFirmware(arm: G1Protocol.Arm, version: String?) {
+        when (arm) {
+            G1Protocol.Arm.LEFT -> firmwareLeft = version
+            G1Protocol.Arm.RIGHT -> firmwareRight = version
         }
         touch()
     }
@@ -198,6 +216,8 @@ object GlassesState {
         serialLeft = null
         serialRight = null
         runningApp = null
+        firmwareLeft = null
+        firmwareRight = null
         worn = null
         caseBattery = null
         caseCharging = null
@@ -225,6 +245,7 @@ object GlassesState {
             put("battery", batteryLeft ?: JSONObject.NULL)
             put("charging", chargingLeft ?: JSONObject.NULL)
             put("serial", serialLeft ?: JSONObject.NULL)
+            put("firmware", firmwareLeft ?: JSONObject.NULL)
         })
         root.put("right", JSONObject().apply {
             put("status", rightStatus.name.lowercase())
@@ -232,6 +253,7 @@ object GlassesState {
             put("battery", batteryRight ?: JSONObject.NULL)
             put("charging", chargingRight ?: JSONObject.NULL)
             put("serial", serialRight ?: JSONObject.NULL)
+            put("firmware", firmwareRight ?: JSONObject.NULL)
         })
         root.put("channel", channel ?: JSONObject.NULL)
         root.put("micActive", micActive)

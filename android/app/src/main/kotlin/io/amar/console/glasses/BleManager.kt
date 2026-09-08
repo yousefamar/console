@@ -659,13 +659,15 @@ class BleManager(private val app: Context) {
         // Heartbeat echoes: consume silently.
         if (op0 == G1Protocol.OP_HEARTBEAT) return
 
-        // Battery poll reply (0x2C). Per-arm value; populates GlassesState.
-        // Fire-and-forget — we don't serialize the poll through the ack queue
-        // because MentraOS's reference doesn't either and it would stall
-        // other writes if a reply is lost.
+        // Battery poll reply (0x2C) — the firmware's GET_DEVICE_INFO, so it
+        // also carries the arm's firmware version. Per-arm; populates
+        // GlassesState. Fire-and-forget — we don't serialize the poll through
+        // the ack queue because MentraOS's reference doesn't either and it
+        // would stall other writes if a reply is lost.
         if (op0 == G1Protocol.OP_BATTERY) {
-            G1Protocol.parseBatteryReply(data)?.let { pct ->
-                GlassesState.setBattery(arm.side, pct)
+            G1Protocol.parseDeviceInfo(data)?.let { info ->
+                info.batteryPct?.let { GlassesState.setBattery(arm.side, it) }
+                info.firmwareFor(arm.side)?.let { GlassesState.setFirmware(arm.side, it) }
             }
             return
         }

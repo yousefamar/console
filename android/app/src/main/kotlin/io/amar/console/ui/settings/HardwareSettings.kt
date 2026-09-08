@@ -172,6 +172,12 @@ fun HardwareSettingsScreen(app: ConsoleApp, onBack: () -> Unit = {}) {
                     GlassesState.channel?.let { append(" · ch $it") }
                 },
             )
+            if (GlassesState.firmwareLeft != null || GlassesState.firmwareRight != null) {
+                StatusRow(
+                    "Firmware L / R",
+                    "v${GlassesState.firmwareLeft ?: "…"} / v${GlassesState.firmwareRight ?: "…"}",
+                )
+            }
         }
         // Charging-case line — shown when paired even if arms not connected.
         if (paired && (GlassesState.caseBattery != null || GlassesState.caseCharging != null)) {

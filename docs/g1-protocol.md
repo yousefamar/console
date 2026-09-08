@@ -454,11 +454,12 @@ So **firmware version = bytes [7..9] (master, `M_SW_VER`) and [10..12] (slave,
 `S_SW_VER`)** — `01 06 06` = v1.6.6 on this pair (2026-06). Only the RIGHT
 arm (master, hardware strap P0.26 — see §17) fills `M_SW_VER`; the left
 reports zeros there and its own version under `S_SW_VER`. `BLE_SW_VER` read
-0.0.0 on both. Console has been receiving this every ~80 s and discarding
-everything after byte[2] — the `firmware` snapshot slot dropped in v0.1.16
-can be re-populated from here with no new traffic (Android BACKLOG, Mobile
-agent's). The `[0x2C, 0x01|0x02]` request byte is stored by the firmware as
-the phone platform ("`%s mobile phone is connected`" — Android/iOS).
+0.0.0 on both. Console parses this since ^kind-pony (`G1Protocol.parseDeviceInfo`,
+APK): per-arm `firmware` in the glasses snapshot (`left.firmware` /
+`right.firmware`, right = master slot, left = slave slot, all-zero = null) —
+no new traffic, the poll already ran every ~80 s. The `[0x2C, 0x01|0x02]`
+request byte is stored by the firmware as the phone platform ("`%s mobile
+phone is connected`" — Android/iOS).
 
 ### Wear detection — `0x27`
 
