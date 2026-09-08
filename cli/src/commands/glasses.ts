@@ -24,6 +24,7 @@ export async function glasses(verb: string | undefined, args: string[], flags: G
     case 'hud': return glassesHud(args, flags)
     case 'config': return glassesConfig(args, flags)
     case 'nav': return glassesNav(args, flags)
+    case 'teleprompt': return glassesTeleprompt(args, flags)
     default:
       exitWithError('USAGE', `Unknown glasses command: ${verb}. Run 'con help glasses'.`, flags)
   }
@@ -271,5 +272,54 @@ async function glassesNav(args: string[], flags: GlobalFlags): Promise<void> {
     }
     default:
       exitWithError('USAGE', NAV_USAGE, flags)
+  }
+}
+
+// con glasses teleprompt <file|-> | next | prev | goto <n> | exit | status — the G1's
+// NATIVE teleprompter (0x09, docs/g1-protocol.md §20). The hub keeps the script,
+// cuts it into 5-line pages and pushes one per touchbar tap (right = next,
+// left = previous); double-tap on the glasses ends the session. Replies carry
+// the page position and the firmware ack {ok, status, ack}.
+const TELEPROMPT_USAGE = [
+  'Usage: con glasses teleprompt <file|->   [--title "<label>"] [--multipart]   (- = read the script from stdin)',
+  '       con glasses teleprompt next | prev | exit | status',
+  '       con glasses teleprompt goto <page>',
+  'Pages are 5 rows of ≤38 chars; blank lines are paragraph breaks. --multipart forces every page across two',
+  'BLE packets (live fallback if a one-packet init ever fails to open the teleprompter app).',
+].join('\n')
+
+async function glassesTeleprompt(args: string[], flags: GlobalFlags): Promise<void> {
+  const positional = args.filter((a) => !a.startsWith('--'))
+  const verb = positional[0]
+  const opts = parseFlags(args)
+  switch (verb) {
+    case undefined:
+      exitWithError('USAGE', TELEPROMPT_USAGE, flags)
+      return
+    case 'status': {
+      output(await hubFetch('/glasses/teleprompt'), flags)
+      return
+    }
+    case 'next':
+    case 'prev':
+    case 'exit': {
+      output(await hubFetch(`/glasses/teleprompt/${verb}`, { method: 'POST' }), flags)
+      return
+    }
+    case 'goto': {
+      const page = Number(positional[1])
+      if (!Number.isInteger(page) || page < 1) exitWithError('USAGE', TELEPROMPT_USAGE, flags)
+      output(await hubFetch('/glasses/teleprompt/goto', { method: 'POST', body: { page } }), flags)
+      return
+    }
+    default: {
+      const text = verb === '-' ? await readStdin() : readFileSync(verb, 'utf8')
+      if (!text.trim()) exitWithError('USAGE', 'the script is empty', flags)
+      const body: Record<string, unknown> = { text }
+      if (opts.title) body.title = opts.title
+      else if (verb !== '-') body.title = verb.split('/').pop()
+      if (opts.multipart) body.multipart = true
+      output(await hubFetch('/glasses/teleprompt/start', { method: 'POST', body }), flags)
+    }
   }
 }

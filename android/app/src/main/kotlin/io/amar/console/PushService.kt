@@ -1160,6 +1160,23 @@ class PushService : Service() {
                 // Native navigation card (0x0A) — docs/g1-protocol.md §18. The reply carries
                 // the RIGHT arm's ack (master; L is written first): ok=false with a status
                 // byte means the firmware refused the frame (string/prompt oversize).
+                // Native teleprompter (0x09, §20): one text buffer per page; the hub
+                // paginates and drives touchbar next/prev. Reply = right arm's ack
+                // for the last packet; status byte 9 (0 ok, 1 packet-order error).
+                "teleprompterShow" -> {
+                    val text = params.optString("text")
+                    if (text.isEmpty()) { replyRpcError(id, "text required"); return }
+                    try {
+                        GlassesController.requireBle().teleprompterShow(
+                            text,
+                            init = params.optBoolean("init", false),
+                            forceMultipart = params.optBoolean("multipart", false),
+                        ) { replyRpc(id, navAckJson(it, statusIndex = 9)) }
+                    } catch (e: IllegalArgumentException) {
+                        replyRpcError(id, e.message ?: "invalid teleprompter page")
+                    }
+                }
+                "teleprompterExit" -> GlassesController.requireBle().teleprompterExit { replyRpc(id, navAckJson(it, statusIndex = 9)) }
                 "navStart" -> GlassesController.requireBle().navStart { replyRpc(id, navAckJson(it)) }
                 "navStep" -> {
                     try {
@@ -1287,8 +1304,8 @@ class PushService : Service() {
         } catch (_: Exception) {}
     }
 
-    /** `{ok, status?, ack?}` — the nav ack's status byte (byte 5) and the raw frame in hex, for `con glasses nav` to print. */
-    private fun navAckJson(outcome: io.amar.console.glasses.BleManager.AckOutcome): JSONObject {
+    /** `{ok, status?, ack?}` — the firmware ack's status byte (`statusIndex`: 5 for nav, 9 for teleprompter pages) and the raw frame in hex, for the CLI to print. */
+    private fun navAckJson(outcome: io.amar.console.glasses.BleManager.AckOutcome, statusIndex: Int = 5): JSONObject {
         val o = JSONObject()
         val payload = when (outcome) {
             is io.amar.console.glasses.BleManager.AckOutcome.Ok -> { o.put("ok", true); outcome.payload }
@@ -1297,7 +1314,7 @@ class PushService : Service() {
             is io.amar.console.glasses.BleManager.AckOutcome.WriteFailed -> { o.put("ok", false).put("error", outcome.reason); null }
         }
         if (payload != null) {
-            if (payload.size >= 6) o.put("status", payload[5].toInt() and 0xFF)
+            if (payload.size > statusIndex) o.put("status", payload[statusIndex].toInt() and 0xFF)
             o.put("ack", payload.joinToString("") { "%02x".format(it) })
         }
         return o

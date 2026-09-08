@@ -349,6 +349,16 @@ export class GlassesHub {
     await this.rpc('setHeadUpAngle', { deg })
   }
 
+  // --- Native teleprompter (0x09) — docs/g1-protocol.md §20 ---------------
+  /** Put one page on the glasses; `init` opens the teleprompter app first (action 1), otherwise the buffer is replaced (action 3). */
+  async teleprompterShow(text: string, init: boolean, multipart = false): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('teleprompterShow', { text, init, multipart })
+  }
+
+  async teleprompterExit(): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('teleprompterExit')
+  }
+
   // --- Native navigation card (0x0A) ---------------------------------------
   async navStart(): Promise<GlassesNavAck> {
     return await this.rpc<GlassesNavAck>('navStart')

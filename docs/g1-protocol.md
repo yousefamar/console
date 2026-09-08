@@ -109,6 +109,7 @@ All opcodes are a single leading byte. Response payloads for
 | 0x03 | Silent mode         | → glasses | `[0x03, 0x0A off / 0x0C on]`; see §9 |
 | 0x04 | App whitelist JSON  | → glasses | 176-byte chunks, `[0x04, totalChunks, seq, ...json...]` |
 | 0x06 | Dashboard show      | → glasses | Force dashboard visible. MentraOS constant; untested in Console. |
+| 0x09 | Teleprompter        | → glasses | `[0x09, len16, seq, action, total16, pkt16, p9, p10, p11, text…, ts64]`; native teleprompter, one 512-B page per buffer; see §20 |
 | 0x0B | Head-up angle       | → glasses | `[0x0B, angle 0-60]`; configures the pitch threshold that triggers dashboard-on. MentraOS verified. |
 | 0x0E | Mic enable/disable  | → glasses | `[0x0E, 0x01 or 0x00]`, **right arm only** |
 | 0x15 | BMP data packet     | → glasses | 194-byte payload; packet 0 prefixes 4-byte flash address |
@@ -701,6 +702,7 @@ per-note metadata is fully mapped.
 | CLI              | `cli/src/commands/glasses.ts`                                      |
 | Native nav card  | §18 — `G1Protocol.Nav`/`encodeNav*`, `BleManager.nav*`, `routes/glasses.ts` `/glasses/nav/*`, `con glasses nav` |
 | Dismiss/status/un-pair | §19 — `encodeDeleteNotification`/`encodeSystemStatusQuery`/`encodeBtUnpair`, `/glasses/notify/dismiss`, `/glasses/unpair` |
+| Native teleprompter | §20 — `G1Protocol.Teleprompter`/`encodeTeleprompter*`, `BleManager.teleprompter*`, `server/src/glasses/teleprompter.ts`, `/glasses/teleprompt/*`, `con glasses teleprompt` |
 
 ## 17. Firmware-derived opcode map (FreedomCoder-dev/g1-reverse, 2026-09-07)
 
@@ -1057,3 +1059,128 @@ Order matters in `BleManager.sendBtUnpair`: send the frame, THEN clear
 `PairStore`. Clearing first would race auto-connect against a device that is
 still bonded; clearing never (the earlier `unpair()` was local-only) leaves a
 stale pair that makes auto-connect spin against glasses which now refuse us.
+
+---
+
+## 20. Native teleprompter — PUT `0x09` (`BLE_REQ_PUT_TELEPROMPTER_INFO`)
+
+The glasses have a built-in teleprompter screen: a text block (UTF-8,
+`gui_utf_draw`), a clock, a vertical progress bar, an optional "starting in N"
+countdown splash with an icon, and a scroll animation. **It holds exactly one
+512-byte text buffer and never pages or scrolls a longer text on its own** —
+the phone app feeds it a fresh buffer per page. Console drives it with
+`con glasses teleprompt <file|->` → hub `POST /glasses/teleprompt/*`
+(`server/src/glasses/teleprompter.ts` paginates and pages on touchbar taps) →
+APK `G1Protocol.encodeTeleprompterPage` / `BleManager.teleprompterShow`.
+This replaces the "teleprompter as a `0x4E` text mirror" idea in
+`g1-future-ideas.md`.
+
+**Source and reliability.** Byte layout from the firmware handler
+`ble/ble_process_put_ops_09_10.inc` (`ble_put_op9_dispatch` → `action1_single`,
+`action2_mark`, `action3_7`, `action5_exit`), the `0x24`/`0x25` side-ops in
+`ble_process_put_ops_21_27.inc`, and the consumer `ui/teleprompt/
+ui_teleprompter_task.c` in FreedomCoder-dev/g1-reverse (§17). The card that
+opened this section pointed at the `0x21–0x27` handler — that file only holds
+the **suspend** (`0x24` sub 6) and **sync** (`0x25` sub 4) side-ops; the
+teleprompter's own opcode is **`0x09`**. Decompiled shipped firmware = strong
+evidence, *not yet confirmed against a live capture* (no glasses were connected
+when this was written — see "Live verification" below). No public SDK carries
+this opcode.
+
+### Frame (every action)
+
+```
+byte 0     : 0x09
+byte 1..2  : length, LE16 — the WHOLE frame including byte 0; must equal the
+             BLE write length or the packet is dropped ("teleprompter packet
+             length error")
+byte 3     : seq — our rolling counter, echoed in the ack, stored as the sync id
+             the master forwards to the slave
+byte 4     : action (table below)
+byte 5..6  : total packets, LE16       ┐ actions 1 / 3 / 7 only
+byte 7..8  : this packet, LE16, 1-BASED ┘ (single packet: total = 1, pkt = 1)
+byte 9..11 : three parameter bytes (per action, below)
+byte 12..  : UTF-8 text
+last 8     : int64 LE app timestamp (ms) — ONLY on the last packet (single or
+             final); intermediate packets end with text. Text length is therefore
+             len-20 on a single/final packet and len-12 on the others.
+```
+
+| action | name | params (bytes 9 / 10 / 11) | text | ack |
+|--------|------|-----------------------------|------|-----|
+| 1 | **init** — clear state, enter the teleprompter app, show text (after the splash) | 9 = countdown seconds (int8; 0 = straight to text) · 10 = low nibble picks the splash icon (0 → bitmap `0x19`, 1 → `0x1a`), bit 7 a flag the UI stores · 11 = stored beside the mark position (use unknown) | yes | 10 B: bytes 0–8 echoed + status |
+| 2 | **mark** — move the highlight position | byte 5 → stored beside the position; **bytes 6..7 = u16 position** ("MARK POSITION = %d"); timestamp still read from the frame's end (16-byte frame) | no | 6 B echo |
+| 3 | **text** — replace the buffer, static redraw | 9 → stored beside the position · **10..11 = u16 mark position** | yes | 10 B: bytes 0–8 + status |
+| 5 | **exit** — leave the app (master forwards to the slave: "Received exit command from master") | — (6-byte frame `[09 06 00 seq 05 00]`) | no | 6 B echo |
+| 7 | **text + scroll** — as 3 but sets the flag that makes the UI run `ui_render_scroll_text_frame` | as 3 | yes | as 3 |
+
+Acks carry **no `0xC9`/`0xCA`**: `parseAck` special-cases `0x09`
+(`G1Protocol.parseTeleprompterAck`). For actions 1/3/7 the status is byte 9 —
+`0` applied, `1` **packet-order error**: the assembly buffer is reset and the
+whole page must be resent from packet 1 ("There is a packet order error, current
+packet order = %d, expected packet order = %d"). Multipart rules: `total > 1`,
+packets 1..N in order; the firmware assembles into a `0x217`-byte buffer whose
+text area is **0x200 = 512 bytes** (`safe_memcpy_checked(…, 0x200)`) — anything
+past that is truncated, so Console refuses pages over 512 B before writing.
+Send each packet to L, await the ack, then R (§3), exactly like `0x4E`.
+
+Side-ops in the neighbouring handler: **`0x24` sub 6 = suspend/resume**
+(`[24 len len seq 06 flag …ts64]`, `flag` 1 = suspended; "SUSPEND status, app
+send counter time = %d" — the app's elapsed counter rides in the trailer) and
+**`0x25` sub 4 = sync** — which is the **heartbeat we already send every 8 s**
+(`encodeHeartbeat` = `[25 06 00 seq 04 seq]`, `OP25_SYNC_COUNT++`). The UI task
+counts down 10 s at init and re-arms to 19 s on each sync, auto-exiting at 0
+("The teleprompter automatically shuts down due to disconnection"), so the
+existing heartbeat is the keep-alive; no extra ticker (unlike nav §18, which
+has its own sub-4 sync).
+
+### What the UI does with it
+
+`ui_teleprompter_task` states: **0** init → if `countdown > 0` **1** splash
+(icon `0x19`/`0x1a` by the mode nibble, seconds counting down from byte 9) →
+**2** text (`gui_utf_draw`, clock top-left, `gui_verticalLine_process_bar` on
+the right; action 7 swaps the draw for the scroll animation) → **3** exit/fade
+(also entered by the double-tap that dismisses any feature — `0xF5 0x00`
+reaches the phone and Console ends its session without writing). A mark
+(action 2) or text (3/7) arriving in state 2 triggers a redraw. Text wider than
+the lens follows the §6 rules (the teleprompter payload is multi-line, so long
+rows **wrap** and push the last row off-screen) — Console pre-wraps at 38
+chars and sends **exactly 5 rows per page**.
+
+### Console surface
+
+| Layer | Where |
+|-------|-------|
+| Encoders + ack parser + limits | `G1Protocol.Teleprompter`, `encodeTeleprompterPage` (chunks ≤224 B so both packet forms stay under one 244-B write; `forceMultipart` splits a short page in two), `encodeTeleprompterMark`, `encodeTeleprompterExit`, `parseTeleprompterAck`; tests `G1TeleprompterTest.kt` (7, byte-exact) |
+| BLE sequencing | `BleManager.teleprompterShow(text, init, forceMultipart)` (L→R per packet, right arm's last ack returned), `teleprompterExit` (action 5, then `0x18` as belt and braces) |
+| RPC | `PushService` `teleprompterShow {text, init, multipart}` / `teleprompterExit` → `{ok, status (byte 9), ack}` |
+| Hub session | `server/src/glasses/teleprompter.ts`: `paginate` (5 rows × ≤38 chars, paragraph breaks kept, ≤512 B/page), `TeleprompterController` — page 1 as INIT, taps page with TEXT (right single-tap `0xF5 0x01` = next, left = previous), double-tap `0x00` ends the session, `isActive()` silences the head-tilt HUD (`wireHud` `suppressed`); tests `glasses-teleprompter.test.ts` |
+| Hub routes | `GET /glasses/teleprompt` · `POST /glasses/teleprompt/{start,next,prev,goto,exit}` (`routes/glasses.ts`) |
+| CLI | `con glasses teleprompt <file|->` `[--title] [--multipart]`, `next | prev | goto <n> | exit | status` |
+
+### Live verification — still to do
+
+No frame has been on the wire yet. First run against real glasses, with
+`con glasses research on` logging: (1) `con glasses teleprompt <file>` — does a
+one-packet INIT open the app (the single-packet path posts to the UI task via the
+generic command message rather than the explicit `update_persist_task_status(9,
+2)` the multipart-final path calls; if the lens stays idle, retry with
+`--multipart`)? (2) Does `0xF5 0x01` actually arrive on a tap while the
+teleprompter runs (§8a calls single-tap "inert" — that is the firmware doing
+nothing with it, which is exactly what we want; if the frame never reaches the
+phone, paging needs another gesture)? (3) Is the countdown byte seconds (a
+`countdown = 3` INIT should show the splash for ~3 s)? (4) Does the 8 s
+heartbeat keep the session alive past 19 s? Record the answers here and in
+`~/.config/console/glasses-research.log`.
+
+Expected frames for a two-page script (timestamp trailer shown as a fixed
+placeholder `00 00 00 00 98 01 00 00`; the real one is the current epoch ms):
+
+```
+INIT page 1  09 44 00 01 01 01 00 01 00 00 00 00 "Line one\nLine two\nLine three\nLine four\nLine five" <ts64>
+             ^^ len=68 ^^ seq  act total=1  pkt=1  p9 p10 p11
+TEXT page 2  09 2d 00 02 03 01 00 01 00 00 00 00 "Page two, row one\nrow two" <ts64>
+EXIT         09 06 00 03 05 00                      (then 0x18)
+ack (page)   09 <len16> <seq> <act> 01 00 01 00 00  — 10 B, byte 9: 0 ok / 1 order error
+ack (exit)   09 06 00 03 05 00                      — 6 B echo
+```

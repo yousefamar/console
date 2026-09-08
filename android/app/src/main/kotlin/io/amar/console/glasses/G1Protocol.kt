@@ -20,6 +20,8 @@ object G1Protocol {
     // --- Opcodes ------------------------------------------------------------
 
     const val OP_APP_WHITELIST: Byte = 0x04
+    /** Native teleprompter (`BLE_REQ_PUT_TELEPROMPTER_INFO`) — docs/g1-protocol.md §20. */
+    const val OP_TELEPROMPTER: Byte = 0x09
     /** Native turn-by-turn card (`BLE_REQ_PUT_NAVIGATION_INFO`) — docs/g1-protocol.md §18. */
     const val OP_NAVIGATION: Byte = 0x0A
     const val OP_HEADUP_ANGLE: Byte = 0x0B
@@ -387,6 +389,147 @@ object G1Protocol {
         return byteArrayOf(OP_HEADUP_ANGLE, clamped.toByte())
     }
 
+    // --- Native teleprompter (0x09) — docs/g1-protocol.md §20 ---------------
+    //
+    // `[0x09, len_lo, len_hi, seq, action, total_lo, total_hi, pkt_lo, pkt_hi,
+    //  p9, p10, p11, text…, ts64]` — len is the WHOLE frame (firmware drops a
+    // mismatch), pkt is 1-based, the int64 LE app timestamp rides ONLY on the
+    // last packet (single or final). The glasses hold one 512-byte text buffer
+    // and render it as the teleprompter page — PAGING IS THE PHONE'S JOB
+    // (send a new buffer per page); the firmware never scrolls a longer text
+    // on its own. Layout from g1-reverse ble_process_put_ops_09_10.inc
+    // (`ble_put_op9_*`), no app SDK carries this opcode.
+
+    object Teleprompter {
+        /** Action 1: (re)initialise — clears state, enters the teleprompter app, shows `text` after a `countdown` seconds splash. */
+        const val ACTION_INIT = 1
+        /** Action 2: move the highlight/mark position (u16 char offset) — no text. */
+        const val ACTION_MARK = 2
+        /** Action 3: replace the text buffer, static redraw. */
+        const val ACTION_TEXT = 3
+        /** Action 5: leave the teleprompter app (master syncs the slave). */
+        const val ACTION_EXIT = 5
+        /** Action 7: replace the text buffer with the scroll animation (`ui_render_scroll_text_frame`). */
+        const val ACTION_TEXT_SCROLL = 7
+        /** The assembled text buffer is 0x200 bytes (`safe_memcpy_checked(…, 0x200)`) — longer text is truncated by the firmware. */
+        const val TEXT_MAX_BYTES = 0x200
+        /** Header (12) + text + trailer (8) must fit one 244-byte write; every chunk ≤ this keeps both the intermediate (len-12) and final (len-20) forms legal. */
+        const val CHUNK_BODY = 244 - 12 - 8
+        // Keep-alive: the UI task counts down 10 s (init) / 19 s (after a sync) and auto-exits;
+        // the 8 s `0x25 sub 4` heartbeat BleManager already sends IS that sync — no extra ticker.
+    }
+
+    private fun teleprompterFrame(
+        seq: Int,
+        action: Int,
+        total: Int,
+        pkt: Int,
+        p9: Int,
+        p10: Int,
+        p11: Int,
+        text: ByteArray,
+        timestampMs: Long?,
+    ): ByteArray {
+        val len = 12 + text.size + (if (timestampMs != null) 8 else 0)
+        val out = ByteArray(len)
+        out[0] = OP_TELEPROMPTER
+        out[1] = (len and 0xFF).toByte()
+        out[2] = ((len shr 8) and 0xFF).toByte()
+        out[3] = (seq and 0xFF).toByte()
+        out[4] = action.toByte()
+        out[5] = (total and 0xFF).toByte()
+        out[6] = ((total shr 8) and 0xFF).toByte()
+        out[7] = (pkt and 0xFF).toByte()
+        out[8] = ((pkt shr 8) and 0xFF).toByte()
+        out[9] = p9.toByte()
+        out[10] = p10.toByte()
+        out[11] = p11.toByte()
+        System.arraycopy(text, 0, out, 12, text.size)
+        if (timestampMs != null) {
+            var v: Long = timestampMs
+            for (i in 0 until 8) { out[12 + text.size + i] = (v and 0xFFL).toByte(); v = v ushr 8 }
+        }
+        return out
+    }
+
+    /**
+     * Encode one page of teleprompter text as the packets for [action] (INIT / TEXT / TEXT_SCROLL).
+     * `countdown` (INIT only, byte 9) is the seconds the glasses show a "starting" splash before the
+     * text — 0 skips it. Byte 10 low nibble picks the splash icon (0/1), bit 7 is a flag the UI
+     * stores but this port never sets; byte 11 is stored beside the mark position (unknown use).
+     * For TEXT/TEXT_SCROLL byte 9 rides beside the mark position and bytes 10..11 ARE the u16 mark
+     * position — pass `markPos`. Text over [Teleprompter.TEXT_MAX_BYTES] is refused here rather than
+     * silently truncated by the firmware. `forceMultipart` splits a short page in two so the
+     * multipart completion path (the one that provably calls `update_persist_task_status(9, 2)`)
+     * runs — a live fallback if a single-packet INIT ever fails to open the app.
+     */
+    fun encodeTeleprompterPage(
+        seq: Int,
+        action: Int,
+        text: String,
+        countdown: Int = 0,
+        markPos: Int = 0,
+        timestampMs: Long = System.currentTimeMillis(),
+        forceMultipart: Boolean = false,
+    ): List<ByteArray> {
+        require(action == Teleprompter.ACTION_INIT || action == Teleprompter.ACTION_TEXT || action == Teleprompter.ACTION_TEXT_SCROLL) { "bad teleprompter action $action" }
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        require(bytes.size <= Teleprompter.TEXT_MAX_BYTES) { "teleprompter page ${bytes.size} B > ${Teleprompter.TEXT_MAX_BYTES}" }
+        val chunks = when {
+            forceMultipart && bytes.size >= 2 -> {
+                val cut = bytes.size / 2
+                var end = cut
+                while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+                listOf(bytes.copyOfRange(0, end), bytes.copyOfRange(end, bytes.size))
+            }
+            else -> chunkText(text, Teleprompter.CHUNK_BODY)
+        }
+        val (p9, p10, p11) = if (action == Teleprompter.ACTION_INIT) {
+            Triple(countdown.coerceIn(0, 127), 0, 0)
+        } else {
+            Triple(0, markPos and 0xFF, (markPos shr 8) and 0xFF)
+        }
+        val total = chunks.size
+        return chunks.mapIndexed { idx, body ->
+            val last = idx == chunks.lastIndex
+            teleprompterFrame(seq, action, total, idx + 1, p9, p10, p11, body, if (last) timestampMs else null)
+        }
+    }
+
+    /** Action 2 — `[0x09, 16, 0, seq, 2, p5, pos_lo, pos_hi, ts64]`: byte 5 rides beside the mark, bytes 6..7 are the u16 position, the timestamp is read from the frame's END. Ack 6 B. */
+    fun encodeTeleprompterMark(seq: Int, markPos: Int, timestampMs: Long = System.currentTimeMillis()): ByteArray {
+        val len = 16
+        val out = ByteArray(len)
+        out[0] = OP_TELEPROMPTER
+        out[1] = len.toByte(); out[2] = 0
+        out[3] = (seq and 0xFF).toByte()
+        out[4] = Teleprompter.ACTION_MARK.toByte()
+        out[5] = 0
+        out[6] = (markPos and 0xFF).toByte()
+        out[7] = ((markPos shr 8) and 0xFF).toByte()
+        var v: Long = timestampMs
+        for (i in 0 until 8) { out[8 + i] = (v and 0xFFL).toByte(); v = v ushr 8 }
+        return out
+    }
+
+    /** Action 5 — `[0x09, 0x06, 0x00, seq, 0x05, 0x00]`. Ack echoes the six bytes. */
+    fun encodeTeleprompterExit(seq: Int): ByteArray =
+        byteArrayOf(OP_TELEPROMPTER, 0x06, 0x00, (seq and 0xFF).toByte(), Teleprompter.ACTION_EXIT.toByte(), 0x00)
+
+    /**
+     * `0x09` acks carry no 0xC9/0xCA. INIT/TEXT/TEXT_SCROLL: 10 bytes, bytes 0..8 echo the request,
+     * byte 9 = 0 ok / 1 packet-order error (assembly reset — resend from packet 1). MARK/EXIT: a
+     * 6-byte echo with no status.
+     */
+    fun parseTeleprompterAck(data: ByteArray): Ack? {
+        if (data.size < 6 || data[0] != OP_TELEPROMPTER) return null
+        val ok = when (data[4].toInt() and 0xFF) {
+            Teleprompter.ACTION_INIT, Teleprompter.ACTION_TEXT, Teleprompter.ACTION_TEXT_SCROLL -> data.size >= 10 && data[9].toInt() == 0
+            else -> true
+        }
+        return Ack(OP_TELEPROMPTER, ok, data)
+    }
+
     // --- Native navigation card (0x0A) — docs/g1-protocol.md §18 -----------
     //
     // Every frame is `[0x0A, len_lo, len_hi, seq, subcmd, …]` where len is the
@@ -560,6 +703,7 @@ object G1Protocol {
         // Nav acks carry no 0xC9/0xCA — `[0x0A, len_lo, len_hi, seq, sub, status]` — and a
         // rolling seq byte could BE 0xC9/0xCA, so decode them explicitly.
         if (expectedOpcode == OP_NAVIGATION) return parseNavAck(data)
+        if (expectedOpcode == OP_TELEPROMPTER) return parseTeleprompterAck(data)
         val ok = data.any { it == RESULT_OK }
         val fail = data.any { it == RESULT_FAIL }
         if (!ok && !fail) {

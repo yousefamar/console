@@ -124,6 +124,7 @@ import { wireTouchToMic } from './glasses/touch-autowire.js'
 import { GlassesConfig } from './glasses/config.js'
 import { makeNotifyForwarder } from './glasses/notify-forward.js'
 import { wireHud } from './glasses/hud.js'
+import { TeleprompterController } from './glasses/teleprompter.js'
 import { SyncBus } from './sync-bus.js'
 import { MailSync } from './mail/sync.js'
 import { CalendarSync } from './cal/sync.js'
@@ -1163,6 +1164,10 @@ const refreshMailUnread = () => {
 refreshMailUnread()
 setInterval(refreshMailUnread, 60_000)
 
+// Native teleprompter session (0x09, docs/g1-protocol.md §20): owns pagination +
+// touchbar paging; the HUD stays silent while it runs.
+const glassesTeleprompter = new TeleprompterController(glassesHub, { log: (m: string) => log(m) })
+
 wireHud(glassesHub, glassesConfig, {
   battery: () => {
     const { state } = glassesHub.getCachedState()
@@ -1185,7 +1190,7 @@ wireHud(glassesHub, glassesConfig, {
     const text = top ? `${top.name ? top.name + ': ' : ''}${top.needsAttention?.snippet ?? ''}` : ''
     return { count: att.length, text }
   },
-}, (m: string) => log(m))
+}, (m: string) => log(m), () => new Date(), () => glassesTeleprompter.isActive())
 
 // --------------------------------------------------------------------------
 // HTTP/HTTPS server
@@ -1814,7 +1819,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/property') && handlePropertyRoutes(req, res, path, url, { searches: propertySearches, sync: propertySync, mapLayers: mapLayerStore, onLayersChange: broadcastLayers, readBody })) return
   if (path.startsWith('/map/layers') && handleMapLayerRoutes(req, res, path, url, mapLayerStore, readBody, broadcastLayers)) return
   if (path.startsWith('/push') && handlePushRoutes(req, res, path, pushServer, readBody)) return
-  if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody, glassesConfig)) return
+  if (path.startsWith('/glasses') && handleGlassesRoutes(req, res, path, glassesHub, readBody, glassesConfig, glassesTeleprompter)) return
   if (path.startsWith('/pen') && handlePenRoutes(req, res, path, penHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return

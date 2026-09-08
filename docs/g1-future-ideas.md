@@ -22,7 +22,7 @@ pipe (text / BMP / notification / mic / touchbar) exposed to hub, SPA, and
 - **Now-playing / context card** — whatever Console considers "current
   context" for an idle state.
 - **Inbox glance** — unread count per source.
-- **Teleprompter** — long-form text paginated by touchbar, 5 lines at a time.
+- ~~**Teleprompter**~~ — BUILT on the firmware's native `0x09` teleprompter (protocol §20, `con glasses teleprompt`), not as a `0x4E` mirror: 5-line pages, touchbar next/prev.
 - **Walking nav** — next-turn chevron once Console has a live route source.
   *Firmware has a NATIVE handler for this* (`BLE_REQ_PUT_NAVIGATION_INFO`:
   direction, x/y, road name, remaining km/time, panoramic + overview map

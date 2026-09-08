@@ -471,6 +471,13 @@ export const COMMANDS: CommandDef[] = [
       angle: { type: 'number', description: 'Head-up tilt threshold in degrees (0-60)' },
     },
     examples: ['con glasses config', 'con glasses config --notify off', 'con glasses config --channel money off', 'con glasses config --angle 35'] },
+  { name: 'glasses teleprompt', description: "Native teleprompter (0x09): <file|-> starts a session (5-line pages, right-tap next / left-tap prev, double-tap ends), then next | prev | goto <n> | exit | status. Replies carry {page, pages} + the firmware ack", safety: 'write',
+    args: [{ name: 'verb', required: true, description: '<file> | - (stdin) | next | prev | goto <page> | exit | status' }],
+    flags: {
+      title: { type: 'string', description: 'start: label shown in status (defaults to the file name)' },
+      multipart: { type: 'boolean', description: 'start: force every page across two BLE packets (fallback if a one-packet init does not open the app)' },
+    },
+    examples: ['con glasses teleprompt ~/talk.md', 'cat notes.txt | con glasses teleprompt -', 'con glasses teleprompt next', 'con glasses teleprompt goto 3', 'con glasses teleprompt exit'] },
   { name: 'glasses nav', description: "Native turn-by-turn card (0x0A): start | step | arrived | exit | map. Layout primitive only — no route source yet. Replies carry the firmware ack {ok, status, ack}", safety: 'write',
     args: [{ name: 'verb', required: true, description: 'start | step | arrived | exit | map <planes.bin>' }],
     flags: {

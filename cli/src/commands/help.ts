@@ -22,7 +22,7 @@ Services:
   cron         Hub-side agent scheduler — list, add, remove, run
   mic          System mic owner + push-to-talk routing
   whatsapp     WhatsApp (via AL) — send, contacts, status
-  glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav
+  glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav, teleprompt
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
 
@@ -243,6 +243,9 @@ Commands:
   research     Reverse-engineering frame log: on|off|tail [N]
   nav          The glasses' NATIVE turn-by-turn card: start | step | arrived | exit | map
                (layout primitive only — no route source yet; see docs/g1-protocol.md section 18)
+  teleprompt   The glasses' NATIVE teleprompter: <file|-> starts (5-line pages; right tap = next,
+               left tap = previous, double-tap ends), then next | prev | goto <n> | exit | status
+               (docs/g1-protocol.md section 20)
 
 status also reports runningApp / runningAppLabel — the feature drawing on the
 lens (idle | app <n> | none), read live with a 0x39 query.

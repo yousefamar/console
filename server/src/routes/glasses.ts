@@ -21,6 +21,11 @@
 //   POST /glasses/nav/map      {panoramic?, planes: b64}   — two 1-bpp planes
 //   The nav routes return the firmware ack ({ok, status, ack}); 422 when the
 //   frame would be refused before it is written (field over its buffer).
+//   GET  /glasses/teleprompt              — {active, page, pages, title} (no APK needed)
+//   POST /glasses/teleprompt/start {text, title?, multipart?} — native teleprompter (0x09, §20):
+//                                         paginate + show page 1; touchbar taps page from then on
+//   POST /glasses/teleprompt/next|prev|exit
+//   POST /glasses/teleprompt/goto  {page}  (1-based)
 //
 // All require the APK to be connected on /push (the phone is the BLE owner).
 // If the APK isn't connected we 503 so the CLI/caller can present a useful
@@ -29,6 +34,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GlassesHub, GlassesNotifyRequest, GlassesNavStep } from '../glasses-hub.js'
 import type { GlassesConfig } from '../glasses/config.js'
+import type { TeleprompterController } from '../glasses/teleprompter.js'
 
 export function handleGlassesRoutes(
   req: IncomingMessage,
@@ -37,8 +43,46 @@ export function handleGlassesRoutes(
   glassesHub: GlassesHub,
   readBody: (req: IncomingMessage) => Promise<string>,
   config: GlassesConfig,
+  teleprompter: TeleprompterController | null = null,
 ): boolean {
   if (!path.startsWith('/glasses')) return false
+
+  // --- native teleprompter (0x09) — hub-side session, firmware ack in replies -
+  if (path === '/glasses/teleprompt' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(teleprompter ? teleprompter.status() : { active: false, page: 0, pages: 0, title: null }))
+    return true
+  }
+  if (path.startsWith('/glasses/teleprompt/') && req.method === 'POST') {
+    const verb = path.slice('/glasses/teleprompt/'.length)
+    if (!['start', 'next', 'prev', 'exit', 'goto'].includes(verb)) return false
+    ;(async () => {
+      const json = (code: number, body: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      if (!teleprompter) return json(501, { error: 'teleprompter not wired' })
+      if (verb !== 'exit' && !glassesHub.hasClient()) return json(503, { error: 'APK not connected' })
+      try {
+        const body = verb === 'start' || verb === 'goto' ? JSON.parse(await readBody(req) || '{}') : {}
+        switch (verb) {
+          case 'start': {
+            const text = String(body.text ?? '')
+            if (!text.trim()) return json(400, { error: 'text required' })
+            return json(200, await teleprompter.start(text, { title: body.title ? String(body.title) : undefined, multipart: !!body.multipart }))
+          }
+          case 'next': return json(200, await teleprompter.next())
+          case 'prev': return json(200, await teleprompter.prev())
+          case 'goto': {
+            const page = Number(body.page)
+            if (!Number.isInteger(page) || page < 1) return json(422, { error: 'page must be a 1-based integer' })
+            return json(200, await teleprompter.goto(page - 1))
+          }
+          case 'exit': return json(200, await teleprompter.stop())
+        }
+      } catch (err) {
+        json(502, { error: (err as Error).message })
+      }
+    })()
+    return true
+  }
 
   // --- HUD + notification config (no APK needed; pure hub state) -----------
   if (path === '/glasses/config' && req.method === 'GET') {

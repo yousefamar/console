@@ -132,6 +132,7 @@ class BleManager(private val app: Context) {
     private val textSeq = AtomicInteger(0)
     /** Rolling seq for 0x0A navigation frames (byte 3, echoed in every ack). */
     private val navSeq = AtomicInteger(0)
+    private val teleprompterSeq = AtomicInteger(0)
     /** Keep-alive ticker while a nav session is open — the glasses auto-exit ~10–19 s without one. */
     @Volatile private var navSyncRunnable: Runnable? = null
 
@@ -276,6 +277,31 @@ class BleManager(private val app: Context) {
                     onResult = if (isLast) onResult else null,
                 )
             }
+        }
+    }
+
+    // --- Native teleprompter (0x09) — docs/g1-protocol.md §20 ---------------
+    //
+    // One page = one text buffer on the glasses. `init` opens the app (action
+    // 1), later pages replace the buffer (action 3). Each packet goes L then R
+    // (§3); the caller's onResult is the RIGHT arm's ack for the LAST packet.
+    // No keep-alive ticker: the 8 s heartbeat is the sync the UI task expects.
+
+    fun teleprompterShow(text: String, init: Boolean, forceMultipart: Boolean = false, onResult: ((AckOutcome) -> Unit)? = null) {
+        val action = if (init) G1Protocol.Teleprompter.ACTION_INIT else G1Protocol.Teleprompter.ACTION_TEXT
+        val packets = G1Protocol.encodeTeleprompterPage(teleprompterSeq.incrementAndGet() and 0xFF, action, text, forceMultipart = forceMultipart)
+        worker.post {
+            for ((idx, pkt) in packets.withIndex()) {
+                enqueueSequenced(pkt, G1Protocol.OP_TELEPROMPTER, if (idx == packets.lastIndex) onResult else null)
+            }
+        }
+    }
+
+    /** Leave the teleprompter app on both arms (action 5), then the generic exit-feature `0x18` as belt and braces. */
+    fun teleprompterExit(onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            enqueueSequenced(G1Protocol.encodeTeleprompterExit(teleprompterSeq.incrementAndGet() and 0xFF), G1Protocol.OP_TELEPROMPTER, onResult)
+            enqueueSequenced(G1Protocol.encodeExit(), G1Protocol.OP_EXIT)
         }
     }
 

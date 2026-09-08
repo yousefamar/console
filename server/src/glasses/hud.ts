@@ -103,6 +103,8 @@ export function wireHud(
   providers: HudProviders,
   log: (msg: string) => void,
   nowFn: () => Date = () => new Date(),
+  /** When true the HUD stays silent — a native feature (teleprompter §20) owns the screen. */
+  suppressed: () => boolean = () => false,
 ): () => void {
   let shown = false
   let timer: ReturnType<typeof setInterval> | null = null
@@ -126,6 +128,7 @@ export function wireHud(
   const unsub = hub.onTouch((f) => {
     if (f.arm !== 'right') return
     if (!config.hudEnabled()) return
+    if (suppressed()) return
     if (f.subcmd === TOUCH_HEAD_UP) {
       shown = true
       push()

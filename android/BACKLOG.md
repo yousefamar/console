@@ -95,6 +95,17 @@ view-mode hub-sync (Room meta is fine on one device).
   card it pushed can actually be dismissed. Layouts from the firmware
   decompile — no frame has been on the wire yet (docs/g1-protocol.md §19).
   Tests: `G1ProtocolPrimitivesTest` (7, byte-exact).
+- **G1: native teleprompter encoder** (^calm-hawk): `G1Protocol.Teleprompter` +
+  `encodeTeleprompterPage` (0x09 actions 1 init / 3 text / 7 text+scroll; ≤512 B
+  pages chunked ≤224 B, 1-based packet numbers, int64 timestamp on the last
+  packet only), `encodeTeleprompterMark`, `encodeTeleprompterExit`,
+  `parseTeleprompterAck` (status at byte 9, no 0xC9); `BleManager.teleprompterShow/
+  teleprompterExit` sequence L→R (exit = action 5 then `0x18`); PushService RPCs
+  `teleprompterShow {text, init, multipart}` / `teleprompterExit` reply
+  `{ok, status, ack}`. The hub owns pagination + touchbar paging
+  (`server/src/glasses/teleprompter.ts`). Layout from the firmware decompile —
+  no frame on the wire yet (docs/g1-protocol.md §20 "Live verification").
+  Tests: `G1TeleprompterTest` (7, byte-exact).
 
 - **G1: native navigation card encoder + keep-alive** (^deft-lynx): `G1Protocol.Nav`
   + `encodeNavStart/Step/Sync/Exit/Arrived`, `encodeNavMapChunks` (two 1-bpp
