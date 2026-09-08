@@ -218,6 +218,10 @@ export class Session extends EventEmitter {
    *  Distinct from steering: any stdin write lands at the next tool boundary,
    *  so a real queue must not touch stdin until `result`. */
   queuedMessage: string | null = null
+  /** Images riding the queued prompt (card attachments on a compact-first
+   *  fork wake). In-memory only — the manifest persists the text, so a
+   *  restart mid-queue delivers the words without the pictures. */
+  private queuedImages: ImageAttachment[] = []
 
   /** The CLI's own task list for this session, read from
    *  ~/.claude/tasks/<claudeSessionId>/ (see agents/todo-store.ts). The stream
@@ -663,10 +667,11 @@ export class Session extends EventEmitter {
   // ONE buffer that grows — a second queue appends rather than making a FIFO.
 
   /** Append `content` to the queued prompt (blank-line separated). */
-  queueMessage(content: string): void {
+  queueMessage(content: string, images?: ImageAttachment[]): void {
     const text = content.trim()
     if (!text) return
     this.queuedMessage = this.queuedMessage ? `${this.queuedMessage}\n\n${text}` : text
+    if (images?.length) this.queuedImages.push(...images)
     this.emitQueued()
     // No turn to wait for — queueing on an idle session is just sending.
     this.flushIfIdle()
@@ -677,6 +682,7 @@ export class Session extends EventEmitter {
     const text = content?.trim() || null
     if (text === this.queuedMessage) return
     this.queuedMessage = text
+    if (!text) this.queuedImages = []
     this.emitQueued()
   }
 
@@ -686,14 +692,19 @@ export class Session extends EventEmitter {
   flushQueuedMessage(): void {
     const content = this.queuedMessage
     if (!content || this.status === 'ended') return
+    const images = this.queuedImages
     this.queuedMessage = null
+    this.queuedImages = []
     this.emitQueued()
     // Same triple as the transient-resume nudge: broadcast + log so the
     // transcript shows it, then write it to stdin.
-    const userMsg = { type: 'user_prompt' as const, sessionId: this.id, content }
+    const userMsg = {
+      type: 'user_prompt' as const, sessionId: this.id, content,
+      ...(images.length ? { images: images.map((i) => `data:${i.media_type};base64,${i.data}`) } : {}),
+    }
     this.logMessage(userMsg)
     this.emit('hub_message', userMsg satisfies HubMessage)
-    this.sendMessage(content)
+    this.sendMessage(content, images.length ? images : undefined)
   }
 
   /** Broadcast the queue state. Bypasses emitHub deliberately — emitHub logs

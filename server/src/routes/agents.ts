@@ -12,7 +12,7 @@ import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
-import { buildReviewReminder, type ReviewCardRef } from '../kanban/dispatch.js'
+import { buildReviewReminder, buildForkCompactPrompt, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
@@ -510,6 +510,18 @@ export function wakeSession(ctx: AgentContext, session: Session, content: string
   session.logMessage(msg) // stamps absIndex
   broadcast(ctx.clients, msg)
   session.sendMessage(content, images)
+}
+
+/** Wake a fresh TICKET-FORK with a `/compact` first and the card envelope
+ *  queued behind it (delivered by the queue flush on the compaction's
+ *  `result`, images included). Both messages log/broadcast like any prompt,
+ *  so the transcript reads: /compact → "Context compacted" → the card. A
+ *  failed compaction still yields a `result`, so the envelope is never
+ *  stranded; a hub restart mid-compaction keeps the queued text in the
+ *  manifest (pictures are dropped — the board lines still name them). */
+export function wakeForkCompacted(ctx: AgentContext, session: Session, envelope: string, images?: ImageAttachment[]): void {
+  wakeSession(ctx, session, buildForkCompactPrompt())
+  session.queueMessage(envelope, images)
 }
 
 

@@ -35,7 +35,8 @@ vi.mock('../session.js', () => {
   return { Session: StubSession }
 })
 
-import { createSession, mintAgentKey, forkRoleSessionForTicket, type AgentContext } from '../routes/agents.js'
+import { createSession, mintAgentKey, forkRoleSessionForTicket, wakeForkCompacted, type AgentContext } from '../routes/agents.js'
+import { buildForkCompactPrompt } from '../kanban/dispatch.js'
 
 function ctxOf(sessions: Map<string, unknown>): AgentContext {
   return { sessions, clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, modelConfig: {} } as unknown as AgentContext
@@ -84,5 +85,26 @@ describe('forkRoleSessionForTicket key shape', () => {
     const fork = forkRoleSessionForTicket(ctx, source as never, 'kind-pony') as unknown as { agentKey: string; name: string }
     expect(fork.agentKey).toBe('new-mobile-app-kind-pony-fork')
     expect(fork.name).toBe('Kind pony (fork)')
+  })
+})
+
+describe('wakeForkCompacted', () => {
+  it('sends /compact first and queues the envelope + images behind it', () => {
+    const sessions = new Map<string, unknown>()
+    const ctx = ctxOf(sessions)
+    const source = { id: 'src', name: 'Console general', agentKey: 'console-general', claudeSessionId: 'c1', cwd: '/tmp', status: 'idle' }
+    sessions.set('src', source)
+    const fork = forkRoleSessionForTicket(ctx, source as never, 'brisk-wolf') as unknown as {
+      sent: string[]; queued: Array<[string, unknown[] | undefined]>; status: string
+      queueMessage: (c: string, i?: unknown[]) => void
+    }
+    // The stub's queueMessage records instead of flushing.
+    fork.queued = []
+    fork.queueMessage = (c, i) => { fork.queued.push([c, i]) }
+    wakeForkCompacted(ctx, fork as never, '[BOARD TASK] the card', [{ media_type: 'image/png', data: 'AAAA' }] as never)
+    expect(fork.sent).toHaveLength(1)
+    expect(fork.sent[0]).toBe(buildForkCompactPrompt())
+    expect(fork.sent[0]!.startsWith('/compact ')).toBe(true)
+    expect(fork.queued).toEqual([['[BOARD TASK] the card', [{ media_type: 'image/png', data: 'AAAA' }]]])
   })
 })

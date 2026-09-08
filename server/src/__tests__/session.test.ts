@@ -1099,6 +1099,29 @@ describe('Session queued messages', () => {
     expect(logged.some((m) => m.content === 'shows up later')).toBe(true)
   })
 
+  it('queued images ride the flush as real image blocks (compact-first fork wake)', async () => {
+    const session = runningSession()
+    session.queueMessage('the card', [{ media_type: 'image/png', data: 'AAAA' }])
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_q', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    const writes = mockProcess.stdin.write.mock.calls
+      .map((c: string[]) => { try { return JSON.parse(c[0]!) } catch { return null } })
+      .filter((w: any) => w?.type === 'user' && Array.isArray(w.message.content))
+    const blocks = writes.at(-1)!.message.content as Array<{ type: string; text?: string; source?: { data: string } }>
+    expect(blocks.map((b) => b.type)).toEqual(['image', 'text'])
+    expect(blocks[0]!.source!.data).toBe('AAAA')
+    expect(blocks[1]!.text).toBe('the card')
+    const logged = session.messageLog.filter((m) => m.type === 'user_prompt').at(-1) as { content: string; images?: string[] }
+    expect(logged.images?.[0]).toMatch(/^data:image\/png;base64,AAAA$/)
+    // Cancelling the queue also drops the pictures.
+    session.queueMessage('again', [{ media_type: 'image/png', data: 'BBBB' }])
+    session.setQueuedMessage(null)
+    session.queueMessage('plain')
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 5, session_id: 'claude_q', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(stdinPrompts()).toContain('plain')
+  })
+
   it('restores a queue from the manifest and kill() drops it', () => {
     const session = new Session({ prompt: 'x', resume: 'claude_q3', silent: true, hibernateOnStart: true, queuedMessage: 'survived a restart' })
     expect(session.queuedMessage).toBe('survived a restart')

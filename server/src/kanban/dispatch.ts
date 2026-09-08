@@ -351,6 +351,23 @@ export function buildReopenNudge(opts: { boardAbsPath: string; text: string; blo
   ].join('\n')
 }
 
+/** Prefs `boards.compactForksOnSpawn` default: a ticket-fork's FIRST turn is a
+ *  `/compact`, the card envelope is queued behind it. A `--fork-session` child
+ *  inherits the source's whole transcript (~70k tokens of it at first request,
+ *  fleet median, 2026-09-08) and re-reads it on every one of its ~490 requests
+ *  — 24 % of all cache_read spend. The CLI's own tool-result clearing is REPL +
+ *  first-party only, so compaction is the lever we have (^brisk-wolf). */
+export const DEFAULT_COMPACT_FORKS_ON_SPAWN = true
+
+/** The `/compact <focus>` sent as a ticket-fork's first message. Slash
+ *  commands work over stream-json (verified 2026-09-08: 40k → 1.2k tokens,
+ *  ~11 s, `system/compact_boundary trigger:manual` then a `result`). The
+ *  focus tells the summariser what a fresh card worker actually needs — the
+ *  project's CLAUDE.md is in the system prompt regardless. */
+export function buildForkCompactPrompt(): string {
+  return '/compact You are being forked to work ONE kanban card. Keep: who you are (agentKey, cwd, project, repo), the project\'s standing rules, decisions and gotchas that are NOT already in CLAUDE.md, and the current state of the code/fleet a new task would need. Drop: tool outputs, past hand-back and merge reports, and chatter about other cards.'
+}
+
 /** Watchdog nudge for a dispatched card that has sat untouched. */
 export function buildStaleNudge(opts: { boardAbsPath: string; text: string; blockId: string; minutes: number }): string {
   return [

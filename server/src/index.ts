@@ -35,12 +35,12 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
-import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
@@ -856,6 +856,18 @@ const boardOps = new BoardOps(noteStore, join(feedsConfigDir, 'board-actors.json
 // follow-up made through the SPA (which leaves no actor record).
 const SELF_ECHO_WINDOW_MS = 60_000
 
+// A fresh ticket-fork compacts its inherited transcript before reading its card
+// (see DEFAULT_COMPACT_FORKS_ON_SPAWN). Live pref so it can be switched off
+// without a restart: `boards.compactForksOnSpawn: false`.
+const compactForksOnSpawn = (): boolean => {
+  const v = prefsStore.getAll()['boards.compactForksOnSpawn']
+  return typeof v === 'boolean' ? v : DEFAULT_COMPACT_FORKS_ON_SPAWN
+}
+const wakeWorker = (worker: Session, forked: boolean, envelope: string, images: ImageAttachment[]) => {
+  if (forked && compactForksOnSpawn()) wakeForkCompacted(agentCtx, worker, envelope, images)
+  else wakeSession(agentCtx, worker, envelope, images)
+}
+
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate, load }) => {
@@ -897,7 +909,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
       }
     }
-    wakeSession(agentCtx, worker, buildBoardEnvelope({
+    wakeWorker(worker, forked, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
       card: { text: card.text, blockId: card.blockId!, lines: card.lines },
       column,
@@ -1065,7 +1077,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
       }
     }
-    wakeSession(agentCtx, worker, buildBoardEnvelope({
+    wakeWorker(worker, forked, buildBoardEnvelope({
       boardAbsPath,
       card: { text: t.text, blockId: t.blockId, lines: t.lines },
       column: t.column,
