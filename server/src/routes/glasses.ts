@@ -12,13 +12,20 @@
 //   GET  /glasses/scan/observations       — what names were seen during scans
 //   POST /glasses/research {verbose}      — toggle verbose RE frame forwarding
 //   GET  /glasses/research/log?n=100      — tail the reverse-engineering log
+//   POST /glasses/nav/start               — native turn-by-turn card (0x0A, §18): enter
+//   POST /glasses/nav/step     {direction, road, distance, eta?, remaining?, speed?, x?, y?}
+//   POST /glasses/nav/arrived  {status: 1|2, prompt}
+//   POST /glasses/nav/exit
+//   POST /glasses/nav/map      {panoramic?, planes: b64}   — two 1-bpp planes
+//   The nav routes return the firmware ack ({ok, status, ack}); 422 when the
+//   frame would be refused before it is written (field over its buffer).
 //
 // All require the APK to be connected on /push (the phone is the BLE owner).
 // If the APK isn't connected we 503 so the CLI/caller can present a useful
 // "phone not reachable" error instead of hanging.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { GlassesHub, GlassesNotifyRequest } from '../glasses-hub.js'
+import type { GlassesHub, GlassesNotifyRequest, GlassesNavStep } from '../glasses-hub.js'
 import type { GlassesConfig } from '../glasses/config.js'
 
 export function handleGlassesRoutes(
@@ -95,6 +102,50 @@ export function handleGlassesRoutes(
       } catch (err) {
         res.writeHead(502, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: (err as Error).message }))
+      }
+    })()
+    return true
+  }
+
+  // --- native navigation card (0x0A) — replies carry the firmware ack -------
+  if (path.startsWith('/glasses/nav/') && req.method === 'POST') {
+    const verb = path.slice('/glasses/nav/'.length)
+    if (!['start', 'step', 'arrived', 'exit', 'map'].includes(verb)) return false
+    ;(async () => {
+      if (!glassesHub.hasClient()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'APK not connected' }))
+        return
+      }
+      const json = (code: number, body: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
+      try {
+        const body = verb === 'start' || verb === 'exit' ? {} : JSON.parse(await readBody(req) || '{}')
+        switch (verb) {
+          case 'start': return json(200, await glassesHub.navStart())
+          case 'exit': return json(200, await glassesHub.navExit())
+          case 'step': {
+            const step = parseNavStep(body)
+            if (typeof step === 'string') return json(422, { error: step })
+            return json(200, await glassesHub.navStep(step))
+          }
+          case 'arrived': {
+            const status = Number(body.status ?? 1)
+            const prompt = String(body.prompt ?? '')
+            if (status !== 1 && status !== 2) return json(422, { error: 'status must be 1 (arrived) or 2 (complete)' })
+            if (Buffer.byteLength(prompt, 'utf8') > NAV_PROMPT_MAX) return json(422, { error: `prompt exceeds ${NAV_PROMPT_MAX} bytes` })
+            return json(200, await glassesHub.navArrived(status, prompt))
+          }
+          case 'map': {
+            const planes = String(body.planes ?? '')
+            const panoramic = !!body.panoramic
+            const want = panoramic ? NAV_PANORAMIC_RAW : NAV_OVERVIEW_RAW
+            const got = planes ? Buffer.from(planes, 'base64').length : 0
+            if (got !== want) return json(422, { error: `planes must decode to exactly ${want} bytes (two 1-bpp planes), got ${got}` })
+            return json(200, await glassesHub.navMap(panoramic, planes))
+          }
+        }
+      } catch (err) {
+        json(502, { error: (err as Error).message })
       }
     })()
     return true
@@ -187,4 +238,29 @@ export function handleGlassesRoutes(
     }
   })()
   return true
+}
+
+// Firmware buffer sizes (docs/g1-protocol.md §18): a field one byte over is refused whole.
+const NAV_FIELD_MAX = 0x18 - 1
+const NAV_ROAD_MAX = 0x40 - 1
+const NAV_PROMPT_MAX = 0x40 - 1
+const NAV_OVERVIEW_RAW = 17 * 136 * 2
+const NAV_PANORAMIC_RAW = 61 * 136 * 2
+
+/** Validate a nav step body against the firmware's limits. Returns the step or an error string. */
+export function parseNavStep(body: Record<string, unknown>): GlassesNavStep | string {
+  const direction = Number(body.direction)
+  if (!Number.isInteger(direction) || direction < 1 || direction > 35) return 'direction must be an integer 1..35'
+  const str = (k: string) => (body[k] == null ? '' : String(body[k]))
+  const step: GlassesNavStep = {
+    direction,
+    road: str('road'), distance: str('distance'), eta: str('eta'), remaining: str('remaining'), speed: str('speed'),
+    x: body.x == null ? 0 : Number(body.x), y: body.y == null ? 0 : Number(body.y),
+  }
+  if (!step.road && !step.distance) return 'road or distance required'
+  for (const [k, max] of [['road', NAV_ROAD_MAX], ['distance', NAV_FIELD_MAX], ['eta', NAV_FIELD_MAX], ['remaining', NAV_FIELD_MAX], ['speed', NAV_FIELD_MAX]] as const) {
+    if (Buffer.byteLength(step[k] ?? '', 'utf8') > max) return `${k} exceeds ${max} UTF-8 bytes`
+  }
+  if (!Number.isInteger(step.x) || !Number.isInteger(step.y) || step.x! < 0 || step.x! > 488 || step.y! < 0 || step.y! > 136) return 'x must be 0..488 and y 0..136'
+  return step
 }

@@ -691,7 +691,8 @@ per-note metadata is fully mapped.
 | SPA bridge       | `src/glasses/bridge.ts`                                            |
 | Text wrapping    | `src/glasses/textLayout.ts`                                        |
 | Hub RPC          | `server/src/routes/glasses.ts`, `server/src/push/rpc.ts`           |
-| CLI              | `cli/src/glasses/*.ts`                                             |
+| CLI              | `cli/src/commands/glasses.ts`                                      |
+| Native nav card  | §18 — `G1Protocol.Nav`/`encodeNav*`, `BleManager.nav*`, `routes/glasses.ts` `/glasses/nav/*`, `con glasses nav` |
 
 ## 17. Firmware-derived opcode map (FreedomCoder-dev/g1-reverse, 2026-09-07)
 
@@ -752,9 +753,9 @@ translate start/pause (`received start/Pause command, origin language type…`),
 `0x1C`, `0x1E` (+`_note`), `0x1F` (onboarding init), `0x20` (font upgrade —
 `recv upgrade font success/failed`), `0x21`–`0x27` → dashboard/teleprompter
 (`received teleprompter suspend packet`, `dashboard information packet`,
-`ble set lum gear`, sync ids). Named PUT requests in the string table that we
-have no doc for yet: `PUT_NAVIGATION_INFO` (turn direction, x/y, road name,
-remaining km/time, panoramic + overview map chunks), `PUT_COUNTDOWN_TIMER`
+`ble set lum gear`, sync ids). Named PUT requests in the string table:
+`PUT_NAVIGATION_INFO` = **`0x0A`, fully laid out in §18** (turn direction, x/y,
+road name, remaining km/time, panoramic + overview map chunks); still undocumented: `PUT_COUNTDOWN_TIMER`
 (`countdown expect_ts:%d, enable:%d`), `PUT_SCHEDULE_TASK`, `PUT_TELEPROMPTER_INFO`,
 `PUT_WAKEUP_ANGLE`, `PUT_ANTI_SHAKE_ENABLE`, `PUT_DISPLAY_MODE`, `PUT_NOTIFY_EN`,
 `PUT_GLASSES_SETTING`, `PUT_INTERNAL_DEBUG`, `PUT_DEVICE_SN`, plus news/stocks
@@ -804,3 +805,173 @@ byte[2]==`0xCC` triggers `send_dmic_msg` (mic frames — §10).
   byte layouts as strong evidence, confirm against our research log
   (`~/.config/console/glasses-research.log`) before coding to them — which
   is exactly how the `0x2C` firmware-version layout above was confirmed.
+
+---
+
+## 18. Native navigation card — PUT `0x0A` (`BLE_REQ_PUT_NAVIGATION_INFO`)
+
+The glasses have a built-in turn-by-turn screen: a 50×50 manoeuvre pictogram,
+road name, distance-to-turn, route ETA/remaining, and an optional map with a
+"you are here" marker. Console drives it with `con glasses nav …` → hub
+`POST /glasses/nav/*` → APK `G1Protocol.encodeNav*` / `BleManager.nav*`.
+**There is no route source behind it yet** — this section is the layout plus
+the primitive; a route provider (OSRM is already in the hub for property
+drive times) is a later card.
+
+**Source and reliability.** Byte layout: the firmware handler
+`ble/ble_process_put_ops_09_10.inc` (subcommand 0–6) and the renderers under
+`ui/navigation/` in FreedomCoder-dev/g1-reverse (§17) — decompiled shipped
+firmware, i.e. strong evidence, *not yet confirmed against a live capture*
+(no glasses were connected when this was written; the first `con glasses nav
+step` against real hardware should be checked in the research log). The 35
+pictogram meanings come from the same repo's `visual_assets_report.json`
+`visual_description` fields — the authors' eyeballing of the decoded bitmaps
+(secondary; expect a few neighbours to be swapped). No public SDK uses this
+opcode (MentraOS draws its own nav via `0x4E` text/BMP), so nothing here is
+cross-checked against an app.
+
+### Frame header (all subcommands)
+
+```
+byte 0    : 0x0A
+byte 1..2 : length, LE16 — the WHOLE frame including byte 0. Firmware compares it
+            with the received byte count and drops the packet on mismatch
+            ("packet length error").
+byte 3    : seq — rolling counter chosen by us; stored per session and echoed in acks
+byte 4    : subcommand (below)
+```
+
+Acks come back on NUS RX as `[0x0A, len_lo, len_hi, seq, subcmd, status, …]` —
+**there is no `0xC9`/`0xCA`**, and `seq` can *be* 0xC9, so `parseAck` special-cases
+`0x0A` (`G1Protocol.parseNavAck`). Send to L, await ack, then R (§3); the right
+arm is the master (§17) and is what the hub reports back. When the slave's
+screen isn't on navigation the master drops forwarded commands ("The master
+Send the navigation command, but the slave's current ScreenID is not
+navigation") — always start both arms.
+
+| sub | name | request body (after byte 4) | ack |
+|-----|------|-----------------------------|-----|
+| 0 | start | — (5-byte frame) | `[…,0x00, 0x00]` 6 B. Zeroes the nav state (0xF5 bytes), sets `nav.active=1`, enters the nav app (`update_persist_task_status(10, 2)`) |
+| 1 | step | `dir, x_lo, x_hi, y_lo, y_hi, s0\0, s1\0, s2\0, s3\0, s4\0` | `[…,0x01, status]` 6 B — `0` applied, `1` a string overran its buffer (**nothing** applied) |
+| 2 | overview map | `total_lo, total_hi, pkt_lo, pkt_hi, data…` (data from byte 9) | 10 B: bytes 0–8 echoed + status |
+| 3 | panoramic map | `total_lo, total_hi, pkt_lo, pkt_hi, flag, data…` (data from byte 10, every packet) | 11 B: bytes 0–9 echoed + status |
+| 4 | sync (keep-alive) | `v` (1 byte, we send 0x01) | `[…,0x04, v]` while navigation is running, `[…,0x04, 0x00]` when it isn't ("navigation don't startup, sync packet return") |
+| 5 | exit | — | `[…,0x05, 0x01]` always. Zeroes state, `nav.active=0` |
+| 6 | arrived | `status, prompt…` (UTF-8, ≤63 B, **no NUL**) | `[…,0x06, 0]` ok / `1` "prompt word oversize, drop it" |
+
+### Step (sub 1) — the per-turn update
+
+```
+[0x0A, len, len, seq, 0x01,
+ dir,                 1..35  → pictogram (table below). 0 / 36+ → "navigation direction
+                      parampter error", the pictogram slot stays blank, the rest still renders
+ x_lo, x_hi,          0..488 (0x1e8)  ┐ "you are here" marker on the PANORAMIC map; over → logged
+ y_lo, y_hi,          0..136 (0x88)   ┘ "x/y parameter overstep" and the marker is skipped
+ s0 "\0"              time remaining      ≤23 B + NUL  (buffer 0x18 at nav+0x0d)
+ s1 "\0"              route distance left ≤23 B + NUL  (0x18 at nav+0x25)
+ s2 "\0"              road name           ≤63 B + NUL  (0x40 at nav+0x3d)
+ s3 "\0"              distance to turn    ≤23 B + NUL  (0x18 at nav+0x7d)
+ s4 "\0"]             current speed       ≤23 B + NUL  (0x18 at nav+0x95)
+```
+
+All five terminators must be present inside the frame (the scanner walks
+`request[pos+n+1] != 0` and bails with status 1 if it runs off the end or a
+string exceeds its max) — an empty field is a lone `\0`. Worst case is 170
+bytes, one write. The firmware's own log line names the fields in this order:
+`direction, x, y, time_remaining, remainning_kilometers, road_name_info,
+remaining_distance_info, current speed`.
+
+**What renders where.** Two views, picked by head pose (`imu_action_status`,
+the same tilt that opens the dashboard):
+
+- *Overview* (head level, the default): 136×136 map at x≈438–576 (right
+  edge), `"s0 s1"` top-right (`snprintf("%s %s")` — e.g. `12 min 3.4 km`), road
+  name `s2` across the middle (430 px wide), `s3` bottom-left (200 px wide),
+  the pictogram at (0x55, +0x39) beside it, clock top-left.
+- *Panoramic* (head up): 488×136 map at x≈88–576 with the marker bitmap
+  `0x54` drawn at `(x-6, y-6)` relative to the map's top-left (i.e. `x`/`y`
+  are map-pixel coordinates and the marker is centred on them), `s4` (speed),
+  `s0`, `s1` stacked down the left column.
+
+**Pictograms** (`dir` → bitmap id `dir+0x55`, 50×50 4-bit grayscale; descriptions
+are the g1-reverse authors', see caveat above):
+
+| dir | meaning | dir | meaning |
+|----|---------|----|---------|
+| 1 | straight ahead | 19 | curved left turn |
+| 2 | slight left / veer | 20 | roundabout / loop |
+| 3 | slight right / veer | 21 | roundabout / loop |
+| 4 | left turn | 22 | wide right arc |
+| 5 | right turn | 23 | wide left arc |
+| 6 | left fork | 24 | tight hooked right |
+| 7 | right fork | 25 | tight hooked left |
+| 8 | hard left bend | 26 | U-turn with exit marker |
+| 9 | hard right bend | 27 | U-turn with exit marker (alt) |
+| 10 | U-turn | 28 | diagonal right branch |
+| 11 | U-turn (alt) | 29 | diagonal left branch |
+| 12 | roundabout / loop exit | 30 | right-side merge |
+| 13 | roundabout / loop exit | 31 | left-side merge |
+| 14 | merge / fork | 32 | sharp diagonal right |
+| 15 | merge / fork | 33 | sharp diagonal left |
+| 16 | roundabout turn | 34 | split / Y junction |
+| 17 | roundabout turn | 35 | split / Y junction (alt) |
+| 18 | curved right turn | | |
+
+### Keep-alive (sub 4) — mandatory
+
+`ui_navigation_task` runs a one-second countdown: 10 at start, reset to **19 by
+every sync ack**, and at 0 it declares "There is a disconnection between the AR
+Glasses and the Bluetooth application", tells the slave to stop (`0x0106`) and
+**auto-exits navigation**. So the phone must sync at least every ~10 s (first
+window) / ~19 s (after the first sync). `BleManager.navStart` arms a 5 s ticker
+(`Nav.SYNC_INTERVAL_MS`); `navExit`, `disconnect()` and `stop()` cancel it, and a
+sync ack with status 0 (glasses left nav on their own) cancels it too.
+Nothing else needs periodic refresh — a step stays on screen until replaced.
+
+### Maps (sub 2 overview, sub 3 panoramic) — chunked, two 1-bpp planes
+
+Both maps are drawn by `gui_bitmps_merge_draw(x0,y0,x1,y1, planeA, planeB, 2, 0xF)`:
+**two 1-bit-per-pixel planes of the same size, plane A painted gray 2 (dim),
+plane B gray 0xF (bright)**, B over A. Rows are `(x1-x0)/8` bytes, LSB-first
+(bit 0 = leftmost pixel of the byte). The assembled payload is the two planes
+back to back:
+
+| | region | bytes/row | rows | plane | raw total | firmware buffer |
+|-|--------|-----------|------|-------|-----------|-----------------|
+| overview (2) | 136 px wide (17 B → 136 px; the 138-px region's last 2 px are never written) | 17 | 136 | 2312 | **4624 = 0x1210** | `0x1210` |
+| panoramic (3) | 488 px | 61 | 136 | 8296 | **16592 = 0x40d0** | `0x40d0` |
+
+Chunking: packet index is **1-based** (`pkt == 1` resets the assembly), `total`
+is the packet count; middle packets must arrive in order ("packet order error"
+otherwise) and keep the running size *below* the buffer, the last packet may
+land exactly on it. After the last packet the size is stored and the renderer
+decides the encoding by **size alone**: exactly the buffer size → raw planes;
+anything smaller → `decode_rle_byte_pairs`: `[count, value]` pairs, count 1–255,
+decoded until the encoded bytes run out ("Data is in raw / rle compress raw
+format"). So an RLE stream that would land on exactly the raw size must be sent
+raw instead (`encodeNavMapChunks` does that). The panoramic `flag` byte
+(byte 9) is stored at `nav+0xad`; no renderer reads it — send 0. A one-packet
+map logs "Maps are compressed to only one pack!!!". `Nav.MAP_CHUNK_BODY = 230`
+keeps every packet under the 244-byte MTU write.
+
+### Arrived (sub 6)
+
+`status 1` → "arrived page": the prompt (≤63 B UTF-8) replaces the road name
+over the current map; `status 2` → "arrival complete": screen cleared, prompt
+drawn large, and the glasses **auto-exit after 5 s** (`AUTO_EXIT_DELAY = 5000`).
+`con glasses nav arrived --prompt … [--complete]`.
+
+### Console surface
+
+| Layer | Where |
+|-------|-------|
+| Encoders + ack parser + limits | `android/…/glasses/G1Protocol.kt` `Nav`, `encodeNavStart/Step/Sync/Exit/Arrived`, `encodeNavMapChunks`, `rleEncode`, `parseNavAck`; tests `G1NavigationTest.kt` |
+| BLE sequencing + keep-alive | `BleManager.navStart/navStep/navArrived/navExit/navMap`, `startNavSync` |
+| RPC | `PushService` `navStart|navStep|navArrived|navExit|navMap` → `{ok, status, ack}` (right arm) |
+| Hub | `POST /glasses/nav/{start,step,arrived,exit,map}` (`routes/glasses.ts`, `parseNavStep` gates the firmware limits → 422 before any write; tests `glasses-nav.test.ts`), `GlassesHub.nav*` |
+| CLI | `con glasses nav start|step|arrived|exit|map` (`--dir --road --dist --eta --remaining --speed --x --y`, `--prompt --complete`, `--panoramic`) |
+
+Not built (deliberately): a route source, map rasterisation, direction
+inference from a route's manoeuvre type. The APK half ships with the next
+release cut; until then the hub route 502s with "unknown method" from an older
+app.

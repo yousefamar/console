@@ -130,6 +130,10 @@ class BleManager(private val app: Context) {
 
     /** Monotonic text sync-seq, wraps mod 256. */
     private val textSeq = AtomicInteger(0)
+    /** Rolling seq for 0x0A navigation frames (byte 3, echoed in every ack). */
+    private val navSeq = AtomicInteger(0)
+    /** Keep-alive ticker while a nav session is open — the glasses auto-exit ~10–19 s without one. */
+    @Volatile private var navSyncRunnable: Runnable? = null
 
     // --- Lifecycle ----------------------------------------------------------
 
@@ -185,6 +189,7 @@ class BleManager(private val app: Context) {
         unregisterBluetoothStateReceiver()
         worker.post {
             stopHeartbeat()
+            stopNavSync()
             disconnectInternal(left)
             disconnectInternal(right)
             stopScan()
@@ -272,6 +277,77 @@ class BleManager(private val app: Context) {
                 )
             }
         }
+    }
+
+    // --- Native navigation card (0x0A) — docs/g1-protocol.md §18 -----------
+
+    /** Enter navigation on both arms and start the keep-alive ticker. Idempotent. */
+    fun navStart(onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            enqueueSequenced(G1Protocol.encodeNavStart(navSeq.incrementAndGet() and 0xFF), G1Protocol.OP_NAVIGATION, onResult)
+            startNavSync()
+        }
+    }
+
+    /** One turn-by-turn update. Throws (before any write) when a field is over the firmware's buffer. */
+    fun navStep(
+        direction: Int,
+        roadName: String,
+        distanceToTurn: String,
+        timeRemaining: String,
+        routeDistance: String,
+        currentSpeed: String,
+        x: Int,
+        y: Int,
+        onResult: ((AckOutcome) -> Unit)? = null,
+    ) {
+        val pkt = G1Protocol.encodeNavStep(navSeq.incrementAndGet() and 0xFF, direction, roadName, distanceToTurn, timeRemaining, routeDistance, currentSpeed, x, y)
+        worker.post { enqueueSequenced(pkt, G1Protocol.OP_NAVIGATION, onResult) }
+    }
+
+    fun navArrived(status: Int, prompt: String, onResult: ((AckOutcome) -> Unit)? = null) {
+        val pkt = G1Protocol.encodeNavArrived(navSeq.incrementAndGet() and 0xFF, status, prompt)
+        worker.post { enqueueSequenced(pkt, G1Protocol.OP_NAVIGATION, onResult) }
+    }
+
+    /** Leave navigation on both arms and stop the ticker. */
+    fun navExit(onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            stopNavSync()
+            enqueueSequenced(G1Protocol.encodeNavExit(navSeq.incrementAndGet() and 0xFF), G1Protocol.OP_NAVIGATION, onResult)
+        }
+    }
+
+    /** Upload a two-plane 1-bpp map (overview 4624 B / panoramic 16592 B), chunked, L then R per chunk. */
+    fun navMap(panoramic: Boolean, planes: ByteArray, onResult: ((AckOutcome) -> Unit)? = null) {
+        val packets = G1Protocol.encodeNavMapChunks(navSeq.incrementAndGet() and 0xFF, panoramic, planes)
+        worker.post {
+            for ((idx, pkt) in packets.withIndex()) {
+                enqueueSequenced(pkt, G1Protocol.OP_NAVIGATION, if (idx == packets.lastIndex) onResult else null)
+            }
+        }
+    }
+
+    private fun startNavSync() {
+        if (navSyncRunnable != null) return
+        val r = object : Runnable {
+            override fun run() {
+                if (!started || navSyncRunnable !== this) return
+                enqueueSequenced(G1Protocol.encodeNavSync(navSeq.incrementAndGet() and 0xFF), G1Protocol.OP_NAVIGATION) { outcome ->
+                    // A sync ack with status 0 = the glasses say navigation isn't running
+                    // (they exited on their own) — stop ticking rather than nag forever.
+                    if (outcome is AckOutcome.Fail && outcome.payload.size >= 6 && outcome.payload[5].toInt() == 0) worker.post { stopNavSync() }
+                }
+                worker.postDelayed(this, G1Protocol.Nav.SYNC_INTERVAL_MS)
+            }
+        }
+        navSyncRunnable = r
+        worker.postDelayed(r, G1Protocol.Nav.SYNC_INTERVAL_MS)
+    }
+
+    private fun stopNavSync() {
+        navSyncRunnable?.let { worker.removeCallbacks(it) }
+        navSyncRunnable = null
     }
 
     /** Mic is right-arm only. No left-side send at all. */
@@ -684,6 +760,7 @@ class BleManager(private val app: Context) {
     fun disconnect() {
         worker.post {
             stopHeartbeat()
+            stopNavSync()
             disconnectInternal(left)
             disconnectInternal(right)
         }

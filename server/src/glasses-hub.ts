@@ -59,6 +59,33 @@ export interface GlassesNotifyRequest {
   timestamp?: number
 }
 
+/** One turn-by-turn update for the glasses' native nav card (0x0A sub 1) — see docs/g1-protocol.md §18. */
+export interface GlassesNavStep {
+  /** Pictogram id 1..35 (1 straight, 4 left, 5 right, 10 U-turn, …). */
+  direction: number
+  /** Road name — ≤63 UTF-8 bytes. Drawn centre in the overview view. */
+  road: string
+  /** Distance to the manoeuvre ("200 m") — ≤23 bytes, bottom-left. */
+  distance: string
+  /** Time remaining for the route ("12 min") — ≤23 bytes, top-right with `remaining`. */
+  eta?: string
+  /** Distance remaining for the route ("3.4 km") — ≤23 bytes. */
+  remaining?: string
+  /** Current speed text — ≤23 bytes, panoramic view only. */
+  speed?: string
+  /** Position marker on the panoramic map, 0..488 × 0..136. */
+  x?: number
+  y?: number
+}
+
+/** The APK relays the RIGHT arm's ack: `status` is the firmware's byte-5 result, `ack` the raw frame in hex. */
+export interface GlassesNavAck {
+  ok: boolean
+  status?: number
+  ack?: string
+  error?: string
+}
+
 type Pending = {
   resolve: (val: unknown) => void
   reject: (err: Error) => void
@@ -272,6 +299,28 @@ export class GlassesHub {
   /** Push the head-up tilt threshold (degrees, 0..60) to both arms at runtime. */
   async setHeadUpAngle(deg: number): Promise<void> {
     await this.rpc('setHeadUpAngle', { deg })
+  }
+
+  // --- Native navigation card (0x0A) ---------------------------------------
+  async navStart(): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('navStart')
+  }
+
+  async navStep(step: GlassesNavStep): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('navStep', { ...step })
+  }
+
+  async navArrived(status: 1 | 2, prompt: string): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('navArrived', { status, prompt })
+  }
+
+  async navExit(): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('navExit')
+  }
+
+  /** Two 1-bpp planes (overview 4624 B / panoramic 16592 B), base64. Chunked + RLE'd APK-side. */
+  async navMap(panoramic: boolean, planesB64: string): Promise<GlassesNavAck> {
+    return await this.rpc<GlassesNavAck>('navMap', { panoramic, planes: planesB64 }, 30_000)
   }
 
   async disconnect(): Promise<void> {

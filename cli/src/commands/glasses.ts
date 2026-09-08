@@ -22,6 +22,7 @@ export async function glasses(verb: string | undefined, args: string[], flags: G
     case 'research': return glassesResearch(args, flags)
     case 'hud': return glassesHud(args, flags)
     case 'config': return glassesConfig(args, flags)
+    case 'nav': return glassesNav(args, flags)
     default:
       exitWithError('USAGE', `Unknown glasses command: ${verb}. Run 'con help glasses'.`, flags)
   }
@@ -186,4 +187,65 @@ async function glassesResearch(args: string[], flags: GlobalFlags): Promise<void
     return
   }
   exitWithError('USAGE', 'Usage: con glasses research on|off|tail [N]', flags)
+}
+
+// con glasses nav start | step | arrived | exit | map — the G1's NATIVE turn-by-turn
+// card (0x0A, docs/g1-protocol.md §18). Layout + primitive only: there is no
+// route source behind it yet; a route provider (OSRM lives in the hub already)
+// is a later card. Hub replies with the firmware ack: {ok, status, ack}.
+const NAV_USAGE = [
+  'Usage: con glasses nav start',
+  '       con glasses nav step --dir <1..35> --road "<name>" --dist "<200 m>" [--eta "<12 min>"] [--remaining "<3.4 km>"] [--speed "<30>"] [--x <0..488> --y <0..136>]',
+  '       con glasses nav arrived --prompt "<text>" [--complete]',
+  '       con glasses nav exit',
+  '       con glasses nav map <planes.bin> [--panoramic]     (two 1-bpp planes: 4624 B overview / 16592 B panoramic)',
+  'Directions: 1 straight, 2/3 slight L/R, 4/5 turn L/R, 6/7 fork L/R, 8/9 hard L/R, 10/11 U-turn, 12-13/16-17/20-21 roundabouts,',
+  '  14/15 merge, 18/19 curved R/L, 22/23 wide arc R/L, 24/25 hooked R/L, 26/27 U-turn+exit, 28/29 diagonal R/L, 30/31 merge R/L,',
+  '  32/33 sharp diagonal R/L, 34/35 Y-split. Fields: road <=63 UTF-8 bytes, the rest <=23; the glasses drop the whole step if one overruns.',
+].join('\n')
+
+async function glassesNav(args: string[], flags: GlobalFlags): Promise<void> {
+  const verb = args.find((a) => !a.startsWith('--'))
+  const opts = parseFlags(args)
+  switch (verb) {
+    case 'start':
+    case 'exit': {
+      const data = await hubFetch(`/glasses/nav/${verb}`, { method: 'POST' })
+      output(data, flags)
+      return
+    }
+    case 'step': {
+      const dir = Number(opts.dir ?? opts.direction)
+      if (!Number.isInteger(dir) || dir < 1 || dir > 35 || (!opts.road && !opts.dist)) exitWithError('USAGE', NAV_USAGE, flags)
+      const body = {
+        direction: dir,
+        road: opts.road ?? '',
+        distance: opts.dist ?? opts.distance ?? '',
+        eta: opts.eta ?? '',
+        remaining: opts.remaining ?? '',
+        speed: opts.speed ?? '',
+        x: opts.x != null ? Number(opts.x) : 0,
+        y: opts.y != null ? Number(opts.y) : 0,
+      }
+      const data = await hubFetch('/glasses/nav/step', { method: 'POST', body })
+      output(data, flags)
+      return
+    }
+    case 'arrived': {
+      if (!opts.prompt) exitWithError('USAGE', NAV_USAGE, flags)
+      const data = await hubFetch('/glasses/nav/arrived', { method: 'POST', body: { status: opts.complete ? 2 : 1, prompt: opts.prompt } })
+      output(data, flags)
+      return
+    }
+    case 'map': {
+      const file = args.filter((a) => !a.startsWith('--'))[1]
+      if (!file) exitWithError('USAGE', NAV_USAGE, flags)
+      const planes = readFileSync(file!).toString('base64')
+      const data = await hubFetch('/glasses/nav/map', { method: 'POST', body: { panoramic: !!opts.panoramic, planes } })
+      output(data, flags)
+      return
+    }
+    default:
+      exitWithError('USAGE', NAV_USAGE, flags)
+  }
 }

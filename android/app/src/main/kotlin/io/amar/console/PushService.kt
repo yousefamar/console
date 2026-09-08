@@ -1127,6 +1127,45 @@ class PushService : Service() {
                     GlassesController.requireBle().setHeadUpAngle(params.optInt("deg", 30))
                     replyRpc(id, JSONObject().put("ok", true))
                 }
+                // Native navigation card (0x0A) — docs/g1-protocol.md §18. The reply carries
+                // the RIGHT arm's ack (master; L is written first): ok=false with a status
+                // byte means the firmware refused the frame (string/prompt oversize).
+                "navStart" -> GlassesController.requireBle().navStart { replyRpc(id, navAckJson(it)) }
+                "navStep" -> {
+                    try {
+                        GlassesController.requireBle().navStep(
+                            direction = params.getInt("direction"),
+                            roadName = params.optString("road"),
+                            distanceToTurn = params.optString("distance"),
+                            timeRemaining = params.optString("eta"),
+                            routeDistance = params.optString("remaining"),
+                            currentSpeed = params.optString("speed"),
+                            x = params.optInt("x", 0),
+                            y = params.optInt("y", 0),
+                        ) { replyRpc(id, navAckJson(it)) }
+                    } catch (e: IllegalArgumentException) {
+                        replyRpcError(id, e.message ?: "invalid nav step")
+                    } catch (e: org.json.JSONException) {
+                        replyRpcError(id, "direction required (1..35)")
+                    }
+                }
+                "navArrived" -> {
+                    try {
+                        GlassesController.requireBle().navArrived(params.optInt("status", 1), params.optString("prompt")) { replyRpc(id, navAckJson(it)) }
+                    } catch (e: IllegalArgumentException) {
+                        replyRpcError(id, e.message ?: "invalid arrived frame")
+                    }
+                }
+                "navExit" -> GlassesController.requireBle().navExit { replyRpc(id, navAckJson(it)) }
+                "navMap" -> {
+                    val b64 = params.optString("planes")
+                    if (b64.isEmpty()) { replyRpcError(id, "planes (base64, two 1-bpp planes) required"); return }
+                    try {
+                        GlassesController.requireBle().navMap(params.optBoolean("panoramic", false), Base64.decode(b64, Base64.DEFAULT)) { replyRpc(id, navAckJson(it)) }
+                    } catch (e: IllegalArgumentException) {
+                        replyRpcError(id, e.message ?: "invalid map")
+                    }
+                }
                 "disconnect" -> {
                     GlassesController.requireBle().disconnect()
                     replyRpc(id, JSONObject().put("ok", true))
@@ -1216,6 +1255,22 @@ class PushService : Service() {
                 .put("result", result)
             ws.send(frame.toString())
         } catch (_: Exception) {}
+    }
+
+    /** `{ok, status?, ack?}` — the nav ack's status byte (byte 5) and the raw frame in hex, for `con glasses nav` to print. */
+    private fun navAckJson(outcome: io.amar.console.glasses.BleManager.AckOutcome): JSONObject {
+        val o = JSONObject()
+        val payload = when (outcome) {
+            is io.amar.console.glasses.BleManager.AckOutcome.Ok -> { o.put("ok", true); outcome.payload }
+            is io.amar.console.glasses.BleManager.AckOutcome.Fail -> { o.put("ok", false); outcome.payload }
+            is io.amar.console.glasses.BleManager.AckOutcome.Timeout -> { o.put("ok", false).put("error", "ack timeout"); null }
+            is io.amar.console.glasses.BleManager.AckOutcome.WriteFailed -> { o.put("ok", false).put("error", outcome.reason); null }
+        }
+        if (payload != null) {
+            if (payload.size >= 6) o.put("status", payload[5].toInt() and 0xFF)
+            o.put("ack", payload.joinToString("") { "%02x".format(it) })
+        }
+        return o
     }
 
     private fun replyRpcError(id: String, error: String) {

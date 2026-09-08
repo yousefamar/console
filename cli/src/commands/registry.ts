@@ -466,6 +466,22 @@ export const COMMANDS: CommandDef[] = [
       angle: { type: 'number', description: 'Head-up tilt threshold in degrees (0-60)' },
     },
     examples: ['con glasses config', 'con glasses config --notify off', 'con glasses config --channel money off', 'con glasses config --angle 35'] },
+  { name: 'glasses nav', description: "Native turn-by-turn card (0x0A): start | step | arrived | exit | map. Layout primitive only — no route source yet. Replies carry the firmware ack {ok, status, ack}", safety: 'write',
+    args: [{ name: 'verb', required: true, description: 'start | step | arrived | exit | map <planes.bin>' }],
+    flags: {
+      dir: { type: 'number', description: 'step: pictogram 1..35 (1 straight, 4/5 turn L/R, 10 U-turn, 12+ roundabouts — con help glasses)' },
+      road: { type: 'string', description: 'step: road name, <=63 UTF-8 bytes' },
+      dist: { type: 'string', description: 'step: distance to the manoeuvre ("200 m"), <=23 bytes' },
+      eta: { type: 'string', description: 'step: time remaining ("12 min"), <=23 bytes' },
+      remaining: { type: 'string', description: 'step: route distance remaining ("3.4 km"), <=23 bytes' },
+      speed: { type: 'string', description: 'step: current speed text, <=23 bytes (panoramic view only)' },
+      x: { type: 'number', description: 'step: marker x on the panoramic map, 0..488' },
+      y: { type: 'number', description: 'step: marker y on the panoramic map, 0..136' },
+      prompt: { type: 'string', description: 'arrived: prompt text, <=63 bytes' },
+      complete: { type: 'boolean', description: 'arrived: status 2 (arrival complete, auto-exits after 5 s) instead of 1' },
+      panoramic: { type: 'boolean', description: 'map: upload the 488x136 panoramic planes (16592 B) instead of the 136x136 overview (4624 B)' },
+    },
+    examples: ['con glasses nav start', 'con glasses nav step --dir 5 --road "High St" --dist "200 m" --eta "12 min" --remaining "3.4 km"', 'con glasses nav arrived --prompt "You have arrived" --complete', 'con glasses nav exit'] },
 
   // ring (Pebble Index 01 — webhook archive + command router)
   { name: 'ring status', description: 'Webhook URL, recording count, router config, agent roster', safety: 'read',

@@ -20,6 +20,8 @@ object G1Protocol {
     // --- Opcodes ------------------------------------------------------------
 
     const val OP_APP_WHITELIST: Byte = 0x04
+    /** Native turn-by-turn card (`BLE_REQ_PUT_NAVIGATION_INFO`) — docs/g1-protocol.md §18. */
+    const val OP_NAVIGATION: Byte = 0x0A
     const val OP_HEADUP_ANGLE: Byte = 0x0B
     const val OP_MIC_CONTROL: Byte = 0x0E
     /**
@@ -379,6 +381,159 @@ object G1Protocol {
         return byteArrayOf(OP_HEADUP_ANGLE, clamped.toByte())
     }
 
+    // --- Native navigation card (0x0A) — docs/g1-protocol.md §18 -----------
+    //
+    // Every frame is `[0x0A, len_lo, len_hi, seq, subcmd, …]` where len is the
+    // WHOLE frame length (firmware rejects the packet when it disagrees with
+    // the received byte count). Layout lifted from the firmware handler
+    // (g1-reverse ble_process_put_ops_09_10.inc), not from any app SDK.
+
+    object Nav {
+        const val SUB_START = 0
+        const val SUB_STEP = 1
+        const val SUB_OVERVIEW_MAP = 2
+        const val SUB_PANORAMIC_MAP = 3
+        const val SUB_SYNC = 4
+        const val SUB_EXIT = 5
+        const val SUB_ARRIVED = 6
+
+        /** Pictogram ids the firmware accepts (`(dir - 1) < 0x23`); 0/36+ = "direction parameter error", nothing drawn. */
+        const val DIRECTION_MIN = 1
+        const val DIRECTION_MAX = 35
+        /** Position marker limits on the panoramic map (`x > 0x1e8 || y > 0x88` logs overstep and skips the marker). */
+        const val X_MAX = 488
+        const val Y_MAX = 136
+        /** Field buffers are 0x18 bytes (road name 0x40) INCLUDING the NUL — one over and the whole step is refused (ack status 1). */
+        const val FIELD_MAX_BYTES = 0x18 - 1
+        const val ROAD_MAX_BYTES = 0x40 - 1
+        const val PROMPT_MAX_BYTES = 0x40 - 1
+        /** Arrived-status values the UI task acts on: 1 = arrived page (prompt + map), 2 = arrival complete (prompt only, auto-exit 5 s). */
+        const val ARRIVED = 1
+        const val ARRIVED_COMPLETE = 2
+
+        /** Overview map: 136×136 px, two 1-bpp planes (dim gray 2, then bright 0xF), 17 bytes/row, 2312 B each. */
+        const val OVERVIEW_PLANE_BYTES = 17 * 136
+        const val OVERVIEW_RAW_BYTES = OVERVIEW_PLANE_BYTES * 2
+        /** Panoramic map: 488×136 px, same two-plane scheme, 61 bytes/row, 8296 B each. */
+        const val PANORAMIC_PLANE_BYTES = 61 * 136
+        const val PANORAMIC_RAW_BYTES = PANORAMIC_PLANE_BYTES * 2
+        /** Data bytes per map packet — keeps a 9/10-byte header + data under the 244-byte write the MTU allows. */
+        const val MAP_CHUNK_BODY = 230
+        /** The glasses count down from 10 (init) / 19 (after a sync) once a second and auto-exit at 0 — send a sync every 5 s. */
+        const val SYNC_INTERVAL_MS = 5_000L
+    }
+
+    private fun navFrame(seq: Int, subcmd: Int, body: ByteArray = ByteArray(0)): ByteArray {
+        val len = 5 + body.size
+        val pkt = ByteArray(len)
+        pkt[0] = OP_NAVIGATION
+        pkt[1] = (len and 0xFF).toByte()
+        pkt[2] = ((len shr 8) and 0xFF).toByte()
+        pkt[3] = (seq and 0xFF).toByte()
+        pkt[4] = subcmd.toByte()
+        System.arraycopy(body, 0, pkt, 5, body.size)
+        return pkt
+    }
+
+    private fun navField(text: String, maxBytes: Int, name: String): ByteArray {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        require(bytes.size <= maxBytes) { "$name exceeds $maxBytes bytes (${bytes.size})" }
+        return bytes + 0
+    }
+
+    /** Subcommand 0 — clears the firmware's nav state and enters navigation. Ack `[0x0A,6,0,seq,0x00,0x00]`. */
+    fun encodeNavStart(seq: Int): ByteArray = navFrame(seq, Nav.SUB_START)
+
+    /**
+     * Subcommand 1 — the per-step update. Body: `dir, x_lo, x_hi, y_lo, y_hi` then FIVE NUL-terminated
+     * UTF-8 strings in firmware struct order: time remaining, distance remaining (whole route),
+     * road name, distance to the manoeuvre, current speed. Overview view draws
+     * "`timeRemaining routeDistance`" top-right, the road name centre, `distanceToTurn` bottom-left;
+     * the panoramic view (head-up) draws the marker at (x, y). Ack status byte: 0 ok, 1 = a string
+     * overran its buffer (nothing applied).
+     */
+    fun encodeNavStep(
+        seq: Int,
+        direction: Int,
+        roadName: String,
+        distanceToTurn: String,
+        timeRemaining: String = "",
+        routeDistance: String = "",
+        currentSpeed: String = "",
+        x: Int = 0,
+        y: Int = 0,
+    ): ByteArray {
+        require(direction in Nav.DIRECTION_MIN..Nav.DIRECTION_MAX) { "direction must be ${Nav.DIRECTION_MIN}..${Nav.DIRECTION_MAX}" }
+        require(x in 0..Nav.X_MAX && y in 0..Nav.Y_MAX) { "marker must be within 0..${Nav.X_MAX} × 0..${Nav.Y_MAX}" }
+        val body = byteArrayOf(
+            direction.toByte(),
+            (x and 0xFF).toByte(), ((x shr 8) and 0xFF).toByte(),
+            (y and 0xFF).toByte(), ((y shr 8) and 0xFF).toByte(),
+        ) + navField(timeRemaining, Nav.FIELD_MAX_BYTES, "timeRemaining") +
+            navField(routeDistance, Nav.FIELD_MAX_BYTES, "routeDistance") +
+            navField(roadName, Nav.ROAD_MAX_BYTES, "roadName") +
+            navField(distanceToTurn, Nav.FIELD_MAX_BYTES, "distanceToTurn") +
+            navField(currentSpeed, Nav.FIELD_MAX_BYTES, "currentSpeed")
+        return navFrame(seq, Nav.SUB_STEP, body)
+    }
+
+    /** Subcommand 4 — keep-alive. Byte 5 is echoed in the ack while navigation is running, 0 when it isn't (the "not started" tell). */
+    fun encodeNavSync(seq: Int): ByteArray = navFrame(seq, Nav.SUB_SYNC, byteArrayOf(0x01))
+
+    /** Subcommand 5 — leave navigation (state zeroed). Ack status is always 1. */
+    fun encodeNavExit(seq: Int): ByteArray = navFrame(seq, Nav.SUB_EXIT)
+
+    /** Subcommand 6 — arrived. `status` 1 = arrived page, 2 = complete (auto-exits after 5 s); prompt ≤ 63 UTF-8 bytes, no NUL. */
+    fun encodeNavArrived(seq: Int, status: Int, prompt: String): ByteArray {
+        require(status == Nav.ARRIVED || status == Nav.ARRIVED_COMPLETE) { "status must be 1 or 2" }
+        val bytes = prompt.toByteArray(Charsets.UTF_8)
+        require(bytes.size <= Nav.PROMPT_MAX_BYTES) { "prompt exceeds ${Nav.PROMPT_MAX_BYTES} bytes" }
+        return navFrame(seq, Nav.SUB_ARRIVED, byteArrayOf(status.toByte()) + bytes)
+    }
+
+    /**
+     * RLE the firmware decodes: `[count, value]` byte pairs (`decode_rle_byte_pairs`), count 1..255.
+     * A payload whose byte length equals the raw plane size is taken as RAW instead, so an RLE
+     * stream that happens to land on exactly that length must be avoided — caller's problem
+     * ([encodeNavMapChunks] falls back to raw in that case).
+     */
+    fun rleEncode(raw: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream(raw.size / 4 + 2)
+        var i = 0
+        while (i < raw.size) {
+            val v = raw[i]
+            var n = 1
+            while (i + n < raw.size && raw[i + n] == v && n < 255) n++
+            out.write(n); out.write(v.toInt() and 0xFF)
+            i += n
+        }
+        return out.toByteArray()
+    }
+
+    /**
+     * Subcommands 2 (overview) / 3 (panoramic) — a two-plane 1-bpp bitmap, chunked. Every packet:
+     * `[0x0A, len, seq, sub, total_lo, total_hi, pkt_lo, pkt_hi, (panoramic only: flag), data…]`,
+     * packet index 1-based. Firmware assembles into a fixed buffer (4624 / 16592 B) and treats a
+     * payload of exactly that size as raw, anything smaller as RLE. The panoramic flag byte is
+     * stored (`nav[0xad]`) but no renderer reads it — sent as 0.
+     */
+    fun encodeNavMapChunks(seq: Int, panoramic: Boolean, planes: ByteArray, compress: Boolean = true): List<ByteArray> {
+        val rawSize = if (panoramic) Nav.PANORAMIC_RAW_BYTES else Nav.OVERVIEW_RAW_BYTES
+        require(planes.size == rawSize) { "map must be exactly $rawSize bytes (two 1-bpp planes)" }
+        val payload = if (compress) rleEncode(planes).takeIf { it.size < rawSize } ?: planes else planes
+        val header = if (panoramic) byteArrayOf(0x00) else ByteArray(0)
+        val total = (payload.size + Nav.MAP_CHUNK_BODY - 1) / Nav.MAP_CHUNK_BODY
+        return (0 until total).map { idx ->
+            val body = payload.copyOfRange(idx * Nav.MAP_CHUNK_BODY, minOf((idx + 1) * Nav.MAP_CHUNK_BODY, payload.size))
+            val n = idx + 1
+            navFrame(
+                seq,
+                if (panoramic) Nav.SUB_PANORAMIC_MAP else Nav.SUB_OVERVIEW_MAP,
+                byteArrayOf((total and 0xFF).toByte(), ((total shr 8) and 0xFF).toByte(), (n and 0xFF).toByte(), ((n shr 8) and 0xFF).toByte()) + header + body,
+            )
+        }
+    }
+
     /** Android-specific post-connect init handshake — see [OP_INIT_ANDROID]. */
     fun encodeInitAndroid(): ByteArray = byteArrayOf(OP_INIT_ANDROID, 0x01)
 
@@ -396,6 +551,9 @@ object G1Protocol {
      */
     fun parseAck(expectedOpcode: Byte, data: ByteArray): Ack? {
         if (data.isEmpty() || data[0] != expectedOpcode) return null
+        // Nav acks carry no 0xC9/0xCA — `[0x0A, len_lo, len_hi, seq, sub, status]` — and a
+        // rolling seq byte could BE 0xC9/0xCA, so decode them explicitly.
+        if (expectedOpcode == OP_NAVIGATION) return parseNavAck(data)
         val ok = data.any { it == RESULT_OK }
         val fail = data.any { it == RESULT_FAIL }
         if (!ok && !fail) {
@@ -404,6 +562,25 @@ object G1Protocol {
             return Ack(expectedOpcode, true, data)
         }
         return Ack(expectedOpcode, ok || !fail, data)
+    }
+
+    /**
+     * Nav ack semantics differ per subcommand (firmware `ble_process_put_ops_09_10.inc`):
+     * start/step/arrived → status 0 = ok, 1 = refused (string/prompt oversize);
+     * map chunks → 10/11-byte echo of the header, status byte after it 0 = ok;
+     * sync → byte 5 echoes what we sent (1) while navigation runs, 0 = "not started";
+     * exit → always 1.
+     */
+    fun parseNavAck(data: ByteArray): Ack? {
+        if (data.size < 6 || data[0] != OP_NAVIGATION) return null
+        val sub = data[4].toInt() and 0xFF
+        val ok = when (sub) {
+            Nav.SUB_SYNC, Nav.SUB_EXIT -> data[5].toInt() != 0
+            Nav.SUB_OVERVIEW_MAP -> data.size >= 10 && data[9].toInt() == 0
+            Nav.SUB_PANORAMIC_MAP -> data.size >= 11 && data[10].toInt() == 0
+            else -> data[5].toInt() == 0
+        }
+        return Ack(OP_NAVIGATION, ok, data)
     }
 
     /**

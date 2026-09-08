@@ -81,6 +81,16 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **G1: native navigation card encoder + keep-alive** (^deft-lynx): `G1Protocol.Nav`
+  + `encodeNavStart/Step/Sync/Exit/Arrived`, `encodeNavMapChunks` (two 1-bpp
+  planes, RLE'd unless that would not shrink), `parseNavAck` (0x0A acks carry no
+  0xC9); `BleManager.navStart/navStep/navArrived/navExit/navMap` sequence L→R
+  and run the 5 s sync ticker the firmware requires (auto-exits ~10–19 s
+  without it); PushService RPCs `navStart|navStep|navArrived|navExit|navMap`
+  reply `{ok, status, ack}`. Layout from the firmware decompile — first live
+  step against real glasses still to be observed (docs/g1-protocol.md §18).
+  Tests: `G1NavigationTest` (8, byte-exact).
+
 ## Shipped
 
 ### v95 (2026-09-06)

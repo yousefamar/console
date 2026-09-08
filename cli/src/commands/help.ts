@@ -22,7 +22,7 @@ Services:
   cron         Hub-side agent scheduler — list, add, remove, run
   mic          System mic owner + push-to-talk routing
   whatsapp     WhatsApp (via AL) — send, contacts, status
-  glasses      G1 smart glasses — status, text, clear, bmp, notify, mic
+  glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
 
@@ -240,6 +240,8 @@ Commands:
   disconnect   Drop BLE link but keep pairing (DND-style)
   scan         Trigger / stop a BLE scan, or dump recent observations
   research     Reverse-engineering frame log: on|off|tail [N]
+  nav          The glasses' NATIVE turn-by-turn card: start | step | arrived | exit | map
+               (layout primitive only — no route source yet; see docs/g1-protocol.md section 18)
 
 Glasses are owned by the phone's APK — the hub talks to it over the push
 WebSocket. If the APK isn't connected you'll get a 503 'APK not connected'.
@@ -254,6 +256,10 @@ Examples:
   con glasses scan observations    # what names were advertising (debug)
   con glasses research tail 200    # recent frames (jq-friendly NDJSON)
   con glasses research on          # also log heartbeats
+  con glasses nav start
+  con glasses nav step --dir 5 --road "High St" --dist "200 m" --eta "12 min" --remaining "3.4 km"
+  con glasses nav arrived --prompt "You have arrived" --complete
+  con glasses nav exit
 `.trim(),
 
   ring: `
