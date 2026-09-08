@@ -1514,8 +1514,21 @@ export class Session extends EventEmitter {
       case 'compact_boundary':
         this.emitHub({ type: 'status', sessionId: this.id, text: 'Context compacted' })
         break
+      // CLI ≥2.1.263 streams a token-count estimate per thinking delta — high
+      // volume, nothing to surface.
+      case 'thinking_tokens':
+      case 'task_updated':
+        break
+      default:
+        if (!Session.unknownSystemSubtypes.has(msg.subtype)) {
+          Session.unknownSystemSubtypes.add(msg.subtype)
+          console.log(`[session] unhandled system subtype from the CLI: ${msg.subtype} (first seen on ${this.id}) — new CLI stream event?`)
+        }
     }
   }
+
+  /** Process-wide, so a new CLI event is logged once per hub boot, not per session. */
+  private static readonly unknownSystemSubtypes = new Set<string>()
 
   /** Mine the CLI's rich tool_use_result for Edit/Write structuredPatch — the
    *  same ready-made unified diff the terminal renders. */

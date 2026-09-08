@@ -253,8 +253,9 @@ export interface ClaudeSystemMessage {
   /** `init` on spawn; the CLI also emits lifecycle subtypes we consume:
    *  `status` (model request started), `task_started`/`task_notification`/
    *  `task_updated` (background bash + Task subagents), `compact_boundary`
-   *  (auto-compaction happened here). Unknown subtypes are ignored. */
-  subtype: 'init' | 'status' | 'task_started' | 'task_notification' | 'task_updated' | 'compact_boundary' | (string & {})
+   *  (auto-compaction happened here), `thinking_tokens` (≥2.1.263, per-delta
+   *  token estimate, dropped). Unknown subtypes are logged once and ignored. */
+  subtype: 'init' | 'status' | 'task_started' | 'task_notification' | 'task_updated' | 'compact_boundary' | 'thinking_tokens' | (string & {})
   session_id: string
   tools?: string[]
   model?: string
