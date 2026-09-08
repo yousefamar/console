@@ -10,6 +10,16 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Inbox: swipe-done on an agent row approves its Under Review card(s) (SPA
+  d4afd8b3, ^trim-lynx) — the SPA's `e` now moves every review card owned by
+  that agentKey to the board's `doneColumn` (the same move as the "Approve →
+  Done" strip shipped in v93), then marks the session read sticky; a board
+  with no Done column falls back to plain mark-read, a failed move puts the
+  row back and alerts. Phone twin: the agent-row swipe-done path calls
+  `SpacesRepository.moveCardByQuery` for each `reviewHandbacksFor` hit before
+  the local read; shared primitive worth extracting so the strip button and
+  the swipe can't drift (SPA `src/inbox/approve.ts`).
+
 - Inbox: agent rows lead with their SPACE (SPA 7b0aec47, ^glad-finch) —
   `sessionToItem` sets `InboxItem.context` = the session's project title (else
   first area; slug if the spaces list isn't loaded) and the row renders it as a
