@@ -1514,15 +1514,30 @@ export class Session extends EventEmitter {
       case 'compact_boundary':
         this.emitHub({ type: 'status', sessionId: this.id, text: 'Context compacted' })
         break
-      // CLI ≥2.1.263 streams a token-count estimate per thinking delta — high
-      // volume, nothing to surface.
+      // CLI ≥2.1.263: the model refused a turn and the CLI retried it on a
+      // FALLBACK model (`direction` retry|revert|sticky; `scope` 'session' =
+      // the session's model is now swapped, 'local' = one subagent response).
+      // Surface it — a silently swapped model breaks attribution and the meter.
+      case 'model_refusal_fallback': {
+        const m = msg as unknown as { content?: string; direction?: string; scope?: string; fallback_model?: string }
+        const text = `Model refusal → fallback${m.fallback_model ? ` to ${m.fallback_model}` : ''}${m.direction ? ` (${m.direction}${m.scope ? `, ${m.scope}` : ''})` : ''}${m.content ? `: ${m.content}` : ''}`
+        console.log(`[session] ${this.id}: ${text.slice(0, 400)}`)
+        this.emitHub({ type: 'status', sessionId: this.id, text: text.slice(0, 300) })
+        break
+      }
+      // CLI ≥2.1.263 stream events with nothing for the hub: thinking_tokens
+      // (per-delta token estimate, high volume), background_tasks_changed
+      // (we track tasks via task_started/task_notification), vcs_state_changed
+      // (the git chip reads the repo itself).
       case 'thinking_tokens':
+      case 'background_tasks_changed':
+      case 'vcs_state_changed':
       case 'task_updated':
         break
       default:
         if (!Session.unknownSystemSubtypes.has(msg.subtype)) {
           Session.unknownSystemSubtypes.add(msg.subtype)
-          console.log(`[session] unhandled system subtype from the CLI: ${msg.subtype} (first seen on ${this.id}) — new CLI stream event?`)
+          console.log(`[session] unhandled system subtype from the CLI: ${msg.subtype} (first seen on ${this.id}) — new CLI stream event? payload: ${JSON.stringify(msg).slice(0, 300)}`)
         }
     }
   }
