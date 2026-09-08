@@ -19,7 +19,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { MapLayerStore } from '../map-layers/store.js'
 import type { GoogleMapsClient } from '../gmaps/client.js'
 import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring } from './geo.js'
-import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
+import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, layerNameFor, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
 import { listingKind } from './land.js'
@@ -29,6 +29,7 @@ import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
 
 const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
+const TIER_COLOR = '#eab308' // gold — tiered (lifted-ceiling) searches draw to their own layers
 const LAYER_GROUP = 'property'
 /** Newest-first listings pulled per poll. Enough to catch a busy day, not the world. */
 const FETCH_LIMIT = 50
@@ -348,7 +349,8 @@ export class PropertySync {
     if (!s) return false
     this.searches.remove(id)
     this.inventory.clear(id)
-    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+    this.pruneLayers()
+    for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
     this.bus.broadcast('property', 'deleted', { id })
     return true
   }
@@ -395,7 +397,7 @@ export class PropertySync {
       this.running = false
       if (this.redrawPending) {
         this.redrawPending = false
-        for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+        for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
       }
     }
   }
@@ -680,7 +682,7 @@ export class PropertySync {
       this.redrawPending = true
       return
     }
-    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+    for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
   }
 
   /**
@@ -691,8 +693,36 @@ export class PropertySync {
    * fine filters, the zone clip and the outside-geofence bar applied at draw
    * time so a criteria tweak redraws without a re-pull.
    */
-  private updateKindLayer(kind: PropertyKind): void {
-    const slug = `${LAYER_GROUP}/${kind}`
+  /**
+   * Every layer that should exist right now: the two kind layers, plus one
+   * `<kind>-<tier>` layer per tier in use. Tiers appear and disappear with the
+   * searches that declare them; `pruneLayers()` removes the orphans.
+   */
+  private layerTargets(): Array<{ kind: PropertyKind; tier?: string }> {
+    const tiers = [...new Set(this.searches.list().map((s) => s.tier).filter((t): t is string => !!t))].sort()
+    const out: Array<{ kind: PropertyKind; tier?: string }> = []
+    for (const kind of PROPERTY_KINDS) {
+      out.push({ kind })
+      for (const tier of tiers) out.push({ kind, tier })
+    }
+    return out
+  }
+
+  /** Remove `property/*` layers no current search feeds (legacy per-search layers, retired tiers). */
+  private pruneLayers(): number {
+    const keep = new Set(this.layerTargets().map((t) => layerNameFor(t.kind, t.tier)))
+    let removed = 0
+    for (const layer of this.mapLayers.list()) {
+      if (layer.group === LAYER_GROUP && !keep.has(layer.name)) {
+        this.mapLayers.remove(layer.slug)
+        removed++
+      }
+    }
+    return removed
+  }
+
+  private updateKindLayer(kind: PropertyKind, tier?: string): void {
+    const slug = `${LAYER_GROUP}/${layerNameFor(kind, tier)}`
     // Every fine-filtered listing of this kind, across searches and portals,
     // BEFORE verdicts — duplicates are grouped first so a verdict on one copy
     // covers the others.
@@ -703,6 +733,8 @@ export class PropertySync {
       // A house search still contributes to the farmland layer (and vice
       // versa never): only walk searches that could feed this kind.
       if (kind === 'house' && searchKind === 'farmland') continue
+      // A tiered search draws only to its tier's layers; untiered only to the defaults.
+      if ((s.tier || undefined) !== tier) continue
       const dismissed = new Set(s.dismissedIds ?? [])
       const interested = new Set(s.interestedIds ?? [])
       const primary = portalOf(s) === PORTAL_BY_COUNTRY[s.country]
@@ -770,7 +802,7 @@ export class PropertySync {
     const geojson = { type: 'FeatureCollection', features: features.slice(0, MAX_PINS) }
     try {
       this.mapLayers.upsert(slug, geojson, {
-        style: { color: LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'url'] },
+        style: { color: tier ? TIER_COLOR : LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'highStreet', 'url'] },
         fit: false,
         updatedBy: 'property',
       })
@@ -785,16 +817,9 @@ export class PropertySync {
    * draw the kind layers once, so a restart on the new code leaves no ghosts.
    */
   private migrateLayers(): void {
-    const kinds = new Set<string>(PROPERTY_KINDS)
-    let removed = 0
-    for (const layer of this.mapLayers.list()) {
-      if (layer.group === LAYER_GROUP && !kinds.has(layer.name)) {
-        this.mapLayers.remove(layer.slug)
-        removed++
-      }
-    }
-    if (removed) this.log(`[property-sync] removed ${removed} legacy per-search layer(s)`)
-    for (const kind of PROPERTY_KINDS) this.updateKindLayer(kind)
+    const removed = this.pruneLayers()
+    if (removed) this.log(`[property-sync] removed ${removed} stale property layer(s)`)
+    for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
     if (removed) this.bus.broadcast('map-layers', 'delta', { layers: this.mapLayers.list() })
   }
 

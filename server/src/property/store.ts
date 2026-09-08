@@ -68,6 +68,13 @@ export interface PropertySearch {
   /** Defaults to `house`. */
   kind?: PropertyKind
   /**
+   * Optional tier name (e.g. `gold`). A tiered search draws to its own layer,
+   * `property/<kind>-<tier>`, instead of the shared kind layer — Yousef's
+   * gold-town searches run at a lifted price ceiling and must not mix with the
+   * ≤300k pins (2026-09-08, ^brisk-owl). Unset = the default kind layer.
+   */
+  tier?: string
+  /**
    * Which portal client runs this search. Defaults to the country's primary
    * portal (PORTAL_BY_COUNTRY); set explicitly for aggregators and specialist
    * sources so one country can have several searches feeding the same kind
@@ -166,7 +173,7 @@ export interface PropertySearch {
 }
 
 export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'> &
-  Partial<Pick<PropertySearch, 'label' | 'kind' | 'portal' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
+  Partial<Pick<PropertySearch, 'label' | 'kind' | 'tier' | 'portal' | 'maxRings' | 'criteria' | 'enabled' | 'notifyLayer' | 'notify' | 'notifyCriteria' | 'outsideCriteria'>>
 
 /**
  * Criteria that never reach a portal — enforced only at draw time from the
@@ -207,6 +214,7 @@ export class PropertySearchStore {
       label: input.label,
       country: input.country,
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.tier ? { tier: input.tier } : {}),
       ...(input.portal !== undefined ? { portal: input.portal } : {}),
       layer: input.layer,
       maxRings: input.maxRings,
@@ -442,6 +450,11 @@ export class PropertySearchStore {
 }
 
 /** The client a search runs on: its explicit portal, else the country's primary one. */
+/** Layer slug a search's listings of `kind` draw to: `property/<kind>` or `property/<kind>-<tier>`. */
+export function layerNameFor(kind: PropertyKind, tier?: string): string {
+  return tier ? `${kind}-${tier}` : kind
+}
+
 export function portalOf(s: Pick<PropertySearch, 'portal' | 'country'>): Portal {
   return s.portal ?? PORTAL_BY_COUNTRY[s.country]
 }

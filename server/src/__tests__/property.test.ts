@@ -895,6 +895,19 @@ describe('PropertySync kind layers', () => {
     expect(layers.get('property/farmland')!.features.length).toBe(1)
   })
 
+  it('a tiered search draws to property/<kind>-<tier>, never to the shared kind layer, and its layer goes when it goes', async () => {
+    const { store, sync, layers } = harness()
+    const base = store.create({ country: 'UK', layer: 'zone' })
+    const gold = store.create({ country: 'DE', layer: 'zone', tier: 'gold' })
+    await sync.fullSync(base.id)
+    await sync.fullSync(gold.id)
+    expect([...layers.keys()].sort()).toEqual(['property/house', 'property/house-gold'])
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['uk1'])
+    expect(layers.get('property/house-gold')!.features.map((f) => f.properties.listingId)).toEqual(['de1'])
+    sync.remove(gold.id)
+    expect([...layers.keys()]).toEqual(['property/house'])
+  })
+
   it('a coarse criteria edit drops the inventory; a review redraws without one', async () => {
     const { store, sync, layers, inventory } = harness()
     const s = store.create({ country: 'UK', layer: 'zone' })
