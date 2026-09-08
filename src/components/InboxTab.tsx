@@ -15,7 +15,7 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Bot, Check, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
@@ -416,7 +416,15 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-text-tertiary flex-shrink-0" title={item.feedKind ? FEED_KIND_LABEL[item.feedKind] : item.network ?? item.source}><ChannelIcon item={item} /></span>
-            <span className="truncate text-sm text-text-primary flex-1">{item.header}</span>
+            <span className="flex items-center gap-1 min-w-0 flex-1">
+              {item.context && (
+                <>
+                  <span className="truncate text-sm text-text-tertiary flex-shrink max-w-[45%]" title={item.context}>{item.context}</span>
+                  <ChevronRight size={11} className="flex-shrink-0 text-text-tertiary/70" />
+                </>
+              )}
+              <span className="truncate text-sm text-text-primary">{item.header}</span>
+            </span>
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
             {item.source === 'agent' && <HandbackGlyph agentKey={item.agentKey} />}
             {item.routeKey && (

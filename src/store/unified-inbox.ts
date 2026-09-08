@@ -209,12 +209,13 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // Agents: unread / attention-flagged sessions (Al excluded — he's a
     // standing conversation, not an item to clear). A session whose @key
     // owns an Under Review card is a hand-back — banded beside attention.
-    const reviewKeys = new Set(
-      useSpacesStore.getState().spaces.flatMap((sp) => sp.reviewAgentKeys ?? []),
-    )
+    const spaces = useSpacesStore.getState().spaces
+    const reviewKeys = new Set(spaces.flatMap((sp) => sp.reviewAgentKeys ?? []))
+    const spaceTitle = new Map(spaces.map((sp) => [sp.slug, sp.title]))
+    const titleOf = (slug: string) => spaceTitle.get(slug)
     const sessions = useAgentStore.getState().sessions
       .filter(sessionIsLive)
-      .map((s) => sessionToItem(s, reviewKeys))
+      .map((s) => sessionToItem(s, reviewKeys, titleOf))
 
     const suppressedLive = suppressedKeys(now, 'live')
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
@@ -236,7 +237,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const sessionById = new Map(useAgentStore.getState().sessions.map((x) => [x.id, x]))
     const snoozedAgents = [...snoozedKeys.keys()].filter((k) => k.startsWith('agent:')).map((k) => {
       const sess = sessionById.get(k.slice(6))
-      return sess ? stamp(sessionToItem(sess, reviewKeys), snoozedKeys.get(k)) : null
+      return sess ? stamp(sessionToItem(sess, reviewKeys, titleOf), snoozedKeys.get(k)) : null
     })
     const suppressedSnoozed = suppressedKeys(now, 'snoozed')
     const snoozedList = [...snoozedThreads, ...snoozedRooms, ...snoozedFeed, ...snoozedAgents]

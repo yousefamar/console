@@ -136,9 +136,11 @@ export function sessionIsLive(s: AgentSessionLike): boolean {
 /** `reviewKeys` = every `@key` owning an Under Review card across all
  *  boards (SpaceSummary.reviewAgentKeys, flattened) — the session's card
  *  being in review is what makes it a hand-back. */
-export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>): InboxItem {
+export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined): InboxItem {
   const idle = s.status !== 'running'
+  const context = sessionContext(s, titleOf)
   return {
+    ...(context ? { context } : {}),
     key: itemKey('agent', s.id),
     source: 'agent',
     sourceId: s.id,

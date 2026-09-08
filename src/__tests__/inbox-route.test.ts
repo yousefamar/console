@@ -5,7 +5,7 @@ import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
   feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
-  sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
+  sessionContext, sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
 
@@ -182,6 +182,19 @@ describe('agent sessions', () => {
     expect(i.route).toBe('inbox')
     expect(i.attention).toBe(true)
     expect(i.ts).toBe(NOW - 100)
+  })
+
+  it('context = the owning space title — project first, else first area, else none (^glad-finch)', () => {
+    const titleOf = (slug: string) => ({ console: 'Console', dev: 'Dev' } as Record<string, string>)[slug]
+    expect(sessionContext({ project: 'console', areas: ['dev'] }, titleOf)).toBe('Console')
+    expect(sessionContext({ areas: ['dev', 'life'] }, titleOf)).toBe('Dev')
+    expect(sessionContext({}, titleOf)).toBeUndefined()
+    // Unknown slug (spaces list not loaded yet) falls back to the slug itself.
+    expect(sessionContext({ project: 'astera' }, titleOf)).toBe('astera')
+    const i = sessionToItem(session({ name: 'Glad finch (fork)', hasUnread: true, project: 'console' }), undefined, titleOf)
+    expect(i.context).toBe('Console')
+    expect(i.header).toBe('Glad finch')
+    expect(sessionToItem(session({ hasUnread: true })).context).toBeUndefined()
   })
 
   it('attention sessions band above chat+mail; plain unread below them', () => {
