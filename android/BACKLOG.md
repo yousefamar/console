@@ -10,6 +10,12 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Inbox: feed rows lead with the ARTICLE title, feed name beneath (SPA
+  40dd715f, ^shy-ant) — `feedItemToItem` in `src/inbox/route.ts` now sets
+  header = item title, body = feed name (the platform glyph + favicon already
+  say the source; "Hacker News: Front Page" ×12 was unreadable). Port the same
+  flip into `InboxLogic.kt`'s feed adapter and the feed row composable.
+
 - Inbox: running agents stay OUT of the inbox list (SPA ^neat-fawn, 2026-09-08,
   `sessionIsLive` in `src/inbox/route.ts`) — a session with `status ==
   "running"` is admitted only when it carries `needsAttention`; unread text on
