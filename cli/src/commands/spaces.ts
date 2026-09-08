@@ -21,7 +21,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, basename } from 'node:path'
 import { hubFetch } from '../client.js'
 import { output, exitWithError, type GlobalFlags } from '../output.js'
-import { parseFlags } from './util.js'
+import { parseFlags, unknownFlags } from './util.js'
 
 interface CardView {
   text: string
@@ -31,6 +31,14 @@ interface CardView {
   blocked: boolean
   checked: boolean
   detail: string[]
+}
+
+/** Flags each board verb accepts. `column` is an alias of `to` on add — it is
+ *  the hub body's field name and the one people reach for. */
+const BOARD_FLAGS: Record<string, readonly string[]> = {
+  show: [], add: ['to', 'column', 'assign', 'detail', 'bottom'], move: [], assign: [], owner: [], model: [],
+  nofork: [], forkok: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
+  edit: ['text', 'detail'], remove: [], redispatch: [], history: [], restore: ['confirm'],
 }
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
@@ -44,6 +52,15 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
   const rest = args.slice(2)
   const opts = parseFlags(rest)
   const pos = rest.filter((a, i) => !a.startsWith('--') && !(i > 0 && rest[i - 1]!.startsWith('--') && !rest[i - 1]!.includes('=')))
+  // A flag the verb doesn't take is a USAGE error, never a silent no-op: an
+  // `add --column "In Progress"` used to land in Backlog and "succeed" (^odd-duck).
+  const known = BOARD_FLAGS[action ?? 'show'] ?? []
+  const stray = unknownFlags(opts, known)
+  if (stray.length) {
+    exitWithError('USAGE', `${action ?? 'show'} does not take --${stray.join(', --')}${known.length ? ` (known: --${known.join(', --')})` : ' (takes no flags)'} — see \`con help spaces\``, flags)
+    return
+  }
+  if (action === 'add' && opts.column && !opts.to) opts.to = opts.column
   const enc = encodeURIComponent(project)
   const detail = (v: string | undefined) => v ? v.split('|').map((s) => s.trim()).filter(Boolean) : undefined
 
@@ -67,7 +84,7 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
     }
     case 'add': {
       const text = pos[0]
-      if (!text) { exitWithError('USAGE', 'Usage: con spaces board <project> add "text" [--to <column>] [--assign <key>] [--detail "a|b"] [--bottom]', flags); return }
+      if (!text) { exitWithError('USAGE', 'Usage: con spaces board <project> add "text" [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]', flags); return }
       output(await hubFetch(`/board/${enc}/cards`, { method: 'POST', body: {
         text, column: opts.to, assign: opts.assign, detail: detail(opts.detail), ...(opts.bottom === 'true' ? { bottom: true } : {}),
       } }), flags)

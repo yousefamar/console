@@ -693,7 +693,7 @@ export const COMMANDS: CommandDef[] = [
     examples: ['con spaces board console', 'con spaces board astera --json'] },
   { name: 'spaces board add', description: 'Add a card (top of column by default)', safety: 'write',
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'text', required: true, description: 'Card text' }],
-    flags: { to: { type: 'string', description: 'Column (default: first)' }, assign: { type: 'string', description: 'Assignee agentKey' }, detail: { type: 'string', description: 'Detail lines, |-separated' }, bottom: { type: 'boolean', description: 'Append instead of prepend' } },
+    flags: { to: { type: 'string', description: 'Column (default: first); --column is an alias' }, column: { type: 'string', description: 'Alias of --to' }, assign: { type: 'string', description: 'Assignee agentKey' }, detail: { type: 'string', description: 'Detail lines, |-separated' }, bottom: { type: 'boolean', description: 'Append instead of prepend' } },
     examples: ['con spaces board console add "Fix the tree" --to Backlog --assign console-general'] },
   { name: 'spaces board move', description: 'Move a card to a column (card = ^id or unique text substring)', safety: 'write',
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'card', required: true, description: '^id or unique text' }, { name: 'column', required: true, description: 'Target column (case-insensitive)' }],

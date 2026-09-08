@@ -29,6 +29,13 @@ export function parseFlags(args: string[]): Record<string, string> {
   return result
 }
 
+/** Flags the caller passed that the verb doesn't know — a typo'd or misremembered
+ *  flag (`--column` for `--to`) must be a USAGE error, not a silently-dropped
+ *  option that lets the command "succeed" with the wrong effect. */
+export function unknownFlags(opts: Record<string, string>, allowed: readonly string[]): string[] {
+  return Object.keys(opts).filter((k) => !allowed.includes(k))
+}
+
 /**
  * Parse command-specific flags from process.argv.
  * Finds everything after 'con <noun> <verb>' in the raw argv.

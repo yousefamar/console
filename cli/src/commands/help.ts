@@ -368,7 +368,7 @@ con spaces — Spaces pane (project-first UI)
 
 Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project>                       Show the board (columns, cards, ^ids, assignees)
-  board <project> add "text"            Add a card [--to <column>] [--assign <key>] [--detail "a|b"] [--bottom]
+  board <project> add "text"            Add a card [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]
   board <project> move "<card>" <col>   Move a card to a column
   board <project> assign "<card>" <key|none>
   board <project> owner <agentKey|none>          Board default owner (unassigned → In Progress auto-assigns to it)
