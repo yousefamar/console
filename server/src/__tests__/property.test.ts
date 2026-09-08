@@ -1146,6 +1146,55 @@ describe('listingKind', () => {
     expect(listingKind({ propertyType: 'Semi-Detached', description: 'orchard-style planting', plotArea: 300 }, 'house')).toBe('house')
     expect(listingKind({ propertyType: 'Semi-Detached', summary: 'Scotland; building plot; landscaped garden' }, 'house')).toBe('house')
   })
+
+  // Every case below is a real Rightmove description that promoted a house to farmland on 2026-09-08 (236 of 8,039 UK rows).
+  it('the neighbourhood, street names, business names and public parks are not the listing\'s land', () => {
+    const house = (description: string, extra: Partial<Listing> = {}) => listingKind({ propertyType: 'Semi-Detached', description, ...extra }, 'house')
+    expect(house('a private rear garden backing onto woodland, a spacious lounge')).toBe('house')
+    expect(house('Country Park is just a short distance away, offering acres of beautiful countryside')).toBe('house')
+    expect(house('see Acres web site tab - Acres Estate Agents have not tested any apparatus')).toBe('house')
+    expect(house('Recreational opportunities abound, with an equestrian centre, canoe and kayaking')).toBe('house')
+    expect(house('the award-winning Helix Project, covering almost 300 hectares of outdoor recreational space')).toBe('house')
+    expect(house('a distinctive extended sandstone former stable block, converted to residential')).toBe('house')
+    expect(house('a South facing rear garden which neighbours an orchard and is beautifully manicured')).toBe('house')
+    expect(house('schools including Cherry Orchard Primary School and Blessed Edward')).toBe('house')
+    expect(house('There are three primary schools - Orchard, Old Mill and Hallbrook Primary')).toBe('house')
+    expect(house('generous open spaces, children’s play areas, community orchards, footpath links')).toBe('house')
+    expect(house('Beyond the rear boundary is an open paddock, giving the garden a pleasant outlook')).toBe('house')
+    expect(house('Keep fit with 6 acres of open space including an orchard on your doorstep')).toBe('house')
+    expect(house('The park offers over 500 acres of woodland, heathland and parkland')).toBe('house')
+    expect(house('bordered by greenery, with approximately 2 hectares of public open space located')).toBe('house')
+    expect(house('the expansive green spaces of 20 Acres and Humford Woods')).toBe('house')
+    expect(house('a visionary development nestled within 215 acres of mature woodland in West Lothian')).toBe('house')
+    expect(house('OPEN THE BANK HOLIDAY WEEKEND 10AM-5PM WV14 8HA ***THE ARCHMORE***')).toBe('house')
+    expect(house('Situated in the popular Orchard Close, a short walk from The Paddocks')).toBe('house')
+    expect(listingKind({ propertyType: 'Semi-Detached', title: '3 bedroom semi-detached house for sale in Pitts Farm Road, Erdington' }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Detached', title: 'Willow Farm, Choppington' }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Farmhouse', title: 'Willow Farm, Choppington' }, 'house')).toBe('farmland')
+  })
+
+  it('word fractions of an acre, decimal fractions, and the 25-acre plausibility cap', () => {
+    expect(plotAreaFromText('Large corner plot - Approx one third of an acre')).toBe(Math.round(4046.86 / 3))
+    expect(plotAreaFromText('standing on a deep 0.07 of an acre plot')).toBe(283) // a stated size below the floor keeps it a house
+    expect(listingKind({ portal: 'rightmove', propertyType: 'Semi-Detached', description: 'standing on a deep 0.07 of an acre plot with an orchard' }, 'house')).toBe('house')
+    expect(plotAreaFromText('a generous plot of around 0.13 of an acre')).toBe(Math.round(0.13 * 4046.86))
+    expect(plotAreaFromText('Approximately one acre of mature grounds')).toBe(Math.round(4046.86))
+    expect(plotAreaFromText('set in two acres with a pond')).toBe(Math.round(2 * 4046.86))
+    expect(plotAreaFromText('three quarters of an acre')).toBe(Math.round(0.75 * 4046.86))
+    expect(plotAreaFromText('set in 1.5 ha of grounds')).toBe(15000)
+    expect(plotAreaFromText('nestled within 215 acres of woodland')).toBeUndefined()
+    expect(plotAreaFromText('Plot size 12.82 acres (24 Plots)')).toBeUndefined()
+  })
+
+  it('a stored plotArea is trusted from portals with a plot field, re-derived from prose for Rightmove/OnTheMarket', () => {
+    expect(listingKind({ portal: 'immobiliare', propertyType: 'Villa', plotArea: 1500 }, 'house')).toBe('farmland')
+    // An old enrichment stored "215 acres of woodland" as the plot; the prose now says otherwise.
+    expect(listingKind({ portal: 'rightmove', propertyType: 'Semi-Detached', plotArea: 870075, description: 'nestled within 215 acres of mature woodland' }, 'house')).toBe('house')
+    expect(listingKind({ portal: 'rightmove', propertyType: 'Semi-Detached', plotArea: 24281, description: 'Keep fit with 6 acres of open space' }, 'house')).toBe('house')
+    expect(listingKind({ portal: 'rightmove', propertyType: 'Cottage', plotArea: 4047, description: 'plot of around one third of an acre' }, 'house')).toBe('farmland')
+    // A portal's own plot field is trusted at any size — a 12 ha rustico at €250k is real.
+    expect(listingKind({ portal: 'immobiliare', propertyType: 'Villa', plotArea: 120_000 }, 'house')).toBe('farmland')
+  })
 })
 
 describe('PropertySync.enrich', () => {
