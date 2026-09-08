@@ -281,6 +281,35 @@ describe('location ids', () => {
     expect(searches[0]!.url.pathname).toMatch(/\/goslar\/.*\/c208l2000r100\+/)
   })
 
+  it('resolves at most maxLookupsPerCall unknown towns per call; the rest fall to a resolved town and resolve on later calls', async () => {
+    // Three rings around three unknown towns plus Marburg (known id). Budget: 1 lookup per call.
+    const goslar: SeedLocation = { name: 'Goslar', state: 'Niedersachsen', lat: 51.9059936, lon: 10.4266284 }
+    const goslarRing: Ring = [[10.38, 51.88], [10.48, 51.88], [10.48, 51.93], [10.38, 51.93], [10.38, 51.88]]
+    const ids: Record<string, string> = { Celle: '{"_0":"Deutschland","_2811":"Celle - Niedersachsen"}', Goslar: '{"_0":"Deutschland","_2000":"Goslar - Niedersachsen"}' }
+    const { calls, client } = stub((url) => (url.pathname.endsWith('.json') ? ids[url.searchParams.get('query')!]! : paged(5)(url)), {
+      locations: [marburg, celle, goslar],
+      maxLookupsPerCall: 1,
+    })
+    await client.newest([marburgInner, celleRing, goslarRing], criteria, 50)
+    const lookups = () => calls.filter((c) => c.url.pathname === '/s-ort-empfehlungen.json').map((c) => c.url.searchParams.get('query'))
+    expect(lookups()).toHaveLength(1)
+    // The un-looked-up town's ring was served from the nearest resolved town (Celle, ~85 km → r100), not skipped.
+    const searches1 = calls.filter((c) => c.url.pathname.startsWith('/s-haus-kaufen/')).map((c) => c.url.pathname)
+    expect(searches1).toHaveLength(2)
+    expect(searches1.some((p) => /\/celle\/.*\/c208l2811r100\+/.test(p))).toBe(true)
+    await client.newest([marburgInner, celleRing, goslarRing], criteria, 50)
+    expect(lookups()).toHaveLength(2)
+    expect(new Set(lookups())).toEqual(new Set(['Celle', 'Goslar']))
+    // Third call: everything is cached, no lookups, three tight queries.
+    const before = calls.length
+    await client.newest([marburgInner, celleRing, goslarRing], criteria, 50)
+    expect(lookups()).toHaveLength(2)
+    const searches3 = calls.slice(before).filter((c) => c.url.pathname.startsWith('/s-haus-kaufen/')).map((c) => c.url.pathname)
+    expect(searches3).toHaveLength(3)
+    expect(searches3.some((p) => /\/celle\/.*\/c208l2811r5\+/.test(p))).toBe(true)
+    expect(searches3.some((p) => /\/goslar\/.*\/c208l2000r5\+/.test(p))).toBe(true)
+  })
+
   it('pickLocation: exact name, right Bundesland, prefix fallback, never the country root', () => {
     expect(pickLocation({ _0: 'Deutschland', _5: 'Fürth - Hessen', _6: 'Fürth - Bayern', _7: 'Fürth - Nürnberg' }, { name: 'Fürth', state: 'Bayern' })).toEqual({ id: 6, label: 'Fürth - Bayern' })
     expect(pickLocation({ _0: 'Deutschland', _9: 'Freiburg - Baden-Württemberg', _10: 'Freiburg-Haslach - Freiburg' }, { name: 'Freiburg im Breisgau', state: 'Baden-Württemberg' })).toEqual({ id: 9, label: 'Freiburg - Baden-Württemberg' })

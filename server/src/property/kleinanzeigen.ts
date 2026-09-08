@@ -13,12 +13,19 @@
 //
 //   PACING CONTRACT. Every request of any kind (search page, location lookup,
 //   ad page) goes through one serialised gate: at least `minIntervalMs`
-//   (default 25 s) between any two requests, IPv4 only (Node https with
+//   (default 45 s) between any two requests, IPv4 only (Node https with
 //   `family: 4` — never the global fetch, which happily picks the AAAA record),
 //   browser-like headers, no parallelism, no retries. At most
-//   `maxRequestsPerRun` (default 120) requests in any rolling `runWindowMs`
+//   `maxRequestsPerRun` (default 40) requests in any rolling `runWindowMs`
 //   (default 1 h) — when that is spent `newest()` returns what it has with
 //   `truncated: true` and `count()`/`detail()` throw `kleinanzeigen: BUDGET`.
+//   Location-id lookups (`/s-ort-empfehlungen.json`) are capped at
+//   `maxLookupsPerCall` (default 2) per newest()/count() call: the first live
+//   skim (2026-09-08) fired 15 of them 25 s apart and the 16th was the range
+//   block — a run of JSON autocomplete calls with no page views is the least
+//   human thing this client can do. Towns without an id are simply left out of
+//   that call (their rings fall to the nearest resolved town) and resolve a
+//   couple per hour until the on-disk cache is complete.
 //   A 403/429 or a body that looks like the block page throws
 //   `kleinanzeigen: BLOCKED …` and arms a back-off (`blockBackoffMs`, default
 //   30 min) during which every call throws the same without touching the
@@ -71,8 +78,9 @@ export const RADII_KM = [5, 10, 20, 30, 50, 100, 150, 200] as const
 export const MAX_RADIUS_KM = 200
 /** Zimmer counts living rooms too: a 2-bed house is a 3-Zimmer-Haus. */
 const ROOM_OFFSET = 1
-const DEFAULT_MIN_INTERVAL_MS = 25_000
-const DEFAULT_MAX_REQUESTS_PER_RUN = 120
+const DEFAULT_MIN_INTERVAL_MS = 45_000
+const DEFAULT_MAX_REQUESTS_PER_RUN = 40
+const DEFAULT_MAX_LOOKUPS_PER_CALL = 2
 const DEFAULT_RUN_WINDOW_MS = 60 * 60 * 1000
 const DEFAULT_BLOCK_BACKOFF_MS = 30 * 60 * 1000
 /** A completed (un-truncated) query's rows are reusable for a smaller radius of the same town for this long. */
@@ -104,8 +112,10 @@ export interface SeedLocation {
  * The candidate towns that define the livable zone (`data/town-amenities-
  * trimmed.json`, DE rows; Kerkrade is Dutch and dropped) plus the large cities
  * nearest the zone's small transit-pocket rings, so those don't have to be
- * covered from 60 km away. Only Marburg's id was verified by hand (api note);
- * the rest resolve through `/s-ort-empfehlungen.json` on first use.
+ * covered from 60 km away. Marburg's id was verified by hand (api note); 14
+ * more were resolved live on 2026-09-08 (see `~/.cache/console/kleinanzeigen-
+ * locations.json`) and are pinned here so they never cost a request again; the
+ * rest resolve through `/s-ort-empfehlungen.json`, a couple per call.
  */
 export const SEED_LOCATIONS: SeedLocation[] = [
   { name: 'Marburg', state: 'Hessen', lat: 50.8090106, lon: 8.7704695, id: 4825 },
@@ -114,46 +124,46 @@ export const SEED_LOCATIONS: SeedLocation[] = [
   { name: 'Paderborn', state: 'Nordrhein-Westfalen', lat: 51.7177044, lon: 8.752653 },
   { name: 'Arnsberg', state: 'Nordrhein-Westfalen', lat: 51.4002384, lon: 8.0605908 },
   { name: 'Wiesbaden', state: 'Hessen', lat: 50.0820384, lon: 8.2416556 },
-  { name: 'Mainz', state: 'Rheinland-Pfalz', lat: 49.9995205, lon: 8.2736253 },
+  { name: 'Mainz', state: 'Rheinland-Pfalz', lat: 49.9995205, lon: 8.2736253, id: 5315 },
   { name: 'Darmstadt', state: 'Hessen', lat: 49.872775, lon: 8.651177 },
   { name: 'Aschaffenburg', state: 'Bayern', lat: 49.9738133, lon: 9.1446665 },
   { name: 'Heidelberg', state: 'Baden-Württemberg', lat: 49.4093582, lon: 8.694724 },
-  { name: 'Mannheim', state: 'Baden-Württemberg', lat: 49.4892913, lon: 8.4673098 },
-  { name: 'Koblenz', state: 'Rheinland-Pfalz', lat: 50.3533278, lon: 7.5943951 },
+  { name: 'Mannheim', state: 'Baden-Württemberg', lat: 49.4892913, lon: 8.4673098, id: 7971 },
+  { name: 'Koblenz', state: 'Rheinland-Pfalz', lat: 50.3533278, lon: 7.5943951, id: 5419 },
   { name: 'Fulda', state: 'Hessen', lat: 50.5514658, lon: 9.6762161 },
   { name: 'Würzburg', state: 'Bayern', lat: 49.7933723, lon: 9.9309779 },
   { name: 'Karlsruhe', state: 'Baden-Württemberg', lat: 49.0068705, lon: 8.4034195 },
   { name: 'Bonn', state: 'Nordrhein-Westfalen', lat: 50.7352621, lon: 7.1024635 },
   { name: 'Kassel', state: 'Hessen', lat: 51.3157833, lon: 9.4978479 },
-  { name: 'Trier', state: 'Rheinland-Pfalz', lat: 49.7596208, lon: 6.6441878 },
+  { name: 'Trier', state: 'Rheinland-Pfalz', lat: 49.7596208, lon: 6.6441878, id: 5432 },
   { name: 'Schwäbisch Hall', state: 'Baden-Württemberg', lat: 49.1124305, lon: 9.7371246 },
-  { name: 'Fürth', state: 'Bayern', lat: 49.4772475, lon: 10.9893626 },
-  { name: 'Bamberg', state: 'Bayern', lat: 49.8916044, lon: 10.8868478 },
+  { name: 'Fürth', state: 'Bayern', lat: 49.4772475, lon: 10.9893626, id: 6803 },
+  { name: 'Bamberg', state: 'Bayern', lat: 49.8916044, lon: 10.8868478, id: 6885 },
   { name: 'Ansbach', state: 'Bayern', lat: 49.3028611, lon: 10.5722288 },
   { name: 'Göttingen', state: 'Niedersachsen', lat: 51.5328328, lon: 9.9351811 },
   { name: 'Aachen', state: 'Nordrhein-Westfalen', lat: 50.776351, lon: 6.083862 },
-  { name: 'Tübingen', state: 'Baden-Württemberg', lat: 48.5203263, lon: 9.053596 },
+  { name: 'Tübingen', state: 'Baden-Württemberg', lat: 48.5203263, lon: 9.053596, id: 9088 },
   { name: 'Ulm', state: 'Baden-Württemberg', lat: 48.3984968, lon: 9.9912458 },
   { name: 'Freiburg', state: 'Baden-Württemberg', lat: 47.9960901, lon: 7.8494005 },
   { name: 'Münster', state: 'Nordrhein-Westfalen', lat: 51.9625101, lon: 7.6251879 },
   { name: 'Bielefeld', state: 'Nordrhein-Westfalen', lat: 52.0191005, lon: 8.531007 },
   { name: 'Regensburg', state: 'Bayern', lat: 49.0195333, lon: 12.0974869 },
-  { name: 'Lörrach', state: 'Baden-Württemberg', lat: 47.6120896, lon: 7.6607218 },
+  { name: 'Lörrach', state: 'Baden-Württemberg', lat: 47.6120896, lon: 7.6607218, id: 8069 },
   { name: 'Goslar', state: 'Niedersachsen', lat: 51.9059936, lon: 10.4266284 },
   { name: 'Erlangen', state: 'Bayern', lat: 49.5977469, lon: 11.0037372 },
-  { name: 'Oldenburg', state: 'Niedersachsen', lat: 53.1389753, lon: 8.2146017 },
+  { name: 'Oldenburg', state: 'Niedersachsen', lat: 53.1389753, lon: 8.2146017, id: 3108 },
   { name: 'Landshut', state: 'Bayern', lat: 48.536217, lon: 12.1516551 },
-  { name: 'Freising', state: 'Bayern', lat: 48.4008273, lon: 11.7439565 },
+  { name: 'Freising', state: 'Bayern', lat: 48.4008273, lon: 11.7439565, id: 6259 },
   // Cities nearest the transit-pocket slivers (not candidate towns themselves).
-  { name: 'Hannover', state: 'Niedersachsen', lat: 52.3744779, lon: 9.7385532 },
+  { name: 'Hannover', state: 'Niedersachsen', lat: 52.3744779, lon: 9.7385532, id: 3155 },
   { name: 'Bremen', state: 'Bremen', lat: 53.0758196, lon: 8.8071646 },
-  { name: 'Düsseldorf', state: 'Nordrhein-Westfalen', lat: 51.2254018, lon: 6.7763137 },
+  { name: 'Düsseldorf', state: 'Nordrhein-Westfalen', lat: 51.2254018, lon: 6.7763137, id: 2068 },
   { name: 'Mönchengladbach', state: 'Nordrhein-Westfalen', lat: 51.1946532, lon: 6.4353894 },
   { name: 'Wuppertal', state: 'Nordrhein-Westfalen', lat: 51.264018, lon: 7.1780374 },
-  { name: 'Halle (Saale)', state: 'Sachsen-Anhalt', lat: 51.4825041, lon: 11.9705452 },
+  { name: 'Halle (Saale)', state: 'Sachsen-Anhalt', lat: 51.4825041, lon: 11.9705452, id: 2409 },
   { name: 'Wolfsburg', state: 'Niedersachsen', lat: 52.4205588, lon: 10.7861682 },
   { name: 'Augsburg', state: 'Bayern', lat: 48.3668041, lon: 10.8986971 },
-  { name: 'Offenburg', state: 'Baden-Württemberg', lat: 48.4716556, lon: 7.944394 },
+  { name: 'Offenburg', state: 'Baden-Württemberg', lat: 48.4716556, lon: 7.944394, id: 9027 },
   { name: 'Stuttgart', state: 'Baden-Württemberg', lat: 48.7784485, lon: 9.1800132 },
 ]
 
@@ -342,6 +352,8 @@ export interface KleinanzeigenClientOptions {
   runWindowMs?: number
   /** After a BLOCKED response, refuse to touch the network for this long. */
   blockBackoffMs?: number
+  /** Location-id lookups allowed per newest()/count() call (unknown towns are skipped this call). */
+  maxLookupsPerCall?: number
   /** Location-id / PLZ cache. `null` = memory only (tests). */
   cacheFile?: string | null
   /** Override the seed table (tests). */
@@ -359,6 +371,7 @@ export class KleinanzeigenClient implements PortalClient {
   private readonly maxRequestsPerRun: number
   private readonly runWindowMs: number
   private readonly blockBackoffMs: number
+  private readonly maxLookupsPerCall: number
   private readonly cacheFile: string | null
   private readonly locations: SeedLocation[]
 
@@ -381,6 +394,7 @@ export class KleinanzeigenClient implements PortalClient {
     this.maxRequestsPerRun = opts.maxRequestsPerRun ?? DEFAULT_MAX_REQUESTS_PER_RUN
     this.runWindowMs = opts.runWindowMs ?? DEFAULT_RUN_WINDOW_MS
     this.blockBackoffMs = opts.blockBackoffMs ?? DEFAULT_BLOCK_BACKOFF_MS
+    this.maxLookupsPerCall = opts.maxLookupsPerCall ?? DEFAULT_MAX_LOOKUPS_PER_CALL
     this.cacheFile = opts.cacheFile === undefined ? DEFAULT_CACHE_FILE : opts.cacheFile
     this.locations = opts.locations ?? SEED_LOCATIONS
   }
@@ -512,27 +526,53 @@ export class KleinanzeigenClient implements PortalClient {
   // ---- geography ----
 
   /**
-   * Plan over the seed table, resolving ids as needed. A town the site
-   * doesn't know (lookup → null) is dropped from the pool and the plan is
-   * redone, so its rings fall to the next-best town.
+   * Plan over the seed table, resolving ids as needed — at most
+   * `maxLookupsPerCall` network lookups per call. A town whose id is unknown
+   * and unaffordable this call is left out of the pool (not dropped for good)
+   * so its rings fall to the nearest town that does have an id; a town the
+   * site doesn't know (lookup → null) is dropped for LOOKUP_MISS_TTL_MS.
    */
   private async resolveQueries(rings: Ring[]): Promise<Query[]> {
     let pool = this.locations
+    let lookups = 0
     while (pool.length) {
       const out: Query[] = []
-      let dropped: SeedLocation | null = null
+      let excluded: SeedLocation | null = null
       for (const p of planQueries(rings, pool)) {
+        const known = this.knownLocationId(p.location)
+        if (known === null) {
+          excluded = p.location
+          break
+        }
+        if (known !== undefined) {
+          out.push({ location: { ...p.location, id: known }, radiusKm: p.radiusKm })
+          continue
+        }
+        if (lookups >= this.maxLookupsPerCall) {
+          excluded = p.location
+          break
+        }
+        lookups++
         const id = await this.locationId(p.location)
         if (id == null) {
-          dropped = p.location
+          excluded = p.location
           break
         }
         out.push({ location: { ...p.location, id }, radiusKm: p.radiusKm })
       }
-      if (!dropped) return out
-      pool = pool.filter((l) => l !== dropped)
+      if (!excluded) return out
+      pool = pool.filter((l) => l !== excluded)
     }
     return []
+  }
+
+  /** Seed id or cached id without touching the network: number = known, null = site has no such place, undefined = not yet looked up. */
+  private knownLocationId(loc: SeedLocation): number | null | undefined {
+    if (loc.id != null) return loc.id
+    const hit = this.loadCache().locations[loc.name]
+    if (!hit) return undefined
+    if (hit.id != null) return hit.id
+    return Date.now() - hit.at < LOOKUP_MISS_TTL_MS ? null : undefined
   }
 
   /** Seed id → cache → one paced autocomplete request. `null` = the site has no such place. */
