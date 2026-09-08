@@ -12,6 +12,7 @@
 // detected by diffing, not reported via any RPC.
 
 import type { KanbanBoard, BoardCard } from './board.js'
+import { skillHintLines, type SkillHint } from './skill-hints.js'
 
 /** Columns whose cards get dispatched when assigned. Deliberately narrow —
  *  an assigned card in Backlog is "planned for X", not "go now". */
@@ -251,8 +252,12 @@ export function buildBoardEnvelope(opts: {
    *  Every worktree lives on the same disk, so a fork starting under load must
    *  serialise its heavy steps instead of adding a parallel tsc/vitest. */
   load?: { running: number; cap: number } | null
+  /** Project skills the card plausibly touches (skill-hints.ts) — named so the
+   *  fork reads the SKILL.md before its first edit; `paths:`-scoped skills
+   *  aren't in its listing until then. */
+  skills?: readonly SkillHint[] | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills } = opts
   const inherited = forkIdentity?.context !== 'fresh'
   // Image detail lines are delivered as REAL image attachments on the wake —
   // echoing them as text renders a broken ![img] box in the transcript.
@@ -284,6 +289,7 @@ export function buildBoardEnvelope(opts: {
     card.text,
     ...(detail.length ? ['', ...detail] : []),
     '',
+    ...skillHintLines(skills ?? []),
     'This card was assigned to you on the kanban board above. Do the work, then',
     'hand it back via the CLI — Yousef reviews the card and moves it to Done; NEVER move your',
     `own card to Done. If stuck: \`con spaces board ${project ?? boardAbsPath} block "^${card.blockId}" --note "what you need"\``,

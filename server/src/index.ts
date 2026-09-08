@@ -32,7 +32,7 @@ import { handleBookmarkRoutes } from './routes/bookmarks.js'
 import { handleFeedRoutes } from './routes/feeds.js'
 import { handleNoteRoutes } from './routes/notes.js'
 import { handleBlogRoutes } from './routes/blog.js'
-import { listSpaces } from './spaces.js'
+import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
@@ -41,6 +41,7 @@ import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
 import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
 import { BoardOps } from './kanban/board-ops.js'
@@ -884,6 +885,15 @@ function parentDigestFor(parent: Session): string | null {
 const forkCostLedger = new ForkCostLedger(join(feedsConfigDir, 'fork-cost.jsonl'))
 agentCtx.forkCost = forkCostLedger
 
+/** Project skills a card plausibly touches — read from the project's repo
+ *  symlink (`projects/<slug>/repo/.claude/skills`). No repo or no skills → none. */
+function skillHintsFor(project: string | null, cardLines: readonly string[]) {
+  if (!project) return null
+  const repo = projectRepo(noteStore.vaultPath, project)
+  if (!repo) return null
+  return skillsForCard(cardLines.join('\n'), loadSkillIndex(repo))
+}
+
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit }) => {
@@ -931,6 +941,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       column,
       project,
       deployGate,
+      skills: skillHintsFor(project, card.lines),
       // A ticket-fork inherits the SOURCE role's self-identity prompt — tell
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
@@ -1100,6 +1111,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       column: t.column,
       project: projectForBoardPath(t.boardPath),
       deployGate: t.deployGate,
+      skills: skillHintsFor(projectForBoardPath(t.boardPath), t.lines),
       forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: worker.claudeSessionId ?? null, context: t.inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !t.inherit ? parentDigestFor(source) : null,
     }), images)

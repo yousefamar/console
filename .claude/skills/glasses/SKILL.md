@@ -3,6 +3,8 @@ name: glasses
 description: Even Realities G1 smart glasses in Console: native Kotlin BLE via the APK, hub dumb pipe (/glasses/*, WS RPC over /push), SPA mirror + stealth screen, HUD, notifications + msgId, teleprompter (0x09), countdown timer (0x07), the §19 primitives (0x4C/0x39/0x47), mic → STT, research log, battery/wear/case events. Use with docs/g1-protocol.md when touching server/src/glasses, src/glasses or the Android glasses code, or running `con glasses`.
 paths: server/src/glasses/**, server/src/glasses-hub.ts, src/glasses/**, cli/src/commands/glasses.ts, android/app/src/main/kotlin/io/amar/console/glasses/**, docs/g1-*.md
 user-invocable: false
+metadata:
+  card_keywords: "g1, glasses, lenses, teleprompter, head-tilt, hud, even realities, touchbar, con glasses"
 ---
 
 # G1 glasses

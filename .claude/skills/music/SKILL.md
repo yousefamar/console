@@ -3,6 +3,8 @@ name: music
 description: Console's Spotify remote control over go-librespot (hub client/auth/poller, SPA drawer, `con music` CLI) and its two load-bearing Web-API gotchas (control endpoints return 200 + a bare command id; shuffle/repeat are device-dependent via actions.disallows). Use when touching server/src/spotify, the Music drawer, or media keys.
 paths: server/src/spotify/**, server/src/routes/spotify.ts, src/components/music/**, src/store/music.ts, src/music/**, cli/src/commands/music.ts
 user-invocable: false
+metadata:
+  card_keywords: "spotify, go-librespot, librespot, music drawer, now playing, con music"
 ---
 
 # Music (Spotify via go-librespot)

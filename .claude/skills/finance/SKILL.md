@@ -3,6 +3,8 @@ name: finance
 description: Console's financial-planning subsystem (/finance/*): the finance-*.json files (categories, rules, overrides, accounts + balance ledgers, streams, budgets, scenarios, settings), the pure projection engine, CRUD + computed routes, net-worth reconstruction, scenario UX, charts. Use when touching server/src/finance, routes/finance.ts or the Money tab's Budgets/Scenarios/Categories views.
 paths: server/src/finance/**, server/src/routes/finance.ts, src/components/money/**, src/store/finance.ts
 user-invocable: false
+metadata:
+  card_keywords: "budgets, scenarios, runway, net worth, /finance, finance-, money tab, categorise, con money"
 ---
 
 # Financial planner

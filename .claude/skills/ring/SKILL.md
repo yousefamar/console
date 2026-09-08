@@ -3,6 +3,8 @@ name: ring
 description: Pebble Index 01 ring → Console: the webhook archive, the vault-note command tree (ring-schema.md), deterministic routing rules (add/log/start/message/al/echo/music/timer), enrichment via the lists watcher (movies, the groceries queue → Sainsbury's), execution feedback + miss cards. Use when touching server/src/ring or server/src/lists, editing ring-schema.md, or debugging a ring utterance (`con ring say --dry`).
 paths: server/src/ring/**, server/src/lists/**, server/src/routes/ring.ts, cli/src/commands/ring.ts
 user-invocable: false
+metadata:
+  card_keywords: "pebble, index 01, ring-schema, ring schema, ring webhook, voice command, con ring, con notes enrich, groceries queue, lists watcher"
 ---
 
 # Pebble ring voice commands

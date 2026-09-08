@@ -3,6 +3,8 @@ name: flights
 description: Console's SerpApi flight search + watchlists (server/src/flights): engines, 24 h poller + quota guard, routes, CLI, FlightsPanel/Sheet, and the flight arcs drawn on the Map tab as an agent layer. Use when touching server/src/flights, src/store/flights.ts or `con cal flights` / `con map flights`.
 paths: server/src/flights/**, server/src/routes/flights.ts, src/store/flights.ts, src/components/FlightsPanel.tsx, src/components/FlightsSheet.tsx, cli/src/commands/map-flights.ts
 user-invocable: false
+metadata:
+  card_keywords: "flight search, serpapi, flight watchlist, flight arcs, con cal flights, con map flights"
 ---
 
 # Flights

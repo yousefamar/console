@@ -3,6 +3,8 @@ name: property
 description: Console's multi-portal house-hunt poller (server/src/property): inventory + kind/tier layers, the eight portal clients (Rightmove, OnTheMarket, IS24, Sparkasse, immobiliare, wikicasa, subito, smallholdings, Kleinanzeigen), cross-portal dedupe, detail enrichment + farmland classifier, place filter, tenure, review state, backfill, nearest-airport lookup, notify layer/criteria, two-tier bar, and every portal's protocol traps. Use when changing property search/poll/alert code, adding a portal, debugging pins or pushes, or running `con map property`.
 paths: server/src/property/**, server/src/routes/property.ts, cli/src/commands/map-property.ts, src/map/property-review.ts
 user-invocable: false
+metadata:
+  card_keywords: "rightmove, onthemarket, immoscout, is24, immobiliare, wikicasa, subito, sparkasse, kleinanzeigen, house-hunt, house hunt, property search, property listing, property listings, house listings, farmland, smallholding, isochrone, where-to-move, con map property"
 ---
 
 # Property search

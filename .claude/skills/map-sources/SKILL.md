@@ -3,6 +3,8 @@ name: map-sources
 description: Console's Map-tab pin sources: the geocaching.com scraper (pycaching TS port — session/cookies, search-first client, rate limits, upstream-watch cron) and the anonymous Meetup GraphQL client (fetchArea, store + pruning, MeetupSync daily refresh, calendar overlay). Use when touching server/src/geocaching or server/src/meetup, their SPA mirrors, or `con map geocaching|meetup`.
 paths: server/src/geocaching/**, server/src/meetup/**, server/src/routes/geocaching.ts, server/src/routes/meetup.ts, src/geocaching/**, src/meetup/**
 user-invocable: false
+metadata:
+  card_keywords: "geocach, pycaching, gc.com, meetup, con map geocaching, con map meetup"
 ---
 
 # Geocaching + Meetup map sources

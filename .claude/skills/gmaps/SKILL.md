@@ -3,6 +3,8 @@ name: gmaps
 description: Console's Google Maps overlay (Places API New + Routes API via the hub, key server-side): client/routes/session-token/UI layout and the Routes gotchas (TRAFFIC_AWARE is DRIVE-only, departureTime only for TRANSIT). Use when touching server/src/gmaps, the Map tab's search/directions UI, or `con map gmaps`.
 paths: server/src/gmaps/**, server/src/routes/gmaps.ts, cli/src/commands/gmaps.ts, src/store/map.ts
 user-invocable: false
+metadata:
+  card_keywords: "google maps, gmaps, places api, routes api, con map gmaps"
 ---
 
 # Google Maps overlay

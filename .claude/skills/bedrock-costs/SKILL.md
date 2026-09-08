@@ -3,6 +3,8 @@ name: bedrock-costs
 description: Console's Bedrock spend analytics (Home → Costs card): the Cost Explorer gotchas that yield all-zero charts, owner-tag attribution and its 2026-07-29 epoch, REGION_ATTRIBUTION, deen.ai's profile, ownerNames, avgPerDayUsd, CACHE_VERSION bumps, the on-disk cache. Use when touching server/src/aws-costs.ts, bedrock-profiles.ts or CostsCard.tsx, or when the Costs card looks wrong.
 paths: server/src/aws-costs.ts, server/src/bedrock-profiles.ts, src/components/home/CostsCard.tsx, server/src/__tests__/aws-costs.test.ts
 user-invocable: false
+metadata:
+  card_keywords: "costs card, cost explorer, bedrock spend, spend analytics, cost attribution, owner tag, aws-costs, con dashboard costs"
 ---
 
 # Bedrock spend analytics
