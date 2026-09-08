@@ -122,7 +122,10 @@ All opcodes are a single leading byte. Response payloads for
 | 0x27 | Wear detection      | ↔         | `[0x27, 0x00]` disables detection; event `[0x27, 0x06]`=on-head / `0x07`=off-head |
 | 0x2C | Battery query/reply | ↔         | Poll `[0x2C, 0x01]` (Android) / `[0x2C, 0x02]` (iOS); reply `[0x2C, 0x66, pct, …]` |
 | 0x34 | Serial number query | → glasses | Response: bytes [2:18] = ASCII serial |
+| 0x39 | System status query | ↔         | `[0x39, len16, 0, 0]` → `[0x39, …echo…, appId]`; appId `0` = idle screen. See §19 |
+| 0x47 | Un-pair ⚠           | → glasses | Opcode only. Glasses drop the bond + disconnect — human-only. See §19 |
 | 0x4B | Notification push   | → glasses | `[0x4B, msgId, maxSeq, seq, json...]`, 176-byte chunks |
+| 0x4C | Dismiss a card      | → glasses | `[0x4C, msgId]` — clears a 0x4B card. Ack is unconditional. See §19 |
 | 0x4E | Text / AI result    | → glasses | 191-byte chunks; see §6 |
 | 0x56 | Exit dashboard ⚠    | → glasses | Force-close dashboard while glasses awake (distinct from 0x18). **Unconfirmed:** came from string-mining `com.even.g1`'s `libapp.so`; **not** in MentraOS, EvenDemoApp, or emingenc. Full payload beyond byte[0] unknown. |
 | 0xF1 | Inbound mic audio   | ← glasses | `[0xF1, seq, 200 bytes LC3]`, **must be 202 bytes total** |
@@ -394,6 +397,10 @@ by the firmware (`4B C9 …` = valid chunk) but renders **nothing** — silent
 drop. The whitelist (`0x04`) being correct is necessary but not sufficient;
 both must be right. Console builds the envelope in `PushService.handleHubRpc`
 "notify" (APK v0.1.37+).
+
+**Clearing a card:** the push has no expiry — a card sits on the lens until
+something dismisses it. That's `0x4C` with the same `msgId`; see §19, which is
+also why the hub (not the APK) now allocates the id.
 
 ## 10. Audio — `0xF1` (inbound)
 
@@ -690,9 +697,10 @@ per-note metadata is fully mapped.
 | JS bridge        | `android/app/src/main/kotlin/.../MainActivity.kt` (`ConsoleBridge`)|
 | SPA bridge       | `src/glasses/bridge.ts`                                            |
 | Text wrapping    | `src/glasses/textLayout.ts`                                        |
-| Hub RPC          | `server/src/routes/glasses.ts`, `server/src/push/rpc.ts`           |
+| Hub RPC          | `server/src/routes/glasses.ts`, `server/src/glasses-hub.ts`        |
 | CLI              | `cli/src/commands/glasses.ts`                                      |
 | Native nav card  | §18 — `G1Protocol.Nav`/`encodeNav*`, `BleManager.nav*`, `routes/glasses.ts` `/glasses/nav/*`, `con glasses nav` |
+| Dismiss/status/un-pair | §19 — `encodeDeleteNotification`/`encodeSystemStatusQuery`/`encodeBtUnpair`, `/glasses/notify/dismiss`, `/glasses/unpair` |
 
 ## 17. Firmware-derived opcode map (FreedomCoder-dev/g1-reverse, 2026-09-07)
 
@@ -767,10 +775,10 @@ ride on** — each is a per-handler read away from a byte layout.
 
 | Op | Meaning |
 |----|---------|
-| 0x47 | **`BLE_REQ_POST_BT_UNPAIR`** — glasses forget the bond and disconnect (`will unbond current bt connection`). Programmatic un-pair for a broken bond; nothing else does this |
+| 0x47 | **`BLE_REQ_POST_BT_UNPAIR`** — glasses forget the bond and disconnect (`will unbond current bt connection`). Programmatic un-pair for a broken bond; nothing else does this. **Implemented, §19** |
 | 0x49 / 0x4A / 0x4D | write an 8-byte record via the settings store (`0x4A` carries a payload) — unnamed |
 | 0x4B | notification push (§9, `BLE_REQ_POST_NOTIFICATION_MSG`) |
-| 0x4C | **`BLE_REQ_POST_DELETE_NOTIFICATION_MSG`** — dismiss a pushed card. Console pushes cards and never clears them |
+| 0x4C | **`BLE_REQ_POST_DELETE_NOTIFICATION_MSG`** — dismiss a pushed card. **Implemented, §19** |
 | 0x4E | text display (§6) — ack `0xC9`; the render-complete follow-up is `0xF5 0xF2` |
 | 0x4F / 0x50 | multi-page AI text modes (§6 mentions `0x50`) |
 
@@ -975,3 +983,77 @@ Not built (deliberately): a route source, map rasterisation, direction
 inference from a route's manoeuvre type. The APK half ships with the next
 release cut; until then the hub route 502s with "unknown method" from an older
 app.
+
+---
+
+## 19. Small primitives — dismiss `0x4C`, system status `0x39`, un-pair `0x47`
+
+Card ^glad-vole. All three layouts are **derived from the firmware handlers**
+(§17), not from MentraOS — its reference implements none of them (`0x4B` is the
+only notification opcode it knows). **Not yet confirmed on hardware:** the APK
+was not connected while these were written, so no frame has been through the
+research log. Each is behind an explicit command, so the first real invocation
+IS the confirmation — check `con glasses research tail` afterwards.
+
+### Dismiss a pushed card — `0x4C`
+
+```
+[0x4C, msgId]        → ack [0x4C, 0xC9, …]
+```
+
+`msgId` is the same byte the card was pushed under in `0x4B` (§9) — byte[1] of
+the push packet and `ncs_notification.msg_id` in its JSON. The POST dispatcher
+copies `payload[1..]` (exactly this one byte) through to the other core and
+**always** answers `0xC9`, so an ok ack means "the request was delivered", NOT
+"a card with that id was on screen". Sent L-then-R like every other card frame.
+
+**The hub now allocates the msgId** (`GlassesHub.allocMsgId`, rolling 1..255)
+and returns it from `POST /glasses/notify` / `con glasses notify`, because the
+APK used to derive it from the wall clock and never tell anyone — which is why
+pushed cards lingered with nothing able to name them. An older APK still
+honours the old behaviour (it falls back to its own clock-derived id if the hub
+sends none), so a hub↔APK version skew degrades to "can't dismiss", not a crash.
+
+### What's on the lens — `0x39`
+
+```
+[0x39, len_lo, len_hi, 0x00, 0x00]   → [0x39, …request bytes[0..4] echoed…, appId]
+```
+
+Bytes[1..2] are a **little-endian echo of the request's own total length** (5
+for the frame above): `ble_process_get_req` compares them against the length the
+BLE layer received and answers `0xFF` instead of the app id on a mismatch. Five
+bytes is the smallest safe request because the handler echoes request bytes[0..4]
+into the reply before writing the id at byte[5].
+
+`appId` semantics from the handler's own log strings (`return system status to
+app, current running app is %d` / `… is E_ID_SCREEN_IDLE`):
+
+| Value | Meaning |
+|-------|---------|
+| `0` | idle screen (`E_ID_SCREEN_IDLE`) — nothing drawn |
+| `0xFF` | firmware has no running-app id stored (also the length-mismatch answer) |
+| other | the firmware's `E_ID_*` feature id — **we have not mapped these**, so Console reports the raw number rather than guessing |
+
+**Right arm only.** The running-app id lives in the master's connection context
+(§17 hardware facts: the right arm is master), and the glasses never push this
+value — it has to be asked for. `GET /glasses/status` fires one query per call
+(4 s budget, best-effort) and falls back to the last value in the APK snapshot
+(`GlassesState.runningApp`, cleared when the right arm drops).
+
+### Programmatic un-pair — `0x47`
+
+```
+[0x47]               → ack [0x47, 0xC9, …], then the glasses disconnect
+```
+
+Opcode only; the handler reads no payload. It acks first, then unbonds and
+disconnects (`bt_conn_disconnect_by_state(handle, 0x13)`), and only if there is
+an ANCS connection handle. **Human-only, and the CLI/route enforce that**
+(`con glasses unpair --confirm`, body `{confirm:true}`): recovery means putting
+the glasses back in the case and pairing again — there is no software undo.
+
+Order matters in `BleManager.sendBtUnpair`: send the frame, THEN clear
+`PairStore`. Clearing first would race auto-connect against a device that is
+still bonded; clearing never (the earlier `unpair()` was local-only) leaves a
+stale pair that makes auto-connect spin against glasses which now refuse us.

@@ -51,6 +51,17 @@ object GlassesController {
     fun sendNotification(msgId: Int, json: String, onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
         requireBle().sendNotification(msgId, json, onResult)
 
+    fun dismissNotification(msgId: Int, onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
+        requireBle().sendDeleteNotification(msgId, onResult)
+
+    fun querySystemStatus(onResult: ((Int?) -> Unit)? = null) =
+        requireBle().querySystemStatus(onResult)
+
+    /** Wire-level un-pair (0x47) — the glasses forget the bond. Distinct from
+     *  [unpair], which only drops OUR saved pair. Human-triggered only. */
+    fun sendBtUnpair(onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
+        requireBle().sendBtUnpair(onResult)
+
     fun setMic(enable: Boolean, onResult: ((BleManager.AckOutcome) -> Unit)? = null) =
         requireBle().setMic(enable, onResult)
 

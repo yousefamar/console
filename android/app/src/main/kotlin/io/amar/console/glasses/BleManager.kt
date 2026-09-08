@@ -328,6 +328,72 @@ class BleManager(private val app: Context) {
         }
     }
 
+    // --- Dismiss / status / un-pair — docs/g1-protocol.md §19 --------------
+
+    /**
+     * Clear a card pushed by [sendNotification] (0x4C). The firmware acks
+     * `0xC9` whether or not that msgId is on screen, so an Ok outcome means
+     * "the glasses took the request", not "a card was removed".
+     */
+    fun sendDeleteNotification(msgId: Int, onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            enqueueSequenced(
+                G1Protocol.encodeDeleteNotification(msgId),
+                expectAck = G1Protocol.OP_DELETE_NOTIFICATION,
+                onResult = onResult,
+            )
+        }
+    }
+
+    /**
+     * Ask the master (right) arm which feature owns the lens (0x39) and record
+     * it in [GlassesState]. Right-arm only: the running-app id lives in the
+     * master's connection context (the slave answers about itself).
+     */
+    fun querySystemStatus(onResult: ((Int?) -> Unit)? = null) {
+        worker.post {
+            enqueueRight(
+                WriteOp(
+                    G1Protocol.encodeSystemStatusQuery(),
+                    expectAckOpcode = G1Protocol.OP_SYSTEM_STATUS,
+                ) { outcome ->
+                    // The lenient ack parser reads an appId of 0xCA as "fail",
+                    // so take the payload from either outcome and let
+                    // parseSystemStatus decide whether it's a status reply.
+                    val payload = when (outcome) {
+                        is AckOutcome.Ok -> outcome.payload
+                        is AckOutcome.Fail -> outcome.payload
+                        else -> null
+                    }
+                    val app = payload?.let { G1Protocol.parseSystemStatus(it) }
+                    if (app != null) GlassesState.setRunningApp(app)
+                    onResult?.invoke(app)
+                },
+            )
+        }
+    }
+
+    /**
+     * Break the bond from the glasses' side (0x47), then drop our saved pair.
+     * Order matters: the firmware unbonds only when it processes the frame, so
+     * clearing [PairStore] first would race auto-connect against a device that
+     * is still bonded. Human-triggered only — recovery needs the physical case.
+     */
+    fun sendBtUnpair(onResult: ((AckOutcome) -> Unit)? = null) {
+        worker.post {
+            enqueueSequenced(
+                G1Protocol.encodeBtUnpair(),
+                expectAck = G1Protocol.OP_BT_UNPAIR,
+            ) { outcome ->
+                // Clear locally regardless of the ack: once the frame is out
+                // the bond may already be gone, and a stale PairStore entry
+                // makes auto-connect spin against a device that refuses us.
+                unpair()
+                onResult?.invoke(outcome)
+            }
+        }
+    }
+
     private fun startNavSync() {
         if (navSyncRunnable != null) return
         val r = object : Runnable {

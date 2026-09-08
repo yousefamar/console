@@ -1101,7 +1101,10 @@ class PushService : Service() {
                     // rides display_name so the card still reads "Mail"/"Chat".
                     val appId = params.optString("appIdentifier", G1Protocol.NOTIFY_APP_ID)
                     val displayName = params.optString("displayName", G1Protocol.NOTIFY_APP_NAME)
-                    val msgId = (System.currentTimeMillis() and 0xFF).toInt()
+                    // The HUB allocates the msgId (and gets it back below) so it
+                    // can dismiss this exact card later with 0x4C. Fall back to
+                    // a clock-derived id only for pre-msgId hub builds.
+                    val msgId = params.optInt("msgId", (System.currentTimeMillis() and 0xFF).toInt())
                     val tsMs = params.optLong("timestamp", System.currentTimeMillis())
                     // Firmware expects the EvenDemoApp NCS envelope — a flat
                     // object is acked (valid 0x4B chunk) but never rendered.
@@ -1117,6 +1120,33 @@ class PushService : Service() {
                         .put("display_name", displayName)
                     val payload = JSONObject().put("ncs_notification", inner)
                     GlassesController.sendNotification(msgId, payload.toString())
+                    replyRpc(id, JSONObject().put("ok", true).put("msgId", msgId))
+                }
+                "notifyDismiss" -> {
+                    val msgId = params.optInt("msgId", -1)
+                    if (msgId !in 0..255) { replyRpcError(id, "msgId 0..255 required"); return }
+                    GlassesController.dismissNotification(msgId)
+                    replyRpc(id, JSONObject().put("ok", true).put("msgId", msgId))
+                }
+                "systemStatus" -> {
+                    // Answered from the 0x39 reply, so the RPC waits for BLE.
+                    GlassesController.querySystemStatus { app ->
+                        replyRpc(
+                            id,
+                            JSONObject()
+                                .put("runningApp", app ?: JSONObject.NULL)
+                                .put(
+                                    "idle",
+                                    if (app == null) JSONObject.NULL else app == G1Protocol.SYSTEM_APP_IDLE,
+                                ),
+                        )
+                    }
+                }
+                "unpairGlasses" -> {
+                    // Destructive: the glasses drop the bond and re-pairing
+                    // needs the physical case. Hub must pass confirm.
+                    if (!params.optBoolean("confirm", false)) { replyRpcError(id, "confirm required"); return }
+                    GlassesController.sendBtUnpair()
                     replyRpc(id, JSONObject().put("ok", true))
                 }
                 "setMic" -> {

@@ -4,7 +4,9 @@
 //   POST /glasses/text     {text}         — write a line to the display
 //   POST /glasses/clear                   — blank the display (G1 "exit")
 //   POST /glasses/bmp      {bmp: b64}     — 1-bpp 576x136 BMP
-//   POST /glasses/notify   {appIdentifier, title, subtitle, message}
+//   POST /glasses/notify   {appIdentifier, title, subtitle, message} → {msgId}
+//   POST /glasses/notify/dismiss {msgId} — clear that card (0x4C)
+//   POST /glasses/unpair   {confirm:true} — glasses forget the bond (0x47)
 //   POST /glasses/mic      {active}       — start/stop mic stream
 //   POST /glasses/disconnect              — DND: drop BLE but keep pairing
 //   POST /glasses/scan     {durationMs?}  — trigger a BLE scan phone-side
@@ -97,8 +99,16 @@ export function handleGlassesRoutes(
       }
       try {
         const state = await glassesHub.status()
+        // Also ask what's on the lens (0x39) — the snapshot only carries the
+        // last known value because the glasses never push it. Best-effort: a
+        // BLE timeout must not fail the whole status call, so fall back to
+        // whatever the APK's snapshot already had.
+        let runningApp = state.runningApp ?? null
+        try {
+          runningApp = (await glassesHub.systemStatus(4_000)).runningApp
+        } catch { /* keep the cached value */ }
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(state))
+        res.end(JSON.stringify({ ...state, runningApp, runningAppLabel: describeRunningApp(runningApp) }))
       } catch (err) {
         res.writeHead(502, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: (err as Error).message }))
@@ -159,6 +169,8 @@ export function handleGlassesRoutes(
       case '/glasses/clear':      return 'clear'
       case '/glasses/bmp':        return 'bmp'
       case '/glasses/notify':     return 'notify'
+      case '/glasses/notify/dismiss': return 'notifyDismiss'
+      case '/glasses/unpair':     return 'unpair'
       case '/glasses/mic':        return 'mic'
       case '/glasses/disconnect': return 'disconnect'
       case '/glasses/scan':       return 'scan'
@@ -179,6 +191,8 @@ export function handleGlassesRoutes(
       const body = command === 'clear' || command === 'disconnect'
         ? {}
         : JSON.parse(await readBody(req) || '{}')
+      // Extra fields merged into the {ok:true} reply (e.g. the allocated msgId).
+      let extra: Record<string, unknown> = {}
       switch (command) {
         case 'text': {
           const text = String(body.text ?? '')
@@ -207,7 +221,30 @@ export function handleGlassesRoutes(
             timestamp: typeof body.timestamp === 'number' ? body.timestamp : Date.now(),
           }
           if (!n.title && !n.message) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'title or message required' })); return }
-          await glassesHub.notify(n)
+          // Returns the msgId the card was pushed under — the caller needs it
+          // to dismiss the card later.
+          extra = await glassesHub.notify(n)
+          break
+        }
+        case 'notifyDismiss': {
+          const msgId = Number(body.msgId)
+          if (!Number.isInteger(msgId) || msgId < 0 || msgId > 255) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'msgId (0..255, from the notify response) required' }))
+            return
+          }
+          await glassesHub.dismissNotification(msgId)
+          extra = { msgId }
+          break
+        }
+        case 'unpair': {
+          // Destructive and physical to undo — never on an implicit call.
+          if (body.confirm !== true) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'confirm: true required — the glasses forget the bond and re-pairing needs the case' }))
+            return
+          }
+          await glassesHub.unpairGlasses()
           break
         }
         case 'mic':
@@ -231,7 +268,7 @@ export function handleGlassesRoutes(
           break
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true }))
+      res.end(JSON.stringify({ ok: true, ...extra }))
     } catch (err) {
       res.writeHead(502, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
@@ -263,4 +300,16 @@ export function parseNavStep(body: Record<string, unknown>): GlassesNavStep | st
   }
   if (!Number.isInteger(step.x) || !Number.isInteger(step.y) || step.x! < 0 || step.x! > 488 || step.y! < 0 || step.y! > 136) return 'x must be 0..488 and y 0..136'
   return step
+}
+
+/**
+ * Human label for a `0x39` running-app id. The numeric ids are the firmware's
+ * own `E_ID_*` feature enum, which we haven't mapped beyond idle — so anything
+ * else is reported as its raw id rather than guessed at.
+ */
+export function describeRunningApp(appId: number | null): string {
+  if (appId == null) return 'unknown'
+  if (appId === 0) return 'idle'
+  if (appId === 0xFF) return 'none'
+  return `app ${appId}`
 }

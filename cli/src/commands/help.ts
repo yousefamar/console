@@ -231,17 +231,24 @@ Examples:
 con glasses — Even Realities G1 smart glasses
 
 Commands:
-  status       Connection + battery snapshot
+  status       Connection + battery snapshot, and what's on the lens right now
   text         Write a line of text to the display
   clear        Blank the display (exit current app)
   bmp          Send a 576x136 1-bpp BMP (heavier — ~400 packets)
-  notify       Push a notification card
+  notify       Push a notification card, or 'notify dismiss <msgId>' to clear one
   mic          Toggle the glasses microphone (on|off)
   disconnect   Drop BLE link but keep pairing (DND-style)
+  unpair       Glasses forget the bond (needs --confirm) — for a broken pairing
   scan         Trigger / stop a BLE scan, or dump recent observations
   research     Reverse-engineering frame log: on|off|tail [N]
   nav          The glasses' NATIVE turn-by-turn card: start | step | arrived | exit | map
                (layout primitive only — no route source yet; see docs/g1-protocol.md section 18)
+
+status also reports runningApp / runningAppLabel — the feature drawing on the
+lens (idle | app <n> | none), read live with a 0x39 query.
+
+notify prints the msgId it pushed the card under; pass that to
+'notify dismiss <msgId>' to clear it (cards otherwise linger on the lens).
 
 Glasses are owned by the phone's APK — the hub talks to it over the push
 WebSocket. If the APK isn't connected you'll get a 503 'APK not connected'.
@@ -250,8 +257,10 @@ Examples:
   con glasses status
   con glasses text "Hello from the terminal"
   con glasses notify --title 'Bus' --message '12 arrives in 3min'
+  con glasses notify dismiss 7      # clear the card pushed as msgId 7
   con glasses bmp ./logo.bmp
   con glasses mic on
+  con glasses unpair --confirm      # last resort for a broken bond
   con glasses scan start           # trigger phone-side BLE scan
   con glasses scan observations    # what names were advertising (debug)
   con glasses research tail 200    # recent frames (jq-friendly NDJSON)

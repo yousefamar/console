@@ -44,6 +44,12 @@ export interface GlassesSnapshot {
   caseCharging: boolean | null
   /** Phone battery % (0..100), injected by PushService; null if unknown. */
   phoneBattery?: number | null
+  /**
+   * Feature id currently drawn on the lens, from a `0x39` query (docs §19):
+   * 0 = idle screen, 0xFF = firmware has none stored, null = never asked.
+   * Optional — an older APK's snapshot won't carry it.
+   */
+  runningApp?: number | null
   lastError: string | null
   lastUpdatedMs: number
 }
@@ -125,6 +131,11 @@ export class GlassesHub {
    */
   private readonly scanObservations: GlassesScanObservation[] = []
   private static readonly SCAN_OBS_MAX = 200
+  /**
+   * Rolling 0x4B message id. 1..255 — the wire field is one byte, and 0 is
+   * skipped so a card id is always truthy.
+   */
+  private nextMsgId = 1
 
   constructor(
     private readonly push: PushServer,
@@ -244,6 +255,13 @@ export class GlassesHub {
     return this.push.clientCount() > 0
   }
 
+  /** Next 0x4B msgId, wrapping 1..255. */
+  allocMsgId(): number {
+    const id = this.nextMsgId
+    this.nextMsgId = (this.nextMsgId % 255) + 1
+    return id
+  }
+
   // --- RPC helpers ---------------------------------------------------------
 
   private async rpc<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<T> {
@@ -288,8 +306,38 @@ export class GlassesHub {
     await this.rpc('sendBmp', { bmp: bmpB64 }, 30_000)
   }
 
-  async notify(n: GlassesNotifyRequest): Promise<void> {
-    await this.rpc('notify', { ...n })
+  /**
+   * Push a card and return the `msgId` it was pushed under. The hub allocates
+   * the id (rather than the APK inventing one from the wall clock) precisely so
+   * the caller can dismiss this card later with [dismissNotification] — a
+   * pushed card otherwise lingers on the lens with nothing able to name it.
+   */
+  async notify(n: GlassesNotifyRequest): Promise<{ msgId: number }> {
+    const msgId = this.allocMsgId()
+    await this.rpc('notify', { ...n, msgId })
+    return { msgId }
+  }
+
+  /**
+   * Clear a card pushed by [notify] (0x4C). The firmware acks unconditionally,
+   * so this resolving does NOT prove a card with that id was on screen.
+   */
+  async dismissNotification(msgId: number): Promise<void> {
+    await this.rpc('notifyDismiss', { msgId })
+  }
+
+  /** What's on the lens right now (0x39). Costs a BLE round trip. */
+  async systemStatus(timeoutMs = 5_000): Promise<{ runningApp: number | null; idle: boolean | null }> {
+    return await this.rpc('systemStatus', {}, timeoutMs)
+  }
+
+  /**
+   * Make the glasses forget the bond (0x47) and drop the phone's saved pair.
+   * HUMAN-ONLY — recovery needs the physical case, so the route requires an
+   * explicit confirm and the CLI a `--confirm` flag.
+   */
+  async unpairGlasses(): Promise<void> {
+    await this.rpc('unpairGlasses', { confirm: true })
   }
 
   async setMic(active: boolean): Promise<void> {

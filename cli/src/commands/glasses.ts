@@ -18,6 +18,7 @@ export async function glasses(verb: string | undefined, args: string[], flags: G
     case 'notify': return glassesNotify(args, flags)
     case 'mic': return glassesMic(args, flags)
     case 'disconnect': return glassesDisconnect(flags)
+    case 'unpair': return glassesUnpair(args, flags)
     case 'scan': return glassesScan(args, flags)
     case 'research': return glassesResearch(args, flags)
     case 'hud': return glassesHud(args, flags)
@@ -66,7 +67,19 @@ async function glassesBmp(args: string[], flags: GlobalFlags): Promise<void> {
   output(data, flags)
 }
 
+// con glasses notify --title … [--message …]   — push a card, prints its msgId
+// con glasses notify dismiss <msgId>            — clear that card (0x4C)
 async function glassesNotify(args: string[], flags: GlobalFlags): Promise<void> {
+  const positional = args.filter((a) => !a.startsWith('--'))
+  if (positional[0] === 'dismiss') {
+    const msgId = Number(positional[1] ?? parseFlags(args).msgId)
+    if (!Number.isInteger(msgId) || msgId < 0 || msgId > 255) {
+      exitWithError('USAGE', 'Usage: con glasses notify dismiss <msgId>  (the msgId printed when the card was pushed)', flags)
+    }
+    const data = await hubFetch('/glasses/notify/dismiss', { method: 'POST', body: { msgId } })
+    output(data, flags)
+    return
+  }
   const opts = parseFlags(args)
   if (!opts.title && !opts.message) {
     exitWithError('USAGE', 'Usage: con glasses notify --title "<t>" [--subtitle "<s>"] [--message "<m>"] [--app com.example]', flags)
@@ -96,6 +109,17 @@ async function glassesMic(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function glassesDisconnect(flags: GlobalFlags): Promise<void> {
   const data = await hubFetch('/glasses/disconnect', { method: 'POST' })
+  output(data, flags)
+}
+
+// con glasses unpair --confirm  — 0x47: the GLASSES forget the bond.
+// Not the same as `disconnect` (which keeps the pairing). Recovery means
+// putting the glasses in the case and pairing again, so it's confirm-gated.
+async function glassesUnpair(args: string[], flags: GlobalFlags): Promise<void> {
+  if (parseFlags(args).confirm !== 'true') {
+    exitWithError('USAGE', 'Usage: con glasses unpair --confirm  (the glasses forget the bond; re-pairing needs the case)', flags)
+  }
+  const data = await hubFetch('/glasses/unpair', { method: 'POST', body: { confirm: true } })
   output(data, flags)
 }
 

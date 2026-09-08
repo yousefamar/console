@@ -38,7 +38,11 @@ object G1Protocol {
     const val OP_HEARTBEAT: Byte = 0x25
     const val OP_WEAR_DETECT: Byte = 0x27
     const val OP_BATTERY: Byte = 0x2C
+    /** GET: which feature is drawing on the lens right now (§19). */
+    const val OP_SYSTEM_STATUS: Byte = 0x39
     const val OP_SERIAL_NUMBER: Byte = 0x34
+    /** POST `BLE_REQ_POST_BT_UNPAIR` — glasses forget the bond (§19). */
+    const val OP_BT_UNPAIR: Byte = 0x47
     /**
      * Unsolicited "QuickNote database snapshot" frame. Fires on long-press of
      * the right temple (default touchbar mapping) after the user records a
@@ -56,6 +60,8 @@ object G1Protocol {
      */
     const val OP_QUICKNOTE_SNAPSHOT: Byte = 0x21
     const val OP_NOTIFICATION: Byte = 0x4B
+    /** POST `BLE_REQ_POST_DELETE_NOTIFICATION_MSG` — dismiss a card (§19). */
+    const val OP_DELETE_NOTIFICATION: Byte = 0x4C
     const val OP_TEXT: Byte = 0x4E
     const val OP_AUDIO_FRAME: Byte = 0xF1.toByte()
     const val OP_TOUCHBAR: Byte = 0xF5.toByte()
@@ -639,4 +645,56 @@ object G1Protocol {
             else -> null
         }
     }
+
+    // --- Small firmware primitives (0x4C / 0x39 / 0x47) ---------------------
+    // All three are firmware-derived (g1-reverse decompilation, docs §19), not
+    // taken from MentraOS — its reference implements none of them.
+
+    /**
+     * Dismiss a card previously pushed with [OP_NOTIFICATION], by its msgId.
+     *
+     * `[0x4C, msgId]`. The firmware's POST dispatcher forwards `payload[1..]`
+     * to the other core — exactly the one msgId byte — and replies `0xC9`
+     * **unconditionally**, so an ok ack means "delivered", NOT "a card with
+     * that id existed".
+     */
+    fun encodeDeleteNotification(msgId: Int): ByteArray =
+        byteArrayOf(OP_DELETE_NOTIFICATION, (msgId and 0xFF).toByte())
+
+    /** Reply byte[5] of a [OP_SYSTEM_STATUS] query when the lens is idle. */
+    const val SYSTEM_APP_IDLE = 0
+
+    /** Reply byte[5] when the firmware has no running-app id stored. */
+    const val SYSTEM_APP_NONE = 0xFF
+
+    /**
+     * Ask which feature owns the lens.
+     *
+     * `[0x39, len_lo, len_hi, 0x00, 0x00]` — **bytes[1..2] are a little-endian
+     * echo of this frame's own total length**, which the handler compares
+     * against the length the BLE layer received; a mismatch makes it answer
+     * `0xFF` instead of the app id. Five bytes is the smallest safe frame
+     * because the handler echoes request bytes[0..4] into the reply.
+     */
+    fun encodeSystemStatusQuery(): ByteArray =
+        byteArrayOf(OP_SYSTEM_STATUS, 0x05, 0x00, 0x00, 0x00)
+
+    /**
+     * Parse a [OP_SYSTEM_STATUS] reply — `[0x39, …5-byte echo…, appId]`.
+     * Returns the app id ([SYSTEM_APP_IDLE] = idle screen,
+     * [SYSTEM_APP_NONE] = none stored / length mismatch), or null if the frame
+     * isn't a status reply.
+     */
+    fun parseSystemStatus(data: ByteArray): Int? {
+        if (data.size < 6 || data[0] != OP_SYSTEM_STATUS) return null
+        return data[5].toInt() and 0xFF
+    }
+
+    /**
+     * Tell the glasses to forget this bond and disconnect (firmware logs
+     * `will unbond current bt connection`, then disconnects with reason 0x13).
+     * Opcode only — the handler reads no payload. HUMAN-ONLY: re-pairing needs
+     * physical access to the case.
+     */
+    fun encodeBtUnpair(): ByteArray = byteArrayOf(OP_BT_UNPAIR)
 }

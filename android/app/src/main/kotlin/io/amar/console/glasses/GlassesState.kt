@@ -59,6 +59,14 @@ object GlassesState {
     @Volatile var caseCharging: Boolean? = null
         private set
 
+    /**
+     * Which feature is drawing on the lens, from a `0x39` query (see
+     * `docs/g1-protocol.md` §19): `0` = idle screen, `0xFF` = the firmware has
+     * no id stored. Null until something asks — the glasses never push this.
+     */
+    @Volatile var runningApp: Int? = null
+        private set
+
     @Volatile var serialLeft: String? = null
         private set
     @Volatile var serialRight: String? = null
@@ -99,6 +107,8 @@ object GlassesState {
                     batteryRight = null
                     chargingRight = null
                     serialRight = null
+                    // Master-arm fact: unknowable once it's gone.
+                    runningApp = null
                 }
             }
         }
@@ -147,6 +157,12 @@ object GlassesState {
     }
 
     @Synchronized
+    internal fun setRunningApp(appId: Int?) {
+        runningApp = appId
+        touch()
+    }
+
+    @Synchronized
     internal fun setWorn(value: Boolean?) {
         worn = value
         touch()
@@ -181,6 +197,7 @@ object GlassesState {
         chargingRight = null
         serialLeft = null
         serialRight = null
+        runningApp = null
         worn = null
         caseBattery = null
         caseCharging = null
@@ -219,6 +236,7 @@ object GlassesState {
         root.put("channel", channel ?: JSONObject.NULL)
         root.put("micActive", micActive)
         root.put("worn", worn ?: JSONObject.NULL)
+        root.put("runningApp", runningApp ?: JSONObject.NULL)
         root.put("caseBattery", caseBattery ?: JSONObject.NULL)
         root.put("caseCharging", caseCharging ?: JSONObject.NULL)
         root.put("lastError", lastError ?: JSONObject.NULL)

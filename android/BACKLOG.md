@@ -81,6 +81,21 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **G1: dismiss a card, read what's on the lens, un-pair** (^glad-vole):
+  `G1Protocol.encodeDeleteNotification` (0x4C `[op, msgId]`),
+  `encodeSystemStatusQuery`/`parseSystemStatus` (0x39 — bytes[1..2] echo the
+  frame's own length or the firmware answers 0xFF; reply byte[5] is the app id,
+  0 = idle), `encodeBtUnpair` (0x47). `BleManager.sendDeleteNotification`
+  (L→R like a push), `querySystemStatus` (RIGHT arm only — the running-app id
+  lives in the master's context; result lands in `GlassesState.runningApp`,
+  cleared when the right arm drops), `sendBtUnpair` (frame first, THEN clear
+  PairStore, or auto-connect races a still-bonded device). PushService RPCs
+  `notifyDismiss` / `systemStatus` / `unpairGlasses` (the last needs
+  `confirm`); `notify` now takes the hub's `msgId` and echoes it back, so the
+  card it pushed can actually be dismissed. Layouts from the firmware
+  decompile — no frame has been on the wire yet (docs/g1-protocol.md §19).
+  Tests: `G1ProtocolPrimitivesTest` (7, byte-exact).
+
 - **G1: native navigation card encoder + keep-alive** (^deft-lynx): `G1Protocol.Nav`
   + `encodeNavStart/Step/Sync/Exit/Arrived`, `encodeNavMapChunks` (two 1-bpp
   planes, RLE'd unless that would not shrink), `parseNavAck` (0x0A acks carry no
