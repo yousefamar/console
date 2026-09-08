@@ -785,19 +785,35 @@ const text = (el: Element | null | undefined): string => (el?.textContent ?? '')
 const PRICE_P_RE = /^(?:[\d.]+\s*€(?:\s*VB)?|VB|Zu verschenken|Preis auf Anfrage)$/i
 /** "180 m² · 7 Zi.", "180 m²", "4 Zi." */
 const FACTS_P_RE = /^(?:[\d.,]+\s*m²(?:\s*·\s*[\d.,]+\s*Zi\.?)?|[\d.,]+\s*Zi\.?)$/
+/** "(9 km)", "(ca. 10 km)" — distance from the search centre. */
+const DIST_SPAN_RE = /^\(\s*(?:ca\.\s*)?([\d.,]+)\s*km\s*\)$/i
+
+/** The SRP pads a thin result set with out-of-radius cards under this heading (real page, 2026-09-08: 5 in-radius rows + 10 padding). */
+const OTHER_PLACES_RE = /^Weitere Ergebnisse in anderen Orten/i
 
 /**
  * Parse an SRP. Classes are hashed, so this walks structure: every
  * `article[data-adid]`, the first `<span>` under it is "PLZ Ort", the next
  * "(N km)", `h3 a` the title, the `<p>`s are teaser / facts / price, the last
  * `<span>` the seller. Duplicated TOP articles are deduped on data-adid.
+ * Cards after the "Weitere Ergebnisse in anderen Orten" heading are outside
+ * the radius (the site pads thin pages with them) and are skipped — the
+ * count line ("1 - 5 von 5 Ergebnissen") only counts the in-radius ones.
  */
 export function parseSearchPage(html: string): ParsedSearchPage {
   const { document } = parseHTML(html)
-  const total = parseGermanInt(/([\d.]+)\s*Ergebnis/i.exec(document.body?.textContent ?? '')?.[1]) ?? 0
+  const bodyText = (document.body?.textContent ?? '').replace(/\s+/g, ' ')
+  const total = parseGermanInt(/von\s+([\d.]+)\s+Ergebnis/i.exec(bodyText)?.[1] ?? /([\d.]+)\s*Ergebnis/i.exec(bodyText)?.[1]) ?? 0
   const rows: RawRow[] = []
   const seen = new Set<string>()
-  for (const article of document.querySelectorAll('article[data-adid]')) {
+  let otherPlaces = false
+  for (const node of document.querySelectorAll('article[data-adid], h2, h3')) {
+    if (node.tagName !== 'ARTICLE') {
+      if (OTHER_PLACES_RE.test(text(node))) otherPlaces = true
+      continue
+    }
+    if (otherPlaces) break
+    const article = node
     const adid = article.getAttribute('data-adid') ?? ''
     if (!adid || seen.has(adid)) continue
     seen.add(adid)
@@ -811,7 +827,8 @@ export function parseSearchPage(html: string): ParsedSearchPage {
       row.address = addr
       row.plz = addr.slice(0, 5)
     }
-    const dist = spans.map((s) => /^\(\s*([\d.,]+)\s*km\s*\)$/.exec(s)).find(Boolean)
+    // "(9 km)" or "(ca. 10 km)" on the real page.
+    const dist = spans.map((s) => DIST_SPAN_RE.exec(s)).find(Boolean)
     if (dist) row.distanceKm = parseFloat(dist[1]!.replace(',', '.'))
     const ps = [...article.querySelectorAll('p')].map(text).filter(Boolean)
     // The price and facts <p>s are short and nothing but the figure — a teaser
@@ -819,7 +836,7 @@ export function parseSearchPage(html: string): ParsedSearchPage {
     row.priceText = ps.find((p) => PRICE_P_RE.test(p)) ?? spans.find((s) => PRICE_P_RE.test(s))
     row.factsText = ps.find((p) => FACTS_P_RE.test(p)) ?? spans.find((s) => FACTS_P_RE.test(s))
     row.summary = ps.find((p) => p !== row.priceText && p !== row.factsText && p.length > 20 && !/^\d{5}\s/.test(p)) ?? undefined
-    const seller = spans.filter((s) => s !== addr && !/^\(\s*[\d.,]+\s*km\s*\)$/.test(s) && !PRICE_P_RE.test(s) && !FACTS_P_RE.test(s) && !/^(Heute|Gestern|\d{2}\.\d{2}\.\d{4})/.test(s) && !/^TOP$/i.test(s) && !/^(Anzeige|Gesuch)$/i.test(s))
+    const seller = spans.filter((s) => s !== addr && !DIST_SPAN_RE.test(s) && !PRICE_P_RE.test(s) && !FACTS_P_RE.test(s) && !/^(Heute|Gestern|\d{2}\.\d{2}\.\d{4})/.test(s) && !/^TOP$/i.test(s) && !/^(Anzeige|Gesuch)$/i.test(s))
     row.sellerText = seller.length ? seller[seller.length - 1] : undefined
     row.dateText = spans.find((s) => /^(Heute|Gestern)\b|^\d{2}\.\d{2}\.\d{4}$/.test(s))
     row.top = spans.some((s) => /^TOP$/i.test(s)) || !!article.querySelector('[class*="topad" i], [class*="badge-top" i]')
@@ -880,7 +897,7 @@ export function parseCardDate(s: string | undefined, now = new Date()): string |
  * "Haus". Resthof/Hof/Landhaus/Fachwerkhaus are kept as their own words so the
  * hub's farmland classifier sees them.
  */
-const TYPE_RE = /\b(Resthof|Bauernhof|Bauernhaus|Landhaus|Fachwerkhaus|Einfamilienhaus|Zweifamilienhaus|Mehrfamilienhaus|Doppelhaush[äa]lfte|Doppelhaus|Reihen(?:mittel|end|eck)?haus|Bungalow|Villa|Stadthaus|Ferienhaus|Wohnhaus|Hofstelle|Hofreite|Anwesen|Gehöft|Aussiedlerhof|Forsthaus|Mühle|Ferienhaus|Holzhaus|Fertighaus|Haus)\b/i
+const TYPE_RE = /\b(Resthof|Bauernhof|Bauernhaus|Landhaus|Fachwerkhaus|Einfamilienhaus|Zweifamilienhaus|Mehrfamilienhaus|Doppelhaush[äa]lfte|Doppelhaus|Reihen(?:mittel|end|eck)?haus|Bungalow|Villa|Stadthaus|Ferienhaus|Wohnhaus|Hofstelle|Hofreite|Vierseit(?:en)?hof|Dreiseit(?:en)?hof|Anwesen|Gehöft|Aussiedlerhof|Forsthaus|Mühle|Holzhaus|Fertighaus|Haus)\b/i
 
 export function typeFromTitle(title: string | undefined): string | undefined {
   if (!title) return undefined
@@ -945,16 +962,23 @@ export interface ParsedAd {
 }
 
 /**
- * Ad page → fields. `null` when the page says the ad is gone ("Gelöscht •"
- * title prefix or `data-soldlabel="Nicht mehr verfügbar"`). Everything else
- * per the api note: `og:latitude`/`og:longitude` (PLZ centroid),
- * `.addetailslist--detail` label/value pairs, `#viewad-locality`,
- * `#viewad-extra-info` (DD.MM.YYYY), `#viewad-price`, `.userprofile-vip`.
+ * Ad page → fields. `null` when the page says the ad is gone: a "Gelöscht •"
+ * title prefix, or the sold/removed badge rendered as visible text. NB the
+ * `<h1 id="viewad-title">` carries `data-soldlabel="Nicht mehr verfügbar"` on
+ * EVERY ad, live ones included (real page, 2026-09-08) — it is the label the
+ * page would show, not a state, so it must never be read as "gone".
+ * Everything else per the api note: `og:latitude`/`og:longitude` (PLZ
+ * centroid), `.addetailslist--detail` label/value pairs, `.checktag` feature
+ * chips, `#viewad-locality`, `#viewad-extra-info` (DD.MM.YYYY),
+ * `#viewad-price`, `.userprofile-vip`.
  */
 export function parseAdPage(html: string): ParsedAd | null {
   const { document } = parseHTML(html)
   const title = text(document.querySelector('#viewad-title'))
-  if (/^Gelöscht\s*•/i.test(title) || document.querySelector('[data-soldlabel*="Nicht mehr verf" i]')) return null
+  if (/^Gelöscht\s*•/i.test(title)) return null
+  // A badge is a short element whose whole text IS the label — never a prose match ("wird verkauft").
+  const soldBadge = [...document.querySelectorAll('#viewad-title ~ *, [class*="soldlabel" i], [class*="badge" i]')].some((el) => el.children.length === 0 && /^(Nicht mehr verfügbar|Verkauft|Gelöscht)$/i.test(text(el)))
+  if (soldBadge) return null
   const meta = (p: string) => document.querySelector(`meta[property="${p}"]`)?.getAttribute('content') ?? undefined
   const lat = parseFloat(meta('og:latitude') ?? '')
   const lon = parseFloat(meta('og:longitude') ?? '')
@@ -982,6 +1006,14 @@ export function parseAdPage(html: string): ParsedAd | null {
     else if (!value) out.features.push(label)
     else out.features.push(`${label}: ${value}`)
   }
+  // Feature chips ("Keller", "Garage/Stellplatz", "Garten"…) are separate
+  // `.checktag` elements, not detail rows. Their container repeats them as one
+  // joined string, so keep only the leaf chips.
+  for (const tag of document.querySelectorAll('.checktag')) {
+    if (tag.querySelector('.checktag')) continue
+    const t = text(tag)
+    if (t && !out.features.includes(t)) out.features.push(t)
+  }
   const extra = text(document.querySelector('#viewad-extra-info'))
   const date = /(\d{2})\.(\d{2})\.(\d{4})/.exec(extra)
   if (date) out.listedAt = new Date(Date.UTC(Number(date[3]), Number(date[2]) - 1, Number(date[1]))).toISOString()
@@ -991,15 +1023,17 @@ export function parseAdPage(html: string): ParsedAd | null {
     for (const br of desc.querySelectorAll('br')) br.replaceWith('\n')
     out.description = (desc.textContent ?? '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() || undefined
   }
-  const profile = document.querySelector('.userprofile-vip')
-  if (profile) {
-    const t = text(profile)
+  // `.userprofile-vip` is a leaf span holding the name ("Sparkasse Marburg-
+  // Biedenkopf - Hendrik Hinspeter"); the account type sits in a sibling
+  // `.userprofile-vip-details` ("Gewerblicher Nutzer" / "Privater Nutzer").
+  const profileName = text(document.querySelector('.userprofile-vip'))
+  const profileKind = [...document.querySelectorAll('.userprofile-vip-details, .userprofile-vip-details-text')].map(text).join(' ')
+  if (/Privater Nutzer/i.test(profileKind) || /Privater Nutzer/i.test(profileName)) {
     // Private sellers stay anonymous — their name is a person, not a brand.
-    if (/Privater Nutzer|Privat/i.test(t)) out.agent = 'privat'
-    else {
-      const name = text(profile.querySelector('.userprofile-vip-name, a, span'))
-      if (name) out.agent = name
-    }
+    out.agent = 'privat'
+  } else if (profileName) {
+    // Drop the " - <employee>" suffix dealers append; keep the business.
+    out.agent = profileName.split(' - ')[0]!.trim() || profileName
   }
   return out
 }

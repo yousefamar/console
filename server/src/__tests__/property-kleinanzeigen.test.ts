@@ -22,6 +22,7 @@ import {
   slugify,
   typeFromTitle,
   type SeedLocation,
+  type RawRow,
 } from '../property/kleinanzeigen.js'
 import type { Ring } from '../property/geo.js'
 import type { Criteria, Listing } from '../property/types.js'
@@ -311,12 +312,19 @@ describe('pagination', () => {
   })
 
   it('a page that adds nothing new ends the walk (the portal repeating itself), as does an empty page', async () => {
-    const repeat = stub(() => listHtml)
+    // Claims 500 results but every page is the same 25 rows → page 2 adds nothing.
+    const repeat = stub(() => srp(500, 1, 25))
     const r = await repeat.client.newest([marburgRing], criteria, Number.POSITIVE_INFINITY)
-    // Fixture claims 47 results but every page is the same 4 rows → page 2 adds nothing.
     expect(repeat.calls).toHaveLength(2)
-    expect(r.listings).toHaveLength(4)
+    expect(r.listings).toHaveLength(25)
     expect(r.truncated).toBe(false)
+    // The real page: 5 in-radius rows, total 5 → one request, complete.
+    const real = stub(() => listHtml)
+    const r3 = await real.client.newest([marburgRing], criteria, Number.POSITIVE_INFINITY)
+    expect(real.calls).toHaveLength(1)
+    expect(r3.listings).toHaveLength(5)
+    expect(r3.total).toBe(5)
+    expect(r3.truncated).toBe(false)
     const empty = stub((url) => (pageOf(url) === 1 ? srp(500, 1, 25) : srp(500, 1, 0)))
     const r2 = await empty.client.newest([marburgRing], criteria, Number.POSITIVE_INFINITY)
     expect(empty.calls).toHaveLength(2)
@@ -342,28 +350,35 @@ describe('pagination', () => {
   })
 })
 
-describe('parseSearchPage over the fixture', () => {
+describe('parseSearchPage over the fixture (real page, Marburg r10, 2026-09-08)', () => {
   const page = parseSearchPage(listHtml)
 
-  it('reads the total, dedupes the TOP duplicate on data-adid, sees the next link', () => {
-    expect(page.total).toBe(47)
-    expect(page.rows.map((r) => r.adid)).toEqual(['3500056603', '3498812204', '3501100777', '3497003310'])
-    expect(page.hasNext).toBe(true)
+  it('reads the in-radius total from "1 - 5 von 5 Ergebnissen" and stops at the "Weitere Ergebnisse in anderen Orten" padding', () => {
+    expect(page.total).toBe(5)
+    // The page carries 15 <article>s; the last 10 are out-of-radius padding.
+    expect(page.rows).toHaveLength(5)
+    expect(page.rows.map((r) => r.adid)).toEqual(['3377018987', '3449390083', '2435726948', '3478715051', '3446753326'])
+    expect(page.hasNext).toBe(false)
   })
 
   it('splits the card into address / distance / title / teaser / facts / price / seller', () => {
-    const r = page.rows[0]!
-    expect(r.href).toBe('/s-anzeige/einfamilienhaus-mit-grossem-garten-in-rabenau/3500056603-208-4825')
-    expect(r.address).toBe('35466 Rabenau')
-    expect(r.plz).toBe('35466')
-    expect(r.distanceKm).toBe(17)
-    expect(r.title).toBe('Einfamilienhaus mit großem Garten in Rabenau')
-    expect(r.summary).toMatch(/^Freistehendes Haus aus 1962/)
-    expect(r.factsText).toBe('180 m² · 7 Zi.')
-    expect(r.priceText).toBe('199.999 € VB')
-    expect(r.sellerText).toBe('Von Privat')
-    expect(r.top).toBe(true)
+    const r = page.rows[1]!
+    expect(r.href).toBe('/s-anzeige/ruhiges-familienparadies-auf-grossem-grundstueck-/3449390083-208-4828')
+    expect(r.address).toBe('35096 Weimar (Lahn)')
+    expect(r.plz).toBe('35096')
+    expect(r.distanceKm).toBe(9)
+    expect(r.title).toBe('Ruhiges Familienparadies auf großem Grundstück!')
+    expect(r.summary).toMatch(/^In Weimar \(Lahn\) - Niederwalgern bieten wir/)
+    expect(r.factsText).toBe('135 m² · 6 Zi.')
+    expect(r.priceText).toBe('295.000 €')
+    expect(r.sellerText).toBe('Sparkasse Marburg-Biedenkopf')
+    expect(r.top).toBe(false)
     expect(r.image).toMatch(/^https:\/\/img\.kleinanzeigen\.de\//)
+  })
+
+  it('"(ca. 10 km)" distances and "VB" prices parse too', () => {
+    expect(page.rows[0]!.distanceKm).toBe(10)
+    expect(page.rows[2]!.priceText).toBe('285.000 € VB')
   })
 })
 
@@ -371,7 +386,7 @@ describe('normalise() over the fixture', () => {
   const rows = parseSearchPage(listHtml).rows.map((r) => normalise(r)).filter((l): l is Listing => l !== null)
 
   it('every row is a PLZ-area listing without coordinates until detail() runs', () => {
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(5)
     for (const l of rows) {
       expect(l.portal).toBe('kleinanzeigen')
       expect(l.currency).toBe('EUR')
@@ -379,33 +394,35 @@ describe('normalise() over the fixture', () => {
       expect(l.lat).toBeUndefined()
       expect(l.plotArea).toBeUndefined()
       expect(l.url).toMatch(/^https:\/\/www\.kleinanzeigen\.de\/s-anzeige\//)
+      // Cards carry no date in this layout.
+      expect(l.listedAt).toBeUndefined()
     }
   })
 
-  it('private Einfamilienhaus: VB price kept, Zimmer − 1 bedrooms, floor area, anonymous seller', () => {
-    const l = rows[0]!
-    expect(l.id).toBe('3500056603')
-    expect(l.price).toBe(199999)
-    expect(l.bedrooms).toBe(6)
-    expect(l.floorArea).toBe(180)
-    expect(l.propertyType).toBe('Einfamilienhaus')
-    expect(l.address).toBe('35466 Rabenau')
-    expect(l.agent).toBe('privat')
-    expect(l.summary).toBe('Einfamilienhaus mit großem Garten in Rabenau — Freistehendes Haus aus 1962, teilsaniert, mit Scheune und 1.250 m² Grundstück am Ortsrand. Ölheizung, neue Fenster 2019, Keller...')
-    expect(l.listedAt).toBeUndefined()
-  })
-
-  it('dealer row keeps the shop name and the Bauernhaus type', () => {
-    const l = rows[1]!
-    expect(l.agent).toBe('Sparkasse Marburg-Biedenkopf')
-    expect(l.propertyType).toBe('Bauernhaus')
-    expect(l.price).toBe(288000)
-    expect(l.bedrooms).toBe(8)
-    expect(l.floorArea).toBe(300)
-  })
-
-  it('"VB" alone is no price; missing facts stay undefined', () => {
+  it('dealer row: VB price kept, Zimmer − 1 bedrooms, floor area, shop name', () => {
     const l = rows[2]!
+    expect(l.id).toBe('2435726948')
+    expect(l.price).toBe(285000)
+    expect(l.bedrooms).toBe(6)
+    expect(l.floorArea).toBe(220)
+    expect(l.propertyType).toBe('Vierseitenhof')
+    expect(l.address).toBe('35274 Kirchhain')
+    expect(l.agent).toBe('Schomann Immobilienvermittlung')
+    expect(l.summary).toBe('Vierseitenhof (Einzelkulturdenkmal) in Kirchhain Großseelheim — Hilfreiche Informationen zum Denkmalschutz finden Sie...')
+  })
+
+  it('type from the title where there is one; undefined when the title has no type word', () => {
+    expect(rows[4]!.propertyType).toBe('Einfamilienhaus')
+    expect(rows[3]!.propertyType).toBe('Zweifamilienhaus')
+    expect(rows[0]!.propertyType).toBeUndefined()
+    expect(rows[0]!.agent).toBe('Sparkasse Marburg-Biedenkopf')
+  })
+
+  const syntheticRow = (over: Partial<RawRow>): RawRow => ({ adid: '1', href: '/s-anzeige/x/1-208-4825', title: 'Haus', address: '35037 Marburg', plz: '35037', ...over })
+
+  it('private seller → "privat"; "VB" alone is no price; missing facts stay undefined', () => {
+    const l = normalise(syntheticRow({ sellerText: 'Von Privat', priceText: 'VB' }))!
+    expect(l.agent).toBe('privat')
     expect(l.price).toBeUndefined()
     expect(l.bedrooms).toBeUndefined()
     expect(l.floorArea).toBeUndefined()
@@ -413,7 +430,7 @@ describe('normalise() over the fixture', () => {
   })
 
   it('€1 placeholder and Resthof are surfaced as-is for the hub\'s own filters', () => {
-    const l = rows[3]!
+    const l = normalise(syntheticRow({ title: 'Resthof — Zwangsversteigerung', priceText: '1 €', factsText: '4 Zi.', sellerText: 'Argetra GmbH', summary: 'Zwangsversteigerung am Amtsgericht.' }))!
     expect(l.price).toBe(1)
     expect(l.propertyType).toBe('Resthof')
     expect(l.bedrooms).toBe(3)
@@ -440,17 +457,17 @@ describe('normalise() over the fixture', () => {
   })
 })
 
-describe('detail()', () => {
-  const row: Listing = { portal: 'kleinanzeigen', id: '3498812204', url: 'https://www.kleinanzeigen.de/s-anzeige/bauernhaus-mit-nebengebaeuden-und-weide/3498812204-208-4825', currency: 'EUR' }
+describe('detail() (real ad page 3377018987, 2026-09-08)', () => {
+  const row: Listing = { portal: 'kleinanzeigen', id: '3377018987', url: 'https://www.kleinanzeigen.de/s-anzeige/zwei-haeuser-zum-preis-von-einem-/3377018987-208-4826', currency: 'EUR' }
 
   it('reads the ad page: PLZ-centroid coordinates, plot, Schlafzimmer, Haustyp, date, description, features, seller', async () => {
     const { calls, client } = stub(() => adHtml)
     const d = (await client.detail(row))!
     expect(calls[0]!.url.toString()).toBe(row.url)
-    expect(d.lat).toBeCloseTo(50.898765, 6)
-    expect(d.lon).toBeCloseTo(8.723456, 6)
+    expect(d.lat).toBeCloseTo(50.898111, 5)
+    expect(d.lon).toBeCloseTo(8.675269, 5)
     expect(d.coordsPrecision).toBe('area')
-    expect(d.plotArea).toBe(4200)
+    expect(d.plotArea).toBe(867)
     expect(d.floorArea).toBe(300)
     expect(d.bedrooms).toBe(6)
     expect(d.bathrooms).toBe(3)
@@ -458,40 +475,49 @@ describe('detail()', () => {
     expect(d.price).toBe(288000)
     expect(d.listedAt).toBe('2026-09-06T00:00:00.000Z')
     expect(d.address).toBe('35083 Hessen - Wetter (Hessen)')
+    // ".userprofile-vip" reads "Sparkasse Marburg-Biedenkopf - Hendrik Hinspeter": business only.
     expect(d.agent).toBe('Sparkasse Marburg-Biedenkopf')
-    expect(d.keyFeatures).toEqual(['Etagen: 2', 'Baujahr: 1900', 'Provision: Mit Provision', 'Keller', 'Garage/Stellplatz', 'Garten'])
-    expect(d.description).toContain('davon ca. 3.000 m² Weide.\nSanierungsbedarf')
+    expect(d.keyFeatures).toEqual(['Etagen: 2', 'Baujahr: 2000', 'Provision: Mit Provision', 'Keller', 'Garage/Stellplatz'])
+    expect(d.description).toMatch(/^In Wetter-Oberndorf können wir Ihnen dieses interessante Zweifamilienhaus zum Kauf anbieten\.\n\nDie Immobilie/)
     expect(d.detailAt).toBeTypeOf('number')
   })
 
-  it('gone ads → null (404, "Gelöscht •", sold label); a reserved ad is still a listing', async () => {
+  it('a live ad is NOT "gone" despite data-soldlabel on its <h1> — that attribute is on every ad', () => {
+    expect(adHtml).toMatch(/<h1[^>]*id="viewad-title"[^>]*data-soldlabel="Nicht mehr verfügbar"/)
+    expect(parseAdPage(adHtml)).not.toBeNull()
+    expect(parseAdPage(adHtml)!.reserved).toBe(false)
+  })
+
+  it('gone ads → null (404, "Gelöscht •" title, a rendered sold badge); a reserved ad is still a listing', async () => {
     const notFound = stub(() => new Response('', { status: 404 }))
     expect(await notFound.client.detail(row)).toBeNull()
-    const deleted = adHtml.replace('Reserviert • Bauernhaus', 'Gelöscht • Bauernhaus')
-    expect(parseAdPage(deleted)).toBeNull()
-    expect(parseAdPage(adHtml.replace('<h1 id="viewad-title"', '<div data-soldlabel="Nicht mehr verfügbar"></div><h1 id="viewad-title"'))).toBeNull()
-    expect(parseAdPage(adHtml)!.reserved).toBe(true)
+    const retitle = (prefix: string) => adHtml.replace(/(<h1[^>]*id="viewad-title"[^>]*>)/, `$1${prefix} • `)
+    expect(parseAdPage(retitle('Gelöscht'))).toBeNull()
+    expect(parseAdPage(retitle('Reserviert'))!.reserved).toBe(true)
+    const badged = adHtml.replace(/(<h1[^>]*id="viewad-title"[^>]*>[\s\S]*?<\/h1>)/, '$1<span class="badge-soldlabel">Nicht mehr verfügbar</span>')
+    expect(parseAdPage(badged)).toBeNull()
   })
 
   it('a private seller stays "privat"; Zimmer − 1 when there is no Schlafzimmer line', () => {
     const priv = adHtml
-      .replace(/<aside class="userprofile-vip">[\s\S]*?<\/aside>/, '<aside class="userprofile-vip"><span class="userprofile-vip-name">Max M.</span><span>Privater Nutzer</span></aside>')
-      .replace(/<li class="addetailslist--detail">Schlafzimmer.*?<\/li>\n/, '')
+      .replace(/(<span[^>]*userprofile-vip-details-text[^>]*>)Gewerblicher Nutzer/, '$1Privater Nutzer')
+      .replace(/<li class="addetailslist--detail">\s*Schlafzimmer[\s\S]*?<\/li>/, '')
     const d = parseAdPage(priv)!
     expect(d.agent).toBe('privat')
     expect(d.bedrooms).toBeUndefined()
     expect(d.rooms).toBe(9)
+    expect(parseAdPage(adHtml)!.bedrooms).toBe(6)
   })
 
   it('learns the PLZ centroid and applies it to later cards with the same PLZ', async () => {
     const { client } = stub(() => adHtml)
     await client.detail(row)
-    const card = parseSearchPage(listHtml).rows.find((r) => r.plz === '35083')!
-    const l = client.toListing(card)!
-    expect(l.lat).toBeCloseTo(50.8988, 4)
-    expect(l.lon).toBeCloseTo(8.7235, 4)
+    const cards = parseSearchPage(listHtml).rows
+    const l = client.toListing(cards.find((r) => r.plz === '35083')!)!
+    expect(l.lat).toBeCloseTo(50.8981, 4)
+    expect(l.lon).toBeCloseTo(8.6753, 4)
     expect(l.coordsPrecision).toBe('area')
-    const other = client.toListing(parseSearchPage(listHtml).rows.find((r) => r.plz === '35466')!)!
+    const other = client.toListing(cards.find((r) => r.plz === '35096')!)!
     expect(other.lat).toBeUndefined()
   })
 })
