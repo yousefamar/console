@@ -296,11 +296,29 @@ function ReviewHandbackRow({ handback: h, item }: { handback: ReviewHandback; it
     }
     setBusy(false)
   }
+  // Opens the real card modal on the Spaces board (every board mutation is
+  // bound to the ACTIVE board, so the modal lives there — same jump as
+  // focusSessionInSpaces, landing on Board with the card open).
+  const openCard = () => void useSpacesStore.getState().openCardInSpaces(h.project, h.query)
   return (
     <div className="flex items-center gap-2 px-3 py-1 text-xs">
       <ClipboardCheck size={12} className="flex-shrink-0 text-blue-400" />
       <span className="text-text-tertiary flex-shrink-0">Under review · {h.project}</span>
-      <span className="truncate text-text-primary flex-1" title={h.text}>{h.text}</span>
+      <button
+        onClick={openCard}
+        className="truncate text-left text-text-primary flex-1 hover:underline"
+        title="Open card"
+      >
+        {h.text}
+      </button>
+      <button
+        onClick={openCard}
+        className="flex items-center gap-1 rounded-sm border border-border bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-text-tertiary/60 hover:text-text-primary transition-colors duration-fast"
+        title="Open this card's modal on the project board"
+      >
+        <FolderKanban size={11} />
+        <span>Open card</span>
+      </button>
       <button
         onClick={() => void approve()}
         disabled={!h.doneColumn || busy}

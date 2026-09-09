@@ -336,6 +336,16 @@ export function findCardByBlockId(board: KanbanBoard, blockId: string): CardRef 
   return findCard(board, (c) => c.blockId === blockId)
 }
 
+/** Resolve a `/board/*`-style card query — `^id` when stamped, else the exact
+ *  card text (the same grammar BoardOps accepts). Null when nothing matches. */
+export function findCardByQuery(board: KanbanBoard, query: string): { ref: CardRef; card: BoardCard } | null {
+  const q = query.trim()
+  const ref = q.startsWith('^') ? findCardByBlockId(board, q.slice(1)) : findCard(board, (c) => c.text === q)
+  if (!ref) return null
+  const card = getCard(board, ref)
+  return card ? { ref, card } : null
+}
+
 export function getCard(board: KanbanBoard, ref: CardRef): BoardCard | null {
   const col = board.columns.find((c) => c.title === ref.column)
   return col?.cards[ref.index] ?? null

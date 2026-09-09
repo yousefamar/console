@@ -35,7 +35,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
+import { splitTrailingTags, cardUrls, findCardByQuery, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1143,6 +1143,16 @@ function BoardView() {
   // Card detail modal — the roomy editing surface (title, details, assignee,
   // column, blocked, delete in one place).
   const [detailTarget, setDetailTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
+  // Another pane (the Inbox's review strip) asked for a card: open its modal
+  // once THIS project's board is in. A card that has since moved or been
+  // deleted just drops the request — the board itself is on screen.
+  const pendingCardOpen = useSpacesStore((s) => s.pendingCardOpen)
+  useEffect(() => {
+    if (!pendingCardOpen || !board || activeSlug !== pendingCardOpen.slug) return
+    const hit = findCardByQuery(board, pendingCardOpen.query)
+    if (hit) setDetailTarget(hit)
+    useSpacesStore.getState().clearPendingCardOpen()
+  }, [pendingCardOpen, board, activeSlug])
   // Which column has an open new-card editor (one at a time).
   const [addingTo, setAddingTo] = useState<string | null>(null)
   // HTML5 drag-and-drop: the dragged card's ref rides component state (not
