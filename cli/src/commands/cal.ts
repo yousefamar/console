@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { hubFetch } from '../client.js'
-import { output, exitWithError, info, type GlobalFlags } from '../output.js'
+import { output, exitWithError, info, isJsonMode, type GlobalFlags } from '../output.js'
 import { parseFlags } from './util.js'
 
 export async function cal(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
@@ -442,13 +442,31 @@ async function calUnlink(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function calLinks(args: string[], flags: GlobalFlags): Promise<void> {
   const eventId = args[0]
-  if (!eventId) exitWithError('USAGE', 'Usage: con cal links <event-id> --calendar <id>', flags)
+  if (!eventId) exitWithError('USAGE', 'Usage: con cal links <event-id> --calendar <id> [--cat]', flags)
   const opts = parseFlags(args.slice(1))
   if (!opts.calendar) exitWithError('USAGE', 'Provide --calendar', flags)
-  const result = await hubFetch(`/cal/events/${encodeURIComponent(eventId)}/links`, {
+  const result = await hubFetch<{ links: string[] }>(`/cal/events/${encodeURIComponent(eventId)}/links`, {
     params: { calendarId: opts.calendar, account: opts.account },
   })
-  output(result, flags)
+  if (!('cat' in opts)) { output(result, flags); return }
+  // --cat: print the contents of every link that is a local text file (the CLI
+  // runs on the same machine as the files), URLs/binaries are named only.
+  const contents = result.links.map((link) => {
+    const p = link.startsWith('~/') ? resolve(process.env.HOME ?? '', link.slice(2)) : link
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p) || !existsSync(p)) return { link, content: null, reason: existsSync(p) ? undefined : 'not a local file' }
+    try {
+      const st = statSync(p)
+      if (st.size > 256 * 1024) return { link, content: null, reason: `${st.size} bytes — too large to print` }
+      const buf = readFileSync(p)
+      if (buf.subarray(0, 512).includes(0)) return { link, content: null, reason: 'binary' }
+      return { link, content: buf.toString('utf8') }
+    } catch (e) { return { link, content: null, reason: (e as Error).message } }
+  })
+  if (isJsonMode(flags)) { output({ links: contents }, flags); return }
+  for (const c of contents) {
+    console.log(`\n=== ${c.link}${c.reason ? `  (${c.reason})` : ''}`)
+    if (c.content !== null) console.log(c.content)
+  }
 }
 
 async function calLinked(args: string[], flags: GlobalFlags): Promise<void> {

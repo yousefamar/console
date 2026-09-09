@@ -8,6 +8,7 @@ import { optimisticallyDeleted, pendingTempIds } from '@/calendar/sync'
 import { useUiStore } from '@/store/ui'
 import { getPref, setPref, isPrefsLoaded, prefsReady } from '@/prefs'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
+import { readLinks } from '@/calendar/links'
 
 const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
 const DEFAULT_CAL_PREF = 'calendar.defaultId'
@@ -108,6 +109,7 @@ function toDbEvent(e: CalendarEvent, calendarId: string, accountEmail: string): 
     eventType: e.eventType,
     workingLocationJson: e.workingLocationProperties ? JSON.stringify(e.workingLocationProperties) : undefined,
     remindersJson: e.reminders ? JSON.stringify(e.reminders) : undefined,
+    linksJson: (() => { const l = e.links ?? readLinks(e); return l.length ? JSON.stringify(l) : undefined })(),
     created: e.created,
     updated: e.updated,
   }
@@ -134,9 +136,42 @@ export function fromDbEvent(d: DbCalendarEvent): CalendarEvent {
     eventType: d.eventType as CalendarEvent['eventType'],
     workingLocationProperties: d.workingLocationJson ? JSON.parse(d.workingLocationJson) : undefined,
     reminders: d.remindersJson ? JSON.parse(d.remindersJson) : undefined,
+    links: d.linksJson ? JSON.parse(d.linksJson) : undefined,
     created: d.created,
     updated: d.updated,
   } as CalendarEvent
+}
+
+async function patchLinks(
+  get: () => { loadEventsFromDb: () => Promise<void> },
+  calendarId: string, accountEmail: string, eventId: string, path: string, op: 'add' | 'remove',
+): Promise<void> {
+  const ck = compoundKey(accountEmail, calendarId, eventId)
+  const existing = await db.calendarEvents.get(ck)
+  const before: string[] = existing?.linksJson ? JSON.parse(existing.linksJson) : []
+  const optimistic = op === 'add' ? (before.includes(path) ? before : [...before, path]) : before.filter((l) => l !== path)
+  if (existing) {
+    await db.calendarEvents.put({ ...existing, linksJson: optimistic.length ? JSON.stringify(optimistic) : undefined })
+    await get().loadEventsFromDb()
+  }
+  try {
+    const res = op === 'add'
+      ? await api.addEventLink(accountEmail, calendarId, eventId, path)
+      : await api.removeEventLink(accountEmail, calendarId, eventId, path)
+    // The hub's answer is authoritative (it may normalise/dedupe).
+    const row = await db.calendarEvents.get(ck)
+    if (row) {
+      await db.calendarEvents.put({ ...row, linksJson: res.links.length ? JSON.stringify(res.links) : undefined })
+      await get().loadEventsFromDb()
+    }
+  } catch (e) {
+    const row = await db.calendarEvents.get(ck)
+    if (row) {
+      await db.calendarEvents.put({ ...row, linksJson: before.length ? JSON.stringify(before) : undefined })
+      await get().loadEventsFromDb()
+    }
+    throw e
+  }
 }
 
 function weekStart(d: Date): Date {
@@ -228,6 +263,11 @@ interface CalendarState {
   deleteAllEvents: (calendarId: string, accountEmail: string, masterEventId: string) => Promise<void>
   rsvp: (calendarId: string, accountEmail: string, eventId: string, status: 'accepted' | 'declined' | 'tentative') => Promise<void>
   setReminder: (calendarId: string, accountEmail: string, eventId: string, minutes: number | null) => Promise<void>
+  /** Attach/detach a private link (extendedProperties.private on YOUR copy).
+   *  Optimistic on the Dexie row; the hub call is direct (not the outbox) and
+   *  a failure reverts + rethrows so the caller can surface it. */
+  linkEvent: (calendarId: string, accountEmail: string, eventId: string, path: string) => Promise<void>
+  unlinkEvent: (calendarId: string, accountEmail: string, eventId: string, path: string) => Promise<void>
   updateLocation: (calendarId: string, accountEmail: string, eventId: string, locationType: string, customLabel?: string) => Promise<void>
 
   // Event form
@@ -782,6 +822,14 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     await enqueue('calRsvp', {
       calendarId, accountEmail, eventId, attendees,
     }, { eventCompoundKey: ck })
+  },
+
+  linkEvent: async (calendarId, accountEmail, eventId, path) => {
+    await patchLinks(get, calendarId, accountEmail, eventId, path, 'add')
+  },
+
+  unlinkEvent: async (calendarId, accountEmail, eventId, path) => {
+    await patchLinks(get, calendarId, accountEmail, eventId, path, 'remove')
   },
 
   setReminder: async (calendarId, accountEmail, eventId, minutes) => {

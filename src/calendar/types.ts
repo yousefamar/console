@@ -64,6 +64,11 @@ export interface CalendarEvent {
     officeLocation?: { buildingId?: string; floorId?: string; label?: string }
     customLocation?: { label: string }
   }
+  /** Google's raw extended properties (present on fetched events). */
+  extendedProperties?: { private?: Record<string, string> | null; shared?: Record<string, string> | null } | null
+  /** Private links on YOUR copy of the event — derived from
+   *  extendedProperties.private (src/calendar/links.ts); never visible to guests. */
+  links?: string[]
   created: string
   updated: string
 }
@@ -119,6 +124,7 @@ export interface DbCalendarEvent {
   eventType?: string
   workingLocationJson?: string
   remindersJson?: string
+  linksJson?: string     // JSON-serialized private links (see CalendarEvent.links)
   created: string
   updated: string
 }

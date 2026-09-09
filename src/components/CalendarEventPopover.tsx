@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useCalendarStore } from '@/store/calendar'
-import { showConfirm } from '@/dialog'
 import type { CalendarEvent } from '@/calendar/types'
 import { sanitizeAndLinkify } from '@/utils/html'
 import {
@@ -8,7 +7,14 @@ import {
   ExternalLink, Pencil, Trash2,
   Check, HelpCircle, XCircle,
   Bell, BellOff,
+  Link2, FileText, Image as ImageIcon, File, Globe, ChevronDown, ChevronRight, Plus, Copy,
 } from 'lucide-react'
+import { showAlert, showConfirm, showPrompt } from '@/dialog'
+import { useUiStore } from '@/store/ui'
+import { hubFetch, getHubUrl } from '@/hub'
+import { classifyLink, type LinkKind } from '@/calendar/links'
+import { getVaultRoot } from '@/calendar/api'
+import { openVaultFile } from '@/notes/open-subscribe'
 
 export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: CalendarEvent[] } = {}) {
   const storeEvents = useCalendarStore((s) => s.events)
@@ -185,6 +191,9 @@ export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: Cale
           {event.description && (
             <DescriptionBlock description={event.description} />
           )}
+
+          {/* Private links — only YOUR copy of the event carries them */}
+          <LinksBlock event={event} />
         </div>
 
         {/* Reminders */}
@@ -431,4 +440,113 @@ function ReminderPicker({ reminders, defaultReminders, onChange }: {
       </div>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Private links (extendedProperties.private on YOUR copy — never shown to
+// guests). Vault notes open in Spaces Docs and peek inline; images peek as a
+// thumbnail; pdf/video open through the media bridge; URLs open in a tab.
+// ---------------------------------------------------------------------------
+
+function LinksBlock({ event }: { event: CalendarEvent }) {
+  const { linkEvent, unlinkEvent } = useCalendarStore()
+  const [vaultRoot, setVaultRoot] = useState<string | null>(null)
+  useEffect(() => { void getVaultRoot().then(setVaultRoot) }, [])
+  const links = event.links ?? []
+
+  const add = async () => {
+    const raw = await showPrompt('File path, vault note or URL to attach privately to this event:', { title: 'Private link', placeholder: 'projects/x/notes.md · /abs/path · https://…' })
+    if (!raw?.trim()) return
+    try { await linkEvent(event.calendarId, event.accountEmail, event.id, raw.trim()) }
+    catch (e) { await showAlert(hubErrorText(e), { title: 'Could not link' }) }
+  }
+
+  if (!links.length) {
+    return (
+      <button onClick={add} className="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors" title="Attach a private link — only your copy of the event carries it">
+        <Link2 size={11} /> Link a file
+      </button>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-[10px] text-text-tertiary uppercase tracking-wider">
+        <Link2 size={11} /> Private links
+        <button onClick={add} className="ml-auto text-text-tertiary hover:text-text-primary" title="Add another"><Plus size={11} /></button>
+      </div>
+      {links.map((l) => (
+        <LinkRow
+          key={l}
+          link={l}
+          kind={classifyLink(l, vaultRoot)}
+          onRemove={async () => {
+            try { await unlinkEvent(event.calendarId, event.accountEmail, event.id, l) }
+            catch (e) { await showAlert(hubErrorText(e), { title: 'Could not unlink' }) }
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function LinkRow({ link, kind, onRemove }: { link: string; kind: LinkKind; onRemove: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [peek, setPeek] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const setLightboxSrc = useUiStore((s) => s.setLightboxSrc)
+  const peekable = kind.kind === 'vault' || (kind.kind === 'media' && kind.image)
+  const bridge = (p: string) => `${getHubUrl()}/agents/local-file?path=${encodeURIComponent(p)}`
+
+  const togglePeek = async () => {
+    if (open) { setOpen(false); return }
+    setOpen(true)
+    if (kind.kind === 'vault' && peek === null) {
+      setLoading(true)
+      try {
+        const r = await hubFetch<{ content: string }>(`/notes/file/${kind.vaultPath.split('/').map(encodeURIComponent).join('/')}`)
+        const body = r.content.replace(/^---\n[\s\S]*?\n---\n?/, '')
+        const lines = body.split('\n')
+        setPeek(lines.slice(0, 40).join('\n') + (lines.length > 40 ? `\n… (${lines.length - 40} more lines)` : ''))
+      } catch (e) { setPeek(`(could not read: ${hubErrorText(e)})`) }
+      finally { setLoading(false) }
+    }
+  }
+
+  const openTarget = () => {
+    if (kind.kind === 'url') window.open(kind.href, '_blank', 'noopener,noreferrer')
+    else if (kind.kind === 'vault') void openVaultFile(kind.vaultPath)
+    else if (kind.kind === 'media') kind.image ? setLightboxSrc(bridge(kind.path)) : window.open(bridge(kind.path), '_blank', 'noopener,noreferrer')
+    else void navigator.clipboard?.writeText(kind.path)
+  }
+
+  const Icon = kind.kind === 'url' ? Globe : kind.kind === 'vault' ? FileText : kind.kind === 'media' && kind.image ? ImageIcon : File
+  return (
+    <div className="text-xs">
+      <div className="group flex items-center gap-1.5">
+        {peekable
+          ? <button onClick={togglePeek} className="text-text-tertiary hover:text-text-primary" title={open ? 'Hide preview' : 'Preview'}>{open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}</button>
+          : <span className="w-[11px]" />}
+        <Icon size={11} className="text-text-tertiary flex-shrink-0" />
+        <button onClick={openTarget} className="truncate text-accent hover:underline text-left" title={kind.kind === 'file' ? `${link} — copy path` : link}>
+          {kind.label}
+        </button>
+        {kind.kind === 'file' && <Copy size={10} className="text-text-tertiary flex-shrink-0" />}
+        <button onClick={onRemove} className="ml-auto opacity-0 group-hover:opacity-100 text-text-tertiary hover:text-red-400 transition-opacity" title="Unlink"><X size={11} /></button>
+      </div>
+      {open && kind.kind === 'vault' && (
+        <pre className="mt-1 ml-[26px] max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-0 p-2 text-[11px] leading-snug text-text-secondary">
+          {loading ? 'Loading…' : peek}
+        </pre>
+      )}
+      {open && kind.kind === 'media' && kind.image && (
+        <img src={bridge(kind.path)} alt={kind.label} onClick={() => setLightboxSrc(bridge(kind.path))} className="mt-1 ml-[26px] max-h-40 cursor-zoom-in rounded-sm border border-border" />
+      )}
+    </div>
+  )
+}
+
+function hubErrorText(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e)
+  try { const j = JSON.parse(m); if (j?.error) return String(j.error) } catch { /* plain */ }
+  return m
 }

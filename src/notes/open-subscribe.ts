@@ -34,7 +34,12 @@ export function findHeadingLine(content: string, anchor: string): number | null 
 async function handleOpen(data: unknown): Promise<void> {
   const { path, anchor } = (data ?? {}) as { path?: string; anchor?: string }
   if (!path) return
+  await openVaultFile(path, anchor)
+}
 
+/** Open a vault-relative file in Spaces Docs (the remote-open path, callable
+ *  from any in-app surface — e.g. a calendar event's private link). */
+export async function openVaultFile(path: string, anchor?: string): Promise<void> {
   const notes = useNotesStore.getState()
   // Cold Notes pane: no adapter yet, so openFile would silently no-op.
   if (!notes.adapter) await useNotesStore.getState().reconnectVault()

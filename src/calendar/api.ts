@@ -108,3 +108,24 @@ export async function deleteEvent(
     method: 'DELETE',
   })
 }
+
+// Private links (extendedProperties.private on YOUR copy — see src/calendar/links.ts).
+export async function addEventLink(accountEmail: string, calendarId: string, eventId: string, path: string): Promise<{ links: string[]; changed: boolean }> {
+  return hubFetch(`/cal/events/${encodeURIComponent(eventId)}/links`, {
+    method: 'POST',
+    body: JSON.stringify({ calendarId, account: accountEmail, path }),
+  })
+}
+
+export async function removeEventLink(accountEmail: string, calendarId: string, eventId: string, path: string): Promise<{ links: string[]; changed: boolean }> {
+  return hubFetch(`/cal/events/${encodeURIComponent(eventId)}/links?calendarId=${encodeURIComponent(calendarId)}&account=${encodeURIComponent(accountEmail)}&path=${encodeURIComponent(path)}`, {
+    method: 'DELETE',
+  })
+}
+
+let vaultRootPromise: Promise<string | null> | null = null
+/** Absolute vault dir (hub `/notes/vault-path`), cached for the page's life. */
+export function getVaultRoot(): Promise<string | null> {
+  vaultRootPromise ??= hubFetch<{ path: string }>('/notes/vault-path').then((r) => r.path ?? null).catch(() => { vaultRootPromise = null; return null })
+  return vaultRootPromise
+}

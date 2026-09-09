@@ -10,6 +10,15 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Calendar: private per-event links (hub + SPA ^gray-bat, 2026-09-08) — events
+  carry `extendedProperties.private` keys `console.link.<i>` (+ marker
+  `console.links=1`); the SPA popover lists them (vault note → Notes editor +
+  inline peek via `/notes/file/`, image → media-bridge thumbnail, URL → browser),
+  `+`/`×` → `POST|DELETE /cal/events/:id/links {calendarId, path}`; `GET
+  /cal/events/:id` returns a derived `links[]`. Port `readLinks`/`classifyLink`
+  (`src/calendar/links.ts`) into the calendar Room row + event sheet; the vault
+  root comes from `GET /notes/vault-path`.
+
 - Inbox: swipe-done on an agent row approves its Under Review card(s) (SPA
   d4afd8b3, ^trim-lynx) — the SPA's `e` now moves every review card owned by
   that agentKey to the board's `doneColumn` (the same move as the "Approve →

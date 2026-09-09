@@ -192,7 +192,7 @@ Commands:
   location      Set working location
   link          Attach a PRIVATE link (file path/URL) to your copy of an event — guests never see it
   unlink        Remove a private link
-  links         List an event's private links ('get' returns them as links too)
+  links         List an event's private links ('get' returns them as links too); --cat prints local text files
   linked        Events carrying private links (--from/--to, default -30d..+90d)
   accounts      List calendar accounts
   add-account   Add a calendar account
