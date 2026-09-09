@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { CalendarClient } from '../calendar-client.js'
 import type { AuthStore } from '../auth-store.js'
 import type { DedupStore } from '../dedup-store.js'
+import { readLinks, linksPatch, addLink, removeLink, LINK_MARKER_FILTER, LinkTooLongError } from '../calendar-links.js'
 
 export function handleCalendarRoutes(
   req: IncomingMessage,
@@ -60,6 +61,79 @@ export function handleCalendarRoutes(
     })
   }
 
+  // Private links — `extendedProperties.private` on YOUR copy of the event
+  // (see calendar-links.ts). Matched before the bare /cal/events/:id routes
+  // or their prefix regexes would swallow the `/links` suffix.
+
+  // GET /cal/events/:id/links?calendarId=
+  const linksMatch = path.match(/^\/cal\/events\/([^/]+)\/links$/)
+  if (linksMatch && req.method === 'GET') {
+    return handleAsync(async () => {
+      const calendarId = url.searchParams.get('calendarId')
+      if (!calendarId) { error(400, 'Missing calendarId'); return }
+      const event = await calendar.getEvent(account, calendarId, decodeURIComponent(linksMatch[1]!))
+      json({ links: readLinks(event as any) })
+    })
+  }
+
+  // POST /cal/events/:id/links {calendarId, account?, path}  → add
+  // DELETE /cal/events/:id/links?calendarId=&path=            → remove
+  if (linksMatch && (req.method === 'POST' || req.method === 'DELETE')) {
+    return handleAsync(async () => {
+      const eventId = decodeURIComponent(linksMatch[1]!)
+      let calendarId: string | null, acc: string, link: string | null
+      if (req.method === 'POST') {
+        const body = JSON.parse(await readBody(req))
+        calendarId = body.calendarId ?? null; acc = body.account || account; link = body.path ?? body.link ?? null
+      } else {
+        calendarId = url.searchParams.get('calendarId'); acc = account; link = url.searchParams.get('path')
+      }
+      if (!calendarId) { error(400, 'Missing calendarId'); return }
+      if (!link) { error(400, 'Missing path'); return }
+      const event = await calendar.getEvent(acc, calendarId, eventId)
+      const current = readLinks(event as any)
+      let next: string[]
+      try {
+        next = req.method === 'POST' ? addLink(current, link) : removeLink(current, link)
+      } catch (e) {
+        error(e instanceof LinkTooLongError ? 422 : 400, (e as Error).message); return
+      }
+      if (next.length !== current.length) await calendar.patchEvent(acc, calendarId, eventId, linksPatch(event as any, next))
+      json({ links: next, changed: next.length !== current.length })
+    })
+  }
+
+  // GET /cal/linked?timeMin&timeMax&calendarId? — events on YOUR calendars
+  // that carry at least one private link (server-side filter on the marker).
+  if (path === '/cal/linked' && req.method === 'GET') {
+    return handleAsync(async () => {
+      const timeMin = url.searchParams.get('timeMin') || undefined
+      const timeMax = url.searchParams.get('timeMax') || undefined
+      const onlyCal = url.searchParams.get('calendarId')
+      const items: unknown[] = []
+      const collect = async (acc: string, calId: string) => {
+        const events = await calendar.getEvents(acc, calId, { timeMin, timeMax, singleEvents: 'true', privateExtendedProperty: LINK_MARKER_FILTER }) as any
+        for (const ev of events.items || []) {
+          items.push({ id: ev.id, summary: ev.summary, start: ev.start, end: ev.end, calendarId: calId, accountEmail: acc, links: readLinks(ev) })
+        }
+      }
+      if (onlyCal) {
+        await collect(account, onlyCal)
+      } else {
+        for (const a of authStore.getGoogleAccounts()) {
+          try {
+            const cals = await calendar.getCalendarList(a.email)
+            for (const cal of cals.items || []) {
+              if (cal.accessRole !== 'owner' && cal.accessRole !== 'writer') continue
+              try { await collect(a.email, cal.id) } catch { /* per-calendar errors don't fail the sweep */ }
+            }
+          } catch { /* skip account errors */ }
+        }
+      }
+      json({ items })
+    })
+  }
+
   // GET /cal/events
   if (path === '/cal/events' && req.method === 'GET') {
     return handleAsync(async () => {
@@ -107,7 +181,8 @@ export function handleCalendarRoutes(
       const calendarId = url.searchParams.get('calendarId')
       if (!calendarId) { error(400, 'Missing calendarId'); return }
       const data = await calendar.getEvent(account, calendarId, decodeURIComponent(eventGetMatch[1]!))
-      json(data)
+      // Derived: private links from extendedProperties.private (calendar-links.ts).
+      json({ ...(data as object), links: readLinks(data as any) })
     })
   }
 

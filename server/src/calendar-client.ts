@@ -86,6 +86,8 @@ export class CalendarClient {
     timeMax?: string
     singleEvents?: string
     maxResults?: string
+    /** `key=value` — only events whose private extended properties match (server-side filter). */
+    privateExtendedProperty?: string
   } = {}) {
     return this.request(accountEmail, `/calendars/${encodeURIComponent(calendarId)}/events`, {
       params: {
@@ -94,6 +96,7 @@ export class CalendarClient {
         maxResults: opts.maxResults ?? '250',
         timeMin: opts.timeMin,
         timeMax: opts.timeMax,
+        privateExtendedProperty: opts.privateExtendedProperty,
       },
     })
   }

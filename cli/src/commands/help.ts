@@ -190,6 +190,10 @@ Commands:
   delete        Delete an event
   rsvp          RSVP to an event
   location      Set working location
+  link          Attach a PRIVATE link (file path/URL) to your copy of an event — guests never see it
+  unlink        Remove a private link
+  links         List an event's private links ('get' returns them as links too)
+  linked        Events carrying private links (--from/--to, default -30d..+90d)
   accounts      List calendar accounts
   add-account   Add a calendar account
   remove-account Remove a calendar account
@@ -202,6 +206,9 @@ Examples:
   con cal eventbrite follow https://www.eventbrite.co.uk/o/wilding-with-harry-121041407049
   con cal create --calendar primary --title "Lunch" --start 2026-04-05T12:00 --end 2026-04-05T13:00
   con cal rsvp event123 --calendar primary --status accept
+  con cal link event123 ~/sync/brain/root/projects/x/notes.md --calendar primary   # private: only YOUR copy carries it
+  con cal links event123 --calendar primary
+  con cal linked --from -7d --to +30d
 `.trim(),
 
   money: `

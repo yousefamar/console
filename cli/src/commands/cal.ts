@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { hubFetch } from '../client.js'
 import { output, exitWithError, info, type GlobalFlags } from '../output.js'
 import { parseFlags } from './util.js'
@@ -17,6 +19,10 @@ export async function cal(verb: string | undefined, args: string[], flags: Globa
     case 'remove-account': return calRemoveAccount(args, flags)
     case 'flights': return calFlights(args, flags)
     case 'eventbrite': return calEventbrite(args, flags)
+    case 'link': return calLink(args, flags)
+    case 'unlink': return calUnlink(args, flags)
+    case 'links': return calLinks(args, flags)
+    case 'linked': return calLinked(args, flags)
     default:
       exitWithError('USAGE', `Unknown cal command: ${verb}. Run 'con help cal'.`, flags)
   }
@@ -326,12 +332,12 @@ async function calRemoveAccount(args: string[], flags: GlobalFlags): Promise<voi
 function parseDate(input: string, relativeTo?: Date): Date {
   if (!input) return new Date()
 
-  // Relative: +Nd, +Nw
-  const relMatch = input.match(/^\+(\d+)([dwm])$/)
+  // Relative: +Nd, +Nw, -Nd …
+  const relMatch = input.match(/^([+-])(\d+)([dwm])$/)
   if (relMatch) {
     const base = relativeTo || new Date()
-    const n = parseInt(relMatch[1]!, 10)
-    const unit = relMatch[2]!
+    const n = parseInt(relMatch[2]!, 10) * (relMatch[1] === '-' ? -1 : 1)
+    const unit = relMatch[3]!
     const result = new Date(base)
     if (unit === 'd') result.setDate(result.getDate() + n)
     else if (unit === 'w') result.setDate(result.getDate() + n * 7)
@@ -390,4 +396,67 @@ async function calEventbrite(args: string[], flags: GlobalFlags): Promise<void> 
     default:
       exitWithError('USAGE', 'Usage: con cal eventbrite {status|events [--force]|follow <url|id>|unfollow <id>|token <token>}', flags)
   }
+}
+
+// --------------------------------------------------------------------------
+// Private links — a local file path (or any string) attached to YOUR copy of
+// an event via extendedProperties.private; no guest ever sees it, no Google
+// UI renders it. `con cal get` also returns `links`.
+// --------------------------------------------------------------------------
+
+/** An existing file relative to the cwd becomes an absolute path (an
+ *  unambiguous pointer); anything else — URLs, vault-relative paths, plain
+ *  text — is stored verbatim. */
+function normaliseLink(raw: string): string {
+  const t = raw.trim()
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t
+  const abs = resolve(t)
+  return existsSync(abs) ? abs : t
+}
+
+async function calLink(args: string[], flags: GlobalFlags): Promise<void> {
+  const [eventId, target] = args
+  if (!eventId || !target) exitWithError('USAGE', 'Usage: con cal link <event-id> <path|url> --calendar <id>', flags)
+  const opts = parseFlags(args.slice(2))
+  if (!opts.calendar) exitWithError('USAGE', 'Provide --calendar', flags)
+  const link = normaliseLink(target!)
+  if (flags.dryRun) { info(`Would link ${link} to event ${eventId}`); return }
+  const result = await hubFetch(`/cal/events/${encodeURIComponent(eventId!)}/links`, {
+    method: 'POST', body: { calendarId: opts.calendar, account: opts.account, path: link },
+  })
+  output(result, flags)
+}
+
+async function calUnlink(args: string[], flags: GlobalFlags): Promise<void> {
+  const [eventId, target] = args
+  if (!eventId || !target) exitWithError('USAGE', 'Usage: con cal unlink <event-id> <path|url> --calendar <id>', flags)
+  const opts = parseFlags(args.slice(2))
+  if (!opts.calendar) exitWithError('USAGE', 'Provide --calendar', flags)
+  const link = normaliseLink(target!)
+  if (flags.dryRun) { info(`Would unlink ${link} from event ${eventId}`); return }
+  const result = await hubFetch(`/cal/events/${encodeURIComponent(eventId!)}/links`, {
+    method: 'DELETE', params: { calendarId: opts.calendar, account: opts.account, path: link },
+  })
+  output(result, flags)
+}
+
+async function calLinks(args: string[], flags: GlobalFlags): Promise<void> {
+  const eventId = args[0]
+  if (!eventId) exitWithError('USAGE', 'Usage: con cal links <event-id> --calendar <id>', flags)
+  const opts = parseFlags(args.slice(1))
+  if (!opts.calendar) exitWithError('USAGE', 'Provide --calendar', flags)
+  const result = await hubFetch(`/cal/events/${encodeURIComponent(eventId)}/links`, {
+    params: { calendarId: opts.calendar, account: opts.account },
+  })
+  output(result, flags)
+}
+
+async function calLinked(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const from = parseDate(opts.from || '-30d')
+  const to = parseDate(opts.to || '+90d', from)
+  const result = await hubFetch('/cal/linked', {
+    params: { timeMin: from.toISOString(), timeMax: to.toISOString(), calendarId: opts.calendar, account: opts.account },
+  })
+  output(result, flags)
 }
