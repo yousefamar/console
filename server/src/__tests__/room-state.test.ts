@@ -87,3 +87,42 @@ describe('computeRoomState — inbound/outbound reply tracking (SLA input)', () 
     expect(next.lastOutboundTs).toBe(6000)
   })
 })
+
+describe('computeRoomState — stickers are conversation (^neat-heron)', () => {
+  // A bridged WhatsApp sticker arrives as `m.sticker`, not `m.room.message`.
+  // The preview loop skipped it, so the thread stayed read, its preview stale,
+  // and the SLA clock never saw an inbound.
+  const sticker = (sender: string, ts: number, body = '') => ({
+    type: 'm.sticker', sender, origin_server_ts: ts,
+    content: { body, url: 'mxc://hs/abc', info: { mimetype: 'image/webp' } },
+  })
+
+  it('an inbound sticker marks the room unread and advances the preview', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [sticker('@other:hs', 5000)] }, unread_notifications: { notification_count: 1 } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.isUnread).toBe(true)
+    expect(next.lastMessageTime).toBe(5000)
+    expect(next.lastMessageBody).toBe('Sticker')
+    expect(next.lastInboundTs).toBe(5000)
+  })
+
+  it('a sticker with alt text uses it as the preview', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [sticker('@other:hs', 5000, '😂 laughing cat')] } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.lastMessageBody).toBe('😂 laughing cat')
+  })
+
+  it('my own sticker counts as outbound and leaves the room read', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [sticker('@me:hs', 5000)] } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.isUnread).toBe(false)
+    expect(next.lastOutboundTs).toBe(5000)
+  })
+
+  it('reactions are still not conversation', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [{ type: 'm.reaction', sender: '@other:hs', origin_server_ts: 5000, content: { 'm.relates_to': { key: '👍' } } }] } }
+    const next = computeRoomState('!r:hs', baseRoom(), delta, ctx)
+    expect(next.isUnread).toBe(false)
+    expect(next.lastMessageBody).toBe('hi')
+  })
+})

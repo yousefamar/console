@@ -59,6 +59,23 @@ export interface RoomState {
 const BRIDGE_BOT_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)bot:/i
 const GHOST_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)_/i
 
+/** Timeline events that count as "someone said something": they advance the
+ *  room preview, flip isUnread, feed the SLA clock and fire a push. Stickers
+ *  are conversation too — a bridged WhatsApp sticker arrives as `m.sticker`
+ *  and used to leave the thread read and silent (^neat-heron). Reactions,
+ *  receipts and state events are deliberately NOT in here. */
+export function isConversationEvent(type: string | undefined): boolean {
+  return type === 'm.room.message' || type === 'm.sticker'
+}
+
+/** Preview text for a conversation event. A sticker's `body` is its alt
+ *  text, often empty — fall back to a label so the row/push never blank. */
+export function previewBody(ev: { type?: string; content?: unknown }): string {
+  const body = (ev.content as Record<string, unknown> | undefined)?.body
+  if (typeof body === 'string' && body.trim()) return body
+  return ev.type === 'm.sticker' ? 'Sticker' : ''
+}
+
 export function isBridgeBotUser(userId: string): boolean {
   return BRIDGE_BOT_RE.test(userId)
 }
@@ -293,13 +310,12 @@ export function computeRoomState(
   let lastInboundTs = existing?.lastInboundTs ?? 0
   let lastOutboundTs = existing?.lastOutboundTs ?? 0
   for (const ev of timelineEvents) {
-    if (ev.type !== 'm.room.message') continue
+    if (!isConversationEvent(ev.type)) continue
     const ts = ev.origin_server_ts ?? 0
     if (ev.sender === ctx.myUserId) lastOutboundTs = Math.max(lastOutboundTs, ts)
     else if (ev.sender && !isBridgeBotUser(ev.sender)) lastInboundTs = Math.max(lastInboundTs, ts)
     if (!lastMsg || ts > lastMsg.timestamp) {
-      const content = ev.content as Record<string, unknown>
-      const body = typeof content.body === 'string' ? content.body : ''
+      const body = previewBody(ev)
       const info = ev.sender ? senderInfo.get(ev.sender) : undefined
       lastMsg = {
         senderId: ev.sender,

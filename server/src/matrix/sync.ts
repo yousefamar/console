@@ -23,7 +23,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { ChatRoomsStore } from './chat-rooms-store.js'
 import type { MessageArchive } from './message-archive.js'
-import type { SyncRoomDelta } from './room-state.js'
+import { isConversationEvent, previewBody, type SyncRoomDelta } from './room-state.js'
 import { health } from '../health.js'
 
 type MatrixSyncState = { nextBatch?: string; lastSyncMs?: number }
@@ -918,9 +918,8 @@ export class MatrixSync {
 
           for (const ev of events) {
             if (ev.sender === cfg.userId) continue
-            if (ev.type !== 'm.room.message') continue
-            const content = ev.content as any
-            const body = typeof content.body === 'string' ? (content.body as string) : ''
+            if (!isConversationEvent(ev.type)) continue
+            const body = previewBody(ev)
             if (!body) continue
 
             const member = ev.sender ? cache?.members.get(ev.sender) : undefined
