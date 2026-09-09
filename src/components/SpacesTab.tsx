@@ -39,6 +39,7 @@ import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from 
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
+import { compareSpacesForRail } from '@/spaces/rail-order'
 import { effectiveOwnerKey } from '@/spaces/owner'
 import { BotCrowned } from '@/components/icons/BotCrowned'
 
@@ -482,14 +483,11 @@ function SpaceListRail() {
     return { agentBadges: badges, alertsBySlug: alerts, unassignedCount: unassigned, curatorForks: curatorForkRows }
   }, [sessions, openFiles, blogDrafts, stalePosts, spaces])
 
-  const byDirtyThenTitle = (a: SpaceSummary, b: SpaceSummary) => {
-    const ad = alertsBySlug.has(a.slug) ? 0 : 1
-    const bd = alertsBySlug.has(b.slug) ? 0 : 1
-    if (ad !== bd) return ad - bd
-    return a.title.localeCompare(b.title)
-  }
-  const areas = useMemo(() => spaces.filter((s) => s.kind === 'area').sort(byDirtyThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
-  const projects = useMemo(() => spaces.filter((s) => s.kind === 'project').sort(byDirtyThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Alert rows OR Under-Review cards hoist a space (a card-owned fork's
+  // hand-back has no row, only the kanban badge tint — see rail-order.ts).
+  const byAttentionThenTitle = compareSpacesForRail(new Set(alertsBySlug.keys()))
+  const areas = useMemo(() => spaces.filter((s) => s.kind === 'area').sort(byAttentionThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
+  const projects = useMemo(() => spaces.filter((s) => s.kind === 'project').sort(byAttentionThenTitle), [spaces, alertsBySlug]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const openAlert = (space: SpaceSummary, a: SpaceAlert) => {
     selectSpace(space.slug)
