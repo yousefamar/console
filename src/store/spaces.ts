@@ -101,11 +101,6 @@ interface SpacesState {
   switcherOpen: boolean
   openSwitcher: () => void
   closeSwitcher: () => void
-  /** A card another pane asked to open in the detail modal — the board view
-   *  consumes it once that project's board is loaded (`^id` or exact text). */
-  pendingCardOpen: { slug: string; query: string } | null
-  openCardInSpaces: (slug: string, query: string) => Promise<void>
-  clearPendingCardOpen: () => void
   /** Create projects/<slug>/board.md with the standard columns and open it. */
   createBoard: (slug: string) => Promise<void>
 }
@@ -227,17 +222,6 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   switcherOpen: false,
   openSwitcher: () => set({ switcherOpen: true }),
   closeSwitcher: () => set({ switcherOpen: false }),
-  pendingCardOpen: null,
-  openCardInSpaces: async (slug, query) => {
-    if (slug.startsWith('~')) return
-    const { useUiStore } = await import('@/store/ui')
-    useUiStore.getState().setActivePane('spaces')
-    if (get().activeSlug !== slug) get().selectSpace(slug)
-    // Force the board side without recording it as a preference (^dry-fawn):
-    // the user asked for a card, not for this space's remembered view.
-    set({ activeView: 'board', pendingCardOpen: { slug, query } })
-  },
-  clearPendingCardOpen: () => set({ pendingCardOpen: null }),
 
   refreshSpaces: async () => {
     set({ loading: true })

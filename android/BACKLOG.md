@@ -20,6 +20,17 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   the local read; shared primitive worth extracting so the strip button and
   the swipe can't drift (SPA `src/inbox/approve.ts`).
 
+- Inbox: open a review card IN PLACE from the agent detail screen (SPA
+  ^glad-bee, `src/components/InboxCardModal.tsx`) — the SPA's hand-back strip
+  offers `Open card` beside `Approve → Done` and shows the card's full editing
+  modal over the Inbox without leaving it (Yousef: no jump to Spaces). The host
+  owns its own board read (`/notes/file/<boardPath>` → find by `^id`) and
+  writes via `POST /board/<project>/<verb>` (edit/assign/block/nofork/inherit/
+  model/move/remove), re-reading after each. Phone twin: the existing card
+  sheet (`SpacesScreen` `CardSheet`) presented from the agent detail screen's
+  hand-back strip for `reviewCards[].blockId`, backed by `SpacesRepository`
+  board reads for that project rather than the active space.
+
 - Inbox: agent rows lead with their SPACE (SPA 7b0aec47, ^glad-finch) —
   `sessionToItem` sets `InboxItem.context` = the session's project title (else
   first area; slug if the spaces list isn't loaded) and the row renders it as a

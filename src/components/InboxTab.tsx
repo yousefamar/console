@@ -32,6 +32,7 @@ import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
 import { feedKindsPresent, reviewHandbacksFor, routeForFeed, type ReviewHandback } from '@/inbox/route'
+import { InboxCardModal } from '@/components/InboxCardModal'
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 import { snoozeLabel, unsnoozeItem } from '@/inbox/snooze'
@@ -250,10 +251,14 @@ export const InboxTab = memo(function InboxTab() {
 function ReviewHandbackStrip({ item }: { item: InboxItem }) {
   const spaces = useSpacesStore((s) => s.spaces)
   const handbacks = reviewHandbacksFor(item.agentKey, spaces)
+  // The card's editing modal opens HERE, over the Inbox — triage stays put
+  // (^glad-bee). InboxCardModal owns its own board copy for that project.
+  const [openCard, setOpenCard] = useState<{ slug: string; query: string } | null>(null)
   if (handbacks.length === 0) return null
   return (
     <div className="border-b border-border bg-surface-1">
-      {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} item={item} />)}
+      {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} item={item} onOpen={() => setOpenCard({ slug: h.project, query: h.query })} />)}
+      {openCard && <InboxCardModal slug={openCard.slug} query={openCard.query} onClose={() => setOpenCard(null)} />}
     </div>
   )
 }
@@ -280,7 +285,7 @@ function HandbackGlyph({ agentKey }: { agentKey?: string }) {
   )
 }
 
-function ReviewHandbackRow({ handback: h, item }: { handback: ReviewHandback; item: InboxItem }) {
+function ReviewHandbackRow({ handback: h, item, onOpen }: { handback: ReviewHandback; item: InboxItem; onOpen: () => void }) {
   const [busy, setBusy] = useState(false)
   const approve = async () => {
     if (!h.doneColumn || busy) return
@@ -296,25 +301,21 @@ function ReviewHandbackRow({ handback: h, item }: { handback: ReviewHandback; it
     }
     setBusy(false)
   }
-  // Opens the real card modal on the Spaces board (every board mutation is
-  // bound to the ACTIVE board, so the modal lives there — same jump as
-  // focusSessionInSpaces, landing on Board with the card open).
-  const openCard = () => void useSpacesStore.getState().openCardInSpaces(h.project, h.query)
   return (
     <div className="flex items-center gap-2 px-3 py-1 text-xs">
       <ClipboardCheck size={12} className="flex-shrink-0 text-blue-400" />
       <span className="text-text-tertiary flex-shrink-0">Under review · {h.project}</span>
       <button
-        onClick={openCard}
+        onClick={onOpen}
         className="truncate text-left text-text-primary flex-1 hover:underline"
         title="Open card"
       >
         {h.text}
       </button>
       <button
-        onClick={openCard}
+        onClick={onOpen}
         className="flex items-center gap-1 rounded-sm border border-border bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-text-tertiary/60 hover:text-text-primary transition-colors duration-fast"
-        title="Open this card's modal on the project board"
+        title="Open this card here — edit, reassign, move, without leaving the Inbox"
       >
         <FolderKanban size={11} />
         <span>Open card</span>

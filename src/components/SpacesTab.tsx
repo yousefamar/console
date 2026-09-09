@@ -35,7 +35,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls, findCardByQuery, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
+import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1117,6 +1117,20 @@ function ViewTab({ label, icon, active, onClick }: { label: string; icon: React.
 // Board view — columns of cards, click-to-move, assign
 // ---------------------------------------------------------------------------
 
+/** Assignee picker entries for a board: every live keyed session (forks
+ *  included), labelled by CURRENT name never raw @key, space-bound first. */
+export function assignableFor(liveKeyed: SessionInfo[], slug: string | null): Array<{ key: string; label: string; fork: boolean; bound: boolean; live: boolean }> {
+  return liveKeyed
+    .map((x) => ({
+      key: x.agentKey!,
+      label: (x.name || x.agentKey!).replace(/\s\(fork\)$/, ''),
+      fork: !!x.parentClaudeSessionId,
+      bound: x.project === slug || (x.areas ?? []).includes(slug ?? ''),
+      live: true,
+    }))
+    .sort((a, b) => Number(b.bound) - Number(a.bound) || a.label.localeCompare(b.label))
+}
+
 function BoardView() {
   const board = useSpacesStore((s) => s.board)
   const boardError = useSpacesStore((s) => s.boardError)
@@ -1143,16 +1157,6 @@ function BoardView() {
   // Card detail modal — the roomy editing surface (title, details, assignee,
   // column, blocked, delete in one place).
   const [detailTarget, setDetailTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
-  // Another pane (the Inbox's review strip) asked for a card: open its modal
-  // once THIS project's board is in. A card that has since moved or been
-  // deleted just drops the request — the board itself is on screen.
-  const pendingCardOpen = useSpacesStore((s) => s.pendingCardOpen)
-  useEffect(() => {
-    if (!pendingCardOpen || !board || activeSlug !== pendingCardOpen.slug) return
-    const hit = findCardByQuery(board, pendingCardOpen.query)
-    if (hit) setDetailTarget(hit)
-    useSpacesStore.getState().clearPendingCardOpen()
-  }, [pendingCardOpen, board, activeSlug])
   // Which column has an open new-card editor (one at a time).
   const [addingTo, setAddingTo] = useState<string | null>(null)
   // HTML5 drag-and-drop: the dragged card's ref rides component state (not
@@ -1185,15 +1189,7 @@ function BoardView() {
   const liveKeyed = sessions.filter((x) => x.status !== 'ended' && x.agentKey)
   const liveByKey = new Map(liveKeyed.map((x) => [x.agentKey!, x]))
   const byCsid = new Map(liveKeyed.filter((x) => x.claudeSessionId).map((x) => [x.claudeSessionId!, x]))
-  const assignable = liveKeyed
-    .map((x) => ({
-      key: x.agentKey!,
-      label: (x.name || x.agentKey!).replace(/\s\(fork\)$/, ''),
-      fork: !!x.parentClaudeSessionId,
-      bound: x.project === activeSlug || (x.areas ?? []).includes(activeSlug ?? ''),
-      live: true,
-    }))
-    .sort((a, b) => Number(b.bound) - Number(a.bound) || a.label.localeCompare(b.label))
+  const assignable = assignableFor(liveKeyed, activeSlug)
   const stateFor = (key: string): AssigneeState => {
     const s = liveByKey.get(key)
     if (!s) return 'idle'
@@ -1469,7 +1465,7 @@ function BoardView() {
  *  properties (column, assignee, #blocked) are pills that apply INSTANTLY;
  *  title + description are borderless editors that autosave on blur/close.
  *  Esc / backdrop / X close (committing any pending text). */
-function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onToggleInheritNow, onSetModel, onMoveColumn, onDelete }: {
+export function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onToggleInheritNow, onSetModel, onMoveColumn, onDelete }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
