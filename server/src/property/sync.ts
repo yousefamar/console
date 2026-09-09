@@ -585,7 +585,10 @@ export class PropertySync {
     if (!checkNewBuild && max == null) return listings
     return listings.filter((l) => {
       if (checkNewBuild && newBuildLike(l)) return false
-      if (max != null && this.highStreets && l.lat != null && l.lon != null) {
+      // Comune/PLZ-centroid coordinates (Subito, Kleinanzeigen, geocoded feeds)
+      // say nothing about the house's street — a centroid always sits near the
+      // centre, so measuring it would pass everything with a fake number.
+      if (max != null && this.highStreets && l.lat != null && l.lon != null && l.coordsPrecision !== 'area') {
         const m = this.highStreets.nearestM(l.lat, l.lon)
         if (m != null && m > max) return false
       }
@@ -593,9 +596,9 @@ export class PropertySync {
     })
   }
 
-  /** "320 m to shops" for the popup; undefined without coordinates or an index. */
+  /** "320 m to shops" for the popup; undefined without exact coordinates or an index. */
   private highStreetLabel(l: Listing): string | undefined {
-    if (!this.highStreets || l.lat == null || l.lon == null) return undefined
+    if (!this.highStreets || l.lat == null || l.lon == null || l.coordsPrecision === 'area') return undefined
     const m = this.highStreets.nearestM(l.lat, l.lon)
     if (m == null) return undefined
     return m >= 5000 ? '>5 km to shops' : `${m} m to shops`

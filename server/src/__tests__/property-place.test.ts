@@ -80,6 +80,43 @@ describe('newBuildLike', () => {
   })
 })
 
+describe('place filter skips centroid coordinates', () => {
+  it('an area-precision row passes maxHighStreetM and carries no distance label', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'place-area-'))
+    dirs.push(dir)
+    const hs = highStreets([[-0.9725, 51.4555]])
+    const { PropertySync } = await import('../property/sync.js')
+    const { PropertySearchStore } = await import('../property/store.js')
+    const { PropertyInventoryStore } = await import('../property/inventory.js')
+    const store = new PropertySearchStore(join(dir, 'searches.json'))
+    const inventory = new PropertyInventoryStore(join(dir, 'inv'))
+    const layers = new Map<string, { features: Array<{ properties: Record<string, unknown> }> }>()
+    const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson as never); return {} },
+      getMeta: (slug: string) => (layers.has(slug) ? {} : undefined),
+      getGeojson: (slug: string) => (slug === 'zone' ? box : null),
+      list: () => [...layers.keys()].map((slug) => ({ slug, group: slug.split('/')[0], name: slug.split('/')[1] })),
+      remove: (slug: string) => layers.delete(slug),
+    }
+    // Two rows 5 km from the only high street: one exact (must drop), one centroid (must stay, unlabelled).
+    const far = { lat: 51.50, lon: -0.9725 }
+    const client = {
+      portal: 'rightmove' as const, currency: 'GBP', count: async () => 0,
+      newest: async () => ({ portal: 'rightmove' as const, total: 2, truncated: false, unsupported: [], listings: [
+        { portal: 'rightmove' as const, id: 'exact', url: 'u1', currency: 'GBP', ...far, coordsPrecision: 'exact' as const },
+        { portal: 'rightmove' as const, id: 'area', url: 'u2', currency: 'GBP', ...far, coordsPrecision: 'area' as const },
+      ] }),
+    }
+    const sync = new PropertySync({ rightmove: client } as never, store, inventory, { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {}, new HighStreetIndex(hs))
+    const s = store.create({ country: 'UK', layer: 'zone', criteria: { maxHighStreetM: 400 } })
+    await sync.fullSync(s.id)
+    const props = layers.get('property/house')!.features.map((f) => f.properties)
+    expect(props.map((p) => p.listingId)).toEqual(['area'])
+    expect(props[0]!.highStreet).toBeUndefined()
+  })
+})
+
 describe('local-only criteria never trigger a re-pull', () => {
   it('changing maxHighStreetM keeps seenIds and the inventory; changing price drops them', () => {
     const dir = mkdtempSync(join(tmpdir(), 'place-store-'))
