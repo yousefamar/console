@@ -42,6 +42,14 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   bands them last; drop that band, keep the attention exception. Tile badge =
   list size, so it shrinks with it.
 
+- Board: model-pin shorthand `#sonnet`/`#opus`/`#haiku`/`#fable` (hub + SPA
+  ^tidy-mole, 2026-09-08) — the hub parses a bare alias tag as `#model/<alias>`
+  and serializes aliases back in the short form, so `CardView.model` already
+  arrives as `sonnet` for a `#sonnet` card (no Kotlin parser change). Display
+  only: `SpacesScreen.kt` ~L1192 renders `#model/$it` — show `#$it` for the
+  four aliases (`MODEL_ALIASES` in both TS ports), `#model/$it` otherwise; the
+  card-sheet model picker should list `fable` beside haiku/sonnet/opus.
+
 - Board: `#inherit` card token (hub + SPA ^tall-colt, 2026-09-08) — ticket-forks
   are now FRESH-context by default; a trailing `#inherit` tag opts a card back
   into the parent-transcript copy. `CardContent.kt`'s token parser must strip

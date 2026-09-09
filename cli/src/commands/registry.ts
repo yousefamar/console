@@ -706,7 +706,7 @@ export const COMMANDS: CommandDef[] = [
   { name: 'spaces board owner', description: 'Set the board\'s default owner (frontmatter default_owner) — unassigned cards dragged into In Progress auto-assign to it; "none" clears', safety: 'write',
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'agent', required: true, description: 'agentKey, or "none"' }],
     examples: ['con spaces board console owner console-general'] },
-  { name: 'spaces board model', description: 'Pin the card\'s ticket-fork to a model (alias haiku/sonnet/opus or full id; "none" clears)', safety: 'write',
+  { name: 'spaces board model', description: 'Pin the card\'s ticket-fork to a model (alias haiku/sonnet/opus/fable or full id; "none" clears). Typing a bare #haiku/#sonnet/#opus/#fable on the card text does the same', safety: 'write',
     args: [{ name: 'project', required: true, description: 'Project slug' }, { name: 'card', required: true, description: '^id or unique text' }, { name: 'model', required: true, description: 'Model alias/id, or "none"' }],
     examples: ['con spaces board console model "^ab12cd" haiku'] },
   { name: 'spaces board nofork', description: 'Dispatch wakes the assignee directly instead of minting a ticket-fork ("forkok" undoes)', safety: 'write',

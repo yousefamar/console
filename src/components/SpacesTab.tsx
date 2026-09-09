@@ -1597,7 +1597,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
           >
             ⧉ {inherit ? 'inherit' : 'fresh'}
           </button>
-          {/* Model pill — pins the ticket-fork's model at dispatch (#model/… token).
+          {/* Model pill — pins the ticket-fork's model at dispatch (#model/… token, or a bare #sonnet/#opus/#haiku/#fable typed on the card).
               Aliases stay valid on both backends; no-op for #nofork direct wakes. */}
           <PillPicker
             icon={<Cpu size={10} className={model ? 'text-amber-400' : 'text-text-tertiary'} />}
@@ -1608,6 +1608,7 @@ function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClos
               { value: 'haiku', label: 'haiku — fast/cheap' },
               { value: 'sonnet', label: 'sonnet — balanced' },
               { value: 'opus', label: 'opus — deep' },
+              { value: 'fable', label: 'fable — frontier' },
             ]}
             onPick={(v) => { setModel(v); onSetModel(v) }}
             title="Fork model — the ticket-fork spawns pinned to this"

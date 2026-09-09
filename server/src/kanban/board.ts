@@ -35,8 +35,9 @@ export interface BoardCard {
    *  gets CLAUDE.md + auto-memory natively plus a digest in the envelope; the
    *  inherited transcript re-read ~130k tokens per message (^tall-colt). */
   inherit: boolean
-  /** `#model/<alias-or-id>` tag — the ticket-fork spawns pinned to this model
-   *  (e.g. `#model/haiku` for a fast fix). Aliases stay portable across
+  /** `#model/<alias-or-id>` tag, or the bare alias shorthand `#sonnet` /
+   *  `#opus` / `#haiku` / `#fable` — the ticket-fork spawns pinned to this
+   *  model (e.g. `#haiku` for a fast fix). Aliases stay portable across
    *  backends (they resolve via the ANTHROPIC_DEFAULT_*_MODEL env). */
   model: string | null
   /** Original lines, verbatim — first line + any indented continuations. */
@@ -128,6 +129,15 @@ export function setBoardDefaultOwner(board: KanbanBoard, agentKey: string | null
   board.header = ['---', line, '---', '', ...h]
 }
 
+/** The CLI's model aliases (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`). A bare
+ *  `#<alias>` card tag is shorthand for `#model/<alias>`; anything else stays
+ *  behind the `#model/` prefix so ordinary hashtags (`#rfp`) never pin a model. */
+export const MODEL_ALIASES = ['opus', 'fable', 'sonnet', 'haiku'] as const
+export function isModelAlias(s: string): s is (typeof MODEL_ALIASES)[number] {
+  return (MODEL_ALIASES as readonly string[]).includes(s)
+}
+const MODEL_ALIAS_RE = new RegExp(`^(.*?)\\s+#(${MODEL_ALIASES.join('|')})$`)
+
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
 export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; model: string | null } {
   let text = rawText.trimEnd()
@@ -169,7 +179,7 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
       inherit = true
       continue
     }
-    const mdl = text.match(/^(.*?)\s+#model\/([\w.:-]+)$/)
+    const mdl = text.match(/^(.*?)\s+#model\/([\w.:-]+)$/) ?? text.match(MODEL_ALIAS_RE)
     if (mdl && model === null) {
       text = mdl[1]!.trimEnd()
       model = mdl[2]!
@@ -178,6 +188,12 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
     break
   }
   return { text, agentKey, blockId, blocked, nofork, inherit, model }
+}
+
+/** Serialized form of a model pin: aliases ride as the bare shorthand the user
+ *  types (`#sonnet`), anything else behind the explicit prefix (`#model/us.…`). */
+export function modelToken(model: string): string {
+  return isModelAlias(model) ? `#${model}` : `#model/${model}`
 }
 
 /** Trailing `#tag` run on a card's (token-stripped) text — display-layer
@@ -277,7 +293,7 @@ export function sanitizeCardText(text: string): string {
   let t = text
   // Repeat: "foo @a #blocked" collides twice.
   for (;;) {
-    const m = t.match(/(\s)(#blocked|#nofork|#inherit|#model\/[\w.:-]+|@[a-z0-9][a-z0-9-]*|\^[A-Za-z0-9-]+)$/)
+    const m = t.match(new RegExp(`(\\s)(#blocked|#nofork|#inherit|#model\\/[\\w.:-]+|#(?:${MODEL_ALIASES.join('|')})|@[a-z0-9][a-z0-9-]*|\\^[A-Za-z0-9-]+)$`))
     if (!m) return t
     t = `${t.slice(0, m.index! + m[1]!.length)}\`${m[2]!}\``
   }
@@ -286,7 +302,7 @@ export function sanitizeCardText(text: string): string {
 function cardFirstLine(card: BoardCard): string {
   card.text = sanitizeCardText(card.text)
   const tokens = [card.text]
-  if (card.model) tokens.push(`#model/${card.model}`)
+  if (card.model) tokens.push(modelToken(card.model))
   if (card.nofork) tokens.push('#nofork')
   if (card.inherit) tokens.push('#inherit')
   if (card.blocked) tokens.push('#blocked')

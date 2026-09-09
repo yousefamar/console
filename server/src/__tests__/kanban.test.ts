@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   cardUrls,
-  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags,
+  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags, modelToken,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
   boardDefaultOwner, setBoardDefaultOwner, boardForkContext,
 } from '../kanban/board.js'
@@ -84,6 +84,28 @@ describe('parseCardTokens', () => {
     expect(board.columns[0]!.cards[0]!.inherit).toBe(true)
     expect(serializeBoard(board)).toContain('- [ ] Fix it #inherit @al ^ab12')
     expect(sanitizeCardText('needs #inherit')).toBe('needs `#inherit`')
+  })
+  it('bare #<alias> is shorthand for #model/<alias>; ids stay behind #model/; other hashtags never pin', () => {
+    expect(parseCardTokens('Quick fix #sonnet @al ^ab12')).toEqual({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', blocked: false, nofork: false, inherit: false, model: 'sonnet' })
+    expect(parseCardTokens('Deep one #opus #inherit')).toEqual({ text: 'Deep one', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: true, model: 'opus' })
+    expect(parseCardTokens('Fast #haiku').model).toBe('haiku')
+    expect(parseCardTokens('Frontier #fable').model).toBe('fable')
+    // an ordinary trailing hashtag is a display tag, not a model pin
+    expect(parseCardTokens('Canadian tax lines #rfp')).toEqual({ text: 'Canadian tax lines #rfp', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: null })
+    // mid-text alias is prose
+    expect(parseCardTokens('The #sonnet form is nicer here').model).toBe(null)
+    // one model per card — the first (rightmost) token wins, the other stays in the text
+    expect(parseCardTokens('Pick one #model/haiku #sonnet')).toEqual({ text: 'Pick one #model/haiku', agentKey: null, blockId: null, blocked: false, nofork: false, inherit: false, model: 'sonnet' })
+    // serializer: aliases write back as the shorthand, ids behind #model/
+    expect(modelToken('sonnet')).toBe('#sonnet')
+    expect(modelToken('us.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe('#model/us.anthropic.claude-haiku-4-5-20251001-v1:0')
+    const board = parseBoard('## In Progress\n- [ ] Fix it #model/sonnet @al ^ab12\n- [ ] Keep #haiku @al\n')
+    expect(board.columns[0]!.cards.map((c) => c.model)).toEqual(['sonnet', 'haiku'])
+    for (const c of board.columns[0]!.cards) refreshCardLine(c)
+    expect(serializeBoard(board)).toBe('## In Progress\n- [ ] Fix it #sonnet @al ^ab12\n- [ ] Keep #haiku @al\n')
+    // write-path collision guard covers the shorthand too
+    expect(sanitizeCardText('we love #opus')).toBe('we love `#opus`')
+    expect(sanitizeCardText('we love #rfp')).toBe('we love #rfp')
   })
   it('#blocked is a trailing property, any order with other tokens', () => {
     expect(parseCardTokens('Fix it #blocked @al ^abc123')).toEqual({ text: 'Fix it', agentKey: 'al', blockId: 'abc123', blocked: true, nofork: false, inherit: false, model: null })

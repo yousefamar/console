@@ -97,7 +97,7 @@ export interface CardView {
   nofork: boolean
   /** `#inherit` — the ticket-fork inherits the parent's transcript (default: fresh context + digest). */
   inherit: boolean
-  /** `#model/<alias>` — ticket-fork model pin (haiku/sonnet/opus or id). */
+  /** `#model/<alias>` (or bare `#haiku`/`#sonnet`/`#opus`/`#fable`) — ticket-fork model pin. */
   model: string | null
   detail: string[]
   /** Set on a move into Under Review when the card carries no `- ` summary

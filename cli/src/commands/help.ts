@@ -372,7 +372,7 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> move "<card>" <col>   Move a card to a column
   board <project> assign "<card>" <key|none>
   board <project> owner <agentKey|none>          Board default owner (unassigned → In Progress auto-assigns to it)
-  board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus)
+  board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus/fable — or just type #sonnet on the card)
   board <project> nofork "<card>"       Dispatch wakes the assignee directly (no ticket-fork)
   board <project> forkok "<card>"       Undo nofork
   board <project> inherit "<card>"      Ticket-fork inherits the parent's whole transcript (default: fresh context + digest)
