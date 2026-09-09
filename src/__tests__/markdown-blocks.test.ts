@@ -49,3 +49,28 @@ describe('segmentBlocks — blockquotes', () => {
     ])
   })
 })
+
+describe('headings + lists (^gray-bat: vault-note peeks, transcript parity)', () => {
+  it('headings are their own segment with level + text; closing #s stripped', () => {
+    expect(segmentBlocks('## Backlog ##\nbody').slice(0, 1)).toEqual([{ kind: 'heading', level: 2, text: 'Backlog' }])
+    expect(segmentBlocks('#nothash')).toEqual([{ kind: 'text', lines: ['#nothash'] }])
+  })
+  it('a run of list lines is one list; bullets, ordered numbers, task boxes, depth', () => {
+    const [seg] = segmentBlocks('- a\n  - b\n- [ ] todo\n- [x] done\n3. third')
+    expect(seg).toEqual({ kind: 'list', items: [
+      { depth: 0, ordered: false, checked: undefined, text: 'a' },
+      { depth: 1, ordered: false, checked: undefined, text: 'b' },
+      { depth: 0, ordered: false, checked: false, text: 'todo' },
+      { depth: 0, ordered: false, checked: true, text: 'done' },
+      { depth: 0, ordered: true, num: 3, checked: undefined, text: 'third' },
+    ] })
+  })
+  it('an indented continuation line folds into the item; a blank line ends the list', () => {
+    const segs = segmentBlocks('- first line\n  continues here\n\nplain')
+    expect(segs[0]).toEqual({ kind: 'list', items: [{ depth: 0, ordered: false, checked: undefined, text: 'first line continues here' }] })
+    expect(segs[1]).toEqual({ kind: 'text', lines: ['', 'plain'] })
+  })
+  it('dashes without a following space are not lists (`---`, `-x`)', () => {
+    expect(segmentBlocks('---\n-x\n2026 - a year').every((s) => s.kind === 'text')).toBe(true)
+  })
+})

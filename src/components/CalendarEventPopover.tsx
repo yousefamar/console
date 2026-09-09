@@ -15,6 +15,7 @@ import { hubFetch, getHubUrl } from '@/hub'
 import { classifyLink, type LinkKind } from '@/calendar/links'
 import { getVaultRoot } from '@/calendar/api'
 import { openVaultFile } from '@/notes/open-subscribe'
+import { renderMarkdownLite } from './AgentMessageBlock'
 
 export function CalendarEventPopover({ eventsOverride }: { eventsOverride?: CalendarEvent[] } = {}) {
   const storeEvents = useCalendarStore((s) => s.events)
@@ -506,7 +507,7 @@ function LinkRow({ link, kind, onRemove }: { link: string; kind: LinkKind; onRem
         const r = await hubFetch<{ content: string }>(`/notes/file/${kind.vaultPath.split('/').map(encodeURIComponent).join('/')}`)
         const body = r.content.replace(/^---\n[\s\S]*?\n---\n?/, '')
         const lines = body.split('\n')
-        setPeek(lines.slice(0, 40).join('\n') + (lines.length > 40 ? `\n… (${lines.length - 40} more lines)` : ''))
+        setPeek(lines.slice(0, 40).join('\n') + (lines.length > 40 ? `\n\n*… ${lines.length - 40} more lines — open to read all*` : ''))
       } catch (e) { setPeek(`(could not read: ${hubErrorText(e)})`) }
       finally { setLoading(false) }
     }
@@ -534,9 +535,9 @@ function LinkRow({ link, kind, onRemove }: { link: string; kind: LinkKind; onRem
         <button onClick={onRemove} className="ml-auto opacity-0 group-hover:opacity-100 text-text-tertiary hover:text-red-400 transition-opacity" title="Unlink"><X size={11} /></button>
       </div>
       {open && kind.kind === 'vault' && (
-        <pre className="mt-1 ml-[26px] max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-surface-0 p-2 text-[11px] leading-snug text-text-secondary">
-          {loading ? 'Loading…' : peek}
-        </pre>
+        <div className="mt-1 ml-[26px] max-h-56 overflow-auto break-words rounded-sm border border-border bg-surface-0 px-2 py-1.5 text-[11px] leading-snug text-text-secondary [&_*]:text-[11px]">
+          {loading ? 'Loading…' : peek !== null ? renderMarkdownLite(peek) : null}
+        </div>
       )}
       {open && kind.kind === 'media' && kind.image && (
         <img src={bridge(kind.path)} alt={kind.label} onClick={() => setLightboxSrc(bridge(kind.path))} className="mt-1 ml-[26px] max-h-40 cursor-zoom-in rounded-sm border border-border" />

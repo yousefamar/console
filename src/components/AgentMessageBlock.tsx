@@ -805,7 +805,25 @@ function renderBlockContent(text: string, startKey: number): React.ReactNode[] {
   let key = startKey
 
   for (const seg of segmentBlocks(text)) {
-    if (seg.kind === 'quote') {
+    if (seg.kind === 'heading') {
+      const cls = seg.level === 1 ? 'text-sm font-semibold' : seg.level === 2 ? 'text-[13px] font-semibold' : 'text-xs font-semibold'
+      parts.push(<div key={key++} className={`${cls} mt-2 mb-1 text-text-primary`}>{renderInlineMarkdown(seg.text)}</div>)
+    } else if (seg.kind === 'list') {
+      // Flat list with depth-indented rows — nesting is visual (padding), not
+      // structural, which is all a transcript/peek needs.
+      parts.push(
+        <ul key={key++} className="my-1 space-y-0.5">
+          {seg.items.map((it, j) => (
+            <li key={j} className="flex items-start gap-1.5" style={{ paddingLeft: `${it.depth * 14}px` }}>
+              <span className="flex-shrink-0 select-none text-text-tertiary w-3.5 text-right">
+                {it.checked !== undefined ? (it.checked ? '☑' : '☐') : it.ordered ? `${it.num}.` : '•'}
+              </span>
+              <span className={it.checked ? 'line-through text-text-tertiary' : undefined}>{renderInlineMarkdown(it.text)}</span>
+            </li>
+          ))}
+        </ul>,
+      )
+    } else if (seg.kind === 'quote') {
       // `>` lines → a real blockquote; recurse so nested `> >` quotes and
       // tables inside a quote render too. Block-level, so it never inherits
       // the `>` glyphs into the pre-wrap text run.
