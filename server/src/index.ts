@@ -40,7 +40,7 @@ import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBac
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
-import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
 import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
@@ -1172,6 +1172,11 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // A card only holds a slot while its worker is actually alive — a dead fork
   // (crashed, killed, ended without moving its card) must not block the queue.
   isWorkerAlive: (agentKey) => !!liveSessionForRole(agentCtx, agentKey),
+  // A fresh ^id must not collide with any session that already carries one
+  // in its key/title — ended and hibernated included: their card may be gone
+  // from the board, but the fork key convention and `con agent chat <name>`
+  // would still resolve to the wrong session.
+  isIdTaken: (id) => [...sessions.values()].some((s) => sessionCarriesBlockId(s, id)),
   files: boardFiles,
 })
 void boardWatcher.start()

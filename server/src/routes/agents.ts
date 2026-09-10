@@ -12,7 +12,7 @@ import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
-import { buildReviewReminder, buildForkCompactPrompt, type ReviewCardRef } from '../kanban/dispatch.js'
+import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
@@ -297,13 +297,22 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   // already visible via indent/filter, so repeating its name is noise. The KEY
   // stays parent-prefixed (`console-general-bold-fox-fork`): the board's
   // assignee filter groups fork keys under their root by that shape.
-  const title = `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
+  const title = forkTitle(blockId)
   // Prefix with the source's KEY, not its name: rootOf()/the reopen peel-back
   // strip `-<blockId>-fork` and expect the remainder to BE the source key. A
   // name-derived prefix only matched when the slug happened to coincide —
   // "Console mobile" (@new-mobile-app) minted `console-mobile-…-fork`, a fork
   // no rail group or reopen could resolve.
   const forkKey = mintAgentKey(ctx, `${source.agentKey ?? baseTitle} ${blockId} fork`)
+  // The watcher mints ids against every session's key/title, so a suffixed
+  // key here means the id check was bypassed (hand-stamped card, older board
+  // restored by Syncthing). Say so: a `…-fork-1` key is one the wind-down
+  // lookup and the reopen peel can never resolve back to this card.
+  if (!forkKey.endsWith(`-${blockId}-fork`)) {
+    const plain = forkKey.replace(/-\d+$/, '')
+    const holder = [...ctx.sessions.values()].find((s) => s.agentKey === plain && s.status !== 'ended')
+    ctx.log(`[boards] ^${blockId}: fork key CLASH — ${plain} is held by ${holder ? `"${holder.name ?? holder.id}" (${holder.status})` : 'another session'}; minted ${forkKey}, which board wind-down/reopen cannot match to this card`)
+  }
   // `--fork-session` resumes the source's transcript, which the CLI keys by
   // cwd — so the fork MUST inherit source.cwd even when that is wrong for the
   // project. Flag it: the only fix is recreating the source in the right dir.

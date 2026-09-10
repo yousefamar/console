@@ -141,21 +141,43 @@ const ID_NOUNS = [
 ]
 
 /** Mint a short, READABLE block id — `<adjective>-<animal>`, collision-checked
- *  against `taken` (the watcher's global in-flight set is keyed by id alone,
- *  and 48×48 combos make birthday collisions real where 36^6 didn't). Falls
- *  back to a numeric suffix if the random picks keep colliding. */
-export function mintBlockId(opts: { taken?: ReadonlySet<string>; random?: () => number } = {}): string {
+ *  against `taken` (a set, or a predicate that can also consult things outside
+ *  the boards — fork sessions carry the id in their key and title). 48×48
+ *  combos make birthday collisions real where 36^6 didn't: with ~250 ids in
+ *  use a blind pick clashes ~10 % of the time, and a clash is not cosmetic —
+ *  the in-flight ledger, the wind-down lookup and the reopen peel are all
+ *  keyed by id alone (astera ^gray-stag/^spry-kite, 2026-09-09: the fork got
+ *  alternating approve/reopen wakes meant for an old Done card). Falls back
+ *  to a numeric suffix if the random picks keep colliding. */
+export function mintBlockId(opts: { taken?: ReadonlySet<string> | ((id: string) => boolean); random?: () => number } = {}): string {
   const random = opts.random ?? Math.random
   const pick = (list: string[]) => list[Math.floor(random() * list.length)]!
+  const given = opts.taken
+  const taken = typeof given === 'function' ? given : (id: string) => given?.has(id) ?? false
   for (let i = 0; i < 40; i++) {
     const id = `${pick(ID_ADJECTIVES)}-${pick(ID_NOUNS)}`
-    if (!opts.taken?.has(id)) return id
+    if (!taken(id)) return id
   }
   const base = `${pick(ID_ADJECTIVES)}-${pick(ID_NOUNS)}`
   for (let n = 2; ; n++) {
     const id = `${base}-${n}`
-    if (!opts.taken?.has(id)) return id
+    if (!taken(id)) return id
   }
+}
+
+/** A ticket-fork's session title — just the readable id ("Gold finch (fork)");
+ *  the parent is visible via indent/filter. One definition, so the clash check
+ *  at mint time and the fork spawn can't disagree about the shape. */
+export function forkTitle(blockId: string): string {
+  return `${blockId.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())} (fork)`
+}
+
+/** Does a session's key or title already carry this ticket id? The key shape
+ *  is `<source>-<id>-fork` (load-bearing: wind-down and reopen peel it), the
+ *  title is `forkTitle(id)`. Ended sessions count too — `con agent chat` by
+ *  name and the SPA's session list would still show two "Gold finch (fork)". */
+export function sessionCarriesBlockId(s: { agentKey?: string | null; name?: string | null }, blockId: string): boolean {
+  return !!s.agentKey?.endsWith(`-${blockId}-fork`) || s.name === forkTitle(blockId)
 }
 
 // ─── Hand-back: what Yousef actually reads ───────────────────────────────

@@ -1,10 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { parseBoard } from '../kanban/board.js'
-import { findDispatchable, inFlightCards, mintBlockId, buildBoardEnvelope, buildWindDownEnvelope, buildReopenNudge, buildReviewReminder, handbackWarning, hasSummaryBullets, resolveDefaultOwner } from '../kanban/dispatch.js'
+import { findDispatchable, inFlightCards, mintBlockId, forkTitle, sessionCarriesBlockId, buildBoardEnvelope, buildWindDownEnvelope, buildReopenNudge, buildReviewReminder, handbackWarning, hasSummaryBullets, resolveDefaultOwner } from '../kanban/dispatch.js'
 import { BoardWatcher, projectForBoardPath, type BoardDispatch, type BoardTransition } from '../kanban/watcher.js'
 import { NoteStore } from '../notes.js'
 
@@ -101,6 +101,91 @@ describe('mintBlockId', () => {
     for (let i = 0; i < 5000; i++) all.add(mintBlockId({ random: cycle }))
     const suffixed = mintBlockId({ taken: all, random: cycle })
     expect(suffixed).toMatch(/^[a-z]+-[a-z]+-\d+$/)
+  })
+  it('accepts a predicate, so the clash set can reach beyond a static set (fork sessions)', () => {
+    // random ⇒ 0 always picks the first adjective + first noun.
+    const first = mintBlockId({ random: () => 0 })
+    expect(mintBlockId({ taken: (id) => id === first, random: () => 0 })).toBe(`${first}-2`)
+  })
+})
+
+describe('fork identity helpers', () => {
+  it('forkTitle is the readable id — the ONE shape the clash check and the spawn share', () => {
+    expect(forkTitle('gold-finch')).toBe('Gold finch (fork)')
+  })
+  it('sessionCarriesBlockId matches the `-<id>-fork` key or the title, live or ended', () => {
+    expect(sessionCarriesBlockId({ agentKey: 'console-general-gold-finch-fork', name: 'x' }, 'gold-finch')).toBe(true)
+    expect(sessionCarriesBlockId({ agentKey: 'other', name: 'Gold finch (fork)' }, 'gold-finch')).toBe(true)
+    expect(sessionCarriesBlockId({ agentKey: 'console-general-gold-finch-fork-1', name: 'x' }, 'gold-finch')).toBe(false)
+    expect(sessionCarriesBlockId({ agentKey: 'console-general', name: 'Console general' }, 'gold-finch')).toBe(false)
+  })
+})
+
+describe('BoardWatcher id clash (^gold-finch)', () => {
+  // Math.random pinned to 0 ⇒ mintBlockId always proposes the same pair; a
+  // clash the watcher SEES yields the `-2` suffix, one it misses yields the
+  // bare pair — so the stamped id is the assertion.
+  const PAIR = mintBlockId({ random: () => 0 })
+  const BOARD_WITH_DONE = `---\nkanban-plugin: board\n---\n\n## In Progress\n\n- [ ] New work @eng\n\n## Done\n\n- [x] Old work @eng-${PAIR}-fork ^${PAIR}\n`
+  const BOARD_NEW_ONLY = `---\nkanban-plugin: board\n---\n\n## In Progress\n\n- [ ] New work @eng\n\n## Done\n\n`
+  const BOARD_DONE_ONLY = `---\nkanban-plugin: board\n---\n\n## In Progress\n\n\n## Done\n\n- [x] Old work @eng-${PAIR}-fork ^${PAIR}\n`
+
+  async function clashSetup(boards: Record<string, string>, opts: { isIdTaken?: (id: string) => boolean } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    for (const [slug, content] of Object.entries(boards)) {
+      mkdirSync(join(dir, 'projects', slug), { recursive: true })
+      writeFileSync(join(dir, 'projects', slug, 'board.md'), content)
+    }
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    const dispatches: BoardDispatch[] = []
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {},
+      onDispatch: (d) => { dispatches.push(d); return true },
+      ...(opts.isIdTaken ? { isIdTaken: opts.isIdTaken } : {}),
+      pollMs: 999_999,
+    })
+    const stampedId = (slug: string) => readFileSync(join(dir, 'projects', slug, 'board.md'), 'utf-8').match(/New work @eng \^([a-z0-9-]+)/)?.[1]
+    return { dir, watcher, dispatches, stampedId, cleanup: () => { random.mockRestore(); watcher.stop(); rmSync(dir, { recursive: true, force: true }) } }
+  }
+
+  it('a boot-time stamp sees the SAME board\'s Done ids (astera re-minted its own ^gray-stag)', async () => {
+    const t = await clashSetup({ demo: BOARD_WITH_DONE })
+    try {
+      await t.watcher.start()
+      expect(t.dispatches).toHaveLength(1)
+      expect(t.stampedId('demo')).toBe(`${PAIR}-2`)
+    } finally { t.cleanup() }
+  })
+
+  it('a boot-time stamp sees ids on boards classified LATER in list order (memo\'s ^spry-kite)', async () => {
+    // "aaa" sorts before "zzz": the stamping board is classified first, the
+    // board holding the id last — exactly the order that lost the clash.
+    const t = await clashSetup({ aaa: BOARD_NEW_ONLY, zzz: BOARD_DONE_ONLY })
+    try {
+      await t.watcher.start()
+      expect(t.dispatches).toHaveLength(1)
+      expect(t.stampedId('aaa')).toBe(`${PAIR}-2`)
+    } finally { t.cleanup() }
+  })
+
+  it('an id a fork SESSION still carries is taken even when no board has it any more', async () => {
+    const t = await clashSetup({ demo: BOARD_NEW_ONLY }, { isIdTaken: (id) => id === PAIR })
+    try {
+      await t.watcher.start()
+      expect(t.stampedId('demo')).toBe(`${PAIR}-2`)
+    } finally { t.cleanup() }
+  })
+
+  it('an id stamped this run stays taken after its card is deleted from the board', async () => {
+    const t = await clashSetup({ demo: BOARD_NEW_ONLY })
+    try {
+      await t.watcher.start()
+      expect(t.stampedId('demo')).toBe(PAIR)
+      // Yousef deletes the stamped card outright and adds different work.
+      writeFileSync(join(t.dir, 'projects', 'demo', 'board.md'), BOARD_NEW_ONLY.replace('New work', 'Other work'))
+      await t.watcher.poll()
+      expect(readFileSync(join(t.dir, 'projects', 'demo', 'board.md'), 'utf-8')).toContain(`Other work @eng ^${PAIR}-2`)
+    } finally { t.cleanup() }
   })
 })
 
