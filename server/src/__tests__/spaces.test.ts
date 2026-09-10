@@ -16,6 +16,8 @@ kanban-plugin: board
 ## In Progress
 
 - [ ] Working on it @eng ^bold-fox
+- [ ] Need creds #blocked @ops ^sly-hare
+    - waiting on the API key
 
 ## Under Review
 
@@ -52,7 +54,22 @@ describe('listSpaces review counts', () => {
     writeFileSync(join(dir!, 'projects/widget/board.md'), BOARD)
     const spaces = await listSpaces(store)
     const widget = spaces.find((s) => s.slug === 'widget')!
-    expect(widget.cardAgentKeys).toEqual(['eng'])
+    expect(widget.cardAgentKeys).toEqual(['eng', 'ops'])
+  })
+
+  it('ships #blocked in-progress cards + their owners (^mild-ibis)', async () => {
+    const store = vault()
+    mkdirSync(join(dir!, 'projects/widget'), { recursive: true })
+    writeFileSync(join(dir!, 'projects/widget/board.md'), BOARD)
+    const spaces = await listSpaces(store)
+    const widget = spaces.find((s) => s.slug === 'widget')!
+    expect(widget.blockedCards).toEqual([{ blockId: 'sly-hare', text: 'Need creds', agentKey: 'ops' }])
+    expect(widget.blockedAgentKeys).toEqual(['ops'])
+    // A #blocked card in Backlog is parked, not stuck; a legacy Blocked column counts.
+    const parked = BOARD.replace('- [ ] Someday', '- [ ] Someday #blocked @eng').replace('## Under Review', '## Blocked\n\n- [ ] Legacy stuck @qa ^old-elk\n\n## Under Review')
+    writeFileSync(join(dir!, 'projects/widget/board.md'), parked)
+    const again = (await listSpaces(store)).find((s) => s.slug === 'widget')!
+    expect(again.blockedCards.map((c) => c.text)).toEqual(['Need creds', 'Legacy stuck'])
   })
 
   it('ships the review cards + the Done column title (^pale-tern)', async () => {

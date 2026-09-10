@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
-  feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
+  blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionContext, sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -250,6 +250,47 @@ describe('agent sessions', () => {
   it('carries the agentKey only when the session has one', () => {
     expect(sessionToItem(session({ agentKey: 'console-general-fork' })).agentKey).toBe('console-general-fork')
     expect(sessionToItem(session())).not.toHaveProperty('agentKey')
+  })
+
+  it('a #blocked card flags the session and bands it with attention, running or not (^mild-ibis)', () => {
+    const blocked = new Set(['stuck-fork'])
+    const idle = sessionToItem(session({ id: 's-blocked', hasUnread: true, agentKey: 'stuck-fork', lastActivityAt: NOW - 50_000 }), undefined, undefined, blocked)
+    expect(idle.blocked).toBe(true)
+    // Unlike review, blocked is not gated on idle — the stall is the fact.
+    expect(sessionToItem(session({ status: 'running', needsAttention: { ts: NOW, snippet: 'x' }, agentKey: 'stuck-fork' }), undefined, undefined, blocked).blocked).toBe(true)
+    expect(sessionToItem(session({ hasUnread: true, agentKey: 'other' }), undefined, undefined, blocked)).not.toHaveProperty('blocked')
+    expect(sessionToItem(session({ hasUnread: true, agentKey: 'stuck-fork' }))).not.toHaveProperty('blocked')
+    const items = [
+      sessionToItem(session({ id: 's-review', hasUnread: true, agentKey: 'reviewer', lastActivityAt: NOW }), new Set(['reviewer']), undefined, blocked),
+      threadToItem(thread({ date: NOW }), DEFAULT_RULES),
+      idle,
+      sessionToItem(session({ id: 's-attn', needsAttention: { ts: NOW, snippet: 'x' }, lastActivityAt: NOW - 60_000 }), undefined, undefined, blocked),
+    ]
+    expect(sortInbox(items).map((i) => i.sourceId)).toEqual(['s-blocked', 's-attn', 's-review', 't1'])
+  })
+})
+
+describe('blocked cards (^mild-ibis)', () => {
+  const spaces = [
+    {
+      kind: 'project' as const, slug: 'console',
+      blockedCards: [
+        { blockId: 'sly-hare', text: 'Need creds', agentKey: 'cg-sly-hare-fork' },
+        { blockId: null, text: 'Hand-made', agentKey: 'cg-sly-hare-fork' },
+        { blockId: 'dry-owl', text: 'Someone else', agentKey: 'other' },
+      ],
+    },
+    { kind: 'area' as const, slug: 'dev', blockedCards: [{ blockId: 'x', text: 'never', agentKey: 'cg-sly-hare-fork' }] },
+    { kind: 'project' as const, slug: 'old-hub' },
+  ]
+
+  it('joins the agentKey to its blocked cards, ^id first else text', () => {
+    expect(blockedCardsFor('cg-sly-hare-fork', spaces)).toEqual([
+      { project: 'console', query: '^sly-hare', text: 'Need creds' },
+      { project: 'console', query: 'Hand-made', text: 'Hand-made' },
+    ])
+    expect(blockedCardsFor(undefined, spaces)).toEqual([])
+    expect(blockedCardsFor('nobody', spaces)).toEqual([])
   })
 })
 

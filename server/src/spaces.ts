@@ -13,7 +13,7 @@ import type { NoteStore } from './notes.js'
 import { parseFrontmatter } from './blog.js'
 import { loadAreaRegistry } from './areas.js'
 import { isKanbanBoard, parseBoard, boardDefaultOwner } from './kanban/board.js'
-import { DONE_COLUMN_RE, REVIEW_COLUMN_RE } from './kanban/dispatch.js'
+import { BLOCKED_COLUMN_RE, DISPATCH_COLUMN_RE, DONE_COLUMN_RE, REVIEW_COLUMN_RE } from './kanban/dispatch.js'
 
 const PROJECTS_DIR = 'projects'
 
@@ -42,8 +42,9 @@ export function projectRepo(vaultPath: string, slug: string): string | null {
   } catch { return null }
 }
 
-/** One card sitting in an Under-Review column — enough for a client to
- *  address it on the /board/:project API without loading the board. */
+/** One card a client may need to act on (Under Review, or #blocked in
+ *  progress) — enough to address it on the /board/:project API without
+ *  loading the board. */
 export interface ReviewCard {
   /** Dispatch stamp; null for a never-dispatched card (address by text). */
   blockId: string | null
@@ -72,6 +73,12 @@ export interface SpaceSummary {
   /** The review cards themselves — so an approve affordance outside the
    *  Spaces pane (the Inbox's agent rows) can move one to Done by ^id. */
   reviewCards: ReviewCard[]
+  /** In-progress cards tagged `#blocked` (or sitting in a legacy Blocked
+   *  column) — the assignee is stuck on Yousef. The Inbox treats the owning
+   *  session like an @amar alert. */
+  blockedCards: ReviewCard[]
+  /** agentKeys of the blocked cards' assignees (the Inbox join key). */
+  blockedAgentKeys: string[]
   /** Title of the board's Done-like column (first match), null when the
    *  board has none — the approve target for `POST /board/:project/move`. */
   doneColumn: string | null
@@ -151,6 +158,8 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
     let reviewCount = 0
     const reviewAgentKeys: string[] = []
     const reviewCards: ReviewCard[] = []
+    const blockedCards: ReviewCard[] = []
+    const blockedAgentKeys: string[] = []
     let doneColumn: string | null = null
     const cardAgentKeys = new Set<string>()
     let defaultOwner: string | null = null
@@ -160,19 +169,26 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
         for (const col of parseBoard(boardContent).columns) {
           if (doneColumn === null && DONE_COLUMN_RE.test(col.title)) doneColumn = col.title
           const isReview = REVIEW_COLUMN_RE.test(col.title)
+          const isDispatch = DISPATCH_COLUMN_RE.test(col.title)
+          const isBlockedColumn = BLOCKED_COLUMN_RE.test(col.title)
           for (const card of col.cards) {
             if (card.agentKey) cardAgentKeys.add(card.agentKey)
+            const ref = { blockId: card.blockId ?? null, text: card.text, agentKey: card.agentKey ?? null }
+            if ((isDispatch && card.blocked) || (isBlockedColumn && !card.checked)) {
+              blockedCards.push(ref)
+              if (card.agentKey) blockedAgentKeys.push(card.agentKey)
+            }
             if (!isReview) continue
             reviewCount++
             if (card.agentKey) reviewAgentKeys.push(card.agentKey)
-            reviewCards.push({ blockId: card.blockId ?? null, text: card.text, agentKey: card.agentKey ?? null })
+            reviewCards.push(ref)
           }
         }
       } catch { /* unparseable board — counts stay 0 */ }
     }
     out.push({
       kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length,
-      reviewCount, reviewAgentKeys, reviewCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
+      reviewCount, reviewAgentKeys, reviewCards, blockedCards, blockedAgentKeys, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
       cwd: spaceCwd(store.vaultPath, { project: slug })!,
       repo: projectRepo(store.vaultPath, slug),
       queuedCount: boardPath ? opts.queuedFor?.(boardPath) ?? 0 : 0,
@@ -192,6 +208,8 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
       reviewCount: 0,
       reviewAgentKeys: [],
       reviewCards: [],
+      blockedCards: [],
+      blockedAgentKeys: [],
       doneColumn: null,
       cardAgentKeys: [],
       defaultOwner: null,

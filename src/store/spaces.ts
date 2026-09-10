@@ -29,6 +29,11 @@ export interface SpaceSummary {
   /** The review cards themselves — the Inbox approve button addresses one
    *  by ^id without loading the board (^pale-tern). Optional: older hub. */
   reviewCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+  /** In-progress cards tagged `#blocked` — the Inbox treats the owning
+   *  session like an @amar alert (^mild-ibis). Optional: older hub. */
+  blockedCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+  /** agentKeys assigned to those blocked cards. */
+  blockedAgentKeys?: string[]
   /** Title of the board's Done-like column; null = none. Optional: older hub. */
   doneColumn?: string | null
   /** agentKeys assigned to ANY card on the board — card-owned forks are
@@ -92,6 +97,9 @@ interface SpacesState {
    *  Inbox's approve button moves a hand-back to Done from outside Spaces.
    *  Throws on failure so the caller can surface it where the user is. */
   moveCardOnBoard: (slug: string, query: string, toColumn: string) => Promise<void>
+  /** Drop a card's `#blocked` tag on ANY project's board by `^id`/text — the
+   *  Inbox's unblock strip; the hub's reopen path nudges the assignee. */
+  unblockCardOnBoard: (slug: string, query: string) => Promise<void>
   /** Rewrite a card's text and detail (indented continuation lines). Tokens
    *  (@key/^id/#blocked) survive — only the human-readable content changes. */
   editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
@@ -455,6 +463,17 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     await hubFetch(`/board/${encodeURIComponent(slug)}/move`, {
       method: 'POST',
       body: JSON.stringify({ card: query, to: toColumn }),
+      timeoutMs: 10000,
+    })
+    await get().refreshSpaces()
+    if (get().activeSlug === slug) await get().loadBoard().catch(() => {})
+  },
+
+  unblockCardOnBoard: async (slug, query) => {
+    if (slug.startsWith('~')) throw new Error('not a project board')
+    await hubFetch(`/board/${encodeURIComponent(slug)}/block`, {
+      method: 'POST',
+      body: JSON.stringify({ card: query, blocked: false }),
       timeoutMs: 10000,
     })
     await get().refreshSpaces()

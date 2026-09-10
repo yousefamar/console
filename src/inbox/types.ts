@@ -44,6 +44,9 @@ export interface InboxItem {
   /** Agent only: its `@key` owns an Under Review card — a hand-back waiting
    *  on Yousef, banded beside attention. */
   review?: boolean
+  /** Agent only: its `@key` owns an in-progress card tagged `#blocked` — the
+   *  agent is stuck on Yousef; banded with attention. */
+  blocked?: boolean
   /** Agent only: the session's board `@key` — joins the row to the Under-
    *  Review card(s) it owns (the approve affordance, ^pale-tern). */
   agentKey?: string

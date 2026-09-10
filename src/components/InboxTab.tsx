@@ -15,7 +15,7 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Ban, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
@@ -31,7 +31,7 @@ import { FeedItemView } from './FeedItemView'
 import { InboxDayRail } from './InboxDayRail'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
-import { feedKindsPresent, reviewHandbacksFor, routeForFeed, type ReviewHandback } from '@/inbox/route'
+import { blockedCardsFor, feedKindsPresent, reviewHandbacksFor, routeForFeed, type BlockedCard, type ReviewHandback } from '@/inbox/route'
 import { InboxCardModal } from '@/components/InboxCardModal'
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
@@ -251,14 +251,66 @@ export const InboxTab = memo(function InboxTab() {
 function ReviewHandbackStrip({ item }: { item: InboxItem }) {
   const spaces = useSpacesStore((s) => s.spaces)
   const handbacks = reviewHandbacksFor(item.agentKey, spaces)
+  // A #blocked card is the mirror image: the agent is stuck on Yousef. Same
+  // strip, red, with Unblock instead of Approve (^mild-ibis).
+  const blocked = blockedCardsFor(item.agentKey, spaces)
   // The card's editing modal opens HERE, over the Inbox — triage stays put
   // (^glad-bee). InboxCardModal owns its own board copy for that project.
   const [openCard, setOpenCard] = useState<{ slug: string; query: string } | null>(null)
-  if (handbacks.length === 0) return null
+  if (handbacks.length === 0 && blocked.length === 0) return null
   return (
     <div className="border-b border-border bg-surface-1">
+      {blocked.map((c) => <BlockedCardRow key={`${c.project}:${c.query}`} card={c} onOpen={() => setOpenCard({ slug: c.project, query: c.query })} />)}
       {handbacks.map((h) => <ReviewHandbackRow key={`${h.project}:${h.query}`} handback={h} item={item} onOpen={() => setOpenCard({ slug: h.project, query: h.query })} />)}
       {openCard && <InboxCardModal slug={openCard.slug} query={openCard.query} onClose={() => setOpenCard(null)} />}
+    </div>
+  )
+}
+
+/** One #blocked card: open it (to read the note and reply on the card) or
+ *  unblock it outright — the hub's reopen path then nudges the assignee. The
+ *  row is NOT dropped: the fork's resumed turn ends with fresh unread text,
+ *  and until then the session has nothing new for Yousef. */
+function BlockedCardRow({ card: c, onOpen }: { card: BlockedCard; onOpen: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const unblock = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await useSpacesStore.getState().unblockCardOnBoard(c.project, c.query)
+    } catch (e) {
+      void showAlert(`Couldn't unblock the card: ${hubErrorText(e)}`)
+    }
+    setBusy(false)
+  }
+  return (
+    <div className="flex items-center gap-2 px-3 py-1 text-xs">
+      <Ban size={12} className="flex-shrink-0 text-red-500" />
+      <span className="text-text-tertiary flex-shrink-0">Blocked · {c.project}</span>
+      <button
+        onClick={onOpen}
+        className="truncate text-left text-text-primary flex-1 hover:underline"
+        title="Open card"
+      >
+        {c.text}
+      </button>
+      <button
+        onClick={onOpen}
+        className="flex items-center gap-1 rounded-sm border border-border bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-text-tertiary/60 hover:text-text-primary transition-colors duration-fast"
+        title="Open this card here — read the blocker note, reply on the card"
+      >
+        <FolderKanban size={11} />
+        <span>Open card</span>
+      </button>
+      <button
+        onClick={() => void unblock()}
+        disabled={busy}
+        className="flex items-center gap-1 rounded-sm border border-border bg-surface-0 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-green-500/60 hover:text-green-500 disabled:cursor-not-allowed disabled:opacity-50 transition-colors duration-fast"
+        title="Drop #blocked — the assignee is nudged to carry on"
+      >
+        <Check size={11} />
+        <span>{busy ? 'Unblocking…' : 'Unblock'}</span>
+      </button>
     </div>
   )
 }
@@ -272,16 +324,28 @@ export function afterApprove(item: InboxItem, remainingHandbacks: number) {
   useAgentStore.getState().markSessionRead(item.sourceId, { sticky: true })
 }
 
-/** Row marker: this agent has a card waiting for review — the same blue the
- *  Spaces rail's kanban badge turns for a hand-back. */
+/** Row markers: a red ⊘ for each agent stuck on a #blocked card (the Spaces
+ *  board's blocked badge), a blue check for a card waiting for review — the
+ *  same blue the Spaces rail's kanban badge turns for a hand-back. */
 function HandbackGlyph({ agentKey }: { agentKey?: string }) {
   const count = useSpacesStore((s) => reviewHandbacksFor(agentKey, s.spaces).length)
-  if (count === 0) return null
+  const blocked = useSpacesStore((s) => blockedCardsFor(agentKey, s.spaces).length)
+  if (count === 0 && blocked === 0) return null
   return (
-    <span className="flex items-center gap-0.5 text-blue-400 flex-shrink-0" title={`${count} card${count === 1 ? '' : 's'} under review — open to approve`}>
-      <ClipboardCheck size={11} />
-      {count > 1 && <span className="text-[10px]">{count}</span>}
-    </span>
+    <>
+      {blocked > 0 && (
+        <span className="flex items-center gap-0.5 text-red-500 flex-shrink-0" title={`${blocked} card${blocked === 1 ? '' : 's'} blocked — open to unblock`}>
+          <Ban size={11} />
+          {blocked > 1 && <span className="text-[10px]">{blocked}</span>}
+        </span>
+      )}
+      {count > 0 && (
+        <span className="flex items-center gap-0.5 text-blue-400 flex-shrink-0" title={`${count} card${count === 1 ? '' : 's'} under review — open to approve`}>
+          <ClipboardCheck size={11} />
+          {count > 1 && <span className="text-[10px]">{count}</span>}
+        </span>
+      )}
+    </>
   )
 }
 
@@ -404,7 +468,7 @@ function FeedSourceIcon({ item }: { item: InboxItem }) {
 function ChannelIcon({ item }: { item: InboxItem }) {
   if (item.source === 'mail') return <Mail size={12} />
   if (item.source === 'feed') return <FeedSourceIcon item={item} />
-  if (item.source === 'agent') return <Bot size={12} className={item.attention ? 'text-red-500' : undefined} />
+  if (item.source === 'agent') return <Bot size={12} className={item.attention || item.blocked ? 'text-red-500' : undefined} />
   if (item.network) return <NetworkIcon network={item.network} />
   return <MessageCircle size={12} />
 }

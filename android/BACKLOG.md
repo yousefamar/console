@@ -62,6 +62,17 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   bands them last; drop that band, keep the attention exception. Tile badge =
   list size, so it shrinks with it.
 
+- Inbox: `#blocked` in-progress cards band with attention (hub + SPA
+  ^mild-ibis, 2026-09-10) — `SpaceSummary` gained `blockedCards` /
+  `blockedAgentKeys` (cards tagged `#blocked` in a dispatch column, or in a
+  legacy Blocked column); `sessionToItem` stamps `InboxItem.blocked` when the
+  session's `agentKey` owns one (NOT gated on idle), `band()` puts it in tier 1
+  beside `needsAttention`, the row's Bot icon + a `Ban` glyph turn red, and
+  the viewer gets a `Blocked · <project>` strip with Open card / Unblock
+  (`POST /board/:project/block {card, blocked:false}`). Port: parse the two
+  fields in `SpacesRepository`, add `blocked` to `InboxLogic.kt`'s agent
+  adapter + band, red row treatment, and the strip on the agent viewer.
+
 - Board: model-pin shorthand `#sonnet`/`#opus`/`#haiku`/`#fable` (hub + SPA
   ^tidy-mole, 2026-09-08) — the hub parses a bare alias tag as `#model/<alias>`
   and serializes aliases back in the short form, so `CardView.model` already

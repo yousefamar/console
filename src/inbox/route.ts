@@ -135,8 +135,10 @@ export function sessionIsLive(s: AgentSessionLike): boolean {
 
 /** `reviewKeys` = every `@key` owning an Under Review card across all
  *  boards (SpaceSummary.reviewAgentKeys, flattened) — the session's card
- *  being in review is what makes it a hand-back. */
-export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined): InboxItem {
+ *  being in review is what makes it a hand-back. `blockedKeys` = every
+ *  `@key` owning a `#blocked` in-progress card — stuck on Yousef, so the
+ *  row is treated like an @amar alert whatever the session is doing. */
+export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined, blockedKeys?: ReadonlySet<string>): InboxItem {
   const idle = s.status !== 'running'
   const context = sessionContext(s, titleOf)
   return {
@@ -151,6 +153,7 @@ export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<stri
     attention: !!s.needsAttention,
     ...(idle ? { idle: true } : {}),
     ...(idle && s.agentKey && reviewKeys?.has(s.agentKey) ? { review: true } : {}),
+    ...(s.agentKey && blockedKeys?.has(s.agentKey) ? { blocked: true } : {}),
     ...(s.agentKey ? { agentKey: s.agentKey } : {}),
   }
 }
@@ -167,12 +170,21 @@ export interface ReviewHandback {
   doneColumn: string | null
 }
 
+/** A `#blocked` in-progress card this agent owns — what the Inbox's unblock
+ *  strip needs to address it on `/board/:project/block`. */
+export interface BlockedCard {
+  project: string
+  query: string
+  text: string
+}
+
 /** Minimal SpaceSummary shape — the hub fields are optional-guarded because
  *  the SPA reader ships before the hub writer (HMR vs restart). */
 export interface SpaceReviewLike {
   kind: 'project' | 'area'
   slug: string
   reviewCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+  blockedCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
   doneColumn?: string | null
 }
 
@@ -185,6 +197,20 @@ export function reviewHandbacksFor(agentKey: string | null | undefined, spaces: 
     for (const c of s.reviewCards ?? []) {
       if (c.agentKey !== agentKey) continue
       out.push({ project: s.slug, query: c.blockId ? `^${c.blockId}` : c.text, text: c.text, doneColumn: s.doneColumn ?? null })
+    }
+  }
+  return out
+}
+
+/** `#blocked` in-progress cards owned by `agentKey` across every project board. */
+export function blockedCardsFor(agentKey: string | null | undefined, spaces: ReadonlyArray<SpaceReviewLike>): BlockedCard[] {
+  if (!agentKey) return []
+  const out: BlockedCard[] = []
+  for (const s of spaces) {
+    if (s.kind !== 'project') continue
+    for (const c of s.blockedCards ?? []) {
+      if (c.agentKey !== agentKey) continue
+      out.push({ project: s.slug, query: c.blockId ? `^${c.blockId}` : c.text, text: c.text })
     }
   }
   return out
@@ -231,18 +257,19 @@ export function roomIsLive(r: DbChatRoom, now: number): boolean {
 
 // ---------------------------------------------------------------------------
 // Inbox ordering. "Blocked on Yousef" bands first — overdue DMs, agents
-// asking for him, review hand-backs (turn ended + card Under Review) — then
-// chat+mail by recency, then the remaining finished-unread agents, then
-// promoted/inbox-routed feed reading; recency within each band. Agent tiers
-// per Yousef (^lean-deer): a hand-back beats a merely-finished agent. A
-// still-running agent never reaches the list unless it needs attention
-// (^neat-fawn), so there is no "still typing" band.
+// asking for him (@amar, or a #blocked card — same tier, ^mild-ibis), review
+// hand-backs (turn ended + card Under Review) — then chat+mail by recency,
+// then the remaining finished-unread agents, then promoted/inbox-routed feed
+// reading; recency within each band. Agent tiers per Yousef (^lean-deer): a
+// hand-back beats a merely-finished agent. A still-running agent never
+// reaches the list unless it needs attention (^neat-fawn), so there is no
+// "still typing" band.
 // ---------------------------------------------------------------------------
 
 function band(i: InboxItem): number {
   if (i.overdue) return 0
   if (i.source === 'agent') {
-    if (i.attention) return 1
+    if (i.attention || i.blocked) return 1
     if (i.review) return 2
     return 4
   }

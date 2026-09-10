@@ -1032,9 +1032,13 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // an earlier "review the work" version walked managers into approving
     // their own forks' cards). Only #blocked is actionable by the org.
     if (t.review) return
+    // #blocked = stuck on Yousef. Raise the assignee's @amar marker (red
+    // badge, push, Inbox attention band) so the stall is visible even when
+    // the session was already read (^mild-ibis).
+    const assignee = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
+    assignee?.flagAttention(`Blocked: ${t.text}`, true)
     // Escalation without a manager tree: the assignee's fork PARENT if it is
     // one, else Al (the always-on front door).
-    const assignee = t.agentKey ? liveSessionForRole(agentCtx, t.agentKey) : undefined
     const parentSession = assignee?.parentClaudeSessionId
       ? [...sessions.values()].find((s) => s.claudeSessionId === assignee.parentClaudeSessionId && s.status !== 'ended')
       : undefined
