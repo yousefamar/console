@@ -88,16 +88,17 @@ correct 1.8.18 APK.
 - **Auto-erase on transfer** → mitigated by the disposable-data gate.
 - Backlog is safe on flash now; the urgency is the *app*, so we have time to be careful.
 
-## Status (updated 2026-09-02)
-- **Support saga, latest:** Moleskine's replacement app (Notebooks 3.0.15, beta) did NOT fix
-  the empty-offline-index bug; Moleskine now prescribes **firmware 3.03** (Moleskine-channel
-  only — NeoLAB's server tops out at 3.02) but the in-app update fails with "Firmware Update
-  Error", as it always has. Yousef replied 2026-09-01 saying so; Sandra
-  (team@moleskinejourney.com, thread `19ff4de81707479f`) answered 2026-09-02 asking for an
-  **in-app ticket (Notebooks → Settings → Contact Us)** so they get the diagnostic bundle —
-  Yousef's move next. The concrete gate is still "get 3.03
-  onto the pen"; the FW_FILE flash route (`0x31`/`0x32`) is viable only if the image is
-  obtained. Full chronology: `memory/project_neo_pen_re.md`.
+## Status (updated 2026-09-10)
+- **Support saga, latest:** Moleskine's replacement app (Notebooks 3.0.15, `com.moleskine.notes`
+  beta track) did NOT fix the empty-offline-index bug. Sandra (Moleskine Digital Support; threads
+  `19ff4de81707479f` + `1a065ffae697b7a4`, the latter spawned by the in-app ticket) **retracted
+  the 3.03 firmware on 2026-09-03: 3.02 is current**, the update nag is an app bug — so there is
+  no firmware image to chase and the FW_FILE flash route (`0x31`/`0x32`) is moot. She also
+  stated Moleskine has **no recovery path** for data the pen no longer transfers; a full reset
+  clears it. Her last suggestion: **soft reset (hold power ~15 s) → retry transfer in Notebooks**,
+  or wait for the next app update (no release date). Ball is Yousef's; untried as of 2026-09-10
+  (threads silent since 3 Sep, Play Store stable still 1.8.18 of Aug 13, no mirror above 3.0.15).
+  Full chronology: `memory/project_neo_pen_re.md`.
 - **Phase 0 ✅** protocol extracted. **Phase 1 ✅** live stroke capture works on the real
   pen (NWP-F130 "Smart Pen", V5 GATT UUIDs not 0x19F1, password `1551`, decoded x/y/force).
 - **Phase 2 (offline rescue) BLOCKED + PARKED** — *not our bug*: a known Moleskine firmware
