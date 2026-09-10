@@ -360,7 +360,9 @@ describe('buildWindDownEnvelope', () => {
     const env = buildWindDownEnvelope({ boardAbsPath: '/v/b.md', text: 'Fix nav', blockId: 'aa', deployGate: 'review' })
     expect(env).toContain('[CARD APPROVED — wind down]')
     expect(env).toContain('Merge your branch into main (this deploys)')
-    expect(env).toContain('autowt cleanup')
+    // Self-scoped, scriptable cleanup — never the TTY-only `-y` form or the sibling-sweeping `--mode`.
+    expect(env).toContain('git worktree remove <path> && git branch -d <branch>')
+    expect(env).not.toContain('autowt cleanup <ticket-slug> -y')
     expect(env).toContain('hub automatically merges your summary')
     expect(env).toContain('learnings durable')
   })

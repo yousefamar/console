@@ -335,15 +335,21 @@ export function buildBoardEnvelope(opts: {
       'note with the branch name + the preview URL (e.g. the Vercel branch',
       'preview). The merge to main happens only after the card owner approves —',
       'they merge, or tell you to. Keep the worktree until then;',
-      '`autowt cleanup <ticket-slug> -y` only after the merge lands.',
+      'remove it only after the merge lands: `git worktree remove <path> &&',
+      'git branch -d <branch>` (never `autowt cleanup --mode …` — it sweeps',
+      'EVERY merged worktree, siblings included; `autowt cleanup <slug> -y`',
+      'needs a TTY you do not have).',
     ] : [
       'WORKTREE: for code work of any substance, isolate yourself first —',
       '`autowt switch <ticket-slug> --terminal echo -y` prints a fresh worktree',
       'path (no terminal opens); do ALL work there, with your own dev server and',
       'tests. When done: fold the work back into the project\'s main branch per',
       'that repo\'s convention (Console: commit lands on `main`, a branch never',
-      'survives), then `autowt cleanup <ticket-slug> -y`. Trivial edits (docs,',
-      'one-liners) can skip the worktree — your judgment.',
+      'survives), then remove YOUR worktree only: `git worktree remove <path>',
+      '&& git branch -d <branch>` — never `autowt cleanup --mode …` (sweeps',
+      'every merged worktree, siblings included) and `autowt cleanup <slug> -y`',
+      'needs a TTY you do not have. Trivial edits (docs, one-liners) can skip',
+      'the worktree — your judgment.',
     ]),
     ...(load && load.running > 1 ? [
       '',
@@ -372,11 +378,11 @@ export function buildWindDownEnvelope(opts: {
     'This board is deploy-gated: approval IS the merge signal. NOW:',
     'Merge your branch into main (this deploys) — resolve conflicts if any.',
     'Verify the merge landed (git log on main).',
-    'Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+    'Remove YOUR worktree only: `git worktree remove <path> && git branch -d <branch>` (never `autowt cleanup --mode …`; `-y` needs a TTY you do not have).',
   ] : [
     'Finish the lifecycle NOW:',
     'Verify your work is folded into the project\'s main branch (commit it if anything is still only in your worktree).',
-    'Remove your worktree: `autowt cleanup <ticket-slug> -y`.',
+    'Remove YOUR worktree only: `git worktree remove <path> && git branch -d <branch>` (never `autowt cleanup --mode …`; `-y` needs a TTY you do not have).',
   ]
   steps.push(
     'Make any learnings durable IF NEEDED: non-obvious gotchas, architecture decisions, or new wiring from this card belong in the repo\'s CLAUDE.md / project docs / your auto-memory — a fork\'s context dies with it, so anything only in your head is lost. Skip if nothing qualifies.',
