@@ -835,7 +835,7 @@ describe('PropertySync kind layers', () => {
       remove: (slug: string) => layers.delete(slug),
     }
     const byCountry: Record<string, Listing[]> = {
-      UK: [listing('uk1', { lat: 51, lon: -1, price: 100000 }), listing('uk-far', { lat: 30, lon: -1, price: 100000 })],
+      UK: [listing('uk1', { lat: 51, lon: -1, price: 100000, propertyType: 'Detached' }), listing('uk-far', { lat: 30, lon: -1, price: 100000 })],
       DE: [listing('de1', { lat: 50, lon: 8, price: 200000, portal: 'immoscout24' })],
     }
     const mk = (country: string) => ({
@@ -893,6 +893,19 @@ describe('PropertySync kind layers', () => {
     await sync.fullSync(s.id)
     expect([...layers.keys()]).toEqual(['property/farmland'])
     expect(layers.get('property/farmland')!.features.length).toBe(1)
+  })
+
+  it('an interested listing stays on the map when a later criteria change would filter it out', async () => {
+    const { store, sync, layers } = harness()
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['uk1'])
+    sync.review(s.id, 'uk1', 'interested')
+    // A local-only edit (no re-pull, inventory intact) whose post-filter would drop uk1.
+    sync.update(s.id, { criteria: { excludeHouseSubtypes: ['detached'] } })
+    const props = layers.get('property/house')!.features.map((f) => f.properties)
+    expect(props.map((p) => p.listingId)).toEqual(['uk1'])
+    expect(props[0]!.review).toBe('interested')
   })
 
   it('a tiered search draws to property/<kind>-<tier>, never to the shared kind layer, and its layer goes when it goes', async () => {

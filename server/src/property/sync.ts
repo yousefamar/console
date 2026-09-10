@@ -744,7 +744,13 @@ export class PropertySync {
       const pool = this.inventory.live(s.id)
       // A search that has never been pulled in full still shows its skims.
       const source: Listing[] = pool.length ? pool : (s.lastResults ?? [])
-      const kept = this.applyPlaceFilter(s, this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? []))))
+      const filtered = this.applyPlaceFilter(s, this.applyOutsideBar(s, this.clipToLayer(s.layer, postFilter(source, s.criteria, s.unsupported ?? []))))
+      // A verdict beats a filter: an interested listing stays on the map however
+      // the criteria move afterwards (walk bar, price, zone edit) — otherwise a
+      // tweak silently loses the houses he already chose (3 of 4 vanished when
+      // the 400 m bar landed, 2026-09-09). Only the portal removing it takes it off.
+      const keptIds = new Set(filtered.map((l) => l.id))
+      const kept = [...filtered, ...source.filter((l) => interested.has(l.id) && !keptIds.has(l.id))]
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
         if (listingKind(l, searchKind) !== kind) continue
