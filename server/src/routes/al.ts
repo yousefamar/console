@@ -22,6 +22,7 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as wa from '../al/whatsapp.js'
 import * as voice from '../al/voice.js'
+import { record as recordHistory } from '../al/wa-history.js'
 import { resolveUsername, ensureUserKnown } from '../al/users.js'
 import { getAlSession } from '../al/al-session.js'
 import { WORKSPACE_DIR } from '../al/identity.js'
@@ -84,7 +85,12 @@ export function handleAlRoutes(
         // `user` labels the send in the caller's transcript with the SAME
         // resolved name the inbound envelope uses, so "sent to Veronica @phone"
         // and "reply from Nica @lid" visibly meet in one identity.
-        jsonResponse(res, 200, { ok: true, id, jid, user: resolveUsername(jid) })
+        const user = resolveUsername(jid)
+        // X-Console-Agent = the sending session's agentKey (CLI sets it from
+        // CONSOLE_AGENT_KEY); absent means the parent AL or a human terminal.
+        const via = (req.headers['x-console-agent'] as string | undefined)?.trim() || 'al'
+        recordHistory({ ts: Date.now(), dir: 'out', jid, user, text, via, id })
+        jsonResponse(res, 200, { ok: true, id, jid, user })
       } catch (err) {
         const msg = (err as Error)?.message ?? 'unknown'
         const status = /not connected/i.test(msg) ? 503 : 500

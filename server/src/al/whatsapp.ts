@@ -41,6 +41,7 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 import { transcribeAudio } from './transcribe.js'
+import { formatHistoryLine, formatTime, type HistoryEntry } from './wa-history.js'
 
 const logger = pino({ level: 'silent' })
 
@@ -484,10 +485,21 @@ export function inboundEnvelope(
    *  model reads "Nica @lid" and "Veronica @phone" as two threads and answers
    *  a stale antecedent (^rosy-kiwi, 2026-09-02). */
   otherIds: string[] = [],
+  opts: {
+    /** Recent exchange on this thread (all identifiers), oldest first, minus
+     *  this message. Without it the reader has no antecedent: the parent got
+     *  Yousef's "Tell her yeet" while a fork had done the relaying (2026-09-11). */
+    history?: HistoryEntry[]
+    /** Owner thread only: conversation forks mid-flight, so the parent knows a
+     *  relay is happening even before any history exists. */
+    forks?: Array<{ label: string; lastInboundAt: number }>
+    now?: number
+  } = {},
 ): string {
   const user = resolvedUser ?? 'unknown'
   const senderTag = msg.senderName ? `${msg.senderName} (${msg.sender})` : msg.sender
   const userTag = otherIds.length ? `${user} (same person as ${otherIds.join(', ')})` : user
+  const now = opts.now ?? Date.now()
   // Envelope is framed as a TASK with a required ACTION (Bash call), not as a
   // chat message awaiting a reply. This stops Claude from defaulting to a
   // conversational in-session reply (which fails silently — the WA sender
@@ -498,10 +510,18 @@ export function inboundEnvelope(
     `From: ${senderTag} — resolved user: ${userTag}`,
     `Thread: ${msg.jid}`,
     `Message ID: ${msg.id}`,
+  ]
+  if (opts.history?.length) {
+    lines.push(``, `Recent thread (oldest first):`, ...opts.history.map((e) => formatHistoryLine(e, now)))
+  }
+  if (opts.forks?.length) {
+    lines.push(``, `Active conversation forks: ${opts.forks.map((f) => `${f.label} (last message ${formatTime(f.lastInboundAt, now)})`).join(', ')}`)
+  }
+  lines.push(
     ``,
     `Message:`,
     msg.text || (msg.imagePaths.length || msg.files.length ? '(no text — attachment only)' : ''),
-  ]
+  )
   if (msg.imagePaths.length > 0) {
     lines.push(
       ``,

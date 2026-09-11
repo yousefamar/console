@@ -21,8 +21,8 @@ const woken: Array<{ id: string; content: string }> = []
 const merged: string[] = []
 vi.mock('../routes/agents.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../routes/agents.js')>()),
-  createSession: (_ctx: unknown, opts: { name?: string; parentClaudeSessionId?: string }) => {
-    const s = new TestSession(`s-fork-${created.length}`, { name: opts.name, parentClaudeSessionId: opts.parentClaudeSessionId })
+  createSession: (_ctx: unknown, opts: { name?: string; parentClaudeSessionId?: string; agentKey?: string }) => {
+    const s = new TestSession(`s-fork-${created.length}`, { name: opts.name, parentClaudeSessionId: opts.parentClaudeSessionId, agentKey: opts.agentKey })
     created.push(s)
     return s
   },
@@ -35,7 +35,7 @@ vi.mock('../routes/agents.js', async (importOriginal) => ({
   },
 }))
 
-import { routeInbound, startConversationForks, activeForks } from '../al/conversation-forks.js'
+import { routeInbound, startConversationForks, activeForks, forkSummaries } from '../al/conversation-forks.js'
 import * as alSession from '../al/al-session.js'
 
 class TestSession extends EventEmitter {
@@ -45,6 +45,7 @@ class TestSession extends EventEmitter {
   status: 'running' | 'idle' | 'ended' = 'idle'
   claudeSessionId?: string
   name?: string
+  agentKey?: string
   cwd = '/tmp'
   parentClaudeSessionId?: string
   constructor(public id: string, init: Partial<TestSession> = {}) { super(); Object.assign(this, init) }
@@ -120,6 +121,20 @@ describe('routeInbound', () => {
     fork.emit('hub_message', { type: 'session_init', claudeSessionId: 'c-fork-0' })
     expect(woken.length).toBe(2)
     expect(woken[1]!.content).toBe('[env 2]')
+  })
+
+  it('a fork gets an `al-<contact>` agentKey and is listed by label for the owner envelope', () => {
+    const ctx = ctxOf(new Map<string, TestSession>([['s-al', parent]]))
+    startConversationForks(ctx)
+    routeInbound(ctx, '447776912442@s.whatsapp.net', 'nica', 'nica', '[env]')
+    const fork = created[0]!
+    expect(fork.agentKey).toBe('al-nica')
+    ctx.sessions.set(fork.id, fork)
+    // a second live fork for the same contact name gets a suffixed key
+    routeInbound(ctx, '999@s.whatsapp.net', null, 'nica', '[env]')
+    expect(created[1]!.agentKey).toBe('al-nica-1')
+    expect(forkSummaries().map((f) => f.label)).toEqual(['nica', 'nica'])
+    expect(forkSummaries()[0]!.lastInboundAt).toBe(Date.now())
   })
 
   it('different threads get different forks', () => {

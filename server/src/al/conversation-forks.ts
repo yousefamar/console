@@ -33,11 +33,11 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { Session } from '../session.js'
 import type { AgentContext } from '../routes/agents.js'
-import { createSession, wakeSession, mergeIntoParent } from '../routes/agents.js'
+import { createSession, wakeSession, mergeIntoParent, mintAgentKey } from '../routes/agents.js'
 import { saveManifest } from '../manifest.js'
 import { getAlSession } from './al-session.js'
 import { AL_NAME } from './identity.js'
-import { identifiersFor, normalize } from './users.js'
+import { identifiersFor, normalize, resolveUsername } from './users.js'
 
 // Resolved per call (not captured at module load) so tests can point it at a
 // tmp dir via CONSOLE_AL_FORKS_FILE — the todo-store tasksRoot() precedent.
@@ -52,8 +52,11 @@ const TRIVIAL_MAX_INBOUND = 2
 /** Sweep cadence. */
 const SWEEP_MS = 60 * 1000
 
-interface ForkRecord {
+export interface ForkRecord {
   threadJid: string
+  /** Who the fork is talking to (resolved user / push name) — names the fork
+   *  in the owner envelope's "Active conversation forks" line. */
+  label?: string
   hubSessionId: string
   claudeSessionId?: string
   createdAt: number
@@ -171,6 +174,10 @@ export function routeInbound(
       fork: true,
       silent: true,
       name: `${AL_NAME} ↔ ${senderLabel}`,
+      // Rides into the fork's env as CONSOLE_AGENT_KEY, so its `con whatsapp
+      // send` calls carry X-Console-Agent and the thread history can say
+      // "AL(nica fork)→Yousef" rather than crediting the parent.
+      agentKey: mintAgentKey(ctx, `al ${senderLabel}`),
       parentClaudeSessionId: parent.claudeSessionId,
       // Inherit Al's space binding (fork_session does the same) — without it
       // the fork has no project/areas and the Spaces rail buries it in
@@ -180,6 +187,7 @@ export function routeInbound(
     })
     state.forks[threadJid] = {
       threadJid,
+      label: senderLabel,
       hubSessionId: fork.id,
       createdAt: Date.now(),
       lastInboundAt: Date.now(),
@@ -307,4 +315,14 @@ export function startConversationForks(ctx: AgentContext): void {
 /** For tests + introspection endpoints. */
 export function activeForks(): ForkRecord[] {
   return Object.values(state.forks)
+}
+
+/** Owner-envelope view: who each live fork is talking to + when it last
+ *  heard from them. Records persisted before `label` existed fall back to
+ *  the resolved user of the thread. */
+export function forkSummaries(): Array<{ label: string; lastInboundAt: number }> {
+  return Object.values(state.forks).map((r) => ({
+    label: r.label ?? resolveUsername(r.threadJid) ?? r.threadJid,
+    lastInboundAt: r.lastInboundAt,
+  }))
 }

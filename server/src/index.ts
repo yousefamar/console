@@ -118,7 +118,8 @@ import { syncVoiceAuth } from './al/voice.js'
 import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
-import { routeInbound, startConversationForks } from './al/conversation-forks.js'
+import * as waHistory from './al/wa-history.js'
+import { routeInbound, startConversationForks, forkSummaries } from './al/conversation-forks.js'
 import { ServersConfig, CanvasDir } from './dashboard.js'
 import { handleDashboardRoutes, handleCanvasRoutes, handleCanvasIslandRoutes, handleCanvasTabRoutes } from './routes/dashboard.js'
 import { CanvasPublicRegistry } from './canvas-public.js'
@@ -2502,7 +2503,14 @@ httpServer.listen(port, host, () => {
               await ensureUserKnown(msg.sender, 'whatsapp', msg.senderName)
               const resolved = resolveUsername(msg.sender)
               const otherIds = identifiersFor(resolved).filter((id) => id !== normalizeJid(msg.sender))
-              const envelope = alWa.inboundEnvelope(msg, resolved, otherIds)
+              waHistory.record({
+                ts: msg.timestamp, dir: 'in', jid: msg.jid, user: resolved, name: msg.senderName, id: msg.id,
+                text: msg.text || msg.files.find((f) => f.transcript)?.transcript || '(attachment only)',
+              })
+              const envelope = alWa.inboundEnvelope(msg, resolved, otherIds, {
+                history: waHistory.recentThread([msg.jid, ...otherIds], { excludeId: msg.id }),
+                forks: resolved === 'yousef' ? forkSummaries() : [],
+              })
               // Non-owner threads route to a per-conversation fork of Al
               // (conversation-forks.ts); owner (Yousef) + fallback paths go to
               // the parent as before.
