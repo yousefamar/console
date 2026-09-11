@@ -10,6 +10,18 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- App-wide command bar (SPA `CommandBar.tsx`, ^dry-fox, 2026-09-11) — the
+  Spaces-only `/` switcher (ported in v95 as `SpacesQuickSwitcher.kt` /
+  `SpacesSwitcher.kt`) grew into a Console-wide jump-to-anything: panes +
+  Money sub-tabs, actions, spaces, sessions, vault files, chat rooms, mail
+  threads (recent 200 + whole-table search from 2 chars), feeds, bookmarks,
+  upcoming calendar events; opened by `\` anywhere / `/` on Spaces / a Search
+  glyph in the header. Ranking is the pure `src/commandbar/rank.ts` (launcher
+  = Recent per-kind-capped → Upcoming → Go to; query = fuzzy, structure before
+  content on a tie, then recency) — port it beside `SpacesSwitcher.kt` and
+  widen the existing switcher sheet's sources; every pick maps to an existing
+  detail route (`console://pane/<name>` + item).
+
 - Calendar: private per-event links (hub + SPA ^gray-bat, 2026-09-08) — events
   carry `extendedProperties.private` keys `console.link.<i>` (+ marker
   `console.links=1`); the SPA popover lists them (vault note → Notes editor +

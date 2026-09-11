@@ -29,7 +29,6 @@ import { NotesEditor } from './NotesEditor'
 import { NotesFileBrowser } from './NotesFileBrowser'
 import { useBlogStore } from '@/store/blog'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { SpacesQuickSwitcher } from './SpacesQuickSwitcher'
 import { SpacesFleetMenu } from './SpacesFleetMenu'
 import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
@@ -69,7 +68,6 @@ export const SpacesTab = memo(function SpacesTab() {
   const spaces = useSpacesStore((s) => s.spaces)
   const activeSlug = useSpacesStore((s) => s.activeSlug)
   const refreshSpaces = useSpacesStore((s) => s.refreshSpaces)
-  const switcherOpen = useSpacesStore((s) => s.switcherOpen)
   const newFileFormOpen = useNotesStore((s) => s.newFileFormOpen)
   const notesQuickSwitcherOpen = useNotesStore((s) => s.quickSwitcherOpen)
   const linkPickerOpen = useNotesStore((s) => s.linkPickerOpen)
@@ -123,7 +121,6 @@ export const SpacesTab = memo(function SpacesTab() {
         ) : (
           <div className="flex flex-1 min-h-0 flex-col"><SpaceRail space={active} /></div>
         )}
-        {switcherOpen && <SpacesQuickSwitcher />}
         <SpacesHandoffBanner />
         {newFileFormOpen && isActivePane && <NewNoteModal />}
         {notesQuickSwitcherOpen && isActivePane && <NotesQuickSwitcher />}
@@ -155,7 +152,6 @@ export const SpacesTab = memo(function SpacesTab() {
       {/* Right — the active agent session, 50/50 with the centre */}
       {active && <SpaceAgentPanel space={active} />}
 
-      {switcherOpen && <SpacesQuickSwitcher />}
       <SpacesHandoffBanner />
       {/* NewNoteModal is store-gated and also mounted by NotesTab — gate on
           the active pane so two panes never render it twice. */}

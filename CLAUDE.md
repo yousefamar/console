@@ -401,12 +401,15 @@ A hardware/hotkey hold-to-talk that streams mic → hub `/stt` (OpenAI realtime,
 - **`android/zello-shim/`** — a tiny invisible stub app with applicationId **`com.loudtalks`** (Zello's REAL package — `com.zello` is only the broadcast prefix). "Open Zello" deep-links to the Play Store when `com.loudtalks` is absent; installing this no-op (a translucent activity that finishes instantly) makes the firmware's launch resolve to nothing visible while the PTT broadcasts keep firing. Build `./gradlew :zello-shim:assembleDebug`, served at `/public/apk/loudtalks-shim.apk`.
 
 ## Keybindings
-- **Global**: `Ctrl+Tab`/`Ctrl+Shift+Tab` = switch pane, `Tab` = next pane, `?` = help, `Shift+T` = dark mode
+- **Global**: `\` = command bar (jump to anything — see below), `Ctrl+Tab`/`Ctrl+Shift+Tab` = switch pane, `Tab` = next pane, `?` = help, `Shift+T` = dark mode
 - **Mail/Chat**: `j/k` = navigate, `e` = archive/read, `b` = snooze, `r/R/f` = reply/all/forward, `c` = compose, `/` = search, `u` = undo
 - **Calendar**: `h/l` = prev/next week, `t` = today, `w/d` = week/day view, `c` = create
-- **Spaces (agents)**: `y/n/a` = approve/deny/allow-all, `Enter` = focus prompt / send, `Ctrl+Enter` = queue until the turn ends, `Shift+Enter` = newline, `Esc` = interrupt, `/` = everything-switcher
+- **Spaces (agents)**: `y/n/a` = approve/deny/allow-all, `Enter` = focus prompt / send, `Ctrl+Enter` = queue until the turn ends, `Shift+Enter` = newline, `Esc` = interrupt, `/` = command bar (same as `\`)
 - **Notes**: vim mode in editor, `Ctrl+P` = find file, `Ctrl+S` = save, `:w/:q/:wq` ex commands
 - **Map**: `j/k` = adjacent cache, `f` = fetch caches in view, `g` = my location, `Esc` = deselect
+
+### Command bar (`\` anywhere, `/` on Spaces, Search glyph in the header)
+`src/components/CommandBar.tsx` (mounted in `App.tsx` on `useUiStore.commandBarOpen`) is the ONE jump-to-anything surface — it absorbed the Spaces-only `/` switcher (deleted 2026-09-11; `SpacesQuickSwitcher.tsx` + `switcherOpen` are gone). Sources: every pane + Money sub-tab, a few actions (compose / new event / add bookmark / add feed / dark mode / shortcuts), spaces, live agent sessions, the whole vault, chat rooms (`db.chatRooms`), mail threads (recent 200 preloaded + a debounced whole-table `db.threads.filter` for queries ≥ 2 chars), feed subscriptions, bookmarks, and still-running/upcoming calendar events (60 days, `endTime > now`). Ranking is pure + unit-tested in `src/commandbar/rank.ts`: empty query = launcher (Recent, per-kind capped so mail can't flood it → Upcoming → Go to); a query = one flat fuzzy list, structure (pane/action/space) before content on an equal score, then most recent. Every pick goes through the existing deep-link primitives — `focusSessionInSpaces`, `openVaultFile` (lands in Spaces Docs), `chat.selectRoom`, `inbox.selectThread`, `cal.navigateToDate` + `selectEvent` — never a bespoke path. Opening primes the lazy stores (`reconnectVault` / `fetchBookmarks` / `fetchFeeds`) so it is complete from a cold boot on any pane. `\` is bare-key (not while typing — Esc blurs first, the app's vim model); no modifier chord yet because `Ctrl+K` is the editor's and Yousef names his own chords (`memory/feedback_keyboard_layout.md`).
 
 ## Commands
 - `pm2 start "npm run dev" --name console-dev` — dev server (Vite, plain HTTP; Caddy in front does TLS)

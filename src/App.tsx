@@ -12,6 +12,7 @@ import { useInboxStore } from '@/store/inbox'
 import { Layout } from '@/components/Layout'
 import { SnoozePicker } from '@/components/SnoozePicker'
 import { SearchOverlay } from '@/components/SearchOverlay'
+import { CommandBar } from '@/components/CommandBar'
 import { KeybindingHelp } from '@/components/KeybindingHelp'
 import { UndoToast } from '@/components/UndoToast'
 import { Toasts } from '@/components/Toasts'
@@ -102,6 +103,7 @@ function ConsoleApp() {
 
 
   const showSearch = useUiStore((s) => s.showSearch)
+  const commandBarOpen = useUiStore((s) => s.commandBarOpen)
   const showKeybindingHelp = useUiStore((s) => s.showKeybindingHelp)
   const snoozeTarget = useUiStore((s) => s.snoozeTarget)
   const showCompose = useUiStore((s) => s.showCompose)
@@ -115,6 +117,7 @@ function ConsoleApp() {
       {needsReAuth && <ReAuthBanner />}
       <Layout />
       {showSearch && <SearchOverlay />}
+      {commandBarOpen && <CommandBar />}
       {showKeybindingHelp && <KeybindingHelp />}
       {snoozeTarget && <SnoozePicker />}
       {showCompose && (

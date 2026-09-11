@@ -48,7 +48,9 @@ export function useKeybindings() {
       // Always active
       if (e.key === 'Escape') {
         e.preventDefault()
-        if (ui.getState().showSearch) {
+        if (ui.getState().commandBarOpen) {
+          ui.getState().setCommandBarOpen(false)
+        } else if (ui.getState().showSearch) {
           ui.getState().setShowSearch(false)
         } else if (ui.getState().showKeybindingHelp) {
           ui.getState().setShowKeybindingHelp(false)
@@ -207,12 +209,20 @@ export function useKeybindings() {
         return
       }
 
+      // "\" — the Console-wide command bar, on every pane.
+      if (e.key === '\\') {
+        e.preventDefault()
+        ui.getState().setCommandBarOpen(true)
+        return
+      }
+
       // Agent-specific keybindings
       if (isAgents) {
-        // "/" — the Spaces everything-switcher (spaces + agents + files).
+        // "/" on Spaces opens the same command bar (it grew out of the
+        // Spaces-only everything-switcher; the muscle memory stays).
         if (e.key === '/') {
           e.preventDefault()
-          void import('@/store/spaces').then(({ useSpacesStore }) => useSpacesStore.getState().openSwitcher())
+          ui.getState().setCommandBarOpen(true)
           return
         }
         const approval = agent.getState().pendingApproval

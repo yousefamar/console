@@ -109,10 +109,6 @@ interface SpacesState {
   editCard: (ref: CardRef, text: string, detail: string[]) => Promise<void>
   /** Remove a card entirely (a human judgment — agents never delete cards). */
   deleteCard: (ref: CardRef) => Promise<void>
-  /** "/" command bar — jump to any space/agent/file. */
-  switcherOpen: boolean
-  openSwitcher: () => void
-  closeSwitcher: () => void
   /** Create projects/<slug>/board.md with the standard columns and open it. */
   createBoard: (slug: string) => Promise<void>
 }
@@ -231,9 +227,6 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
   boardMtime: null,
   boardError: null,
   saving: false,
-  switcherOpen: false,
-  openSwitcher: () => set({ switcherOpen: true }),
-  closeSwitcher: () => set({ switcherOpen: false }),
 
   refreshSpaces: async () => {
     set({ loading: true })

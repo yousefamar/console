@@ -94,6 +94,9 @@ interface UiState {
 
   // Panels
   showSearch: boolean
+  /** The Console-wide command bar (`\` anywhere, `/` on Spaces). */
+  commandBarOpen: boolean
+  setCommandBarOpen: (v: boolean) => void
   showKeybindingHelp: boolean
   /** The snooze picker is open for exactly this item (any source), or closed. */
   snoozeTarget: SnoozeTarget | null
@@ -187,6 +190,8 @@ export const useUiStore = create<UiState>((set) => ({
   }),
 
   showSearch: false,
+  commandBarOpen: false,
+  setCommandBarOpen: (v) => set({ commandBarOpen: v }),
   showKeybindingHelp: false,
   snoozeTarget: null,
   showSchedulePicker: false,

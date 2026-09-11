@@ -5,6 +5,7 @@ const BINDINGS = [
     { key: 'j / ↓', action: 'Next item' },
     { key: 'k / ↑', action: 'Previous item' },
     { key: 'Tab', action: 'Switch pane' },
+    { key: '\\', action: 'Jump to anything' },
     { key: '/', action: 'Search' },
   ]},
   { section: 'Triage', items: [

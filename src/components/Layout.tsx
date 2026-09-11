@@ -27,7 +27,7 @@ import { getHubUrl } from '@/hub'
 import { isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
 import { evictAll } from '@/utils/email-cache'
-import { RefreshCw, Mail, MessageCircle, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban, Inbox as InboxIcon } from 'lucide-react'
+import { RefreshCw, Mail, MessageCircle, Bookmark, FileText, Rss, CalendarDays, PoundSterling, Settings, BellOff, ChevronLeft, Check, Clock, LayoutDashboard, CloudOff, MapPin, Music, FolderKanban, Inbox as InboxIcon, Search } from 'lucide-react'
 import { HomeTab } from './HomeTab'
 import { BookmarkTab } from './BookmarkTab'
 import { NotesTab } from './NotesTab'
@@ -224,6 +224,7 @@ export function Layout() {
   const setActivePane = useUiStore((s) => s.setActivePane)
   const setShowMatrixLogin = useUiStore((s) => s.setShowMatrixLogin)
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
+  const setCommandBarOpen = useUiStore((s) => s.setCommandBarOpen)
   const musicOpen = useMusicStore((s) => s.open)
   const toggleMusic = useMusicStore((s) => s.toggleOpen)
   const isMobile = useIsMobile()
@@ -422,6 +423,13 @@ export function Layout() {
           )}
         </div>
         <div className="flex items-center gap-3 md:gap-4">
+          <button
+            onClick={() => setCommandBarOpen(true)}
+            className="text-text-tertiary hover:text-text-secondary transition-colors duration-fast"
+            title="Jump to anything (\)"
+          >
+            <Search size={13} />
+          </button>
           <HubOfflineIndicator />
           <SyncStatus />
           {!isBookmarks && !isNotes && (isEmail ? gmailConnected : isFeeds || isCalendar || isMoney || isMap || isSpaces || isInbox ? true : matrixConnected) && (
