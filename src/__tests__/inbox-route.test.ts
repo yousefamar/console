@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
-  blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
+  blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionContext, sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -322,6 +322,51 @@ describe('review hand-backs (^pale-tern)', () => {
     expect(reviewHandbacksFor(null, spaces)).toEqual([])
     expect(reviewHandbacksFor('nobody', spaces)).toEqual([])
     expect(reviewHandbacksFor('cg-bold-fox-fork', [{ kind: 'project', slug: 'old-hub' }])).toEqual([])
+  })
+})
+
+describe('card title as the row header (^jade-kiwi)', () => {
+  const spaces = [
+    {
+      kind: 'project' as const, slug: 'console', doneColumn: 'Done',
+      ownedCards: [
+        { blockId: 'bold-fox', text: 'Working on the widget', agentKey: 'cg-bold-fox-fork' },
+        { blockId: 'sly-hare', text: 'Need creds', agentKey: 'cg-sly-hare-fork' },
+        { blockId: 'teal-crab', text: 'Ship it', agentKey: 'cg-teal-crab-fork' },
+        { blockId: 'multi-a', text: 'In progress one', agentKey: 'multi' },
+        { blockId: 'multi-b', text: 'Review one', agentKey: 'multi' },
+      ],
+      blockedCards: [{ blockId: 'sly-hare', text: 'Need creds', agentKey: 'cg-sly-hare-fork' }],
+      reviewCards: [
+        { blockId: 'teal-crab', text: 'Ship it', agentKey: 'cg-teal-crab-fork' },
+        { blockId: 'multi-b', text: 'Review one', agentKey: 'multi' },
+      ],
+    },
+    { kind: 'area' as const, slug: 'dev', ownedCards: [{ blockId: 'x', text: 'never', agentKey: 'cg-bold-fox-fork' }] },
+    { kind: 'project' as const, slug: 'old-hub' },
+  ]
+
+  it('finds the owned card in any live column; blocked/review outrank in-progress for a multi-card owner', () => {
+    expect(ownedCardText('cg-bold-fox-fork', spaces)).toBe('Working on the widget')
+    expect(ownedCardText('cg-sly-hare-fork', spaces)).toBe('Need creds')
+    expect(ownedCardText('cg-teal-crab-fork', spaces)).toBe('Ship it')
+    expect(ownedCardText('multi', spaces)).toBe('Review one')
+    expect(ownedCardText('nobody', spaces)).toBeUndefined()
+    expect(ownedCardText(undefined, spaces)).toBeUndefined()
+    expect(ownedCardText('cg-bold-fox-fork', [{ kind: 'project', slug: 'old-hub' }])).toBeUndefined()
+  })
+
+  it('the row header becomes the card text; the fork name moves to agentName', () => {
+    const cardTextOf = (k: string) => ownedCardText(k, spaces)
+    const session = (over: Partial<AgentSessionLike>): AgentSessionLike => ({ id: 's1', prompt: 'do things', status: 'idle', createdAt: NOW, ...over })
+    const owned = sessionToItem(session({ name: 'Bold fox (fork)', hasUnread: true, agentKey: 'cg-bold-fox-fork' }), undefined, undefined, undefined, cardTextOf)
+    expect(owned.header).toBe('Working on the widget')
+    expect(owned.agentName).toBe('Bold fox')
+    // No live card (parent role, chat fork, older hub) → the name stays the header, no tooltip.
+    const plain = sessionToItem(session({ name: 'Console general', hasUnread: true, agentKey: 'console-general' }), undefined, undefined, undefined, cardTextOf)
+    expect(plain.header).toBe('Console general')
+    expect(plain).not.toHaveProperty('agentName')
+    expect(sessionToItem(session({ name: 'Keyless', hasUnread: true }), undefined, undefined, undefined, cardTextOf).header).toBe('Keyless')
   })
 })
 

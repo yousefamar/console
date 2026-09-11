@@ -493,11 +493,11 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
             <span className="flex items-center gap-1 min-w-0 flex-1">
               {item.context && (
                 <>
-                  <span className="truncate text-sm text-text-tertiary flex-shrink max-w-[45%]" title={item.context}>{item.context}</span>
+                  <span className="truncate text-sm text-text-tertiary flex-shrink-0 max-w-[40%]" title={item.context}>{item.context}</span>
                   <ChevronRight size={11} className="flex-shrink-0 text-text-tertiary/70" />
                 </>
               )}
-              <span className="truncate text-sm text-text-primary">{item.header}</span>
+              <span className="truncate text-sm text-text-primary" title={item.agentName}>{item.header}</span>
             </span>
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
             {item.source === 'agent' && <HandbackGlyph agentKey={item.agentKey} />}

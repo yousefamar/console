@@ -34,6 +34,10 @@ export interface SpaceSummary {
   blockedCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
   /** agentKeys assigned to those blocked cards. */
   blockedAgentKeys?: string[]
+  /** Every `@key`-owned card in a live column (In Progress / Under Review /
+   *  Blocked) — the Inbox titles a card-owned session's row with its card
+   *  text (^jade-kiwi). Optional: older hub. */
+  ownedCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
   /** Title of the board's Done-like column; null = none. Optional: older hub. */
   doneColumn?: string | null
   /** agentKeys assigned to ANY card on the board — card-owned forks are

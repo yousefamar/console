@@ -50,6 +50,10 @@ export interface InboxItem {
   /** Agent only: the session's board `@key` — joins the row to the Under-
    *  Review card(s) it owns (the approve affordance, ^pale-tern). */
   agentKey?: string
+  /** Agent only: the session's own name when `header` is its card's text
+   *  instead — a card-owned fork is about its card, the name is a tooltip
+   *  (^jade-kiwi). */
+  agentName?: string
   /** Agent only: the owning space's title (project, else first area) — a
    *  fork's name alone ("Glad finch") says nothing about what it is working
    *  on; the row renders it as a muted prefix (^glad-finch). */

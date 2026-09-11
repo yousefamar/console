@@ -18,7 +18,7 @@ import { useSpacesStore } from '@/store/spaces'
 import { useUiStore } from '@/store/ui'
 import { activeLocalSnoozes, unsnoozeItem } from '@/inbox/snooze'
 import {
-  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, reviewHandbacksFor, roomIsLive, roomToItem,
+  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type FeedMode,
 } from '@/inbox/route'
@@ -219,9 +219,10 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const blockedKeys = new Set(spaces.flatMap((sp) => sp.blockedAgentKeys ?? []))
     const spaceTitle = new Map(spaces.map((sp) => [sp.slug, sp.title]))
     const titleOf = (slug: string) => spaceTitle.get(slug)
+    const cardTextOf = (agentKey: string) => ownedCardText(agentKey, spaces)
     const sessions = useAgentStore.getState().sessions
       .filter(sessionIsLive)
-      .map((s) => sessionToItem(s, reviewKeys, titleOf, blockedKeys))
+      .map((s) => sessionToItem(s, reviewKeys, titleOf, blockedKeys, cardTextOf))
 
     const suppressedLive = suppressedKeys(now, 'live')
     const all = [...threads, ...rooms, ...feedItems, ...sessions]
@@ -243,7 +244,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const sessionById = new Map(useAgentStore.getState().sessions.map((x) => [x.id, x]))
     const snoozedAgents = [...snoozedKeys.keys()].filter((k) => k.startsWith('agent:')).map((k) => {
       const sess = sessionById.get(k.slice(6))
-      return sess ? stamp(sessionToItem(sess, reviewKeys, titleOf, blockedKeys), snoozedKeys.get(k)) : null
+      return sess ? stamp(sessionToItem(sess, reviewKeys, titleOf, blockedKeys, cardTextOf), snoozedKeys.get(k)) : null
     })
     const suppressedSnoozed = suppressedKeys(now, 'snoozed')
     const snoozedList = [...snoozedThreads, ...snoozedRooms, ...snoozedFeed, ...snoozedAgents]

@@ -72,6 +72,18 @@ describe('listSpaces review counts', () => {
     expect(again.blockedCards.map((c) => c.text)).toEqual(['Need creds', 'Legacy stuck'])
   })
 
+  it('ships every owned card in a live column — not Backlog, not Done (^jade-kiwi)', async () => {
+    const store = vault()
+    mkdirSync(join(dir!, 'projects/widget'), { recursive: true })
+    writeFileSync(join(dir!, 'projects/widget/board.md'), BOARD.replace('- [ ] Someday', '- [ ] Someday @eng'))
+    const widget = (await listSpaces(store)).find((s) => s.slug === 'widget')!
+    expect(widget.ownedCards).toEqual([
+      { blockId: 'bold-fox', text: 'Working on it', agentKey: 'eng' },
+      { blockId: 'sly-hare', text: 'Need creds', agentKey: 'ops' },
+      { blockId: 'teal-crab', text: 'Ship the widget', agentKey: 'eng' },
+    ])
+  })
+
   it('ships the review cards + the Done column title (^pale-tern)', async () => {
     const store = vault()
     mkdirSync(join(dir!, 'projects/widget'), { recursive: true })

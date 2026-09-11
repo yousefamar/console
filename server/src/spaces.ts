@@ -79,6 +79,10 @@ export interface SpaceSummary {
   blockedCards: ReviewCard[]
   /** agentKeys of the blocked cards' assignees (the Inbox join key). */
   blockedAgentKeys: string[]
+  /** Every `@key`-owned card in a live column (In Progress / Under Review /
+   *  Blocked), board order. A card-owned session is about its card, so the
+   *  Inbox titles the row with the card text, not the fork's name. */
+  ownedCards: ReviewCard[]
   /** Title of the board's Done-like column (first match), null when the
    *  board has none — the approve target for `POST /board/:project/move`. */
   doneColumn: string | null
@@ -160,6 +164,7 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
     const reviewCards: ReviewCard[] = []
     const blockedCards: ReviewCard[] = []
     const blockedAgentKeys: string[] = []
+    const ownedCards: ReviewCard[] = []
     let doneColumn: string | null = null
     const cardAgentKeys = new Set<string>()
     let defaultOwner: string | null = null
@@ -174,6 +179,7 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
           for (const card of col.cards) {
             if (card.agentKey) cardAgentKeys.add(card.agentKey)
             const ref = { blockId: card.blockId ?? null, text: card.text, agentKey: card.agentKey ?? null }
+            if (card.agentKey && (isDispatch || isReview || isBlockedColumn)) ownedCards.push(ref)
             if ((isDispatch && card.blocked) || (isBlockedColumn && !card.checked)) {
               blockedCards.push(ref)
               if (card.agentKey) blockedAgentKeys.push(card.agentKey)
@@ -188,7 +194,7 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
     }
     out.push({
       kind: 'project', slug, title, notePath, boardPath, status, fileCount: flat ? 1 : files.length,
-      reviewCount, reviewAgentKeys, reviewCards, blockedCards, blockedAgentKeys, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
+      reviewCount, reviewAgentKeys, reviewCards, blockedCards, blockedAgentKeys, ownedCards, doneColumn, cardAgentKeys: [...cardAgentKeys], defaultOwner,
       cwd: spaceCwd(store.vaultPath, { project: slug })!,
       repo: projectRepo(store.vaultPath, slug),
       queuedCount: boardPath ? opts.queuedFor?.(boardPath) ?? 0 : 0,
@@ -210,6 +216,7 @@ export async function listSpaces(store: NoteStore, opts: ListSpacesOpts = {}): P
       reviewCards: [],
       blockedCards: [],
       blockedAgentKeys: [],
+      ownedCards: [],
       doneColumn: null,
       cardAgentKeys: [],
       defaultOwner: null,

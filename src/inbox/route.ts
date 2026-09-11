@@ -138,15 +138,20 @@ export function sessionIsLive(s: AgentSessionLike): boolean {
  *  being in review is what makes it a hand-back. `blockedKeys` = every
  *  `@key` owning a `#blocked` in-progress card — stuck on Yousef, so the
  *  row is treated like an @amar alert whatever the session is doing. */
-export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined, blockedKeys?: ReadonlySet<string>): InboxItem {
+export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined, blockedKeys?: ReadonlySet<string>, cardTextOf?: (agentKey: string) => string | undefined): InboxItem {
   const idle = s.status !== 'running'
   const context = sessionContext(s, titleOf)
+  const name = (s.name || s.prompt.slice(0, 40)).replace(/\s\(fork\)$/, '')
+  // A card-owned session is about its card: the card text is the header, the
+  // fork's minted name ("Glad finch") says nothing and drops to a tooltip.
+  const card = s.agentKey ? cardTextOf?.(s.agentKey) : undefined
   return {
     ...(context ? { context } : {}),
     key: itemKey('agent', s.id),
     source: 'agent',
     sourceId: s.id,
-    header: (s.name || s.prompt.slice(0, 40)).replace(/\s\(fork\)$/, ''),
+    header: card ?? name,
+    ...(card ? { agentName: name } : {}),
     body: s.needsAttention?.snippet ?? s.lastTextSnippet ?? '',
     ts: s.lastActivityAt ?? s.createdAt,
     route: 'inbox',
@@ -214,6 +219,29 @@ export function blockedCardsFor(agentKey: string | null | undefined, spaces: Rea
     }
   }
   return out
+}
+
+/** Minimal SpaceSummary shape for the owned-card lookup (optional-guarded:
+ *  older hub payloads omit `ownedCards`). */
+export interface SpaceOwnedLike extends SpaceReviewLike {
+  ownedCards?: Array<{ blockId: string | null; text: string; agentKey: string | null }>
+}
+
+/** The card an agent's Inbox row is ABOUT: a #blocked one first (the row is
+ *  banded for it), then its Under Review hand-back, then whatever it is
+ *  working in In Progress. Undefined when its `@key` owns no live card. */
+export function ownedCardText(agentKey: string | null | undefined, spaces: ReadonlyArray<SpaceOwnedLike>): string | undefined {
+  if (!agentKey) return undefined
+  const blocked = blockedCardsFor(agentKey, spaces)[0]
+  if (blocked) return blocked.text
+  const review = reviewHandbacksFor(agentKey, spaces)[0]
+  if (review) return review.text
+  for (const s of spaces) {
+    if (s.kind !== 'project') continue
+    const owned = s.ownedCards?.find((c) => c.agentKey === agentKey)
+    if (owned) return owned.text
+  }
+  return undefined
 }
 
 export function feedItemToItem(i: FeedItem, feed: FeedSubscription | undefined, rules: InboxRules): InboxItem | null {
