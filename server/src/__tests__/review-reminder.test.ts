@@ -34,3 +34,29 @@ describe('withReviewReminder (^shy-boar)', () => {
     expect(withReviewReminder(ctxWith({ eng: [CARD] }), sess('eng'), ' /clear ')).toBe(' /clear ')
   })
 })
+
+// A `#blocked` card means "stuck on Yousef" — his message is usually the
+// unblock, and the FORK owns the tag: a stale one keeps the Inbox row red
+// (blocked AND unread) on every reply (^cool-fox, 2026-09-11).
+function ctxBlocked(cards: Record<string, ReviewCardRef[]>): AgentContext {
+  return {
+    sessions: new Map(), clients: new Set(), cwd: '/tmp', log: () => {}, truncate: (s: string) => s, modelConfig: {},
+    reviewCardsFor: () => [],
+    blockedCardsFor: (key: string) => cards[key] ?? [],
+  } as unknown as AgentContext
+}
+
+describe('withReviewReminder — #blocked cards', () => {
+  it('appends the unblock-first reminder naming the exact command', () => {
+    const out = withReviewReminder(ctxBlocked({ eng: [CARD] }), sess('eng'), 'Karl says use Airtable')
+    expect(out.startsWith('Karl says use Airtable')).toBe(true)
+    expect(out).toContain('[BOARD — you own a #blocked card]')
+    expect(out).toContain('con spaces board demo unblock "^r1"')
+    expect(out).toContain('FIRST run the unblock command')
+  })
+
+  it('is silent when nothing is blocked, and never decorates /clear', () => {
+    expect(withReviewReminder(ctxBlocked({ eng: [] }), sess('eng'), 'hi')).toBe('hi')
+    expect(withReviewReminder(ctxBlocked({ eng: [CARD] }), sess('eng'), '/clear')).toBe('/clear')
+  })
+})
