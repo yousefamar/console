@@ -19,13 +19,14 @@
 //   `maxRequestsPerRun` (default 40) requests in any rolling `runWindowMs`
 //   (default 1 h) — when that is spent `newest()` returns what it has with
 //   `truncated: true` and `count()`/`detail()` throw `kleinanzeigen: BUDGET`.
-//   Location-id lookups (`/s-ort-empfehlungen.json`) are capped at
-//   `maxLookupsPerCall` (default 2) per newest()/count() call: the first live
-//   skim (2026-09-08) fired 15 of them 25 s apart and the 16th was the range
-//   block — a run of JSON autocomplete calls with no page views is the least
-//   human thing this client can do. Towns without an id are simply left out of
-//   that call (their rings fall to the nearest resolved town) and resolve a
-//   couple per hour until the on-disk cache is complete.
+//   Location-id lookups (`/s-ort-empfehlungen.json`) are OFF by default
+//   (`maxLookupsPerCall` 0). Every one of the seven 403s between go-live and
+//   2026-09-11 was on that endpoint — never on a search or ad page, which kept
+//   working in between — and each 403 armed the 30-min back-off that also
+//   halted enrichment. Ids are pinned in SEED_LOCATIONS instead (21 verified
+//   live); a town without an id is left out and its rings fall to the nearest
+//   pinned town with a wider radius (the hub clips to the real polygon). New
+//   ids: look them up by hand in a browser and pin them, never from the hub.
 //   A 403/429 or a body that looks like the block page throws
 //   `kleinanzeigen: BLOCKED …` and arms a back-off (`blockBackoffMs`, default
 //   30 min) during which every call throws the same without touching the
@@ -82,7 +83,7 @@ export const MAX_RADIUS_KM = 200
 const ROOM_OFFSET = 1
 const DEFAULT_MIN_INTERVAL_MS = 45_000
 const DEFAULT_MAX_REQUESTS_PER_RUN = 40
-const DEFAULT_MAX_LOOKUPS_PER_CALL = 2
+const DEFAULT_MAX_LOOKUPS_PER_CALL = 0
 const DEFAULT_RUN_WINDOW_MS = 60 * 60 * 1000
 const DEFAULT_BLOCK_BACKOFF_MS = 30 * 60 * 1000
 /** A completed (un-truncated) query's rows are reusable for a smaller radius of the same town for this long. */
@@ -115,19 +116,21 @@ export interface SeedLocation {
  * trimmed.json`, DE rows; Kerkrade is Dutch and dropped) plus the large cities
  * nearest the zone's small transit-pocket rings, so those don't have to be
  * covered from 60 km away. Marburg's id was verified by hand (api note); 14
- * more were resolved live on 2026-09-08 (see `~/.cache/console/kleinanzeigen-
- * locations.json`) and are pinned here so they never cost a request again; the
- * rest resolve through `/s-ort-empfehlungen.json`, a couple per call.
+ * more were resolved live on 2026-09-08/10 and are pinned here so they never
+ * cost a request again. Two autocomplete answers were WRONG and are not pinned:
+ * "Freiburg" → 12111 = Freiburg (Elbe), Niedersachsen (the prefix fallback in
+ * pickLocation, not Freiburg im Breisgau), and "Bremen" → 1. Towns without an
+ * id fall to the nearest pinned town; look ids up by hand in a browser and pin.
  */
 export const SEED_LOCATIONS: SeedLocation[] = [
   { name: 'Marburg', state: 'Hessen', lat: 50.8090106, lon: 8.7704695, id: 4825 },
-  { name: 'Celle', state: 'Niedersachsen', lat: 52.624056, lon: 10.081052 },
-  { name: 'Ingolstadt', state: 'Bayern', lat: 48.7630165, lon: 11.4250395 },
+  { name: 'Celle', state: 'Niedersachsen', lat: 52.624056, lon: 10.081052, id: 3197 },
+  { name: 'Ingolstadt', state: 'Bayern', lat: 48.7630165, lon: 11.4250395, id: 7586 },
   { name: 'Paderborn', state: 'Nordrhein-Westfalen', lat: 51.7177044, lon: 8.752653 },
   { name: 'Arnsberg', state: 'Nordrhein-Westfalen', lat: 51.4002384, lon: 8.0605908 },
   { name: 'Wiesbaden', state: 'Hessen', lat: 50.0820384, lon: 8.2416556 },
   { name: 'Mainz', state: 'Rheinland-Pfalz', lat: 49.9995205, lon: 8.2736253, id: 5315 },
-  { name: 'Darmstadt', state: 'Hessen', lat: 49.872775, lon: 8.651177 },
+  { name: 'Darmstadt', state: 'Hessen', lat: 49.872775, lon: 8.651177, id: 4888 },
   { name: 'Aschaffenburg', state: 'Bayern', lat: 49.9738133, lon: 9.1446665 },
   { name: 'Heidelberg', state: 'Baden-Württemberg', lat: 49.4093582, lon: 8.694724 },
   { name: 'Mannheim', state: 'Baden-Württemberg', lat: 49.4892913, lon: 8.4673098, id: 7971 },
@@ -138,10 +141,10 @@ export const SEED_LOCATIONS: SeedLocation[] = [
   { name: 'Bonn', state: 'Nordrhein-Westfalen', lat: 50.7352621, lon: 7.1024635 },
   { name: 'Kassel', state: 'Hessen', lat: 51.3157833, lon: 9.4978479 },
   { name: 'Trier', state: 'Rheinland-Pfalz', lat: 49.7596208, lon: 6.6441878, id: 5432 },
-  { name: 'Schwäbisch Hall', state: 'Baden-Württemberg', lat: 49.1124305, lon: 9.7371246 },
+  { name: 'Schwäbisch Hall', state: 'Baden-Württemberg', lat: 49.1124305, lon: 9.7371246, id: 9150 },
   { name: 'Fürth', state: 'Bayern', lat: 49.4772475, lon: 10.9893626, id: 6803 },
   { name: 'Bamberg', state: 'Bayern', lat: 49.8916044, lon: 10.8868478, id: 6885 },
-  { name: 'Ansbach', state: 'Bayern', lat: 49.3028611, lon: 10.5722288 },
+  { name: 'Ansbach', state: 'Bayern', lat: 49.3028611, lon: 10.5722288, id: 6095 },
   { name: 'Göttingen', state: 'Niedersachsen', lat: 51.5328328, lon: 9.9351811 },
   { name: 'Aachen', state: 'Nordrhein-Westfalen', lat: 50.776351, lon: 6.083862 },
   { name: 'Tübingen', state: 'Baden-Württemberg', lat: 48.5203263, lon: 9.053596, id: 9088 },

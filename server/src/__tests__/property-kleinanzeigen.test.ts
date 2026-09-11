@@ -256,7 +256,7 @@ describe('location ids', () => {
   const lookup = { _0: 'Deutschland', _2811: 'Celle - Niedersachsen', _30001: 'Altstadt - Celle' }
 
   it('resolves a seed without an id through the autocomplete once, then from the cache', async () => {
-    const { calls, client } = stub((url) => (url.pathname.endsWith('.json') ? JSON.stringify(lookup) : paged(5)(url)), { locations: [celle] })
+    const { calls, client } = stub((url) => (url.pathname.endsWith('.json') ? JSON.stringify(lookup) : paged(5)(url)), { locations: [celle], maxLookupsPerCall: 2 })
     await client.newest([celleRing], criteria, 50)
     await client.newest([celleRing], criteria, 50)
     const lookups = calls.filter((c) => c.url.pathname === '/s-ort-empfehlungen.json')
@@ -273,12 +273,23 @@ describe('location ids', () => {
     const goslar: SeedLocation = { name: 'Goslar', state: 'Niedersachsen', lat: 51.9059936, lon: 10.4266284 }
     const { calls, client } = stub((url) => (url.pathname.endsWith('.json') ? (url.searchParams.get('query') === 'Celle' ? '{"_0":"Deutschland"}' : '{"_0":"Deutschland","_2000":"Goslar - Niedersachsen"}') : paged(5)(url)), {
       locations: [celle, goslar],
+      maxLookupsPerCall: 2,
     })
     await client.newest([celleRing], criteria, 50)
     const searches = calls.filter((c) => c.url.pathname.startsWith('/s-haus-kaufen/'))
     expect(searches).toHaveLength(1)
     // Goslar is ~85 km from Celle: the sliver needs r100 from there.
     expect(searches[0]!.url.pathname).toMatch(/\/goslar\/.*\/c208l2000r100\+/)
+  })
+
+  it('by default never calls the autocomplete: an unknown town falls to the nearest pinned town, no lookup request', async () => {
+    const { calls, client } = stub((url) => (url.pathname.endsWith('.json') ? JSON.stringify(lookup) : paged(5)(url)), { locations: [marburg, celle] })
+    await client.newest([celleRing], criteria, 50)
+    expect(calls.filter((c) => c.url.pathname === '/s-ort-empfehlungen.json')).toHaveLength(0)
+    const searches = calls.filter((c) => c.url.pathname.startsWith('/s-haus-kaufen/'))
+    expect(searches).toHaveLength(1)
+    // Celle is ~230 km from Marburg → the biggest radius the UI offers.
+    expect(searches[0]!.url.pathname).toMatch(/\/marburg\/.*\/c208l4825r200\+/)
   })
 
   it('resolves at most maxLookupsPerCall unknown towns per call; the rest fall to a resolved town and resolve on later calls', async () => {
