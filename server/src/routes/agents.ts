@@ -13,7 +13,7 @@ import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { wouldCycle } from '../agents/lineage.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
-import { buildReviewReminder, buildBlockedReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
+import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
@@ -136,10 +136,6 @@ export interface AgentContext {
    *  A human message to such a session gets a stdin-only reminder that
    *  feedback re-opens the card — see withReviewReminder. */
   reviewCardsFor?: (agentKey: string) => ReviewCardRef[]
-  /** Open `#blocked` cards owned by an agentKey (BoardWatcher.blockedCardsFor).
-   *  A human message to such a session gets a stdin-only "unblock first"
-   *  reminder — the fork owns the tag, and a stale one keeps the Inbox red. */
-  blockedCardsFor?: (agentKey: string) => ReviewCardRef[]
   /** A session ended — a card fork holding a dispatch slot may have died, so
    *  the board dispatcher should re-scan its queue (BoardWatcher.onWorkerEnded).
    *  The 10 s poll would find it anyway; this just makes it immediate. */
@@ -154,10 +150,9 @@ export interface AgentContext {
  *  to In Progress first" reminder. Appended to stdin only — the transcript
  *  keeps Yousef's own words. `/clear` is a command, never decorated. */
 export function withReviewReminder(ctx: AgentContext, session: Session, content: string): string {
-  if (!session.agentKey || content.trim() === '/clear') return content
-  const review = ctx.reviewCardsFor ? buildReviewReminder(ctx.reviewCardsFor(session.agentKey)) : ''
-  const blocked = ctx.blockedCardsFor ? buildBlockedReminder(ctx.blockedCardsFor(session.agentKey)) : ''
-  return content + review + blocked
+  if (!ctx.reviewCardsFor || !session.agentKey || content.trim() === '/clear') return content
+  const reminder = buildReviewReminder(ctx.reviewCardsFor(session.agentKey))
+  return reminder ? content + reminder : content
 }
 
 /** Restart every live session onto the currently-resolved model. Used after a

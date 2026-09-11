@@ -237,22 +237,6 @@ export function buildReviewReminder(cards: ReviewCardRef[]): string {
   ].join('\n')
 }
 
-/** Stdin-only reminder appended to a human message reaching a session whose
- *  `@key` owns a `#blocked` card: a `#blocked` card means "stuck on Yousef",
- *  so his message is usually the unblock — and the fork must clear the tag,
- *  or the Inbox keeps the row red (blocked AND unread) on every reply. */
-export function buildBlockedReminder(cards: ReviewCardRef[]): string {
-  if (cards.length === 0) return ''
-  const list = cards.map((c) => `  • "${c.text}" (^${c.blockId}) — \`con spaces board ${boardRef(c.project, c.boardPath)} unblock "^${c.blockId}"\``)
-  return [
-    '',
-    '---',
-    `[BOARD — you own ${cards.length === 1 ? 'a #blocked card' : `${cards.length} #blocked cards`}]`,
-    ...list,
-    'If the message above gives you what you were waiting for, FIRST run the unblock command above (the tag means "stuck on Yousef" and keeps the card red in his Inbox until cleared), then continue the work. If you are still blocked after reading it, leave the tag and `note` what is still missing.',
-  ].join('\n')
-}
-
 /** The wake envelope injected into the assignee's session. Self-instructing:
  *  the board FILE is the reporting surface, no RPC to learn. */
 export function buildBoardEnvelope(opts: {

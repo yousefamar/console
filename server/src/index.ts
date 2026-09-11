@@ -759,7 +759,6 @@ const agentCtx: AgentContext = {
   // Under-Review cards per agentKey, from the watcher's in-flight ledger
   // (declared below; only ever called at message time, long after boot).
   reviewCardsFor: (agentKey) => boardWatcher.reviewCardsFor(agentKey),
-  blockedCardsFor: (agentKey) => boardWatcher.blockedCardsFor(agentKey),
   // A card fork that ended frees its dispatch slot — drain the queue now
   // rather than waiting out the 10 s poll.
   onWorkerEnded: () => void boardWatcher.onWorkerEnded(),
