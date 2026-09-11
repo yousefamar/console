@@ -126,10 +126,13 @@ export function sessionContext(s: Pick<AgentSessionLike, 'project' | 'areas'>, t
  *  not one of them: its unread text is a turn still being typed, nothing for
  *  Yousef to act on yet (^neat-fawn: "Inbox is only for things that require
  *  my attention"). The exception is `needsAttention` — a question or approval
- *  can block a still-running turn, and that IS his to answer. */
-export function sessionIsLive(s: AgentSessionLike): boolean {
+ *  can block a still-running turn, and that IS his to answer. So is a session
+ *  whose `@key` owns a `#blocked` card: the stall outlives any read marker,
+ *  the row leaves only when the card is unblocked (^sly-lynx). */
+export function sessionIsLive(s: AgentSessionLike, blockedKeys?: ReadonlySet<string>): boolean {
   if (s.isAl) return false
   if (s.needsAttention) return true
+  if (s.agentKey && blockedKeys?.has(s.agentKey)) return true
   return s.status !== 'running' && !!s.hasUnread
 }
 

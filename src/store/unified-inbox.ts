@@ -221,7 +221,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const titleOf = (slug: string) => spaceTitle.get(slug)
     const cardTextOf = (agentKey: string) => ownedCardText(agentKey, spaces)
     const sessions = useAgentStore.getState().sessions
-      .filter(sessionIsLive)
+      .filter((s) => sessionIsLive(s, blockedKeys))
       .map((s) => sessionToItem(s, reviewKeys, titleOf, blockedKeys, cardTextOf))
 
     const suppressedLive = suppressedKeys(now, 'live')

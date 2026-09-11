@@ -175,6 +175,14 @@ describe('agent sessions', () => {
     expect(sessionIsLive(session({ hasUnread: true, status: 'ended' }))).toBe(true)
   })
 
+  it('a session owning a #blocked card stays live once read, running or not (^sly-lynx)', () => {
+    const blocked = new Set(['stuck-fork'])
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork' }), blocked)).toBe(true)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', status: 'running' }), blocked)).toBe(true)
+    expect(sessionIsLive(session({ agentKey: 'other' }), blocked)).toBe(false)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', isAl: true }), blocked)).toBe(false)
+  })
+
   it('adapts: header = name sans (fork), body = attention snippet, always inbox', () => {
     const i = sessionToItem(session({ name: 'Rosy finch (fork)', needsAttention: { ts: NOW, snippet: 'need a review' }, lastActivityAt: NOW - 100 }))
     expect(i.header).toBe('Rosy finch')
