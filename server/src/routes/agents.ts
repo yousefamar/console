@@ -20,6 +20,7 @@ import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
 import type { ForkCostLedger } from '../agents/fork-cost.js'
+import type { RecallIndex } from '../recall/index.js'
 import { getLastReadIndex, pinRead, setLastReadIndex, unpinRead } from '../read-state.js'
 
 // Session order persistence
@@ -143,6 +144,9 @@ export interface AgentContext {
   /** Fresh-vs-inherited fork cost ledger (agents/fork-cost.ts) — a fork's
    *  totals are appended when it ends. */
   forkCost?: ForkCostLedger
+  /** Past-session index (recall/) — a finished turn re-parses that session's
+   *  transcript so it is searchable from any other session. */
+  recall?: RecallIndex | null
 }
 
 /** What the MODEL receives for a human message: the text plus, when the
@@ -477,6 +481,9 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
     if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result'
       || msg.type === 'session_queued') {
       saveManifest(ctx.sessions)
+    }
+    if ((msg.type === 'result' || msg.type === 'session_ended') && session.claudeSessionId) {
+      ctx.recall?.touch(session.claudeSessionId, session.cwd)
     }
   })
 

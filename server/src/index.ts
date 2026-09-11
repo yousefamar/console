@@ -44,6 +44,9 @@ import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnv
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
 import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
+import { RecallIndex } from './recall/index.js'
+import { QueryLog } from './recall/qlog.js'
+import { handleRecallRoutes } from './routes/recall.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
@@ -885,6 +888,27 @@ function parentDigestFor(parent: Session): string | null {
 const forkCostLedger = new ForkCostLedger(join(feedsConfigDir, 'fork-cost.jsonl'))
 agentCtx.forkCost = forkCostLedger
 
+// Past-session recall (^jade-bat): every JSONL transcript under ~/.claude/projects
+// is FTS-indexed in a worker thread — backfill at boot, re-parse a hub session
+// after each turn, hourly catch-up for terminal sessions. `con agent search|read`.
+// CONSOLE_RECALL=0 disables it.
+const recallIndex = process.env.CONSOLE_RECALL === '0' ? null : new RecallIndex({
+  dbPath: join(feedsConfigDir, 'recall.db'),
+  projectsDir: join(homedir(), '.claude', 'projects'),
+  names: (() => {
+    let cached: { at: number; entries: ReturnType<typeof loadManifest> } | null = null
+    return (csid: string) => {
+      for (const s of sessions.values()) if (s.claudeSessionId === csid) return { hubName: s.name ?? undefined, agentKey: s.agentKey }
+      if (!cached || Date.now() - cached.at > 30_000) cached = { at: Date.now(), entries: loadManifest() }
+      const entry = cached.entries.find((m) => m.claudeSessionId === csid)
+      return entry ? { hubName: entry.name, agentKey: entry.agentKey } : {}
+    }
+  })(),
+  log,
+})
+agentCtx.recall = recallIndex
+const recallQlog = new QueryLog(join(feedsConfigDir, 'recall-qlog.jsonl'))
+
 /** Project skills a card plausibly touches — read from the project's repo
  *  symlink (`projects/<slug>/repo/.claude/skills`). No repo or no skills → none. */
 function skillHintsFor(project: string | null, cardLines: readonly string[]) {
@@ -1521,6 +1545,8 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   // Fresh-vs-inherited ticket-fork cost (^tall-colt's measurement): ended forks
   // from the JSONL ledger + live forks, bucketed by context mode. `?days=N`
   // narrows the ended set (default all).
+  if (handleRecallRoutes(req, res, path, url, { recall: recallIndex, qlog: recallQlog, getSessions: () => sessions })) return
+
   if (path === '/agents/fork-cost' && req.method === 'GET') {
     const days = Number(url.searchParams.get('days') ?? '0')
     const sinceTs = days > 0 ? Date.now() - days * 86_400_000 : 0
@@ -2324,6 +2350,7 @@ httpServer.listen(port, host, () => {
   log(`WebSocket: ${wsproto}://${host}:${port}`)
   log(`Health check: ${proto}://${host}:${port}/health`)
   if (tlsOpts && certCandidates[0]) log(`TLS: using ${certCandidates[0].cert}`)
+  recallIndex?.start()
 
   // Restore sessions from manifest — but FIRST reap the previous hub's claude
   // children (process-reaper.ts). pm2 restarts the tree with SIGINT, which the
@@ -2558,6 +2585,7 @@ function shutdown() {
   flushReadState()
   cronScheduler.flush()
   staleSweeper.stop()
+  recallIndex?.stop()
   const children: number[] = []
   for (const session of sessions.values()) {
     const pid = session.terminateForShutdown()

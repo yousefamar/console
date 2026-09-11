@@ -23,9 +23,67 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'reparent': return agentReparent(args, flags)
     case 'backend': return agentBackend(args, flags)
     case 'fork-cost': return agentForkCost(args, flags)
+    case 'search': return agentSearch(args, flags)
+    case 'read': return agentRead(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
+}
+
+// --------------------------------------------------------------------------
+// agent search / agent read — past-session recall over the hub's FTS index of
+// every Claude Code transcript on this machine (server/src/recall/). Each level
+// prints the next, cheaper address to read; quotes come only from a turn or
+// tool-result read, never from search snippets.
+// --------------------------------------------------------------------------
+
+const SEARCH_FLAGS = ['project', 'here', 'since', 'until', 'file', 'branch', 'session', 'limit', 'tools', 'self']
+const READ_FLAGS = ['grep', 'turns', 'tools', 'max']
+
+async function agentSearch(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const unknown = Object.keys(opts).filter((k) => !SEARCH_FLAGS.includes(k))
+  if (unknown.length) exitWithError('USAGE', `Unknown flag(s) --${unknown.join(', --')}. Usage: con agent search "<words>" [--project <substr>] [--here] [--since 7d|YYYY-MM-DD] [--until …] [--file <substr>] [--branch <substr>] [--session <id8>] [--limit N] [--tools] [--self]`, flags)
+  const query = positionals(args, opts).join(' ')
+  const params: Record<string, string | undefined> = {
+    q: query,
+    project: opts.project, since: opts.since, until: opts.until, file: opts.file, branch: opts.branch, session: opts.session, limit: opts.limit,
+    here: opts.here === 'true' ? '1' : undefined,
+    tools: opts.tools === 'true' ? '1' : undefined,
+    self: opts.self === 'true' ? '1' : undefined,
+    cwd: process.cwd(),
+  }
+  const r = await hubFetch<{ text: string; hits: number; fallback?: string }>('/agents/recall/search', { params })
+  if (flags.json) { output(r, flags); return }
+  process.stdout.write(r.text + '\n')
+}
+
+async function agentRead(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const unknown = Object.keys(opts).filter((k) => !READ_FLAGS.includes(k))
+  if (unknown.length) exitWithError('USAGE', `Unknown flag(s) --${unknown.join(', --')}. Usage: con agent read <address> [--grep <regex>] [--turns last:5|first:3|2-6|1,4,9] [--tools] [--max <chars>]`, flags)
+  const address = positionals(args, opts).join(' ')
+  if (!address) exitWithError('USAGE', 'Usage: con agent read <session8>[/<uuid8>|/t<idx>][#<seq>] — or paste a cite tag "[<session8> <uuid8> t<idx> <date> <role>]"', flags)
+  const params: Record<string, string | undefined> = {
+    address, grep: opts.grep, turns: opts.turns, max: opts.max,
+    tools: opts.tools === 'true' ? '1' : undefined,
+    cwd: process.cwd(),
+  }
+  const r = await hubFetch<{ text: string }>('/agents/recall/read', { params })
+  if (flags.json) { output(r, flags); return }
+  process.stdout.write(r.text + '\n')
+}
+
+/** Args that are neither a --flag nor the value a --flag consumed. */
+function positionals(args: string[], opts: Record<string, string>): string[] {
+  const consumed = new Set(Object.values(opts))
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('--')) { if (!a.includes('=') && i + 1 < args.length && consumed.has(args[i + 1]!) && !args[i + 1]!.startsWith('--')) i++; continue }
+    out.push(a)
+  }
+  return out
 }
 
 // --------------------------------------------------------------------------

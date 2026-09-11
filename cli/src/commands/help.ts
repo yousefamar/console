@@ -431,6 +431,8 @@ Commands:
   reparent      Move a session under another in the fork tree (<session> <parent> | --root)
   fork-cost    Per-turn spend of ticket-forks, fresh vs inherited context [--days N]
   model         Inspect/switch the model all agents spawn with
+  search        Find past sessions by full text (all transcripts on this machine) [--project --here --since --file --tools]
+  read          Read a past session / turn / tool result by address [--grep --turns --tools]
 
 Examples:
   con agent create "Fix the auth bug" --cwd /path/to/project --wait
@@ -438,6 +440,8 @@ Examples:
   con agent tail session_1
   con agent chat "Gravel general" "what auth does the control plane use?"
   con agent chat --id <conv-id> "follow-up question"
+  con agent search "pruned transcript crons" --since 30d
+  con agent read 27c3625f --grep "rekey"
   con agent chat --id <conv-id> --end
 `.trim(),
 
