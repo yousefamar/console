@@ -40,6 +40,14 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   hand-back strip for `reviewCards[].blockId`, backed by `SpacesRepository`
   board reads for that project rather than the active space.
 
+- Inbox: card-owned agent rows are titled with their CARD text (SPA 2f45b0fe,
+  ^jade-kiwi) — `/blog/spaces` ships `ownedCards[{blockId,text,agentKey}]` per
+  project (every `@key` card in In Progress / Under Review / Blocked, board
+  order); `ownedCardText(agentKey, spaces)` in `src/inbox/route.ts` prefers
+  blocked → review → in-progress, the header becomes the card text and the
+  session name moves to a tooltip (`InboxItem.agentName`). Uncarded sessions
+  keep their name. Port into `InboxLogic.kt`'s agent adapter + the row.
+
 - Inbox: agent rows lead with their SPACE (SPA 7b0aec47, ^glad-finch) —
   `sessionToItem` sets `InboxItem.context` = the session's project title (else
   first area; slug if the spaces list isn't loaded) and the row renders it as a
