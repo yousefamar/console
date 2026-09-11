@@ -10,7 +10,10 @@
 // with `:e`. Whatever the trigger, the response is the same: read disk, and if
 // it differs from what we last synced with, flip the buffer into review mode —
 // the user's buffer becomes the review BASE (what ✗ restores), the disk text
-// becomes the buffer (what ✓ keeps). Blind replacement is `:e!` only.
+// becomes the buffer (what ✓ keeps). Blind replacement is `:e!` — or a clean
+// buffer nobody is looking at (no live editor for it: other pane, other Spaces
+// view, other file), where a review would only ask the user to adjudicate a
+// change they never saw happen.
 //
 // Wired at boot (GatedBoot): the change can land while the user is on any
 // pane; files that aren't open need nothing (opening later reads disk).
@@ -27,18 +30,21 @@ export type ReconcileDecision =
   | 'local-only'
   /** Disk moved: open (or extend) a review against the user's buffer. */
   | 'review'
-  /** Forced reload — take disk verbatim, dropping any review and local edits. */
+  /** Take disk verbatim: forced (`:e!`, drops any review and local edits), or
+   *  a clean buffer with no editor on screen (an open review, if any, keeps
+   *  its base and simply spans the new text too). */
   | 'replace'
 
 /** Pure: what to do about a disk read for an open file. */
 export function decideReconcile(
   file: { content: string; savedContent: string },
   fresh: string,
-  force: boolean,
+  opts: { force: boolean; onScreen: boolean },
 ): ReconcileDecision {
   if (fresh === file.content) return 'unchanged'
-  if (force) return 'replace'
+  if (opts.force) return 'replace'
   if (fresh === file.savedContent) return 'local-only'
+  if (!opts.onScreen && file.content === file.savedContent) return 'replace'
   return 'review'
 }
 
@@ -90,12 +96,16 @@ export async function reconcileWithDisk(
   // A save that STARTED during the read means the disk we just saw is stale.
   if (pendingSave(path) !== saveBefore && depth < 3) return reconcileWithDisk(path, opts, depth + 1)
 
-  const file = useNotesStore.getState().openFiles[path]
+  const { openFiles, editorView, editorViewPath } = useNotesStore.getState()
+  const file = openFiles[path]
   if (!file) return 'skipped'
   // Force = "take disk as-is": an open review is dropped even when the buffer
   // already matches disk (the review is UI state on top of equal text).
   if (opts.force) useNotesStore.getState().endReview(path)
-  const decision = decideReconcile(file, fresh.content, !!opts.force)
+  // Only one live CM6 view exists app-wide, and only for the file the user is
+  // actually looking at (Notes pane, or Spaces Docs view, with that file active).
+  const onScreen = !!editorView && editorViewPath === path
+  const decision = decideReconcile(file, fresh.content, { force: !!opts.force, onScreen })
   switch (decision) {
     case 'unchanged':
       if (file.savedContent !== fresh.content || file.baseMtime !== fresh.mtime) {
