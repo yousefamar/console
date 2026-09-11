@@ -10,6 +10,18 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Inbox routing rules offline (SPA `store/unified-inbox.ts`, ^spry-wren,
+  2026-09-11) — the SPA now mirrors `/inbox/rules` locally (localStorage
+  `console:inbox-rules`), composes from the mirror while the hub is
+  unreachable, re-pulls on every sync-WS (re)connect, and pushes a save the
+  hub missed (dirty flag) instead of pulling the stale copy over it.
+  `InboxRepository` already composes without waiting, but `refreshRules()`
+  falls back to DEFAULTS on an offline boot (promoted/demoted sources
+  revert) and a failed `hub.post` is dropped. Phone equivalent: persist
+  `InboxRules` JSON in DataStore/a Room meta row, seed the StateFlow from it,
+  re-run `refreshRules()` on WS reconnect, keep a dirty flag so the
+  reconnect push wins.
+
 - App-wide command bar (SPA `CommandBar.tsx`, ^dry-fox, 2026-09-11) — the
   Spaces-only `/` switcher (ported in v95 as `SpacesQuickSwitcher.kt` /
   `SpacesSwitcher.kt`) grew into a Console-wide jump-to-anything: panes +

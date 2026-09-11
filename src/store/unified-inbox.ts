@@ -27,8 +27,9 @@ import { showAlert } from '@/dialog'
 import type { FeedKind } from '@/feeds/feed-kind'
 
 interface UnifiedInboxState {
+  /** Routing rules — the hub's copy once it has answered, until then the
+   *  local mirror (last known) or the defaults. Composition never waits. */
   rules: InboxRules
-  rulesLoaded: boolean
   feedList: InboxItem[]
   /** Everything currently snoozed, across all four sources, soonest-due
    *  first — the Inbox column's "N snoozed" view. Derived like the lists:
@@ -54,6 +55,8 @@ interface UnifiedInboxState {
    *  moves on — same semantics as the chat pane's selected room. */
   selected: InboxItem | null
 
+  /** Pull the hub's rules (one in-flight fetch at a time, timed out). A
+   *  save that failed offline is pushed instead of being overwritten. */
   loadRules: () => Promise<void>
   saveRules: (rules: InboxRules) => Promise<void>
   /** Set one feed's route (feed | inbox | hidden) — the filter UI's verb. */
@@ -109,9 +112,49 @@ function suppressedKeys(now: number, from: 'live' | 'snoozed'): Set<string> {
   return new Set([...handledKeys].filter(([, h]) => h.from === from).map(([k]) => k))
 }
 
+/** Offline mirror of the hub's inbox-rules.json (same pattern as the notes
+ *  open-tabs pref): the hub is authoritative, this is what composition uses
+ *  until the hub answers — or for the whole session when it never does. */
+const RULES_MIRROR_KEY = 'console:inbox-rules'
+/** A hub that is DOWN (vs. the browser knowing it's offline) leaves a fetch
+ *  hanging for the TCP connect timeout — a minute or more. */
+const RULES_FETCH_TIMEOUT_MS = 8_000
+
+function readRulesMirror(): InboxRules | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(RULES_MIRROR_KEY)
+    return raw ? normalizeRules(JSON.parse(raw)) : null
+  } catch { return null }
+}
+function writeRulesMirror(rules: InboxRules): void {
+  try { globalThis.localStorage?.setItem(RULES_MIRROR_KEY, JSON.stringify(rules)) } catch { /* quota / private mode */ }
+}
+function sameRules(a: InboxRules, b: InboxRules): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+let rulesInFlight: Promise<void> | null = null
+/** A save the hub never acknowledged — the local copy is the newer one, so
+ *  the next successful contact pushes it rather than pulling over it. */
+let rulesDirty = false
+/** Saves overlap; only the newest one's outcome may clear the dirty flag. */
+let saveSeq = 0
+let rulesRequested = false
+
+async function pushRules(rules: InboxRules): Promise<boolean> {
+  try {
+    const res = await hubFetch('/inbox/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rules),
+      timeoutMs: RULES_FETCH_TIMEOUT_MS,
+    })
+    return res.ok
+  } catch { return false }
+}
+
 export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
-  rules: DEFAULT_RULES,
-  rulesLoaded: false,
+  rules: readRulesMirror() ?? DEFAULT_RULES,
   feedList: [],
   snoozedList: [],
   showSnoozed: false,
@@ -131,23 +174,38 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
 
   setFeedFilter: (kind) => set({ feedFilter: kind }),
 
-  loadRules: async () => {
-    try {
-      const res = await hubFetch('/inbox/rules')
-      if (res.ok) set({ rules: normalizeRules(await res.json()), rulesLoaded: true })
-    } catch {
-      // Hub unreachable — defaults stand; retry happens on next rebuild.
-    }
+  loadRules: () => {
+    if (rulesInFlight) return rulesInFlight
+    rulesInFlight = (async () => {
+      if (rulesDirty) {
+        const seq = saveSeq
+        if (await pushRules(get().rules) && seq === saveSeq) rulesDirty = false
+        return
+      }
+      try {
+        const res = await hubFetch('/inbox/rules', { timeoutMs: RULES_FETCH_TIMEOUT_MS })
+        if (!res.ok) return
+        const rules = normalizeRules(await res.json())
+        // A save may have landed while this GET was in flight — it owns the truth.
+        if (rulesDirty) return
+        writeRulesMirror(rules)
+        const changed = !sameRules(rules, get().rules)
+        set({ rules })
+        if (changed) void get().rebuild()
+      } catch {
+        // Hub unreachable — the mirror/defaults stand; retried on reconnect.
+      }
+    })().finally(() => { rulesInFlight = null })
+    return rulesInFlight
   },
 
   saveRules: async (rules) => {
     set({ rules })
-    await hubFetch('/inbox/rules', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rules),
-    }).catch(() => {})
+    writeRulesMirror(rules)
     void get().rebuild()
+    rulesDirty = true
+    const seq = ++saveSeq
+    if (await pushRules(rules) && seq === saveSeq) rulesDirty = false
   },
 
   setFeedRoute: async (feedId, route) => {
@@ -180,9 +238,12 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
 
   rebuild: async () => {
     const seq = ++rebuildSeq
-    const { rules, rulesLoaded } = get()
-    if (!rulesLoaded) await get().loadRules()
-    const effective = get().rulesLoaded ? get().rules : rules
+    // Never wait on the hub: the lists compose from Dexie with the mirrored
+    // rules right away (Mail and Chat render offline; so must this pane —
+    // ^spry-wren). The first rebuild kicks the fetch off alongside; it
+    // rebuilds again if the hub's rules differ. Reconnects re-pull (subscribe.ts).
+    if (!rulesRequested) { rulesRequested = true; void get().loadRules() }
+    const effective = get().rules
     const now = Date.now()
 
     // Mail: the store's threads array IS the live inbox (archive removes).

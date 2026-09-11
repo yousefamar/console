@@ -11,6 +11,7 @@ import { useAgentStore } from '@/store/agent'
 import { useSpacesStore } from '@/store/spaces'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { makeRebuildScheduler } from '@/inbox/rebuild-scheduler'
+import { hubBus } from '@/sync-bus'
 
 const REBUILD_DEBOUNCE_MS = 300
 /** Ceiling on how long a busy fleet's store writes can hold a rebuild off
@@ -34,4 +35,8 @@ export function wireUnifiedInbox(): void {
   // Overdue-ness (SLA) is a function of wall clock, not store events — a DM
   // crosses its 24h line with no delta firing. Coarse re-sweep.
   setInterval(schedule, 5 * 60_000)
+  // Routing rules live hub-side; the lists compose from the local mirror
+  // meanwhile. Each (re)connect re-pulls them — or pushes a save the hub
+  // missed while unreachable.
+  hubBus.onConnect(() => { void useUnifiedInboxStore.getState().loadRules() })
 }
