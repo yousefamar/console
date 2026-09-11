@@ -183,8 +183,9 @@ export class Session extends EventEmitter {
   readonly id: string
   claudeSessionId?: string
   name?: string
-  /** claudeSessionId of the parent session if this is a fork (else undefined). */
-  readonly parentClaudeSessionId?: string
+  /** claudeSessionId of the parent session if this is a fork (else undefined).
+   *  Mutable only via `reparent_session`. */
+  parentClaudeSessionId?: string
   /** See SessionOptions.forkContext. Undefined for non-forks / pre-^tall-colt forks. */
   readonly forkContext?: 'fresh' | 'inherited'
   /** Completed turns (`result` messages) — the denominator for per-turn cost. */

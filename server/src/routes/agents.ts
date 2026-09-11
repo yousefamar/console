@@ -10,6 +10,7 @@ import type { ModelConfig } from '../model-config.js'
 import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
+import { wouldCycle } from '../agents/lineage.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
@@ -930,6 +931,36 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       }
       const mem = { linked: 'memory shared into the new dir', 'already-shared': 'memory already shared', 'kept-existing': 'target has its own memory — adopted', none: 'no memory to carry' }[r.memory]
       log(`Session ${session.id} relocated ${from} → ${session.cwd} (transcript moved, ${mem}; wakes there on next message)`)
+      saveManifest(sessions)
+      broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
+      break
+    }
+
+    case 'reparent_session': {
+      const session = sessions.get(msg.sessionId)
+      if (!session) {
+        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        return
+      }
+      const parent = msg.parentSessionId ? sessions.get(msg.parentSessionId) : null
+      if (msg.parentSessionId && !parent) {
+        sendTo(ws, { type: 'hub_error', message: `reparent failed: parent not found: ${msg.parentSessionId}` })
+        return
+      }
+      if (parent && !parent.claudeSessionId) {
+        sendTo(ws, { type: 'hub_error', message: `reparent failed: parent has no Claude session ID yet` })
+        return
+      }
+      if (parent) {
+        const byClaudeId = new Map([...sessions.values()].filter((s) => s.claudeSessionId).map((s) => [s.claudeSessionId!, s]))
+        if (wouldCycle(session, parent, byClaudeId)) {
+          sendTo(ws, { type: 'hub_error', message: `reparent failed: ${parent.id} is ${parent === session ? 'the session itself' : 'a descendant of it'}` })
+          return
+        }
+      }
+      const from = session.parentClaudeSessionId
+      session.parentClaudeSessionId = parent?.claudeSessionId
+      log(`Session ${session.id} reparented ${from ?? '(root)'} → ${parent ? `${parent.id} (${parent.claudeSessionId})` : '(root)'}`)
       saveManifest(sessions)
       broadcast(clients, { type: 'sessions_list', sessions: Array.from(sessions.values()).map((s) => s.getInfo()) })
       break

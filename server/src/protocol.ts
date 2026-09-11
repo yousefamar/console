@@ -50,6 +50,10 @@ export type ClientMessage =
    *  fallback). `model: null` clears the pin — back to the hub-wide model. */
   | { type: 'set_session_model'; sessionId: string; model: string | null }
   | { type: 'relocate_session'; sessionId: string; cwd: string }
+  /** Move a session under a new parent in the fork tree (`parentSessionId` is a
+   *  hub session id; `null` detaches it to a root). Lineage only — nothing is
+   *  respawned. */
+  | { type: 'reparent_session'; sessionId: string; parentSessionId: string | null }
   /** Merge a fork back into its parent: the fork summarises, the digest is
    *  injected into the parent, then the fork is killed. */
   | { type: 'merge_session'; sessionId: string }

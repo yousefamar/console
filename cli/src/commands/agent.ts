@@ -20,6 +20,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'merge': return agentMerge(args, flags)
     case 'model': return agentModel(args, flags)
     case 'cwd': return agentCwd(args, flags)
+    case 'reparent': return agentReparent(args, flags)
     case 'backend': return agentBackend(args, flags)
     case 'fork-cost': return agentForkCost(args, flags)
     default:
@@ -438,6 +439,36 @@ async function agentCwd(args: string[], flags: GlobalFlags): Promise<void> {
   )
   if (!reply || reply.type === 'hub_error') exitWithError('ERROR', reply?.message ?? 'no reply from hub', flags)
   output({ relocated: hubId, cwd }, flags)
+}
+
+/** `con agent reparent <session> <new-parent>` — move a session (fork or root)
+ *  under another session in the sidebar's fork tree; `--root` detaches it.
+ *  Lineage only: review hand-backs and `merge` follow the new parent, nothing
+ *  is respawned, the agentKey is untouched. */
+async function agentReparent(args: string[], flags: GlobalFlags): Promise<void> {
+  const toRoot = args.includes('--root')
+  const [target, parentArg] = args.filter((a) => !a.startsWith('--'))
+  if (!target || (!parentArg && !toRoot)) exitWithError('USAGE', 'Usage: con agent reparent <session-id|name> <parent-session-id|name> | --root', flags)
+  const toHubId = async (ref: string): Promise<string> => {
+    if (/^session_/.test(ref)) return ref
+    try { return (await resolveByClaudeId(ref)).id } catch { try { return (await resolveByName(ref)).id } catch { return ref } }
+  }
+  const hubId = await toHubId(target!)
+  const parentId = toRoot ? null : await toHubId(parentArg!)
+  const { sendAndReceive } = await import('../ws-client.js')
+  const reply = await sendAndReceive(
+    { type: 'reparent_session', sessionId: hubId, parentSessionId: parentId },
+    (msg: any) => (msg.type === 'hub_error' && /reparent|not found/i.test(msg.message))
+      || (msg.type === 'sessions_list' && (() => {
+        const child = msg.sessions?.find((s: any) => s.id === hubId)
+        if (!child) return false
+        if (parentId === null) return !child.parentClaudeSessionId
+        const parent = msg.sessions?.find((s: any) => s.id === parentId)
+        return !!parent && child.parentClaudeSessionId === parent.claudeSessionId
+      })()),
+  )
+  if (!reply || reply.type === 'hub_error') exitWithError('ERROR', reply?.message ?? 'no reply from hub', flags)
+  output({ reparented: hubId, parent: parentId }, flags)
 }
 
 async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {

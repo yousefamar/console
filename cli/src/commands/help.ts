@@ -428,7 +428,8 @@ Commands:
   wait          Block until session completes
   chat          Talk to another agent (forks it, returns its reply)
   merge         Merge a fork back into its parent (summary folded in), then close it
-  fork-cost     Per-turn spend of ticket-forks, fresh vs inherited context [--days N]
+  reparent      Move a session under another in the fork tree (<session> <parent> | --root)
+  fork-cost    Per-turn spend of ticket-forks, fresh vs inherited context [--days N]
   model         Inspect/switch the model all agents spawn with
 
 Examples:
