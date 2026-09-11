@@ -74,7 +74,8 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   ^mild-ibis, 2026-09-10) — `SpaceSummary` gained `blockedCards` /
   `blockedAgentKeys` (cards tagged `#blocked` in a dispatch column, or in a
   legacy Blocked column); `sessionToItem` stamps `InboxItem.blocked` when the
-  session's `agentKey` owns one (NOT gated on idle), `band()` puts it in tier 1
+  session's `agentKey` owns one (admission unchanged — running sessions never
+  enter the list; `blocked` only colours an admitted idle+unread row), `band()` puts it in tier 1
   beside `needsAttention`, the row's Bot icon + a `Ban` glyph turn red, and
   the viewer gets a `Blocked · <project>` strip with Open card / Unblock
   (`POST /board/:project/block {card, blocked:false}`). Port: parse the two

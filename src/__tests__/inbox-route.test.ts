@@ -175,14 +175,13 @@ describe('agent sessions', () => {
     expect(sessionIsLive(session({ hasUnread: true, status: 'ended' }))).toBe(true)
   })
 
-  it('a #blocked card surfaces its session when blocked AND unread, running or not (^sly-lynx)', () => {
-    const blocked = new Set(['stuck-fork'])
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true }), blocked)).toBe(true)
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, status: 'running' }), blocked)).toBe(true)
-    // Read = quiet, like any unread; the card stays blocked on the board.
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork' }), blocked)).toBe(false)
-    expect(sessionIsLive(session({ agentKey: 'other', hasUnread: true, status: 'running' }), blocked)).toBe(false)
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, isAl: true }), blocked)).toBe(false)
+  it('a #blocked card never admits a RUNNING session — running sessions stay out of the Inbox, full stop (Yousef 2026-09-11)', () => {
+    // Admission ignores the card entirely; `blocked` only colours an admitted (idle + unread) row.
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true }))).toBe(true)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, status: 'running' }))).toBe(false)
+    // Read = quiet, like any unread; the card stays blocked on the board — unblocking is the fork's call.
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork' }))).toBe(false)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, isAl: true }))).toBe(false)
   })
 
   it('adapts: header = name sans (fork), body = attention snippet, always inbox', () => {

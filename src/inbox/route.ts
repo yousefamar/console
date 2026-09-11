@@ -126,21 +126,24 @@ export function sessionContext(s: Pick<AgentSessionLike, 'project' | 'areas'>, t
  *  not one of them: its unread text is a turn still being typed, nothing for
  *  Yousef to act on yet (^neat-fawn: "Inbox is only for things that require
  *  my attention"). The exception is `needsAttention` — a question or approval
- *  can block a still-running turn, and that IS his to answer. A session whose
- *  `@key` owns a `#blocked` card surfaces when it is blocked AND unread,
- *  running or not — reading it clears the row like any unread (^sly-lynx). */
-export function sessionIsLive(s: AgentSessionLike, blockedKeys?: ReadonlySet<string>): boolean {
+ *  can block a still-running turn, and that IS his to answer. That is the ONLY
+ *  exception: a `#blocked` card does not admit a running session (Yousef,
+ *  2026-09-11: "I don't want to see any actively running sessions in my
+ *  inbox" — when to unblock is the fork's discretion; the card's `#blocked`
+ *  only colours the row once the session is idle and unread). */
+export function sessionIsLive(s: AgentSessionLike): boolean {
   if (s.isAl) return false
   if (s.needsAttention) return true
   if (!s.hasUnread) return false
-  return s.status !== 'running' || (!!s.agentKey && !!blockedKeys?.has(s.agentKey))
+  return s.status !== 'running'
 }
 
 /** `reviewKeys` = every `@key` owning an Under Review card across all
  *  boards (SpaceSummary.reviewAgentKeys, flattened) — the session's card
  *  being in review is what makes it a hand-back. `blockedKeys` = every
  *  `@key` owning a `#blocked` in-progress card — stuck on Yousef, so the
- *  row is treated like an @amar alert whatever the session is doing. */
+ *  row is coloured like an @amar alert once the session is admitted (idle +
+ *  unread) — it never admits a running session. */
 export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<string>, titleOf?: (slug: string) => string | undefined, blockedKeys?: ReadonlySet<string>, cardTextOf?: (agentKey: string) => string | undefined): InboxItem {
   const idle = s.status !== 'running'
   const context = sessionContext(s, titleOf)
