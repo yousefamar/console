@@ -292,10 +292,10 @@ function SpaceListRail() {
       if (sp.reviewAgentKeys?.length) reviewOwners.set(sp.slug, new Set(sp.reviewAgentKeys))
       if (sp.cardAgentKeys?.length) cardOwners.set(sp.slug, new Set(sp.cardAgentKeys))
     }
-    // A #blocked card is attention (red) for as long as it stays blocked —
-    // from board state, not the hub's transition-time flag (^sly-lynx).
+    // A #blocked card's UNREAD session is attention (red) — from board state,
+    // not the hub's transition-time flag; reading it clears it (^sly-lynx).
     const blockedKeys = blockedAgentKeys(spaces)
-    const attentionOf = (s: (typeof sessions)[number]): boolean => !!s.needsAttention || (!!s.agentKey && blockedKeys.has(s.agentKey))
+    const attentionOf = (s: (typeof sessions)[number]): boolean => !!s.needsAttention || (!!s.hasUnread && !!s.agentKey && blockedKeys.has(s.agentKey))
     const push = (slug: string, a: SpaceAlert) => {
       const arr = alerts.get(slug) ?? []
       arr.push(a)

@@ -126,14 +126,14 @@ export function sessionContext(s: Pick<AgentSessionLike, 'project' | 'areas'>, t
  *  not one of them: its unread text is a turn still being typed, nothing for
  *  Yousef to act on yet (^neat-fawn: "Inbox is only for things that require
  *  my attention"). The exception is `needsAttention` — a question or approval
- *  can block a still-running turn, and that IS his to answer. So is a session
- *  whose `@key` owns a `#blocked` card: the stall outlives any read marker,
- *  the row leaves only when the card is unblocked (^sly-lynx). */
+ *  can block a still-running turn, and that IS his to answer. A session whose
+ *  `@key` owns a `#blocked` card surfaces when it is blocked AND unread,
+ *  running or not — reading it clears the row like any unread (^sly-lynx). */
 export function sessionIsLive(s: AgentSessionLike, blockedKeys?: ReadonlySet<string>): boolean {
   if (s.isAl) return false
   if (s.needsAttention) return true
-  if (s.agentKey && blockedKeys?.has(s.agentKey)) return true
-  return s.status !== 'running' && !!s.hasUnread
+  if (!s.hasUnread) return false
+  return s.status !== 'running' || (!!s.agentKey && !!blockedKeys?.has(s.agentKey))
 }
 
 /** `reviewKeys` = every `@key` owning an Under Review card across all
@@ -225,8 +225,9 @@ export function blockedCardsFor(agentKey: string | null | undefined, spaces: Rea
 }
 
 /** Every `@key` owning a `#blocked` in-progress card, across all boards —
- *  derived from board state, so it survives hub restarts and read markers
- *  (the hub's transition-time attention flag does neither). */
+ *  derived from board state, so it survives hub restarts (the hub's
+ *  transition-time attention flag does not). Pair it with `hasUnread`:
+ *  blocked AND unread is red, a read blocked session is quiet. */
 export function blockedAgentKeys(spaces: ReadonlyArray<{ blockedAgentKeys?: string[] }>): Set<string> {
   return new Set(spaces.flatMap((sp) => sp.blockedAgentKeys ?? []))
 }

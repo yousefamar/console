@@ -175,12 +175,14 @@ describe('agent sessions', () => {
     expect(sessionIsLive(session({ hasUnread: true, status: 'ended' }))).toBe(true)
   })
 
-  it('a session owning a #blocked card stays live once read, running or not (^sly-lynx)', () => {
+  it('a #blocked card surfaces its session when blocked AND unread, running or not (^sly-lynx)', () => {
     const blocked = new Set(['stuck-fork'])
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork' }), blocked)).toBe(true)
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork', status: 'running' }), blocked)).toBe(true)
-    expect(sessionIsLive(session({ agentKey: 'other' }), blocked)).toBe(false)
-    expect(sessionIsLive(session({ agentKey: 'stuck-fork', isAl: true }), blocked)).toBe(false)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true }), blocked)).toBe(true)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, status: 'running' }), blocked)).toBe(true)
+    // Read = quiet, like any unread; the card stays blocked on the board.
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork' }), blocked)).toBe(false)
+    expect(sessionIsLive(session({ agentKey: 'other', hasUnread: true, status: 'running' }), blocked)).toBe(false)
+    expect(sessionIsLive(session({ agentKey: 'stuck-fork', hasUnread: true, isAl: true }), blocked)).toBe(false)
   })
 
   it('adapts: header = name sans (fork), body = attention snippet, always inbox', () => {
