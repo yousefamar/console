@@ -384,6 +384,14 @@ export class PropertySync {
           this.log(`[property-sync] ${s.id} failed: ${(e as Error).message}`)
         }
       }
+      // The skims are "what's new" and should reach the map now; the full pulls
+      // and enrichment below can run for an hour (Kleinanzeigen paces itself at
+      // 45 s/request), and holding every redraw behind them meant a newly
+      // created search's layer — or any criteria edit — did not appear until the
+      // whole tick ended (the plot layer sat undrawn 45 min after its sync,
+      // 2026-09-11). So: flush once here, defer again for the slow half.
+      this.flushRedraw()
+      this.deferRedraw = true
       // Full pulls after the skims, so a slow one never delays "what's new".
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
@@ -391,18 +399,25 @@ export class PropertySync {
         if (Date.now() - last < (this.pacingOf(s).fullSyncIntervalMs ?? FULL_SYNC_INTERVAL_MS)) continue
         await this.fullSync(s.id)
       }
+      // A full pull is a visible change too — don't make it wait for enrichment.
+      this.flushRedraw()
+      this.deferRedraw = true
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
         await this.enrich(s.id, this.pacingOf(s).enrichPerTick ?? ENRICH_PER_TICK)
       }
     } finally {
-      this.deferRedraw = false
       this.running = false
-      if (this.redrawPending) {
-        this.redrawPending = false
-        for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
-      }
+      this.flushRedraw()
     }
+  }
+
+  /** End a deferred stretch: redraw once if anything changed during it. */
+  private flushRedraw(): void {
+    this.deferRedraw = false
+    if (!this.redrawPending) return
+    this.redrawPending = false
+    for (const t of this.layerTargets()) this.updateKindLayer(t.kind, t.tier)
   }
 
   private async pollSearch(s: PropertySearch): Promise<void> {
