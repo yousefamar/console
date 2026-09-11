@@ -22,7 +22,7 @@ import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, layerNameFor, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
-import { listingKind } from './land.js'
+import { listingKind, planningLike, fixerLike } from './land.js'
 import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
@@ -71,6 +71,9 @@ const LIVENESS_MAX_PROBES = 30
 const INTERESTED_COLOR = '#22c55e'
 const LISTING_ICON = '🏠'
 const INTERESTED_ICON = '🏡'
+/** A house whose text says it needs work — the fixer-upper route into a gold town (Yousef, 2026-09-11). */
+const FIXER_ICON = '🏚️'
+const PLOT_ICON = '🏗️'
 /** Notifications per poll per search — beyond this, one summary push. */
 const MAX_ALERTS = 5
 /**
@@ -734,7 +737,9 @@ export class PropertySync {
     for (const s of this.searches.list()) {
       const searchKind = kindOf(s)
       // A house search still contributes to the farmland layer (and vice
-      // versa never): only walk searches that could feed this kind.
+      // versa never): only walk searches that could feed this kind. Plot
+      // searches are sealed off in both directions.
+      if ((searchKind === 'plot') !== (kind === 'plot')) continue
       if (kind === 'house' && searchKind === 'farmland') continue
       // A tiered search draws only to its tier's layers; untiered only to the defaults.
       if ((s.tier || undefined) !== tier) continue
@@ -754,6 +759,8 @@ export class PropertySync {
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
         if (listingKind(l, searchKind) !== kind) continue
+        // The plot layer is land WITH planning consent; a paddock or an auction strip stays off it (fail-closed on silence).
+        if (kind === 'plot' && !interested.has(l.id) && !planningLike(l)) continue
         candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, bedroomsApprox: LOCALI_PORTALS.has(l.portal), source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
     }
@@ -766,6 +773,7 @@ export class PropertySync {
       const top = group[0]!
       const { l, s } = top
       const isInterested = group.some((c) => c.interested)
+      const fixer = kind === 'house' && fixerLike(l)
       const alsoOn = [...new Set(group.slice(1).map((c) => c.l.portal))]
       features.push({
         type: 'Feature',
@@ -776,6 +784,7 @@ export class PropertySync {
           beds: l.bedrooms,
           area: l.floorArea,
           plot: l.plotArea,
+          condition: fixer ? 'needs work' : undefined,
           listed: l.listedAt?.slice(0, 10),
           country: s.country,
           portal: l.portal,
@@ -799,7 +808,7 @@ export class PropertySync {
           // An emoji can't be recoloured, so "interested" is a different house —
           // 🏡 with its green garden reads as the good one. `_color` stays for
           // renderers that draw points as circles (Android) and the label layer.
-          _icon: isInterested ? INTERESTED_ICON : LISTING_ICON,
+          _icon: isInterested ? INTERESTED_ICON : kind === 'plot' ? PLOT_ICON : fixer ? FIXER_ICON : LISTING_ICON,
           // Yousef's verdict; unreviewed pins carry neither key.
           ...(isInterested ? { review: 'interested', _color: INTERESTED_COLOR } : {}),
         },
@@ -811,7 +820,7 @@ export class PropertySync {
     const geojson = { type: 'FeatureCollection', features: features.slice(0, MAX_PINS) }
     try {
       this.mapLayers.upsert(slug, geojson, {
-        style: { color: tier ? TIER_COLOR : LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'highStreet', 'url'] },
+        style: { color: tier ? TIER_COLOR : LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'condition', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'highStreet', 'url'] },
         fit: false,
         updatedBy: 'property',
       })

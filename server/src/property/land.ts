@@ -152,6 +152,9 @@ export function plotAreaFromText(text: string): number | undefined {
 const PROSE_PLOT_PORTALS = new Set(['rightmove', 'onthemarket'])
 
 export function listingKind(l: Pick<Listing, 'propertyType' | 'title' | 'plotArea' | 'summary' | 'keyFeatures' | 'description' | 'bedrooms'> & { portal?: string }, searchKind: PropertyKind): PropertyKind {
+  // A plot search is the only way onto the plot layer, and never off it: a
+  // "Plot with planning permission for a 4-bed house" is a plot, not a house.
+  if (searchKind === 'plot') return 'plot'
   if (searchKind === 'farmland') return 'farmland'
   if (FARMLAND_TYPE_RE.test(l.propertyType ?? '')) return 'farmland'
   // In the title the same words are often a street or house name ("Pitts Farm Road", "Willow Farm Close").
@@ -165,4 +168,48 @@ export function listingKind(l: Pick<Listing, 'propertyType' | 'title' | 'plotAre
   // it over a keyword ("orchard" in a 300 m² garden is a fruit tree).
   if (plot == null && hasLandKeyword(text)) return 'farmland'
   return 'house'
+}
+
+type ListingText = Pick<Listing, 'title' | 'summary' | 'keyFeatures' | 'description'>
+const textOf = (l: ListingText): string => [l.title ?? '', l.summary ?? '', ...(l.keyFeatures ?? []), l.description ?? ''].join('\n')
+
+/**
+ * Sentences that talk about planning the seller does NOT have: "subject to
+ * planning", "planning potential", "lapsed/refused/no planning", holiday-let
+ * consents (occupancy-restricted, not a home). Dropped before the positive
+ * test so "Planning Potential Subject to planning permission (Local Plan)"
+ * cannot pass on its own words.
+ */
+const PLANNING_NEGATIVE_RE =
+  /\bsubject to\b|\bstpp\b|\b(?:planning|development)\s+potential\b|\bpotential\s+(?:for|to)\b|\bscope\s+(?:for|to)\b|\bmay\s+be\s+suitable\b|\b(?:lapsed|expired|previous(?:ly)?|refused|withdrawn|no|without|pre-?)\s+(?:\w+\s+)?planning\b|\bholiday\b|\bpre-?app(?:lication)?\b/i
+const PLANNING_POSITIVE_RE =
+  /\b(?:full|detailed|outline|outlined)\s+planning\b|\bplanning\s+(?:permission|consent|approval)\s+(?:in\s+principle|granted|approved|obtained|secured|in\s+place|exists|has\s+been|was\s+granted|for\s+(?:a|an|the|one|two|three|four|five|six|\d)\b)|\bpermission\s+in\s+principle\b|\bwith\s+(?:the\s+benefit\s+of\s+)?(?:full\s+|outline\s+|detailed\s+)?planning\b|\bbenefit(?:ing|s)?\s+(?:from|of)\s+(?:full\s+|outline\s+|detailed\s+)?planning\b|\bplanning\s+ref(?:erence)?\b|\bconsented\s+(?:site|plot|scheme|development)\b|\bapproved\s+plans?\b|\b(?:PP|PIP)\s+(?:granted|for)\b/i
+
+/**
+ * Does this land listing carry planning consent for a dwelling? Fail-CLOSED:
+ * the plot layer is "bare land with planning permission" (Yousef, 2026-09-11),
+ * so a paddock, a strip sold at auction for £2k or a site "with potential" is
+ * not drawn until its text says the permission exists. Rightmove land
+ * summaries state it up front ("Plot with Planning Permission – …", "planning
+ * permission for a 4 bed detached house"), so pre-enrichment rows still pass.
+ */
+export function planningLike(l: ListingText): boolean {
+  return textOf(l)
+    .split(/[.;\n]|\*\*|\s[-–]\s/)
+    .some((sentence) => !PLANNING_NEGATIVE_RE.test(sentence) && PLANNING_POSITIVE_RE.test(sentence))
+}
+
+/**
+ * Estate-agent phrasing for a house that needs work. Calibrated on the live
+ * UK inventory (15,035 rows, 2026-09-11): 1,439 hits with this set minus the
+ * three that were noise — "blank canvas" is a garden-landscaping cliché,
+ * "structural defects" is the new-build warranty boilerplate, "subsidence" is
+ * the material-information "History of subsidence: No" line. German and
+ * Italian equivalents included so DE/IT pins flag the same way.
+ */
+export const FIXER_RE =
+  /\b(?:in need of|requires?|requiring|needs?|needing|would benefit from|ready for|ripe for|awaiting)\s+(?:some\s+|complete\s+|full\s+|total\s+|general\s+|extensive\s+|significant\s+|considerable\s+|cosmetic\s+|a\s+(?:programme|program|scheme|degree|level|little|lot)\s+of\s+)?(?:modernis|moderniz|renovat|refurbish|updating|upgrading|improvement|repair|attention|TLC\b|work\b)|\b(?:renovation|refurbishment|modernisation|modernization|improvement)\s+(?:project|opportunity)|\bproject\s+(?:property|house|home)\b|\bdoer[- ]?upper|\bfixer[- ]?upper|\bun-?modernised|\bcash\s+(?:buyers?|purchasers?)\s+only|\bstructural\s+(?:issues|movement|repairs?)|\bsuspected\s+subsidence|\bfire[- ]damaged|\bderelict|\bdilapidated|\bsanierungsbed(?:ü|ue)rftig|\brenovierungsbed(?:ü|ue)rftig|\bsanierungsobjekt|\bmodernisierungsbedarf|\bhandwerker(?:haus|objekt)?\b|\bf(?:ü|ue)r\s+handwerker\b|\bda\s+ristrutturare\b|\bda\s+rinnovare\b|\bda\s+sistemare\b|\bda\s+riattare\b|\ballo\s+stato\s+grezzo\b|\bal\s+grezzo\b/i
+
+export function fixerLike(l: ListingText): boolean {
+  return FIXER_RE.test(textOf(l))
 }

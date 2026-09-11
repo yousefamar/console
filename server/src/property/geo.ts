@@ -82,7 +82,15 @@ export function simplifyToLatLng(ring: Ring, maxVertices: number, close: boolean
   return pts
 }
 
-/** Every outer ring of a Polygon/MultiPolygon, largest first. */
+/**
+ * Below this (deg², ~0.1 km²) a ring is a union sliver, not a place: it can't
+ * hold a house we'd draw, it costs a portal request per search, and a 3-point
+ * one made Rightmove 400 an entire count (2026-09-11, 145 of the zone's 352
+ * rings were under it).
+ */
+const MIN_RING_AREA = 1e-5
+
+/** Every outer ring of a Polygon/MultiPolygon, largest first, slivers dropped. */
 export function outerRings(geometry: Geometry): Ring[] {
   const polys = (geometry.type === 'MultiPolygon'
     ? (geometry.coordinates as Ring[][])
@@ -91,6 +99,7 @@ export function outerRings(geometry: Geometry): Ring[] {
     .map((p) => p[0]!)
     .filter((r) => Array.isArray(r) && r.length >= 4)
     .map((ring) => ({ ring, area: Math.abs(shoelace(ring)) }))
+    .filter((r) => r.area >= MIN_RING_AREA)
     .sort((a, b) => b.area - a.area)
     .map((r) => r.ring)
 }

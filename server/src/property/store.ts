@@ -56,10 +56,13 @@ export const PORTAL_BY_COUNTRY: Record<Country, Portal> = {
  * What kind of property a search is after. Map layers are sliced by kind ONLY
  * (Yousef, 2026-09-07: "do not slice by country … do not slice by source
  * either. Only slice by type") — every search of a kind feeds one
- * `property/<kind>` layer; country and portal are popup fields.
+ * `property/<kind>` layer; country and portal are popup fields. `plot` is
+ * bare land WITH planning consent for a dwelling (self-build, 2026-09-11) —
+ * a plot search feeds only the plot layer and the house/farmland searches
+ * never promote into it.
  */
-export type PropertyKind = 'house' | 'farmland'
-export const PROPERTY_KINDS: readonly PropertyKind[] = ['house', 'farmland']
+export type PropertyKind = 'house' | 'farmland' | 'plot'
+export const PROPERTY_KINDS: readonly PropertyKind[] = ['house', 'farmland', 'plot']
 
 export interface PropertySearch {
   id: string

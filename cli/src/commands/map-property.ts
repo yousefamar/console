@@ -45,7 +45,7 @@ async function get(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function add(args: string[], flags: GlobalFlags): Promise<void> {
   const o = parseFlags(args)
-  if (!o.country) return exitWithError('USAGE', 'con map property add --country UK|DE|IT --layer <group/name> [--kind house|farmland] [--tier <name>] [--portal <name>] [criteria flags]', flags)
+  if (!o.country) return exitWithError('USAGE', 'con map property add --country UK|DE|IT --layer <group/name> [--kind house|farmland|plot] [--tier <name>] [--portal <name>] [criteria flags]', flags)
   if (!o.layer) return exitWithError('USAGE', '--layer <map-layer-slug> required (supplies the search polygon)', flags)
   const body: Record<string, unknown> = {
     country: String(o.country).toUpperCase(),

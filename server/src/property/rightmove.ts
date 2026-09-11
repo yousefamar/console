@@ -222,6 +222,7 @@ function compile(c: Criteria): Record<string, string> {
     p.propertyTypes = wanted.length ? wanted.join(',') : DEFAULT_HOUSE_SUBTYPES.join(',')
   }
   if (c.propertyType === 'flat') p.propertyTypes = 'flat'
+  if (c.propertyType === 'land') p.propertyTypes = 'land'
   // Deliberately NOT sending minSize/maxSize: only ~49% of Rightmove listings
   // report a floor area, and the server-side filter drops the silent rest.
   // Post-filtering keeps them (see postFilter in sync.ts).

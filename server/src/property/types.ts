@@ -31,8 +31,12 @@ export type Channel = 'buy' | 'rent'
  */
 export interface Criteria {
   channel?: Channel
-  /** House vs flat vs any. Portals have far richer taxonomies; this is the axis we care about. */
-  propertyType?: 'house' | 'flat' | 'any'
+  /**
+   * House vs flat vs any. Portals have far richer taxonomies; this is the axis
+   * we care about. `land` = bare plots (Rightmove `propertyTypes=land`; the
+   * other clients have no land type and ignore it).
+   */
+  propertyType?: 'house' | 'flat' | 'land' | 'any'
   /**
    * Narrows `propertyType: 'house'` to specific house types. Portal-agnostic
    * subset: `detached | semi-detached | terraced | bungalow | villa | farmhouse | land`.

@@ -12,7 +12,7 @@ import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirpo
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
-import { plotAreaFromText, listingKind, normaliseTenure } from '../property/land.js'
+import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
@@ -79,6 +79,13 @@ describe('outerRings', () => {
     const rings = outerRings({ type: 'MultiPolygon', coordinates: [[small], [big, hole]] })
     expect(rings).toHaveLength(2)
     expect(rings[0]).toEqual(big)
+  })
+
+  it('drops union slivers (a 3-point 0 km² ring 400s Rightmove and buys nothing)', () => {
+    const big: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+    const sliver: [number, number][] = [[-1.5, 51.2], [-1.4999, 51.2001], [-1.4998, 51.2], [-1.5, 51.2]]
+    const pocket: [number, number][] = [[-2, 52], [-1.99, 52], [-1.99, 52.01], [-2, 52.01], [-2, 52]] // ~0.7 km²
+    expect(outerRings({ type: 'MultiPolygon', coordinates: [[big], [sliver], [pocket]] })).toEqual([big, pocket])
   })
 })
 
@@ -823,7 +830,7 @@ describe('PropertyInventoryStore', () => {
 
 describe('PropertySync kind layers', () => {
   const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
-  const harness = () => {
+  const harness = (extraUK: Listing[] = []) => {
     const store = tmpStore()
     const inventory = tmpInventory()
     const layers = new Map<string, { type: string; features: Array<{ properties: Record<string, unknown> }> }>()
@@ -835,8 +842,12 @@ describe('PropertySync kind layers', () => {
       remove: (slug: string) => layers.delete(slug),
     }
     const byCountry: Record<string, Listing[]> = {
-      UK: [listing('uk1', { lat: 51, lon: -1, price: 100000, propertyType: 'Detached' }), listing('uk-far', { lat: 30, lon: -1, price: 100000 })],
+      UK: [listing('uk1', { lat: 51, lon: -1, price: 100000, propertyType: 'Detached' }), listing('uk-far', { lat: 30, lon: -1, price: 100000 }), ...extraUK],
       DE: [listing('de1', { lat: 50, lon: 8, price: 200000, portal: 'immoscout24' })],
+      IT: [
+        listing('plot-pp', { lat: 43, lon: 11, price: 90000, propertyType: 'Land', bedrooms: 0, summary: 'Building plot with full planning permission for a 3-bed house' }),
+        listing('plot-none', { lat: 43, lon: 11, price: 20000, propertyType: 'Land', bedrooms: 0, summary: 'Paddock with development potential subject to planning' }),
+      ],
     }
     const mk = (country: string) => ({
       portal: 'rightmove' as const, currency: 'EUR', count: async () => 0,
@@ -885,6 +896,35 @@ describe('PropertySync kind layers', () => {
     await sync.fullSync(s.id)
     expect(inventory.live(s.id).map((e) => e.id).sort()).toEqual(['a', 'b'])
     expect(store.get(s.id)?.inventory?.truncated).toBe(true)
+  })
+
+  it('a plot search feeds property/plot only, and only rows whose text carries planning consent', async () => {
+    const { store, sync, layers } = harness()
+    const plots = store.create({ country: 'IT', layer: 'zone', kind: 'plot', criteria: { propertyType: 'land' } })
+    const houses = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(plots.id)
+    await sync.fullSync(houses.id)
+    expect([...layers.keys()].sort()).toEqual(['property/house', 'property/plot'])
+    const plotProps = layers.get('property/plot')!.features.map((f) => f.properties)
+    expect(plotProps.map((p) => p.listingId)).toEqual(['plot-pp'])
+    expect(plotProps[0]!._icon).toBe('🏗️')
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['uk1'])
+    // An interested plot stays even without the consent text.
+    sync.review(plots.id, 'plot-none', 'interested')
+    expect(layers.get('property/plot')!.features.map((f) => f.properties.listingId).sort()).toEqual(['plot-none', 'plot-pp'])
+  })
+
+  it('a house that needs work is drawn with the fixer glyph and a condition field', async () => {
+    const { store, sync, layers } = harness([listing('uk-fixer', { lat: 52, lon: -1.5, price: 150000, propertyType: 'Semi-Detached', summary: 'Semi in need of modernisation, cash buyers only' })])
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    const byId = new Map(layers.get('property/house')!.features.map((f) => [f.properties.listingId, f.properties]))
+    expect(byId.get('uk1')).toMatchObject({ _icon: '🏠' })
+    expect(byId.get('uk1')!.condition).toBeUndefined()
+    expect(byId.get('uk-fixer')).toMatchObject({ _icon: '🏚️', condition: 'needs work' })
+    // Interested beats the fixer glyph — 🏡 is the one he chose.
+    sync.review(s.id, 'uk-fixer', 'interested')
+    expect(layers.get('property/house')!.features.find((f) => f.properties.listingId === 'uk-fixer')!.properties._icon).toBe('🏡')
   })
 
   it('a farmland search feeds property/farmland, not the house layer', async () => {
@@ -1151,6 +1191,13 @@ describe('Rightmove detail model', () => {
 })
 
 describe('listingKind', () => {
+  it('a plot search is always plot; house and farmland searches never reach the plot layer', () => {
+    expect(listingKind({ propertyType: 'Land', summary: 'Plot with planning permission for a 4 bed house' }, 'plot')).toBe('plot')
+    expect(listingKind({ propertyType: 'Farm Land', plotArea: 40000 }, 'plot')).toBe('plot')
+    expect(listingKind({ propertyType: 'Detached', summary: 'planning permission for an annexe' }, 'house')).toBe('house')
+    expect(listingKind({ propertyType: 'Land' }, 'farmland')).toBe('farmland')
+  })
+
   it('a farmland search is always farmland; a house search promotes on type, plot or text', () => {
     expect(listingKind({}, 'farmland')).toBe('farmland')
     expect(listingKind({ propertyType: 'Semi-Detached' }, 'house')).toBe('house')
@@ -1375,5 +1422,52 @@ describe('tenure — leasehold is an automatic disqualification', () => {
     expect(postFilter(rows, { freeholdOnly: true, excludeCommonhold: true }, []).map((l) => l.id)).toEqual(['fh', 'text-both', 'unknown'])
     expect(postFilter(rows, { freeholdOnly: true }, []).map((l) => l.id)).toEqual(['fh', 'sof', 'text-both', 'unknown'])
     expect(postFilter(rows, {}, []).length).toBe(6)
+  })
+})
+
+describe('planningLike', () => {
+  it('true when a sentence states consent exists (live Rightmove land summaries, 2026-09-11)', () => {
+    expect(planningLike({ summary: 'Single plot - For Sale - Planning permission for a 4 bed detached house - would suit self-build.' })).toBe(true)
+    expect(planningLike({ summary: 'Plot with Planning Permission – Land Adjacent to 1 Dirleton Avenue, North Berwick' })).toBe(true)
+    expect(planningLike({ summary: 'A site with planning permission in principle for a 0.28-hectare residential development.' })).toBe(true)
+    expect(planningLike({ summary: 'A prime plot benefiting from full planning permission for the construction of two houses.' })).toBe(true)
+    expect(planningLike({ summary: 'FORMER SCHOOL HOUSE SANDSTONE BUILD, FULL PLANNING to complete a 4 bed dwelling house. Planning Reference 24/0001' })).toBe(true)
+    expect(planningLike({ summary: 'Opportunity to purchase a plot with outlined planning in sought after central location.' })).toBe(true)
+    expect(planningLike({ summary: 'Cleared site with planning consent for the construction of 9 flats.' })).toBe(true)
+  })
+
+  it('false for potential, subject-to, lapsed, holiday-let and silence', () => {
+    expect(planningLike({ summary: 'Future potential for various development, subject to all necessary consents.' })).toBe(false)
+    expect(planningLike({ summary: 'Site Area 0.8 acres. Tenure Freehold. Planning Potential Subject to planning permission (Crawley Local Plan).' })).toBe(false)
+    expect(planningLike({ summary: 'Exciting development potential subject to obtaining all necessary planning permissions.' })).toBe(false)
+    expect(planningLike({ summary: 'Previously had planning permission for a dwelling, now lapsed.' })).toBe(false)
+    expect(planningLike({ summary: 'BARN with PLANNING permission for detached Holiday Cottage in the Pentland Hills.' })).toBe(false)
+    expect(planningLike({ summary: '10.7 acre pasture field set off a no-through lane within the High Weald AONB.' })).toBe(false)
+    expect(planningLike({})).toBe(false)
+  })
+
+  it('a positive sentence survives a negative one elsewhere in the text', () => {
+    expect(planningLike({ summary: 'Full planning permission granted for a 3-bed bungalow. Scope for a larger house subject to planning.' })).toBe(true)
+  })
+})
+
+describe('fixerLike', () => {
+  it('flags estate-agent needs-work phrasing in EN/DE/IT', () => {
+    expect(fixerLike({ summary: 'THREE BED SEMI IN NEED OF MODERNISATION' })).toBe(true)
+    expect(fixerLike({ description: 'While the property would benefit from some updating throughout, it offers scope' })).toBe(true)
+    expect(fixerLike({ keyFeatures: ['Renovation project', 'No onward chain'] })).toBe(true)
+    expect(fixerLike({ summary: 'CASH BUYERS ONLY - HUGE POTENTIAL!' })).toBe(true)
+    expect(fixerLike({ summary: 'Unmodernised bungalow with a large plot' })).toBe(true)
+    expect(fixerLike({ title: 'Sanierungsbedürftiges Einfamilienhaus mit großem Garten' })).toBe(true)
+    expect(fixerLike({ title: 'Handwerkerhaus in ruhiger Lage' })).toBe(true)
+    expect(fixerLike({ title: 'Casa indipendente da ristrutturare con giardino' })).toBe(true)
+  })
+
+  it('ignores the three calibrated noise phrases and ordinary listings', () => {
+    expect(fixerLike({ description: 'the rear garden provides a fantastic blank canvas for landscaping' })).toBe(false)
+    expect(fixerLike({ description: 'ten-year builder warranty, then eight years of structural defects insurance cover' })).toBe(false)
+    expect(fixerLike({ description: 'Material Information: History of Subsidence: No. Unsafe Cladding: No' })).toBe(false)
+    expect(fixerLike({ summary: 'Beautifully presented three bedroom semi with landscaped garden' })).toBe(false)
+    expect(fixerLike({})).toBe(false)
   })
 })
