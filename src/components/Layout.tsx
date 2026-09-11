@@ -90,6 +90,8 @@ import { useMusicStore } from '@/store/music'
 const MapTab = lazy(() => import('./MapTab').then((m) => ({ default: m.MapTab })))
 import { useFeedStore } from '@/store/feeds'
 import { useAgentStore } from '@/store/agent'
+import { useSpacesStore } from '@/store/spaces'
+import { blockedAgentKeys } from '@/inbox/route'
 import { useBookmarkStore } from '@/store/bookmarks'
 import { useNotesStore } from '@/store/notes'
 import { useMapStore } from '@/store/map'
@@ -574,11 +576,12 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
               : pane === 'map'
                 ? useMapStore((s) => countUnreviewedListings(s.layerData))
                 : 0
-  // Red dot on a tab: Spaces when a session emits @amar; Inbox when such a
-  // session sits in its list; Notes when the pen is streaming new strokes
-  // you haven't seen. Visible from any other pane.
-  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
-  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention))
+  // Red dot on a tab: Spaces when a session emits @amar or owns a #blocked
+  // card; Inbox when such a session sits in its list; Notes when the pen is
+  // streaming new strokes you haven't seen. Visible from any other pane.
+  const blockedKeys = blockedAgentKeys(useSpacesStore((s) => s.spaces))
+  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention || (!!sess.agentKey && blockedKeys.has(sess.agentKey))))
+  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention || i.blocked))
   const penStreaming = useNotesStore((s) => s.penStreaming)
   const attention = (pane === 'spaces' && agentsAttention) || (pane === 'inbox' && inboxAttention) || (pane === 'notes' && penStreaming)
 
@@ -684,8 +687,9 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
             : pane === 'spaces'
               ? useAgentStore((s) => s.sessions.filter((sess) => sess.hasUnread).length) + useNotesStore((s) => Object.values(s.openFiles).filter((f) => f.content !== f.savedContent).length)
               : 0
-  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention))
-  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention))
+  const blockedKeys = blockedAgentKeys(useSpacesStore((s) => s.spaces))
+  const agentsAttention = useAgentStore((s) => s.sessions.some((sess) => sess.needsAttention || (!!sess.agentKey && blockedKeys.has(sess.agentKey))))
+  const inboxAttention = useUnifiedInboxStore((s) => s.inboxList.some((i) => i.attention || i.blocked))
   const attention = (pane === 'spaces' && agentsAttention) || (pane === 'inbox' && inboxAttention)
 
   return (

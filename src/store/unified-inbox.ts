@@ -18,7 +18,7 @@ import { useSpacesStore } from '@/store/spaces'
 import { useUiStore } from '@/store/ui'
 import { activeLocalSnoozes, unsnoozeItem } from '@/inbox/snooze'
 import {
-  feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
+  blockedAgentKeys, feedItemToItem, filterByFeedKind, filterByFeedMode, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type FeedMode,
 } from '@/inbox/route'
@@ -216,7 +216,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // one whose @key owns a #blocked card IS attention.
     const spaces = useSpacesStore.getState().spaces
     const reviewKeys = new Set(spaces.flatMap((sp) => sp.reviewAgentKeys ?? []))
-    const blockedKeys = new Set(spaces.flatMap((sp) => sp.blockedAgentKeys ?? []))
+    const blockedKeys = blockedAgentKeys(spaces)
     const spaceTitle = new Map(spaces.map((sp) => [sp.slug, sp.title]))
     const titleOf = (slug: string) => spaceTitle.get(slug)
     const cardTextOf = (agentKey: string) => ownedCardText(agentKey, spaces)

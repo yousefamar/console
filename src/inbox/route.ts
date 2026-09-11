@@ -224,6 +224,13 @@ export function blockedCardsFor(agentKey: string | null | undefined, spaces: Rea
   return out
 }
 
+/** Every `@key` owning a `#blocked` in-progress card, across all boards —
+ *  derived from board state, so it survives hub restarts and read markers
+ *  (the hub's transition-time attention flag does neither). */
+export function blockedAgentKeys(spaces: ReadonlyArray<{ blockedAgentKeys?: string[] }>): Set<string> {
+  return new Set(spaces.flatMap((sp) => sp.blockedAgentKeys ?? []))
+}
+
 /** Minimal SpaceSummary shape for the owned-card lookup (optional-guarded:
  *  older hub payloads omit `ownedCards`). */
 export interface SpaceOwnedLike extends SpaceReviewLike {

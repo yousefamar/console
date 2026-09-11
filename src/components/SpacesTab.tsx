@@ -41,6 +41,7 @@ import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPast
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
 import { compareSpacesForRail } from '@/spaces/rail-order'
 import { effectiveOwnerKey } from '@/spaces/owner'
+import { blockedAgentKeys } from '@/inbox/route'
 import { BotCrowned } from '@/components/icons/BotCrowned'
 
 /** "Set/Unset as project owner" — board frontmatter `default_owner:` (the
@@ -291,6 +292,10 @@ function SpaceListRail() {
       if (sp.reviewAgentKeys?.length) reviewOwners.set(sp.slug, new Set(sp.reviewAgentKeys))
       if (sp.cardAgentKeys?.length) cardOwners.set(sp.slug, new Set(sp.cardAgentKeys))
     }
+    // A #blocked card is attention (red) for as long as it stays blocked —
+    // from board state, not the hub's transition-time flag (^sly-lynx).
+    const blockedKeys = blockedAgentKeys(spaces)
+    const attentionOf = (s: (typeof sessions)[number]): boolean => !!s.needsAttention || (!!s.agentKey && blockedKeys.has(s.agentKey))
     const push = (slug: string, a: SpaceAlert) => {
       const arr = alerts.get(slug) ?? []
       arr.push(a)
@@ -325,18 +330,18 @@ function SpaceListRail() {
     const curatorForkRows: SpaceAlert[] = []
     for (const s of live) {
       if (isCuratorLineage(s)) {
-        if (s.agentKey !== CURATOR_AGENT_KEY && (s.hasUnread || s.needsAttention || s.status === 'running')) {
+        if (s.agentKey !== CURATOR_AGENT_KEY && (s.hasUnread || attentionOf(s) || s.status === 'running')) {
           curatorForkRows.push({
             kind: 'session', id: s.id,
             label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
-            level: s.needsAttention ? 'attention' : s.status === 'running' ? 'working' : 'unread',
+            level: attentionOf(s) ? 'attention' : s.status === 'running' ? 'working' : 'unread',
             fork: true, sessionId: s.id,
           })
         }
         continue
       }
       const unread = !!s.hasUnread
-      const attention = !!s.needsAttention
+      const attention = attentionOf(s)
       const working = s.status === 'running'
       const slugs = [...(s.project ? [s.project] : []), ...(s.areas ?? [])]
       for (const slug of slugs) {
@@ -401,12 +406,12 @@ function SpaceListRail() {
       if (s.isAl) continue
       if (s.project || (s.areas ?? []).length) continue
       unassigned++
-      bump(UNASSIGNED_SLUG, !!s.hasUnread, !!s.needsAttention)
-      if (s.hasUnread || s.needsAttention || s.status === 'running') {
+      bump(UNASSIGNED_SLUG, !!s.hasUnread, attentionOf(s))
+      if (s.hasUnread || attentionOf(s) || s.status === 'running') {
         push(UNASSIGNED_SLUG, {
           kind: 'session', id: s.id,
           label: (s.name || s.id).replace(/\s\(fork\)$/, ''),
-          level: s.needsAttention ? 'attention' : s.status === 'running' ? 'working' : 'unread',
+          level: attentionOf(s) ? 'attention' : s.status === 'running' ? 'working' : 'unread',
           fork: !!s.parentClaudeSessionId,
           sessionId: s.id,
         })

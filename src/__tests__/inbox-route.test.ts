@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
-  blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
+  blockedAgentKeys, blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionContext, sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -291,6 +291,10 @@ describe('blocked cards (^mild-ibis)', () => {
     { kind: 'area' as const, slug: 'dev', blockedCards: [{ blockId: 'x', text: 'never', agentKey: 'cg-sly-hare-fork' }] },
     { kind: 'project' as const, slug: 'old-hub' },
   ]
+
+  it('flattens blockedAgentKeys across spaces, tolerating hubs that omit it', () => {
+    expect(blockedAgentKeys([{ blockedAgentKeys: ['a', 'b'] }, {}, { blockedAgentKeys: ['b'] }])).toEqual(new Set(['a', 'b']))
+  })
 
   it('joins the agentKey to its blocked cards, ^id first else text', () => {
     expect(blockedCardsFor('cg-sly-hare-fork', spaces)).toEqual([
