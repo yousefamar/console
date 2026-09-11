@@ -43,11 +43,12 @@
 // paced gate and cached on disk for good. The hub clips every row to the real
 // polygon (`coordsPrecision: 'area'` → 6 km slack).
 //
-// Coordinates: the result card carries only "PLZ Ort"; lat/lon is on the ad
-// page (`og:latitude`, a PLZ centroid). So rows come back WITHOUT coordinates
-// until `detail()` runs — the hub's enrich loop fills them in, one paced
-// request each — except where the card's PLZ is one this client has already
-// seen on an ad page (a small on-disk PLZ → centroid memo grows with use).
+// Coordinates: the result card carries only "PLZ Ort"; the ad page's
+// `og:latitude` is itself just the PLZ centroid. So every row gets its PLZ
+// centroid at once from the bundled GeoNames table (`de-plz-centroids.ts`,
+// `coordsPrecision: 'area'`), refined to the site's own centroid once an ad in
+// that PLZ has been read (`detail()`, on-disk PLZ memo). `detail()` is still
+// what supplies plot area, Haustyp, Schlafzimmer and the listing date.
 //
 // Server-side filters we do send are FAIL-CLOSED: `grundstuecksflaeche_d` and
 // `zimmer_d` silently drop ads that don't state a plot size / room count
@@ -64,6 +65,7 @@ import { parseHTML } from 'linkedom'
 import type { Ring } from './geo.js'
 import { haversineKm } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
+import { plzCentroid } from './de-plz-centroids.js'
 
 const ORIGIN = 'https://www.kleinanzeigen.de'
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
@@ -629,12 +631,18 @@ export class KleinanzeigenClient implements PortalClient {
     this.saveCache()
   }
 
-  /** Row → Listing, with coordinates only where the card's PLZ has been seen on an ad page before. */
+  /**
+   * Row → Listing with PLZ-centroid coordinates: the ad page's own og:latitude
+   * where an ad in that PLZ has been read before, else the bundled GeoNames
+   * PLZ table (`de-plz-centroids.ts`). Both are area-level; without the table,
+   * rows stayed undrawable until `detail()` reached them (~5/hour under the
+   * request budget — 544 rows would have taken five days to appear).
+   */
   toListing(r: RawRow): Listing | null {
     const l = normalise(r)
     if (!l) return null
     const plz = r.plz ?? (r.address ? /^\d{5}/.exec(r.address)?.[0] : undefined)
-    const memo = plz ? this.loadCache().plz[plz] : undefined
+    const memo = plz ? (this.loadCache().plz[plz] ?? plzCentroid(plz)) : undefined
     if (memo && l.lat == null) {
       l.lat = memo[0]
       l.lon = memo[1]

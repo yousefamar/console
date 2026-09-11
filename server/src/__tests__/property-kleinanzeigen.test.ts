@@ -414,7 +414,7 @@ describe('parseSearchPage over the fixture (real page, Marburg r10, 2026-09-08)'
 describe('normalise() over the fixture', () => {
   const rows = parseSearchPage(listHtml).rows.map((r) => normalise(r)).filter((l): l is Listing => l !== null)
 
-  it('every row is a PLZ-area listing without coordinates until detail() runs', () => {
+  it('every row is a PLZ-area listing; normalise() alone carries no coordinates (toListing adds the PLZ centroid)', () => {
     expect(rows).toHaveLength(5)
     for (const l of rows) {
       expect(l.portal).toBe('kleinanzeigen')
@@ -538,16 +538,22 @@ describe('detail() (real ad page 3377018987, 2026-09-08)', () => {
     expect(parseAdPage(adHtml)!.bedrooms).toBe(6)
   })
 
-  it('learns the PLZ centroid and applies it to later cards with the same PLZ', async () => {
+  it('every card gets its PLZ centroid from the bundled GeoNames table at once; an ad page read refines it to the site\'s own centroid', async () => {
     const { client } = stub(() => adHtml)
-    await client.detail(row)
     const cards = parseSearchPage(listHtml).rows
-    const l = client.toListing(cards.find((r) => r.plz === '35083')!)!
-    expect(l.lat).toBeCloseTo(50.8981, 4)
-    expect(l.lon).toBeCloseTo(8.6753, 4)
-    expect(l.coordsPrecision).toBe('area')
-    const other = client.toListing(cards.find((r) => r.plz === '35096')!)!
-    expect(other.lat).toBeUndefined()
+    // Before any ad page: GeoNames centroid for 35083 (Wetter) and 35096 (Weimar/Lahn).
+    const fresh = client.toListing(cards.find((r) => r.plz === '35083')!)!
+    expect(fresh.lat).toBeCloseTo(50.9025, 3)
+    expect(fresh.lon).toBeCloseTo(8.7237, 3)
+    expect(fresh.coordsPrecision).toBe('area')
+    expect(client.toListing(cards.find((r) => r.plz === '35096')!)!.lat).toBeCloseTo(50.7406, 1)
+    // After detail(): the site's og: centroid wins for that PLZ (~3.5 km from GeoNames').
+    await client.detail(row)
+    const refined = client.toListing(cards.find((r) => r.plz === '35083')!)!
+    expect(refined.lat).toBeCloseTo(50.8981, 4)
+    expect(refined.lon).toBeCloseTo(8.6753, 4)
+    // Unknown PLZ → no coordinates.
+    expect(client.toListing({ adid: '9', href: '/s-anzeige/x/9-208-1', address: '00000 Nirgendwo', plz: '00000' })!.lat).toBeUndefined()
   })
 })
 
