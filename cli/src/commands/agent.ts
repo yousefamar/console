@@ -103,8 +103,9 @@ async function agentForkCost(args: string[], flags: GlobalFlags): Promise<void> 
 // First turn:  con agent chat "<name>" "<message>"
 //   Forks the named session (inherits its full context), injects the message,
 //   waits for its reply, prints `conv: <claudeSessionId>` then the reply text.
-//   The fork is a real session — visible in `con agent list`, tailable, and
-//   left alive for follow-ups. The forked agent's MAIN session is untouched.
+//   The fork is a real session named "<name> ↔ <--from>" — visible in
+//   `con agent list`, tailable, and left alive for follow-ups. The forked
+//   agent's MAIN session is untouched.
 //
 // Continue:    con agent chat --id <conv-id> "<message>"
 //   Injects into the existing fork (resolved by claudeSessionId → live hub id,
@@ -214,7 +215,7 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
 
   await streamWithSends({
     timeoutMs,
-    initial: { type: 'fork_session', sessionId: target.id },
+    initial: { type: 'fork_session', sessionId: target.id, name: `${(target.name || name).replace(/(\s*\(fork\))+$/, '')} ↔ ${from}` },
     onMessage: (msg, send) => {
       if (msg.type === 'session_created' && !existingIds.has(msg.sessionId) && !forkHubId) {
         forkHubId = msg.sessionId

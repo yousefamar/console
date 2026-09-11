@@ -1091,7 +1091,10 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         return
       }
       const forkCwd = msg.cwd || sourceSession.cwd
-      const forkName = sourceSession.name ? `${sourceSession.name.replace(/(\s*\(fork\))+$/, '')} (fork)` : undefined
+      const baseName = sourceSession.name?.replace(/(\s*\(fork\))+$/, '')
+      // `con agent chat` names its fork "<target> ↔ <asker>" (same convention as
+      // Al's conversation forks) so the sidebar shows who opened it and why.
+      const forkName = msg.name?.trim() || (baseName ? `${baseName} (fork)` : undefined)
       // A seeded UI fork gets its own agentKey (board-assignable) and inherits
       // the source's space binding so it shows in the same project/area panel.
       // `con agent chat` forks pass no seed → ephemeral, key-less.

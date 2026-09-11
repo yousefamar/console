@@ -29,7 +29,7 @@ export type ClientMessage =
   | { type: 'get_session_history'; sessionId: string }
   | { type: 'rename_session'; sessionId: string; name: string }
   | { type: 'generate_title'; sessionId: string }
-  | { type: 'fork_session'; sessionId: string; cwd?: string; seed?: boolean }
+  | { type: 'fork_session'; sessionId: string; cwd?: string; seed?: boolean; name?: string }
   | { type: 'get_older_messages'; sessionId: string; beforeIndex: number; limit?: number }
   | { type: 'reorder_sessions'; order: string[] }
   | { type: 'set_collapsed_groups'; collapsed: string[] }
