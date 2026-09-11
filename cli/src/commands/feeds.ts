@@ -30,15 +30,20 @@ async function feedsList(args: string[], flags: GlobalFlags): Promise<void> {
   output(data, flags)
 }
 
+async function fetchAllItems(params?: Record<string, string | undefined>): Promise<unknown[]> {
+  const data = await hubFetch<{ items: unknown[] }>('/feeds/items', { params })
+  return data.items
+}
+
 async function feedsItems(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const params: Record<string, string | undefined> = {}
 
   if (opts.since) params.since = opts.since
 
-  // If specific feed, fetch that feed's items
-  const feedPath = opts.feed ? `/feeds/${encodeURIComponent(opts.feed)}/items` : '/feeds/items'
-  let items = await hubFetch<unknown[]>(feedPath, { params })
+  let items = opts.feed
+    ? await hubFetch<unknown[]>(`/feeds/${encodeURIComponent(opts.feed)}/items`, { params })
+    : await fetchAllItems(params)
 
   // Get read state for filtering
   if (opts.unread) {
@@ -65,8 +70,7 @@ async function feedsRead(args: string[], flags: GlobalFlags): Promise<void> {
   const itemId = args[0]
   if (!itemId) exitWithError('USAGE', 'Usage: con feeds read <item-id>', flags)
 
-  // Fetch all items and find the one we want
-  const items = await hubFetch<unknown[]>('/feeds/items')
+  const items = await fetchAllItems()
   const item = (items as any[]).find((i) => i.id === itemId)
 
   if (!item) exitWithError('NOT_FOUND', `Feed item not found: ${itemId}`, flags)
@@ -77,8 +81,7 @@ async function feedsMarkRead(args: string[], flags: GlobalFlags): Promise<void> 
   const opts = parseFlags(args)
 
   if (opts.all) {
-    // Mark everything read
-    const items = await hubFetch<unknown[]>('/feeds/items')
+    const items = await fetchAllItems()
     const ids = (items as any[]).map((i) => i.id)
     await hubFetch('/feeds/read', { method: 'PUT', body: { add: ids, remove: [] } })
     output({ markedRead: ids.length }, flags)

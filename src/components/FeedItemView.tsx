@@ -1,6 +1,8 @@
 import { useMemo, useEffect, useRef, useCallback, useState } from 'react'
 import { useFeedStore } from '@/store/feeds'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '@/db'
 import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { getHubUrl } from '@/hub'
@@ -419,7 +421,16 @@ export function FeedItemView() {
     return () => document.removeEventListener('mousedown', onClick)
   }, [menuOpen])
 
-  const item = items.find((i) => i.id === selectedItemId)
+  const listItem = items.find((i) => i.id === selectedItemId)
+  // `items` is the Feeds pane's own view (its feed/folder selection, top 200
+  // by date). The Inbox selects from a wider window, so resolve from Dexie
+  // when the selection isn't in the list.
+  const dbItem = useLiveQuery(
+    async () => (selectedItemId && !listItem ? (await db.feedItems.get(selectedItemId)) ?? null : null),
+    [selectedItemId, listItem],
+  )
+  const item = listItem ?? (dbItem?.id === selectedItemId ? dbItem : undefined)
+  const resolving = !!selectedItemId && !listItem && dbItem === undefined
   const feed = item ? feeds.find((f) => f.id === item.feedId) : null
 
   const sanitizedContent = useMemo(() => {
@@ -437,6 +448,7 @@ export function FeedItemView() {
   }, [selectedItemId])
 
   if (!item) {
+    if (resolving) return <div className="flex-1" />
     return (
       <div className="flex flex-1 items-center justify-center">
         <div className="text-center">
