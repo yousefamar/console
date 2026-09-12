@@ -7,6 +7,8 @@ import io.amar.console.data.db.MeetupEventRow
 import io.amar.console.data.db.MetaRow
 import io.amar.console.sync.SyncBusClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -159,6 +161,8 @@ data class MapUiState(
     val layers: List<MapLayerMeta> = emptyList(),
     val layerData: Map<String, String> = emptyMap(), // slug → raw geojson string
     val layerVisible: Map<String, Boolean> = emptyMap(),
+    /** Property pins awaiting a verdict — the review-deck badge (SPA Map tab count parity). */
+    val unreviewedListings: Int = 0,
 
     // Built-in visibility (default all-on)
     val builtinVisible: Map<BuiltinLayer, Boolean> = mapOf(
@@ -251,7 +255,8 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
             val metas = parseLayerIndex(raw)
             val data = mutableMapOf<String, String>()
             for (m in metas) db.meta().get(LAYER_DATA_PREFIX + m.slug)?.let { data[m.slug] = it }
-            _state.value = _state.value.copy(layers = metas, layerData = _state.value.layerData + data)
+            for ((slug, gj) in data) countUnreviewed(slug, gj)
+            _state.value = _state.value.copy(layers = metas, layerData = _state.value.layerData + data, unreviewedListings = unreviewedBySlug.values.sum())
         }
     }
 
@@ -624,10 +629,13 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
     /** Hide a property listing's pin permanently, then pull the trimmed layer
      *  down immediately so it visibly disappears without waiting for the next
      *  hourly poll to push an update. Mirrors the SPA's dismiss button. */
-    suspend fun dismissListing(searchId: String, listingId: String) {
+    suspend fun dismissListing(searchId: String, listingId: String) = reviewListing(searchId, listingId, "dismissed")
+
+    /** Verdict on a pin: `interested` (🏡, stays through criteria edits), `dismissed` (gone), `none`. */
+    suspend fun reviewListing(searchId: String, listingId: String, state: String) {
         hub.post(
-            "/property/searches/${java.net.URLEncoder.encode(searchId, "UTF-8")}/dismiss",
-            buildJsonObject { put("listingId", listingId) }.toString(),
+            "/property/searches/${java.net.URLEncoder.encode(searchId, "UTF-8")}/review",
+            buildJsonObject { put("listingId", listingId); put("state", state) }.toString(),
         )
         loadLayers()
     }
@@ -642,6 +650,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         val stale = _state.value.layerData.keys.filter { it !in slugs }
         for (s in stale) runCatching { db.meta().delete(LAYER_DATA_PREFIX + s) }
         val newData = _state.value.layerData.filterKeys { it in slugs }.toMutableMap()
+        unreviewedBySlug.keys.retainAll(slugs)
         for (m in metas) {
             // Keep cached geojson when updatedAt is unchanged (multi-MB layers).
             if (newData[m.slug] != null && prevByslug[m.slug]?.updatedAt == m.updatedAt) continue
@@ -649,9 +658,19 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
                 val gj = hub.get("/map/layers/${enc(m.slug)}")
                 newData[m.slug] = gj
                 db.meta().put(MetaRow(LAYER_DATA_PREFIX + m.slug, gj))
+                countUnreviewed(m.slug, gj)
             } // a failing layer is skipped, keeping any cached copy
         }
-        _state.value = _state.value.copy(layerData = newData)
+        _state.value = _state.value.copy(layerData = newData, unreviewedListings = unreviewedBySlug.values.sum())
+    }
+
+    /** Per-layer unreviewed-pin counts, recomputed only when a layer's geojson is (re)loaded — the strings are multi-MB. */
+    private val unreviewedBySlug = mutableMapOf<String, Int>()
+
+    private suspend fun countUnreviewed(slug: String, geojson: String) {
+        if (!slug.startsWith("property/")) return
+        // Off the main thread: loadLayers runs in the screen's scope.
+        unreviewedBySlug[slug] = withContext(Dispatchers.Default) { countUnreviewedListings(geojson) }
     }
 
     // --- visibility (persisted to meta KV, mirroring localStorage) ----------- //

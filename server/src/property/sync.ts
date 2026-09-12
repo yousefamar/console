@@ -27,6 +27,16 @@ import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
 import { needsAirportDistance, normaliseHouseType, notifyRejection, withoutAirportGate, type NotifyCriteria } from './notify-filter.js'
+import { sortDeck, toDeckCard, type DeckCard } from './deck.js'
+
+/** One drawn pin: the primary-portal copy of a duplicate group, plus what the group as a whole says. */
+interface ReviewableListing {
+  l: Listing
+  s: PropertySearch
+  interested: boolean
+  fixer: boolean
+  alsoOn: Portal[]
+}
 
 const LAYER_COLOR = '#f97316' // orange — distinct from the flight cyan
 const TIER_COLOR = '#eab308' // gold — tiered (lifted-ceiling) searches draw to their own layers
@@ -96,6 +106,13 @@ export class PropertySync {
   private readonly geomCache = new Map<string, { version: number; geometries: Geometry[]; inZone: Map<string, boolean> }>()
   /** During tick(), redraws are coalesced into one at the end instead of one per search. */
   private deferRedraw = false
+  /**
+   * What each `property/*` layer currently draws, keyed `<kind>|<tier>`. Every
+   * state change that can move a pin already redraws the layer, so the deck
+   * reads these instead of recomputing (`reviewable()` is ~5 s over the live
+   * inventories — far too slow to run per request on the hub's event loop).
+   */
+  private readonly reviewableCache = new Map<string, ReviewableListing[]>()
   private redrawPending = false
   // Hourly. "I want to be the first to know" — but portal listings appear in
   // batches during agent working hours, and all three are free public servers
@@ -742,11 +759,15 @@ export class PropertySync {
     return removed
   }
 
-  private updateKindLayer(kind: PropertyKind, tier?: string): void {
-    const slug = `${LAYER_GROUP}/${layerNameFor(kind, tier)}`
-    // Every fine-filtered listing of this kind, across searches and portals,
-    // BEFORE verdicts — duplicates are grouped first so a verdict on one copy
-    // covers the others.
+  /**
+   * What the `property/<kind>[-<tier>]` layer draws: every fine-filtered
+   * listing of this kind across searches and portals, cross-portal duplicates
+   * grouped onto the primary-portal copy, dismissed groups gone. One source of
+   * truth for the map pins AND the review deck — the two must never disagree
+   * about what is reviewable.
+   */
+  private reviewable(kind: PropertyKind, tier?: string): ReviewableListing[] {
+    // Grouped BEFORE verdicts so a verdict on one copy covers the others.
     type Candidate = { lat: number; lon: number; price?: number; bedrooms?: number; bedroomsApprox: boolean; source: string; fuzzy: boolean; l: Listing; s: PropertySearch; primary: boolean; dismissed: boolean; interested: boolean }
     const candidates: Candidate[] = []
     for (const s of this.searches.list()) {
@@ -782,14 +803,57 @@ export class PropertySync {
     // Primary-portal copies first so they win the "which one do we draw" call.
     candidates.sort((a, b) => Number(b.primary) - Number(a.primary))
 
-    const features: unknown[] = []
+    const out: ReviewableListing[] = []
     for (const group of groupDuplicates(candidates)) {
       if (group.some((c) => c.dismissed)) continue
       const top = group[0]!
-      const { l, s } = top
-      const isInterested = group.some((c) => c.interested)
-      const fixer = kind === 'house' && fixerLike(l)
-      const alsoOn = [...new Set(group.slice(1).map((c) => c.l.portal))]
+      out.push({
+        l: top.l,
+        s: top.s,
+        interested: group.some((c) => c.interested),
+        fixer: kind === 'house' && fixerLike(top.l),
+        alsoOn: [...new Set(group.slice(1).map((c) => c.l.portal))],
+      })
+    }
+    return out
+  }
+
+  /**
+   * The review deck: unreviewed pins of `kind` (every tier), newest first, as
+   * cards carrying the detail the popup omits. `counts` covers every kind so
+   * the client's kind picker can show what's waiting without N requests.
+   */
+  deck(opts: { kind?: PropertyKind; limit: number }): { cards: DeckCard[]; total: number; counts: Record<PropertyKind, number> } {
+    const counts = { house: 0, farmland: 0, plot: 0 } as Record<PropertyKind, number>
+    const all: DeckCard[] = []
+    for (const t of this.layerTargets()) {
+      const rows = this.cachedReviewable(t.kind, t.tier).filter((r) => !r.interested)
+      counts[t.kind] += rows.length
+      if (opts.kind && t.kind !== opts.kind) continue
+      for (const r of rows) {
+        all.push(toDeckCard({ listing: r.l, search: r.s, kind: t.kind, tier: t.tier, fixer: r.fixer, alsoOn: r.alsoOn, highStreet: this.highStreetLabel(r.l), airport: airportLabel(r.l) }))
+      }
+    }
+    const sorted = sortDeck(all)
+    return { cards: sorted.slice(0, opts.limit), total: sorted.length, counts }
+  }
+
+  private cachedReviewable(kind: PropertyKind, tier?: string): ReviewableListing[] {
+    const key = `${kind}|${tier ?? ''}`
+    let rows = this.reviewableCache.get(key)
+    if (!rows) {
+      rows = this.reviewable(kind, tier)
+      this.reviewableCache.set(key, rows)
+    }
+    return rows
+  }
+
+  private updateKindLayer(kind: PropertyKind, tier?: string): void {
+    const slug = `${LAYER_GROUP}/${layerNameFor(kind, tier)}`
+    const rows = this.reviewable(kind, tier)
+    this.reviewableCache.set(`${kind}|${tier ?? ''}`, rows)
+    const features: unknown[] = []
+    for (const { l, s, interested: isInterested, fixer, alsoOn } of rows) {
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
@@ -804,9 +868,7 @@ export class PropertySync {
           country: s.country,
           portal: l.portal,
           alsoOn: alsoOn.length ? alsoOn.join(', ') : undefined,
-          airport: l.nearestAirport
-            ? `${l.nearestAirport.driveMinutes}min drive${l.nearestAirport.transitMinutes != null ? ` / ${l.nearestAirport.transitMinutes}min transit` : ''} to ${l.nearestAirport.iata}`
-            : undefined,
+          airport: airportLabel(l),
           highStreet: this.highStreetLabel(l),
           url: l.url,
           // Extra detail for the SPA's property panel (not shown in the popup).
@@ -1016,8 +1078,14 @@ function formatPrice(major: number, currency: string): string {
 }
 
 function airportSuffix(l: Listing): string {
+  const label = airportLabel(l)
+  return label ? ` — ${label}` : ''
+}
+
+/** "42min drive / 70min transit to LHR" — the pin popup field and the deck card share it. */
+function airportLabel(l: Listing): string | undefined {
   const a = l.nearestAirport
-  if (!a) return ''
+  if (!a) return undefined
   const transit = a.transitMinutes != null ? ` / ${a.transitMinutes}min transit` : ''
-  return ` — ${a.driveMinutes}min drive${transit} to ${a.iata}`
+  return `${a.driveMinutes}min drive${transit} to ${a.iata}`
 }

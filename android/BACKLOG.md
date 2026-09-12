@@ -122,18 +122,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   /board/:project/inherit {card, inherit}`), and the tile a small `inherit`
   badge. `CardView` from the hub now carries `inherit: boolean`.
 
-- Map: property listing review state (hub + SPA ^soft-goat, 2026-09-07) —
-  every pin carries `_icon` (🏠 unreviewed, 🏡 interested — SPA draws agent
-  points with an `_icon` as that emoji); interested pins also carry
-  `review: 'interested'` + `_color` (green); dismissed pins are absent. `AgentFeaturePanel`/`agentFeatureInfo` in
-  `MapScreen.kt` has "not interested" (`MapRepository.dismissListing` →
-  `/dismiss`); add an "interested" toggle → `POST /property/searches/:id/review
-  {listingId, state: interested|dismissed|none}` and honour the per-feature
-  `_color` when drawing agent-layer points if the Kotlin renderer doesn't yet.
-  Map grid tile badge = unreviewed count (SPA `countUnreviewedListings`: pins
-  on `property/*` layers with a `listingId` and no `review`). Opening a
-  listing never changes state.
-
 - Calendar: multi-day TIMED events (SPA bd2fa2cb, `src/calendar/multi-day.ts`) —
   an event crossing local midnight (Fri 16:00 → Sun 15:00) rendered as a 15-min
   sliver on its start day; the SPA now re-shapes it into the all-day bar as a
@@ -181,6 +169,35 @@ view (the phone's Board > Agents > Docs landing is deliberate) · Notes tabs /
 view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
+
+- **Property review deck — swipe right/left over the house-hunt pins** (^bold-kiwi,
+  Yousef: "a more Tinder like view for properties so I can swipe right or left").
+  `ui/longtail/PropertyDeckScreen.kt` (route `map/deck`; entry = the 🏠 chip with
+  the unreviewed count at the front of the Map toolbar, shown once a `property/*`
+  layer exists) stacks the hub's `GET /property/deck?kind=…` cards — the SAME set
+  the map draws (`PropertySync.reviewable()`, now shared by the layer writer and
+  the deck) minus anything already judged — newest first, two cards peeking
+  behind. Drag right = interested (🏡 on the map), left = not interested (pin
+  gone); commit at 35 % of the width or a ≥1800 px/s flick in the drag's
+  direction (`swipeVerdict`), else spring back; LIKE/NOPE stamps fade in with
+  the drag. Tap = `ModalBottomSheet` with photo, key features, description,
+  navigate / open-on-portal, and the two verdict buttons; bottom row ✕ / undo /
+  ♥ animate the top card off like a swipe. Kind chips (Houses / Land / Plots)
+  carry the hub's per-kind counts. `data/longtail/PropertyDeckRepository.kt`:
+  verdicts are OPTIMISTIC + durable — `propertyReview` outbox rows → `POST
+  /property/searches/:id/review` (404 = search gone = Done; other 4xx Fail; 5xx
+  Retry; transport NotReady); ids judged this session are filtered out of every
+  refetch because the hub keeps serving a card until its verdict lands; undo
+  `cancel()`s a still-pending row and queues `none`; the stack refills at 8
+  cards left. `MapUiState.unreviewedListings` (per-layer counts memoised on
+  geojson (re)load, parsed on Default) feeds the toolbar chip AND the Map grid
+  tile badge — closes the "review state" Open entry (the renderer already
+  honoured `_icon`/`_color`). Tests: `PropertyDeckLogicTest` (parse, price/area
+  formatting, facts line, listedAgo buckets, swipe geometry, unreviewed count)
+  + `PropertyDeckRepositoryTest` (Robolectric: load order, judge → outbox →
+  drain posts the verdict, judged ids never resurface, undo withdraws + queues
+  none, refill). No emulator on this box — screenshot from the phone after the
+  release (`POST /debug/screenshot?target=apk`).
 
 - **G1: native countdown timer encoder** (^wavy-crow): `G1Protocol.OP_COUNTDOWN_TIMER`
   (0x07) + `encodeCountdownTimer(seconds, enable)` / `encodeCountdownCancel()` —

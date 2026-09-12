@@ -24,10 +24,11 @@ export async function mapProperty(verb: string | undefined, args: string[], flag
     case 'enrich': return enrich(args, flags)
     case 'count': return count(args, flags)
     case 'listings': return listings(args, flags)
+    case 'deck': return deck(args, flags)
     default:
       exitWithError(
         'USAGE',
-        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | interested | reseed | sync | inventory | enrich | count | listings.`,
+        `Unknown 'con map property' verb: ${verb}. Try list | add | get | set | remove | run | backfill | dismiss | interested | reseed | sync | inventory | enrich | count | listings | deck.`,
         flags,
       )
   }
@@ -197,6 +198,15 @@ async function listings(args: string[], flags: GlobalFlags): Promise<void> {
   if (o.limit) q.set('limit', String(o.limit))
   if (o.country) q.set('country', String(o.country).toUpperCase())
   output(await hubFetch(`/property/listings${q.size ? `?${q}` : ''}`), flags)
+}
+
+/** The review deck — unreviewed map pins as cards, newest first (what the phone swipes through). */
+async function deck(args: string[], flags: GlobalFlags): Promise<void> {
+  const o = parseFlags(args)
+  const q = new URLSearchParams()
+  if (o.kind) q.set('kind', String(o.kind))
+  if (o.limit) q.set('limit', String(o.limit))
+  output(await hubFetch(`/property/deck${q.size ? `?${q}` : ''}`), flags)
 }
 
 /**

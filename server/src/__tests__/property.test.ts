@@ -983,6 +983,39 @@ describe('PropertySync kind layers', () => {
     expect(inventory.get(uk.id).entries.length).toBe(0)
     expect(layers.get('property/house')!.features.map((f) => f.properties.listingId)).toEqual(['de1'])
   })
+
+  it('the deck is exactly the drawn pins minus verdicts, newest first, with per-kind counts', async () => {
+    const { store, sync, layers } = harness([
+      listing('uk-new', { lat: 52, lon: -1.5, price: 180000, propertyType: 'Detached', listedAt: '2026-09-11T10:00:00Z', description: 'x'.repeat(2500), keyFeatures: ['Garden', 'Garage'], tenure: 'freehold' }),
+      listing('uk-old', { lat: 52, lon: -1.6, price: 120000, propertyType: 'Bungalow', listedAt: '2026-09-01T10:00:00Z' }),
+    ])
+    const uk = store.create({ country: 'UK', layer: 'zone' })
+    const gold = store.create({ country: 'DE', layer: 'zone', tier: 'gold' })
+    const plots = store.create({ country: 'IT', layer: 'zone', kind: 'plot', criteria: { propertyType: 'land' } })
+    await sync.fullSync(uk.id)
+    await sync.fullSync(gold.id)
+    await sync.fullSync(plots.id)
+    const all = sync.deck({ limit: 30 })
+    // Dated rows newest first, undated (uk1, de1) after them; the gold tier rides along in the house deck.
+    expect(all.cards.map((c) => c.listingId)).toEqual(['uk-new', 'uk-old', 'uk1', 'de1', 'plot-pp'])
+    expect(all.total).toBe(5)
+    expect(all.counts).toEqual({ house: 4, farmland: 0, plot: 1 })
+    expect(all.cards.find((c) => c.listingId === 'de1')).toMatchObject({ tier: 'gold', kind: 'house', country: 'DE', portal: 'immoscout24', searchId: gold.id })
+    const card = all.cards[0]!
+    expect(card).toMatchObject({ kind: 'house', price: 180000, currency: 'GBP', tenure: 'freehold', keyFeatures: ['Garden', 'Garage'], fixer: false, alsoOn: [], lat: 52, lon: -1.5 })
+    expect(card.description!.length).toBeLessThanOrEqual(2000)
+    expect(card.description!.endsWith('…')).toBe(true)
+    // Kind filter + limit; counts still cover every kind.
+    const houses = sync.deck({ kind: 'house', limit: 2 })
+    expect(houses.cards.map((c) => c.listingId)).toEqual(['uk-new', 'uk-old'])
+    expect(houses.total).toBe(4)
+    expect(houses.counts.plot).toBe(1)
+    // A verdict either way leaves the deck; the map keeps the interested pin.
+    sync.review(uk.id, 'uk-new', 'interested')
+    sync.review(uk.id, 'uk-old', 'dismissed')
+    expect(sync.deck({ kind: 'house', limit: 30 }).cards.map((c) => c.listingId)).toEqual(['uk1', 'de1'])
+    expect(layers.get('property/house')!.features.map((f) => f.properties.listingId).sort()).toEqual(['uk-new', 'uk1'])
+  })
 })
 
 describe('groupDuplicates', () => {

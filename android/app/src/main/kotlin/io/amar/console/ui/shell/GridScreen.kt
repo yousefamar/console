@@ -86,6 +86,8 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
     val agentAlerts = sessions.count { it.needsAttention || it.hasUnread }
     val agentAttention = sessions.any { it.needsAttention }
     val approvals by app.graph.agents.approvals.collectAsState()
+    // Map tile = property pins awaiting a verdict (SPA Map tab count parity).
+    val mapState by app.graph.map.state.collectAsState()
     val nextEvent by app.graph.calendar
         .observeEvents(System.currentTimeMillis(), System.currentTimeMillis() + 24 * 3600_000)
         .collectAsState(initial = emptyList())
@@ -192,6 +194,7 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
                     Pane.Spaces -> agentAlerts + approvals.size
                     Pane.Feeds -> feedUnread
                     Pane.Notes -> notesDirty
+                    Pane.Map -> mapState.unreviewedListings
                     else -> 0
                 }
                 val subtitle = when (pane) {

@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.DirectionsTransit
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.House
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LocationSearching
@@ -97,7 +99,7 @@ import org.maplibre.android.maps.MapView
  * Room/meta-KV-hydrated; only the CARTO tiles need the network).
  */
 @Composable
-fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
+fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Unit = {}) {
     val context = androidx.compose.ui.platform.LocalContext.current
     remember { MapLibre.getInstance(context) }
     // MapLibre requires the full lifecycle from onCreate — without it the GL
@@ -285,6 +287,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
         MapToolbar(
             state = state,
             onGrid = onGrid,
+            onOpenDeck = onOpenDeck,
             onToggleLayers = { showLayers = !showLayers },
             onToggleCreds = { showCreds = !showCreds },
             onRangeDays = { days -> scope.launch { repo.loadHistory(System.currentTimeMillis() - days * MapUiState.DAY_MS, System.currentTimeMillis()) } },
@@ -407,9 +410,9 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}) {
             AgentFeaturePanel(
                 info,
                 onClose = { featureInfo = null },
-                onDismiss = { searchId, listingId ->
+                onReview = { searchId, listingId, state ->
                     scope.launch {
-                        runCatching { repo.dismissListing(searchId, listingId) }
+                        runCatching { repo.reviewListing(searchId, listingId, state) }
                         featureInfo = null
                     }
                 },
@@ -435,6 +438,7 @@ private val DASH_SEQUENCE: List<Array<Float>> = listOf(
 private fun MapToolbar(
     state: MapUiState,
     onGrid: () -> Unit,
+    onOpenDeck: () -> Unit,
     onToggleLayers: () -> Unit,
     onToggleCreds: () -> Unit,
     onRangeDays: (Long) -> Unit,
@@ -465,6 +469,17 @@ private fun MapToolbar(
             // App-grid button (this pane is full-screen — no PaneTopBar).
             ToolbarChip(onClick = onGrid) {
                 Icon(Icons.Filled.Apps, "App grid", modifier = Modifier.size(15.dp))
+            }
+
+            // Property review deck (swipe right/left over the unreviewed pins).
+            // Badge = pins awaiting a verdict, the SPA Map tab's count.
+            if (state.layers.any { it.slug.startsWith("property/") }) {
+                ToolbarChip(onClick = onOpenDeck) {
+                    Icon(Icons.Filled.House, "Review houses", modifier = Modifier.size(15.dp))
+                    if (state.unreviewedListings > 0) {
+                        Text("${state.unreviewedListings}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
 
             // Google Maps place search (Yousef's mobile ask: find places, hand
@@ -1233,7 +1248,7 @@ private fun PlaceDetailPanel(
 
 // Keys rendered specially or used as plumbing, not as generic field rows —
 // mirrors the SPA's PANEL_SPECIAL in MapTab.tsx's LayerFeaturePanel.
-private val FIELD_SPECIAL = setOf("name", "title", "url", "listingId", "searchId")
+private val FIELD_SPECIAL = setOf("name", "title", "url", "listingId", "searchId", "review")
 
 data class AgentFeatureInfo(
     val layerName: String,
@@ -1247,9 +1262,11 @@ data class AgentFeatureInfo(
      *  "open" row instead of a plain-text field. */
     val url: String? = null,
     /** listingId + searchId, present together only for property pins — drives
-     *  the "not interested" dismiss action. */
+     *  the interested / not-interested verdict actions. */
     val listingId: String? = null,
     val searchId: String? = null,
+    /** `interested` when the pin already carries that verdict (🏡). */
+    val review: String? = null,
 )
 
 /** Build the info panel model from a tapped feature's properties. Mirrors the
@@ -1287,6 +1304,7 @@ fun agentFeatureInfo(
         url = prop("url"),
         listingId = listingId,
         searchId = searchId,
+        review = prop("review"),
     )
 }
 
@@ -1294,11 +1312,12 @@ fun agentFeatureInfo(
 private fun AgentFeaturePanel(
     info: AgentFeatureInfo,
     onClose: () -> Unit,
-    onDismiss: (searchId: String, listingId: String) -> Unit,
+    onReview: (searchId: String, listingId: String, state: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    var dismissing by remember(info.listingId) { mutableStateOf(false) }
+    // Keyed per pin — optimistic state must not leak between features (SPA LayerFeaturePanel rule).
+    var reviewing by remember(info.listingId) { mutableStateOf<String?>(null) }
     Surface(
         modifier = modifier.padding(top = 8.dp, end = 8.dp).widthIn(max = 320.dp).heightIn(max = 480.dp),
         shape = RoundedCornerShape(8.dp),
@@ -1334,22 +1353,46 @@ private fun AgentFeaturePanel(
                 }
             }
             if (!info.listingId.isNullOrEmpty() && !info.searchId.isNullOrEmpty()) {
-                TextButton(
-                    onClick = {
-                        if (dismissing) return@TextButton
-                        dismissing = true
-                        onDismiss(info.searchId, info.listingId)
-                    },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                    modifier = Modifier.padding(top = 4.dp),
-                ) {
-                    Icon(Icons.Filled.Close, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.size(4.dp))
-                    Text(
-                        if (dismissing) "hiding…" else "not interested",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                val interested = info.review == "interested"
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(
+                        onClick = {
+                            if (reviewing != null) return@TextButton
+                            val next = if (interested) "none" else "interested"
+                            reviewing = next
+                            onReview(info.searchId, info.listingId, next)
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Icon(Icons.Filled.Favorite, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.green)
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            when {
+                                reviewing == "interested" -> "saving…"
+                                reviewing == "none" -> "clearing…"
+                                interested -> "interested ✓"
+                                else -> "interested"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.accents.green,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            if (reviewing != null) return@TextButton
+                            reviewing = "dismissed"
+                            onReview(info.searchId, info.listingId, "dismissed")
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Icon(Icons.Filled.Close, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            if (reviewing == "dismissed") "hiding…" else "not interested",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

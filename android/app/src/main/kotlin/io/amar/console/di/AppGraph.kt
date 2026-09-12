@@ -54,6 +54,7 @@ class AppGraph(context: Context) {
     )
     val bookmarks = BookmarksRepository(db, hub, outbox)
     val map = MapRepository(db, hub)
+    val propertyDeck = io.amar.console.data.longtail.PropertyDeckRepository(hub, outbox)
     val music = MusicRepository(hub)
     val home = HomeRepository(hub)
     val money = io.amar.console.data.money.MoneyRepository(db, hub)
@@ -78,6 +79,7 @@ class AppGraph(context: Context) {
         }
 
         mail.registerOutboxHandlers()
+        propertyDeck.registerOutboxHandlers()
         mail.wireLiveDeltas(appScope)
         syncEngine.addDomain("mail") { mail.reconcile() }
 

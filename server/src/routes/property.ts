@@ -15,12 +15,14 @@
 // POST   /property/searches/:id/enrich?limit=N — fetch detail pages for rows that lack them (paced)
 // POST   /property/count                  — ad-hoc count, nothing saved
 // GET    /property/listings               — merged newest listings across searches
+// GET    /property/deck?kind=house&limit=N — unreviewed map pins as swipe cards (newest first) + per-kind counts
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { MapLayerStore } from '../map-layers/store.js'
-import type { PropertySearchStore, CreatePropertySearchInput, Country, ReviewState } from '../property/store.js'
+import { PROPERTY_KINDS, type PropertySearchStore, type CreatePropertySearchInput, type Country, type ReviewState, type PropertyKind } from '../property/store.js'
 import type { PropertySync } from '../property/sync.js'
 import type { Criteria, Listing, Portal } from '../property/types.js'
+import { clampDeckLimit } from '../property/deck.js'
 
 const REVIEW_STATES = new Set<ReviewState>(['interested', 'dismissed', 'none'])
 
@@ -101,6 +103,16 @@ export function handlePropertyRoutes(
     }
     rows.sort((a, b) => (b.listedAt ?? '').localeCompare(a.listedAt ?? ''))
     json({ listings: rows.slice(0, limit) })
+    return true
+  }
+
+  if (path === '/property/deck' && req.method === 'GET') {
+    const kind = url.searchParams.get('kind')
+    if (kind && !(PROPERTY_KINDS as readonly string[]).includes(kind)) {
+      error(400, `kind must be one of ${PROPERTY_KINDS.join('|')}`)
+      return true
+    }
+    json(sync.deck({ kind: (kind as PropertyKind | null) ?? undefined, limit: clampDeckLimit(url.searchParams.get('limit')) }))
     return true
   }
 

@@ -905,6 +905,8 @@ export const COMMANDS: CommandDef[] = [
     examples: ['con map property count --country IT --layer where-to-move/livable-zone --max-price 400000 --type house'] },
   { name: 'map property listings', description: 'Merged newest-first listings across all searches', safety: 'read',
     flags: { limit: { type: 'number', description: 'Max rows (default 60)' }, country: { type: 'string', description: 'Filter to one country' } } },
+  { name: 'map property deck', description: 'The review deck: unreviewed map pins as cards (newest first) with per-kind counts — the set the phone swipes through. Verdicts go via `interested` / `dismiss`.', safety: 'read',
+    flags: { kind: { type: 'string', description: 'house | farmland | plot (default: every kind)' }, limit: { type: 'number', description: 'Max cards (default 30, max 200)' } } },
 
   // music (Spotify via hub → spotifyd Connect device; target for media keys)
   { name: 'music now', description: 'Show current Spotify playback (track, position, device)', safety: 'read' },
