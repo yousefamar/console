@@ -958,6 +958,21 @@ describe('Session hibernation', () => {
     expect(session.getInfo().hibernated).toBe(true)
   })
 
+  it('totalCost accumulates across processes — the CLI counter restarts at 0 on every wake (^sly-orca)', async () => {
+    const session = await initedIdleSession()
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, session_id: 'x', total_cost_usd: 1.5, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.totalCost).toBe(1.5)
+    session.hibernate()
+    await new Promise((r) => setTimeout(r, 10))
+    session.sendMessage('wake')
+    await new Promise((r) => setTimeout(r, 10))
+    // The fresh process reports ITS cumulative cost from zero.
+    sendStdoutJson({ type: 'result', subtype: 'success', duration_ms: 1, session_id: 'x', total_cost_usd: 0.25, usage: { input_tokens: 1, output_tokens: 1 } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.totalCost).toBeCloseTo(1.75)
+  })
+
   it('sendMessage wakes a hibernated session via --resume and delivers the message', async () => {
     const session = await initedIdleSession()
     session.hibernate()

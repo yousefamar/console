@@ -212,6 +212,12 @@ export class Session extends EventEmitter {
    *  which moves the transcript to the new cwd's project dir first. */
   cwd: string
   totalCost = 0
+  /** totalCost carried by earlier claude processes of this session. The CLI's
+   *  `total_cost_usd` is cumulative PER PROCESS, so every hibernation wake /
+   *  respawn restarts it at 0 — assigning it raw made a session's cost DROP on
+   *  wake while its tokens kept climbing (three astera forks read $0 at 100k+
+   *  output tokens, ^sly-orca 2026-09-11). Rebased at each spawn. */
+  private costBase = 0
   totalTokens: TokenUsage = { input: 0, output: 0 }
   contextWindow = 200_000
   /** Per-session model pin (see SessionOptions.modelOverride). While set, this
@@ -348,6 +354,7 @@ export class Session extends EventEmitter {
   }
 
   private spawn(options: SessionOptions, spawnCtx: { wake?: boolean } = {}) {
+    this.costBase = this.totalCost
     // Prompt-cache TTL for every request this process will make — decided
     // here because the CLI reads the env var once at start. See
     // agents/cache-ttl.ts for the policy; the reason is logged per spawn and
@@ -1421,8 +1428,9 @@ export class Session extends EventEmitter {
     if (!msg.is_error && !msg.subtype.startsWith('error')) this.midTurn = false
     this.lastActivityAt = Date.now()
     this.turnCount++
-    // total_cost_usd is cumulative (session total), not per-turn
-    this.totalCost = msg.total_cost_usd
+    // total_cost_usd is cumulative for THIS process, not per-turn — add the
+    // cost of the processes before it (costBase) for a session total.
+    this.totalCost = this.costBase + msg.total_cost_usd
     this.totalTokens.input += msg.usage.input_tokens
     this.totalTokens.output += msg.usage.output_tokens
     if (msg.usage.cache_read_input_tokens) {
