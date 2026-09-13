@@ -170,6 +170,12 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+(empty — next batch goes here)
+
+## Shipped
+
+### v96 (2026-09-12)
+
 - **Property review deck — swipe right/left over the house-hunt pins** (^bold-kiwi,
   Yousef: "a more Tinder like view for properties so I can swipe right or left").
   `ui/longtail/PropertyDeckScreen.kt` (route `map/deck`; entry = the 🏠 chip with
@@ -260,8 +266,6 @@ view-mode hub-sync (Room meta is fine on one device).
   once known. No new BLE traffic — the poll already ran every ~80 s and
   discarded everything after byte[2]. Tests: `G1DeviceInfoTest` against the
   two captured frames (right 45 3f … / left 3f 00 …, both v1.6.6).
-
-## Shipped
 
 ### v95 (2026-09-06)
 - **Spaces: quick switcher** (SPA `SpacesQuickSwitcher.tsx`, the `/` command
