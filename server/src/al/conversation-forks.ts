@@ -16,7 +16,7 @@
 //   - a fork idle > IDLE_MS with a SUBSTANTIVE conversation (> TRIVIAL_MAX
 //     inbound messages or any tool call beyond the reply-send) → digest-merge
 //     into the parent (mergeIntoParent — same path as `con agent merge`).
-//   - a trivial conversation → reap silently (kill_session semantics; the
+//   - a trivial conversation → reap silently (kill + remove from the list; the
 //     full transcript stays on disk + in the Beeper chat archive). A digest
 //     of "he said thanks, I said np" is worth less than the 2 turns it costs.
 //

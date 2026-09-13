@@ -1033,6 +1033,38 @@ describe('Session hibernation', () => {
     const written = mockProcess.stdin.write.mock.calls.map((c: string[]) => JSON.parse(c[0]))
     expect(written.some((w: any) => w.type === 'user' && w.message?.content === 'queued during death')).toBe(true)
   })
+
+  // A session is either there or gone. An incidental death (crash, OOM, killed
+  // from outside) of a resumable session is NOT an end: it hibernates and the
+  // next message resumes it. Only the user ends a session, and that removes it.
+  it('unexpected exit of an inited session hibernates it instead of ending it', async () => {
+    const session = await initedIdleSession()
+    const messages = collectHubMessages(session)
+    session.sendMessage('do a thing')
+    expect(session.status).toBe('running')
+
+    mockProcess.emit('exit', 137) // OOM-killed mid-turn
+
+    expect(session.status).toBe('idle')
+    expect(session.hibernated).toBe(true)
+    expect(messages.find((m) => m.type === 'session_ended')).toBeUndefined()
+    // The turn is closed for waiters, and the death is surfaced in the transcript
+    expect(messages.find((m) => m.type === 'result')).toBeTruthy()
+    expect(messages.find((m) => m.type === 'error' && /exited unexpectedly/.test((m as any).message))).toBeTruthy()
+
+    session.sendMessage('carry on')
+    expect(lastSpawnArgs!.args).toContain('--resume')
+    expect(lastSpawnArgs!.args).toContain('claude_hib')
+    expect(session.status).toBe('running')
+  })
+
+  it('unexpected exit of a session that never initialised still ends it', () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+    mockProcess.emit('exit', 1)
+    expect(session.status).toBe('ended')
+    expect(messages.find((m) => m.type === 'session_ended')).toBeTruthy()
+  })
 })
 
 describe('Session hibernateOnStart (restore path)', () => {

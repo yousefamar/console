@@ -1005,12 +1005,6 @@ class AgentsRepository(
     fun markRead(sessionId: String) {
         scope.launch {
             val sess = db.agents().byId(sessionId)
-            // Reading an ENDED session acknowledges + removes it (delete_session).
-            if (sess != null && sess.status == "ended") {
-                db.agents().deleteSession(sessionId)
-                sendWs(buildJsonObject { put("type", "delete_session"); put("sessionId", sessionId) })
-                return@launch
-            }
             sendWs(buildJsonObject { put("type", "mark_session_read"); put("sessionId", sessionId) })
             sendWs(buildJsonObject { put("type", "clear_attention"); put("sessionId", sessionId) })
             sess?.let {

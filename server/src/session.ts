@@ -573,6 +573,30 @@ export class Session extends EventEmitter {
         if (this.processAlive || this.restartingForModel) return
         // Otherwise (chain exhausted / no advance) fall through to end cleanly.
       }
+      // An incidental death (crash, OOM, killed from outside) of a resumable
+      // session is treated like hibernation: the session stays in the list as
+      // idle and the next message wakes it with --resume. A session is either
+      // there or gone — 'ended' is reserved for one that can never come back.
+      if (!this.endedByUser && this.claudeSessionId) {
+        this.hibernating = false
+        this.hibernated = true
+        this.interrupted = false
+        const wasRunning = this.status === 'running'
+        this.status = 'idle'
+        if (wasRunning) {
+          this.emitHub({ type: 'error', sessionId: this.id, message: `The agent process exited unexpectedly (code=${code}) mid-turn. The session is kept — your next message resumes it.` })
+        }
+        this.emitHub({ type: 'result', sessionId: this.id, cost: this.totalCost, tokens: { input: 0, output: 0 }, duration: 0, sessionIdClaude: this.claudeSessionId })
+        this.emit('exit', code)
+        const pending = this.pendingWakeMessage
+        if (pending) {
+          this.pendingWakeMessage = null
+          this.sendMessage(pending.content, pending.images)
+        } else {
+          this.flushQueuedMessage()
+        }
+        return
+      }
       this.status = 'ended'
       this.emitHub({ type: 'session_ended', sessionId: this.id })
       this.emit('exit', code)

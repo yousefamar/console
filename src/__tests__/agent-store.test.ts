@@ -561,29 +561,6 @@ describe('markSessionRead', () => {
     expect(msgs.some((m: Record<string, unknown>) => m.type === 'delete_session')).toBe(false)
   })
 
-  it('deletes an ENDED session when marked read (terminated + acknowledged → gone)', async () => {
-    useAgentStore.getState().connect()
-    await flush()
-    const ws = MockWebSocket.latest()!
-    useAgentStore.setState({
-      sessions: [{
-        id: 'sess_dead', status: 'ended', createdAt: 1, prompt: '', totalCost: 0,
-        totalTokens: { input: 0, output: 0 }, contextWindow: 200_000, contextUsed: 0,
-        messageLogLength: 5, lastReadIndex: 0, hasUnread: true,
-      }],
-      activeSessionId: 'sess_dead',
-    })
-
-    useAgentStore.getState().markSessionRead('sess_dead')
-
-    // Removed locally + delete sent to hub; active session cleared
-    expect(useAgentStore.getState().sessions.find((s) => s.id === 'sess_dead')).toBeUndefined()
-    expect(useAgentStore.getState().activeSessionId).toBeNull()
-    const msgs = ws.sentMessages.map((m) => JSON.parse(m))
-    const del = msgs.find((m: Record<string, unknown>) => m.type === 'delete_session')
-    expect(del).toEqual({ type: 'delete_session', sessionId: 'sess_dead' })
-  })
-
   it('sticky read (hand-back approved) pins the session: new messages never flip it back to unread', async () => {
     useAgentStore.getState().connect()
     await flush()

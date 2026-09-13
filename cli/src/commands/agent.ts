@@ -169,10 +169,9 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
     if (!convId) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> --end', flags); return }
     const target = await resolveByClaudeId(convId)
     const { sendAndReceive } = await import('../ws-client.js')
-    // kill_session ends the fork's subprocess but KEEPS the entry in the list so
-    // its conversation stays readable (Yousef's call — don't auto-reap). The hub
-    // marks it status:ended and broadcasts the updated list. To fully remove it,
-    // `con agent kill <session-id>`.
+    // Ends the fork's subprocess and removes it from the list (same as `con
+    // agent kill`). The transcript stays readable via `con agent list --past`
+    // and `con agent read <id>`.
     await sendAndReceive({ type: 'kill_session', sessionId: target.id }, () => false)
     output({ ended: convId }, flags)
     return
@@ -388,11 +387,8 @@ async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
   const sessionId = args[0]
   if (!sessionId) exitWithError('USAGE', 'Usage: con agent kill <session-id>', flags)
 
-  // delete_session terminates the subprocess AND removes from the manifest.
-  // kill_session alone left the entry to be resurrected on next hub restart —
-  // not what `con agent kill` documents itself as doing (see CLAUDE.md "kill"
-  // sharp-edge note: "deletes the session entry"). Use the action that
-  // actually matches the documented contract.
+  // kill_session and delete_session are the same hub action: terminate the
+  // subprocess and remove the entry from the list + manifest.
   const { sendAndReceive } = await import('../ws-client.js')
   await sendAndReceive(
     { type: 'delete_session', sessionId },
