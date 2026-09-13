@@ -503,7 +503,13 @@ fun jsonStr(s: String): String {
  *  renderer can rasterise them before the symbol layer references them. */
 fun emojiInGeojson(geojson: String): Set<String> {
     val out = mutableSetOf<String>()
-    val re = Regex("\"_icon\"\\s*:\\s*\"([^\"]+)\"")
-    for (m in re.findAll(geojson)) out.add(m.groupValues[1])
+    // One Matcher for the whole scan. `Regex.findAll` makes a fresh Matcher per
+    // match and Android's ICU copies the entire input on each — on the 6 MB
+    // property layer with a `_icon` per pin that was the 11:48 ANR (21 s of
+    // main thread inside onDidFinishLoadingStyle, 1.8 GB RSS).
+    val m = ICON_RE.matcher(geojson)
+    while (m.find()) out.add(m.group(1)!!)
     return out
 }
+
+private val ICON_RE = java.util.regex.Pattern.compile("\"_icon\"\\s*:\\s*\"([^\"]+)\"")

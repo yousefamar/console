@@ -174,6 +174,28 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Shipped
 
+### v99 (2026-09-13)
+
+- **Map crash root cause (v96–v98): `Regex.findAll` over the 6 MB property
+  layer.** Evidence from v98's `exits` (ApplicationExitInfo): an ANR at 11:48
+  with the main thread inside `NativeMapView.onDidFinishLoadingStyle` →
+  `MapRenderer.emojiInGeojson` → `Matcher.find` → `Matcher.reset` →
+  `MatcherNative.setInput` (`utm=2146` = 21 s of main-thread CPU, RSS 711 MB,
+  high-water 1.8 GB), plus plain CRASH records at 10:12 (v96) and 12:25 (v97).
+  Kotlin's `Regex.findAll` builds a NEW `Matcher` for every match, and on Android
+  each new Matcher copies the entire input into ICU native memory — with a
+  `_icon` on every one of ~3,700 property pins that is ~3,700 × 11 MB of copying
+  per style load. The renderer's scan was old code (07-20); the input only became
+  pathological once every property pin carried `_icon` (hub ^soft-goat, live
+  since the 09-10 hub run) and the house layer grew to 5.7 MB — and my v97/v98
+  `countUnreviewedListings` added two more such scans (off-main, hence the
+  memory-churn CRASH rather than an ANR). Neither v96's kotlinx tree nor the
+  missing-emoji path was the cause. Fix: one `java.util.regex.Matcher` per scan
+  (`while (m.find())`) in both `emojiInGeojson` and `countMatches` — O(length),
+  148 ms for a 6 MB / 4,000-match fixture (`PropertyDeckLogicTest`). Rule for
+  this codebase: never `Regex.findAll` (or any per-match Matcher) over
+  layer-sized strings; the other `findAll` call sites run over short text.
+
 ### v98 (2026-09-13)
 
 - **Property deck: skip** (^bold-kiwi feedback, "a subtle way to skip"). Swipe UP

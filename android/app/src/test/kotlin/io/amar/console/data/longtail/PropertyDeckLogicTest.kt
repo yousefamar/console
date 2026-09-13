@@ -128,6 +128,22 @@ class PropertyDeckLogicTest {
     }
 
     @Test
+    fun `counting over a layer-sized string with thousands of matches is linear, not matches x length`() {
+        // ~6 MB, 4000 property pins: the shape of the live house layer.
+        val feature = """{"type":"Feature","geometry":{"type":"Point","coordinates":[-1.5,52.0]},"properties":{"listingId":"%d","searchId":"s","summary":"%s","_icon":"🏠"}},"""
+        val pad = "x".repeat(1400)
+        val sb = StringBuilder("""{"type":"FeatureCollection","features":[""")
+        repeat(4000) { sb.append(feature.format(it, pad)) }
+        sb.setLength(sb.length - 1); sb.append("]}")
+        val gj = sb.toString()
+        assertTrue(gj.length > 5_000_000)
+        val t0 = System.nanoTime()
+        assertEquals(4000, countUnreviewedListings(gj))
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("took ${ms}ms", ms < 2000)
+    }
+
+    @Test
     fun `labels`() {
         assertEquals("Houses", kindLabel("house"))
         assertEquals("Land", kindLabel("farmland"))

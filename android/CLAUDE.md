@@ -199,6 +199,18 @@ while the app is foregrounded (plus short background borrows), so a remote
   Kotlin string literal must be `\\d`.
 - `Icons.Outlined.*` imports are explicit per icon (no wildcard) — add the
   import or you get "Unresolved reference".
+- **Never `Regex.findAll` (or any per-match `Matcher`) over a layer-sized
+  string.** Kotlin's `findAll` builds a new `Matcher` per match and Android's ICU
+  copies the whole input into native memory each time — ~3,700 `_icon` matches
+  over the 6 MB property layer was 21 s of main-thread CPU and a 1.8 GB RSS peak
+  (v96–v98 Map ANR/crash). Use one `Pattern.matcher(s)` + `while (m.find())`
+  (`countMatches`, `emojiInGeojson`). Same class: never build a kotlinx
+  `JsonElement` tree of a layer string beside MapLibre's own parse.
+- **`exits` is the crash tool**: `POST /debug/eval?target=apk -d '{"code":"exits"}'`
+  returns Android's `ApplicationExitInfo` (Java crash, NATIVE crash + tombstone
+  head, ANR + trace head, LMK). The in-app uncaught hook also persists the
+  exception synchronously and replays it on the next connect. Use these before
+  theorising — v96/v97 shipped two wrong "fixes" on a guess.
 - `DateTimeFormatter.ofPattern("MMM", Locale.UK)` renders September as "Sept"
   (JDK 17+ CLDR en-GB); use `Locale.ENGLISH` for 3-letter months and keep
   day-before-month order in the pattern (`MoneyFormat.MONTH_LOCALE`).

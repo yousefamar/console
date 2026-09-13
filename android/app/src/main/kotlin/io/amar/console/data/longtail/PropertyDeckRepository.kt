@@ -205,18 +205,29 @@ fun swipeVerdict(offsetX: Float, velocityX: Float, widthPx: Float, offsetY: Floa
 // ---------------------------------------------------------------------- //
 // Unreviewed count off the map layers (Map toolbar badge; SPA countUnreviewedListings parity)
 
-private val LISTING_ID_RE = Regex("\"listingId\"\\s*:")
-private val INTERESTED_RE = Regex("\"review\"\\s*:\\s*\"interested\"")
+private val LISTING_ID_RE = java.util.regex.Pattern.compile("\"listingId\"\\s*:")
+private val INTERESTED_RE = java.util.regex.Pattern.compile("\"review\"\\s*:\\s*\"interested\"")
 
-// Pins on a property layer that carry a listingId and no verdict. Counted by
-// regex over the raw string, like emojiInGeojson — the house layer is ~6 MB and
-// a kotlinx JsonElement tree of it OOMs the phone beside MapLibre's own parse
-// (v96 crashed on every Map open). Both keys occur once per feature, only in
-// property pins' properties.
+/**
+ * Matches of [pattern] in [input] through ONE Matcher. Never `Regex.findAll` on
+ * a big string on Android: it builds a new Matcher per match and ICU copies the
+ * whole input into native memory each time — 3,700 matches over the 6 MB house
+ * layer was 21 s of main-thread CPU and a 1.8 GB RSS peak (v96–v98 ANR/crash).
+ */
+fun countMatches(pattern: java.util.regex.Pattern, input: CharSequence): Int {
+    val m = pattern.matcher(input)
+    var n = 0
+    while (m.find()) n++
+    return n
+}
+
+// Pins on a property layer that carry a listingId and no verdict. Counted over
+// the raw string (never a kotlinx JsonElement tree — that OOMed beside
+// MapLibre's own parse). Both keys occur once per feature, only in property pins.
 fun countUnreviewedListings(geojson: String): Int {
-    val listings = LISTING_ID_RE.findAll(geojson).count()
+    val listings = countMatches(LISTING_ID_RE, geojson)
     if (listings == 0) return 0
-    return (listings - INTERESTED_RE.findAll(geojson).count()).coerceAtLeast(0)
+    return (listings - countMatches(INTERESTED_RE, geojson)).coerceAtLeast(0)
 }
 
 // ---------------------------------------------------------------------- //
