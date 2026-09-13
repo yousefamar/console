@@ -185,9 +185,11 @@ export type CreatePropertySearchInput = Pick<PropertySearch, 'country' | 'layer'
  * portal never saw. `excludeHouseSubtypes` is enforced locally on every
  * portal regardless of what it filtered (postFilter), so it is local-only too —
  * adding `terraced` to the Italian searches on 2026-09-08 dropped three
- * inventories for nothing.
+ * inventories for nothing. `excludeAuctions` likewise (always re-checked in
+ * postFilter); the one asymmetry is that turning it OFF on a portal that
+ * filtered server-side shows the auction rows only from the next full pull.
  */
-export const LOCAL_ONLY_CRITERIA = ['maxHighStreetM', 'excludeHouseSubtypes'] as const
+export const LOCAL_ONLY_CRITERIA = ['maxHighStreetM', 'excludeHouseSubtypes', 'excludeAuctions'] as const
 
 function coarseCriteria(c: Criteria | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = { ...(c ?? {}) }

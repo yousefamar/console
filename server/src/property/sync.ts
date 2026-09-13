@@ -60,6 +60,16 @@ const LOCALI_PORTALS = new Set<string>(['wikicasa', 'subito', 'kleinanzeigen'])
  */
 const AREA_COORDS_BUFFER_KM = 6
 /**
+ * Portals whose `'area'` coordinate is the CENTRE of the named comune/zone
+ * (Subito's town point, Wikicasa's cityDto), not an average over a polygon.
+ * There "no high-street cell near the point" means the place has no high
+ * street, so the walk bar can still say no — and does for 64% of Italian
+ * centroid rows (2026-09-13). A PLZ average (Kleinanzeigen) or a free geocode
+ * (smallholdings) can land in fields beside a real high street; those stay
+ * untested.
+ */
+const PLACE_CENTRE_PORTALS = new Set<string>(['subito', 'wikicasa'])
+/**
  * Detail-page enrichment (PortalClient.detail): one request per listing, so
  * it is paced and budgeted per tick. UK's ~8k rows take ~20 ticks to cover
  * from cold; after that only new rows need it. Re-read after DETAIL_TTL_MS so
@@ -626,10 +636,10 @@ export class PropertySync {
     if (!checkNewBuild && max == null) return listings
     return listings.filter((l) => {
       if (checkNewBuild && newBuildLike(l)) return false
-      // Comune/PLZ-centroid coordinates (Subito, Kleinanzeigen, geocoded feeds)
-      // say nothing about the house's street — a centroid always sits near the
-      // centre, so measuring it would pass everything with a fake number.
-      if (max != null && this.highStreets && l.lat != null && l.lon != null && l.coordsPrecision !== 'area') {
+      // A centroid says nothing about the house's street, but a comune centre
+      // with no high street rules out every house in the comune; a PLZ average
+      // or a geocode proves nothing either way and passes untested.
+      if (max != null && this.highStreets && l.lat != null && l.lon != null && walkTestable(l)) {
         const m = this.highStreets.nearestM(l.lat, l.lon)
         if (m != null && m > max) return false
       }
@@ -637,12 +647,13 @@ export class PropertySync {
     })
   }
 
-  /** "320 m to shops" for the popup; undefined without exact coordinates or an index. */
+  /** "320 m to shops" for the popup ("town centre 120 m to shops" when the pin is the comune point); undefined without testable coordinates or an index. */
   private highStreetLabel(l: Listing): string | undefined {
-    if (!this.highStreets || l.lat == null || l.lon == null || l.coordsPrecision === 'area') return undefined
+    if (!this.highStreets || l.lat == null || l.lon == null || !walkTestable(l)) return undefined
     const m = this.highStreets.nearestM(l.lat, l.lon)
     if (m == null) return undefined
-    return m >= 5000 ? '>5 km to shops' : `${m} m to shops`
+    const dist = m >= 5000 ? '>5 km to shops' : `${m} m to shops`
+    return l.coordsPrecision === 'area' ? `town centre ${dist}` : dist
   }
 
   /**
@@ -1002,7 +1013,10 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
       if (types.some((t) => c.excludeHouseSubtypes!.includes(t))) return false
     }
     if (missing.has('excludeSchemes') && c.excludeSchemes && matchesAny(l, SCHEME_TERMS)) return false
-    if (missing.has('excludeAuctions') && c.excludeAuctions && matchesAny(l, AUCTION_TERMS)) return false
+    // Also always local: a portal's own auction flag misses text-only tells
+    // (immobiliare's "vendita all'asta" rows carry no flag), and re-checking an
+    // exclusion drops nothing a portal filter would have kept.
+    if (c.excludeAuctions && auctionLike(l)) return false
     // "Price on request" listings have no price field at all on any portal —
     // IS24 sends price.value: 0 for these (verified: the live page shows "Auf
     // Anfrage", not a data error), and normalise() already reads 0 as absent.
@@ -1047,12 +1061,23 @@ export function applyNotifyGate(listings: Listing[], nc: NotifyCriteria | undefi
  * undesirable (just a faster, cash-ready completion process), so it's a
  * distinct opt-out from retirement/shared-ownership stock.
  */
-const AUCTION_TERMS = ['auction', 'for sale by tender', 'zwangsversteigerung', 'asta']
+// Word-bounded: as a substring `asta` is in "fantastica", "castagno", "Bastia".
+// No "tribunale" — "vicino al tribunale" is a location, not a sale method.
+const AUCTION_RE = /\bauctions?\b|for sale by tender|zwangsversteigerung|\basta\b|aste giudiziari|aggiudicaz|vendita giudiziaria/i
 const SCHEME_TERMS = ['shared ownership', 'shared equity', 'part buy', 'retirement', 'over 55', 'over 60']
 
 function matchesAny(l: Listing, terms: string[]): boolean {
   const hay = `${l.title ?? ''} ${l.summary ?? ''} ${l.propertyType ?? ''}`.toLowerCase()
   return terms.some((t) => hay.includes(t))
+}
+
+export function auctionLike(l: Listing): boolean {
+  return AUCTION_RE.test(`${l.title ?? ''} ${l.summary ?? ''} ${l.propertyType ?? ''}`)
+}
+
+/** Exact coordinates, or a centroid that is a real place centre (`PLACE_CENTRE_PORTALS`). */
+function walkTestable(l: Listing): boolean {
+  return l.coordsPrecision !== 'area' || PLACE_CENTRE_PORTALS.has(l.portal)
 }
 
 function sortNewestFirst(listings: Listing[]): Listing[] {

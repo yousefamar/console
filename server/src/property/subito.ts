@@ -12,12 +12,18 @@
 // it every call is an Akamai 403 that looks like an IP ban), radius search only
 // (`lat`/`lon`/`rad` metres, ≤100 km), 100 rows a page with no depth cap, real
 // ISO timestamps, and a `list_ids=` lookup that doubles as the liveness probe.
-// Coordinates are COMUNE CENTROIDS, never the house — every row is flagged
-// `coordsPrecision: 'area'` so the hub clips with a buffer and never dedupes
-// them against exact-coordinate portals.
+// Coordinates: `geo.map` is the geocoded address the advertiser entered — it
+// lands on the street the ad text names at zoom 8, 13, 17 and 18 alike, so
+// `zoom` is only the reveal radius the site draws, not the precision (probe of
+// 100 Torino rows, 2026-09-13; the 2026-09-07 note that rows are comune-level
+// came from 30 rustici). A map point within `TOWN_POINT_M` of the comune point
+// is indistinguishable from a "just the comune" geocode, and the ~2% of rows
+// without `map` have nothing else: those keep the comune point and are flagged
+// `coordsPrecision: 'area'` so the hub clips with a buffer, never dedupes them,
+// and walk-tests the comune centre instead of the house.
 
 import type { Ring } from './geo.js'
-import { coverRingWithCircles } from './geo.js'
+import { coverRingWithCircles, haversineKm } from './geo.js'
 import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
@@ -28,6 +34,8 @@ const CHANNEL_HEADER = 'x-subito-channel'
 const PAGE = 100
 /** `rad` is honoured up to 100 km (1,204 rows at 100 km around Pisa, no cap hit). */
 const MAX_RADIUS_KM = 100
+/** A `geo.map` point this close to the comune point is treated as the comune point. */
+const TOWN_POINT_M = 250
 /** The note asks for ≥1.5 s between calls; applied between every two requests, not just deep pulls. */
 const DEFAULT_REQUEST_GAP_MS = 1500
 /** The hub regexes the body for terreno/ettari, so keep most of it (bodies run 500–2,000 chars). */
@@ -305,7 +313,7 @@ export interface RawAd {
   geo?: {
     town?: { value?: string; lat?: number; lon?: number }
     city?: { value?: string }
-    map?: { address?: string; latitude?: string; longitude?: string }
+    map?: { address?: string; latitude?: string; longitude?: string; zoom?: string }
   }
   urls?: { default?: string }
 }
@@ -434,8 +442,13 @@ export function normalise(r: RawAd): Listing | null {
   const adv = r.advertiser
   const agency = adv?.company === true || adv?.type === 1
   const town = r.geo?.town
-  const lat = town?.lat ?? parseFloat(r.geo?.map?.latitude ?? '')
-  const lon = town?.lon ?? parseFloat(r.geo?.map?.longitude ?? '')
+  const mapLat = parseFloat(r.geo?.map?.latitude ?? '')
+  const mapLon = parseFloat(r.geo?.map?.longitude ?? '')
+  const hasMap = Number.isFinite(mapLat) && Number.isFinite(mapLon)
+  const hasTown = town?.lat != null && town?.lon != null
+  const exact = hasMap && (!hasTown || haversineKm([mapLon, mapLat], [town.lon!, town.lat!]) * 1000 > TOWN_POINT_M)
+  const lat = exact ? mapLat : hasTown ? town.lat : hasMap ? mapLat : undefined
+  const lon = exact ? mapLon : hasTown ? town.lon : hasMap ? mapLon : undefined
   const listedAt = r.dates?.display_iso8601 ? new Date(r.dates.display_iso8601) : undefined
   const image = r.images?.[0]?.cdn_base_url
 
@@ -453,10 +466,9 @@ export function normalise(r: RawAd): Listing | null {
     floorArea,
     plotArea,
     propertyType,
-    lat: Number.isFinite(lat) ? lat : undefined,
-    lon: Number.isFinite(lon) ? lon : undefined,
-    // Comune centroid, never the house — every sampled ad has showPin:false.
-    coordsPrecision: 'area',
+    lat,
+    lon,
+    coordsPrecision: exact ? 'exact' : 'area',
     // Normalised to UTC: the hub sorts listedAt as strings, and Subito's
     // offsets flip between +0200 and +0100 across the year.
     listedAt: listedAt && !Number.isNaN(listedAt.getTime()) ? listedAt.toISOString() : undefined,

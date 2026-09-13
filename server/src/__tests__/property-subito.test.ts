@@ -239,17 +239,37 @@ describe('normalise() over the recorded fixture', () => {
     expect(kept.map((l) => l.title)).toEqual(['Terratetto Lari', 'Viareggina a - MarcianaCascina', 'RUSTICO A SAN GIULIANO TERME', 'Rustico indipendente'])
   })
 
-  it('every row is a comune centroid: coordsPrecision area, town lat/lon', () => {
+  it('geo.map is the house (exact) whenever it sits clear of the comune point, at any zoom', () => {
     for (const l of kept) {
-      expect(l.coordsPrecision).toBe('area')
-      expect(l.lat).toBeTypeOf('number')
-      expect(l.lon).toBeTypeOf('number')
+      expect(l.coordsPrecision).toBe('exact')
       expect(l.portal).toBe('subito')
       expect(l.currency).toBe('EUR')
     }
-    // town centroid, not geo.map (which is a street address 2.5 km away on this row)
-    expect(kept[0]!.lat).toBeCloseTo(43.566445, 5)
-    expect(kept[0]!.lon).toBeCloseTo(10.59237, 5)
+    // The street address 2.5 km from the town point, not the town point.
+    expect(kept[0]!.lat).toBeCloseTo(43.5871789, 6)
+    expect(kept[0]!.lon).toBeCloseTo(10.5849739, 6)
+    // zoom 10 and 13 rows too: zoom is the reveal radius the site draws, not the precision.
+    expect(kept[1]!.lat).toBeCloseTo(43.678641, 6)
+    expect(kept[2]!.lat).toBeCloseTo(43.8183702, 6)
+  })
+
+  it('falls back to the comune point (area) without geo.map, or when the map point is within 250 m of it', () => {
+    const noMap = normalise(ad({ subject: 'Rustico indipendente', body: 'Rustico di 90 mq.', size: 90 }))!
+    expect(noMap.coordsPrecision).toBe('area')
+    expect(noMap.lat).toBeCloseTo(43.7275, 6)
+    expect(noMap.lon).toBeCloseTo(10.5874, 6)
+    // ~120 m east of the town point: a "just the comune" geocode, not a street.
+    const nearTown = normalise(ad({ subject: 'Rustico indipendente', body: 'Rustico di 90 mq.', size: 90, geo: { town: { value: 'Buti', lat: 43.7275, lon: 10.5874 }, city: { value: 'Pisa' }, map: { latitude: '43.7275', longitude: '10.5889', zoom: '13' } } }))!
+    expect(nearTown.coordsPrecision).toBe('area')
+    expect(nearTown.lon).toBeCloseTo(10.5874, 6)
+    // No town point at all: the map point is all there is, and it is exact.
+    const noTown = normalise(ad({ subject: 'Rustico indipendente', body: 'Rustico di 90 mq.', size: 90, geo: { city: { value: 'Pisa' }, map: { latitude: '43.70', longitude: '10.60', zoom: '8' } } }))!
+    expect(noTown.coordsPrecision).toBe('exact')
+    expect(noTown.lat).toBeCloseTo(43.7, 6)
+    // Neither: no coordinates, still a listing.
+    const nothing = normalise(ad({ subject: 'Rustico indipendente', body: 'Rustico di 90 mq.', size: 90, geo: { city: { value: 'Pisa' } } }))!
+    expect(nothing.lat).toBeUndefined()
+    expect(nothing.coordsPrecision).toBe('area')
   })
 
   it('maps the agency house row: list id, url, price, locali-1 bedrooms, floor area, agency name, image rule, UTC listedAt', () => {
