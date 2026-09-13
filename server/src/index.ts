@@ -152,6 +152,7 @@ import { PropertySync } from './property/sync.js'
 import { HighStreetIndex } from './property/place.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
+import { BrowserFetch } from './property/browser-fetch.js'
 import { ImmoScout24Client } from './property/immoscout24.js'
 import { WafTokenStore } from './property/waf-token.js'
 import { handlePropertyRoutes } from './routes/property.js'
@@ -389,7 +390,8 @@ const propertyInventory = new PropertyInventoryStore(join(feedsConfigDir, 'prope
 const propertySync = new PropertySync(
   {
     rightmove: new RightmoveClient(),
-    immobiliare: new ImmobiliareClient(),
+    // DataDome-walled since 2026-09-07: every request runs inside a Chromium page (browser-fetch.ts).
+    immobiliare: new ImmobiliareClient(new BrowserFetch({ origin: 'https://www.immobiliare.it/', log: (msg: string) => { log(msg) } }).fetch),
     immoscout24: new ImmoScout24Client(wafTokenStore),
     // Extra sources surveyed 2026-09-07 (^spry-tern) — each is just another
     // search's `portal`; they all feed the same property/<kind> layers.

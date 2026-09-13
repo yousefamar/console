@@ -1,9 +1,13 @@
 // immobiliare.it client (Italy). Protocol notes:
 // ~/sync/brain/root/projects/home/immobiliare-api.md
 //
-// The friendliest of the three: no auth, no cookies, clean JSON, an arbitrary
-// polygon via `vrt`, a ~15-byte count endpoint, and a self-reported
-// `isResultsLimitReached` so we never have to guess at truncation.
+// Clean JSON, an arbitrary polygon via `vrt`, a ~15-byte count endpoint, and a
+// self-reported `isResultsLimitReached` so we never have to guess at truncation.
+// Since 2026-09-07 api-next sits behind DataDome (HTTP 403 → captcha JSON for
+// anything that isn't a real browser, TLS fingerprint included), so the hub
+// hands this client a `fetchImpl` that runs each request inside a Chromium page
+// (`browser-fetch.ts`); the client itself is unchanged and fixture-tested with
+// a plain stub.
 
 import type { Ring } from './geo.js'
 import { boxAround, simplifyToLatLng } from './geo.js'

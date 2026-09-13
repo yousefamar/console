@@ -6,28 +6,20 @@
 // plain fetch. So: drive a headless Chromium at the homepage once every few
 // days, cache the token on disk, and let the client use it over plain HTTP.
 //
-// Playwright is NOT a dependency of this repo — it's a big install and only
-// this one portal needs it. We resolve it from wherever it already exists on
-// the machine and degrade gracefully (IS24 count queries still work without a
-// token; only listing reads need one).
+// Playwright comes from wherever it already exists on the machine
+// (`playwright.ts`); without it IS24 count queries still work, only listing
+// reads need a token.
 //
 // Notes: ~/sync/brain/root/projects/home/immoscout24-api.md
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { homedir } from 'node:os'
+import { loadChromium, type PwBrowser } from './playwright.js'
 
 const HOMEPAGE = 'https://www.immobilienscout24.de/'
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 /** Refresh this far before the cookie's own expiry. */
 const RENEW_MARGIN_MS = 12 * 60 * 60 * 1000
-
-/** Playwright installs we know about on this machine, most-likely first. */
-const PLAYWRIGHT_CANDIDATES = [
-  `${homedir()}/proj/code/sainsburys/node_modules/playwright/index.mjs`,
-  `${homedir()}/proj/code/astera-app/node_modules/playwright/index.mjs`,
-  `${homedir()}/proj/code/reflection-tools/node_modules/playwright/index.mjs`,
-]
 
 interface Cached {
   token: string
@@ -83,7 +75,7 @@ export class WafTokenStore {
   }
 
   private async mint(): Promise<string | null> {
-    const chromium = await this.loadChromium()
+    const chromium = await loadChromium()
     if (!chromium) {
       this.log('[is24] no Playwright install found — cannot mint a WAF token')
       return null
@@ -124,19 +116,6 @@ export class WafTokenStore {
     }
   }
 
-  private async loadChromium(): Promise<PwChromium | null> {
-    for (const path of PLAYWRIGHT_CANDIDATES) {
-      if (!existsSync(path)) continue
-      try {
-        const mod = (await import(path)) as { chromium?: PwChromium }
-        if (mod.chromium) return mod.chromium
-      } catch {
-        // try the next candidate
-      }
-    }
-    return null
-  }
-
   private load(): void {
     if (this.cache) return
     try {
@@ -154,22 +133,4 @@ export class WafTokenStore {
     // Session-ish credential — keep it owner-readable only.
     writeFileSync(this.file, JSON.stringify(this.cache), { encoding: 'utf8', mode: 0o600 })
   }
-}
-
-// Minimal structural types for the Playwright bits we touch — we can't import
-// its types since it isn't a dependency here.
-interface PwChromium {
-  launch(opts: { headless: boolean; args?: string[] }): Promise<PwBrowser>
-}
-interface PwBrowser {
-  newContext(opts: Record<string, unknown>): Promise<PwContext>
-  close(): Promise<void>
-}
-interface PwContext {
-  newPage(): Promise<PwPage>
-  cookies(): Promise<Array<{ name: string; value: string; expires: number }>>
-}
-interface PwPage {
-  goto(url: string, opts: Record<string, unknown>): Promise<unknown>
-  waitForTimeout(ms: number): Promise<void>
 }
