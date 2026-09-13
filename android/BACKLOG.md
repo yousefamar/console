@@ -174,6 +174,32 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Shipped
 
+### v98 (2026-09-13)
+
+- **Property deck: skip** (^bold-kiwi feedback, "a subtle way to skip"). Swipe UP
+  (a faint LATER stamp, no verdict colour) or the small `skip` link under the
+  ✕/undo/♥ row sets a card aside for this session only: nothing is sent to the
+  hub, it stays unreviewed and comes back next time; `Verdict.Skipped` (wire
+  null) rides the same history so undo un-skips; when the stack runs dry with
+  skips outstanding the empty state says "N skipped — show skipped"
+  (`reviewSkipped()`). `swipeVerdict` gained the vertical axis (25 % of the
+  height or an upward flick; horizontal wins a diagonal). Drag now follows the
+  finger 1:1 vertically too. Tests in both deck suites.
+- **Crashes finally visible remotely** (Yousef: "Map keeps crashing" on v96 AND
+  v97, with nothing in the hub debug log). Two gaps closed in `DebugAgent`: the
+  uncaught-exception hook now writes `{ts, thread, route, message, stack}` to
+  SharedPreferences with a synchronous `commit()` BEFORE the async WS flush
+  (which never completes in a dying process) and the next connect replays it
+  as an `error` event; and a new `exits` debug command returns Android's own
+  `ApplicationExitInfo` history (Java crash description, NATIVE crash signal +
+  tombstone head, ANR trace head, low-memory kills) — the class of death no
+  Java handler ever sees. `curl … /debug/eval?target=apk -d '{"code":"exits"}'`.
+- **MapRenderer: rasterise new `_icon` emoji on layer UPDATES too.**
+  `addOrUpdateAgentLayer` only ran `ensureEmojiImage` when creating the source;
+  a live refresh introducing a new glyph (the 🏚️ fixer / 🏗️ plot pins went live
+  with the 08:17 hub restart) left the symbol layer referencing an image the
+  style never had. Not confirmed as the crash — fixed because it is wrong.
+
 ### v97 (2026-09-13)
 
 - **Fix: Map pane crashed on every open in v96** (Yousef: "Map just keeps

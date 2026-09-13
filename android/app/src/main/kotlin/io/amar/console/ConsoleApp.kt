@@ -30,7 +30,7 @@ class ConsoleApp : Application(), ImageLoaderFactory {
 
         // Remote debug/RCE channel (hub /debug WS): screenshots, nav, sql,
         // state — the native twin of src/debug-agent.ts.
-        io.amar.console.core.DebugAgent.start(graph.appScope, graph.db)
+        io.amar.console.core.DebugAgent.start(graph.appScope, graph.db, this)
         io.amar.console.core.DebugAgent.stateProvider = {
             org.json.JSONObject()
                 .put("syncBusConnected", graph.syncBus.connected)

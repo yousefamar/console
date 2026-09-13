@@ -102,6 +102,14 @@ class PropertyDeckLogicTest {
         assertNull(swipeVerdict(120f, -2500f, w))
         assertNull(swipeVerdict(40f, 2500f, w))
         assertNull(swipeVerdict(0f, 0f, w))
+        // Up = skip, only once the vertical commit line (25 % of height) or an upward flick is reached; horizontal wins a diagonal.
+        val h = 1600f
+        assertEquals(Verdict.Skipped, swipeVerdict(0f, 0f, w, offsetY = -420f, velocityY = 0f, heightPx = h))
+        assertNull(swipeVerdict(0f, 0f, w, offsetY = -380f, velocityY = 0f, heightPx = h))
+        assertEquals(Verdict.Skipped, swipeVerdict(30f, 0f, w, offsetY = -120f, velocityY = -2500f, heightPx = h))
+        assertNull(swipeVerdict(0f, 0f, w, offsetY = 420f, velocityY = 0f, heightPx = h)) // down does nothing
+        assertEquals(Verdict.Interested, swipeVerdict(360f, 0f, w, offsetY = -500f, velocityY = 0f, heightPx = h))
+        assertNull(swipeVerdict(0f, 0f, w, offsetY = -500f, velocityY = 0f, heightPx = 0f)) // no height known = no skip
     }
 
     @Test

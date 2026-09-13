@@ -301,9 +301,11 @@ class MapRenderer {
     private fun addOrUpdateAgentLayer(s: Style, meta: MapLayerMeta, geojson: String) {
         val srcId = "layer:${meta.slug}"
         val existing = s.getSourceAs<GeoJsonSource>(srcId)
-        if (existing != null) { existing.setGeoJson(geojson); return }
-        // Extract any emoji used as _icon so styleimagemissing-equivalent works.
+        // Extract any emoji used as _icon so styleimagemissing-equivalent works —
+        // on updates too: a live layer refresh can introduce a glyph the style
+        // has never rasterised (the fixer 🏚️ / plot 🏗️ pins arrived that way).
         for (e in emojiInGeojson(geojson)) ensureEmojiImage(e)
+        if (existing != null) { existing.setGeoJson(geojson); return }
 
         s.addSource(GeoJsonSource(srcId, geojson))
         val st = meta.style

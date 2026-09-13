@@ -61,7 +61,8 @@ data class PropertyCard(
 
 data class PropertyDeck(val cards: List<PropertyCard>, val total: Int, val counts: Map<String, Int>)
 
-enum class Verdict(val wire: String) { Interested("interested"), Dismissed("dismissed") }
+/** [wire] is the hub review state; `Skipped` never reaches the hub — the card just leaves this session's stack. */
+enum class Verdict(val wire: String?) { Interested("interested"), Dismissed("dismissed"), Skipped(null) }
 
 val PROPERTY_KINDS = listOf("house", "farmland", "plot")
 
@@ -182,18 +183,23 @@ fun portalLabel(portal: String): String = when (portal) {
 
 /** Fraction of the card width the card must travel to commit a verdict. */
 const val SWIPE_COMMIT_FRACTION = 0.35f
+/** Fraction of the card height an upward drag must travel to skip. */
+const val SKIP_COMMIT_FRACTION = 0.25f
 /** px/s — a quick flick commits even from a short drag. */
 const val SWIPE_FLING_VELOCITY = 1800f
 
-/** Right = interested, left = dismissed, null = spring back. */
-fun swipeVerdict(offsetX: Float, velocityX: Float, widthPx: Float): Verdict? {
+/** Right = interested, left = dismissed, up = skipped (later), null = spring back. Horizontal wins a diagonal. */
+fun swipeVerdict(offsetX: Float, velocityX: Float, widthPx: Float, offsetY: Float = 0f, velocityY: Float = 0f, heightPx: Float = 0f): Verdict? {
     val commit = widthPx * SWIPE_COMMIT_FRACTION
     val flung = abs(velocityX) >= SWIPE_FLING_VELOCITY && (velocityX > 0) == (offsetX > 0) && abs(offsetX) > widthPx * 0.08f
-    return when {
+    val horizontal = when {
         offsetX >= commit || (flung && offsetX > 0) -> Verdict.Interested
         offsetX <= -commit || (flung && offsetX < 0) -> Verdict.Dismissed
         else -> null
     }
+    if (horizontal != null || heightPx <= 0f) return horizontal
+    val flungUp = velocityY <= -SWIPE_FLING_VELOCITY && offsetY < -heightPx * 0.06f
+    return if (offsetY <= -heightPx * SKIP_COMMIT_FRACTION || flungUp) Verdict.Skipped else null
 }
 
 // ---------------------------------------------------------------------- //
@@ -226,6 +232,8 @@ data class PropertyDeckUiState(
     val error: String? = null,
     /** Verdicts this session, oldest first — the undo stack. */
     val history: List<Pair<PropertyCard, Verdict>> = emptyList(),
+    /** Cards set aside this session (still unreviewed on the hub). */
+    val skippedCount: Int = 0,
 )
 
 /**
@@ -240,6 +248,8 @@ class PropertyDeckRepository(private val hub: HubClient, private val outbox: Out
     val state: StateFlow<PropertyDeckUiState> = _state
 
     private val judged = mutableSetOf<String>()
+    /** Session-only: a skipped card comes back next time the deck is opened. */
+    private val skipped = mutableSetOf<String>()
 
     companion object {
         const val TYPE_REVIEW = "propertyReview"
@@ -253,11 +263,13 @@ class PropertyDeckRepository(private val hub: HubClient, private val outbox: Out
     suspend fun load(kind: String = _state.value.kind) {
         _state.value = _state.value.copy(kind = kind, loading = true, error = null)
         try {
-            val deck = parsePropertyDeck(hub.get("/property/deck?kind=${enc(kind)}&limit=$PAGE")) ?: error("bad deck payload")
-            val fresh = deck.cards.filter { it.key !in judged }
+            val limit = minOf(PAGE + skipped.size, MAX_LIMIT)
+            val deck = parsePropertyDeck(hub.get("/property/deck?kind=${enc(kind)}&limit=$limit")) ?: error("bad deck payload")
+            val fresh = deck.cards.filter { it.key !in judged && it.key !in skipped }
+            val judgedOnPage = deck.cards.count { it.key in judged }
             _state.value = _state.value.copy(
                 cards = fresh,
-                total = (deck.total - (deck.cards.size - fresh.size)).coerceAtLeast(fresh.size),
+                total = (deck.total - judgedOnPage).coerceAtLeast(fresh.size),
                 counts = deck.counts,
                 loading = false,
             )
@@ -273,37 +285,50 @@ class PropertyDeckRepository(private val hub: HubClient, private val outbox: Out
         _state.value = s.copy(loading = true)
         try {
             // The hub still serves what we hold and what we've judged but not yet flushed — ask past both.
-            val limit = minOf(PAGE + s.cards.size + judged.size, MAX_LIMIT)
+            val limit = minOf(PAGE + s.cards.size + judged.size + skipped.size, MAX_LIMIT)
             val deck = parsePropertyDeck(hub.get("/property/deck?kind=${enc(s.kind)}&limit=$limit")) ?: error("bad deck payload")
             val have = _state.value.cards.map { it.key }.toSet()
-            val more = deck.cards.filter { it.key !in judged && it.key !in have }
+            val more = deck.cards.filter { it.key !in judged && it.key !in skipped && it.key !in have }
             _state.value = _state.value.copy(cards = _state.value.cards + more, counts = deck.counts, loading = false)
         } catch (e: Exception) {
             _state.value = _state.value.copy(loading = false)
         }
     }
 
-    /** Optimistic: the card leaves the stack now; the hub hears about it via the outbox. */
+    /** Optimistic: the card leaves the stack now; the hub hears about it via the outbox. A skip tells the hub nothing. */
     suspend fun judge(card: PropertyCard, verdict: Verdict) {
-        judged += card.key
         val s = _state.value
-        _state.value = s.copy(
-            cards = s.cards.filter { it.key != card.key },
-            total = (s.total - 1).coerceAtLeast(0),
-            counts = s.counts + (card.kind to ((s.counts[card.kind] ?: 1) - 1).coerceAtLeast(0)),
-            history = (s.history + (card to verdict)).takeLast(50),
-        )
-        enqueue(card, verdict.wire)
+        val rest = s.cards.filter { it.key != card.key }
+        val history = (s.history + (card to verdict)).takeLast(50)
+        if (verdict == Verdict.Skipped) {
+            skipped += card.key
+            _state.value = s.copy(cards = rest, history = history, skippedCount = skipped.size)
+        } else {
+            judged += card.key
+            _state.value = s.copy(
+                cards = rest,
+                total = (s.total - 1).coerceAtLeast(0),
+                counts = s.counts + (card.kind to ((s.counts[card.kind] ?: 1) - 1).coerceAtLeast(0)),
+                history = history,
+            )
+            enqueue(card, verdict.wire!!)
+        }
         if (_state.value.cards.size < REFILL_AT) refill()
     }
 
-    /** Put the last judged card back on top and clear its verdict on the hub. */
+    /** Put the last card back on top; a real verdict is cleared on the hub, a skip just un-skips. */
     suspend fun undo() {
         val s = _state.value
-        val (card, _) = s.history.lastOrNull() ?: return
+        val (card, verdict) = s.history.lastOrNull() ?: return
+        val cards = listOf(card) + s.cards.filter { it.key != card.key }
+        if (verdict == Verdict.Skipped) {
+            skipped -= card.key
+            _state.value = s.copy(cards = cards, history = s.history.dropLast(1), skippedCount = skipped.size)
+            return
+        }
         judged -= card.key
         _state.value = s.copy(
-            cards = listOf(card) + s.cards.filter { it.key != card.key },
+            cards = cards,
             total = s.total + 1,
             counts = s.counts + (card.kind to (s.counts[card.kind] ?: 0) + 1),
             history = s.history.dropLast(1),
@@ -312,6 +337,13 @@ class PropertyDeckRepository(private val hub: HubClient, private val outbox: Out
         // already landed is reverted by an explicit `none`.
         outbox.cancel(card.key, TYPE_REVIEW)
         enqueue(card, "none")
+    }
+
+    /** Bring this session's skipped cards back into the stack. */
+    suspend fun reviewSkipped() {
+        skipped.clear()
+        _state.value = _state.value.copy(skippedCount = 0, history = _state.value.history.filter { it.second != Verdict.Skipped })
+        load()
     }
 
     private suspend fun enqueue(card: PropertyCard, state: String) {

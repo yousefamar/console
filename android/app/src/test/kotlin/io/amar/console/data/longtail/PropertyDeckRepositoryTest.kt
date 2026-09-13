@@ -137,6 +137,34 @@ class PropertyDeckRepositoryTest {
     }
 
     @Test
+    fun `skip sets a card aside without telling the hub, undo un-skips, show-skipped brings it back`() = runTest {
+        repo.load()
+        val top = repo.state.value.cards.first()
+        repo.judge(top, Verdict.Skipped)
+        var s = repo.state.value
+        assertEquals(listOf("l2", "l3"), s.cards.map { it.listingId })
+        assertEquals(3, s.total) // still to review
+        assertEquals(1, s.skippedCount)
+        assertEquals(0, db.outbox().pending().size)
+        // A reload does not resurrect it this session.
+        repo.load()
+        assertEquals(listOf("l2", "l3"), repo.state.value.cards.map { it.listingId })
+        // Undo puts it back, still nothing queued.
+        repo.undo()
+        s = repo.state.value
+        assertEquals(listOf("l1", "l2", "l3"), s.cards.map { it.listingId })
+        assertEquals(0, s.skippedCount)
+        assertEquals(0, db.outbox().pending().size)
+        // Skip everything → show skipped brings the whole stack back.
+        repeat(3) { repo.judge(repo.state.value.cards.first(), Verdict.Skipped) }
+        assertTrue(repo.state.value.cards.isEmpty())
+        assertEquals(3, repo.state.value.skippedCount)
+        repo.reviewSkipped()
+        assertEquals(listOf("l1", "l2", "l3"), repo.state.value.cards.map { it.listingId })
+        assertEquals(0, repo.state.value.history.size)
+    }
+
+    @Test
     fun `the stack refills from the hub when it runs low`() = runTest {
         deckSize = 60
         repo.load()

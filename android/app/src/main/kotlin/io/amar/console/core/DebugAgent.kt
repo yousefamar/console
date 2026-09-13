@@ -79,9 +79,13 @@ object DebugAgent {
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
-    fun start(appScope: CoroutineScope, database: ConsoleDb) {
+    /** Application context for the crash store + ActivityManager; set by start(). */
+    @Volatile private var appContext: android.content.Context? = null
+
+    fun start(appScope: CoroutineScope, database: ConsoleDb, context: android.content.Context? = null) {
         if (wantConnected) return
         scope = appScope
+        appContext = context?.applicationContext
         db = database
         wantConnected = true
         open()
@@ -91,13 +95,88 @@ object DebugAgent {
                 flushEvents()
             }
         }
-        // Crashes are the #1 thing to see remotely.
+        // Crashes are the #1 thing to see remotely — and the in-memory log +
+        // async WS send never survive one (the process is dying). Persist the
+        // exception SYNCHRONOUSLY first; the next connect replays it.
         val prior = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
-            log("error", message = "${e.javaClass.simpleName}: ${e.message}", stack = e.stackTraceToString().take(4000))
+            val message = "${e.javaClass.simpleName}: ${e.message}"
+            val stack = e.stackTraceToString().take(4000)
+            runCatching {
+                crashPrefs()?.edit()
+                    ?.putLong("ts", System.currentTimeMillis())
+                    ?.putString("thread", t.name)
+                    ?.putString("message", message)
+                    ?.putString("stack", stack)
+                    ?.putString("route", AppLifecycle.currentRoute)
+                    ?.commit()
+            }
+            log("error", message = message, stack = stack)
             flushEvents()
             prior?.uncaughtException(t, e)
         }
+    }
+
+    private fun crashPrefs(): android.content.SharedPreferences? =
+        appContext?.getSharedPreferences("console.debug.crash", android.content.Context.MODE_PRIVATE)
+
+    /** Re-emit a crash persisted by the uncaught handler in a previous process, then clear it. */
+    private fun replayStoredCrash() {
+        val p = crashPrefs() ?: return
+        val message = p.getString("message", null) ?: return
+        log(
+            "error",
+            message = "[previous run, ${p.getString("route", "?")}, thread ${p.getString("thread", "?")}, at ${p.getLong("ts", 0)}] $message",
+            stack = p.getString("stack", null),
+        )
+        p.edit().clear().apply()
+    }
+
+    /**
+     * Android's own record of why this app's processes died (API 30+): Java
+     * crashes with the exception in `description`, NATIVE crashes (signal),
+     * ANRs, low-memory kills — the class of crash no Java handler ever sees.
+     */
+    private fun exitReasons(): String {
+        if (android.os.Build.VERSION.SDK_INT < 30) return "requires Android 11+"
+        val ctx = appContext ?: return "no context"
+        val am = ctx.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val out = JSONArray()
+        for (info in am.getHistoricalProcessExitReasons(null, 0, 12)) {
+            val reason = when (info.reason) {
+                android.app.ApplicationExitInfo.REASON_CRASH -> "CRASH"
+                android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+                android.app.ApplicationExitInfo.REASON_ANR -> "ANR"
+                android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+                android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+                android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+                android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+                android.app.ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+                android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+                android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+                android.app.ApplicationExitInfo.REASON_OTHER -> "OTHER"
+                android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+                android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+                else -> "reason ${info.reason}"
+            }
+            // ANR/native traces come as a stream; keep the head.
+            val trace = if (info.reason == android.app.ApplicationExitInfo.REASON_ANR || info.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                runCatching { info.traceInputStream?.bufferedReader()?.use { it.readText().take(6000) } }.getOrNull()
+            } else null
+            out.put(
+                JSONObject()
+                    .put("ts", info.timestamp)
+                    .put("reason", reason)
+                    .put("status", info.status)
+                    .put("importance", info.importance)
+                    .put("process", info.processName)
+                    .put("pss_kb", info.pss)
+                    .put("rss_kb", info.rss)
+                    .put("description", info.description ?: JSONObject.NULL)
+                    .put("trace", trace ?: JSONObject.NULL),
+            )
+        }
+        return out.toString(2)
     }
 
     fun onActivity(activity: Activity?) {
@@ -130,6 +209,7 @@ object DebugAgent {
         ws = okHttp.newWebSocket(builder.build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 log("console", "info", "debug agent connected v${BuildConfig.VERSION_NAME}")
+                replayStoredCrash()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -219,7 +299,8 @@ object DebugAgent {
             "state" -> stateSummary().toString(2)
             "reconcile" -> { reconcileTrigger?.invoke(); "reconcile triggered" }
             "drain" -> { drainTrigger?.invoke(); "outbox drain scheduled" }
-            "help" -> "route | nav <route> | back | sql <select…> | state | reconcile | drain"
+            "exits" -> exitReasons()
+            "help" -> "route | nav <route> | back | sql <select…> | state | reconcile | drain | exits"
             else -> throw IllegalArgumentException("unknown command '$cmd' — try help")
         }
     }

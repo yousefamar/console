@@ -127,9 +127,15 @@ fun PropertyDeckScreen(repo: PropertyDeckRepository, onBack: () -> Unit) {
                     Text(state.error!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.accents.red)
                     TextButton(onClick = { scope.launch { repo.load() } }) { Text("retry") }
                 }
+                top == null && state.skippedCount > 0 -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Nothing new", style = MaterialTheme.typography.titleMedium)
+                    Text("${state.skippedCount} skipped", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { scope.launch { repo.reviewSkipped() } }) { Text("show skipped") }
+                }
                 top == null -> EmptyState(Icons.Filled.House, "All reviewed", "New listings land here as the portals list them.")
                 else -> BoxWithConstraints(Modifier.fillMaxSize()) {
                     val widthPx = constraints.maxWidth.toFloat()
+                    val heightPx = constraints.maxHeight.toFloat()
                     // Two cards peek out behind the top one.
                     for (i in minOf(2, state.cards.size - 1) downTo 1) {
                         val c = state.cards[i]
@@ -144,6 +150,7 @@ fun PropertyDeckScreen(repo: PropertyDeckRepository, onBack: () -> Unit) {
                     SwipeableCard(
                         card = top,
                         widthPx = widthPx,
+                        heightPx = heightPx,
                         programmatic = programmatic,
                         onVerdict = { v ->
                             programmatic = null
@@ -167,6 +174,14 @@ fun PropertyDeckScreen(repo: PropertyDeckRepository, onBack: () -> Unit) {
             }
             Spacer(Modifier.size(28.dp))
             VerdictButton(Icons.Filled.Favorite, "Interested", MaterialTheme.accents.green, enabled = top != null && programmatic == null) { programmatic = Verdict.Interested }
+        }
+        // Neither verdict — set it aside for a later session (swipe up does the same).
+        TextButton(
+            onClick = { programmatic = Verdict.Skipped },
+            enabled = top != null && programmatic == null,
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 6.dp),
+        ) {
+            Text("skip", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 
@@ -195,11 +210,12 @@ private fun VerdictButton(icon: androidx.compose.ui.graphics.vector.ImageVector,
     }
 }
 
-/** The draggable top card: follows the finger with a tilt, stamps LIKE/NOPE as it nears the commit line, flies off or springs back. */
+/** The draggable top card: follows the finger with a tilt, stamps LIKE/NOPE (or LATER going up) as it nears the commit line, flies off or springs back. */
 @Composable
 private fun SwipeableCard(
     card: PropertyCard,
     widthPx: Float,
+    heightPx: Float,
     programmatic: Verdict?,
     onVerdict: (Verdict) -> Unit,
     onOpen: () -> Unit,
@@ -208,10 +224,14 @@ private fun SwipeableCard(
     val offsetY = remember(card.key) { Animatable(0f) }
     val scope = rememberCoroutineScope()
     val commitPx = widthPx * io.amar.console.data.longtail.SWIPE_COMMIT_FRACTION
+    val skipPx = heightPx * io.amar.console.data.longtail.SKIP_COMMIT_FRACTION
 
     suspend fun flyOff(v: Verdict) {
-        val dir = if (v == Verdict.Interested) 1f else -1f
-        offsetX.animateTo(dir * widthPx * 1.4f, tween(220))
+        when (v) {
+            Verdict.Interested -> offsetX.animateTo(widthPx * 1.4f, tween(220))
+            Verdict.Dismissed -> offsetX.animateTo(-widthPx * 1.4f, tween(220))
+            Verdict.Skipped -> offsetY.animateTo(-heightPx * 1.3f, tween(220))
+        }
         onVerdict(v)
     }
 
@@ -220,6 +240,7 @@ private fun SwipeableCard(
     }
 
     val progress = (offsetX.value / commitPx).coerceIn(-1f, 1f)
+    val skipProgress = (-offsetY.value / skipPx).coerceIn(0f, 1f)
     Box(
         Modifier.fillMaxSize()
             .offset { IntOffset(offsetX.value.roundToInt(), offsetY.value.roundToInt()) }
@@ -233,18 +254,26 @@ private fun SwipeableCard(
                         tracker.addPosition(change.uptimeMillis, change.position)
                         scope.launch {
                             offsetX.snapTo(offsetX.value + drag.x)
-                            offsetY.snapTo(offsetY.value + drag.y * 0.4f)
+                            offsetY.snapTo(offsetY.value + drag.y)
                         }
                     },
                     onDragEnd = {
-                        val v = swipeVerdict(offsetX.value, tracker.calculateVelocity().x, widthPx)
+                        val vel = tracker.calculateVelocity()
+                        val v = swipeVerdict(offsetX.value, vel.x, widthPx, offsetY.value, vel.y, heightPx)
                         scope.launch {
-                            if (v == null) {
-                                launch { offsetX.animateTo(0f, spring(stiffness = 600f)) }
-                                launch { offsetY.animateTo(0f, spring(stiffness = 600f)) }
-                            } else {
-                                launch { offsetY.animateTo(0f, tween(220)) }
-                                flyOff(v)
+                            when (v) {
+                                null -> {
+                                    launch { offsetX.animateTo(0f, spring(stiffness = 600f)) }
+                                    launch { offsetY.animateTo(0f, spring(stiffness = 600f)) }
+                                }
+                                Verdict.Skipped -> {
+                                    launch { offsetX.animateTo(0f, tween(220)) }
+                                    flyOff(v)
+                                }
+                                else -> {
+                                    launch { offsetY.animateTo(0f, tween(220)) }
+                                    flyOff(v)
+                                }
                             }
                         }
                     },
@@ -260,6 +289,10 @@ private fun SwipeableCard(
         PropertyCardFace(card, onOpen = onOpen)
         if (progress > 0.05f) Stamp("LIKE", MaterialTheme.accents.green, progress, Modifier.align(Alignment.TopStart).padding(22.dp).graphicsLayer { rotationZ = -14f })
         if (progress < -0.05f) Stamp("NOPE", MaterialTheme.accents.red, -progress, Modifier.align(Alignment.TopEnd).padding(22.dp).graphicsLayer { rotationZ = 14f })
+        // Quieter than the verdict stamps: a skip is a shrug, not a decision.
+        if (skipProgress > 0.05f && progress > -0.3f && progress < 0.3f) {
+            Stamp("LATER", MaterialTheme.colorScheme.onSurfaceVariant, skipProgress * 0.8f, Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp))
+        }
     }
 }
 
