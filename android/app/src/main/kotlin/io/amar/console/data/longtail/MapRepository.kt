@@ -664,12 +664,13 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         _state.value = _state.value.copy(layerData = newData, unreviewedListings = unreviewedBySlug.values.sum())
     }
 
-    /** Per-layer unreviewed-pin counts, recomputed only when a layer's geojson is (re)loaded — the strings are multi-MB. */
-    private val unreviewedBySlug = mutableMapOf<String, Int>()
+    /** Per-layer unreviewed-pin counts, recomputed only when a layer's geojson is (re)loaded — the strings are
+     *  multi-MB. Concurrent: the sync-bus delta handler and the screen's loadLayers both write here. */
+    private val unreviewedBySlug = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     private suspend fun countUnreviewed(slug: String, geojson: String) {
         if (!slug.startsWith("property/")) return
-        // Off the main thread: loadLayers runs in the screen's scope.
+        // A regex pass over ~6 MB — still off the main thread (loadLayers runs in the screen's scope).
         unreviewedBySlug[slug] = withContext(Dispatchers.Default) { countUnreviewedListings(geojson) }
     }
 

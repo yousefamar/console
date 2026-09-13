@@ -113,6 +113,8 @@ class PropertyDeckLogicTest {
             {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"listingId":"c","searchId":"s"}}
         ]}"""
         assertEquals(2, countUnreviewedListings(gj))
+        // The hub writes compact JSON; whitespace variants count the same.
+        assertEquals(2, countUnreviewedListings(gj.replace("\"listingId\":", "\"listingId\" : ").replace("\"review\":\"interested\"", "\"review\" : \"interested\"")))
         assertEquals(0, countUnreviewedListings("nope"))
         assertEquals(0, countUnreviewedListings("""{"type":"FeatureCollection","features":[]}"""))
     }

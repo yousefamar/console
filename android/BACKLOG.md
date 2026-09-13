@@ -174,6 +174,21 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Shipped
 
+### v97 (2026-09-13)
+
+- **Fix: Map pane crashed on every open in v96** (Yousef: "Map just keeps
+  crashing"). Root cause: the new unreviewed-listings badge parsed each
+  `property/*` layer's geojson into a kotlinx `JsonElement` tree on Map open
+  (`hydrate()` → `countUnreviewedListings`) — the house layer is ~6 MB, its tree
+  well over 100 MB, beside MapLibre's own gson parse of the same string on a
+  heap without `largeHeap` → OOM. `countUnreviewedListings` is now two regex
+  passes over the raw string (`"listingId":` minus `"review":"interested"`, the
+  `emojiInGeojson` approach; identical count to a real parse on the live file,
+  3720/3720) with no tree, and the per-slug memo is a `ConcurrentHashMap` (the
+  sync-bus delta handler and the screen's `loadLayers` write it concurrently).
+  The crash never reached the hub debug log — the uncaught-exception hook
+  flushes after the OOM, when the process is already dying.
+
 ### v96 (2026-09-12)
 
 - **Property review deck — swipe right/left over the house-hunt pins** (^bold-kiwi,

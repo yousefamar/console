@@ -199,14 +199,18 @@ fun swipeVerdict(offsetX: Float, velocityX: Float, widthPx: Float): Verdict? {
 // ---------------------------------------------------------------------- //
 // Unreviewed count off the map layers (Map toolbar badge; SPA countUnreviewedListings parity)
 
-// Pins on a property layer that carry a listingId and no verdict.
+private val LISTING_ID_RE = Regex("\"listingId\"\\s*:")
+private val INTERESTED_RE = Regex("\"review\"\\s*:\\s*\"interested\"")
+
+// Pins on a property layer that carry a listingId and no verdict. Counted by
+// regex over the raw string, like emojiInGeojson — the house layer is ~6 MB and
+// a kotlinx JsonElement tree of it OOMs the phone beside MapLibre's own parse
+// (v96 crashed on every Map open). Both keys occur once per feature, only in
+// property pins' properties.
 fun countUnreviewedListings(geojson: String): Int {
-    val fc = runCatching { json.parseToJsonElement(geojson) as? JsonObject }.getOrNull() ?: return 0
-    val features = (fc["features"] as? JsonArray) ?: return 0
-    return features.count { f ->
-        val p = (f as? JsonObject)?.get("properties") as? JsonObject ?: return@count false
-        p["listingId"] != null && (p["review"] as? JsonPrimitive)?.contentOrNull != "interested"
-    }
+    val listings = LISTING_ID_RE.findAll(geojson).count()
+    if (listings == 0) return 0
+    return (listings - INTERESTED_RE.findAll(geojson).count()).coerceAtLeast(0)
 }
 
 // ---------------------------------------------------------------------- //
