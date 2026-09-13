@@ -395,6 +395,10 @@ export class PropertySync {
     try {
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
+        // A slow source skims less often than every tick (Kleinanzeigen: daily).
+        const skimEvery = this.pacingOf(s).skimIntervalMs
+        // …and a blocked skim waits the same interval rather than re-poking a blocked range every hour.
+        if (skimEvery && s.lastCheckedAt && Date.now() - s.lastCheckedAt < skimEvery) continue
         try {
           await this.pollSearch(s)
         } catch (e) {
@@ -421,7 +425,9 @@ export class PropertySync {
       this.deferRedraw = true
       for (const s of this.searches.list()) {
         if (s.enabled === false) continue
-        await this.enrich(s.id, this.pacingOf(s).enrichPerTick ?? ENRICH_PER_TICK)
+        const perTick = this.pacingOf(s).enrichPerTick ?? ENRICH_PER_TICK
+        if (perTick <= 0) continue
+        await this.enrich(s.id, perTick)
       }
     } finally {
       this.running = false

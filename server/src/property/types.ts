@@ -235,9 +235,10 @@ export interface PortalClient {
   detail?(listing: Listing): Promise<Partial<Listing> | null>
   /**
    * Optional cadence hints for sources that must be crawled slowly
-   * (Kleinanzeigen: one request per 25 s). PropertySync uses them in place
-   * of its defaults: how often to run the exhaustive pull, and how many
-   * detail pages to fetch per hourly tick.
+   * (Kleinanzeigen: one request per 3 min, one skim a day). PropertySync uses
+   * them in place of its defaults: how often to skim (`skimIntervalMs`, default
+   * every tick), how often to run the exhaustive pull (`Infinity` = never), and
+   * how many detail pages to fetch per hourly tick (0 = none).
    */
-  readonly pacing?: { fullSyncIntervalMs?: number; enrichPerTick?: number }
+  readonly pacing?: { skimIntervalMs?: number; fullSyncIntervalMs?: number; enrichPerTick?: number }
 }

@@ -1303,6 +1303,50 @@ describe('listingKind', () => {
   })
 })
 
+describe('PropertySync tick pacing', () => {
+  const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
+  it('a client with skimIntervalMs skims once per interval (even after a block), never full-syncs at Infinity, and enriches nothing at 0', async () => {
+    const store = tmpStore()
+    const inventory = tmpInventory()
+    const layers = new Map<string, unknown>()
+    const mapLayers = {
+      upsert: (slug: string, geojson: unknown) => { layers.set(slug, geojson); return {} },
+      getMeta: (slug: string) => (layers.has(slug) ? {} : undefined),
+      getGeojson: (slug: string) => (slug === 'zone' ? box : null),
+      list: () => [...layers.keys()].map((slug) => ({ slug, group: 'property', name: slug.split('/')[1] })),
+      remove: (slug: string) => layers.delete(slug),
+    }
+    const calls = { newest: 0, detail: 0 }
+    const slow = {
+      portal: 'kleinanzeigen' as const, currency: 'EUR', count: async () => 0,
+      pacing: { skimIntervalMs: 24 * 60 * 60 * 1000, fullSyncIntervalMs: Number.POSITIVE_INFINITY, enrichPerTick: 0 },
+      newest: async () => { calls.newest++; return { portal: 'kleinanzeigen' as const, total: 1, truncated: false, unsupported: [], listings: [listing('k1', { portal: 'kleinanzeigen', lat: 50, lon: 9, price: 200000, bedrooms: 3 })] } },
+      detail: async () => { calls.detail++; return { detailAt: Date.now() } },
+    }
+    const fast = {
+      portal: 'immoscout24' as const, currency: 'EUR', count: async () => 0,
+      newest: async () => ({ portal: 'immoscout24' as const, total: 0, truncated: false, unsupported: [], listings: [] }),
+    }
+    const sync = new PropertySync({ kleinanzeigen: slow, immoscout24: fast } as never, store, inventory, { broadcast: () => {} } as never, { broadcast: () => {} } as never, mapLayers as never, { isConfigured: () => false } as never, () => {})
+    store.create({ country: 'DE', layer: 'zone', portal: 'kleinanzeigen' } as never)
+    const tick = () => (sync as unknown as { tick: () => Promise<void> }).tick()
+    await tick()
+    expect(calls.newest).toBe(1)
+    expect(calls.detail).toBe(0)
+    await tick()
+    await tick()
+    // Same day: no second skim, no full pull (the skim merged its row, but nothing marked the inventory synced), no detail pages.
+    expect(calls.newest).toBe(1)
+    expect(calls.detail).toBe(0)
+    expect(inventory.live(store.list()[0]!.id).map((l) => l.id)).toEqual(['k1'])
+    expect(store.list()[0]!.inventory?.syncedAt ?? 0).toBe(0)
+    // A blocked skim waits the interval too instead of re-poking hourly.
+    store.recordPoll(store.list()[0]!.id, { listings: [], error: 'kleinanzeigen: BLOCKED' })
+    await tick()
+    expect(calls.newest).toBe(1)
+  })
+})
+
 describe('PropertySync.enrich', () => {
   const box = { type: 'Polygon', coordinates: [[[-10, 40], [20, 40], [20, 60], [-10, 60], [-10, 40]]] }
   it('applies detail fields, marks gone rows removed, stops on a thrown error, and re-splits the layers', async () => {

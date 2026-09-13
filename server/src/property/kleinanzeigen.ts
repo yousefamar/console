@@ -13,11 +13,13 @@
 //
 //   PACING CONTRACT. Every request of any kind (search page, location lookup,
 //   ad page) goes through one serialised gate: at least `minIntervalMs`
-//   (default 45 s) between any two requests, IPv4 only (Node https with
+//   (default 3 min) between any two requests, IPv4 only (Node https with
 //   `family: 4` — never the global fetch, which happily picks the AAAA record),
 //   browser-like headers, no parallelism, no retries. At most
-//   `maxRequestsPerRun` (default 40) requests in any rolling `runWindowMs`
-//   (default 1 h) — when that is spent `newest()` returns what it has with
+//   `maxRequestsPerRun` (default 12) requests in any rolling `runWindowMs`
+//   (default 1 h). Both were 25 s / 120 (blocked), then 45 s / 40 (blocked on
+//   search + ad pages, 2026-09-13); what has never blocked is a handful of
+//   requests minutes apart. — when that is spent `newest()` returns what it has with
 //   `truncated: true` and `count()`/`detail()` throw `kleinanzeigen: BUDGET`.
 //   Location-id lookups (`/s-ort-empfehlungen.json`) are OFF by default
 //   (`maxLookupsPerCall` 0). Every one of the seven 403s between go-live and
@@ -81,8 +83,8 @@ export const RADII_KM = [5, 10, 20, 30, 50, 100, 150, 200] as const
 export const MAX_RADIUS_KM = 200
 /** Zimmer counts living rooms too: a 2-bed house is a 3-Zimmer-Haus. */
 const ROOM_OFFSET = 1
-const DEFAULT_MIN_INTERVAL_MS = 45_000
-const DEFAULT_MAX_REQUESTS_PER_RUN = 40
+const DEFAULT_MIN_INTERVAL_MS = 180_000
+const DEFAULT_MAX_REQUESTS_PER_RUN = 12
 const DEFAULT_MAX_LOOKUPS_PER_CALL = 0
 const DEFAULT_RUN_WINDOW_MS = 60 * 60 * 1000
 const DEFAULT_BLOCK_BACKOFF_MS = 30 * 60 * 1000
@@ -368,9 +370,13 @@ export interface KleinanzeigenClientOptions {
 export class KleinanzeigenClient implements PortalClient {
   readonly portal = 'kleinanzeigen' as const
   readonly currency = 'EUR'
-  // A full pull is hours at 25 s/request; once a day is plenty. 40 detail
-  // pages per tick ≈ 17 min — leaves the hourly budget for the skim.
-  readonly pacing = { fullSyncIntervalMs: 24 * 60 * 60 * 1000, enrichPerTick: 40 }
+  // Low-cadence mode (Yousef, 2026-09-13, after the range block returned on
+  // search and ad pages at 45 s / 40 per hour): ONE skim a day — the newest
+  // rows per town circle, ~50 requests spread over ~4 h at 3 min each — no
+  // exhaustive pull and no detail pages. Coordinates come from the PLZ table,
+  // the plot floor is applied server-side, so the pins stay usable without
+  // enrichment. If this cadence blocks too, the source is dropped.
+  readonly pacing = { skimIntervalMs: 24 * 60 * 60 * 1000, fullSyncIntervalMs: Number.POSITIVE_INFINITY, enrichPerTick: 0 }
 
   private readonly minIntervalMs: number
   private readonly maxRequestsPerRun: number
