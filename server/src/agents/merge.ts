@@ -50,6 +50,8 @@ export function buildMergeEnvelope(childName: string, summary: string, kind: 'fo
     summary.trim() || `(the ${noun} produced no summary)`,
     '',
     `The ${noun} is now gone${kind === 'agent' ? ' and you have absorbed its role' : ''}. Absorb anything useful above`,
-    'into your work, and if any of it is durable, fold it into your `## Memory`.',
+    'into your work. Verify its claims before acting on them (commits on main, docs in place), action any open',
+    'to-fix it left you now, and make durable lessons durable: repo rules/gotchas → the project CLAUDE.md or its',
+    'skill; working preferences → your auto-memory. Nothing it reported lives anywhere else once this message scrolls.',
   ].join('\n')
 }
