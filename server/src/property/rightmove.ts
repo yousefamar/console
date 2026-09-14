@@ -16,6 +16,15 @@ import { plotAreaFromText, normaliseTenure } from './land.js'
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
 const MAP_ENDPOINT = 'https://www.rightmove.co.uk/api/property-search/map/search'
 const MAX_VERTICES = 90 // the server simplifies to ~85 anyway
+// Rightmove rejects some jagged rings at 60–90 vertices ({"notFound":true} from
+// the map endpoint, the "couldn't find the place" page from the list view) that
+// it accepts at ≤47 — ring 4 of the north zone, 2026-09-14, geometrically clean
+// (no self-intersection, no spike, no bad polyline chars) yet a hard 400 at 60
+// and 79 points, fine at 47 and 29. The polygon is only the portal-side
+// approximation (the hub re-clips every row to the real geometry), so a
+// coarser RDP pass on rejection loses nothing but a few edge listings.
+const VERTEX_BUDGETS = [MAX_VERTICES, 45, 22]
+const REJECTED_RE = /rightmove: HTTP 400|no searchResults in list page/
 const LIST_PAGE = 24 // fixed server-side; numberOfPropertiesPerPage is ignored on the HTML view
 const INDEX_MAX = 1000 // index > 1000 is a 400
 const SORT_NEWEST = '6'
@@ -32,16 +41,30 @@ export class RightmoveClient implements PortalClient {
   async count(rings: Ring[], criteria: Criteria): Promise<number> {
     let total = 0
     for (const ring of rings) {
-      const q = new URLSearchParams({
-        locationIdentifier: locationIdentifier(ring),
-        numberOfPropertiesPerPage: '1',
-        index: '0',
-        ...compile(criteria),
+      total += await this.withRingFallback(ring, async (location) => {
+        const q = new URLSearchParams({
+          locationIdentifier: location,
+          numberOfPropertiesPerPage: '1',
+          index: '0',
+          ...compile(criteria),
+        })
+        const data = await this.getJson(`${MAP_ENDPOINT}?${q}`)
+        return parseCount((data as { resultCount?: unknown }).resultCount)
       })
-      const data = await this.getJson(`${MAP_ENDPOINT}?${q}`)
-      total += parseCount((data as { resultCount?: unknown }).resultCount)
     }
     return total
+  }
+
+  /** Run `fn` with the ring at each vertex budget in turn until Rightmove accepts the polygon. */
+  private async withRingFallback<T>(ring: Ring, fn: (location: string) => Promise<T>): Promise<T> {
+    for (let i = 0; i < VERTEX_BUDGETS.length; i++) {
+      try {
+        return await fn(locationIdentifier(ring, VERTEX_BUDGETS[i]!))
+      } catch (e) {
+        if (i === VERTEX_BUDGETS.length - 1 || !REJECTED_RE.test((e as Error).message)) throw e
+      }
+    }
+    throw new Error('unreachable')
   }
 
   async newest(rings: Ring[], criteria: Criteria, limit: number): Promise<SearchResult> {
@@ -49,25 +72,29 @@ export class RightmoveClient implements PortalClient {
     let total = 0
     let truncated = false
 
+    const path = criteria.channel === 'rent' ? 'property-to-rent' : 'property-for-sale'
+    const page = async (location: string, index: number): Promise<{ resultCount?: unknown; properties?: unknown[] }> => {
+      const q = new URLSearchParams({ locationIdentifier: location, sortType: SORT_NEWEST, index: String(index), ...compile(criteria) })
+      const html = await this.getText(`https://www.rightmove.co.uk/${path}/find.html?${q}`)
+      const model = pageModel(html, '__NEXT_DATA__') as
+        | { props?: { pageProps?: { searchResults?: { resultCount?: unknown; properties?: unknown[] } } } }
+        | null
+      const sr = model?.props?.pageProps?.searchResults
+      if (!sr) throw new Error('rightmove: no searchResults in list page')
+      return sr
+    }
+
     for (const ring of rings) {
+      // The first page settles which polygon Rightmove accepts; later pages reuse it.
+      let location = ''
       for (let index = 0; index < limit; index += LIST_PAGE) {
         if (index > INDEX_MAX) {
           truncated = true
           break
         }
-        const q = new URLSearchParams({
-          locationIdentifier: locationIdentifier(ring),
-          sortType: SORT_NEWEST,
-          index: String(index),
-          ...compile(criteria),
-        })
-        const path = criteria.channel === 'rent' ? 'property-to-rent' : 'property-for-sale'
-        const html = await this.getText(`https://www.rightmove.co.uk/${path}/find.html?${q}`)
-        const model = pageModel(html, '__NEXT_DATA__') as
-          | { props?: { pageProps?: { searchResults?: { resultCount?: unknown; properties?: unknown[] } } } }
-          | null
-        const sr = model?.props?.pageProps?.searchResults
-        if (!sr) throw new Error('rightmove: no searchResults in list page')
+        const sr = index === 0
+          ? await this.withRingFallback(ring, async (loc) => { const r = await page(loc, 0); location = loc; return r })
+          : await page(location, index)
         if (index === 0) total += parseCount(sr.resultCount)
         const rows = (sr.properties ?? []) as RawListRow[]
         for (const p of rows) {
@@ -185,8 +212,8 @@ export class RightmoveClient implements PortalClient {
   }
 }
 
-function locationIdentifier(ring: Ring): string {
-  const pts = simplifyToLatLng(ring, MAX_VERTICES, true)
+function locationIdentifier(ring: Ring, maxVertices = MAX_VERTICES): string {
+  const pts = simplifyToLatLng(ring, maxVertices, true)
   return 'USERDEFINEDAREA^' + JSON.stringify({ polylines: encodePolyline(pts) })
 }
 

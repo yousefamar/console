@@ -309,6 +309,62 @@ describe('boxAround', () => {
   })
 })
 
+describe('RightmoveClient ring fallback', () => {
+  const res = (status: number, body = ''): Response => new Response(body, { status })
+  const fetchOf = (fn: (url: string) => Response | Promise<Response>) => ((url: string | URL | Request) => Promise.resolve(fn(String(url)))) as unknown as typeof fetch
+  // A jagged 120-vertex ring: RDP keeps >47 points at the first budget, ≤47 at the second.
+  const jagged: Array<[number, number]> = []
+  for (let i = 0; i < 120; i++) {
+    const t = (i / 120) * 2 * Math.PI
+    const rr = 0.05 + (i % 2 ? 0.012 : 0) + (i % 3 ? 0.004 : 0)
+    jagged.push([-1.2 + rr * Math.cos(t), 52.05 + rr * Math.sin(t)])
+  }
+  jagged.push(jagged[0]!)
+  const vertices = (url: string): number => {
+    const loc = decodeURIComponent(new URL(url).searchParams.get('locationIdentifier') ?? '')
+    const pl = JSON.parse(loc.slice(loc.indexOf('^') + 1)).polylines as string
+    // count polyline points: one per pair of terminated 5-bit groups (chars < 95 terminate a value)
+    return pl.split('').filter((ch) => ch.charCodeAt(0) < 95).length / 2
+  }
+  const crit = { channel: 'buy', propertyType: 'house', maxPrice: 200000 } as const
+
+  it('count(): a ring Rightmove 400s at the full vertex budget is retried coarser, and the coarse polygon counts', async () => {
+    const budgets: number[] = []
+    const client = new RightmoveClient(fetchOf((url) => {
+      const n = vertices(url)
+      budgets.push(n)
+      return n > 47 ? res(400, '{"notFound":true}') : res(200, JSON.stringify({ resultCount: '3' }))
+    }))
+    expect(await client.count([jagged], crit)).toBe(3)
+    expect(budgets.length).toBe(2)
+    expect(budgets[0]).toBeGreaterThan(47)
+    expect(budgets[1]).toBeLessThanOrEqual(47)
+  })
+
+  it('newest(): the list page\'s "couldn\'t find the place" answer triggers the same fallback, and later pages reuse the accepted polygon', async () => {
+    const seen: number[] = []
+    const row = (id: number) => ({ id, displayAddress: `${id} Test St`, price: { amount: 150000, currencyCode: 'GBP' }, bedrooms: 3, propertySubType: 'Detached', location: { latitude: 52.05, longitude: -1.2 }, propertyUrl: `/properties/${id}` })
+    const client = new RightmoveClient(fetchOf((url) => {
+      const n = vertices(url)
+      seen.push(n)
+      if (n > 47) return res(200, '<html><title>Rightmove - We couldn’t find the place you were looking for.</title></html>')
+      const index = Number(new URL(url).searchParams.get('index') ?? '0')
+      const properties = index === 0 ? Array.from({ length: 24 }, (_, i) => row(i + 1)) : [row(25)]
+      return res(200, `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { searchResults: { resultCount: '25', properties } } } })}</script>`)
+    }))
+    const out = await client.newest([jagged], crit, 48)
+    expect(out.total).toBe(25)
+    expect(out.listings.length).toBe(25)
+    expect(seen.length).toBe(3) // rejected full budget, accepted coarse, second page reuses coarse
+    expect(seen.slice(1).every((n) => n <= 47)).toBe(true)
+  })
+
+  it('a rejection at every budget still throws', async () => {
+    const client = new RightmoveClient(fetchOf(() => res(400, '{"notFound":true}')))
+    await expect(client.count([jagged], crit)).rejects.toThrow('HTTP 400')
+  })
+})
+
 describe('PortalClient.isLive', () => {
   const res = (status: number, body = ''): Response => new Response(body, { status })
   const fetchOf = (fn: (url: string) => Response | Promise<Response>) => ((url: string | URL | Request) => Promise.resolve(fn(String(url)))) as unknown as typeof fetch
