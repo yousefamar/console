@@ -404,8 +404,9 @@ A hardware/hotkey hold-to-talk that streams mic → hub `/stt` (OpenAI realtime,
 - **`android/zello-shim/`** — a tiny invisible stub app with applicationId **`com.loudtalks`** (Zello's REAL package — `com.zello` is only the broadcast prefix). "Open Zello" deep-links to the Play Store when `com.loudtalks` is absent; installing this no-op (a translucent activity that finishes instantly) makes the firmware's launch resolve to nothing visible while the PTT broadcasts keep firing. Build `./gradlew :zello-shim:assembleDebug`, served at `/public/apk/loudtalks-shim.apk`.
 
 ## Keybindings
-- **Global**: `\` = command bar (jump to anything — see below), `Ctrl+Tab`/`Ctrl+Shift+Tab` = switch pane, `Tab` = next pane, `?` = help, `Shift+T` = dark mode
+- **Global**: `\` = command bar (jump to anything — see below; also fires from an EMPTY input/textarea, because chat/agent composers re-focus themselves after a send — a field with text keeps its backslash, ^teal-eel), `Ctrl+Tab`/`Ctrl+Shift+Tab` = switch pane, `Tab` = next pane, `?` = help, `Shift+T` = dark mode
 - **Mail/Chat**: `j/k` = navigate, `e` = archive/read, `b` = snooze, `r/R/f` = reply/all/forward, `c` = compose, `/` = search, `u` = undo
+- **Inbox**: `j/k`, `e`, `b`, `p` = promote/demote source, `r/R/f` on mail, `o` = open agent in Spaces, `/` = command bar (the pane spans every source, so its search IS the bar)
 - **Calendar**: `h/l` = prev/next week, `t` = today, `w/d` = week/day view, `c` = create
 - **Spaces (agents)**: `y/n/a` = approve/deny/allow-all, `Enter` = focus prompt / send, `Ctrl+Enter` = queue until the turn ends, `Shift+Enter` = newline, `Esc` = interrupt, `/` = command bar (same as `\`)
 - **Notes**: vim mode in editor, `Ctrl+P` = find file, `Ctrl+S` = save, `:w/:q/:wq` ex commands
