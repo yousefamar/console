@@ -29,6 +29,7 @@ import { ThreadView } from './ThreadView'
 import { ChatRoomView } from './ChatRoomView'
 import { FeedItemView } from './FeedItemView'
 import { InboxDayRail } from './InboxDayRail'
+import { InboxPinnedChats } from './InboxPinnedChats'
 import { NetworkIcon } from './ChatRoomListItem'
 import { relativeTime } from '@/utils/date'
 import { blockedCardsFor, feedKindsPresent, reviewHandbacksFor, routeForFeed, type BlockedCard, type ReviewHandback } from '@/inbox/route'
@@ -183,6 +184,7 @@ export const InboxTab = memo(function InboxTab() {
             </>
           }
         />
+        {!showSnoozed && <InboxPinnedChats />}
         <div className="flex-1 overflow-y-auto">
           {showSnoozed ? (
             <>
