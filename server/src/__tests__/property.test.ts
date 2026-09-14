@@ -927,6 +927,18 @@ describe('PropertySync kind layers', () => {
     expect(layers.get('property/house')!.features.find((f) => f.properties.listingId === 'uk-fixer')!.properties._icon).toBe('🏡')
   })
 
+  it('an auction lot draws its price as a guide, not an asking price', async () => {
+    const { store, sync, layers } = harness([listing('uk-lot', { lat: 52, lon: -1.5, price: 220000, propertyType: 'Semi-Detached', summary: 'LOT 26 **FOR SALE BY ONLINE AUCTION** on 16th September' })])
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    const byId = new Map(layers.get('property/house')!.features.map((f) => [f.properties.listingId, f.properties]))
+    expect(byId.get('uk-lot')!.price).toBe('guide £220,000')
+    expect(byId.get('uk1')!.price).toBe('£100,000')
+    const cards = sync.deck({ limit: 10 }).cards
+    expect(cards.find((c) => c.listingId === 'uk-lot')?.auction).toBe(true)
+    expect(cards.find((c) => c.listingId === 'uk1')?.auction).toBe(false)
+  })
+
   it('a farmland search feeds property/farmland, not the house layer', async () => {
     const { store, sync, layers } = harness()
     const s = store.create({ country: 'DE', layer: 'zone', kind: 'farmland' })

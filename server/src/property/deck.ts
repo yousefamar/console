@@ -46,6 +46,8 @@ export interface DeckCard {
   description?: string
   /** `fixerLike()` — needs work. */
   fixer: boolean
+  /** `auctionLike()` — `price` is the guide, not an asking price. */
+  auction: boolean
   /** "320 m to shops", as on the pin. */
   highStreet?: string
   /** "42min drive / 70min transit to LHR", as on the pin. */
@@ -60,6 +62,7 @@ export interface DeckCardInput {
   kind: PropertyKind
   tier?: string
   fixer: boolean
+  auction: boolean
   alsoOn: Portal[]
   highStreet?: string
   airport?: string
@@ -94,6 +97,7 @@ export function toDeckCard(i: DeckCardInput): DeckCard {
     keyFeatures: l.keyFeatures,
     description,
     fixer: i.fixer,
+    auction: i.auction,
     highStreet: i.highStreet,
     airport: i.airport,
     lat: l.lat!,

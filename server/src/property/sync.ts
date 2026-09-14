@@ -848,7 +848,7 @@ export class PropertySync {
       counts[t.kind] += rows.length
       if (opts.kind && t.kind !== opts.kind) continue
       for (const r of rows) {
-        all.push(toDeckCard({ listing: r.l, search: r.s, kind: t.kind, tier: t.tier, fixer: r.fixer, alsoOn: r.alsoOn, highStreet: this.highStreetLabel(r.l), airport: airportLabel(r.l) }))
+        all.push(toDeckCard({ listing: r.l, search: r.s, kind: t.kind, tier: t.tier, fixer: r.fixer, auction: auctionLike(r.l), alsoOn: r.alsoOn, highStreet: this.highStreetLabel(r.l), airport: airportLabel(r.l) }))
       }
     }
     const sorted = sortDeck(all)
@@ -875,7 +875,7 @@ export class PropertySync {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
         properties: {
-          price: l.price != null ? formatPrice(l.price, l.currency) : undefined,
+          price: priceLabel(l),
           address: l.address ?? l.title,
           beds: l.bedrooms,
           area: l.floorArea,
@@ -1096,10 +1096,18 @@ function kindOf(s: PropertySearch): PropertyKind {
 }
 
 function describe(l: Listing): string {
-  const price = l.price != null ? formatPrice(l.price, l.currency) : '?'
   const beds = l.bedrooms != null ? ` ${l.bedrooms}bed` : ''
   const plot = l.plotArea != null ? ` ${l.plotArea}m² plot` : ''
-  return `${price}${beds}${plot}`
+  return `${priceLabel(l) ?? '?'}${beds}${plot}`
+}
+
+// An auction guide is the seller's minimum expectation, not an asking price:
+// 14 Tyle Road (RM 92428200) guided £220k against a £295k 2018 sale and
+// £325k+ terraces on the same street. Say so on the pin.
+function priceLabel(l: Listing): string | undefined {
+  if (l.price == null) return undefined
+  const price = formatPrice(l.price, l.currency)
+  return auctionLike(l) ? `guide ${price}` : price
 }
 
 function formatPrice(major: number, currency: string): string {
