@@ -197,13 +197,31 @@ export class PropertySync {
     return this.review(id, listingId, dismissed ? 'dismissed' : 'none')
   }
 
+  /**
+   * Fires once when a listing goes from not-interested to interested (never on
+   * a repeat verdict, a dismissal, or a clear). index.ts files the vetting card
+   * from it (interest-card.ts); unset = nothing happens beyond the repaint.
+   */
+  onInterested: ((listing: Listing, search: PropertySearch) => Promise<void>) | null = null
+
   /** Yousef's verdict on a listing — repaints the pin (or removes it) at once. */
   review(id: string, listingId: string, state: ReviewState): PropertySearch | undefined {
+    const wasInterested = this.searches.get(id)?.interestedIds?.includes(listingId) ?? false
     const s = this.searches.review(id, listingId, state)
     if (!s) return undefined
     this.updateLayer(s)
     this.bus.broadcast('property', 'updated', s)
+    if (state === 'interested' && !wasInterested && this.onInterested) {
+      const listing = this.findListing(s, listingId)
+      if (!listing) this.log(`[property-sync] ${id}: interested ${listingId} is in neither the inventory nor the snapshot — no vetting card`)
+      else this.onInterested(listing, s).catch((e) => this.log(`[property-sync] ${id}: vetting card for ${listingId} failed: ${e}`))
+    }
     return s
+  }
+
+  /** The stored row for a listing id — the inventory (enriched) first, the poll snapshot as fallback. */
+  private findListing(s: PropertySearch, listingId: string): Listing | undefined {
+    return this.inventory.get(s.id).entries.find((l) => l.id === listingId) ?? s.lastResults?.find((l) => l.id === listingId)
   }
 
   /**

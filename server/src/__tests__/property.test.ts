@@ -461,6 +461,22 @@ describe('PropertySync.pruneGone', () => {
     expect(pins(layers).map((x) => x.listingId)).toEqual(['a'])
     expect(broadcasts.filter((b) => b === 'updated')).toHaveLength(2)
   })
+
+  it('onInterested fires once per listing, on the not-interested → interested edge only', async () => {
+    const { store, sync } = harness(async () => true)
+    const fired: string[] = []
+    sync.onInterested = async (l, s) => { fired.push(`${s.id}:${l.id}:${l.price}`) }
+    const s = store.create({ country: 'UK', layer: 'l' })
+    store.recordPoll(s.id, { listings: [listing('a', { lat: 1, lon: 1, price: 250000 })] })
+    sync.review(s.id, 'a', 'interested')
+    sync.review(s.id, 'a', 'interested') // repeat verdict — no second card
+    sync.review(s.id, 'a', 'dismissed')
+    sync.review(s.id, 'a', 'none')
+    sync.review(s.id, 'a', 'interested') // re-interested after a clear — fires again (the board dedupes by URL)
+    sync.review(s.id, 'missing', 'interested') // not in inventory or snapshot — nothing to vet
+    await new Promise((r) => setTimeout(r, 0))
+    expect(fired).toEqual([`${s.id}:a:250000`, `${s.id}:a:250000`])
+  })
 })
 
 describe('PropertySearchStore.reseed', () => {
