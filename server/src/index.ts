@@ -590,6 +590,9 @@ syncBus.register('chat-rooms', {
   markRead: async (args) => matrixSync.markRead(args as { roomId: string; eventId: string }),
   markUnread: async (args) => matrixSync.markUnread(args as { roomId: string }),
   snooze: async (args) => matrixSync.snooze(args as { roomId: string; untilMs?: number }),
+  // Per-room unsent draft (empty text clears) — the SPA composer persists
+  // through here; agents use the `/matrix/rooms/:id/draft` HTTP twin.
+  setDraft: async (args) => matrixSync.setDraft(args as { roomId: string; text?: string }),
   // Surgical: re-derive one room's metadata from full state (fixes a single
   // re-link-inflated room without waiting for the boot sweep).
   refreshRoom: async (args) => matrixSync.refreshRoomState(args as { roomId: string }),

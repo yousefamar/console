@@ -1,6 +1,6 @@
 import { hubFetch } from '../client.js'
 import { output, exitWithError, info, outputLine, type GlobalFlags } from '../output.js'
-import { parseFlags, unknownFlags } from './util.js'
+import { parseFlags, unknownFlags, readStdin } from './util.js'
 
 export async function chat(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   switch (verb) {
@@ -12,6 +12,8 @@ export async function chat(verb: string | undefined, args: string[], flags: Glob
     case 'mark-read': return chatMarkRead(args, flags)
     case 'mark-unread': return chatMarkUnread(args, flags)
     case 'snooze': return chatSnooze(args, flags)
+    case 'draft': return chatDraft(args, flags)
+    case 'drafts': return chatDrafts(flags)
     case 'info': return chatInfo(args, flags)
     case 'tail': return chatTail(args, flags)
     case 'undo': return chatUndo(flags)
@@ -128,6 +130,47 @@ async function chatSnooze(args: string[], flags: GlobalFlags): Promise<void> {
     body: { until: opts.until },
   })
   output({ snoozed: roomId, until: opts.until }, flags)
+}
+
+const DRAFT_USAGE = 'Usage: con chat draft <room-id> [--body <text> | --file <path> | --stdin] [--clear]  (no text = show the current draft)'
+
+/** Leave text in a room's composer WITHOUT sending it. Yousef reviews it in
+ *  the chat (the room surfaces as unread while a draft exists) and sends or
+ *  discards it himself. */
+async function chatDraft(args: string[], flags: GlobalFlags): Promise<void> {
+  const roomId = args[0]
+  if (!roomId || roomId.startsWith('--')) exitWithError('USAGE', DRAFT_USAGE, flags)
+  const opts = parseFlags(args.slice(1))
+  const bad = unknownFlags(opts, ['body', 'file', 'stdin', 'clear'])
+  if (bad.length) exitWithError('USAGE', `Unknown flag(s): ${bad.map((f) => `--${f}`).join(', ')}. ${DRAFT_USAGE}`, flags)
+  const path = `/matrix/rooms/${encodeURIComponent(roomId)}/draft`
+
+  if (opts.clear === 'true') {
+    if (flags.dryRun) { info(`Would clear the draft in ${roomId}`); return }
+    output(await hubFetch(path, { method: 'DELETE' }), flags)
+    return
+  }
+
+  let text = opts.body
+  if (text === undefined && opts.file) {
+    const { readFileSync } = await import('node:fs')
+    text = readFileSync(opts.file, 'utf8')
+  }
+  if (text === undefined && opts.stdin === 'true') text = await readStdin()
+  if (text === undefined) {
+    // No text at all = show the current draft.
+    output(await hubFetch(path), flags)
+    return
+  }
+  text = text.replace(/\s+$/, '')
+  if (!text) exitWithError('USAGE', `Draft text is empty. ${DRAFT_USAGE}`, flags)
+
+  if (flags.dryRun) { info(`Would draft in ${roomId} (not send): ${text}`); return }
+  output(await hubFetch(path, { method: 'PUT', body: { text } }), flags)
+}
+
+async function chatDrafts(flags: GlobalFlags): Promise<void> {
+  output(await hubFetch('/matrix/drafts'), flags)
 }
 
 async function chatInfo(args: string[], flags: GlobalFlags): Promise<void> {

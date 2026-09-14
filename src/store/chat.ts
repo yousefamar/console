@@ -320,6 +320,10 @@ interface ChatState {
   snoozeRoom: (option: 'laterToday' | 'tomorrow' | 'nextWeek' | 'custom', customDate?: Date, roomId?: string, opts?: { advance?: boolean }) => Promise<void>
   /** Clear a room's snooze now (undo). Hub-owned like snoozeRoom. */
   unsnoozeRoom: (roomId: string) => Promise<void>
+  /** Set (or clear, with empty text) a room's unsent draft. Hub-owned so
+   *  every device's composer shows the same text and the room stays live
+   *  until it is sent or discarded. */
+  setRoomDraft: (roomId: string, text: string) => Promise<void>
 
   // Send
   sendMessage: (roomId: string, body: string, formattedBody?: string, mentionUserIds?: string[]) => Promise<void>
@@ -387,7 +391,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
     if (prev && prev !== roomId) {
       const prevRoom = get().rooms.find((r) => r.id === prev)
-      if (prevRoom && !prevRoom.isUnread && !prevRoom.tags?.includes('m.favourite')) {
+      if (prevRoom && !prevRoom.isUnread && !prevRoom.draft && !prevRoom.tags?.includes('m.favourite')) {
         set((s) => ({ rooms: s.rooms.filter((r) => r.id !== prev) }))
       }
     }
@@ -626,6 +630,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // and JSON drops an undefined key — never send null, which would
       // persist as a null in the room snapshot).
       await hubBus.rpc('chat-rooms', 'snooze', { roomId })
+    } catch { /* hub will reconcile on next snapshot fetch */ }
+  },
+
+  setRoomDraft: async (roomId, text) => {
+    const draft = text.trim() ? text : undefined
+    const existing = await db.chatRooms.get(roomId)
+    if (!existing || (existing.draft ?? undefined) === draft) return
+    const patch = { draft, draftUpdatedAt: draft ? Date.now() : undefined }
+    // Optimistic — the hub's chat-rooms delta lands within a tick and
+    // overwrites identically.
+    await db.chatRooms.update(roomId, patch)
+    set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, ...patch } : r)) }))
+    try {
+      const { hubBus } = await import('@/sync-bus')
+      await hubBus.rpc('chat-rooms', 'setDraft', { roomId, text: draft ?? '' })
     } catch { /* hub will reconcile on next snapshot fetch */ }
   },
 

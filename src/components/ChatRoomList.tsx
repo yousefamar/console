@@ -19,7 +19,7 @@ function isFavourite(room: DbChatRoom) {
 const ROOM_FIELDS: (keyof DbChatRoom)[] = [
   'id', 'name', 'avatar', 'networkIcon', 'lastMessageTime',
   'lastMessageSender', 'lastMessageBody', 'isUnread', 'snoozedUntil',
-  'isLowPriority',
+  'isLowPriority', 'draft',
 ]
 function roomShallowEqual(a: DbChatRoom, b: DbChatRoom) {
   for (const k of ROOM_FIELDS) if (a[k] !== b[k]) return false
@@ -65,7 +65,11 @@ export function ChatRoomList() {
         .filter((r) => {
           const isFav = r.tags?.includes('m.favourite') ?? false
           if (isFav) return true
-          return r.isUnread && !r.snoozedUntil && !r.isLowPriority && !r.isMuted
+          if (r.snoozedUntil) return false
+          // An unsent draft is an obligation — the room stays listed until
+          // it is sent or discarded, muted/low-priority or not.
+          if (r.draft) return true
+          return r.isUnread && !r.isLowPriority && !r.isMuted
         })
         .reverse()
         .sortBy('lastMessageTime'),
@@ -88,7 +92,7 @@ export function ChatRoomList() {
     [liveChatRooms],
   )
   const inboxRooms = useMemo(() =>
-    (liveChatRooms ?? []).filter((r) => r.isUnread && !r.snoozedUntil && !isFavourite(r)),
+    (liveChatRooms ?? []).filter((r) => (r.isUnread || !!r.draft) && !r.snoozedUntil && !isFavourite(r)),
     [liveChatRooms],
   )
 

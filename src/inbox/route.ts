@@ -85,12 +85,15 @@ export function roomToItem(r: DbChatRoom, rules: InboxRules, now?: number): Inbo
     source: 'chat',
     sourceId: r.id,
     header: r.name,
-    body,
+    // The draft IS what needs handling — it replaces the last-message
+    // preview so the row reads as "reply waiting", not "they said X".
+    body: r.draft ? r.draft : body,
     network: r.networkIcon,
-    ts: r.lastMessageTime,
+    ts: r.draft ? Math.max(r.lastMessageTime, r.draftUpdatedAt ?? 0) : r.lastMessageTime,
     route: routeForRoom(r, rules),
     routeKey: r.id,
     isDirect: r.isDirect,
+    ...(r.draft ? { draft: true } : {}),
     ...(now !== undefined && isOverdue(r, rules, now) ? { overdue: true } : {}),
   }
 }
@@ -293,6 +296,9 @@ export function threadIsLive(t: DbThread, now: number): boolean {
 
 export function roomIsLive(r: DbChatRoom, now: number): boolean {
   if (r.snoozedUntil && r.snoozedUntil > now) return false
+  // An unsent draft (mine, or one an agent left for review) is an
+  // obligation like an unread message — muted/low-priority don't hide it.
+  if (r.draft) return true
   if (r.isLowPriority || r.isMuted) return false
   return r.isUnread || !!r.manualUnread
 }

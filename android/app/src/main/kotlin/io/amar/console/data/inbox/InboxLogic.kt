@@ -8,6 +8,7 @@ import io.amar.console.data.db.MailThreadRow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -133,6 +134,8 @@ data class InboxEntry(
     val review: Boolean = false,
     /** Chat only: DM unanswered past its SLA window — tops the inbox. */
     val overdue: Boolean = false,
+    /** Chat only: the room holds an unsent draft (`body` is the draft text). */
+    val draft: Boolean = false,
     /** The rules-override key this item's SOURCE routes by (room id / sender
      *  email / feed id) — what promote/demote writes. Null for agents. */
     val routeKey: String? = null,
@@ -175,6 +178,21 @@ fun slaTimestamps(rawJson: String?): SlaTimestamps {
     )
 }
 
+/** The room's unsent draft (hub `RoomState.draft`, set from the SPA composer
+ *  or `con chat draft`). Rides rawJson like the SLA timestamps — no schema
+ *  change. Null when absent/blank. */
+fun roomDraft(rawJson: String?): String? {
+    if (rawJson.isNullOrBlank()) return null
+    val o = runCatching { inboxJson.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return null
+    return o["draft"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+}
+
+fun roomDraftUpdatedAt(rawJson: String?): Long {
+    if (rawJson.isNullOrBlank()) return 0
+    val o = runCatching { inboxJson.parseToJsonElement(rawJson).jsonObject }.getOrNull() ?: return 0
+    return o["draftUpdatedAt"]?.jsonPrimitive?.longOrNull ?: 0
+}
+
 /** UNREAD DM unanswered past its SLA window: the other side spoke after my
  *  last reply, and that inbound has aged past the window. Overdue is an
  *  escalation of an unread thread, never a re-admission of a read one —
@@ -199,6 +217,9 @@ fun threadIsLive(t: MailThreadRow, now: Long): Boolean =
 
 fun roomIsLive(r: ChatRoomRow, now: Long): Boolean {
     if (r.snoozedUntil != null && r.snoozedUntil > now) return false
+    // An unsent draft is an obligation like an unread message — muted /
+    // low-priority don't hide it (SPA roomIsLive parity).
+    if (roomDraft(r.rawJson) != null) return true
     if (r.isLowPriority || r.isMuted) return false
     return r.isUnread || r.manualUnread
 }
@@ -229,16 +250,19 @@ fun roomToEntry(r: ChatRoomRow, rules: InboxRules, now: Long): InboxEntry {
     // DMs drop the sender prefix when the sender IS the room's namesake —
     // their name is already the header (SPA roomToItem parity).
     val body = if (sender.isNullOrBlank() || (r.isDirect && sender == r.name)) text else "$sender: $text"
+    // A draft IS what needs handling — it replaces the last-message preview.
+    val draft = roomDraft(r.rawJson)
     return InboxEntry(
         key = "chat:${r.id}",
         source = InboxSource.CHAT,
         sourceId = r.id,
         header = r.name,
-        body = body,
+        body = draft ?: body,
         network = r.networkIcon,
-        ts = r.lastMessageTime,
+        ts = if (draft != null) maxOf(r.lastMessageTime, roomDraftUpdatedAt(r.rawJson)) else r.lastMessageTime,
         inInbox = rules.routeForRoom(r.id) == "inbox",
         overdue = isOverdue(r, rules, now),
+        draft = draft != null,
         routeKey = r.id,
     )
 }

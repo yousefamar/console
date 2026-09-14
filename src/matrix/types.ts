@@ -149,6 +149,8 @@ export interface DbChatRoom {
   readReceipts?: Record<string, { eventId: string; ts: number; displayName?: string; avatar?: string }>
   lastInboundTs?: number       // Newest message ts from someone else (SLA input)
   lastOutboundTs?: number      // Newest message ts from me (SLA input)
+  draft?: string               // Unsent composer text (hub-owned; a drafted room is live like an unread one)
+  draftUpdatedAt?: number
 }
 
 export interface DbChatMessage {

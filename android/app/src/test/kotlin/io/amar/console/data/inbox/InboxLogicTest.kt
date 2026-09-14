@@ -108,6 +108,17 @@ class InboxLogicTest {
         assertFalse(roomIsLive(room(snoozedUntil = NOW + HOUR), NOW))
         assertFalse(roomIsLive(room(isUnread = false), NOW))
 
+        // A drafted room is live whatever its read/mute state, unless snoozed.
+        val drafted = """{"draft":"reply for review","draftUpdatedAt":${NOW - 500}}"""
+        assertTrue(roomIsLive(room(isUnread = false, rawJson = drafted), NOW))
+        assertTrue(roomIsLive(room(isUnread = false, muted = true, rawJson = drafted), NOW))
+        assertFalse(roomIsLive(room(isUnread = false, snoozedUntil = NOW + HOUR, rawJson = drafted), NOW))
+        assertFalse(roomIsLive(room(isUnread = false, rawJson = """{"draft":"  "}"""), NOW))
+        val entry = roomToEntry(room(isUnread = false, rawJson = drafted), InboxRules.DEFAULT, NOW)
+        assertTrue(entry.draft)
+        assertEquals("reply for review", entry.body)
+        assertEquals(NOW - 500, entry.ts)
+
         assertTrue(sessionIsLive(session()))
         assertFalse(sessionIsLive(session(hasUnread = false)))
         assertTrue(sessionIsLive(session(hasUnread = false, attention = true)))

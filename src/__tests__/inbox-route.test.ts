@@ -411,6 +411,26 @@ describe('SLA / overdue', () => {
     expect(isOverdue(overdueDm(), disabled, NOW)).toBe(false)
   })
 
+  it('a room holding a draft is live whatever its read/mute state, unless snoozed (^bold-lynx)', () => {
+    const drafted = room({ isUnread: false, draft: 'reply for review', draftUpdatedAt: NOW - 500 })
+    expect(roomIsLive(drafted, NOW)).toBe(true)
+    expect(roomIsLive({ ...drafted, isMuted: true }, NOW)).toBe(true)
+    expect(roomIsLive({ ...drafted, isLowPriority: true }, NOW)).toBe(true)
+    expect(roomIsLive({ ...drafted, snoozedUntil: NOW + H }, NOW)).toBe(false)
+    expect(roomIsLive(room({ isUnread: false, draft: '' }), NOW)).toBe(false)
+  })
+
+  it('a drafted room\'s item shows the draft as its body, flags it, and ranks by the draft edit', () => {
+    const drafted = room({ isUnread: false, lastMessageSender: 'Bob', lastMessageBody: 'hi', draft: 'reply for review', draftUpdatedAt: NOW - 500 })
+    const item = roomToItem(drafted, DEFAULT_RULES, NOW)
+    expect(item.draft).toBe(true)
+    expect(item.body).toBe('reply for review')
+    expect(item.ts).toBe(NOW - 500)
+    const plain = roomToItem(room({ lastMessageSender: 'Bob', lastMessageBody: 'hi' }), DEFAULT_RULES, NOW)
+    expect(plain.draft).toBeUndefined()
+    expect(plain.body).toBe('hi')
+  })
+
   it('no inbound recorded (pre-restart rooms) → never overdue', () => {
     expect(isOverdue(room({ isUnread: false }), DEFAULT_RULES, NOW)).toBe(false)
   })

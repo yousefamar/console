@@ -168,10 +168,19 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
         </div>
         <div className="flex items-center gap-1">
           <span className="truncate text-xs text-text-tertiary flex-1">
-            {room.lastMessageSender && (
-              <span className="text-text-tertiary">{room.lastMessageSender}: </span>
+            {room.draft ? (
+              <>
+                <span className="text-amber-500">Draft: </span>
+                {room.draft}
+              </>
+            ) : (
+              <>
+                {room.lastMessageSender && (
+                  <span className="text-text-tertiary">{room.lastMessageSender}: </span>
+                )}
+                {room.lastMessageBody}
+              </>
             )}
-            {room.lastMessageBody}
           </span>
           {room.unreadCount && room.unreadCount > 0 ? (
             <span className="flex-shrink-0 text-[10px] text-blue-500 font-medium tabular-nums">

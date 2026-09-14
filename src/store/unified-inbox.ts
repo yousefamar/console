@@ -80,6 +80,10 @@ interface UnifiedInboxState {
   handleSelected: (verb: 'done' | 'snooze') => void
   /** `e` on an agent row: move its Under Review card(s) to Done, then mark read. */
   approveAndMarkRead: (item: InboxItem) => Promise<void>
+  /** `e` on a chat row holding a draft: the draft IS the obligation, so
+   *  "done" discards it (undoable for 5 s) and marks the room read — a bare
+   *  mark-read would leave the row live and it would pop straight back. */
+  discardDraftAndMarkRead: (item: InboxItem) => Promise<void>
   /** Remove an item from the composed lists NOW and move the selection to its
    *  neighbour. The rebuild would drop it anyway, but that is a 300 ms
    *  trailing debounce that every source-store write resets — a busy agent
@@ -403,9 +407,29 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     // `advance: false` — this pane just moved its own selection; the mail
     // store must not step to ITS list neighbour and mark that one read.
     if (item.source === 'mail') useInboxStore.getState().archiveThread(item.sourceId, { advance: false })
-    else if (item.source === 'chat') void useChatStore.getState().markRoomRead(item.sourceId)
+    else if (item.source === 'chat') void (item.draft ? get().discardDraftAndMarkRead(item) : useChatStore.getState().markRoomRead(item.sourceId))
     else if (item.source === 'agent') void get().approveAndMarkRead(item)
     else void useFeedStore.getState().markRead(item.sourceId)
+  },
+
+  discardDraftAndMarkRead: async (item) => {
+    const chat = useChatStore.getState()
+    const text = (await db.chatRooms.get(item.sourceId))?.draft ?? ''
+    await chat.setRoomDraft(item.sourceId, '')
+    await chat.markRoomRead(item.sourceId)
+    if (!text) return
+    useUiStore.getState().setUndoAction({
+      label: 'Draft discarded',
+      expiresAt: Date.now() + 5000,
+      undo: async () => {
+        useUiStore.getState().setUndoAction(null)
+        await useChatStore.getState().setRoomDraft(item.sourceId, text)
+        get().restore(item.key)
+        await get().rebuild()
+        const back = get().inboxList.find((i) => i.key === item.key)
+        if (back) get().select(back)
+      },
+    })
   },
 
   approveAndMarkRead: async (item) => {

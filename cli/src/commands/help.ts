@@ -104,6 +104,8 @@ Commands:
   mark-read     Mark room(s) as read
   mark-unread   Mark a room as unread
   snooze        Snooze a room
+  draft         Leave a draft in the room's composer without sending (--clear discards)
+  drafts        List rooms with an unsent draft
   info          Get room details
   tail          Stream new messages (NDJSON)
   undo          Undo last action
@@ -112,6 +114,7 @@ Examples:
   con chat rooms --filter unread
   con chat messages !roomid:matrix.org --limit 20
   con chat send !roomid:matrix.org --body "Hello"
+  con chat draft !roomid:matrix.org --body "Reply for Yousef to review"
 `.trim(),
 
   bookmarks: `

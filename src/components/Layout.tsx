@@ -574,7 +574,7 @@ function PaneTab({ pane, icon, label, activePane, setActivePane }: {
     : pane === 'inbox'
       ? useUnifiedInboxStore((s) => s.inboxList.length)
       : pane === 'chat'
-        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
+        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread || !!r.draft).length)
         : pane === 'feeds'
           ? useFeedStore((s) => s.totalUnread)
           : pane === 'notes'
@@ -687,7 +687,7 @@ function MobileTabItem({ pane, icon, label, isActive, onClick }: {
     : pane === 'inbox'
       ? useUnifiedInboxStore((s) => s.inboxList.length)
       : pane === 'chat'
-        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread).length)
+        ? useChatStore((s) => s.rooms.filter((r) => r.isUnread || !!r.draft).length)
         : pane === 'feeds'
           ? useFeedStore((s) => s.totalUnread)
           : pane === 'notes'

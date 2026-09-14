@@ -10,6 +10,18 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
+- Per-room chat drafts in the composer (SPA `ChatComposeInput.tsx`,
+  ^bold-lynx, 2026-09-14) — the hub room row now carries `draft` +
+  `draftUpdatedAt` (`RoomState`), written by the SPA composer (RPC
+  `chat-rooms.setDraft`) and by agents (`con chat draft` → `PUT
+  /matrix/rooms/:id/draft`). DONE on the phone: `InboxLogic.roomIsLive` /
+  `roomToEntry` read `draft` from `rawJson` (drafted room is live, body =
+  draft, `InboxEntry.draft`). OPEN: the chat composer should hydrate from the
+  room's `draft` on open, persist typing (debounced) via `PUT
+  /matrix/rooms/:id/draft` (`{text}`; empty clears / `DELETE`), clear on send;
+  the room list row should show an amber `Draft: …` preview and count drafted
+  rooms as unread; the Inbox row should show a `draft` chip and `e` should
+  discard the draft (undo) + mark read, as the SPA does.
 - Inbox routing rules offline (SPA `store/unified-inbox.ts`, ^spry-wren,
   2026-09-11) — the SPA now mirrors `/inbox/rules` locally (localStorage
   `console:inbox-rules`), composes from the mirror while the hub is

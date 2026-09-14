@@ -1,9 +1,32 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react'
+import { liveQuery } from 'dexie'
+import { db } from '@/db'
 import { useChatStore } from '@/store/chat'
 import { useGlassesStore } from '@/glasses/store'
 import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
 import { primeRoomMembers, searchRoomMembers, getRoomMembers, type RoomMember } from '@/matrix/room-members'
+
+const DRAFT_SAVE_MS = 400
+
+/** The room's hub-synced draft (`DbChatRoom.draft`), `undefined` until the
+ *  first read for THIS room lands — the result is stamped with its room so a
+ *  switch never hydrates the new room's textarea with the old room's text.
+ *  Re-renders only when the draft string changes, not on every sync delta. */
+function useRoomDraft(roomId: string): string | undefined {
+  const [state, setState] = useState<{ roomId: string; draft: string } | null>(null)
+  useEffect(() => {
+    const sub = liveQuery(() => db.chatRooms.get(roomId)).subscribe({
+      next: (room) => {
+        const draft = room?.draft ?? ''
+        setState((prev) => (prev && prev.roomId === roomId && prev.draft === draft ? prev : { roomId, draft }))
+      },
+      error: () => {},
+    })
+    return () => sub.unsubscribe()
+  }, [roomId])
+  return state?.roomId === roomId ? state.draft : undefined
+}
 
 interface ChatComposeInputProps {
   roomId: string
@@ -90,6 +113,119 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       inputRef.current?.focus()
     }
   }, [replyingTo])
+
+  // --- Per-room drafts -----------------------------------------------------
+  // The textarea is ONE shared instance across rooms, so the draft lives on
+  // the hub's room row (DbChatRoom.draft): typing persists there (debounced),
+  // a room switch hydrates from it, and an agent's `con chat draft` shows up
+  // in the composer the same way. `hubDraftRef` = the latest Dexie value for
+  // the current room (null until its first read lands); `syncedDraftRef` =
+  // the last text this composer applied or pushed, i.e. "what the textarea
+  // held before any unsaved typing".
+  const roomDraft = useRoomDraft(roomId)
+  const setRoomDraft = useChatStore((s) => s.setRoomDraft)
+  const hubDraftRef = useRef<string | null>(null)
+  const syncedDraftRef = useRef<string | null>(null)
+  const lastLocalWriteRef = useRef(0)
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const roomIdRef = useRef(roomId)
+  const isEditing = !!editingMessage && editingMessage.roomId === roomId
+  const isEditingRef = useRef(isEditing)
+  isEditingRef.current = isEditing
+
+  const setTextareaValue = useCallback((value: string) => {
+    textRef.current = value
+    setHasContent(!!value.trim())
+    if (inputRef.current) {
+      inputRef.current.value = value
+      inputRef.current.style.height = '24px'
+      inputRef.current.style.height = Math.min(120, inputRef.current.scrollHeight) + 'px'
+    }
+    useGlassesStore.getState().setComposerText('chat', value)
+  }, [])
+
+  /** Push the current text to the hub as this room's draft if it differs
+   *  from what Dexie (the hub mirror) holds — so a push the hub dropped is
+   *  simply retried on the next flush. Edit mode never persists (the
+   *  textarea holds the message being edited, not a draft). */
+  const flushDraft = useCallback((forRoom: string, text: string) => {
+    if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null }
+    if (hubDraftRef.current === null || text === hubDraftRef.current) return
+    hubDraftRef.current = text
+    syncedDraftRef.current = text
+    lastLocalWriteRef.current = Date.now()
+    void setRoomDraft(forRoom, text)
+  }, [setRoomDraft])
+
+  const scheduleDraftSave = useCallback(() => {
+    if (isEditingRef.current) return
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    const forRoom = roomIdRef.current
+    draftTimerRef.current = setTimeout(() => {
+      draftTimerRef.current = null
+      if (roomIdRef.current !== forRoom || isEditingRef.current) return
+      flushDraft(forRoom, textRef.current)
+    }, DRAFT_SAVE_MS)
+  }, [flushDraft])
+
+  // Room switch: flush the old room's pending text, then start the new room
+  // blank until its hub draft is read (the hydrate effect below fills it).
+  useEffect(() => {
+    const prev = roomIdRef.current
+    if (prev !== roomId) {
+      if (!isEditingRef.current) flushDraft(prev, textRef.current)
+      roomIdRef.current = roomId
+      hubDraftRef.current = null
+      syncedDraftRef.current = null
+      setTextareaValue('')
+    }
+  }, [roomId, flushDraft, setTextareaValue])
+
+  // Hydrate: first read for this room fills the textarea; a later remote
+  // change (another device, an agent's draft) replaces the text only when
+  // nothing unsaved is typed here — local typing wins and overwrites the hub
+  // on its next flush.
+  useEffect(() => {
+    if (roomDraft === undefined) return
+    hubDraftRef.current = roomDraft
+    if (isEditing) return
+    const synced = syncedDraftRef.current
+    if (synced === null) {
+      syncedDraftRef.current = roomDraft
+      if (roomDraft !== textRef.current) setTextareaValue(roomDraft)
+      return
+    }
+    if (roomDraft === synced) return
+    // A sync delta computed before our own write landed can briefly echo the
+    // PREVIOUS draft back; applying it would blank the textarea mid-typing.
+    // Ignore it — the next flush re-pushes the textarea if the hub really
+    // does hold something else.
+    if (Date.now() - lastLocalWriteRef.current < 1500) return
+    if (textRef.current === synced) setTextareaValue(roomDraft)
+    syncedDraftRef.current = roomDraft
+  }, [roomDraft, roomId, isEditing, setTextareaValue])
+
+  // Leaving edit mode puts the room's draft back in the textarea (the edit
+  // path clears the input on commit/cancel).
+  const wasEditingRef = useRef(false)
+  useEffect(() => {
+    if (wasEditingRef.current && !isEditing) {
+      const draft = hubDraftRef.current ?? ''
+      syncedDraftRef.current = draft
+      setTextareaValue(draft)
+    }
+    wasEditingRef.current = isEditing
+  }, [isEditing, setTextareaValue])
+
+  // Unmount / page hide: don't lose the debounce window's text.
+  useEffect(() => {
+    const onHide = () => { if (!isEditingRef.current) flushDraft(roomIdRef.current, textRef.current) }
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+      onHide()
+    }
+  }, [flushDraft])
 
   // When the user picks a message to edit (only ones in this room — the store
   // is room-agnostic), pre-fill the textarea with its current body, place the
@@ -202,6 +338,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(!!newText.trim())
     setMentionQuery(null)
     setMentionResults([])
+    scheduleDraftSave()
     // Track this mention so the send path can attach it to m.mentions even if
     // there are multiple members with the same display name.
     if (!pendingMentionsRef.current.some((m) => m.userId === member.userId)) {
@@ -215,7 +352,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
         inputRef.current.focus()
       }
     })
-  }, [mentionQuery])
+  }, [mentionQuery, scheduleDraftSave])
 
   const selectEmoji = useCallback((result: { shortcode: string; emoji: string }) => {
     if (!emojiQuery) return
@@ -232,6 +369,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(!!newText.trim())
     setEmojiQuery(null)
     setEmojiResults([])
+    scheduleDraftSave()
     requestAnimationFrame(() => {
       if (inputRef.current) {
         const pos = emojiQuery.startIdx + result.emoji.length
@@ -240,7 +378,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
         inputRef.current.focus()
       }
     })
-  }, [emojiQuery])
+  }, [emojiQuery, scheduleDraftSave])
 
   const clearInput = useCallback(() => {
     textRef.current = ''
@@ -300,6 +438,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
       const caption = textRef.current.trim() || undefined
       clearAttachments()
       clearInput()
+      flushDraft(roomId, '')
       try {
         for (let i = 0; i < files.length; i++) {
           const { file } = files[i]!
@@ -325,13 +464,14 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
 
     sendingRef.current = true
     clearInput()
+    flushDraft(roomId, '')
     try {
       await sendMessage(roomId, body, fmt?.formattedBody, mentionUserIds)
     } finally {
       sendingRef.current = false
     }
     inputRef.current?.focus()
-  }, [roomId, sendMessage, sendImage, sendFile, pendingFiles, clearAttachments, clearInput, editingMessage, editMessage])
+  }, [roomId, sendMessage, sendImage, sendFile, pendingFiles, clearAttachments, clearInput, editingMessage, editMessage, flushDraft])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // @-mention autocomplete keyboard handling (takes priority over emoji
@@ -423,7 +563,8 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     detectEmojiQuery(value, cursorPos)
     detectMentionQuery(value, cursorPos)
     useGlassesStore.getState().setComposerText('chat', value)
-  }, [detectEmojiQuery, detectMentionQuery, autoResize, hasContent])
+    scheduleDraftSave()
+  }, [detectEmojiQuery, detectMentionQuery, autoResize, hasContent, scheduleDraftSave])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Arrow keys move cursor without triggering onChange

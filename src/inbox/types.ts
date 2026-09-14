@@ -60,6 +60,10 @@ export interface InboxItem {
   context?: string
   /** Chat only: DM unanswered past its SLA window — tops the inbox. */
   overdue?: boolean
+  /** Chat only: the room holds an unsent draft (`body` is the draft text).
+   *  A drafted room is live regardless of read state; `e` discards the
+   *  draft (with undo) rather than merely marking read. */
+  draft?: boolean
   /** The rules-override key this item's SOURCE routes by (room id / sender
    *  email / feed id) — what promote/demote writes. Absent for agents (they
    *  don't route). */

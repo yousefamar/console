@@ -530,6 +530,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
               <span className="truncate text-sm text-text-primary" title={item.agentName}>{item.header}</span>
             </span>
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
+            {item.draft && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unsent draft">draft</span>}
             {item.source === 'agent' && <HandbackGlyph agentKey={item.agentKey} />}
             {item.routeKey && (
               <button

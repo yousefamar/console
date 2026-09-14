@@ -126,3 +126,21 @@ describe('computeRoomState — stickers are conversation (^neat-heron)', () => {
     expect(next.lastMessageBody).toBe('hi')
   })
 })
+
+describe('computeRoomState — drafts are hub-only and survive every recompute', () => {
+  it('carries draft + draftUpdatedAt through a sync delta', () => {
+    const existing = baseRoom({ draft: 'unsent reply', draftUpdatedAt: 4242 })
+    const delta: SyncRoomDelta = { unread_notifications: { notification_count: 0 } }
+    const next = computeRoomState('!r:hs', existing, delta, ctx)
+    expect(next.draft).toBe('unsent reply')
+    expect(next.draftUpdatedAt).toBe(4242)
+  })
+
+  it('an incoming message does not disturb the draft', () => {
+    const existing = baseRoom({ draft: 'unsent reply', draftUpdatedAt: 4242 })
+    const delta: SyncRoomDelta = { timeline: { events: [{ type: 'm.room.message', sender: '@other:hs', origin_server_ts: 5000, event_id: '$e', content: { msgtype: 'm.text', body: 'ping' } }] } }
+    const next = computeRoomState('!r:hs', existing, delta, ctx)
+    expect(next.draft).toBe('unsent reply')
+    expect(next.isUnread).toBe(true)
+  })
+})

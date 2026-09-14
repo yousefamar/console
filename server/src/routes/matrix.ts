@@ -362,6 +362,30 @@ export function handleMatrixRoutes(
     return true
   }
 
+  // GET /matrix/drafts — every room holding an unsent draft
+  if (path === '/matrix/drafts' && req.method === 'GET') {
+    json(matrixSync.listDrafts())
+    return true
+  }
+
+  // GET|PUT|DELETE /matrix/rooms/:id/draft — the room's unsent composer text.
+  // PUT {text} sets (empty clears), DELETE clears. Hub-owned, broadcast to
+  // every device via the chat-rooms snapshot; nothing is ever sent.
+  const draftMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/draft$/)
+  if (draftMatch && (req.method === 'GET' || req.method === 'PUT' || req.method === 'DELETE')) {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(draftMatch[1]!)
+      if (req.method === 'GET') { json(matrixSync.getDraft(roomId)); return }
+      let text: string | undefined
+      if (req.method === 'PUT') {
+        const body = JSON.parse(await readBody(req)) as { text?: unknown }
+        if (typeof body.text !== 'string') { error(400, 'text (string) required'); return }
+        text = body.text
+      }
+      json(await matrixSync.setDraft({ roomId, text }))
+    })
+  }
+
   // GET /matrix/rooms/:id/info
   const infoMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/info$/)
   if (infoMatch && req.method === 'GET') {

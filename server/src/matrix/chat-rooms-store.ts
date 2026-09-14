@@ -111,6 +111,33 @@ export class ChatRoomsStore {
     })
   }
 
+  /** Set or clear a room's unsent draft (empty/undefined clears). Hub-only
+   *  state like snooze — the homeserver has no draft concept. */
+  setRoomDraft(roomId: string, text: string | undefined, now = Date.now()): boolean {
+    const next = text && text.trim() ? text : undefined
+    let changed = false
+    this.store.update((draft) => {
+      const room = draft[roomId]
+      if (!room) return false
+      if ((room.draft ?? undefined) === next) return false
+      changed = true
+      draft[roomId] = { ...room, draft: next, draftUpdatedAt: next ? now : undefined }
+    })
+    return changed
+  }
+
+  getRoom(roomId: string): RoomState | undefined {
+    return this.store.get().data[roomId]
+  }
+
+  /** Every room holding a draft, newest edit first. */
+  listDrafts(): Array<Pick<RoomState, 'id' | 'name' | 'networkIcon' | 'isDirect' | 'draft' | 'draftUpdatedAt'>> {
+    return Object.values(this.store.get().data)
+      .filter((r) => !!r.draft)
+      .sort((a, b) => (b.draftUpdatedAt ?? 0) - (a.draftUpdatedAt ?? 0))
+      .map(({ id, name, networkIcon, isDirect, draft, draftUpdatedAt }) => ({ id, name, networkIcon, isDirect, draft, draftUpdatedAt }))
+  }
+
   /** Update the per-room outbound mute flag (driven by the push-rule set). */
   setMutedRoomIds(mutedRoomIds: Set<string>): void {
     this.store.update((draft) => {

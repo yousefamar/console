@@ -633,6 +633,28 @@ export class MatrixSync {
     return { ok: true }
   }
 
+  /** Set or clear a room's unsent draft — hub-owned so every device shows
+   *  the same composer text and an agent can leave a reply for review
+   *  without sending it. Empty text clears. */
+  async setDraft(args: { roomId: string; text?: string }): Promise<{ ok: true; roomId: string; draft: string | null; changed: boolean }> {
+    if (!args?.roomId) throw new Error('roomId required')
+    if (!this.chatRoomsStore) throw new Error('chat rooms store not configured')
+    if (!this.chatRoomsStore.getRoom(args.roomId)) throw Object.assign(new Error(`unknown room: ${args.roomId}`), { status: 404 })
+    const changed = this.chatRoomsStore.setRoomDraft(args.roomId, args.text)
+    const room = this.chatRoomsStore.getRoom(args.roomId)
+    return { ok: true, roomId: args.roomId, draft: room?.draft ?? null, changed }
+  }
+
+  getDraft(roomId: string): { roomId: string; name?: string; draft: string | null; draftUpdatedAt?: number } {
+    const room = this.chatRoomsStore?.getRoom(roomId)
+    if (!room) throw Object.assign(new Error(`unknown room: ${roomId}`), { status: 404 })
+    return { roomId, name: room.name, draft: room.draft ?? null, draftUpdatedAt: room.draftUpdatedAt }
+  }
+
+  listDrafts() {
+    return this.chatRoomsStore?.listDrafts() ?? []
+  }
+
   /**
    * Re-derive a room's metadata (name, memberCount, isDirect, avatar) from its
    * FULL current state. Incremental /sync uses lazy_load_members, so these

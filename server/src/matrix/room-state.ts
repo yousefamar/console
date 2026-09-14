@@ -52,6 +52,12 @@ export interface RoomState {
    *  lastOutboundTs by more than the window). Monotone: only advance. */
   lastInboundTs?: number
   lastOutboundTs?: number
+  /** Unsent composer text for this room — hub-owned so every device (and
+   *  any agent via `con chat draft`) sees the same draft. A room with a
+   *  draft is treated as live/unread by the Chat list + Inbox until the
+   *  draft is sent or cleared. Never touched by sync recomputes. */
+  draft?: string
+  draftUpdatedAt?: number
 }
 
 // --- bridge bot / ghost detection ---------------------------------------
@@ -428,6 +434,8 @@ export function computeRoomState(
     isEncrypted: isEncrypted || (existing?.isEncrypted ?? false),
     networkIcon: detectBridgeNetwork(allStateForRoom) ?? existing?.networkIcon,
     snoozedUntil: existing?.snoozedUntil,
+    draft: existing?.draft,
+    draftUpdatedAt: existing?.draftUpdatedAt,
     prevBatch: delta.timeline?.prev_batch ?? existing?.prevBatch,
     readReceipts: updatedReceipts,
     lastInboundTs: lastInboundTs || undefined,
