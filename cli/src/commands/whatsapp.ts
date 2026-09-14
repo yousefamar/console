@@ -3,6 +3,9 @@
 //   con whatsapp status                        → connection + QR state
 //   con whatsapp qr                            → write QR PNG to stdout / file
 //   con whatsapp send <to> [--body | --file]   → outbound text
+//   con whatsapp send <to> --speak "…" [--lang ar] [--speed 1.1]
+//                                              → voice note in Yousef's cloned voice (Cartesia)
+//   con whatsapp send <to> --audio <file>      → any audio file, sent as a voice note
 //   con whatsapp delete <message_id> --to <jid> → revoke for everyone
 //   con whatsapp contacts [--query <text>]     → workspace contacts lookup
 //
@@ -54,6 +57,20 @@ async function waSend(args: string[], flags: GlobalFlags): Promise<void> {
   const to = (args.find((a) => !a.startsWith('--')) ?? opts.to ?? '').trim()
   if (!to) exitWithError('USAGE', 'Usage: con whatsapp send <to> [--body "..." | --file <path> | --stdin]', flags)
 
+  if (opts.speak) {
+    const speed = opts.speed ? Number(opts.speed) : undefined
+    if (speed !== undefined && !(speed >= 0.6 && speed <= 1.5)) exitWithError('USAGE', '--speed must be between 0.6 and 1.5', flags)
+    const data = await hubFetch('/whatsapp/send', { method: 'POST', body: { to, speak: opts.speak, language: opts.lang, speed } })
+    return output(data, flags)
+  }
+  if (opts.audio) {
+    let audio: string
+    try { audio = readFileSync(opts.audio).toString('base64') }
+    catch (err) { return exitWithError('USAGE', `Could not read ${opts.audio}: ${(err as Error).message}`, flags) }
+    const data = await hubFetch('/whatsapp/send', { method: 'POST', body: { to, audio } })
+    return output(data, flags)
+  }
+
   let body = opts.body
   if (!body && opts.file) {
     try { body = readFileSync(opts.file, 'utf-8') }
@@ -61,7 +78,7 @@ async function waSend(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (!body && opts.stdin === 'true') body = await readStdin()
   if (!body || !body.trim()) {
-    exitWithError('USAGE', 'Provide --body "...", --file <path>, or --stdin', flags)
+    exitWithError('USAGE', 'Provide --body "...", --file <path>, --stdin, --speak "..." or --audio <file>', flags)
   }
 
   const data = await hubFetch('/whatsapp/send', { method: 'POST', body: { to, text: body } })

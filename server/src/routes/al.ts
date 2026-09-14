@@ -3,6 +3,8 @@
 //   GET  /whatsapp/status                 → { connected, hasQr }
 //   GET  /whatsapp/qr                     → image/png QR (404 if connected)
 //   POST /whatsapp/send  {to,text}        → { ok, id, jid }
+//                        {to,speak,language?,speed?} → same + { voiceNote, seconds }  (Cartesia TTS in Yousef's voice → ptt)
+//                        {to,audio(base64)}          → same  (any audio file → ptt)
 //   POST /whatsapp/delete {to,messageId}  → { ok }
 //   GET  /whatsapp/contacts?query=…       → { contacts: [...] }
 //
@@ -21,6 +23,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as wa from '../al/whatsapp.js'
+import * as tts from '../al/tts.js'
 import * as voice from '../al/voice.js'
 import { record as recordHistory } from '../al/wa-history.js'
 import { resolveUsername, ensureUserKnown } from '../al/users.js'
@@ -71,26 +74,39 @@ export function handleAlRoutes(
 
   if (path === '/whatsapp/send' && req.method === 'POST') {
     readBody(req).then(async (body) => {
-      const { to, text } = JSON.parse(body || '{}') as { to?: string; text?: string }
-      if (!to || typeof to !== 'string') return jsonResponse(res, 400, { error: 'missing to' })
-      if (!text || typeof text !== 'string' || !text.trim()) {
-        return jsonResponse(res, 400, { error: 'missing or empty text' })
+      const { to, text, speak, language, speed, audio } = JSON.parse(body || '{}') as {
+        to?: string; text?: string; speak?: string; language?: string; speed?: number; audio?: string
       }
-      if (wa.findBlockedTerm(text)) {
+      if (!to || typeof to !== 'string') return jsonResponse(res, 400, { error: 'missing to' })
+      const modes = [text, speak, audio].filter((v) => typeof v === 'string' && v.trim()).length
+      if (modes !== 1) {
+        return jsonResponse(res, 400, { error: 'provide exactly one of text, speak (spoken as a voice note) or audio (base64, sent as a voice note)' })
+      }
+      const spokenOrTyped = (text ?? speak)!
+      if (typeof spokenOrTyped === 'string' && wa.findBlockedTerm(spokenOrTyped)) {
         console.warn('[al/wa] outbound send BLOCKED — message matched censored-content policy')
         return jsonResponse(res, 400, { error: 'blocked: message contains censored content (home address)' })
       }
       try {
-        const { id, jid } = await wa.sendText(to.trim(), text)
         // `user` labels the send in the caller's transcript with the SAME
         // resolved name the inbound envelope uses, so "sent to Veronica @phone"
         // and "reply from Nica @lid" visibly meet in one identity.
-        const user = resolveUsername(jid)
         // X-Console-Agent = the sending session's agentKey (CLI sets it from
         // CONSOLE_AGENT_KEY); absent means the parent AL or a human terminal.
         const via = (req.headers['x-console-agent'] as string | undefined)?.trim() || 'al'
-        recordHistory({ ts: Date.now(), dir: 'out', jid, user, text, via, id })
-        jsonResponse(res, 200, { ok: true, id, jid, user })
+        if (text) {
+          const { id, jid } = await wa.sendText(to.trim(), text)
+          const user = resolveUsername(jid)
+          recordHistory({ ts: Date.now(), dir: 'out', jid, user, text, via, id })
+          return jsonResponse(res, 200, { ok: true, id, jid, user })
+        }
+        const wav = speak
+          ? await tts.synthesise(speak, { language, speed })
+          : Buffer.from(audio!, 'base64')
+        const { id, jid, seconds } = await wa.sendVoiceNote(to.trim(), wav)
+        const user = resolveUsername(jid)
+        recordHistory({ ts: Date.now(), dir: 'out', jid, user, text: `(voice note, ${seconds}s) ${speak ?? '[audio file]'}`, via, id })
+        jsonResponse(res, 200, { ok: true, id, jid, user, voiceNote: true, seconds })
       } catch (err) {
         const msg = (err as Error)?.message ?? 'unknown'
         const status = /not connected/i.test(msg) ? 503 : 500
