@@ -12,7 +12,7 @@ import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirpo
 import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
-import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike } from '../property/land.js'
+import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, stackedFlatLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
@@ -627,6 +627,15 @@ describe('postFilter', () => {
     // Absent ≠ failing: dropping these would hide most of IS24's hidden-detail rows.
     const rows = [listing('a', { plotArea: undefined })]
     expect(postFilter(rows, criteria, ['minPlotArea'])).toHaveLength(1)
+  })
+
+  it('drops a flat from a house search whatever the portal typed it as', () => {
+    const rows = [
+      listing('a', { propertyType: 'Villa', summary: 'main door lower villa in a quiet cul-de-sac' }),
+      listing('b', { propertyType: 'Villa', summary: 'detached villa with garden' }),
+    ]
+    expect(postFilter(rows, { propertyType: 'house' }, []).map((l) => l.id)).toEqual(['b'])
+    expect(postFilter(rows, { propertyType: 'any' }, []).map((l) => l.id)).toEqual(['a', 'b'])
   })
 
   it('matches keywords case-insensitively across title, summary and address', () => {
@@ -1537,6 +1546,26 @@ describe('planningLike', () => {
 
   it('a positive sentence survives a negative one elsewhere in the text', () => {
     expect(planningLike({ summary: 'Full planning permission granted for a 3-bed bungalow. Scope for a larger house subject to planning.' })).toBe(true)
+  })
+})
+
+describe('stackedFlatLike', () => {
+  it('catches Scottish four-in-a-block flats sold as villas and typed flats', () => {
+    expect(stackedFlatLike({ propertyType: 'Villa', summary: '71 Lochend Gardens is a generously proportioned, two double bedroom main door lower villa situated in a quiet residential cul-de-sac.' })).toBe(true)
+    expect(stackedFlatLike({ propertyType: 'Villa', summary: 'Light and well-presented, two-bedroom, traditional upper villa with a private garden.' })).toBe(true)
+    expect(stackedFlatLike({ propertyType: 'Semi-Detached', keyFeatures: ['Ground floor flat with bay-fronted lounge', 'First floor flat with separate access'] })).toBe(true)
+    expect(stackedFlatLike({ propertyType: 'Detached', summary: 'A well-presented two-bedroom ground floor flat boasting off-street parking' })).toBe(true)
+    expect(stackedFlatLike({ propertyType: 'Bungalow', summary: 'communal gardens and superb local conveniences make this maisonette a truly desirable residence' })).toBe(true)
+    expect(stackedFlatLike({ propertyType: 'Flat', summary: 'Two bedrooms' })).toBe(true)
+  })
+
+  it('leaves real houses alone, including description-only mentions', () => {
+    expect(stackedFlatLike({ propertyType: 'Villa', summary: 'Detached villa with a south-facing garden and driveway' })).toBe(false)
+    expect(stackedFlatLike({ propertyType: 'Semi-Detached', summary: 'Two generous double upper-floor bedrooms alongside a modern family bathroom' })).toBe(false)
+    expect(stackedFlatLike({ propertyType: 'Semi-Detached', description: 'To the front is a shared entrance leading to the private driveway' })).toBe(false)
+    expect(stackedFlatLike({ propertyType: 'Detached', description: 'transformed from its ORIGINAL maisonette design to create a DISTINCTIVE home' })).toBe(false)
+    expect(stackedFlatLike({ propertyType: 'Detached', keyFeatures: ['Ground Floor Home Office/ 4th Bedroom'] })).toBe(false)
+    expect(stackedFlatLike({ propertyType: 'Detached' })).toBe(false)
   })
 })
 

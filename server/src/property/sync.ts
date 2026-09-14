@@ -22,7 +22,7 @@ import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, layerNameFor, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
-import { listingKind, planningLike, fixerLike } from './land.js'
+import { listingKind, planningLike, fixerLike, stackedFlatLike } from './land.js'
 import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
@@ -1012,6 +1012,8 @@ export function postFilter(listings: Listing[], c: Criteria, unsupported: string
       const types = normaliseHouseType(l.propertyType)
       if (types.some((t) => c.excludeHouseSubtypes!.includes(t))) return false
     }
+    // A house search never draws a flat, whatever the portal typed it as.
+    if (c.propertyType === 'house' && stackedFlatLike(l)) return false
     if (missing.has('excludeSchemes') && c.excludeSchemes && matchesAny(l, SCHEME_TERMS)) return false
     // Also always local: a portal's own auction flag misses text-only tells
     // (immobiliare's "vendita all'asta" rows carry no flag), and re-checking an

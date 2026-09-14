@@ -213,3 +213,20 @@ export const FIXER_RE =
 export function fixerLike(l: ListingText): boolean {
   return FIXER_RE.test(textOf(l))
 }
+
+/**
+ * A flat in house clothing. Scottish agents sell the two halves of a 1930s
+ * four-in-a-block as "lower villa" / "upper villa" (a "main door" flat has its
+ * own front door) and Rightmove types them "Villa", which the house whitelist
+ * accepts — 71 Lochend Gardens drew as a £150k gold-tier house (2026-09-14).
+ * Headline text only (title, summary, key features): descriptions mention the
+ * flat upstairs, a granny flat or a "former maisonette layout" of a real house.
+ * Calibrated on the live UK inventory: 5 of 41 "Villa" rows were flats.
+ */
+const STACKED_FLAT_RE =
+  /\b(?:lower|upper|quarter)[- ]villas?\b|\bdouble[- ]upper\s+(?:flat|villa|apartment|conversion)\b|\b(?:four|4)[- ]in[- ]a[- ]block\b|\b(?:ground|first|second|third|top|upper|lower)[- ]floor\s+(?:flat|apartment|maisonette)\b|\b(?:lower|upper|main[- ]door)\s+flat\b|\bflatted\b|\b(?:upper|lower)\s+colony\b|\bcolony\s+flat\b|\bmaisonettes?\b/i
+
+export function stackedFlatLike(l: ListingText & Pick<Listing, 'propertyType'>): boolean {
+  if (/\b(?:flat|apartment|maisonette)\b/i.test(l.propertyType ?? '')) return true
+  return STACKED_FLAT_RE.test([l.title ?? '', l.summary ?? '', ...(l.keyFeatures ?? [])].join('\n'))
+}
