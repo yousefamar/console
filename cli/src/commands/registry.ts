@@ -68,7 +68,7 @@ export const COMMANDS: CommandDef[] = [
     flags: { body: { type: 'string', description: 'Message text' }, html: { type: 'boolean', description: 'Body is HTML' }, 'reply-to': { type: 'string', description: 'Event ID to reply to' } } },
   { name: 'chat send-file', description: 'Send a file to a room', safety: 'write',
     args: [{ name: 'room-id', required: true, description: 'Room ID' }, { name: 'file-path', required: true, description: 'File to send' }],
-    flags: { caption: { type: 'string', description: 'Caption text' } } },
+    flags: { caption: { type: 'string', description: 'Caption text' }, mime: { type: 'string', description: 'MIME type (default: from extension)' }, voice: { type: 'boolean', description: 'Send an audio file as a push-to-talk voice note' } } },
   { name: 'chat react', description: 'React to a message', safety: 'write',
     args: [{ name: 'room-id', required: true, description: 'Room ID' }, { name: 'event-id', required: true, description: 'Event ID' }, { name: 'emoji', required: true, description: 'Emoji reaction' }] },
   { name: 'chat mark-read', description: 'Mark room(s) as read', safety: 'write',

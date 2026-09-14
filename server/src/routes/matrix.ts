@@ -18,6 +18,20 @@ import { restoreFromRecoveryKey, restoreCrossSigningFromRecoveryKey } from '../m
 const GHOST_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)_/i
 const BOT_RE = /^@(whatsapp|signal|telegram|discord(?:go)?|slack(?:go)?|instagram(?:go)?|facebook|twitter|linkedin|googlechat|gmessages|imessage(?:cloud)?)bot:/i
 
+const SEND_FILE_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+  ogg: 'audio/ogg; codecs=opus', oga: 'audio/ogg; codecs=opus', opus: 'audio/ogg; codecs=opus',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav',
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', json: 'application/json', csv: 'text/csv',
+}
+
+function mimeFromFilename(filename: unknown): string | undefined {
+  if (typeof filename !== 'string') return undefined
+  const ext = filename.split('.').pop()?.toLowerCase()
+  return ext ? SEND_FILE_MIME[ext] : undefined
+}
+
 function networkFromUserId(userId: string, re: RegExp): string | undefined {
   const m = userId.match(re)
   if (!m) return undefined
@@ -271,7 +285,9 @@ export function handleMatrixRoutes(
       const body = JSON.parse(await readBody(req))
 
       const fileData = Buffer.from(body.content, 'base64')
-      const contentType = body.mimeType || 'application/octet-stream'
+      const contentType: string = body.mimeType || mimeFromFilename(body.filename) || 'application/octet-stream'
+      const voice = body.voice === true
+      if (voice && !contentType.startsWith('audio/')) throw new Error('voice requires an audio file')
       const upload = await matrix.uploadMedia(fileData, contentType, body.filename)
 
       const msgtype = contentType.startsWith('image/') ? 'm.image'
@@ -279,12 +295,20 @@ export function handleMatrixRoutes(
         : contentType.startsWith('audio/') ? 'm.audio'
         : 'm.file'
 
+      const info: Record<string, unknown> = { mimetype: contentType, size: fileData.length }
+      if (typeof body.durationMs === 'number') info.duration = body.durationMs
       const content: Record<string, unknown> = {
         msgtype,
         body: body.caption || body.filename,
         filename: body.filename,
         url: upload.content_uri,
-        info: { mimetype: contentType, size: fileData.length },
+        info,
+      }
+      // MSC3245: the WhatsApp bridge sends m.audio as a plain audio file unless
+      // this key is present, in which case it goes out as a push-to-talk voice note.
+      if (voice) {
+        content['org.matrix.msc3245.voice'] = {}
+        content['org.matrix.msc1767.audio'] = typeof body.durationMs === 'number' ? { duration: body.durationMs } : {}
       }
 
       const result = await matrixSync.sendRoomEvent({

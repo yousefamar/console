@@ -106,7 +106,8 @@ export interface WhatsAppFile {
   path: string
   mimeType: string
   kind: 'audio' | 'video' | 'document'
-  transcript?: string  // set only for transcribed voice notes (audio + ptt)
+  voiceNote?: boolean  // audio recorded with the mic button (ptt), not a shared audio file
+  transcript?: string  // set only for voice notes whose transcription succeeded
 }
 
 export interface WhatsAppInbound {
@@ -372,6 +373,7 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
             const file: WhatsAppFile = { path: p, mimeType, kind }
             // Voice note (recorded via the mic button, not a shared audio file) — transcribe.
             if (kind === 'audio' && audioMsg?.ptt) {
+              file.voiceNote = true
               const transcript = await transcribeAudio(buffer, mimeType)
               if (transcript) file.transcript = transcript
             }
@@ -517,11 +519,18 @@ export function inboundEnvelope(
   if (opts.forks?.length) {
     lines.push(``, `Active conversation forks: ${opts.forks.map((f) => `${f.label} (last message ${formatTime(f.lastInboundAt, now)})`).join(', ')}`)
   }
-  lines.push(
-    ``,
-    `Message:`,
-    msg.text || (msg.imagePaths.length || msg.files.length ? '(no text — attachment only)' : ''),
-  )
+  // A transcribed voice note IS the message — same slot, same handling as
+  // typed text, so the reader never treats it as "attachment only".
+  const voiceNote = msg.files.find((f) => f.voiceNote)
+  if (msg.text) {
+    lines.push(``, `Message:`, msg.text)
+  } else if (voiceNote?.transcript) {
+    lines.push(``, `Message (voice note, transcribed — treat exactly like typed text):`, voiceNote.transcript)
+  } else if (voiceNote) {
+    lines.push(``, `Message:`, `(voice note — transcription FAILED; tell the sender you couldn't make out the audio and ask them to type it)`)
+  } else {
+    lines.push(``, `Message:`, msg.imagePaths.length || msg.files.length ? '(no text — attachment only)' : '')
+  }
   if (msg.imagePaths.length > 0) {
     lines.push(
       ``,
@@ -530,8 +539,12 @@ export function inboundEnvelope(
     )
   }
   for (const file of msg.files) {
+    if (file === voiceNote) {
+      lines.push(``, `(voice note audio: ${file.path})`)
+      continue
+    }
     lines.push(``, `[INBOUND WhatsApp] Attached file (${file.kind}, ${file.mimeType}): ${file.path}`)
-    if (file.transcript) lines.push(`Voice note transcript: "${file.transcript}"`)
+    if (file.transcript) lines.push(`Transcript: "${file.transcript}"`)
   }
   lines.push(
     ``,

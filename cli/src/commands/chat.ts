@@ -1,6 +1,6 @@
 import { hubFetch } from '../client.js'
 import { output, exitWithError, info, outputLine, type GlobalFlags } from '../output.js'
-import { parseFlags } from './util.js'
+import { parseFlags, unknownFlags } from './util.js'
 
 export async function chat(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   switch (verb) {
@@ -56,20 +56,36 @@ async function chatSend(args: string[], flags: GlobalFlags): Promise<void> {
 async function chatSendFile(args: string[], flags: GlobalFlags): Promise<void> {
   const roomId = args[0]
   const filePath = args[1]
-  if (!roomId || !filePath) exitWithError('USAGE', 'Usage: con chat send-file <room-id> <file-path>', flags)
+  if (!roomId || !filePath) exitWithError('USAGE', 'Usage: con chat send-file <room-id> <file-path> [--caption "..."] [--mime <type>] [--voice]', flags)
   const opts = parseFlags(args.slice(2))
+  const bad = unknownFlags(opts, ['caption', 'mime', 'voice'])
+  if (bad.length) exitWithError('USAGE', `Unknown flag(s): ${bad.map((f) => `--${f}`).join(', ')}`, flags)
+  const voice = opts.voice === 'true'
 
-  if (flags.dryRun) { info(`Would send file ${filePath} to ${roomId}`); return }
+  if (flags.dryRun) { info(`Would send ${voice ? 'voice note' : 'file'} ${filePath} to ${roomId}`); return }
 
   const { readFileSync } = await import('node:fs')
   const { basename } = await import('node:path')
   const content = readFileSync(filePath).toString('base64')
+  const durationMs = voice ? await audioDurationMs(filePath) : undefined
 
   const result = await hubFetch(`/matrix/rooms/${encodeURIComponent(roomId)}/send-file`, {
     method: 'POST',
-    body: { filename: basename(filePath), content, caption: opts.caption },
+    body: { filename: basename(filePath), content, caption: opts.caption, mimeType: opts.mime, voice, durationMs },
   })
   output(result, flags)
+}
+
+/** Voice notes show a length in WhatsApp only if the event carries one; best-effort via ffprobe. */
+async function audioDurationMs(filePath: string): Promise<number | undefined> {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { encoding: 'utf8' })
+    const secs = parseFloat(out.trim())
+    return Number.isFinite(secs) ? Math.round(secs * 1000) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 async function chatReact(args: string[], flags: GlobalFlags): Promise<void> {
