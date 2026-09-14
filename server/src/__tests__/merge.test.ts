@@ -27,7 +27,8 @@ describe('buildMergeEnvelope', () => {
     expect(e).toContain('Gravel general (fork)')
     expect(e).toContain('mTLS')
     expect(e).toMatch(/fork/)
-    expect(e).toMatch(/Memory/)
+    expect(e).toMatch(/auto-memory/)
+    expect(e).not.toContain("## Memory")
   })
   it('handles an empty summary gracefully', () => {
     const e = buildMergeEnvelope('x (fork)', '')
