@@ -188,12 +188,13 @@ export function hubFetchRaw(path: string, opts?: HubFetchOptions): Promise<Respo
   const { signal, cleanup } = withTimeout(opts)
   const url = `${getHubUrl()}${path}`
   const init: RequestInit = { ...opts, signal, ...(shouldUseCredentials(url) ? { credentials: 'include' } : {}) }
-  const promise = fetchHubFirst(url, init).then((res) => {
+  // Chained, not `promise.finally(cleanup)` on the side: a detached derived
+  // promise rejects unhandled whenever the fetch fails, even with the caller's
+  // catch in place.
+  return fetchHubFirst(url, init).then((res) => {
     noteAuthChallenge(res)
     return res
-  })
-  promise.finally(cleanup)
-  return promise
+  }).finally(cleanup)
 }
 
 export class HubError extends Error {

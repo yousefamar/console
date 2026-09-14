@@ -196,6 +196,17 @@ export function useKeybindings() {
         return
       }
 
+      // "\" in an EMPTY input/textarea opens the command bar too. Sending a
+      // chat or agent message re-focuses its composer, so the `\` that should
+      // have jumped somewhere was typed into it instead. Once there is text
+      // the field keeps its backslash.
+      const emptyField = (tag === 'input' || tag === 'textarea') && (target as HTMLInputElement).value === ''
+      if (e.key === '\\' && emptyField && !e.metaKey && !e.ctrlKey && !e.altKey && !ui.getState().commandBarOpen) {
+        e.preventDefault()
+        ui.getState().setCommandBarOpen(true)
+        return
+      }
+
       // Don't intercept when editing text
       if (isEditing) return
 
@@ -451,6 +462,13 @@ export function useKeybindings() {
         if (e.key === 'p' && selected) {
           e.preventDefault()
           void uinbox.toggleRoute(selected)
+          return
+        }
+        // "/" is the footer's advertised search; the Inbox spans every
+        // source, so it is the command bar (as on Spaces), not mail search.
+        if (e.key === '/') {
+          e.preventDefault()
+          ui.getState().setCommandBarOpen(true)
           return
         }
         // Mail replies work here too — the viewer IS ThreadView.
