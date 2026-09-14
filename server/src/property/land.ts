@@ -46,15 +46,29 @@ export const FARMLAND_MIN_PLOT_M2 = 1000
 export const FARMLAND_TEXT_RE =
   /\bpaddocks?\b|\borchards?\b|\bstable block and paddocks?\b|\bstables and paddocks?\b|\bequestrian (?:facilities|property|land|use)\b|\bsmallholding\b|\bsmall holding\b|\bpasture\b|\bgrazing\b|\bmenage\b|\bmanège\b|\bpolytunnels?\b|\bhalf an acre\b|\bquarter of an acre\b|\bthird of an acre\b|\bweide\b|\bwiese\b|obstwiese|obstgarten|streuobst|pferdehaltung|pferdestall|\bstallungen?\b|nebengebäude|\bgrundstück (?:von|mit) (?:über |ca\.? ?)?\d|\bfrutteto\b|\buliveto\b|\bvigneto\b|\bterreno agricolo\b|\bstalla\b|\bpascolo\b/i
 
-/** A land word preceded by this within ~60 chars is somebody else's land. */
+/** A land word preceded by this within ~60 chars is somebody else's land — or land that was, or might one day be ("former orchard", "possibilities: orchard"). */
 const NEARBY_BEFORE_RE =
-  /(?:nearby|near|neighbour\w*|close to|close by|walks?|trails?|views?|view of|outlook|overlook\w*|backing onto|backs onto|adjacent|surround\w*|access to|distance|minutes|local|country park|park|the area|areas? of|acres of|opportunit\w+|amenit\w+|pursuits|centre|center|club|riding|routes?|explore|community|communal|public|shared|schools?|nestled within|estate of|development|beyond|open space|green spaces?|spaces? of)\W[^.\n]{0,60}$/i
+  /(?:nearby|near|neighbour\w*|close to|close by|walks?|trails?|views?|view of|outlook|overlook\w*|backing onto|backs onto|adjacent|surround\w*|access to|distance|minutes|local|country park|park|the area|areas? of|acres of|opportunit\w+|amenit\w+|pursuits|centre|center|club|riding|routes?|explore|community|communal|public|shared|schools?|nestled within|estate of|development|beyond|open space|green spaces?|spaces? of|former|formerly|once|originally|possibilit\w+|potential|could|ideal for|whether as|scope for)\W[^.\n]{0,60}$/i
 /** …or followed by this within ~30 chars. */
 const NEARBY_AFTER_RE =
-  /^[^.\n]{0,30}?\b(?:walks?|trails?|nearby|close by|in the area|on the doorstep|centre|center|club|outlook|beyond|views?|of (?:open|public|green|communal|shared|beautiful|stunning|rolling|surrounding|countryside)|open space|countryside|parkland|heathland|primary|school|academy|nursery|plots)\b/i
-/** Street names, house names and business names built from land words ("Orchard Close", "The Paddocks", "Acres Estate Agents"). */
-const STREET_SUFFIX_RE = /^\s+(?:Close|Road|Rd|Street|St|Lane|Ln|Drive|Dr|Avenue|Ave|Way|Hill|Hills|Park|Court|Ct|Gardens|Green|View|Place|Pl|Crescent|Cres|Grove|Walk|Rise|Terrace|Mews|Row|End|Estate|Farm Road|Estate Agents|at\b|Country Park|Development|Primary|School|Academy|Nursery|Surgery|Church|Inn|Pub|Woods?|House|Cottage|Court)\b/
+  /^[^.\n]{0,30}?\b(?:walks?|trails?|nearby|close by|in the area|on the doorstep|centre|center|club|outlook|beyond|views?|of (?:open|public|green|communal|shared|beautiful|stunning|rolling|surrounding|countryside)|open space|countryside|parkland|heathland|primary|school|academy|nursery|plots|new (?:collection|homes?|development|build)|coming soon)\b/i
+/**
+ * Street names, house names, estate names and business names built from land
+ * words ("Orchard Close", "The Paddocks", "Acres Estate Agents", "Orchards
+ * development"). Case-insensitive: the land word itself must be capitalised
+ * (checked by the caller), the descriptor after it often isn't.
+ */
+const STREET_SUFFIX_RE = /^\s+(?:Close|Road|Rd|Street|St|Lane|Ln|Drive|Dr|Avenue|Ave|Way|Hill|Hills|Park|Court|Ct|Gardens|Green|View|Place|Pl|Crescent|Cres|Grove|Walk|Rise|Terrace|Mews|Row|End|Lea|Leys|Croft|Dene|Fields?|Meadows?|Gate|Village|Estate|Farm Road|Estate Agents|at\b|Country Park|Residential Park|Park Homes?|Development|Primary|School|Academy|Nursery|Surgery|Church|Inn|Pub|Woods?|House|Cottage|Court)\b/i
 const HOUSE_NAME_BEFORE_RE = /\bThe\s+(?:Old\s+)?$/
+/**
+ * Listings whose grounds belong to a site, not the home: retirement villages
+ * ("set within 20 acres of landscaped grounds"), park homes, houseboats on a
+ * three-acre marina, shared-ownership estates named after the orchard they
+ * replaced. Prose acreage and land words are about the site there — only a
+ * structured plot field is believed.
+ */
+const COMMUNAL_SITE_RE =
+  /\bretirement (?:village|development|complex|community|park|living|scheme)\b|\bover[- ]?(?:45|50|55|60)'?s\b|\bpark home\b|\bresidential park\b|\bhouseboat\b|\bshared ownership\b|\bcommunal grounds\b/i
 
 /**
  * FARMLAND_TEXT_RE with context: true only for a match that is not a proper
@@ -142,31 +156,41 @@ export function plotAreaFromText(text: string): number | undefined {
 
 
 /**
- * Which layer a listing belongs on. A search declared `farmland` is farmland;
- * otherwise a house is promoted when its type says so, its plot is at least
- * FARMLAND_MIN_PLOT_M2, or its text claims that much land. "House + land
- * only": rows with no bedrooms at all are bare land and never promoted here —
- * the house searches don't return them, and the farmland clients drop them.
+ * Which layer a listing belongs on. A row from a dedicated smallholdings feed
+ * is farmland on the search's say-so; every other row — house search or
+ * farmland keyword search alike — is promoted when its type says so, its plot
+ * is at least FARMLAND_MIN_PLOT_M2, or its text claims that much land. "House
+ * + land only": rows with no bedrooms at all are bare land and never promoted
+ * here — the house searches don't return them, and the farmland clients drop
+ * them.
  */
 /** Portals with no structured plot field — any stored plotArea there was parsed out of prose and is re-derived here under the current rules. */
 const PROSE_PLOT_PORTALS = new Set(['rightmove', 'onthemarket'])
+/** Feeds that are smallholdings by construction — nothing to classify. */
+const FARMLAND_FEEDS = new Set(['smallholdings'])
 
 export function listingKind(l: Pick<Listing, 'propertyType' | 'title' | 'plotArea' | 'summary' | 'keyFeatures' | 'description' | 'bedrooms'> & { portal?: string }, searchKind: PropertyKind): PropertyKind {
   // A plot search is the only way onto the plot layer, and never off it: a
   // "Plot with planning permission for a 4-bed house" is a plot, not a house.
   if (searchKind === 'plot') return 'plot'
-  if (searchKind === 'farmland') return 'farmland'
+  // A farmland KEYWORD search on a house portal is not evidence of land:
+  // OnTheMarket matches keywords against the address too, so "Orchard Grove"
+  // and "Paddocks Close" semis came back and drew as smallholdings (56 of 59
+  // UK farmland pins on 2026-09-14). Those rows take the same text test as a
+  // house search's; a row that classifies as a plain house draws nowhere.
+  if (searchKind === 'farmland' && l.portal && FARMLAND_FEEDS.has(l.portal)) return 'farmland'
   if (FARMLAND_TYPE_RE.test(l.propertyType ?? '')) return 'farmland'
   // In the title the same words are often a street or house name ("Pitts Farm Road", "Willow Farm Close").
   if (typeWordInTitle(l.title ?? '')) return 'farmland'
   const text = [l.title ?? '', l.summary ?? '', ...(l.keyFeatures ?? []), l.description ?? ''].join('\n')
   // A portal's own plot field is trusted at any size (a 12 ha rustico at €250k is real); only prose gets the plausibility cap.
   const stated = l.plotArea != null && !(l.portal && PROSE_PLOT_PORTALS.has(l.portal)) ? l.plotArea : undefined
-  const plot = stated ?? plotAreaFromText(text)
+  const communal = COMMUNAL_SITE_RE.test(`${l.propertyType ?? ''}\n${text}`)
+  const plot = stated ?? (communal ? undefined : plotAreaFromText(text))
   if (plot != null && plot >= FARMLAND_MIN_PLOT_M2) return 'farmland'
   // A stated plot BELOW the floor is the author telling us the size — believe
   // it over a keyword ("orchard" in a 300 m² garden is a fruit tree).
-  if (plot == null && hasLandKeyword(text)) return 'farmland'
+  if (plot == null && !communal && hasLandKeyword(text)) return 'farmland'
   return 'house'
 }
 

@@ -964,12 +964,15 @@ describe('PropertySync kind layers', () => {
     expect(cards.find((c) => c.listingId === 'uk1')?.auction).toBe(false)
   })
 
-  it('a farmland search feeds property/farmland, not the house layer', async () => {
-    const { store, sync, layers } = harness()
-    const s = store.create({ country: 'DE', layer: 'zone', kind: 'farmland' })
+  it('a farmland search feeds property/farmland with the rows whose own text says land; a street-name match draws nowhere', async () => {
+    const { store, sync, layers } = harness([
+      listing('uk-paddock', { lat: 51, lon: -1, price: 250000, propertyType: 'Detached', description: 'Set in 3.2 acres with a paddock and stables' }),
+      listing('uk-orchard-grove', { lat: 51, lon: -1, price: 250000, propertyType: 'Semi-Detached', title: '3 bedroom semi-detached house for sale in Orchard Grove, Stanley' }),
+    ])
+    const s = store.create({ country: 'UK', layer: 'zone', kind: 'farmland' })
     await sync.fullSync(s.id)
     expect([...layers.keys()]).toEqual(['property/farmland'])
-    expect(layers.get('property/farmland')!.features.length).toBe(1)
+    expect(layers.get('property/farmland')!.features.map((f) => f.properties.listingId)).toEqual(['uk-paddock'])
   })
 
   it('an interested listing stays on the map when a later criteria change would filter it out', async () => {
@@ -1265,11 +1268,18 @@ describe('listingKind', () => {
     expect(listingKind({ propertyType: 'Land', summary: 'Plot with planning permission for a 4 bed house' }, 'plot')).toBe('plot')
     expect(listingKind({ propertyType: 'Farm Land', plotArea: 40000 }, 'plot')).toBe('plot')
     expect(listingKind({ propertyType: 'Detached', summary: 'planning permission for an annexe' }, 'house')).toBe('house')
-    expect(listingKind({ propertyType: 'Land' }, 'farmland')).toBe('farmland')
+    expect(listingKind({ propertyType: 'Land' }, 'farmland')).not.toBe('plot')
   })
 
-  it('a farmland search is always farmland; a house search promotes on type, plot or text', () => {
-    expect(listingKind({}, 'farmland')).toBe('farmland')
+  it('a smallholdings-feed row is farmland on the search\'s say-so; any other farmland-search row takes the same text test as a house search', () => {
+    expect(listingKind({ portal: 'smallholdings' }, 'farmland')).toBe('farmland')
+    expect(listingKind({}, 'farmland')).toBe('house')
+    // OnTheMarket keyword search matched the street name (live 2026-09-14: 56 of 59 UK farmland pins).
+    expect(listingKind({ portal: 'onthemarket', propertyType: 'Semi-Detached', title: '3 bedroom semi-detached house for sale in Orchard Grove, Stanley', description: 'Three well-sized bedrooms' }, 'farmland')).toBe('house')
+    expect(listingKind({ portal: 'onthemarket', propertyType: 'Bungalow', description: 'extends to approximately 3.22 acres, offering a mix of established gardens, paddock, and natural countryside' }, 'farmland')).toBe('farmland')
+  })
+
+  it('a house search promotes on type, plot or text', () => {
     expect(listingKind({ propertyType: 'Semi-Detached' }, 'house')).toBe('house')
     expect(listingKind({ propertyType: 'Equestrian Facility' }, 'house')).toBe('farmland')
     expect(listingKind({ propertyType: 'Bauernhaus' }, 'house')).toBe('farmland')
@@ -1311,6 +1321,16 @@ describe('listingKind', () => {
     expect(house('a visionary development nestled within 215 acres of mature woodland in West Lothian')).toBe('house')
     expect(house('OPEN THE BANK HOLIDAY WEEKEND 10AM-5PM WV14 8HA ***THE ARCHMORE***')).toBe('house')
     expect(house('Situated in the popular Orchard Close, a short walk from The Paddocks')).toBe('house')
+    // Live OnTheMarket keyword-search rows, 2026-09-14
+    expect(house('this well-presented three-bedroom home is situated within the popular Orchards development and offers')).toBe('house')
+    expect(house('Constructed around 1960 on former orchard land, Hales Park has grown into a well-regarded residential area')).toBe('house')
+    expect(house('The lower section offers endless possibilities, whether as a family garden, orchard, play area, or vegetable plot')).toBe('house')
+    expect(house('Introducing Archer\'s Grove at Stoke Orchard, a beautiful new collection of homes for sale in Gloucestershire')).toBe('house')
+    expect(house('Nestled in the serene Orchards Residential Park, this immaculate two-bedroom detached bungalow')).toBe('house')
+    expect(house('Set in the Orchard Lea retirement village for the over 55\'s. The property is set within approximately 20 acres of scenic grounds')).toBe('house')
+    expect(listingKind({ propertyType: 'Houseboat', description: 'private grounds, including an orchard leading down to the towpath; mooring within secure gated grounds of approximately three acres' }, 'house')).toBe('house')
+    // …but a structured plot field still counts on a communal site (the portal measured it).
+    expect(listingKind({ portal: 'immoscout24', propertyType: 'Einfamilienhaus', plotArea: 2500, description: 'Nähe Retirement Village' }, 'house')).toBe('farmland')
     expect(listingKind({ propertyType: 'Semi-Detached', title: '3 bedroom semi-detached house for sale in Pitts Farm Road, Erdington' }, 'house')).toBe('house')
     expect(listingKind({ propertyType: 'Detached', title: 'Willow Farm, Choppington' }, 'house')).toBe('house')
     expect(listingKind({ propertyType: 'Farmhouse', title: 'Willow Farm, Choppington' }, 'house')).toBe('farmland')
