@@ -15,7 +15,7 @@ import { CalendarDays, ChevronLeft, ChevronRight, PanelRightClose } from 'lucide
 import { db } from '@/db'
 import { useCalendarStore, fromDbEvent } from '@/store/calendar'
 import { optimisticallyDeleted } from '@/calendar/sync'
-import { getPref, setPref } from '@/prefs'
+import { usePref } from '@/prefs'
 import { CalendarGrid } from './CalendarGrid'
 import { CalendarEventForm } from './CalendarEventForm'
 import { CalendarEventPopover } from './CalendarEventPopover'
@@ -38,7 +38,7 @@ function localDateStr(d: Date): string {
 
 export const InboxDayRail = memo(function InboxDayRail() {
   const [date, setDate] = useState(() => startOfDay(new Date()))
-  const [collapsed, setCollapsed] = useState(() => getPref<boolean>(COLLAPSED_PREF, false))
+  const [collapsed, setCollapsed] = usePref<boolean>(COLLAPSED_PREF, false)
   const [rows, setRows] = useState<DbCalendarEvent[]>([])
   const visibleCalendarIds = useCalendarStore((s) => s.visibleCalendarIds)
   const overlaySources = useCalendarStore((s) => s.overlaySources)
@@ -101,12 +101,7 @@ export const InboxDayRail = memo(function InboxDayRail() {
   const days = useMemo(() => [date], [dateKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const isToday = isSameDay(new Date(), date)
 
-  const toggleCollapsed = () => {
-    setCollapsed((v) => {
-      setPref(COLLAPSED_PREF, !v)
-      return !v
-    })
-  }
+  const toggleCollapsed = () => setCollapsed(!collapsed)
 
   if (collapsed) {
     return (

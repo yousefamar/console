@@ -15,9 +15,10 @@
 // prefix — the header already names them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
-import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Ban, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, Rss, SlidersHorizontal } from 'lucide-react'
+import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Ban, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, PanelLeftClose, Rss, SlidersHorizontal } from 'lucide-react'
 import { SiReddit, SiSubstack, SiX, SiYcombinator, SiYoutube } from 'react-icons/si'
 import { AgentSessionView } from './AgentSessionView'
+import { usePref } from '@/prefs'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { useAgentStore } from '@/store/agent'
 import { useFeedStore } from '@/store/feeds'
@@ -43,6 +44,8 @@ import { approveHandbacks, hubErrorText } from '@/inbox/approve'
 // src/inbox/subscribe.ts, wired at boot from GatedBoot — the tab badge needs
 // the lists before this pane ever mounts.
 
+const FEED_COLLAPSED_PREF = 'inboxFeedCollapsed'
+
 export const InboxTab = memo(function InboxTab() {
   const fullFeedList = useUnifiedInboxStore((s) => s.feedList)
   const feedFilter = useUnifiedInboxStore((s) => s.feedFilter)
@@ -65,13 +68,18 @@ export const InboxTab = memo(function InboxTab() {
   const selectedKey = selected?.key ?? null
   const [showFilter, setShowFilter] = useState(false)
   const isMobile = useIsMobile()
+  // Desktop: the Feed column folds to a thin rail (same pref mechanism as the
+  // day rail on the right). Mobile has its own Inbox|Feed toggle instead.
+  const [feedCollapsed, setFeedCollapsed] = usePref<boolean>(FEED_COLLAPSED_PREF, false)
+  const toggleFeedCollapsed = () => setFeedCollapsed(!feedCollapsed)
 
   // Mobile: one screen at a time — an Inbox|Feed segmented toggle picks the
   // visible list; selecting swaps to the viewer; the header back button
   // (mobileGoBack) clears the selection back to the list.
   const [mobileList, setMobileList] = useState<'inbox' | 'feed'>('inbox')
   const showViewer = !isMobile || !!selected
-  const showFeedCol = isMobile ? (!selected && mobileList === 'feed') : true
+  const showFeedRail = !isMobile && feedCollapsed
+  const showFeedCol = isMobile ? (!selected && mobileList === 'feed') : !feedCollapsed
   const showInboxCol = isMobile ? (!selected && mobileList === 'inbox') : true
   const colClass = isMobile ? 'w-full' : 'w-80 flex-shrink-0 border-r border-border'
   const mobileToggle = isMobile ? (
@@ -92,6 +100,19 @@ export const InboxTab = memo(function InboxTab() {
 
   return (
     <>
+      {/* Collapsed Feed rail — icon + count; click to expand. The column
+          below stays mounted (display:none) so its scroll position survives. */}
+      {showFeedRail && (
+        <button
+          onClick={toggleFeedCollapsed}
+          className="w-8 flex-shrink-0 border-r border-border flex flex-col items-center gap-1 pt-2 text-text-tertiary hover:text-text-primary transition-colors duration-fast"
+          title={`Show feed (${feedList.length})`}
+        >
+          <Rss size={14} />
+          <span className="text-[10px] tabular-nums">{feedList.length}</span>
+        </button>
+      )}
+
       {/* Feed column */}
       <div className={`${colClass} ${showFeedCol ? 'flex' : 'hidden'} flex-col overflow-hidden`}>
         <ColumnHeader
@@ -132,6 +153,11 @@ export const InboxTab = memo(function InboxTab() {
             title: 'Filter feeds',
             onClick: () => setShowFilter((v) => !v),
           }}
+          trailing={!isMobile && (
+            <button onClick={toggleFeedCollapsed} className="text-text-tertiary hover:text-text-primary" title="Collapse">
+              <PanelLeftClose size={12} />
+            </button>
+          )}
         />
         {showFilter && <FeedFilterPanel onClose={() => setShowFilter(false)} />}
         <div className="flex-1 overflow-y-auto">
@@ -408,11 +434,12 @@ const SOURCE_FILTERS: Array<{ source: InboxSource; icon: React.ReactNode; title:
 
 // Matches SpacesTab's RailSection header (text-[10px] uppercase tracking-wide
 // text-text-tertiary) so the two unified panes read as one family.
-function ColumnHeader({ label, count, extra, action }: {
+function ColumnHeader({ label, count, extra, action, trailing }: {
   label: string
   count: number
   extra?: React.ReactNode
   action?: { icon: React.ReactNode; title: string; onClick: () => void }
+  trailing?: React.ReactNode
 }) {
   return (
     <div className="flex items-center justify-between border-b border-border px-3 py-1">
@@ -428,6 +455,7 @@ function ColumnHeader({ label, count, extra, action }: {
             {action.icon}
           </button>
         )}
+        {trailing}
       </span>
     </div>
   )

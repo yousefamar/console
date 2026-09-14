@@ -12,6 +12,7 @@
 // localStorage is still appropriate for device-specific things like the
 // hub URL override or one-shot "have we prompted?" flags.
 
+import { useEffect, useState } from 'react'
 import { hubFetch } from '@/hub'
 
 export type PrefValue = string | number | boolean | null | PrefValue[] | { [k: string]: PrefValue }
@@ -80,6 +81,24 @@ export function isPrefsLoaded(): boolean {
  */
 export function prefsReady(): Promise<void> {
   return readyPromise
+}
+
+/**
+ * Component state backed by a pref. Panes are pre-rendered before `initPrefs()`
+ * resolves, so a plain `useState(() => getPref(…))` seeds from the empty cache
+ * and the saved value never shows; this re-reads once the hub copy lands and
+ * follows every later `setPref` of the key.
+ */
+export function usePref<T extends PrefValue>(key: string, fallback: T): [T, (value: T) => void] {
+  const [value, setValue] = useState<T>(() => getPref(key, fallback))
+  useEffect(() => {
+    let cancelled = false
+    void prefsReady().then(() => { if (!cancelled) setValue(getPref(key, fallback)) })
+    const off = onPrefChange<T>(key, (v) => setValue(v === undefined ? fallback : v))
+    return () => { cancelled = true; off() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  return [value, (v) => setPref(key, v)]
 }
 
 /** Test seam: forget the cache + retry state. */
