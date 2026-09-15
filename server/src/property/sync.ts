@@ -22,7 +22,7 @@ import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, layerNameFor, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
-import { listingKind, planningLike, fixerLike, stackedFlatLike } from './land.js'
+import { listingKind, planningLike, fixerLike, footAccessLike, stackedFlatLike } from './land.js'
 import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
@@ -35,6 +35,8 @@ interface ReviewableListing {
   s: PropertySearch
   interested: boolean
   fixer: boolean
+  /** `footAccessLike()` — no vehicle reaches the house. */
+  footAccess: boolean
   alsoOn: Portal[]
 }
 
@@ -852,6 +854,7 @@ export class PropertySync {
         s: top.s,
         interested: group.some((c) => c.interested),
         fixer: kind === 'house' && fixerLike(top.l),
+        footAccess: footAccessLike(top.l),
         alsoOn: [...new Set(group.slice(1).map((c) => c.l.portal))],
       })
     }
@@ -871,7 +874,7 @@ export class PropertySync {
       counts[t.kind] += rows.length
       if (opts.kind && t.kind !== opts.kind) continue
       for (const r of rows) {
-        all.push(toDeckCard({ listing: r.l, search: r.s, kind: t.kind, tier: t.tier, fixer: r.fixer, auction: auctionLike(r.l), alsoOn: r.alsoOn, highStreet: this.highStreetLabel(r.l), airport: airportLabel(r.l) }))
+        all.push(toDeckCard({ listing: r.l, search: r.s, kind: t.kind, tier: t.tier, fixer: r.fixer, footAccess: r.footAccess, auction: auctionLike(r.l), alsoOn: r.alsoOn, highStreet: this.highStreetLabel(r.l), airport: airportLabel(r.l) }))
       }
     }
     const sorted = sortDeck(all)
@@ -893,7 +896,7 @@ export class PropertySync {
     const rows = this.reviewable(kind, tier)
     this.reviewableCache.set(`${kind}|${tier ?? ''}`, rows)
     const features: unknown[] = []
-    for (const { l, s, interested: isInterested, fixer, alsoOn } of rows) {
+    for (const { l, s, interested: isInterested, fixer, footAccess, alsoOn } of rows) {
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [l.lon, l.lat] },
@@ -904,6 +907,7 @@ export class PropertySync {
           area: l.floorArea,
           plot: l.plotArea,
           condition: fixer ? 'needs work' : undefined,
+          access: footAccess ? 'foot only' : undefined,
           listed: l.listedAt?.slice(0, 10),
           country: s.country,
           portal: l.portal,
@@ -937,7 +941,7 @@ export class PropertySync {
     const geojson = { type: 'FeatureCollection', features: features.slice(0, MAX_PINS) }
     try {
       this.mapLayers.upsert(slug, geojson, {
-        style: { color: tier ? TIER_COLOR : LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'condition', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'highStreet', 'url'] },
+        style: { color: tier ? TIER_COLOR : LAYER_COLOR, size: 5, panel: true, popup: ['price', 'address', 'beds', 'area', 'plot', 'condition', 'access', 'listed', 'country', 'portal', 'alsoOn', 'airport', 'highStreet', 'url'] },
         fit: false,
         updatedBy: 'property',
       })

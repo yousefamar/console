@@ -348,6 +348,7 @@ private fun PropertyCardFace(card: PropertyCard, onOpen: (() -> Unit)?) {
                     // Gold = the tiered (lifted-ceiling) searches' layer colour on the map.
                     if (card.tier != null) Badge(card.tier, Color(0xFFEAB308), fg = Color.Black)
                     if (card.fixer) Badge("needs work", MaterialTheme.accents.amber, fg = Color.Black)
+                    if (card.footAccess) Badge("foot only", MaterialTheme.accents.amber, fg = Color.Black)
                     Badge(card.country, Color.Black.copy(alpha = 0.55f))
                 }
             }

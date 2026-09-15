@@ -37,6 +37,8 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- Property deck: `foot only` badge (server `DeckCard.footAccess` — a house no car reaches, `footAccessLike()`), beside `needs work`. `PropertyDeckRepository.kt`, `PropertyDeckScreen.kt`; SPA pin popup shows `access: foot only`.
+
 ## Shipped
 
 ### v100 (2026-09-15)

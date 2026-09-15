@@ -12,7 +12,7 @@ import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirpo
 import { asEntryArray, exposeFields, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields, priceQualifier } from '../property/rightmove.js'
-import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, stackedFlatLike } from '../property/land.js'
+import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, footAccessLike, stackedFlatLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
@@ -1067,6 +1067,7 @@ describe('PropertySync kind layers', () => {
     expect(byId.get('uk1')).toMatchObject({ _icon: '🏠' })
     expect(byId.get('uk1')!.condition).toBeUndefined()
     expect(byId.get('uk-fixer')).toMatchObject({ _icon: '🏚️', condition: 'needs work' })
+    expect(byId.get('uk-fixer')!.access).toBeUndefined()
     // Interested beats the fixer glyph — 🏡 is the one he chose.
     sync.review(s.id, 'uk-fixer', 'interested')
     expect(layers.get('property/house')!.features.find((f) => f.properties.listingId === 'uk-fixer')!.properties._icon).toBe('🏡')
@@ -1082,6 +1083,18 @@ describe('PropertySync kind layers', () => {
     const cards = sync.deck({ limit: 10 }).cards
     expect(cards.find((c) => c.listingId === 'uk-lot')?.auction).toBe(true)
     expect(cards.find((c) => c.listingId === 'uk1')?.auction).toBe(false)
+  })
+
+  it('a house no car reaches carries an access field on the pin and the deck card', async () => {
+    const { store, sync, layers } = harness([listing('uk-path', { lat: 52, lon: -1.5, price: 130000, propertyType: 'Detached', summary: 'Cottage, pedestrian access only via the footpath' })])
+    const s = store.create({ country: 'UK', layer: 'zone' })
+    await sync.fullSync(s.id)
+    const byId = new Map(layers.get('property/house')!.features.map((f) => [f.properties.listingId, f.properties]))
+    expect(byId.get('uk-path')!.access).toBe('foot only')
+    expect(byId.get('uk1')!.access).toBeUndefined()
+    const cards = sync.deck({ limit: 10 }).cards
+    expect(cards.find((c) => c.listingId === 'uk-path')?.footAccess).toBe(true)
+    expect(cards.find((c) => c.listingId === 'uk1')?.footAccess).toBe(false)
   })
 
   it('a farmland search feeds property/farmland with the rows whose own text says land; a street-name match draws nowhere', async () => {
@@ -1743,5 +1756,26 @@ describe('fixerLike', () => {
     expect(fixerLike({ description: 'Material Information: History of Subsidence: No. Unsafe Cladding: No' })).toBe(false)
     expect(fixerLike({ summary: 'Beautifully presented three bedroom semi with landscaped garden' })).toBe(false)
     expect(fixerLike({})).toBe(false)
+  })
+})
+
+describe('footAccessLike', () => {
+  it('flags a house no car reaches, in IT/EN/DE phrasing', () => {
+    expect(footAccessLike({ summary: 'La proprietà è raggiungibile a piedi tramite un sentiero attraversato da un piccolo torrente' })).toBe(true)
+    expect(footAccessLike({ description: "L'abitazione risulta raggiungibile solamente a piedi percorrendo la mulattiera di frazione" })).toBe(true)
+    expect(footAccessLike({ description: 'Il secondo rustico, non accessibile in auto, è composto da un locale deposito' })).toBe(true)
+    expect(footAccessLike({ summary: 'Casa in centro storico, no accesso carrabile' })).toBe(true)
+    expect(footAccessLike({ description: 'Raggiungibile tramite una bella ma faticosa scalinata' })).toBe(true)
+    expect(footAccessLike({ summary: 'Parcel of land, pedestrian access only and no services' })).toBe(true)
+    expect(footAccessLike({ summary: 'Berghütte, nur zu Fuß erreichbar' })).toBe(true)
+  })
+
+  it('ignores walking-distance-to-shops, the pedestrian gate beside a driveway, and a car route that ends in steps', () => {
+    expect(footAccessLike({ description: 'Tutti i servizi sono raggiungibili a piedi. Accesso carrabile e pedonale.' })).toBe(false)
+    expect(footAccessLike({ keyFeatures: ['Accesso pedonale indipendente', 'Box auto'] })).toBe(false)
+    expect(footAccessLike({ description: 'Raggiungibile in auto tramite stradina sterrata ed una scalinata' })).toBe(false)
+    expect(footAccessLike({ description: 'A pian terreno accesso carrabile all\'ampio locale autorimessa' })).toBe(false)
+    expect(footAccessLike({ summary: 'Access on foot can be obtained by following the footpath to the west; vehicular access from West Road' })).toBe(false)
+    expect(footAccessLike({})).toBe(false)
   })
 })

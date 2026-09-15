@@ -239,6 +239,29 @@ export function fixerLike(l: ListingText): boolean {
 }
 
 /**
+ * The house cannot be reached by car: a baita "raggiungibile a piedi tramite
+ * un sentiero", a Cinque Terre rustico up a scalinata, a Valli di Lanzo
+ * borgata "raggiungibile solo a piedi". Neither the portals nor the walk bar
+ * see it — the Valmadrera rustico (Subito 626368637) drew as a €130k farmland
+ * pin at a trailhead 170 m from the nearest road (2026-09-15). Sentence-level:
+ * a sentence naming car access too ("raggiungibile in auto … ed una
+ * scalinata", "accesso carrabile e pedonale") is not foot-only. Calibrated on
+ * the live IT inventories: 38 of 6,983 Subito rows, all mountain/coast
+ * rustici. "Servizi raggiungibili a piedi" (shops within walking distance)
+ * and a bare "accesso pedonale" (the gate beside the driveway) never match.
+ */
+const FOOT_ACCESS_RE =
+  /\b(?:solo|soltanto|solamente|esclusivamente|unicamente)\s+a\s+piedi\b|\bnon\s+(?:è\s+)?(?:raggiungibil\w*|accessibil\w*)\s+(?:in|con\s+l'|con\s+la\s+)\s*(?:auto|macchina)\b|\b(?:no|senza|priv[oa]\s+di|non\s+ha|non\s+dispone\s+di|non\s+(?:c'è|vi\s+è))\s+accesso\s+(?:carrabile|carraio|veicolare|auto)\b|\braggiungibil\w*[^.;\n]{0,60}\b(?:sentiero|sentierino|mulattiera|scalinata)\b|\b(?:sentiero|mulattiera)[^.;\n]{0,60}\braggiungibil|\b\d+\s*(?:minuti|min\.?|m|metri)\s+a\s+piedi\s+dall?(?:'auto|a\s+strada|a\s+macchina|al?\s+parcheggio)\b|\bno\s+vehicular\s+access\b|\bno\s+vehicle\s+access\b|\bpedestrian\s+access\s+only\b|\bonly\s+accessible\s+(?:on|by)\s+foot\b|\baccessible\s+only\s+(?:on|by)\s+foot\b|\bfoot(?:path)?\s+access\s+only\b|\bnot\s+accessible\s+by\s+(?:car|vehicle|road)\b|\bnur\s+zu\s+fu(?:ß|ss)\s+erreichbar\b|\bnicht\s+mit\s+dem\s+(?:auto|pkw)\s+erreichbar\b|\bkeine\s+zufahrt\b/i
+const FOOT_ACCESS_NEGATIVE_RE =
+  /(?<!\bnon\s)(?<!\bnon\s+è\s)\b(?:raggiungibil\w*|accessibil\w*|accesso)\s+(?:anche\s+)?(?:in|con\s+l'|con\s+la\s+)\s*(?:auto|macchina)\b|\b(?:carrabile|carraio)\s+(?:e|ed)\s+pedonale\b|\bpedonale\s+(?:e|ed)\s+(?:carrabile|carraio)\b|\bwith\s+vehicular\s+access\b|\bzufahrt\s+(?:vorhanden|möglich)\b/i
+
+export function footAccessLike(l: ListingText): boolean {
+  return textOf(l)
+    .split(/[.;!\n]|\*\*/)
+    .some((sentence) => FOOT_ACCESS_RE.test(sentence) && !FOOT_ACCESS_NEGATIVE_RE.test(sentence))
+}
+
+/**
  * A flat in house clothing. Scottish agents sell the two halves of a 1930s
  * four-in-a-block as "lower villa" / "upper villa" (a "main door" flat has its
  * own front door) and Rightmove types them "Villa", which the house whitelist

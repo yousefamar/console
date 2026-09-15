@@ -48,6 +48,8 @@ export interface DeckCard {
   description?: string
   /** `fixerLike()` — needs work. */
   fixer: boolean
+  /** `footAccessLike()` — no vehicle reaches the house. */
+  footAccess: boolean
   /** `auctionLike()` — `price` is the guide, not an asking price. */
   auction: boolean
   /** "320 m to shops", as on the pin. */
@@ -64,6 +66,7 @@ export interface DeckCardInput {
   kind: PropertyKind
   tier?: string
   fixer: boolean
+  footAccess: boolean
   auction: boolean
   alsoOn: Portal[]
   highStreet?: string
@@ -100,6 +103,7 @@ export function toDeckCard(i: DeckCardInput): DeckCard {
     keyFeatures: l.keyFeatures,
     description,
     fixer: i.fixer,
+    footAccess: i.footAccess,
     auction: i.auction,
     highStreet: i.highStreet,
     airport: i.airport,

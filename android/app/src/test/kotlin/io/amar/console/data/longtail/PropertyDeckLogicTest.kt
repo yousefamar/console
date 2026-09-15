@@ -15,7 +15,7 @@ class PropertyDeckLogicTest {
            "url":"https://www.rightmove.co.uk/properties/165","title":"3 bedroom detached house for sale","address":"High St, Lewes",
            "price":285000,"currency":"GBP","bedrooms":3,"bathrooms":1,"floorArea":98,"plotArea":1250,"propertyType":"Detached","tenure":"freehold",
            "listedAt":"2026-09-10T09:00:00Z","agent":"Fox & Sons","image":"https://media.rightmove.co.uk/x.jpg","summary":"A house.",
-           "keyFeatures":["Garden","Garage"],"description":"Long text","fixer":true,"highStreet":"320 m to shops","airport":"42min drive to LGW","lat":50.87,"lon":0.01},
+           "keyFeatures":["Garden","Garage"],"description":"Long text","fixer":true,"footAccess":true,"highStreet":"320 m to shops","airport":"42min drive to LGW","lat":50.87,"lon":0.01},
           {"listingId":"77","searchId":"ps_it","kind":"house","portal":"immobiliare","alsoOn":[],"country":"IT","url":"https://immobiliare.it/77",
            "currency":"EUR","fixer":false,"lat":43.1,"lon":11.2},
           {"searchId":"ps_x","kind":"house","portal":"rightmove","currency":"GBP","lat":0,"lon":0}
@@ -38,6 +38,7 @@ class PropertyDeckLogicTest {
         assertEquals("freehold", c.tenure)
         assertEquals(listOf("Garden", "Garage"), c.keyFeatures)
         assertTrue(c.fixer)
+        assertTrue(c.footAccess)
         assertEquals("320 m to shops", c.highStreet)
         val it = deck.cards[1]
         assertNull(it.price)
@@ -45,6 +46,7 @@ class PropertyDeckLogicTest {
         assertNull(it.listedAt)
         assertTrue(it.keyFeatures.isEmpty())
         assertFalse(it.fixer)
+        assertFalse(it.footAccess)
     }
 
     @Test
