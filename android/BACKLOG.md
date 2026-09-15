@@ -10,60 +10,6 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
 (`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
 
-- Per-room chat drafts in the composer (SPA `ChatComposeInput.tsx`,
-  ^bold-lynx, 2026-09-14) — the hub room row now carries `draft` +
-  `draftUpdatedAt` (`RoomState`), written by the SPA composer (RPC
-  `chat-rooms.setDraft`) and by agents (`con chat draft` → `PUT
-  /matrix/rooms/:id/draft`). DONE on the phone: `InboxLogic.roomIsLive` /
-  `roomToEntry` read `draft` from `rawJson` (drafted room is live, body =
-  draft, `InboxEntry.draft`). OPEN: the chat composer should hydrate from the
-  room's `draft` on open, persist typing (debounced) via `PUT
-  /matrix/rooms/:id/draft` (`{text}`; empty clears / `DELETE`), clear on send;
-  the room list row should show an amber `Draft: …` preview and count drafted
-  rooms as unread; the Inbox row should show a `draft` chip and `e` should
-  discard the draft (undo) + mark read, as the SPA does.
-- Inbox routing rules offline (SPA `store/unified-inbox.ts`, ^spry-wren,
-  2026-09-11) — the SPA now mirrors `/inbox/rules` locally (localStorage
-  `console:inbox-rules`), composes from the mirror while the hub is
-  unreachable, re-pulls on every sync-WS (re)connect, and pushes a save the
-  hub missed (dirty flag) instead of pulling the stale copy over it.
-  `InboxRepository` already composes without waiting, but `refreshRules()`
-  falls back to DEFAULTS on an offline boot (promoted/demoted sources
-  revert) and a failed `hub.post` is dropped. Phone equivalent: persist
-  `InboxRules` JSON in DataStore/a Room meta row, seed the StateFlow from it,
-  re-run `refreshRules()` on WS reconnect, keep a dirty flag so the
-  reconnect push wins.
-
-- Calendar: private per-event links (hub + SPA ^gray-bat, 2026-09-08) — events
-  carry `extendedProperties.private` keys `console.link.<i>` (+ marker
-  `console.links=1`); the SPA popover lists them (vault note → Notes editor +
-  inline peek via `/notes/file/`, image → media-bridge thumbnail, URL → browser),
-  `+`/`×` → `POST|DELETE /cal/events/:id/links {calendarId, path}`; `GET
-  /cal/events/:id` returns a derived `links[]`. Port `readLinks`/`classifyLink`
-  (`src/calendar/links.ts`) into the calendar Room row + event sheet; the vault
-  root comes from `GET /notes/vault-path`.
-
-- Calendar: multi-day TIMED events (SPA bd2fa2cb, `src/calendar/multi-day.ts`) —
-  an event crossing local midnight (Fri 16:00 → Sun 15:00) rendered as a 15-min
-  sliver on its start day; the SPA now re-shapes it into the all-day bar as a
-  spanning block (end exclusive; ending exactly at 00:00 stays single-day) and
-  the popover prints both days. Check `CalendarScreen.kt`'s week grid for the
-  same bucketing and mirror `multiDaySpan`.
-
-- Calendar: Eventbrite organiser overlay (SPA `src/eventbrite/calendar-overlay.ts`,
-  ^wise-stag) — hub `GET /eventbrite/events` returns `{events:[{id,title,url,
-  start,end,organizerName,venueName,address,online,summary}]}`; add an
-  `EVENTBRITE_ID = "eventbrite"` overlay (#f05537, real end times, location =
-  venueName + address or "Online") beside Meetup in `CalOverlays.kt` +
-  `CalendarRepository.refreshOverlays`. Can replace the OutdoorLads slot below.
-
-- Remove the OutdoorLads overlay (hub + SPA removed in ^wise-stag, 2026-09-06 —
-  Yousef dropped the group): delete `OUTDOORLADS_*` + `outdoorLadsEventRow` in
-  `data/cal/CalOverlays.kt` (+ its test), the `/outdoorlads/events` fetch in
-  `CalendarRepository.refreshOverlays`, and the `"outdoorlads"` id checks in
-  `CalendarScreen.kt` / `CalendarSidebarSheet.kt`. Harmless today: the fetch
-  404s inside `runCatching`, so the overlay never appears — this is dead code.
-
 - Money: editing parity — the read-only pane shipped (^quick-gull); still
   SPA-only: Budgets (`/finance/budgets` + `/finance/budget-status`), Scenarios
   (`/finance/scenarios`, comparison chart), Categories + rules CRUD, per-tx
@@ -90,6 +36,94 @@ view (the phone's Board > Agents > Docs landing is deliberate) · Notes tabs /
 view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
+
+- **Chat: per-room drafts are hub-synced in the composer** (^dry-wolf, 2026-09-15;
+  SPA `ChatComposeInput.tsx` `useRoomDraft`, ^bold-lynx 2f39ce8a). Root cause of
+  the gap: the phone's `Composer` persisted text only in the on-device
+  `DraftStore`, so a draft typed on the desktop (or left by an agent via `con
+  chat draft`) never reached the phone's composer and vice versa, while the
+  Inbox already read `draft` off the room row. Now: the pure
+  `data/chat/ChatDraftSync.kt` holds the SPA's ref rules (first hub read
+  hydrates; a later remote value replaces the field only when nothing unsaved
+  is typed; a remote value within 1.5 s of our own write is an echo and is
+  ignored; edit mode never persists and `afterEdit` restores the draft; a flush
+  pushes only when the text differs from the mirror) — `ChatDraftSyncTest`.
+  `ChatRepository.observeRoomDraft` / `setRoomDraft` (optimistic `rawJson`
+  patch via `withRoomDraft`, then `PUT /matrix/rooms/:id/draft {text}` or
+  `DELETE`) / `discardDraftAndMarkRead`; pushes the hub dropped stay in a dirty
+  map and re-push on the next sync-WS connect (the phone is offline often
+  enough that "the snapshot reconciles it" would lose typing). `ChatRoomScreen`:
+  400 ms debounced save on typing (read at fire time so an ended edit can't
+  clear the restored draft), immediate clear on send/attachment send, flush on
+  leave (`DisposableEffect`, via the repo scope). Room list: a drafted room is
+  LIVE whatever its read/mute/low-priority state (only snooze hides it), the
+  preview reads amber `Draft: …`, and the Chat tile badge counts drafted rooms
+  (`observeUnreadCount` matches `"draft":"…"` in `rawJson` — no schema column).
+  Inbox: `DRAFT` chip on the row; `e` on a drafted row DISCARDS the draft +
+  marks read (a bare mark-read leaves the row live and it pops straight back),
+  undo restores the text (SPA `discardDraftAndMarkRead`). The local
+  `DraftStore` stays as the on-device cache under the hub mirror.
+- **Chat: stickers count as conversation** (^dry-wolf; hub/SPA 5c6ba77b
+  ^neat-heron). Unread/preview are hub-owned so the hub fix already reached
+  the phone; the remaining gap was the two-thirds of real stickers that carry
+  an EMPTY body — `ChatEvents.eventToMessage` now falls back to `"Sticker"`
+  (`STICKER_BODY`) for an `m.sticker` with no alt text so reply quotes and any
+  local preview read as something, and `ChatFormat.isImageFilenameCaption`
+  suppresses it as a caption under the image bubble. `ChatEvents.
+  isConversationEvent` mirrors the hub's (`m.room.message` OR `m.sticker`).
+- **Inbox: routing rules survive offline** (^dry-wolf; SPA ^spry-wren
+  b4e9258f). Root cause: `InboxRepository.refreshRules()` fell back to
+  `InboxRules.DEFAULT` on an offline boot (every promoted/demoted source
+  reverted until the hub answered) and a failed `POST /inbox/rules` was
+  dropped. Now the rules JSON lives in a Room meta row (`inbox:rules`) written
+  on every successful GET/POST; `seedRulesFromMirror` (init + first refresh)
+  seeds the StateFlow from it before any hub call; `wireLive` re-runs
+  `refreshRules` on every sync-WS connect; a save the hub missed sets a dirty
+  flag (newest save wins via `saveSeq`) and the next refresh PUSHES the local
+  copy instead of pulling the stale one over it. Seed and fetch-apply run under
+  one mutex — they raced in the full suite. `InboxRulesPersistenceTest`
+  (MockWebServer: offline seed, pull rewrites the mirror, dropped save pushed).
+- **Calendar: private per-event links** (^dry-wolf; hub + SPA ^gray-bat
+  b4c8eeb2/a4206ffa). `data/cal/EventLinks.kt` is the client port of
+  `src/calendar/links.ts` — key grammar `console.link.<i>` + marker
+  `console.links=1` over `extendedProperties.private`: `readLinks` (numeric
+  order, junk keys skipped), `withLinks` (the local twin of the hub's
+  `linksPatch`: stale keys dropped, set laid out from 0, marker toggled,
+  foreign private keys kept), `addLink`/`removeLink`, `classifyLink` (URL →
+  browser; absolute path under the vault root or a vault-relative `.md` →
+  Notes editor; png/jpg/…/pdf/mp4 → the hub media bridge `/agents/local-file`
+  with the bearer the app's Coil loader already attaches; anything else →
+  copy path) — `EventLinksTest`. `EventDetails.links` is parsed off `rawJson`
+  (the hub's `/cal/events` list carries `extendedProperties`).
+  `CalendarRepository.linkEvent`/`unlinkEvent`: DIRECT hub `POST|DELETE
+  /cal/events/:id/links` (not the outbox — SPA parity), optimistic Room row,
+  revert + rethrow on failure, the hub's returned `links[]` re-applied as
+  authoritative; `vaultRoot()` caches `GET /notes/vault-path`. Detail sheet:
+  a "Private links" block (Link a file / + → prompt dialog; rows with kind
+  glyph, tap opens, inline thumbnail + lightbox for images, × unlinks, hub
+  error text inline); hidden for overlay events and un-synced `~` rows.
+  `CalendarScreen` gained `onOpenNote` (AppShell → Notes editor route).
+- **Calendar: multi-day TIMED events span the all-day bar** (^dry-wolf; SPA
+  bd2fa2cb `src/calendar/multi-day.ts`). The phone's time grid clamped a
+  Fri 16:00 → Sun 15:00 event per column, painting a full-height block across
+  Saturday. `CalGrid.multiDaySpan` (local-midnight start, EXCLUSIVE end after
+  the last day; ending exactly at 00:00 stays single-day; all-day rows and
+  inverted ranges → null) + `asAllDaySpan` re-shape it for `packAllDayBars`;
+  `CalTimeGrid` routes such events into the all-day row and opens the ORIGINAL
+  row (real times) from the bar. Detail sheet `eventWhenLabel` names both days
+  ("Fri 11 Sep 16:00 – Sun 13 Sep 15:00") — `CalGridTest` + `CalFormatTest`.
+  Month cells already listed the event on each day it overlaps.
+- **Calendar: Eventbrite organiser overlay; OutdoorLads removed** (^dry-wolf;
+  SPA `src/eventbrite/calendar-overlay.ts`, hub `GET /eventbrite/events`;
+  OutdoorLads gone hub+SPA in ^wise-stag). `CalOverlays.eventbriteEventRow`
+  (#f05537, real end times, location = venue + address or "Online",
+  organiser + summary + URL in the description) beside Meetup in
+  `CalendarRepository.refreshOverlays` — boot, every reconcile, reconnect.
+  `OUTDOORLADS_*`/`outdoorLadsEventRow` + the `/outdoorlads/events` fetch (a
+  404 inside `runCatching` for a week) and its tests are deleted; the sidebar
+  "Overlays" group and the first-seen-visible default now key off one
+  `isOverlayCalendar` / `OVERLAY_IDS` predicate instead of two string
+  literals per site. `CalOverlaysTest` covers the Eventbrite mapping.
 
 - Launcher search is the command bar (^pale-fawn, 2026-09-15; SPA
   `CommandBar.tsx` + `src/commandbar/rank.ts`, ^dry-fox 6debac42 / ^teal-eel
