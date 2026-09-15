@@ -31,7 +31,9 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   Browsers,
   downloadContentFromMessage,
+  normalizeMessageContent,
   type DownloadableMessage,
+  type WAMessageContent,
   type WASocket,
 } from '@whiskeysockets/baileys'
 import QRCode from 'qrcode'
@@ -111,6 +113,26 @@ export interface WhatsAppFile {
   kind: 'audio' | 'video' | 'document'
   voiceNote?: boolean  // audio recorded with the mic button (ptt), not a shared audio file
   transcript?: string  // set only for voice notes whose transcription succeeded
+}
+
+/**
+ * The message node to read text and media from, plus its text. Newer clients
+ * wrap a captioned document as `documentWithCaptionMessage.message.documentMessage`
+ * (and ephemeral/view-once messages wrap everything similarly), so reading
+ * `msg.message.documentMessage` directly finds nothing and a 1,000-char brief
+ * riding on a zip arrives as "(no text — attachment only)" (2026-09-15). A
+ * caption IS the message: it takes the same slot as typed text.
+ */
+export function inboundContent(message: WAMessageContent | null | undefined): { content: WAMessageContent; text: string } {
+  const content = normalizeMessageContent(message) ?? {}
+  const text =
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
+    ''
+  return { content, text }
 }
 
 export interface WhatsAppInbound {
@@ -331,15 +353,11 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
         // action. Drop them at the boundary, before ensureUserKnown/envelope.
         if (msg.key.remoteJid === 'status@broadcast') continue
 
-        const text =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.imageMessage?.caption ||
-          ''
+        const { content, text } = inboundContent(msg.message)
 
         const images: WhatsAppImage[] = []
         const imagePaths: string[] = []
-        const imgMsg = msg.message.imageMessage
+        const imgMsg = content.imageMessage
         if (imgMsg) {
           try {
             const stream = await downloadContentFromMessage(imgMsg as DownloadableMessage, 'image')
@@ -356,9 +374,9 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
         }
 
         const files: WhatsAppFile[] = []
-        const audioMsg = msg.message.audioMessage
-        const videoMsg = msg.message.videoMessage
-        const docMsg = msg.message.documentMessage
+        const audioMsg = content.audioMessage
+        const videoMsg = content.videoMessage
+        const docMsg = content.documentMessage
         for (const [kind, mediaMsg, baileysType, preferredName] of [
           ['audio', audioMsg, 'audio', undefined],
           ['video', videoMsg, 'video', undefined],
