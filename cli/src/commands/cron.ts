@@ -95,9 +95,10 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 async function removeCmd(args: string[], flags: GlobalFlags): Promise<void> {
-  const id = args[0]
-  if (!id) { exitWithError('USAGE', 'Usage: con cron remove <task-id>', flags); return }
-  const r = await hubFetch<{ removed: boolean }>(`/cron/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  const id = args.find((a) => !a.startsWith('--'))
+  if (!id) { exitWithError('USAGE', 'Usage: con cron remove <task-id> [--force]  (--force = remove a task owned by ANOTHER session; the owner is told)', flags); return }
+  const force = parseFlags(args).force === 'true'
+  const r = await hubFetch<{ removed: boolean }>(`/cron/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' })
   output(r, flags)
 }
 

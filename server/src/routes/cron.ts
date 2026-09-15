@@ -129,7 +129,27 @@ export function handleCronRoutes(
     const id = m[1]!
     const verb = m[2]
     if (req.method === 'DELETE' && !verb) {
-      json(res, 200, { removed: scheduler.remove(id) })
+      // Ownership guard. `con cron list` is fleet-wide, so a bulk "remove
+      // everything matching <substring of MY prompt>" from one agent deleted
+      // another agent's recurring task (Astera general took out the weekly
+      // mobile sweep, 2026-09-11). An AGENT (X-Console-Agent set) may only
+      // remove tasks bound to its own session unless it passes ?force=1;
+      // human clients (SPA, a terminal CLI with no agent key) are unrestricted.
+      const actor = (req.headers['x-console-agent'] as string | undefined)?.trim() || undefined
+      const task = scheduler.get(id)
+      if (!task) { json(res, 200, { removed: false }); return true }
+      const force = url.searchParams.get('force') === '1'
+      if (actor && !force) {
+        const own = [...deps.getSessions().values()].some((s) => s.agentKey === actor && s.claudeSessionId === task.claudeSessionId)
+        if (!own) {
+          json(res, 403, {
+            error: `task ${id} belongs to session "${nameForSession(task.claudeSessionId, deps)}", not to ${actor}. Pass --force (?force=1) only if you are certain — the owner will be told.`,
+            owner: task.claudeSessionId,
+          })
+          return true
+        }
+      }
+      json(res, 200, { removed: scheduler.remove(id, { actor: actor ?? 'unknown', reason: force ? 'forced' : undefined }) })
       return true
     }
     if (req.method === 'POST' && verb === 'run') {

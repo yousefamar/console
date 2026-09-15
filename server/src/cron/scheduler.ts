@@ -134,14 +134,61 @@ export class HubCronScheduler {
     return task
   }
 
-  remove(id: string): boolean {
+  get(id: string): HubCronTask | undefined {
+    return this.state.tasks.find((t) => t.id === id)
+  }
+
+  /** Remove a task. Every removal is logged with its actor — the 2026-09-11
+   *  loss of the weekly mobile sweep (another session bulk-removed every task
+   *  whose prompt contained "merge") was invisible because nothing logged it.
+   *  A removal by someone other than the owning session also wakes that
+   *  session with a one-line notice, so the owner can re-register. */
+  remove(id: string, opts: { actor?: string; reason?: string } = {}): boolean {
     const idx = this.state.tasks.findIndex((t) => t.id === id)
     if (idx === -1) return false
-    this.state.tasks.splice(idx, 1)
+    const [task] = this.state.tasks.splice(idx, 1)
     const job = this.jobs.get(id)
     if (job) { job.stop(); this.jobs.delete(id) }
     this.persistSync()
+    const actor = opts.actor ?? 'unknown'
+    const owner = task!.claudeSessionId.slice(0, 8)
+    const promptHint = task!.prompt.length > 70 ? `${task!.prompt.slice(0, 70)}…` : task!.prompt
+    this.log(`[cron] removed ${id} (owner ${owner}, ${task!.recurring ? task!.trigger : 'one-shot'}) by ${actor}${opts.reason ? ` — ${opts.reason}` : ''}: "${promptHint.replace(/\n/g, ' ')}"`)
+    if (opts.reason !== 'fired') this.notifyOwnerOfRemoval(task!, actor)
     return true
+  }
+
+  /** Cross-session removals are the dangerous case: tell the owning session
+   *  what happened (same wake path as a fire, so it can act) and push. A
+   *  session removing its OWN task gets nothing — that is routine hygiene. */
+  private notifyOwnerOfRemoval(task: HubCronTask, actor: string): void {
+    const session = [...this.getSessions().values()].find((s) => s.claudeSessionId === task.claudeSessionId)
+    const selfRemoval = !!session && (session.agentKey === actor || session.id === actor || session.claudeSessionId === actor)
+    if (selfRemoval || actor === 'hub') return
+    const byAgent = actor !== 'unknown'
+    const promptHint = task.prompt.length > 120 ? `${task.prompt.slice(0, 120)}…` : task.prompt
+    if (byAgent) {
+      this.notifySafe({
+        type: 'agent',
+        id: `cron:${task.id}`,
+        title: `Cron task removed by ${actor}`,
+        body: `${session?.name ?? task.claudeSessionId.slice(0, 8)}'s "${promptHint.replace(/\n/g, ' ')}" (${task.recurring ? task.trigger : 'one-shot'}) is gone.`,
+        pane: 'agents',
+      })
+    }
+    if (!session || session.status === 'ended') return
+    const who = byAgent
+      ? `another agent (**${actor}**) — most likely a mistake on their side. Verify you still need it and re-register with \`con cron add\` if so`
+      : 'a human client (SPA or a CLI call without an agent key) — treat that as intentional: note it, do NOT re-add unless Yousef asks'
+    const content = `[HUB CRON REMOVED]\nYour hub cron task \`${task.id}\` (trigger \`${task.trigger}\`${task.recurring ? ', recurring' : ', one-shot'}${task.guard ? `, guard \`${task.guard}\`` : ''}) was removed by ${who}. Its prompt was:\n\n${task.prompt}`
+    try {
+      const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content }
+      this.broadcast(userMsg)
+      session.logMessage(userMsg)
+      session.sendMessage(content)
+    } catch (e) {
+      this.log(`[cron] owner notice failed: ${(e as Error).message}`)
+    }
   }
 
   /** Re-key every ACTIVE (non-disabled) task from one claudeSessionId to another.
@@ -284,7 +331,7 @@ export class HubCronScheduler {
 
     // One-shot tasks remove themselves after firing
     if (!task.recurring) {
-      this.remove(task.id)
+      this.remove(task.id, { actor: 'hub', reason: 'fired' })
       return { ok: true }
     }
 
