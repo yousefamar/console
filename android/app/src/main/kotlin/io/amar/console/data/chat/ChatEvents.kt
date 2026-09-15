@@ -20,6 +20,16 @@ import kotlinx.serialization.json.longOrNull
  */
 object ChatEvents {
 
+    /** Preview/body stand-in for a sticker with no alt text (hub `previewBody`). */
+    const val STICKER_BODY = "Sticker"
+
+    /**
+     * "Someone said something" — the event types that advance a room's preview,
+     * flip unread and count as conversation (hub room-state `isConversationEvent`).
+     * A bridged WhatsApp sticker arrives as `m.sticker`, not `m.room.message`.
+     */
+    fun isConversationEvent(type: String?): Boolean = type == "m.room.message" || type == "m.sticker"
+
     private fun JsonObject.str(key: String): String? =
         (this[key] as? JsonElement)?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
 
@@ -65,7 +75,10 @@ object ChatEvents {
         if (msgtype == "m.notice" &&
             effectiveContent.str("body")?.contains("Decrypting message from WhatsApp failed") == true
         ) return null
-        val body = effectiveContent.str("body") ?: ""
+        // Two-thirds of real stickers carry an empty body: fall back to "Sticker"
+        // so reply quotes / previews read as something (the bubble suppresses it
+        // as a caption, ChatFormat.isImageFilenameCaption).
+        val body = (effectiveContent.str("body") ?: "").let { if (type == "m.sticker" && it.isBlank()) STICKER_BODY else it }
         // formatted_body: strip the mx-reply quote block bridges prepend.
         val formatted = effectiveContent.str("formatted_body")
             ?.replace(Regex("<mx-reply>.*?</mx-reply>", RegexOption.DOT_MATCHES_ALL), "")

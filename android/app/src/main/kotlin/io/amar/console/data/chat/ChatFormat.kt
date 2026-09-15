@@ -66,7 +66,7 @@ object ChatFormat {
 
     fun isImageFilenameCaption(body: String?): Boolean {
         val b = body?.trim() ?: return false
-        return b == "image" || (IMAGE_EXT.containsMatchIn(b) && !b.contains(' '))
+        return b == "image" || b == ChatEvents.STICKER_BODY || (IMAGE_EXT.containsMatchIn(b) && !b.contains(' '))
     }
 
     fun isVideoFilenameCaption(body: String?): Boolean {

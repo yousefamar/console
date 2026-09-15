@@ -9,6 +9,8 @@ import io.amar.console.data.db.MetaRow
 import io.amar.console.sync.SyncBusClient
 import io.amar.console.sync.outbox.Outbox
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -225,6 +227,74 @@ class ChatRepository(
         val room = db.chatRooms().byId(roomId) ?: return
         db.chatRooms().upsertAll(listOf(room.copy(isUnread = true, manualUnread = true, unreadCount = maxOf(1, room.unreadCount))))
         outbox.enqueue(TYPE_MARK_UNREAD, buildJsonObject { put("roomId", roomId) }.toString(), entityId = roomId)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Per-room drafts — hub-owned (`RoomState.draft`, ^bold-lynx): the text
+    // lives on the room row like `snoozedUntil`, so agents can leave a reply
+    // for review (`con chat draft`) and every device's composer shows it.
+
+    /** The room's hub-mirrored draft ("" when none); distinct so the composer
+     *  re-hydrates only when the string changes, not on every sync delta. */
+    fun observeRoomDraft(roomId: String): Flow<String> =
+        db.chatRooms().observeRoom(roomId)
+            .map { io.amar.console.data.inbox.roomDraft(it?.rawJson) ?: "" }
+            .distinctUntilChanged()
+
+    /** Drafts whose hub push failed, re-pushed on the next connect (the
+     *  phone is offline often enough that "the snapshot reconciles it" would
+     *  silently lose typing). */
+    private val dirtyDrafts = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * Persist [text] as the room's draft: optimistic rawJson patch (the room's
+     * `draft`/`draftUpdatedAt` — the SPA store does the same on Dexie), then
+     * `PUT /matrix/rooms/:id/draft {text}` (empty → `DELETE`). Failure is not an
+     * error to the caller: the hub reconciles on the next connect via
+     * [dirtyDrafts]. No-op when the mirror already holds [text].
+     */
+    suspend fun setRoomDraft(roomId: String, text: String) {
+        val room = db.chatRooms().byId(roomId) ?: return
+        val current = io.amar.console.data.inbox.roomDraft(room.rawJson) ?: ""
+        val wanted = if (text.isBlank()) "" else text
+        if (current == wanted && dirtyDrafts[roomId] == null) return
+        db.chatRooms().upsertAll(listOf(room.copy(rawJson = withRoomDraft(room.rawJson, wanted))))
+        dirtyDrafts[roomId] = wanted
+        pushDraft(roomId, wanted)
+    }
+
+    private suspend fun pushDraft(roomId: String, text: String) {
+        val ok = runCatching {
+            val path = "/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/draft"
+            if (text.isEmpty()) hub.delete(path)
+            else hub.put(path, buildJsonObject { put("text", text) }.toString())
+        }.isSuccess
+        // Only clear the dirty mark if no newer text was queued meanwhile.
+        if (ok) dirtyDrafts.remove(roomId, text)
+    }
+
+    /** Fire-and-forget [setRoomDraft] for composer callbacks that outlive their
+     *  composition scope (dispose-time flush). */
+    fun setRoomDraftAsync(roomId: String, text: String) {
+        repoScope?.launch { runCatching { setRoomDraft(roomId, text) } }
+    }
+
+    /** Re-push drafts the hub never acknowledged (connect-time). */
+    suspend fun flushDirtyDrafts() {
+        for ((roomId, text) in dirtyDrafts.entries.toList()) pushDraft(roomId, text)
+    }
+
+    /**
+     * Inbox `e` on a drafted row: DISCARD the draft and mark read (SPA
+     * `discardDraftAndMarkRead`) — a bare mark-read would leave the row live
+     * (a draft keeps a room listed) and it would pop straight back. Returns
+     * the discarded text so the caller can offer undo via [setRoomDraft].
+     */
+    suspend fun discardDraftAndMarkRead(roomId: String): String {
+        val text = io.amar.console.data.inbox.roomDraft(db.chatRooms().byId(roomId)?.rawJson) ?: ""
+        setRoomDraft(roomId, "")
+        markRead(roomId)
+        return text
     }
 
     suspend fun snooze(roomId: String, untilMs: Long?) {
@@ -881,7 +951,10 @@ class ChatRepository(
 
     fun wireLiveDeltas(scope: kotlinx.coroutines.CoroutineScope) {
         repoScope = scope
-        syncBus.onConnect { resumedThisConnection = false }
+        syncBus.onConnect {
+            resumedThisConnection = false
+            if (dirtyDrafts.isNotEmpty()) scope.launch { runCatching { flushDirtyDrafts() } }
+        }
         // Handlers fire on the OkHttp WS reader thread — hop to a coroutine.
         syncBus.on("chat-rooms", "delta") { data ->
             scope.launch { runCatching { applyRoomsDelta(data.jsonObject) } }

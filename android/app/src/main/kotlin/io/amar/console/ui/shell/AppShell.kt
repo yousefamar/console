@@ -161,7 +161,18 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                                     app.graph.mail.archive(entry.sourceId); suspend { app.graph.mail.undoArchive(entry.sourceId) }
                                 }
                                 io.amar.console.data.inbox.InboxSource.CHAT -> {
-                                    app.graph.chat.markRead(entry.sourceId); suspend { app.graph.chat.markUnread(entry.sourceId) }
+                                    // A drafted row: `e` DISCARDS the draft + marks read (a bare
+                                    // mark-read leaves the row live and it pops straight back);
+                                    // undo restores the text (SPA discardDraftAndMarkRead).
+                                    if (entry.draft) {
+                                        val text = app.graph.chat.discardDraftAndMarkRead(entry.sourceId)
+                                        suspend {
+                                            if (text.isNotEmpty()) app.graph.chat.setRoomDraft(entry.sourceId, text)
+                                            else app.graph.chat.markUnread(entry.sourceId)
+                                        }
+                                    } else {
+                                        app.graph.chat.markRead(entry.sourceId); suspend { app.graph.chat.markUnread(entry.sourceId) }
+                                    }
                                 }
                                 io.amar.console.data.inbox.InboxSource.FEED -> {
                                     app.graph.feeds.markRead(entry.sourceId); suspend { app.graph.feeds.markUnread(entry.sourceId) }

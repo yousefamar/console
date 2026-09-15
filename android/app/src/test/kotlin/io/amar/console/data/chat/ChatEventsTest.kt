@@ -71,6 +71,23 @@ class ChatEventsTest {
     }
 
     @Test
+    fun `sticker with an empty body falls back to Sticker and is a conversation event`() {
+        val row = ChatEvents.eventToMessage(
+            ev("""{"event_id":"${'$'}e6b","sender":"@a:x","type":"m.sticker","origin_server_ts":1,
+                 "content":{"body":"","url":"mxc://x/st","info":{"mimetype":"image/webp"}}}"""),
+            "!r",
+        )!!
+        assertEquals("m.image", row.msgtype)
+        assertEquals(ChatEvents.STICKER_BODY, row.body)
+        assertEquals("mxc://x/st", row.mediaMxc)
+        // The bubble treats the fallback like a filename caption — no text under the image.
+        assertEquals(true, ChatFormat.isImageFilenameCaption(row.body))
+        assertEquals(true, ChatEvents.isConversationEvent("m.sticker"))
+        assertEquals(true, ChatEvents.isConversationEvent("m.room.message"))
+        assertEquals(false, ChatEvents.isConversationEvent("m.reaction"))
+    }
+
+    @Test
     fun `sticker becomes image`() {
         val msg = ChatEvents.eventToMessage(
             ev("""{"event_id":"${'$'}e6","sender":"@a:x","type":"m.sticker","origin_server_ts":1,

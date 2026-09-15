@@ -138,10 +138,13 @@ fun ChatRoomListScreen(repo: ChatRepository, onOpenRoom: (String) -> Unit, onGri
     val pinned = remember(rooms) {
         rooms.filter { it.isPinned && !it.isMuted }.sortedBy { it.name.lowercase() }
     }
+    // An unsent draft (mine, or one an agent left for review) is an obligation
+    // like an unread message — listed until sent or cleared; only snooze hides it.
     val visible = remember(rooms) {
         rooms.filter { r ->
-            r.isUnread && !r.isMuted && !r.isLowPriority && !r.isPinned &&
-                (r.snoozedUntil == null || r.snoozedUntil < now)
+            !r.isPinned && (r.snoozedUntil == null || r.snoozedUntil < now) &&
+                (io.amar.console.data.inbox.roomDraft(r.rawJson) != null ||
+                    (r.isUnread && !r.isMuted && !r.isLowPriority))
         }
     }
 
@@ -449,15 +452,16 @@ private fun RoomRow(room: ChatRoomRow, onClick: () -> Unit, onLongPress: (() -> 
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val draft = remember(room.rawJson) { io.amar.console.data.inbox.roomDraft(room.rawJson) }
                 Text(
-                    buildString {
+                    if (draft != null) "Draft: ${draft.replace('\n', ' ')}" else buildString {
                         if (!room.isDirect && !room.lastMessageSender.isNullOrEmpty()) {
                             append(room.lastMessageSender); append(": ")
                         }
                         append(room.lastMessageBody ?: "")
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (draft != null) MaterialTheme.accents.amber else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
@@ -545,6 +549,48 @@ fun ChatRoomScreen(
     var members by remember(roomId) { mutableStateOf<List<ChatRepository.RoomMember>>(emptyList()) }
     val pickedMentions = remember(roomId) { mutableStateListOf<io.amar.console.data.chat.Mentions.Mention>() }
     val composerHandle = remember(roomId) { io.amar.console.ui.components.ComposerHandle() }
+
+    // Hub-synced per-room draft (SPA ChatComposeInput useRoomDraft): hydrate the
+    // composer from the room's `draft` on open, persist typing after 400 ms,
+    // flush on leave, clear on send; remote changes replace the text only when
+    // nothing unsaved is typed; edit mode never persists. Rules live in the
+    // pure ChatDraftSync; the local DraftStore stays as the on-device cache.
+    val hubDraft by repo.observeRoomDraft(roomId).collectAsState(initial = null)
+    val draftSync = remember(roomId) { io.amar.console.data.chat.ChatDraftSync() }
+    var draftJob by remember(roomId) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun flushDraftNow(text: String) {
+        draftJob?.cancel(); draftJob = null
+        draftSync.flush(text, editing = editingMsg != null)?.let { repo.setRoomDraftAsync(roomId, it) }
+    }
+    fun scheduleDraftSave() {
+        if (editingMsg != null) return
+        draftJob?.cancel()
+        draftJob = scope.launch {
+            kotlinx.coroutines.delay(io.amar.console.data.chat.ChatDraftSync.SAVE_DEBOUNCE_MS)
+            draftJob = null
+            // Read the field at fire time: an edit that ended meanwhile has
+            // already put the room's draft back, and must not be cleared.
+            draftSync.flush(composerHandle.text, editing = editingMsg != null)?.let { repo.setRoomDraftAsync(roomId, it) }
+        }
+    }
+    LaunchedEffect(hubDraft, editingMsg == null) {
+        val d = hubDraft ?: return@LaunchedEffect
+        draftSync.onRemote(d, composerHandle.text, editing = editingMsg != null)?.let { composerHandle.setText(it) }
+    }
+    // Leaving edit mode puts the room's draft back (the edit path clears the input).
+    var wasEditing by remember(roomId) { mutableStateOf(false) }
+    LaunchedEffect(editingMsg == null) {
+        if (wasEditing && editingMsg == null) composerHandle.setText(draftSync.afterEdit())
+        wasEditing = editingMsg != null
+    }
+    androidx.compose.runtime.DisposableEffect(roomId) {
+        onDispose {
+            draftJob?.cancel()
+            if (editingMsg == null) {
+                draftSync.flush(composerHandle.text, editing = false)?.let { repo.setRoomDraftAsync(roomId, it) }
+            }
+        }
+    }
     val mentionQuery = remember(composerText) { io.amar.console.data.chat.Mentions.activeQuery(composerText) }
     val emojiQuery = remember(composerText) { activeEmojiQuery(composerText) }
     val emojiSuggestions = remember(emojiQuery) {
@@ -759,6 +805,7 @@ fun ChatRoomScreen(
                     replyingTo = null
                     val fmt = mentionsFor(text)
                     pickedMentions.clear()
+                    flushDraftNow("")
                     scope.launch {
                         repo.sendText(roomId, text, replyId, fmt?.formattedBody, fmt?.userIds ?: emptyList())
                         repo.markRead(roomId)
@@ -766,8 +813,9 @@ fun ChatRoomScreen(
                 }
                 scope.launch { listState.animateScrollToItem(0) } // reverseLayout: 0 = bottom
             },
-            onTextChange = { composerText = it; onComposerChange(it) },
+            onTextChange = { composerText = it; onComposerChange(it); scheduleDraftSave() },
             onSendWithAttachments = { text, uris ->
+                flushDraftNow("")
                 scope.launch {
                     uris.forEachIndexed { i, uri ->
                         repo.sendAttachment(context, roomId, uri, if (i == 0) text.ifBlank { null } else null)

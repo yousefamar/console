@@ -106,7 +106,13 @@ interface ChatRoomDao {
     /** Unhandled conversations — the ONE unread-count formula (grid badge +
      *  chat header must agree): unread, not muted/low-priority, not snoozed.
      *  Pinned rooms COUNT (they render with unread pills and need handling). */
-    @Query("SELECT COUNT(*) FROM chat_rooms WHERE isUnread = 1 AND isMuted = 0 AND isLowPriority = 0 AND (snoozedUntil IS NULL OR snoozedUntil < :now)")
+    @Query(
+        "SELECT COUNT(*) FROM chat_rooms WHERE (snoozedUntil IS NULL OR snoozedUntil < :now) AND (" +
+            "(isUnread = 1 AND isMuted = 0 AND isLowPriority = 0) OR " +
+            // A drafted room is live whatever its read/mute state (SPA Chat badge:
+            // `isUnread || draft`). rawJson carries `"draft":"…"` — no schema column.
+            "rawJson LIKE '%\"draft\":\"_%')"
+    )
     fun observeUnreadCount(now: Long): Flow<Int>
 
     /** TRUNCATE-style wipe for the Matrix-disconnect cache clear (O(1) vs

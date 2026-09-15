@@ -504,6 +504,16 @@ private fun InboxRow(
                     )
                     if (handbacks > 1) Text("$handbacks", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
                 }
+                if (entry.draft) {
+                    Text(
+                        "DRAFT",
+                        fontSize = 9.sp,
+                        color = MaterialTheme.accents.amber,
+                        modifier = Modifier
+                            .background(MaterialTheme.accents.amber.copy(alpha = 0.2f), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 3.dp),
+                    )
+                }
                 if (entry.overdue) {
                     Text(
                         "OVERDUE",
