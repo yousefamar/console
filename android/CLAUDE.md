@@ -255,7 +255,7 @@ The durable session for this directory is **"Console mobile"** (agentKey
 2026-09-05 so this file loads natively). Cards on the console board assigned
 `@new-mobile-app` dispatch as forks of it.
 
-**Cron `KqtDQQU`** (hub scheduler, bound to that session's csid, `0 5 * * 0` =
+**Cron `tZZPux0`** (hub scheduler, bound to that session's csid, `0 5 * * 0` =
 every Sunday 05:00 local, guard `~/exec/mobile-parity-guard.sh`) wakes the
 agent only when there is something to sweep — hub/SPA commits since the last
 sweep, `## Open` entries still waiting, or board cards newly Done; a quiet
@@ -264,8 +264,16 @@ group gaps into 3–6 self-contained board cards assigned to `@new-mobile-app`
 (each dispatches as a fork of it, working in its own worktree) → reconcile the
 folded state → full suite → cut the release (forks never cut; the parent
 does — the shape that shipped v90). Inspect/retune with `con cron list | run
-KqtDQQU | remove KqtDQQU`; edit the guard file in place (registered as
-`--guard "bash …"`, not `--guard-file`, so edits propagate).
+tZZPux0 | remove tZZPux0`; edit the guard file in place (registered as
+`--guard "bash …"`, not `--guard-file`, so edits propagate). **The task can
+vanish** — the original `KqtDQQU` disappeared from the scheduler between
+2026-09-06 and 09-13 with no removal in the hub log (persisted-task count just
+dropped across restarts), so a Sunday passed unswept. If `con cron list` has no
+task on this session's csid with the parity guard, re-register: `con cron add
+--session <this csid> --trigger "0 5 * * 0" --guard "bash
+/home/amar/exec/mobile-parity-guard.sh" --prompt "$(cat …)"` with the prompt
+recovered from this session's transcript (`con agent read <s8> --grep "WEEKLY
+MOBILE PARITY SWEEP"`), then fix the id here.
 
 **The sweep (what each card's fork does; the parent does 1–2 for the whole
 batch and 5 once everything is folded):**
