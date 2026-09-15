@@ -167,7 +167,28 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                                     app.graph.feeds.markRead(entry.sourceId); suspend { app.graph.feeds.markUnread(entry.sourceId) }
                                 }
                                 io.amar.console.data.inbox.InboxSource.AGENT -> {
-                                    app.graph.agents.markRead(entry.sourceId); suspend { app.graph.agents.markUnread(entry.sourceId) }
+                                    // Done on an agent that handed a card back IS the approval:
+                                    // every Under Review card its key owns moves to the board's
+                                    // Done column (the strip's move), then the session is marked
+                                    // read — sticky when something moved, so the fork's wind-down
+                                    // farewell can't re-flag the row (SPA approveAndMarkRead,
+                                    // ^trim-lynx). A failed move leaves the row (it snaps back)
+                                    // and says why; a board with no Done column just marks read.
+                                    val spaces = app.graph.spaces
+                                    val handbacks = io.amar.console.data.inbox.reviewHandbacksFor(entry.agentKey, spaces.spaces.value)
+                                    val outcome = io.amar.console.data.inbox.approveHandbacks(handbacks) { p, q, col -> spaces.moveCardByQuery(p, q, col) }
+                                    val failed = outcome.failed
+                                    if (failed != null) {
+                                        AppToast.show("Couldn't move \"${failed.text}\" to ${failed.doneColumn}: ${spaces.boardError.value ?: "hub error"}", error = true)
+                                        spaces.clearError()
+                                        null
+                                    } else {
+                                        if (outcome.moved.isNotEmpty()) spaces.refreshSpaces()
+                                        app.graph.agents.markRead(entry.sourceId, sticky = outcome.moved.isNotEmpty())
+                                        // Undo restores the unread only — the Done moves ran the
+                                        // forks' wind-down hub-side and are not reversible here.
+                                        suspend { app.graph.agents.markUnread(entry.sourceId) }
+                                    }
                                 }
                             }
                         },

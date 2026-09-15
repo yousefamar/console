@@ -57,6 +57,16 @@ class SpacesRepository(
         val reviewAgentKeys: List<String> = emptyList(),
         /** The review cards themselves (approve-from-Inbox); empty on an older hub. */
         val reviewCards: List<ReviewCard> = emptyList(),
+        /** In-progress cards tagged `#blocked` (or in a legacy Blocked column)
+         *  — the assignee is stuck on Yousef. The Inbox bands the owning
+         *  session with attention (^mild-ibis). Empty on an older hub. */
+        val blockedCards: List<ReviewCard> = emptyList(),
+        /** agentKeys of the blocked cards' assignees (the Inbox join key). */
+        val blockedAgentKeys: List<String> = emptyList(),
+        /** Every `@key`-owned card in a live column (In Progress / Under
+         *  Review / Blocked), board order — the Inbox titles a card-owned
+         *  session's row with its card text (^jade-kiwi). */
+        val ownedCards: List<ReviewCard> = emptyList(),
         /** First Done-like column title, or null when the board has none. */
         val doneColumn: String? = null,
         /** EVERY assignee on the board (all columns, dedup'd) — a fork whose
@@ -83,10 +93,16 @@ class SpacesRepository(
         val checked: Boolean,
         /** #nofork — dispatch wakes the role directly (no per-ticket fork). */
         val nofork: Boolean = false,
-        /** #model/<alias> — ticket-fork model pin (haiku/sonnet/opus). */
+        /** #inherit — the ticket-fork copies the parent's transcript instead
+         *  of the default fresh context + digest (^tall-colt). */
+        val inherit: Boolean = false,
+        /** Model pin: `#model/<alias-or-id>`, or the bare shorthand
+         *  `#haiku`/`#sonnet`/`#opus`/`#fable` — the hub resolves both to the
+         *  same field, so `model` is `sonnet` for a `#sonnet` card. */
         val model: String? = null,
         val detail: List<String>,
     )
+
 
     data class BoardColumnView(val title: String, val cards: List<CardView>)
     data class BoardView(
@@ -151,14 +167,11 @@ class SpacesRepository(
                     reviewCount = o["reviewCount"]?.jsonPrimitive?.intOrNull ?: 0,
                     reviewAgentKeys = (o["reviewAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
-                    reviewCards = (o["reviewCards"] as? JsonArray)?.mapNotNull { c ->
-                        val co = c as? JsonObject ?: return@mapNotNull null
-                        ReviewCard(
-                            blockId = co["blockId"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-                            text = co["text"]?.jsonPrimitive?.content ?: return@mapNotNull null,
-                            agentKey = co["agentKey"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-                        )
-                    } ?: emptyList(),
+                    reviewCards = cardRefs(o["reviewCards"]),
+                    blockedCards = cardRefs(o["blockedCards"]),
+                    blockedAgentKeys = (o["blockedAgentKeys"] as? JsonArray)
+                        ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+                    ownedCards = cardRefs(o["ownedCards"]),
                     doneColumn = o["doneColumn"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
                     cardAgentKeys = (o["cardAgentKeys"] as? JsonArray)
                         ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
@@ -169,20 +182,39 @@ class SpacesRepository(
         }
     }
 
+    /** `{blockId,text,agentKey}[]` — the shape every card list on a SpaceSummary shares. */
+    private fun cardRefs(el: kotlinx.serialization.json.JsonElement?): List<ReviewCard> =
+        (el as? JsonArray)?.mapNotNull { c ->
+            val co = c as? JsonObject ?: return@mapNotNull null
+            ReviewCard(
+                blockId = co["blockId"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+                text = co["text"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                agentKey = co["agentKey"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            )
+        } ?: emptyList()
+
+    /** Read a project's board WITHOUT making it the open board — for a card
+     *  sheet hosted outside Spaces (the Inbox's open-card-in-place, ^glad-bee),
+     *  which must not swap the board the Spaces screen is showing. Throws on
+     *  failure (callers decide how to surface it). */
+    suspend fun fetchBoard(project: String): BoardView {
+        val resp = json.parseToJsonElement(hub.get("/board/" + java.net.URLEncoder.encode(project, "UTF-8"))).jsonObject
+        val cols = (resp["columns"] as? JsonArray)?.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            BoardColumnView(
+                title = o["title"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                cards = (o["cards"] as? JsonArray)?.mapNotNull { cardFrom(it as? JsonObject) } ?: emptyList(),
+            )
+        } ?: emptyList()
+        return BoardView(
+            project, resp["path"]?.jsonPrimitive?.content ?: "", cols,
+            defaultOwner = resp["defaultOwner"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+        )
+    }
+
     suspend fun loadBoard(project: String) {
         runCatching {
-            val resp = json.parseToJsonElement(hub.get("/board/" + java.net.URLEncoder.encode(project, "UTF-8"))).jsonObject
-            val cols = (resp["columns"] as? JsonArray)?.mapNotNull { el ->
-                val o = el as? JsonObject ?: return@mapNotNull null
-                BoardColumnView(
-                    title = o["title"]?.jsonPrimitive?.content ?: return@mapNotNull null,
-                    cards = (o["cards"] as? JsonArray)?.mapNotNull { cardFrom(it as? JsonObject) } ?: emptyList(),
-                )
-            } ?: emptyList()
-            _board.value = BoardView(
-                project, resp["path"]?.jsonPrimitive?.content ?: "", cols,
-                defaultOwner = resp["defaultOwner"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
-            )
+            _board.value = fetchBoard(project)
             _boardError.value = null
         }.onFailure { _boardError.value = it.message }
     }
@@ -202,6 +234,7 @@ class SpacesRepository(
             blocked = o["blocked"]?.jsonPrimitive?.content == "true",
             checked = o["checked"]?.jsonPrimitive?.content == "true",
             nofork = o["nofork"]?.jsonPrimitive?.content == "true",
+            inherit = o["inherit"]?.jsonPrimitive?.content == "true",
             model = o["model"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
         )
@@ -219,12 +252,21 @@ class SpacesRepository(
             val o = json.parseToJsonElement(resp).jsonObject
             if (o["error"] != null) throw IllegalStateException(o["error"]!!.jsonPrimitive.content)
         }.onFailure { _boardError.value = it.message }.isSuccess
-        loadBoard(project) // truth after every attempt, success or not
+        // Truth after every attempt, success or not — for the OPEN board only.
+        // A mutation on another project's board (Inbox-hosted card sheet,
+        // approve-from-Inbox) must not swap what the Spaces screen shows.
+        val open = _board.value
+        if (open == null || open.project == project) loadBoard(project)
         return ok
     }
 
     suspend fun setNofork(project: String, card: CardView, nofork: Boolean): Boolean =
         post(project, "nofork", buildJsonObject { put("card", cardAddress(card)); put("nofork", nofork) })
+
+    /** `#inherit` on/off — whether the card's ticket-fork copies the parent's
+     *  transcript (default fresh context + digest, ^tall-colt). */
+    suspend fun setInherit(project: String, card: CardView, inherit: Boolean): Boolean =
+        post(project, "inherit", buildJsonObject { put("card", cardAddress(card)); put("inherit", inherit) })
 
     suspend fun setModel(project: String, card: CardView, model: String?): Boolean =
         post(project, "model", buildJsonObject {
@@ -255,8 +297,14 @@ class SpacesRepository(
         })
 
     suspend fun setBlocked(project: String, card: CardView, blocked: Boolean, note: String? = null): Boolean =
+        setBlockedByQuery(project, cardAddress(card), blocked, note)
+
+    /** Block/unblock by address (`^id` or unique text) — for cards known only
+     *  from `blockedCards` (the Inbox's Unblock strip, ^mild-ibis). Unblocking
+     *  fires the hub's reopen nudge to the assignee. */
+    suspend fun setBlockedByQuery(project: String, query: String, blocked: Boolean, note: String? = null): Boolean =
         post(project, "block", buildJsonObject {
-            put("card", cardAddress(card)); put("blocked", blocked)
+            put("card", query); put("blocked", blocked)
             note?.let { put("note", it) }
         })
 

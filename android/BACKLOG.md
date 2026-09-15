@@ -43,85 +43,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   (`src/calendar/links.ts`) into the calendar Room row + event sheet; the vault
   root comes from `GET /notes/vault-path`.
 
-- Inbox: swipe-done on an agent row approves its Under Review card(s) (SPA
-  d4afd8b3, ^trim-lynx) — the SPA's `e` now moves every review card owned by
-  that agentKey to the board's `doneColumn` (the same move as the "Approve →
-  Done" strip shipped in v93), then marks the session read sticky; a board
-  with no Done column falls back to plain mark-read, a failed move puts the
-  row back and alerts. Phone twin: the agent-row swipe-done path calls
-  `SpacesRepository.moveCardByQuery` for each `reviewHandbacksFor` hit before
-  the local read; shared primitive worth extracting so the strip button and
-  the swipe can't drift (SPA `src/inbox/approve.ts`).
-
-- Inbox: open a review card IN PLACE from the agent detail screen (SPA
-  ^glad-bee, `src/components/InboxCardModal.tsx`) — the SPA's hand-back strip
-  offers `Open card` beside `Approve → Done` and shows the card's full editing
-  modal over the Inbox without leaving it (Yousef: no jump to Spaces). The host
-  owns its own board read (`/notes/file/<boardPath>` → find by `^id`) and
-  writes via `POST /board/<project>/<verb>` (edit/assign/block/nofork/inherit/
-  model/move/remove), re-reading after each. Phone twin: the existing card
-  sheet (`SpacesScreen` `CardSheet`) presented from the agent detail screen's
-  hand-back strip for `reviewCards[].blockId`, backed by `SpacesRepository`
-  board reads for that project rather than the active space.
-
-- Inbox: card-owned agent rows are titled with their CARD text (SPA 2f45b0fe,
-  ^jade-kiwi) — `/blog/spaces` ships `ownedCards[{blockId,text,agentKey}]` per
-  project (every `@key` card in In Progress / Under Review / Blocked, board
-  order); `ownedCardText(agentKey, spaces)` in `src/inbox/route.ts` prefers
-  blocked → review → in-progress, the header becomes the card text and the
-  session name moves to a tooltip (`InboxItem.agentName`). Uncarded sessions
-  keep their name. Port into `InboxLogic.kt`'s agent adapter + the row.
-
-- Inbox: agent rows lead with their SPACE (SPA 7b0aec47, ^glad-finch) —
-  `sessionToItem` sets `InboxItem.context` = the session's project title (else
-  first area; slug if the spaces list isn't loaded) and the row renders it as a
-  muted prefix + small chevron before the name ("Console › Rosy owl"). Port
-  `sessionContext()` into `InboxLogic.kt` (sessions carry `project`/`areasCsv`
-  since Room v12; titles from `SpacesRepository.spaces`) and add the prefix to
-  the agent row composable.
-
-- Inbox: feed rows lead with the ARTICLE title, feed name beneath (SPA
-  40dd715f, ^shy-ant) — `feedItemToItem` in `src/inbox/route.ts` now sets
-  header = item title, body = feed name (the platform glyph + favicon already
-  say the source; "Hacker News: Front Page" ×12 was unreadable). Port the same
-  flip into `InboxLogic.kt`'s feed adapter and the feed row composable.
-
-- Inbox: running agents stay OUT of the inbox list (SPA ^neat-fawn, 2026-09-08,
-  `sessionIsLive` in `src/inbox/route.ts`) — a session with `status ==
-  "running"` is admitted only when it carries `needsAttention`; unread text on
-  a running turn is not actionable. `InboxLogic.kt`'s agent admission
-  (`sessionToEntry`/`composeInbox`) still lets running+unread sessions in and
-  bands them last; drop that band, keep the attention exception. Tile badge =
-  list size, so it shrinks with it.
-
-- Inbox: `#blocked` in-progress cards band with attention (hub + SPA
-  ^mild-ibis, 2026-09-10) — `SpaceSummary` gained `blockedCards` /
-  `blockedAgentKeys` (cards tagged `#blocked` in a dispatch column, or in a
-  legacy Blocked column); `sessionToItem` stamps `InboxItem.blocked` when the
-  session's `agentKey` owns one (admission unchanged — running sessions never
-  enter the list; `blocked` only colours an admitted idle+unread row), `band()` puts it in tier 1
-  beside `needsAttention`, the row's Bot icon + a `Ban` glyph turn red, and
-  the viewer gets a `Blocked · <project>` strip with Open card / Unblock
-  (`POST /board/:project/block {card, blocked:false}`). Port: parse the two
-  fields in `SpacesRepository`, add `blocked` to `InboxLogic.kt`'s agent
-  adapter + band, red row treatment, and the strip on the agent viewer.
-
-- Board: model-pin shorthand `#sonnet`/`#opus`/`#haiku`/`#fable` (hub + SPA
-  ^tidy-mole, 2026-09-08) — the hub parses a bare alias tag as `#model/<alias>`
-  and serializes aliases back in the short form, so `CardView.model` already
-  arrives as `sonnet` for a `#sonnet` card (no Kotlin parser change). Display
-  only: `SpacesScreen.kt` ~L1192 renders `#model/$it` — show `#$it` for the
-  four aliases (`MODEL_ALIASES` in both TS ports), `#model/$it` otherwise; the
-  card-sheet model picker should list `fable` beside haiku/sonnet/opus.
-
-- Board: `#inherit` card token (hub + SPA ^tall-colt, 2026-09-08) — ticket-forks
-  are now FRESH-context by default; a trailing `#inherit` tag opts a card back
-  into the parent-transcript copy. `CardContent.kt`'s token parser must strip
-  `#inherit` like `#nofork` (else it renders as card text), the card sheet
-  wants an inherit/fresh toggle beside the nofork pill (`POST
-  /board/:project/inherit {card, inherit}`), and the tile a small `inherit`
-  badge. `CardView` from the hub now carries `inherit: boolean`.
-
 - Calendar: multi-day TIMED events (SPA bd2fa2cb, `src/calendar/multi-day.ts`) —
   an event crossing local midnight (Fri 16:00 → Sun 15:00) rendered as a 15-min
   sliver on its start day; the SPA now re-shapes it into the all-day bar as a
@@ -202,6 +123,93 @@ view-mode hub-sync (Room meta is fine on one device).
   Recent/Upcoming/Go-to composition is ported in `rank("")` and tested, just
   not rendered. Not in Room on the phone: the spaces list (hub-loaded
   StateFlow, so absent offline until the first sync) — everything else is.
+- **Inbox: running agents stay OUT of the list unless they need attention**
+  (SPA ^neat-fawn ad80abf8 + 67108001). `InboxLogic.sessionIsLive` admitted any
+  unread session and banded running ones last; a running turn's unread text is
+  not actionable, so the phone showed rows the desktop had dropped and the
+  tile badge over-counted. Now `needsAttention` admits (a question/approval
+  blocks the turn), else idle + unread only — and there is no "still typing"
+  band. Tests cover running+unread (out), running+attention (in).
+- **Inbox: `#blocked` cards band with attention, red row, Unblock strip** (hub
+  + SPA ^mild-ibis 9ed127b0, ^sly-lynx 489e7bd5/ef1204a1/b01e4ccc).
+  `SpaceSummary` gained `blockedCards` / `blockedAgentKeys` / `ownedCards`
+  (parsed in `SpacesRepository`, one `cardRefs` helper); `InboxEntry.blocked`
+  (key ∈ blockedAgentKeys), band 1 beside attention, red Bot + a red ⊘ row
+  glyph; the agent screen gets a `Blocked · <project>` strip with Open card /
+  Unblock (`SpacesRepository.setBlockedByQuery` → `POST /board/:p/block
+  {blocked:false}`, the hub's reopen nudge fires). Admission is unchanged —
+  a running blocked fork never enters the list.
+- **Inbox: card-owned agent rows are titled with their CARD text** (SPA
+  2f45b0fe ^jade-kiwi) + **rows lead with their SPACE** (7b0aec47 ^glad-finch).
+  Pure `ownedCardText` (blocked → review → in-progress) and `sessionContext`
+  (project title, else first area, else nothing) ported into `InboxLogic.kt`;
+  `composeInbox` now takes the SPACES list (`InboxRepository(spacesFlow)`)
+  instead of a flattened review-key set so all four agent joins derive from
+  one input. Row: muted context prefix + chevron (capped at 120dp so a long
+  card title can't crush it), header = card text, session name muted beside it
+  (`InboxEntry.agentName`, the SPA's tooltip).
+- **Inbox: feed rows lead with the ARTICLE title, feed name beneath** (SPA
+  40dd715f ^shy-ant). `feedItemToEntry` header/body flipped — the platform
+  glyph + favicon already say the source; "Hacker News: Front Page" ×12 was
+  unreadable.
+- **Inbox: swipe-done on an agent row approves its Under Review card(s)** (SPA
+  d4afd8b3 ^trim-lynx). New pure `approveHandbacks` (`data/inbox/Approve.kt`,
+  port of `src/inbox/approve.ts`: in order, skip no-Done boards, stop at the
+  first failure — tested) shared by the swipe path (`AppShell` onDone) and the
+  agent screen's Approve button, so the two can't drift. After the move the
+  session is marked read STICKY (`AgentsRepository.markRead(sticky=true)` →
+  `mark_session_read {sticky:true}`; the hub pins `lastReadIndex` so the
+  fork's wind-down farewell can't re-flag the row). A failed move toasts and
+  the row snaps back; the Approve button on the detail screen marks read
+  sticky only when it approved the session's LAST review card.
+- **Inbox: open a review / blocked card IN PLACE from the agent screen** (SPA
+  ^glad-bee `InboxCardModal.tsx`). `ui/inbox/InboxCardSheet.kt` hosts the
+  shared Spaces `CardSheet` (now public) over the agent detail: it owns its
+  own board read (`SpacesRepository.fetchBoard` — never the open-board
+  state, so Spaces keeps showing its project), resolves the card by `^id`
+  else exact text, and every mutation goes through the same hub BoardOps
+  verbs. `SpacesRepository.post()` now reloads the OPEN board only when it
+  is the mutated project — the old unconditional reload would have swapped
+  the Spaces board to whichever project the Inbox last touched.
+- **Inbox: pinned chats strip** (SPA 58e4e996 ^shy-loon `InboxPinnedChats`).
+  One row of 32dp avatars of `m.favourite` rooms (`ChatRoomRow.isPinned`,
+  alphabetical) under the Inbox header — network badge in the corner, blue
+  unread count, read rooms dimmed to 60%, hidden on the Feed list and in the
+  snoozed view; tap opens the room. List membership unchanged.
+- **Board: model-pin shorthand `#sonnet`/`#opus`/`#haiku`/`#fable`** (hub + SPA
+  ^tidy-mole 572323f2) and **the `#inherit` token** (^tall-colt).
+  `KanbanCodec.parseCardTokens` now parses the FULL grammar the hub does
+  (`#nofork`, `#inherit`, `#model/<id>`, the four bare aliases —
+  `MODEL_ALIASES`), `BoardCard` carries the fields, `cardFirstLine` writes
+  them back in the hub's token order, `modelToken()` spells aliases short;
+  round-trip + re-render tested. `CardView.inherit` parsed; card sheet shows
+  `#inherit` (blue) and the model pin as the file spells it (`#sonnet`, not
+  `#model/sonnet`), a `fresh ↔ inherit ✓` toggle (`POST /board/:p/inherit`),
+  and `fable` in the model picker; the tile grew nofork / inherit / model
+  badges (SPA tile parity).
+- **Agents: transcript markdown-lite renders `>` blockquotes (nested), `#`
+  headings, and `-`/`*`/`1.` lists incl. `[ ]`/`[x]` task boxes** (SPA
+  33157ae5 ^ripe-crab, 7046c9c4 ^gray-bat). `ui/agents/MarkdownBlocks.kt` is a
+  verbatim port of `src/agents/markdown-blocks.ts` (`segmentBlocks`,
+  `parseListItem`, `parseHeading`, `unquoteLine`) with the SPA's test file
+  ported case for case; `MarkdownLite` renders each `Lines` run through it —
+  quotes recurse behind a 2dp bar, lists are flat with depth-indented rows and
+  struck done boxes, headings by level. The old per-line `startsWith` branches
+  (which printed `>` literally and knew only `- `/`* `) are gone.
+- **Agents: stray-cwd glyph is grey, not amber** (SPA 0f2b2bd5). The Spaces
+  row's FolderOff + cwd line no longer tint amber (a stray is a fact, not an
+  alert); `AgentStatusBar` was already grey.
+- **Agents: session lifecycle audit after "sessions are either there or gone"**
+  (hub 01042e09 ^warm-elk). `kill_session` now removes the entry hub-side and
+  the next `sessions_list` `deleteAbsent`s the row — nothing to change;
+  `session_ended` (only ever a never-initialised, unresumable session now) still
+  marks `status = "ended"`, and an incidental crash arrives as
+  `hibernated:true` + `status:idle` through the normal list row. The remaining
+  `status != "ended"` filters are harmless defensive guards.
+- **Agents: `con agent chat` forks named `<target> ↔ <asker>`** (eeb04c82).
+  `AgentLabels` resolves by agentKey + parent csid, names are display-only, so a
+  `↔` name renders verbatim and roots to the target — pinned by
+  `AgentLabelsTest`.
 
 ## Shipped
 

@@ -70,6 +70,22 @@ private fun session(
     lastCachedIndex = 0, messageLogLength = 5, isAl = isAl, lastActivityAt = lastActivityAt,
 )
 
+private fun spaceSummary(
+    slug: String = "console",
+    title: String = "Console",
+    reviewCards: List<io.amar.console.data.spaces.SpacesRepository.ReviewCard> = emptyList(),
+    reviewAgentKeys: List<String> = reviewCards.mapNotNull { it.agentKey },
+    blockedCards: List<io.amar.console.data.spaces.SpacesRepository.ReviewCard> = emptyList(),
+    blockedAgentKeys: List<String> = blockedCards.mapNotNull { it.agentKey },
+    ownedCards: List<io.amar.console.data.spaces.SpacesRepository.ReviewCard> = emptyList(),
+    doneColumn: String? = "Done",
+) = io.amar.console.data.spaces.SpacesRepository.SpaceSummary(
+    kind = "project", slug = slug, title = title, notePath = null, boardPath = "projects/$slug/board.md",
+    status = null, fileCount = 0, reviewCount = reviewCards.size, reviewAgentKeys = reviewAgentKeys,
+    reviewCards = reviewCards, blockedCards = blockedCards, blockedAgentKeys = blockedAgentKeys,
+    ownedCards = ownedCards, doneColumn = doneColumn,
+)
+
 class InboxLogicTest {
 
     // ---- rules parse/serialize ----
@@ -123,6 +139,12 @@ class InboxLogicTest {
         assertFalse(sessionIsLive(session(hasUnread = false)))
         assertTrue(sessionIsLive(session(hasUnread = false, attention = true)))
         assertFalse(sessionIsLive(session(isAl = true)))
+        // A RUNNING session's unread text is a turn still being typed — not
+        // inbox material (^neat-fawn) — unless it needs attention (a question
+        // or approval blocks the turn, and that IS Yousef's to answer).
+        assertFalse(sessionIsLive(session(status = "running")))
+        assertTrue(sessionIsLive(session(status = "running", attention = true)))
+        assertTrue(sessionIsLive(session(status = "running", hasUnread = false, attention = true)))
     }
 
     // ---- SLA ----
@@ -219,27 +241,115 @@ class InboxLogicTest {
     }
 
     @Test
-    fun `agent tiers attention, review hand-back, chat+mail, finished, running`() {
+    fun `agent tiers attention or blocked, review hand-back, chat+mail, finished`() {
         val review = setOf("reviewer")
-        val running = sessionToEntry(session(id = "run", status = "running", lastActivityAt = NOW), review)
+        val blockedKeys = setOf("stuck")
         val idle = sessionToEntry(session(id = "idle", lastActivityAt = NOW), review)
         val mail = threadToEntry(thread(date = NOW - HOUR), InboxRules.DEFAULT)
         val handback = sessionToEntry(session(id = "rev", agentKey = "reviewer", lastActivityAt = NOW - 9 * HOUR), review)
         val attention = sessionToEntry(session(id = "attn", attention = true, lastActivityAt = NOW - 9 * HOUR), review)
-        val sorted = sortInbox(listOf(running, idle, mail, handback, attention))
+        // A #blocked card bands with attention (^mild-ibis) — older than attention here, so after it.
+        val blocked = sessionToEntry(session(id = "blk", agentKey = "stuck", lastActivityAt = NOW - 10 * HOUR), review, blockedKeys = blockedKeys)
+        assertTrue(blocked.blocked)
+        val sorted = sortInbox(listOf(idle, mail, handback, attention, blocked))
         assertEquals(
-            listOf("agent:attn", "agent:rev", "mail:t1", "agent:idle", "agent:run"),
+            listOf("agent:attn", "agent:blk", "agent:rev", "mail:t1", "agent:idle"),
             sorted.map { it.key },
         )
-        // composeInbox threads reviewKeys through to the adapter.
+        // composeInbox derives review/blocked keys, titles and card text from the spaces list.
+        val sp = spaceSummary(
+            reviewCards = listOf(io.amar.console.data.spaces.SpacesRepository.ReviewCard("abc", "Ship the fix", "reviewer")),
+            reviewAgentKeys = listOf("reviewer"),
+            blockedCards = listOf(io.amar.console.data.spaces.SpacesRepository.ReviewCard("zzz", "Need creds", "stuck")),
+            blockedAgentKeys = listOf("stuck"),
+        )
         val lists = composeInbox(
             threads = emptyList(), rooms = emptyList(), feedItems = emptyList(), feedsById = emptyMap(),
             readIds = emptySet(), snoozedKeys = emptyMap(),
-            sessions = listOf(session(id = "rev", agentKey = "reviewer"), session(id = "idle")),
-            rules = InboxRules.DEFAULT, now = NOW, reviewKeys = review,
+            sessions = listOf(
+                session(id = "rev", agentKey = "reviewer").copy(project = "console"),
+                session(id = "idle", agentKey = "nobody"),
+                // Running + unread is NOT admitted, blocked card or not; running + attention is.
+                session(id = "run", status = "running", lastActivityAt = NOW),
+                session(id = "runblk", status = "running", agentKey = "stuck"),
+                session(id = "runattn", status = "running", attention = true, lastActivityAt = NOW - 20 * HOUR),
+            ),
+            rules = InboxRules.DEFAULT, now = NOW, spaces = listOf(sp),
         )
-        assertEquals(listOf("agent:rev", "agent:idle"), lists.inbox.map { it.key })
-        assertTrue(lists.inbox[0].review)
+        assertEquals(listOf("agent:runattn", "agent:rev", "agent:idle"), lists.inbox.map { it.key })
+        val rev = lists.inbox[1]
+        assertTrue(rev.review)
+        // Card-owned rows are titled with the CARD, name → agentName; space title is the context.
+        assertEquals("Ship the fix", rev.header)
+        assertEquals("Worker", rev.agentName)
+        assertEquals("Console", rev.context)
+        // Uncarded sessions keep their name and no agentName.
+        assertEquals("Worker", lists.inbox[2].header)
+        assertNull(lists.inbox[2].agentName)
+    }
+
+    @Test
+    fun `sessionContext prefers the project title, else the first area, else nothing`() {
+        val titles = mapOf("console" to "Console", "life" to "Life")
+        assertEquals("Console", sessionContext("console", "life,health") { titles[it] })
+        assertEquals("Life", sessionContext(null, "life,health") { titles[it] })
+        assertEquals("unknown-slug", sessionContext("unknown-slug", null) { titles[it] })
+        assertNull(sessionContext(null, null) { titles[it] })
+        assertNull(sessionContext(null, "") { titles[it] })
+        val e = sessionToEntry(session(id = "s").copy(project = "console"), titleOf = { titles[it] })
+        assertEquals("Console", e.context)
+        assertNull(sessionToEntry(session(id = "s")).context)
+    }
+
+    @Test
+    fun `blockedCardsFor blockedAgentKeys and ownedCardText join board state across projects`() {
+        val console = spaceSummary(
+            slug = "console", title = "Console",
+            reviewCards = listOf(io.amar.console.data.spaces.SpacesRepository.ReviewCard("rev", "Reviewed card", "worker")),
+            blockedCards = listOf(io.amar.console.data.spaces.SpacesRepository.ReviewCard("blk", "Blocked card", "worker"), io.amar.console.data.spaces.SpacesRepository.ReviewCard(null, "Someone else", "other")),
+            blockedAgentKeys = listOf("worker", "other"),
+            ownedCards = listOf(io.amar.console.data.spaces.SpacesRepository.ReviewCard("own", "In-progress card", "worker"), io.amar.console.data.spaces.SpacesRepository.ReviewCard("o2", "Third card", "third")),
+        )
+        val area = console.copy(kind = "area", slug = "life")
+        val spaces = listOf(console, area)
+        assertEquals(listOf(BlockedCard("console", "^blk", "Blocked card")), blockedCardsFor("worker", spaces))
+        assertEquals(listOf(BlockedCard("console", "Someone else", "Someone else")), blockedCardsFor("other", spaces))
+        assertTrue(blockedCardsFor(null, spaces).isEmpty())
+        assertEquals(setOf("worker", "other"), blockedAgentKeys(spaces))
+        // blocked → review → in-progress preference.
+        assertEquals("Blocked card", ownedCardText("worker", spaces))
+        assertEquals("Reviewed card", ownedCardText("worker", listOf(console.copy(blockedCards = emptyList()))))
+        assertEquals("In-progress card", ownedCardText("worker", listOf(console.copy(blockedCards = emptyList(), reviewCards = emptyList()))))
+        assertEquals("Third card", ownedCardText("third", spaces))
+        assertNull(ownedCardText("nobody", spaces))
+        assertNull(ownedCardText(null, spaces))
+    }
+
+    @Test
+    fun `feed rows lead with the article title and carry the feed name beneath`() {
+        val e = feedItemToEntry(feedItem(), feed(), InboxRules.DEFAULT)!!
+        assertEquals("Post", e.header)
+        assertEquals("Feed", e.body)
+        assertEquals("", feedItemToEntry(feedItem(), null, InboxRules.DEFAULT)!!.body)
+    }
+
+    @Test
+    fun `approveHandbacks moves in order, skips boards with no Done column, stops at the first failure`() = kotlinx.coroutines.runBlocking {
+        val a = io.amar.console.data.spaces.SpacesRepository.ReviewHandback("console", "^a", "A", "Done")
+        val noDone = io.amar.console.data.spaces.SpacesRepository.ReviewHandback("home", "^n", "N", null)
+        val b = io.amar.console.data.spaces.SpacesRepository.ReviewHandback("console", "^b", "B", "Done")
+        val c = io.amar.console.data.spaces.SpacesRepository.ReviewHandback("console", "^c", "C", "Done")
+        val moves = ArrayList<String>()
+        val ok = approveHandbacks(listOf(a, noDone, b)) { p, q, col -> moves += "$p:$q→$col"; true }
+        assertEquals(listOf("console:^a→Done", "console:^b→Done"), moves)
+        assertEquals(listOf(a, b), ok.moved)
+        assertEquals(listOf(noDone), ok.skipped)
+        assertNull(ok.failed)
+        moves.clear()
+        val bad = approveHandbacks(listOf(a, b, c)) { _, q, _ -> moves += q; q != "^b" }
+        assertEquals(listOf("^a", "^b"), moves) // c never attempted
+        assertEquals(listOf(a), bad.moved)
+        assertEquals(b, bad.failed)
     }
 
     @Test

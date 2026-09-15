@@ -115,10 +115,16 @@ data class InboxEntry(
     val key: String,
     val source: InboxSource,
     val sourceId: String,
-    /** Row header: the person (DM/mail sender), group name, or feed title. */
+    /** Row header: the person (DM/mail sender), group name, article title, or
+     *  — for a card-owned agent — its card text. */
     val header: String,
-    /** Row body: message text, mail subject, or feed-item title. */
+    /** Row body: message text, mail subject, or feed name. */
     val body: String,
+    /** Agent only: the session's SPACE (project title, else first area) —
+     *  rendered as a muted prefix before the header ("Console › Rosy owl"). */
+    val context: String? = null,
+    /** Agent only: the session's own name when [header] is its card text. */
+    val agentName: String? = null,
     /** Chat bridge network (whatsapp/slack/…) — drives the channel icon. */
     val network: String? = null,
     val ts: Long,
@@ -132,6 +138,10 @@ data class InboxEntry(
     /** Agent only: its `@key` owns an Under Review card — a hand-back waiting
      *  on Yousef, banded beside attention. */
     val review: Boolean = false,
+    /** Agent only: its `@key` owns a `#blocked` in-progress card — stuck on
+     *  Yousef, banded with attention. Colours an admitted (idle + unread) row
+     *  red; never admits a running session. */
+    val blocked: Boolean = false,
     /** Chat only: DM unanswered past its SLA window — tops the inbox. */
     val overdue: Boolean = false,
     /** Chat only: the room holds an unsent draft (`body` is the draft text). */
@@ -224,10 +234,18 @@ fun roomIsLive(r: ChatRoomRow, now: Long): Boolean {
     return r.isUnread || r.manualUnread
 }
 
-/** Unread agent sessions demand handling; Al is a standing conversation, not
- *  an item to clear. */
-fun sessionIsLive(s: AgentSessionRow): Boolean =
-    !s.isAl && (s.hasUnread || s.needsAttention)
+/** Agent sessions that demand handling are inbox-shaped by definition. A
+ *  RUNNING session is not one of them: its unread text is a turn still being
+ *  typed (^neat-fawn: "Inbox is only for things that require my attention").
+ *  The ONE exception is `needsAttention` — a question/approval can block a
+ *  still-running turn. A `#blocked` card never admits a running session. Al
+ *  is a standing conversation, not an item to clear. */
+fun sessionIsLive(s: AgentSessionRow): Boolean {
+    if (s.isAl) return false
+    if (s.needsAttention) return true
+    if (!s.hasUnread) return false
+    return s.status != "running"
+}
 
 // --------------------------------------------------------------------------
 // Adapters: source rows → InboxEntry.
@@ -267,23 +285,48 @@ fun roomToEntry(r: ChatRoomRow, rules: InboxRules, now: Long): InboxEntry {
     )
 }
 
+/** Which space a session belongs to, for display: its project, else its
+ *  first area, else nothing (chat forks / one-off creates). [titleOf] maps a
+ *  slug to the space's title; an unknown slug falls back to the slug (SPA
+ *  `sessionContext`). */
+fun sessionContext(project: String?, areasCsv: String?, titleOf: (String) -> String? = { null }): String? {
+    val slug = project ?: areasCsv?.split(',')?.firstOrNull { it.isNotBlank() }?.trim()
+    if (slug.isNullOrBlank()) return null
+    return titleOf(slug) ?: slug
+}
+
 /** Agents are inbox-shaped by definition — no routing rules apply.
  *  `reviewKeys` = every `@key` owning an Under Review card across all boards
  *  (SpaceSummary.reviewAgentKeys, flattened) — the session's card being in
- *  review is what makes it a hand-back. */
-fun sessionToEntry(s: AgentSessionRow, reviewKeys: Set<String> = emptySet()): InboxEntry {
+ *  review is what makes it a hand-back. `blockedKeys` = every `@key` owning a
+ *  `#blocked` in-progress card (stuck on Yousef — coloured like an @amar
+ *  alert once admitted). `cardTextOf` = the card a card-owned session is
+ *  ABOUT: it becomes the header and the fork's minted name drops to
+ *  [InboxEntry.agentName] (a name like "Glad finch" says nothing). */
+fun sessionToEntry(
+    s: AgentSessionRow,
+    reviewKeys: Set<String> = emptySet(),
+    titleOf: (String) -> String? = { null },
+    blockedKeys: Set<String> = emptySet(),
+    cardTextOf: (String) -> String? = { null },
+): InboxEntry {
     val idle = s.status != "running"
+    val name = s.name.removeSuffix(" (fork)")
+    val card = s.agentKey?.let(cardTextOf)
     return InboxEntry(
         key = "agent:${s.id}",
         source = InboxSource.AGENT,
         sourceId = s.id,
-        header = s.name.removeSuffix(" (fork)"),
+        header = card ?: name,
+        agentName = if (card != null) name else null,
+        context = sessionContext(s.project, s.areasCsv, titleOf),
         body = s.attentionSnippet ?: s.lastTextSnippet ?: "",
         ts = if (s.lastActivityAt > 0) s.lastActivityAt else s.createdAt,
         inInbox = true,
         attention = s.needsAttention,
         idle = idle,
         review = idle && s.agentKey != null && s.agentKey in reviewKeys,
+        blocked = s.agentKey != null && s.agentKey in blockedKeys,
         agentKey = s.agentKey,
     )
 }
@@ -315,7 +358,56 @@ fun reviewHandbacksFor(
     return out
 }
 
-/** Null when the feed is routed 'hidden' — dropped from the pane entirely. */
+/** A `#blocked` in-progress card this agent owns — what the unblock strip
+ *  needs to address it on `/board/:project/block` (SPA `BlockedCard`). */
+data class BlockedCard(val project: String, val query: String, val text: String)
+
+/** `#blocked` in-progress cards owned by [agentKey] across every project
+ *  board (SPA `blockedCardsFor`). */
+fun blockedCardsFor(
+    agentKey: String?,
+    spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary>,
+): List<BlockedCard> {
+    if (agentKey == null) return emptyList()
+    val out = ArrayList<BlockedCard>()
+    for (s in spaces) {
+        if (s.kind != "project") continue
+        for (c in s.blockedCards) {
+            if (c.agentKey != agentKey) continue
+            out += BlockedCard(project = s.slug, query = c.blockId?.let { "^$it" } ?: c.text, text = c.text)
+        }
+    }
+    return out
+}
+
+/** Every `@key` owning a `#blocked` in-progress card, across all boards —
+ *  derived from board state, so it survives hub restarts (the hub's
+ *  transition-time attention flag does not). */
+fun blockedAgentKeys(spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary>): Set<String> =
+    spaces.flatMapTo(HashSet()) { it.blockedAgentKeys }
+
+/** The card an agent's Inbox row is ABOUT: a #blocked one first (the row is
+ *  banded for it), then its Under Review hand-back, then whatever it is
+ *  working in In Progress. Null when its `@key` owns no live card (SPA
+ *  `ownedCardText`). */
+fun ownedCardText(
+    agentKey: String?,
+    spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary>,
+): String? {
+    if (agentKey == null) return null
+    blockedCardsFor(agentKey, spaces).firstOrNull()?.let { return it.text }
+    reviewHandbacksFor(agentKey, spaces).firstOrNull()?.let { return it.text }
+    for (s in spaces) {
+        if (s.kind != "project") continue
+        s.ownedCards.firstOrNull { it.agentKey == agentKey }?.let { return it.text }
+    }
+    return null
+}
+
+/** Null when the feed is routed 'hidden' — dropped from the pane entirely.
+ *  Feeds invert the who/what shape: the ARTICLE title is what Yousef scans
+ *  for, the feed name is context — the platform glyph + favicon on the row
+ *  already say where it came from (^shy-ant). */
 fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEntry? {
     val route = rules.routeForFeed(i.feedId)
     if (route == "hidden") return null
@@ -323,8 +415,8 @@ fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEnt
         key = "feed:${i.id}",
         source = InboxSource.FEED,
         sourceId = i.id,
-        header = feed?.title ?: "",
-        body = i.title,
+        header = i.title,
+        body = feed?.title ?: "",
         ts = i.publishedAt,
         inInbox = route == "inbox",
         routeKey = i.feedId,
@@ -337,19 +429,20 @@ fun feedItemToEntry(i: FeedItemRow, feed: FeedRow?, rules: InboxRules): InboxEnt
 
 // --------------------------------------------------------------------------
 // Ordering — the SPA's bands (src/inbox/route.ts `band`, keep in sync):
-// overdue → attention-agents → review hand-backs (turn ended + card Under
-// Review) → chat+mail merged by recency (fresh mail must not sink under
-// stale group unreads) → finished (idle) unread agents → still-running
-// unread agents → inbox-routed feed items. Recency within each band.
+// overdue → agents asking for Yousef (@amar, or a #blocked card — same tier,
+// ^mild-ibis) → review hand-backs (turn ended + card Under Review) →
+// chat+mail merged by recency (fresh mail must not sink under stale group
+// unreads) → finished unread agents → inbox-routed feed items. Recency
+// within each band. A still-running agent never reaches the list unless it
+// needs attention (^neat-fawn), so there is no "still typing" band.
 // --------------------------------------------------------------------------
 
 private fun band(e: InboxEntry): Int = when {
     e.overdue -> 0
     e.source == InboxSource.AGENT -> when {
-        e.attention -> 1
+        e.attention || e.blocked -> 1
         e.review -> 2
-        e.idle -> 4
-        else -> 5
+        else -> 4
     }
     e.source == InboxSource.CHAT || e.source == InboxSource.MAIL -> 3
     else -> 6
@@ -382,6 +475,9 @@ data class InboxLists(
 /**
  * @param snoozedKeys local item-key snoozes still in force (`feed:<id>` /
  *   `agent:<sessionId>` → until). Mail/chat snoozes live on their rows.
+ * @param spaces the hub's spaces list — every agent-row join (review
+ *   hand-backs, #blocked cards, owned-card headers, space titles) derives
+ *   from it, so the Inbox never loads a board.
  */
 fun composeInbox(
     threads: List<MailThreadRow>,
@@ -394,8 +490,13 @@ fun composeInbox(
     rules: InboxRules,
     now: Long,
     xOnly: Boolean = false,
-    reviewKeys: Set<String> = emptySet(),
+    spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary> = emptyList(),
 ): InboxLists {
+    val reviewKeys = spaces.flatMapTo(HashSet()) { it.reviewAgentKeys }
+    val blockedKeys = blockedAgentKeys(spaces)
+    val titles = spaces.associate { it.slug to it.title }
+    val titleOf: (String) -> String? = { titles[it] }
+    val cardTextOf: (String) -> String? = { ownedCardText(it, spaces) }
     val snoozed = ArrayList<InboxEntry>()
     val all = buildList {
         for (t in threads) {
@@ -414,7 +515,7 @@ fun composeInbox(
         }
         for (s in sessions) {
             if (!sessionIsLive(s)) continue
-            val e = sessionToEntry(s, reviewKeys)
+            val e = sessionToEntry(s, reviewKeys, titleOf, blockedKeys, cardTextOf)
             val until = snoozedKeys[e.key]
             if (until != null && until > now) snoozed += e.copy(snoozedUntil = until) else add(e)
         }

@@ -1002,10 +1002,18 @@ class AgentsRepository(
         _approvals.value = _approvals.value.filter { it.requestId != requestId }
     }
 
-    fun markRead(sessionId: String) {
+    /** [sticky] = the Inbox approve verdict: read for good until the fork is
+     *  folded — the hub pins the read state so the wind-down turn's farewell
+     *  can't re-flag the row (SPA `markSessionRead(id, {sticky})`, ^fond-yak).
+     *  The hub keeps `lastReadIndex` at the log length while pinned, so the
+     *  list rows derive `hasUnread=false` with no client-side flag. */
+    fun markRead(sessionId: String, sticky: Boolean = false) {
         scope.launch {
             val sess = db.agents().byId(sessionId)
-            sendWs(buildJsonObject { put("type", "mark_session_read"); put("sessionId", sessionId) })
+            sendWs(buildJsonObject {
+                put("type", "mark_session_read"); put("sessionId", sessionId)
+                if (sticky) put("sticky", true)
+            })
             sendWs(buildJsonObject { put("type", "clear_attention"); put("sessionId", sessionId) })
             sess?.let {
                 db.agents().upsertSessions(listOf(it.copy(hasUnread = false, needsAttention = false, lastReadIndex = it.messageLogLength)))

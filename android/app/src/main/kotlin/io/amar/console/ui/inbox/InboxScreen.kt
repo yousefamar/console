@@ -21,6 +21,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.AssignmentTurnedIn
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
+import io.amar.console.data.chat.MatrixMedia
+import io.amar.console.data.db.ChatRoomRow
+import io.amar.console.data.inbox.blockedCardsFor
+import io.amar.console.ui.components.Avatar
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Inbox
@@ -216,6 +226,12 @@ fun InboxScreen(
                 }
             }
         }
+        // Pinned chats (m.favourite) as one avatar row under the header —
+        // hidden in the snoozed view and on the Feed list (SPA ^shy-loon).
+        if (!showSnoozed && !showFeed) {
+            val pinned by repo.pinnedRooms.collectAsState(initial = emptyList())
+            if (pinned.isNotEmpty()) PinnedChatsStrip(pinned, onOpenChat)
+        }
         if (entries.isEmpty()) {
             EmptyState(
                 if (showSnoozed) Icons.Outlined.Schedule else Icons.Outlined.Inbox,
@@ -267,8 +283,8 @@ fun InboxScreen(
                     ) {
                         InboxRow(
                             entry = entry,
-                            handback = entry.source == InboxSource.AGENT &&
-                                reviewHandbacksFor(entry.agentKey, spaceList).isNotEmpty(),
+                            handbacks = if (entry.source == InboxSource.AGENT) reviewHandbacksFor(entry.agentKey, spaceList).size else 0,
+                            blockedCards = if (entry.source == InboxSource.AGENT) blockedCardsFor(entry.agentKey, spaceList).size else 0,
                             dueLabel = entry.snoozedUntil?.let { timeFmt.format(Date(it)) },
                             onClick = {
                                 when (entry.source) {
@@ -413,7 +429,10 @@ private fun SwipeHint(direction: SwipeToDismissBoxValue, snoozedView: Boolean) {
 @Composable
 private fun InboxRow(
     entry: InboxEntry,
-    handback: Boolean,
+    /** Agent only: Under Review cards its key owns (blue check glyph). */
+    handbacks: Int,
+    /** Agent only: `#blocked` in-progress cards its key owns (red ⊘ glyph). */
+    blockedCards: Int,
     dueLabel: String?,
     onClick: () -> Unit,
     onToggleRoute: () -> Unit,
@@ -430,6 +449,25 @@ private fun InboxRow(
         SourceIcon(entry)
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Agent rows lead with their SPACE as a muted prefix + chevron
+                // ("Console › Rosy owl") — a fork's name alone says nothing
+                // about what it works on (^glad-finch). Width-capped (the SPA's
+                // max-w-[40%]) so a long card title can't crush it to one letter.
+                entry.context?.let { ctx ->
+                    Text(
+                        ctx,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 120.dp),
+                    )
+                    Icon(
+                        Icons.Outlined.ChevronRight, null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(12.dp).offset(x = (-4).dp),
+                    )
+                }
                 Text(
                     entry.header,
                     style = MaterialTheme.typography.bodyMedium,
@@ -438,11 +476,33 @@ private fun InboxRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                if (handback) {
+                // A card-owned agent's header is its card; the session's own
+                // name rides alongside, muted (the SPA's tooltip, ^jade-kiwi).
+                entry.agentName?.let { name ->
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 80.dp),
+                    )
+                }
+                // Row markers (SPA HandbackGlyph): red ⊘ per agent stuck on a
+                // #blocked card, blue check for a card waiting for review.
+                if (blockedCards > 0) {
+                    Icon(
+                        Icons.Outlined.Block, "Card blocked",
+                        tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(13.dp),
+                    )
+                    if (blockedCards > 1) Text("$blockedCards", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
+                }
+                if (handbacks > 0) {
                     Icon(
                         Icons.Outlined.AssignmentTurnedIn, "Card under review",
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp),
                     )
+                    if (handbacks > 1) Text("$handbacks", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
                 }
                 if (entry.overdue) {
                     Text(
@@ -484,6 +544,57 @@ private fun InboxRow(
     }
 }
 
+/**
+ * Pinned chats (Matrix `m.favourite` rooms) as an avatar-only strip — the
+ * Chat app's pinned section compressed to one row of 32dp avatars so it
+ * costs the list a single line (SPA `InboxPinnedChats`, ^shy-loon). Read
+ * rooms dim; unread rooms carry a blue count; the bridge network badges the
+ * corner. Tap opens the room like any chat item.
+ */
+@Composable
+private fun PinnedChatsStrip(rooms: List<ChatRoomRow>, onOpenChat: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (room in rooms) {
+            val unread = room.isUnread && room.snoozedUntil == null
+            Box(
+                Modifier.size(34.dp).clickable { onOpenChat(room.id) }.alpha(if (unread) 1f else 0.6f),
+            ) {
+                Avatar(
+                    name = room.name,
+                    imageUrl = MatrixMedia.thumbnailUrl(room.avatarMxc, 64, 64),
+                    size = 32.dp,
+                )
+                if (room.networkIcon != null) {
+                    Box(
+                        Modifier.align(Alignment.BottomEnd)
+                            .background(MaterialTheme.colorScheme.background, CircleShape)
+                            .padding(1.dp),
+                    ) { NetworkBadge(room.networkIcon, size = 11.dp) }
+                }
+                if (unread) {
+                    val count = room.unreadCount
+                    Box(
+                        Modifier.align(Alignment.TopEnd)
+                            .background(MaterialTheme.accents.blue, CircleShape)
+                            .padding(horizontal = 3.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            when { count > 99 -> "99+"; count > 0 -> "$count"; else -> " " },
+                            fontSize = 9.sp, lineHeight = 11.sp, color = Color.White, fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    HorizontalDivider(thickness = 0.5.dp)
+}
+
 /** Row-height 16:9 thumbnail; a dead URL renders nothing (row keeps its height). */
 @Composable
 private fun ItemThumb(url: String) {
@@ -510,8 +621,10 @@ private fun SourceIcon(entry: InboxEntry) {
     }
     val (icon, tint) = when (entry.source) {
         InboxSource.MAIL -> Icons.Outlined.Email to MaterialTheme.colorScheme.onSurfaceVariant
+        // Red for @amar attention OR a #blocked card — admission already
+        // means idle + unread (or attention), so blocked-and-admitted is red.
         InboxSource.AGENT -> Icons.Outlined.SmartToy to
-            (if (entry.attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            (if (entry.attention || entry.blocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         else -> Icons.AutoMirrored.Outlined.Chat to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Icon(icon, contentDescription = entry.source.name, tint = tint, modifier = Modifier.size(20.dp))

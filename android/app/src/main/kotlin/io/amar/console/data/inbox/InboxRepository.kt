@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -40,9 +41,10 @@ class InboxRepository(
     /** Agent sessions ride the agents WS — injected so composition
      *  recomputes on session changes. */
     sessionsFlow: Flow<List<AgentSessionRow>>,
-    /** Every `@key` owning an Under Review card (SpacesRepository's
-     *  reviewAgentKeys, flattened) — ranks review hand-backs. */
-    reviewKeysFlow: Flow<Set<String>> = MutableStateFlow(emptySet()),
+    /** The hub's spaces list (SpacesRepository.spaces) — every agent-row join
+     *  derives from it: review hand-backs, `#blocked` cards, owned-card
+     *  headers, space titles. */
+    spacesFlow: Flow<List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary>> = MutableStateFlow(emptyList()),
 ) {
     private val rules = MutableStateFlow(InboxRules.DEFAULT)
     private val xOnly = MutableStateFlow(false)
@@ -72,11 +74,11 @@ class InboxRepository(
 
     val lists: StateFlow<InboxLists> = combine(
         sources,
-        combine(sessionsFlow, reviewKeysFlow) { s, k -> s to k },
+        combine(sessionsFlow, spacesFlow) { s, sp -> s to sp },
         db.feeds().observeSnoozes(),
         rules,
         combine(xOnly, nowTick) { x, _ -> x },
-    ) { src, (sessions, reviewKeys), snoozes, r, x ->
+    ) { src, (sessions, spaces), snoozes, r, x ->
         val now = System.currentTimeMillis()
         composeInbox(
             threads = src.threads,
@@ -89,7 +91,7 @@ class InboxRepository(
             rules = r,
             now = now,
             xOnly = x,
-            reviewKeys = reviewKeys,
+            spaces = spaces,
         )
     // WhileSubscribed(0) + catch, NOT Eagerly: an eager (or lingering) collector
     // observes Room past the screen's lifetime — under Robolectric (which boots
@@ -99,6 +101,13 @@ class InboxRepository(
     // shutdown/in tests; the inbox just stops updating).
     }.catch { }
         .stateIn(scope, SharingStarted.WhileSubscribed(0), InboxLists(emptyList(), emptyList()))
+
+    /** Matrix `m.favourite` rooms, alphabetical — the Inbox's pinned-chats
+     *  avatar strip (SPA `InboxPinnedChats`, ^shy-loon). List membership is
+     *  unchanged: the strip is the reach-for-it surface, read or not. */
+    val pinnedRooms: Flow<List<ChatRoomRow>> = db.chatRooms().observeAll()
+        .map { rooms -> rooms.filter { it.isPinned }.sortedBy { it.name.lowercase() } }
+        .catch { }
 
     init {
         scope.launch {

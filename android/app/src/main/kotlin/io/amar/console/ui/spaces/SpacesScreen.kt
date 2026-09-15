@@ -1041,7 +1041,7 @@ private fun CardChip(
                 }
             }
         }
-        val hasMeta = card.blocked || card.agentKey != null || card.blockId != null
+        val hasMeta = card.blocked || card.agentKey != null || card.blockId != null || card.nofork || card.inherit || card.model != null
         if (hasMeta) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 if (card.blocked) {
@@ -1050,6 +1050,11 @@ private fun CardChip(
                         Text("blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     }
                 }
+                // Dispatch-shape badges (SPA tile parity): violet nofork, blue
+                // inherit, amber model pin spelled as the board file does.
+                if (card.nofork) Text("nofork", style = MaterialTheme.typography.labelSmall, color = VIOLET)
+                if (card.inherit) Text("inherit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
+                card.model?.let { Text(io.amar.console.data.spaces.KanbanCodec.modelToken(it), style = MaterialTheme.typography.labelSmall, color = AMBER) }
                 card.agentKey?.let { key ->
                     val label = io.amar.console.data.spaces.agentLabel(key, allSessions)
                     // Chip colour = the assignee session's state, the rail's
@@ -1076,9 +1081,13 @@ private fun CardChip(
     }
 }
 
+/** The card editing sheet. Also hosted OUTSIDE Spaces — the Inbox's agent
+ *  detail opens a review/blocked card here without leaving the Inbox
+ *  (^glad-bee; `InboxCardSheet` in ui/inbox) — so it takes everything it
+ *  needs as parameters and never reads the open-board state itself. */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun CardSheet(
+fun CardSheet(
     spacesRepo: SpacesRepository,
     card: SpacesRepository.CardView,
     allSessions: List<AgentSessionRow>,
@@ -1176,12 +1185,16 @@ private fun CardSheet(
                 if (card.blockId != null) Text("dispatched ^${card.blockId}", style = MaterialTheme.typography.labelSmall, color = GREEN)
                 if (card.blocked) Text("#blocked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 if (card.nofork) Text("#nofork", style = MaterialTheme.typography.labelSmall, color = VIOLET)
-                card.model?.let { Text("#model/$it", style = MaterialTheme.typography.labelSmall, color = AMBER) }
+                if (card.inherit) Text("#inherit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
+                card.model?.let { Text(io.amar.console.data.spaces.KanbanCodec.modelToken(it), style = MaterialTheme.typography.labelSmall, color = AMBER) }
             }
 
             // Dispatch controls: nofork (wake the role directly, no fork),
-            // model pin (ticket-fork spawns on this model), redispatch
-            // (stamped cards only — re-fire a lost/dead dispatch).
+            // inherit (ticket-fork copies the parent transcript instead of
+            // the default fresh context + digest, ^tall-colt), model pin
+            // (ticket-fork spawns on this model — the four CLI aliases, valid
+            // on both backends), redispatch (stamped cards only — re-fire a
+            // lost/dead dispatch).
             Row(
                 Modifier.horizontalScroll(rememberScrollState()).padding(top = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1197,7 +1210,18 @@ private fun CardSheet(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
-                for (alias in listOf("haiku", "sonnet", "opus")) {
+                Surface(
+                    onClick = { run { spacesRepo.setInherit(slug, card, !card.inherit) } },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (card.inherit) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Text(
+                        if (card.inherit) "inherit ✓" else "fresh",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+                for (alias in listOf("haiku", "sonnet", "opus", "fable")) {
                     val selected = card.model == alias
                     Surface(
                         onClick = { run { spacesRepo.setModel(slug, card, if (selected) null else alias) } },
@@ -1506,9 +1530,10 @@ private fun SpaceAgentsList(
                     }
                     // A session running outside its space's home — the bug
                     // class: spawned from the hub's own cwd — reads the wrong
-                    // CLAUDE.md and its forks inherit the cwd. Amber FolderOff
-                    // (SPA FolderX, ^spry-seal) + amber cwd line; the fix is
-                    // "Relocate to …" in the long-press sheet.
+                    // CLAUDE.md and its forks inherit the cwd. Grey FolderOff
+                    // (SPA FolderX, ^spry-seal; grey not amber since 0f2b2bd5 —
+                    // a stray is a fact about the row, not an alert); the fix
+                    // is "Relocate to …" in the long-press sheet.
                     val stray = isStrayCwd(s.cwd, spaceCwd)
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1523,14 +1548,14 @@ private fun SpaceAgentsList(
                                 Icon(
                                     Icons.Filled.FolderOff,
                                     contentDescription = "Runs from ${shortCwd(s.cwd!!)}, not this space's dir ${shortCwd(spaceCwd!!)}",
-                                    tint = AMBER, modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp),
                                 )
                             }
                         }
                         Text(
                             s.status + (if (s.hibernated) " · hibernated" else "") + (s.cwd?.let { " · " + shortCwd(it) } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (stray) AMBER else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
                     }

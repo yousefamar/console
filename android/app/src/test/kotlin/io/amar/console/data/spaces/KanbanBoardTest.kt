@@ -71,6 +71,54 @@ kanban-plugin: board
     }
 
     @Test
+    fun `dispatch tags nofork inherit and model parse in any order and re-serialize in hub order`() {
+        // Bare alias shorthand (^tidy-mole) resolves to the same field as #model/.
+        val t1 = KanbanCodec.parseCardTokens("Quick doc fix #sonnet #nofork @al ^abc")
+        assertEquals("Quick doc fix", t1.text)
+        assertEquals("sonnet", t1.model)
+        assertTrue(t1.nofork)
+        assertFalse(t1.inherit)
+        assertEquals("al", t1.agentKey)
+        assertEquals("abc", t1.blockId)
+
+        val t2 = KanbanCodec.parseCardTokens("Deep port #inherit #model/claude-opus-4-8 #blocked")
+        assertEquals("Deep port", t2.text)
+        assertTrue(t2.inherit)
+        assertEquals("claude-opus-4-8", t2.model)
+        assertTrue(t2.blocked)
+        assertFalse(t2.nofork)
+
+        // Only the four aliases are shorthand — other hashtags stay card text.
+        val t3 = KanbanCodec.parseCardTokens("Look at the #fable card #bi")
+        assertEquals("Look at the #fable card #bi", t3.text)
+        assertNull(t3.model)
+        val t4 = KanbanCodec.parseCardTokens("Cheap sweep #haiku")
+        assertEquals("Cheap sweep", t4.text)
+        assertEquals("haiku", t4.model)
+        val t5 = KanbanCodec.parseCardTokens("Fable please #fable")
+        assertEquals("fable", t5.model)
+
+        // modelToken spells aliases short and ids behind #model/ (hub + SPA parity).
+        assertEquals("#sonnet", KanbanCodec.modelToken("sonnet"))
+        assertEquals("#model/claude-opus-4-8", KanbanCodec.modelToken("claude-opus-4-8"))
+
+        // A tagged board round-trips byte-identically; a re-rendered line
+        // follows the hub's token order (model, nofork, inherit, blocked, @, ^).
+        val tagged = "## Now\n\n- [ ] Cheap sweep #haiku #nofork #inherit #blocked @al ^abc\n- [x] Old #model/claude-opus-4-8 @al"
+        val board = KanbanCodec.parse(tagged)
+        assertEquals(tagged, KanbanCodec.serialize(board))
+        val card = board.columns[0].cards[0]
+        assertEquals("haiku", card.model); assertTrue(card.nofork); assertTrue(card.inherit)
+        card.agentKey = "new-mobile-app"
+        KanbanCodec.refreshCardLine(card)
+        assertEquals("- [ ] Cheap sweep #haiku #nofork #inherit #blocked @new-mobile-app ^abc", card.lines[0])
+        val old = board.columns[0].cards[1]
+        old.inherit = true
+        KanbanCodec.refreshCardLine(old)
+        assertEquals("- [x] Old #model/claude-opus-4-8 #inherit @al", old.lines[0])
+    }
+
+    @Test
     fun `continuations attach to the previous card and survive round-trip`() {
         val board = KanbanCodec.parse(sample)
         val backlog = board.columns.first { it.title == "Backlog" }

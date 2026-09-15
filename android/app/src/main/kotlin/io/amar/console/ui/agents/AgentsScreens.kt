@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ViewKanban
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -83,14 +85,22 @@ private val jsonLenient = Json { ignoreUnknownKeys = true }
 private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
 
+/** One Under Review card this session's @key owns: open it in place (the
+ *  card sheet over this screen — ^glad-bee, no jump to Spaces) or approve →
+ *  Done. Tapping the text opens too. */
 @Composable
-private fun ReviewHandbackStrip(hb: io.amar.console.data.spaces.SpacesRepository.ReviewHandback, onApprove: () -> Unit) {
+private fun ReviewHandbackStrip(
+    hb: io.amar.console.data.spaces.SpacesRepository.ReviewHandback,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onApprove: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer).padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
             Text(
                 "Under review · ${hb.project}",
                 style = MaterialTheme.typography.labelSmall,
@@ -98,8 +108,51 @@ private fun ReviewHandbackStrip(hb: io.amar.console.data.spaces.SpacesRepository
             )
             Text(hb.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        androidx.compose.material3.TextButton(onClick = onApprove, enabled = hb.doneColumn != null) {
-            Text(if (hb.doneColumn != null) "Approve → ${hb.doneColumn}" else "No Done column")
+        IconButton(onClick = onOpen) {
+            Icon(Icons.Filled.ViewKanban, contentDescription = "Open card", tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(18.dp))
+        }
+        androidx.compose.material3.TextButton(onClick = onApprove, enabled = hb.doneColumn != null && !busy) {
+            Text(
+                when {
+                    busy -> "Moving…"
+                    hb.doneColumn != null -> "Approve → ${hb.doneColumn}"
+                    else -> "No Done column"
+                },
+            )
+        }
+    }
+}
+
+/** The mirror image of the review strip: a `#blocked` card the session owns
+ *  — it is stuck on Yousef. Red; Unblock drops the tag (the hub's reopen
+ *  path then nudges the assignee), Open reads the blocker note + replies on
+ *  the card (^mild-ibis). */
+@Composable
+private fun BlockedCardStrip(
+    c: io.amar.console.data.inbox.BlockedCard,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onUnblock: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(Icons.Outlined.Block, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+        Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
+            Text(
+                "Blocked · ${c.project}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Text(c.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onClick = onOpen) {
+            Icon(Icons.Filled.ViewKanban, contentDescription = "Open card", tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(18.dp))
+        }
+        androidx.compose.material3.TextButton(onClick = onUnblock, enabled = !busy) {
+            Text(if (busy) "Unblocking…" else "Unblock")
         }
     }
 }
@@ -241,16 +294,68 @@ fun AgentSessionScreen(
 
         if (sessionApprovals.isNotEmpty()) ApprovalCard(repo, sessionApprovals.first())
 
-        // Review hand-backs: one strip per Under Review card this session's
-        // @key owns — approve straight from the transcript (SPA
+        // Review hand-backs + blocked cards: one strip per card this session's
+        // @key owns — approve / unblock straight from the transcript (SPA
         // ReviewHandbackStrip parity). The Done transition runs the fork's
-        // wind-down hub-side exactly like a Spaces drag.
+        // wind-down hub-side exactly like a Spaces drag; approving the LAST
+        // review card also marks the session read sticky (^fond-yak). "Open
+        // card" hosts the card sheet here, over this screen (^glad-bee).
         if (spaces != null) {
             val spaceList by spaces.spaces.collectAsState()
             val handbacks = remember(spaceList, session?.agentKey) {
                 io.amar.console.data.inbox.reviewHandbacksFor(session?.agentKey, spaceList)
             }
-            for (hb in handbacks) ReviewHandbackStrip(hb) { scope.launch { spaces.moveCardByQuery(hb.project, hb.query, hb.doneColumn ?: return@launch); spaces.refreshSpaces() } }
+            val blocked = remember(spaceList, session?.agentKey) {
+                io.amar.console.data.inbox.blockedCardsFor(session?.agentKey, spaceList)
+            }
+            var busyCard by remember { mutableStateOf<String?>(null) }
+            var openCard by remember { mutableStateOf<Pair<String, String>?>(null) }
+            for (c in blocked) {
+                BlockedCardStrip(
+                    c, busy = busyCard == c.query,
+                    onOpen = { openCard = c.project to c.query },
+                    onUnblock = {
+                        scope.launch {
+                            busyCard = c.query
+                            if (!spaces.setBlockedByQuery(c.project, c.query, false)) {
+                                io.amar.console.ui.shell.AppToast.show("Couldn't unblock the card: ${spaces.boardError.value ?: "hub error"}", error = true)
+                                spaces.clearError()
+                            }
+                            spaces.refreshSpaces()
+                            busyCard = null
+                        }
+                    },
+                )
+            }
+            for (hb in handbacks) {
+                ReviewHandbackStrip(
+                    hb, busy = busyCard == hb.query,
+                    onOpen = { openCard = hb.project to hb.query },
+                    onApprove = {
+                        scope.launch {
+                            busyCard = hb.query
+                            val outcome = io.amar.console.data.inbox.approveHandbacks(listOf(hb)) { p, q, col -> spaces.moveCardByQuery(p, q, col) }
+                            if (outcome.failed != null) {
+                                io.amar.console.ui.shell.AppToast.show("Couldn't move the card to ${hb.doneColumn}: ${spaces.boardError.value ?: "hub error"}", error = true)
+                                spaces.clearError()
+                            } else {
+                                spaces.refreshSpaces()
+                                // Only the LAST of several cards handles the session.
+                                val remaining = io.amar.console.data.inbox.reviewHandbacksFor(session?.agentKey, spaces.spaces.value)
+                                    .count { !(it.project == hb.project && it.query == hb.query) }
+                                if (remaining == 0) repo.markRead(sessionId, sticky = true)
+                            }
+                            busyCard = null
+                        }
+                    },
+                )
+            }
+            openCard?.let { (project, query) ->
+                io.amar.console.ui.inbox.InboxCardSheet(
+                    spaces = spaces, project = project, query = query, allSessions = sessions,
+                    onDismiss = { openCard = null; scope.launch { spaces.refreshSpaces() } },
+                )
+            }
         }
 
         // Pair tool_result / tool_diff to their tool_use; dedup bg_task.

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -655,7 +656,7 @@ fun MarkdownLite(text: String, modifier: Modifier = Modifier) {
                     if (isVideoPath(block.src)) InlineVideo(model, block.alt)
                     else InlineImage(model, block.alt) { lightbox = imageModels.indexOf(model).coerceAtLeast(0) }
                 }
-                is MdBlock.Lines -> for (line in block.lines) { if (line.isNotBlank()) RenderMdLine(line) }
+                is MdBlock.Lines -> RenderSegments(block.lines.joinToString("\n"))
             }
         }
         lightbox?.let { io.amar.console.ui.components.ImageLightbox(imageModels, it) { lightbox = null } }
@@ -891,18 +892,67 @@ private fun MdTable(header: List<String>, rows: List<List<String>>) {
     }
 }
 
+/**
+ * Block-level markdown-lite for a non-fence text run — the SPA's
+ * `renderBlockContent`: the pure [MarkdownBlocks.segmentBlocks] walks lines
+ * into heading / list / quote / table / text segments, and this renders each.
+ * `>` quotes recurse so `> > x` nests (^ripe-crab); lists are flat with
+ * depth-indented rows, `[ ]`/`[x]` task boxes struck when done (^gray-bat).
+ */
 @Composable
-private fun RenderMdLine(line: String) {
-    when {
-        line.startsWith("### ") -> Text(inlineMd(line.removePrefix("### ")), style = MaterialTheme.typography.titleSmall)
-        line.startsWith("## ") -> Text(inlineMd(line.removePrefix("## ")), style = MaterialTheme.typography.titleMedium)
-        line.startsWith("# ") -> Text(inlineMd(line.removePrefix("# ")), style = MaterialTheme.typography.titleLarge)
-        line.startsWith("- ") || line.startsWith("* ") ->
-            Row {
-                Text("•  ", style = MaterialTheme.typography.bodyMedium)
-                Text(inlineMd(line.drop(2)), style = MaterialTheme.typography.bodyMedium)
+private fun RenderSegments(text: String) {
+    for (seg in remember(text) { MarkdownBlocks.segmentBlocks(text) }) {
+        when (seg) {
+            is MarkdownBlocks.Segment.Heading -> Text(
+                inlineMd(seg.text),
+                style = when (seg.level) {
+                    1 -> MaterialTheme.typography.titleLarge
+                    2 -> MaterialTheme.typography.titleMedium
+                    else -> MaterialTheme.typography.titleSmall
+                },
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            is MarkdownBlocks.Segment.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                for (it in seg.items) {
+                    Row(Modifier.padding(start = (it.depth * 14).dp)) {
+                        Text(
+                            when {
+                                it.checked != null -> if (it.checked) "☑" else "☐"
+                                it.ordered -> "${it.num}."
+                                else -> "•"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(18.dp),
+                        )
+                        Text(
+                            inlineMd(it.text),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (it.checked == true) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                            textDecoration = if (it.checked == true) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                        )
+                    }
+                }
             }
-        else -> Text(inlineMd(line), style = MaterialTheme.typography.bodyMedium)
+            // IntrinsicSize.Min on the Row so the bar can fill the quote's height
+            // (a LazyColumn item has no bounded height for fillMaxHeight alone).
+            is MarkdownBlocks.Segment.Quote -> Row(Modifier.padding(vertical = 2.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                Box(
+                    Modifier.width(2.dp).fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)),
+                )
+                Column(Modifier.padding(start = 10.dp)) { RenderSegments(seg.lines.joinToString("\n")) }
+            }
+            // Tables are split out by splitBlocks before this runs; a table
+            // inside a quote reaches here via the recursion.
+            is MarkdownBlocks.Segment.Table -> MdTable(
+                TranscriptHelpers.tableCells(seg.header),
+                seg.body.map { TranscriptHelpers.tableCells(it) },
+            )
+            is MarkdownBlocks.Segment.Text -> for (line in seg.lines) {
+                if (line.isNotBlank()) Text(inlineMd(line), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }
 

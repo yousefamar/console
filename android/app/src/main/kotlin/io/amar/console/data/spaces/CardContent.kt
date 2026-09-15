@@ -54,9 +54,10 @@ object CardContent {
     }
 
     /** Split a trailing run of `#tag` tokens off the display text (display-
-     *  only — the tags stay in the file). #blocked, #nofork and the model
-     *  tags are parsed to card fields hub-side and never reach here via
-     *  CardView.text, but hand-typed extras like `#bi` do. */
+     *  only — the tags stay in the file). #blocked, #nofork, #inherit and the
+     *  model tags (`#model/x` or a bare alias) are parsed to card fields
+     *  hub-side (`KanbanCodec.parseCardTokens` is the same grammar) and never
+     *  reach here via CardView.text, but hand-typed extras like `#bi` do. */
     fun splitTrailingTags(text: String): TagSplit {
         val tags = ArrayDeque<String>()
         var t = text.trimEnd()

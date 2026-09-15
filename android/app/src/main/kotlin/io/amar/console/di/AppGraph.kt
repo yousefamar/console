@@ -16,7 +16,6 @@ import io.amar.console.data.mail.MailRepository
 import io.amar.console.data.notes.NotesRepository
 import io.amar.console.glasses.mirror.GlassesMirror
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import io.amar.console.sync.SyncBusClient
 import io.amar.console.sync.SyncEngine
@@ -48,9 +47,10 @@ class AppGraph(context: Context) {
     val spaces = io.amar.console.data.spaces.SpacesRepository(hub, syncBus)
     val inbox = io.amar.console.data.inbox.InboxRepository(
         appScope, db, hub, agents.observeSessions(),
-        // Review hand-backs rank off the spaces list's reviewAgentKeys; the
-        // list loads on every sync-WS connect (wireLive), so it's there from boot.
-        reviewKeysFlow = spaces.spaces.map { list -> list.flatMap { it.reviewAgentKeys }.toSet() },
+        // Agent rows join the spaces list (review hand-backs, #blocked cards,
+        // owned-card headers, space titles); the list loads on every sync-WS
+        // connect (wireLive), so it's there from boot.
+        spacesFlow = spaces.spaces,
     )
     val bookmarks = BookmarksRepository(db, hub, outbox)
     val map = MapRepository(db, hub)
