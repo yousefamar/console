@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.core.HubConfig
 import io.amar.console.data.cal.CalendarRepository
+import io.amar.console.data.cal.isOverlayCalendar
 import io.amar.console.data.cal.DAY_MS
 import io.amar.console.data.cal.FlightsRepository
 import io.amar.console.data.cal.addMonthsClamped
@@ -67,14 +69,17 @@ private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Contex
  * Calendar pane — full multi-view surface: Month (6×7 grid), Week (7-col time
  * grid) and Day (1-col) with now-line, drag-to-create/move, all-day + working
  * -location rows, detail sheet (RSVP/reminders/join/delete), event form
- * (guests + Meet + move), overlays (Meetup/OutdoorLads), account management +
+ * (guests + Meet + move), overlays (Meetup/Eventbrite), account management +
  * mini-month jump + default-calendar star + flights.
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
+fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}, onOpenNote: (String) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Vault root classifies absolute-path private links as notes (null offline).
+    var vaultRoot by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(repo) { vaultRoot = repo.vaultRoot() }
     val flights = remember(repo) { repo.flights }
     val calendars by repo.observeCalendars().collectAsState(initial = emptyList())
     val accounts by repo.observeAccounts().collectAsState(initial = emptyList())
@@ -119,9 +124,7 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     // desktop toggle: the "constantly re-showing my calendars" fight.
     // First-seen overlays default visible even against a saved allow-list.
     androidx.compose.runtime.LaunchedEffect(calendars, visibleIds) {
-        val overlayIds = calendars.filter {
-            it.accessRole == "reader" && (it.calendarId == "meetup" || it.calendarId == "outdoorlads")
-        }.map { it.calendarId }.toSet()
+        val overlayIds = calendars.filter { isOverlayCalendar(it) }.map { it.calendarId }.toSet()
         if (overlayIds.isNotEmpty()) repo.ensureOverlaysVisible(overlayIds)
     }
     // null visibleIds → all visible (first load). Otherwise it's the allow-list.
@@ -323,9 +326,11 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     detailKey?.let { key ->
         val event = allEvents.firstOrNull { it.compoundKey == key }
         if (event == null) detailKey = null
-        else EventDetailSheet(
+        else {
+        val eventCal = calByKey["${event.accountEmail}:${event.calendarId}"]
+        EventDetailSheet(
             event = event,
-            calendar = calByKey["${event.accountEmail}:${event.calendarId}"],
+            calendar = eventCal,
             calendarDefaults = calDefaults[event.calendarId] ?: emptyList(),
             onDismiss = { detailKey = null },
             onRsvp = { status -> scope.launch { repo.rsvp(event.compoundKey, status) } },
@@ -334,7 +339,13 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
             onDelete = { detailKey = null; deleteWithUndo(event) },
             onDeleteFollowing = { detailKey = null; deleteSeriesWithUndo(event, event.startTime) },
             onDeleteSeries = { detailKey = null; deleteSeriesWithUndo(event, null) },
+            onLink = if (eventCal != null && isOverlayCalendar(eventCal)) null
+                else { link -> repo.linkEvent(event.compoundKey, link) },
+            onUnlink = { link -> repo.unlinkEvent(event.compoundKey, link) },
+            vaultRoot = vaultRoot,
+            onOpenNote = { path -> detailKey = null; onOpenNote(path) },
         )
+        }
     }
 
     // ---- Recurring edit scope dialog (drag move/resize of a recurring event) ---- //

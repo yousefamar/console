@@ -48,6 +48,8 @@ data class EventDetails(
     val workingLocation: WorkingLocation?,
     val organizerSelf: Boolean,
     val recurringEventId: String?,
+    /** Private links from extendedProperties.private (EventLinks.kt). */
+    val links: List<String> = emptyList(),
 ) {
     val selfAttendee: Attendee? get() = attendees.firstOrNull { it.self }
     val isTask: Boolean get() = description?.contains("tasks.google.com/task/") == true
@@ -108,6 +110,7 @@ fun parseEventDetails(rawJson: String): EventDetails {
         workingLocation = workingLocation,
         organizerSelf = (e["organizer"] as? JsonObject)?.get("self")?.jsonPrimitive?.booleanOrNull ?: false,
         recurringEventId = e["recurringEventId"]?.jsonPrimitive?.content,
+        links = readLinks(e),
     )
 }
 

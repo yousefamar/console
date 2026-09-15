@@ -42,7 +42,7 @@ import java.util.TimeZone
  * with ~temp compound keys; create carries clientToken (dedupeToken) so a
  * queued retry can't double-create.
  *
- * Read-only overlay sources (Meetup, OutdoorLads) live in-memory and are merged
+ * Read-only overlay sources (Meetup, Eventbrite) live in-memory and are merged
  * into the observed event stream — never persisted, never Google-synced.
  */
 class CalendarRepository(
@@ -70,7 +70,7 @@ class CalendarRepository(
     }
 
     // ---------------------------------------------------------------- //
-    // In-memory read-only overlays (Meetup / OutdoorLads)
+    // In-memory read-only overlays (Meetup / Eventbrite)
 
     private val overlayEvents = MutableStateFlow<Map<String, List<CalEventRow>>>(emptyMap())
     private val overlayCalendars = MutableStateFlow<Map<String, CalendarRow>>(emptyMap())
@@ -135,7 +135,7 @@ class CalendarRepository(
     }
 
     /**
-     * A saved visibleIds allow-list that predates an overlay (Meetup/OutdoorLads)
+     * A saved visibleIds allow-list that predates an overlay (Meetup/Eventbrite)
      * would hide it even though the user never opted out. For any overlay id not
      * yet in overlaySeen: default it visible and mark it seen — only an explicit
      * toggle-off then sticks. No-op until visibleIds has loaded (else the
@@ -456,6 +456,62 @@ class CalendarRepository(
             put("event", buildJsonObject { put("reminders", reminders) })
         }
         outbox.enqueue(TYPE_REMINDER, payload.toString(), entityId = compoundKey)
+    }
+
+    // ---------------------------------------------------------------- //
+    // Private per-event links (EventLinks.kt). DIRECT hub call, not the outbox —
+    // the SPA does the same: optimistic Room row, revert + throw on failure so
+    // the sheet can show the hub's error.
+
+    private var vaultRootCache: String? = null
+
+    /** Absolute vault dir from the hub (`/notes/vault-path`), cached; null offline. */
+    suspend fun vaultRoot(): String? {
+        vaultRootCache?.let { return it }
+        return runCatching {
+            json.parseToJsonElement(hub.get("/notes/vault-path")).jsonObject["path"]?.jsonPrimitive?.content
+        }.getOrNull()?.also { vaultRootCache = it }
+    }
+
+    suspend fun linkEvent(compoundKey: String, link: String) = mutateLinks(compoundKey) { addLink(it, link) }
+
+    suspend fun unlinkEvent(compoundKey: String, link: String) = mutateLinks(compoundKey) { removeLink(it, link) }
+
+    private suspend fun mutateLinks(compoundKey: String, next: (List<String>) -> List<String>) {
+        val row = db.calendar().byKey(compoundKey) ?: return
+        if (row.eventId.startsWith("~")) throw IllegalStateException("Event has not reached Google yet")
+        val current = readLinks(row.rawJson)
+        val wanted = next(current)
+        if (wanted == current) return
+        val added = wanted.firstOrNull { it !in current }
+        val removed = current.firstOrNull { it !in wanted }
+        db.calendar().upsertEvents(listOf(row.copy(rawJson = withLinks(row.rawJson, wanted))))
+        val result = runCatching {
+            if (added != null) {
+                hub.post("/cal/events/${enc(row.eventId)}/links", buildJsonObject {
+                    put("calendarId", row.calendarId)
+                    put("account", row.accountEmail)
+                    put("path", added)
+                }.toString())
+            } else {
+                hub.delete("/cal/events/${enc(row.eventId)}/links?calendarId=${enc(row.calendarId)}&account=${enc(row.accountEmail)}&path=${enc(removed ?: "")}")
+            }
+        }
+        result.onFailure {
+            // Revert to the pre-mutation copy unless a sync replaced the row meanwhile.
+            val live = db.calendar().byKey(compoundKey)
+            if (live != null && readLinks(live.rawJson) == wanted) db.calendar().upsertEvents(listOf(row))
+            throw it
+        }
+        // The hub's answer is authoritative (it may have normalised the path).
+        runCatching {
+            val links = (json.parseToJsonElement(result.getOrThrow()).jsonObject["links"] as? JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.content }
+            if (links != null && links != wanted) {
+                val live = db.calendar().byKey(compoundKey) ?: return
+                db.calendar().upsertEvents(listOf(live.copy(rawJson = withLinks(live.rawJson, links))))
+            }
+        }
     }
 
     /**
@@ -865,7 +921,7 @@ class CalendarRepository(
         scope.launch { runCatching { hydratePrefs() } }
     }
 
-    /** Boot/reconnect refresh of the overlay sources (Meetup + OutdoorLads). */
+    /** Boot/reconnect refresh of the overlay sources (Meetup + Eventbrite). */
     suspend fun refreshOverlays() {
         runCatching {
             val resp = hub.get("/meetup/events")
@@ -874,10 +930,10 @@ class CalendarRepository(
             setOverlay(MEETUP_ID, overlayCalendarRow(MEETUP_ID, "Meetup", MEETUP_COLOR), events)
         }
         runCatching {
-            val resp = hub.get("/outdoorlads/events")
+            val resp = hub.get("/eventbrite/events")
             val events = (json.parseToJsonElement(resp).jsonObject["events"] as? JsonArray)
-                ?.mapNotNull { (it as? JsonObject)?.let { o -> outdoorLadsEventRow(o) } } ?: emptyList()
-            setOverlay(OUTDOORLADS_ID, overlayCalendarRow(OUTDOORLADS_ID, "OutdoorLads", OUTDOORLADS_COLOR), events)
+                ?.mapNotNull { (it as? JsonObject)?.let { o -> eventbriteEventRow(o) } } ?: emptyList()
+            setOverlay(EVENTBRITE_ID, overlayCalendarRow(EVENTBRITE_ID, "Eventbrite", EVENTBRITE_COLOR), events)
         }
     }
 

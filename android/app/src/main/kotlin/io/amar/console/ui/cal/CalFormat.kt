@@ -28,6 +28,18 @@ fun dayLabelLong(ms: Long): String = SimpleDateFormat("EEEE d MMMM", Locale.UK).
 fun dayLabelShort(ms: Long): String = SimpleDateFormat("EEE d MMM", Locale.UK).format(Date(ms))
 fun monthLabel(ms: Long): String = SimpleDateFormat("MMMM yyyy", Locale.UK).format(Date(ms))
 
+/**
+ * Detail-sheet "when" line. A timed event crossing local midnight names BOTH days
+ * ("Fri 11 Sep 16:00 – Sun 13 Sep 15:00") — "Fri 11 Sep · 16:00–15:00" reads as a
+ * negative-length event (SPA CalendarEventPopover, bd2fa2cb).
+ */
+fun eventWhenLabel(e: CalEventRow): String = when {
+    e.isAllDay -> dayLabelLong(e.startTime) + " · all day"
+    dayKey(e.startTime) == dayKey(maxOf(e.endTime - 1, e.startTime)) ->
+        "${dayLabelLong(e.startTime)} · ${timeShort(e.startTime)}–${timeShort(e.endTime)}"
+    else -> "${dayLabelShort(e.startTime)} ${timeShort(e.startTime)} – ${dayLabelShort(e.endTime)} ${timeShort(e.endTime)}"
+}
+
 /** "July 13–19, 2026" (same month) / "Jun 29 – Jul 5, 2026" (cross-month). */
 fun weekRangeLabel(weekStartMs: Long): String {
     val startCal = Calendar.getInstance().apply { timeInMillis = weekStartMs }

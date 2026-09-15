@@ -149,6 +149,38 @@ fun packAllDayBars(events: List<CalEventRow>, weekStartMs: Long, numCols: Int): 
 }
 
 // -------------------------------------------------------------------------- //
+// Multi-day TIMED events (port of src/calendar/multi-day.ts)
+
+/** All-day-shaped span for a timed event: local midnight of its first day and the
+ *  EXCLUSIVE local midnight after its last day (Google all-day semantics). */
+data class MultiDaySpan(val startDayMs: Long, val endDayMsExclusive: Long)
+
+/**
+ * A TIMED event that crosses local midnight (Fri 16:00 → Sun 15:00) can't sit in
+ * the hour grid — one column, `end − start` minutes — so it rides the all-day bar
+ * as a spanning block instead, Google-style. Returns the span for such an event,
+ * or null when it fits in one local day. An event ending exactly at midnight
+ * still belongs to its start day; all-day rows and inverted ranges return null.
+ */
+fun multiDaySpan(e: CalEventRow, tz: TimeZone = TimeZone.getDefault()): MultiDaySpan? {
+    if (e.isAllDay || e.endTime <= e.startTime) return null
+    // End at 00:00 → the last day is the previous one.
+    val lastInstant = e.endTime - 1
+    val startDay = startOfDay(e.startTime, tz)
+    val lastDay = startOfDay(lastInstant, tz)
+    if (startDay == lastDay) return null
+    val cal = Calendar.getInstance(tz)
+    cal.timeInMillis = lastDay
+    cal.add(Calendar.DAY_OF_YEAR, 1)
+    return MultiDaySpan(startDay, cal.timeInMillis)
+}
+
+/** The event re-shaped for the all-day bar; callers keep the ORIGINAL row for detail
+ *  views so the real times still show (the bar row is layout-only). */
+fun asAllDaySpan(e: CalEventRow, span: MultiDaySpan): CalEventRow =
+    e.copy(startTime = span.startDayMs, endTime = span.endDayMsExclusive, isAllDay = true)
+
+// -------------------------------------------------------------------------- //
 // Month grid
 
 /** Always 6 rows × 7 days, Monday-anchored, including prev/next-month spillover.

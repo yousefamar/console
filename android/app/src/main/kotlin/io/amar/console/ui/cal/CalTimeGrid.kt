@@ -47,6 +47,8 @@ import io.amar.console.data.cal.QUARTER_MS
 import io.amar.console.data.cal.hasReminder
 import io.amar.console.data.cal.isAccepted
 import io.amar.console.data.cal.mergeDuplicates
+import io.amar.console.data.cal.asAllDaySpan
+import io.amar.console.data.cal.multiDaySpan
 import io.amar.console.data.cal.packAllDayBars
 import io.amar.console.data.cal.packLanes
 import io.amar.console.data.cal.isDeclined
@@ -93,14 +95,29 @@ fun CalTimeGrid(
     }
 
     fun typeOf(e: CalEventRow) = parseEventDetails(e.rawJson).eventType
-    val allDay = events.filter { it.isAllDay && typeOf(it) != "workingLocation" }
     val working = events.filter { typeOf(it) == "workingLocation" }
-    val timed = events.filter { !it.isAllDay && typeOf(it) != "workingLocation" }
+    val allDay = ArrayList<CalEventRow>()
+    val timed = ArrayList<CalEventRow>()
+    // A timed event crossing local midnight rides the all-day bar as a spanning
+    // block (SPA multi-day.ts); the bar row is layout-only, so opening it must
+    // hand the ORIGINAL row (real times) to the detail sheet.
+    val spanOriginals = HashMap<String, CalEventRow>()
+    for (e in events) {
+        if (typeOf(e) == "workingLocation") continue
+        if (e.isAllDay) { allDay.add(e); continue }
+        val span = multiDaySpan(e)
+        if (span != null) {
+            allDay.add(asAllDaySpan(e, span))
+            spanOriginals[e.compoundKey] = e
+        } else timed.add(e)
+    }
 
     Column(Modifier.fillMaxSize()) {
         DayHeaderRow(weekStartMs, numCols)
         if (working.isNotEmpty()) WorkingLocationRow(working, weekStartMs, numCols, onLocationClick)
-        if (allDay.isNotEmpty()) AllDayBarsRow(allDay, ::colorHex, weekStartMs, numCols, onOpen)
+        if (allDay.isNotEmpty()) {
+            AllDayBarsRow(allDay, ::colorHex, weekStartMs, numCols) { onOpen(spanOriginals[it.compoundKey] ?: it) }
+        }
 
         val scroll = rememberScrollState()
         BoxWithConstraints(

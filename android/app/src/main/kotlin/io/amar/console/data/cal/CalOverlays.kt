@@ -11,8 +11,8 @@ import kotlinx.serialization.json.put
 import java.time.OffsetDateTime
 
 /**
- * Read-only calendar overlay sources (Meetup, OutdoorLads) — ports of
- * src/meetup/calendar-overlay.ts + src/outdoorlads/calendar-overlay.ts.
+ * Read-only calendar overlay sources (Meetup, Eventbrite) — ports of
+ * src/meetup/calendar-overlay.ts + src/eventbrite/calendar-overlay.ts.
  *
  * Both surface time-based events that don't belong to a Google account, as
  * synthetic "reader" calendars: never persisted to Room, never editable,
@@ -22,15 +22,17 @@ import java.time.OffsetDateTime
 
 const val MEETUP_ID = "meetup"
 const val MEETUP_COLOR = "#ff4a79"      // Meetup brand pink
-const val OUTDOORLADS_ID = "outdoorlads"
-const val OUTDOORLADS_COLOR = "#f5821f" // OutdoorLads brand orange
+const val EVENTBRITE_ID = "eventbrite"
+const val EVENTBRITE_COLOR = "#f05537"  // Eventbrite brand orange-red
+
+/** Every synthetic overlay calendar id — the sidebar groups these under "Overlays". */
+val OVERLAY_IDS: Set<String> = setOf(MEETUP_ID, EVENTBRITE_ID)
+
+fun isOverlayCalendar(cal: CalendarRow): Boolean =
+    cal.accessRole == "reader" && cal.calendarId in OVERLAY_IDS
 
 private const val HOUR_MS_OVL = 60L * 60 * 1000
 private const val MEETUP_BLOCK_MS = HOUR_MS_OVL         // no end time → 1h block
-private const val OUTDOORLADS_BLOCK_MS = 2 * HOUR_MS_OVL // feed has no end → 2h block
-
-/** OutdoorLads: only surface camping event types (substring, case-insensitive). */
-private val OUTDOORLADS_INCLUDE = listOf("camp")
 
 /** The synthetic CalendarRow for an overlay source (drives colour + sidebar toggle). */
 fun overlayCalendarRow(id: String, name: String, color: String): CalendarRow =
@@ -70,29 +72,30 @@ fun meetupEventRow(e: JsonObject): CalEventRow? {
 }
 
 // -------------------------------------------------------------------------- //
-// OutdoorLads
+// Eventbrite
 
-fun outdoorLadsIncluded(eventType: String): Boolean {
-    val t = eventType.lowercase()
-    return OUTDOORLADS_INCLUDE.any { t.contains(it) }
-}
-
-/** Pure: one OutdoorLads event JSON node → a synthetic timed CalEventRow (or null,
- *  incl. when it isn't a camping event). */
-fun outdoorLadsEventRow(e: JsonObject): CalEventRow? {
+/** Pure: one Eventbrite event JSON node (hub `GET /eventbrite/events`) → a synthetic
+ *  timed CalEventRow (or null). Real end times; a missing end falls back to the start. */
+fun eventbriteEventRow(e: JsonObject): CalEventRow? {
     val id = e["id"]?.jsonPrimitive?.content ?: return null
-    val eventType = e["eventType"]?.jsonPrimitive?.content ?: ""
-    if (!outdoorLadsIncluded(eventType)) return null
     val startIso = e["start"]?.jsonPrimitive?.content ?: return null
     val startMs = parseIso(startIso) ?: return null
-    val endMs = startMs + OUTDOORLADS_BLOCK_MS
+    val endMs = e["end"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }?.let { parseIso(it) } ?: startMs
     val title = e["title"]?.jsonPrimitive?.content ?: "(untitled)"
-    val location = e["location"]?.jsonPrimitive?.content
-    val link = e["link"]?.jsonPrimitive?.content ?: ""
-    val text = e["description"]?.jsonPrimitive?.content ?: ""
-    val description = listOf(eventType, text, link).filter { it.isNotBlank() }.joinToString("\n")
+    val online = e["online"]?.jsonPrimitive?.booleanOrNull ?: false
+    val location = if (online) "Online"
+    else listOfNotNull(
+        e["venueName"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+        e["address"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+    ).joinToString(", ")
+    val url = e["url"]?.jsonPrimitive?.content ?: ""
+    val description = listOf(
+        e["organizerName"]?.jsonPrimitive?.content ?: "",
+        e["summary"]?.jsonPrimitive?.content ?: "",
+        url,
+    ).filter { it.isNotBlank() }.joinToString("\n")
 
-    return synthEventRow(OUTDOORLADS_ID, "outdoorlads:$id", title, location, startMs, endMs, description, link)
+    return synthEventRow(EVENTBRITE_ID, "eventbrite:$id", title, location, startMs, endMs, description, url)
 }
 
 // -------------------------------------------------------------------------- //

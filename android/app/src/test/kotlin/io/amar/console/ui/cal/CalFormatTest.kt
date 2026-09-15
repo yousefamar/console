@@ -15,6 +15,41 @@ class CalFormatTest {
         return c.timeInMillis
     }
 
+    private fun row(start: Long, end: Long, allDay: Boolean = false) = io.amar.console.data.db.CalEventRow(
+        compoundKey = "k", accountEmail = "a", calendarId = "c", eventId = "e",
+        summary = "s", location = null, startTime = start, endTime = end,
+        isAllDay = allDay, status = "confirmed", rawJson = "{}",
+    )
+    private fun at(y: Int, m0: Int, d: Int, h: Int): Long {
+        val c = Calendar.getInstance()
+        c.clear(); c.set(y, m0, d, h, 0, 0)
+        return c.timeInMillis
+    }
+
+    @Test
+    fun `eventWhenLabel single-day timed event names the day once`() {
+        val label = eventWhenLabel(row(at(2026, 8, 11, 16), at(2026, 8, 11, 18)))
+        assertEquals("Friday 11 September · 16:00–18:00", label)
+    }
+
+    @Test
+    fun `eventWhenLabel multi-day timed event names both days`() {
+        val label = eventWhenLabel(row(at(2026, 8, 11, 16), at(2026, 8, 13, 15)))
+        // Locale.UK renders September as "Sept" on JDK 17+ — assert the shape, not the month token.
+        assertTrue(label, label.startsWith("Fri 11 Sep") && label.contains(" 16:00 – Sun 13 Sep") && label.endsWith(" 15:00"))
+    }
+
+    @Test
+    fun `eventWhenLabel ending at midnight stays single-day`() {
+        val label = eventWhenLabel(row(at(2026, 8, 11, 22), at(2026, 8, 12, 0)))
+        assertEquals("Friday 11 September · 22:00–00:00", label)
+    }
+
+    @Test
+    fun `eventWhenLabel all-day`() {
+        assertEquals("Friday 11 September · all day", eventWhenLabel(row(at(2026, 8, 11, 0), at(2026, 8, 12, 0), allDay = true)))
+    }
+
     @Test
     fun `weekRangeLabel same-month formats month and day range`() {
         // Monday 2026-07-13 → Sunday 2026-07-19.

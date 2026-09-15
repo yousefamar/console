@@ -21,13 +21,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.AlertDialog
@@ -52,13 +59,20 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.amar.console.core.HubConfig
+import io.amar.console.data.cal.LinkKind
+import io.amar.console.data.cal.classifyLink
 import io.amar.console.data.cal.effectiveReminderMinutes
+import io.amar.console.data.cal.mediaBridgeUrl
 import io.amar.console.data.cal.extractUrls
 import io.amar.console.data.cal.hasReminder
 import io.amar.console.data.cal.parseEventDetails
 import io.amar.console.data.cal.stripHtml
 import io.amar.console.data.db.CalEventRow
 import io.amar.console.data.db.CalendarRow
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 private val REMINDER_PRESETS = listOf(
     0 to "At start", 5 to "5 min", 10 to "10 min", 15 to "15 min", 30 to "30 min", 60 to "1 hr",
@@ -79,6 +93,11 @@ fun EventDetailSheet(
      *  series (SPA DeleteScopeDialog). Null hides the scoped options. */
     onDeleteFollowing: (() -> Unit)? = null,
     onDeleteSeries: (() -> Unit)? = null,
+    /** Private links (EventLinks.kt). Null = read-only sheet (overlay events). */
+    onLink: (suspend (String) -> Unit)? = null,
+    onUnlink: (suspend (String) -> Unit)? = null,
+    vaultRoot: String? = null,
+    onOpenNote: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val details = remember(event.rawJson) { parseEventDetails(event.rawJson) }
@@ -113,8 +132,7 @@ fun EventDetailSheet(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                if (event.isAllDay) dayLabelLong(event.startTime) + " · all day"
-                else "${dayLabelLong(event.startTime)} · ${timeShort(event.startTime)}–${timeShort(event.endTime)}",
+                eventWhenLabel(event),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -155,6 +173,19 @@ fun EventDetailSheet(
                 if (details.attendees.size > 5) {
                     Text("+${details.attendees.size - 5} more", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+
+            // Private links — only YOUR copy of the event carries them.
+            if (onLink != null && onUnlink != null && !event.eventId.startsWith("~")) {
+                Spacer(Modifier.height(10.dp))
+                PrivateLinksBlock(
+                    links = details.links,
+                    vaultRoot = vaultRoot,
+                    onLink = onLink,
+                    onUnlink = onUnlink,
+                    onOpenUrl = ::openUrl,
+                    onOpenNote = onOpenNote,
+                )
             }
 
             // Reminder picker — owner/writer + timed events only.
@@ -268,4 +299,123 @@ fun rsvpDotColor(status: String): Color = when (status) {
     "tentative" -> MaterialTheme.accents.amber
     "declined" -> MaterialTheme.accents.red
     else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+// -------------------------------------------------------------------------- //
+// Private links (SPA CalendarEventPopover LinksBlock / LinkRow)
+
+@Composable
+private fun PrivateLinksBlock(
+    links: List<String>,
+    vaultRoot: String?,
+    onLink: suspend (String) -> Unit,
+    onUnlink: suspend (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onOpenNote: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var adding by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var lightbox by remember { mutableStateOf<String?>(null) }
+
+    fun run(block: suspend () -> Unit) {
+        scope.launch {
+            error = null
+            runCatching { block() }.onFailure { error = hubErrorText(it) }
+        }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(Icons.Outlined.Link, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            if (links.isEmpty()) "Link a file" else "PRIVATE LINKS",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f).then(if (links.isEmpty()) Modifier.clickable { adding = true } else Modifier),
+        )
+        Icon(
+            Icons.Filled.Add, "Add link", Modifier.size(16.dp).clickable { adding = true },
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    for (link in links) {
+        val kind = remember(link, vaultRoot) { classifyLink(link, vaultRoot) }
+        val icon = when (kind) {
+            is LinkKind.Url -> Icons.Outlined.Language
+            is LinkKind.Vault -> Icons.Outlined.Description
+            is LinkKind.Media -> if (kind.image) Icons.Outlined.Image else Icons.Outlined.InsertDriveFile
+            is LinkKind.File -> Icons.Outlined.InsertDriveFile
+        }
+        val bridge = { p: String -> mediaBridgeUrl(HubConfig.hubBase, p) }
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(icon, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                kind.label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).clickable {
+                    when (kind) {
+                        is LinkKind.Url -> onOpenUrl(kind.href)
+                        is LinkKind.Vault -> onOpenNote(kind.vaultPath)
+                        is LinkKind.Media -> if (kind.image) lightbox = bridge(kind.path) else onOpenUrl(bridge(kind.path))
+                        is LinkKind.File -> {
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("path", kind.path))
+                            android.widget.Toast.makeText(context, "Path copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+            )
+            if (kind is LinkKind.File) Icon(Icons.Outlined.ContentCopy, "Copy path", Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(
+                Icons.Filled.Close, "Unlink", Modifier.size(14.dp).clickable { run { onUnlink(link) } },
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (kind is LinkKind.Media && kind.image) {
+            coil.compose.AsyncImage(
+                model = bridge(kind.path), contentDescription = kind.label,
+                contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp).clip(RoundedCornerShape(6.dp))
+                    .clickable { lightbox = bridge(kind.path) },
+            )
+        }
+    }
+    error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
+
+    if (adding) {
+        var text by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { adding = false },
+            title = { Text("Private link") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = text, onValueChange = { text = it }, singleLine = true,
+                    placeholder = { Text("projects/x/notes.md · /abs/path · https://…") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = text.isNotBlank(),
+                    onClick = { val t = text.trim(); adding = false; run { onLink(t) } },
+                ) { Text("Link") }
+            },
+            dismissButton = { TextButton(onClick = { adding = false }) { Text("Cancel") } },
+        )
+    }
+    lightbox?.let { io.amar.console.ui.components.ImageLightbox(listOf(it), 0) { lightbox = null } }
+}
+
+/** Unwrap the hub's `{error}` body when a request fails (SPA `hubErrorText`). */
+private fun hubErrorText(e: Throwable): String {
+    val m = e.message ?: e.toString()
+    return runCatching { kotlinx.serialization.json.Json.parseToJsonElement(m).jsonObject["error"]?.jsonPrimitive?.content }
+        .getOrNull() ?: m
 }

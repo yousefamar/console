@@ -17,6 +17,52 @@ class CalGridTest {
             isAllDay = false, status = "confirmed", rawJson = "{}",
         )
 
+    // ---- multiDaySpan ------------------------------------------------- //
+
+    private val utc = TimeZone.getTimeZone("UTC")
+    private fun utcAt(y: Int, m0: Int, d: Int, h: Int, min: Int = 0): Long {
+        val c = Calendar.getInstance(utc)
+        c.clear(); c.set(y, m0, d, h, min, 0)
+        return c.timeInMillis
+    }
+
+    @Test
+    fun `timed event crossing midnight spans both days with an exclusive end`() {
+        // Fri 11 Sep 16:00 → Sun 13 Sep 15:00
+        val span = multiDaySpan(evt("a", utcAt(2026, 8, 11, 16), utcAt(2026, 8, 13, 15)), utc)!!
+        assertEquals(utcAt(2026, 8, 11, 0), span.startDayMs)
+        assertEquals(utcAt(2026, 8, 14, 0), span.endDayMsExclusive)
+    }
+
+    @Test
+    fun `timed event within one day is not multi-day`() {
+        assertEquals(null, multiDaySpan(evt("a", utcAt(2026, 8, 11, 9), utcAt(2026, 8, 11, 17)), utc))
+    }
+
+    @Test
+    fun `timed event ending exactly at midnight stays on its start day`() {
+        assertEquals(null, multiDaySpan(evt("a", utcAt(2026, 8, 11, 22), utcAt(2026, 8, 12, 0)), utc))
+    }
+
+    @Test
+    fun `all-day rows and inverted ranges are never multi-day spans`() {
+        val allDay = evt("a", utcAt(2026, 8, 11, 0), utcAt(2026, 8, 13, 0)).copy(isAllDay = true)
+        assertEquals(null, multiDaySpan(allDay, utc))
+        assertEquals(null, multiDaySpan(evt("b", utcAt(2026, 8, 13, 15), utcAt(2026, 8, 11, 16)), utc))
+    }
+
+    @Test
+    fun `asAllDaySpan re-shapes the row for the bar and packs across the right columns`() {
+        val e = evt("a", utcAt(2026, 8, 11, 16), utcAt(2026, 8, 13, 15))
+        val shaped = asAllDaySpan(e, multiDaySpan(e, utc)!!)
+        assertTrue(shaped.isAllDay)
+        assertEquals(e.compoundKey, shaped.compoundKey)
+        // Week of Mon 7 Sep: Fri = col 4, Sun = col 6.
+        val bars = packAllDayBars(listOf(shaped), utcAt(2026, 8, 7, 0), 7)
+        assertEquals(4, bars.single().startCol)
+        assertEquals(6, bars.single().endCol)
+    }
+
     // ---- packLanes ---------------------------------------------------- //
 
     @Test

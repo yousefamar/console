@@ -50,34 +50,52 @@ class CalOverlaysTest {
         assertNull(meetupEventRow(obj("""{"id":"x","title":"no time"}""")))
     }
 
-    // ---- OutdoorLads -------------------------------------------------- //
+    // ---- Eventbrite --------------------------------------------------- //
 
     @Test
-    fun `outdoorlads camping event produces a 2h block`() {
-        val row = outdoorLadsEventRow(obj(
-            """{"id":"o1","title":"Peak District Camp","link":"https://ol/o1",
-                "start":"2026-08-01T10:00:00+01:00","eventType":"Campsites","region":"North West",
-                "location":"Edale, North West","description":"Bring a tent"}"""
+    fun `eventbrite venue event keeps its real end time and organiser in the description`() {
+        val row = eventbriteEventRow(obj(
+            """{"id":"e1","title":"Founders Night","url":"https://eventbrite.co.uk/e/e1",
+                "start":"2026-09-20T18:00:00Z","end":"2026-09-20T21:30:00Z","organizerId":"o1",
+                "organizerName":"Reading Founders","venueName":"The Biscuit Factory",
+                "address":"1 Cross St, Reading","online":false,"summary":"Pitches + drinks"}"""
         ))!!
-        assertEquals("Peak District Camp", row.summary)
-        assertEquals("Edale, North West", row.location)
-        assertEquals(2 * HOUR_MS, row.endTime - row.startTime)
-        assertTrue(parseEventDetails(row.rawJson).description!!.contains("Campsites"))
+        assertEquals("eventbrite:eventbrite:eventbrite:e1", row.compoundKey)
+        assertEquals(EVENTBRITE_ID, row.calendarId)
+        assertEquals("Founders Night", row.summary)
+        assertEquals("The Biscuit Factory, 1 Cross St, Reading", row.location)
+        assertFalse(row.isAllDay)
+        assertEquals(3 * HOUR_MS + HOUR_MS / 2, row.endTime - row.startTime)
+        val details = parseEventDetails(row.rawJson)
+        assertTrue(details.description!!.contains("Reading Founders"))
+        assertTrue(details.description!!.contains("Pitches + drinks"))
+        assertEquals("https://eventbrite.co.uk/e/e1", details.htmlLink)
     }
 
     @Test
-    fun `outdoorlads non-camping event is filtered out`() {
-        assertNull(outdoorLadsEventRow(obj(
-            """{"id":"o2","title":"Hill Walk","link":"l","start":"2026-08-01T10:00:00+01:00",
-                "eventType":"Lowland and Hill Walks","region":"SE","location":"x","description":"d"}"""
-        )))
+    fun `eventbrite online event is located Online and a missing end collapses to the start`() {
+        val row = eventbriteEventRow(obj(
+            """{"id":"e2","title":"Webinar","url":"u","start":"2026-09-20T18:00:00Z","end":"",
+                "organizerId":"o","organizerName":"G","venueName":"","address":"","online":true,"summary":""}"""
+        ))!!
+        assertEquals("Online", row.location)
+        assertEquals(row.startTime, row.endTime)
     }
 
     @Test
-    fun `outdoorLadsIncluded matches camp substring case-insensitively`() {
-        assertTrue(outdoorLadsIncluded("Campsites"))
-        assertTrue(outdoorLadsIncluded("CAMPING WEEKEND"))
-        assertFalse(outdoorLadsIncluded("Cycling"))
+    fun `eventbrite event missing id or start returns null`() {
+        assertNull(eventbriteEventRow(obj("""{"title":"no id","start":"2026-09-20T18:00:00Z"}""")))
+        assertNull(eventbriteEventRow(obj("""{"id":"x","title":"no start"}""")))
+    }
+
+    @Test
+    fun `only meetup and eventbrite are overlay calendars`() {
+        assertTrue(isOverlayCalendar(overlayCalendarRow(MEETUP_ID, "Meetup", MEETUP_COLOR)))
+        assertTrue(isOverlayCalendar(overlayCalendarRow(EVENTBRITE_ID, "Eventbrite", EVENTBRITE_COLOR)))
+        assertFalse(isOverlayCalendar(overlayCalendarRow("outdoorlads", "OutdoorLads", "#f5821f")))
+        assertFalse(isOverlayCalendar(
+            overlayCalendarRow(MEETUP_ID, "Meetup", MEETUP_COLOR).copy(accessRole = "owner")
+        ))
     }
 
     @Test
@@ -86,6 +104,9 @@ class CalOverlaysTest {
         assertEquals("meetup:meetup", m.id)
         assertEquals("reader", m.accessRole)
         assertEquals("#ff4a79", m.color)
+        val e = overlayCalendarRow(EVENTBRITE_ID, "Eventbrite", EVENTBRITE_COLOR)
+        assertEquals("eventbrite:eventbrite", e.id)
+        assertEquals("#f05537", e.color)
     }
 
     // ---- guest parsing ------------------------------------------------ //

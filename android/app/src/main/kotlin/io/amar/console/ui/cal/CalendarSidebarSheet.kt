@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.data.cal.CalendarRepository
+import io.amar.console.data.cal.isOverlayCalendar
 import io.amar.console.data.db.CalendarRow
 
 private const val OVERLAYS_GROUP = " overlays"
@@ -72,9 +73,7 @@ fun CalendarSidebarSheet(
 ) {
     // Group: synthetic overlays under one bucket, rest by accountEmail.
     val groups = calendars.groupBy { cal ->
-        if (cal.accessRole == "reader" && cal.accountEmail == cal.calendarId &&
-            (cal.calendarId == "meetup" || cal.calendarId == "outdoorlads")
-        ) OVERLAYS_GROUP else cal.accountEmail
+        if (cal.accountEmail == cal.calendarId && isOverlayCalendar(cal)) OVERLAYS_GROUP else cal.accountEmail
     }
     val orderedKeys = (accounts.map { it.email } + groups.keys).distinct()
         .filter { it in groups }

@@ -281,7 +281,15 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         },
                     )
                 }
-                composable(Pane.Calendar.route) { CalendarScreen(app.graph.calendar, onGrid = toGrid) }
+                composable(Pane.Calendar.route) {
+                    CalendarScreen(
+                        app.graph.calendar, onGrid = toGrid,
+                        onOpenNote = { path ->
+                            navController.openApp(Pane.Notes)
+                            navController.navigate("notes/${android.net.Uri.encode(path)}")
+                        },
+                    )
+                }
                 composable(Pane.Notes.route) {
                     NotesBrowserScreen(
                         app.graph.notes,
