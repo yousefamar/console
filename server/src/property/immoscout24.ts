@@ -187,6 +187,37 @@ export class ImmoScout24Client implements PortalClient {
     return null
   }
 
+  /**
+   * The expose page carries what the result list hides: IS24's approximate
+   * location for a hidden-address listing (the map circle's centre — inside
+   * the right Ortsteil, where the list marker is the town centre), the three
+   * prose blocks, and the `keyValues` tracking blob with rented / Baujahr /
+   * energy class / price reduction. A WAF rejection (after one re-mint) throws
+   * so the batch stops; 404/410 or the deactivated flag → gone.
+   */
+  async detail(listing: Listing): Promise<Partial<Listing> | null> {
+    const url = `${ORIGIN}/expose/${encodeURIComponent(listing.id)}`
+    let token = await this.waf.get()
+    if (!token) throw new Error('immoscout24: no WAF token available')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await this.fetchImpl(url, { headers: { 'user-agent': UA, cookie: `aws-waf-token=${token}`, accept: 'text/html' } })
+      if (res.status === 404 || res.status === 410) return null
+      if (res.status === 401 || res.status === 403) {
+        this.waf.invalidate()
+        const next = await this.waf.get()
+        if (!next || attempt === 1) throw new WafRejected(res.status)
+        token = next
+        continue
+      }
+      if (res.status === 429 || res.status >= 500) throw new Error(`immoscout24: detail page ${res.status} — backing off`)
+      if (!res.ok) return null
+      const html = await res.text()
+      if (DEACTIVATED_RE.test(html)) return null
+      return exposeFields(html)
+    }
+    return null
+  }
+
   private async getHtml(url: string, token: string): Promise<string> {
     const res = await this.fetchImpl(url, {
       headers: { 'user-agent': UA, cookie: `aws-waf-token=${token}`, accept: 'text/html' },
@@ -382,8 +413,120 @@ function normalise(e: RawEntry, markers: Map<string, [number, number]>): Listing
     propertyType: re['@xsi.type']?.replace(/^search:/, ''),
     lat: a?.wgs84Coordinate?.latitude ?? marker?.[0],
     lon: a?.wgs84Coordinate?.longitude ?? marker?.[1],
+    // A hidden-address row's marker is the town/district centre shared by
+    // every such row there (388 of 695 DE rows sat on 90 points, 2026-09-15);
+    // detail() replaces it with the expose page's own approximate point.
+    coordsPrecision: a?.wgs84Coordinate ? 'exact' : 'area',
     listedAt: e['@creation'],
     agent: re.contactDetails?.company,
     image: imageUrl(re.galleryAttachments?.attachment?.[0]?.urls?.[0]?.url?.['@href']),
   }
+}
+
+interface ExposeKeyValues {
+  obj_rented?: string
+  obj_yearConstructed?: string
+  obj_condition?: string
+  obj_heatingType?: string
+  obj_firingTypes?: string
+  obj_energyEfficiencyClass?: string
+  obj_thermalChar?: string
+  obj_priceReductionPercentage?: string
+  obj_cellar?: string
+  obj_telekomInternetSpeed?: string
+}
+
+interface ExposeMap {
+  location?: { latitude?: number; longitude?: number; coordinateAvailable?: boolean; showFullAddress?: boolean }
+}
+
+interface ExposeContent {
+  objectDescription?: string
+  otherDescription?: string
+  locationDescription?: string
+}
+
+const CONDITION_DE: Record<string, string> = {
+  first_time_use: 'Erstbezug',
+  first_time_use_after_refurbishment: 'Erstbezug nach Sanierung',
+  mint_condition: 'neuwertig',
+  refurbished: 'saniert',
+  modernized: 'modernisiert',
+  fully_renovated: 'vollständig renoviert',
+  well_kept: 'gepflegt',
+  need_of_renovation: 'renovierungsbedürftig',
+  negotiable: 'nach Vereinbarung',
+  ripe_for_demolition: 'abbruchreif',
+}
+
+const HEATING_DE: Record<string, string> = {
+  central_heating: 'Zentralheizung',
+  self_contained_central_heating: 'Etagenheizung',
+  floor_heating: 'Fußbodenheizung',
+  heat_pump: 'Wärmepumpe',
+  district_heating: 'Fernwärme',
+  stove_heating: 'Ofenheizung',
+  night_storage_heater: 'Nachtspeicher',
+  wood_pellet_heating: 'Pelletheizung',
+  combined_heat_and_power_plant: 'BHKW',
+  electric_heating: 'Elektroheizung',
+  gas_heating: 'Gasheizung',
+  oil_heating: 'Ölheizung',
+  solar_heating: 'Solarheizung',
+}
+
+/** pageModel throws on a malformed blob; one odd page must not end the batch. */
+function model<T>(html: string, marker: string): T | null {
+  try {
+    return pageModel(html, marker) as T | null
+  } catch {
+    return null
+  }
+}
+
+function prose(s: string | undefined): string | undefined {
+  const t = (s ?? '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim()
+  return t || undefined
+}
+
+/**
+ * The fields a search cares about from an expose page. Exported for tests.
+ * Coordinates only move when IS24 publishes one it stands behind
+ * (`coordinateAvailable`); the precision follows `showFullAddress`.
+ */
+export function exposeFields(html: string): Partial<Listing> {
+  const out: Partial<Listing> = { detailAt: Date.now() }
+  const map = model<ExposeMap>(html, '"exposeMap":')
+  const loc = map?.location
+  if (loc?.coordinateAvailable && typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+    out.lat = loc.latitude
+    out.lon = loc.longitude
+    out.coordsPrecision = loc.showFullAddress ? 'exact' : 'area'
+  }
+  const content = model<ExposeContent>(html, '"exposeContent":')
+  const blocks = [prose(content?.objectDescription), prose(content?.otherDescription)]
+  const lage = prose(content?.locationDescription)
+  if (lage) blocks.push(`Lage: ${lage}`)
+  const description = blocks.filter(Boolean).join('\n\n')
+  if (description) out.description = description
+
+  const kv = model<ExposeKeyValues>(html, 'keyValues = ') ?? {}
+  const features: string[] = []
+  if (kv.obj_rented === 'y') features.push('Vermietet')
+  if (kv.obj_yearConstructed && /^\d{4}$/.test(kv.obj_yearConstructed)) features.push(`Baujahr ${kv.obj_yearConstructed}`)
+  const condition = kv.obj_condition && CONDITION_DE[kv.obj_condition]
+  if (condition) features.push(`Zustand: ${condition}`)
+  const heating = [kv.obj_heatingType && HEATING_DE[kv.obj_heatingType], kv.obj_firingTypes?.replace(/_/g, ' ')]
+    .filter((x): x is string => Boolean(x && x !== 'no_information'))
+  if (heating.length) features.push(`Heizung: ${heating.join(', ')}`)
+  if (kv.obj_energyEfficiencyClass) {
+    const kwh = kv.obj_thermalChar ? ` (${kv.obj_thermalChar.replace('.', ',')} kWh/m²a)` : ''
+    features.push(`Energieklasse ${kv.obj_energyEfficiencyClass}${kwh}`)
+  }
+  if (kv.obj_cellar === 'y') features.push('Keller')
+  const cut = Number(kv.obj_priceReductionPercentage)
+  if (cut > 0) features.push(`Preis reduziert −${cut} %`)
+  if (kv.obj_telekomInternetSpeed) features.push(`Internet ${kv.obj_telekomInternetSpeed}`)
+  if (features.length) out.keyFeatures = features
+  return out
 }

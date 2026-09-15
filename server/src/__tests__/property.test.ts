@@ -9,7 +9,7 @@ import { PropertyInventoryStore, fetchAll } from '../property/inventory.js'
 import { groupDuplicates } from '../property/dedupe.js'
 import { coverRingWithCircles, nearGeometry, haversineKm } from '../property/geo.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
-import { asEntryArray, ImmoScout24Client } from '../property/immoscout24.js'
+import { asEntryArray, exposeFields, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
 import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, stackedFlatLike } from '../property/land.js'
@@ -386,6 +386,35 @@ describe('PortalClient.isLive', () => {
     expect(await new ImmoScout24Client(waf, fetchOf(() => res(200, '"exposeState":{"isDeactivatedRedesign":false}'))).isLive(l)).toBe(true)
     expect(await new ImmoScout24Client(waf, fetchOf(() => res(200, '"exposeState":{"isDeactivatedRedesign":true}'))).isLive(l)).toBe(false)
     expect(await new ImmoScout24Client(waf, fetchOf(() => res(401))).isLive(l)).toBeNull()
+  })
+
+  it('immoscout24: expose page → approximate point (area), prose, rented/Baujahr/energy/price-cut features; WAF → throws, 410 → gone', async () => {
+    // Shapes copied from expose 167831277 (Varel, 2026-09-15): hidden address, list marker on the town centre.
+    const page = [
+      '<html><script>x={"exposeMap":{"googleApiKey":"k","location":{"quarterBoundsJson":{"southWest":{"latitude":53.32098,"longitude":8.03197},"northEast":{"latitude":53.45396,"longitude":8.20514}},"isInternational":false,"latitude":53.3957,"coordinateAvailable":true,"showFullAddress":false,"longitude":8.08746},"addressForMap":{"zipCode":"26316"}},',
+      '"exposeContent":{"aiSummary":null,"locationDescription":"Das Haus befindet sich in ruhiger, ländlicher Lage im Vareler Ortsteil Borgstede.","otherDescription":"Die Grundrisse sind nicht maßstabsgerecht.","objectDescription":"Dieses sanierte Einfamilienhaus wurde 1953 errichtet.\\n\\nGasheizung aus dem Jahr 2012."},"exposeState":{"isDeactivatedRedesign":false}};',
+      'keyValues = {"obj_rented":"y","obj_yearConstructed":"1953","obj_condition":"modernized","obj_heatingType":"central_heating","obj_firingTypes":"gas","obj_energyEfficiencyClass":"E","obj_thermalChar":"145.7","obj_priceReductionPercentage":"9","obj_cellar":"n","obj_telekomInternetSpeed":"100 MBit/s"};</script></html>',
+    ].join('')
+    const f = exposeFields(page)
+    expect(f).toMatchObject({ lat: 53.3957, lon: 8.08746, coordsPrecision: 'area' })
+    expect(f.description).toContain('Dieses sanierte Einfamilienhaus')
+    expect(f.description).toContain('Lage: Das Haus befindet sich')
+    expect(f.keyFeatures).toEqual(['Vermietet', 'Baujahr 1953', 'Zustand: modernisiert', 'Heizung: Zentralheizung, gas', 'Energieklasse E (145,7 kWh/m²a)', 'Preis reduziert −9 %', 'Internet 100 MBit/s'])
+    expect(f.detailAt).toBeGreaterThan(0)
+    // A published address keeps exact precision; no coordinate → untouched.
+    expect(exposeFields(page.replace('"showFullAddress":false', '"showFullAddress":true')).coordsPrecision).toBe('exact')
+    expect(exposeFields(page.replace('"coordinateAvailable":true', '"coordinateAvailable":false')).lat).toBeUndefined()
+
+    let tokens = ['tok']
+    const waf = { get: async () => tokens.shift() ?? null, invalidate: () => {} } as unknown as ConstructorParameters<typeof ImmoScout24Client>[0]
+    const l = listing('167831277', { portal: 'immoscout24' })
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(410))).detail(l)).toBeNull()
+    tokens = ['tok']
+    expect(await new ImmoScout24Client(waf, fetchOf(() => res(200, page.replace('"isDeactivatedRedesign":false', '"isDeactivatedRedesign":true')))).detail(l)).toBeNull()
+    tokens = ['tok']
+    expect((await new ImmoScout24Client(waf, fetchOf(() => res(200, page))).detail(l))?.lat).toBe(53.3957)
+    tokens = ['tok', 'tok2']
+    await expect(new ImmoScout24Client(waf, fetchOf(() => res(401))).detail(l)).rejects.toThrow(/WAF/)
   })
 
   it('immobiliare: re-queries a box around the listing and looks for its id; no coords → unknown', async () => {

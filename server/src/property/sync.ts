@@ -66,9 +66,12 @@ const AREA_COORDS_BUFFER_KM = 6
  * street, so the walk bar can still say no — and does for 64% of Italian
  * centroid rows (2026-09-13). A PLZ average (Kleinanzeigen) or a free geocode
  * (smallholdings) can land in fields beside a real high street; those stay
- * untested.
+ * untested. IS24's hidden-address rows start on the town centre (list marker)
+ * and move to the expose page's approximate point once enriched — either way
+ * a real place, not an average (Varel centre passed at 95 m while the house
+ * was in Borgstede, 3.2 km from any high street — IS24 167831277, 2026-09-15).
  */
-const PLACE_CENTRE_PORTALS = new Set<string>(['subito', 'wikicasa'])
+const PLACE_CENTRE_PORTALS = new Set<string>(['subito', 'wikicasa', 'immoscout24'])
 /**
  * Detail-page enrichment (PortalClient.detail): one request per listing, so
  * it is paced and budgeted per tick. UK's ~8k rows take ~20 ticks to cover
@@ -671,7 +674,9 @@ export class PropertySync {
     const m = this.highStreets.nearestM(l.lat, l.lon)
     if (m == null) return undefined
     const dist = m >= 5000 ? '>5 km to shops' : `${m} m to shops`
-    return l.coordsPrecision === 'area' ? `town centre ${dist}` : dist
+    if (l.coordsPrecision !== 'area') return dist
+    // An enriched IS24 row sits on the expose page's blurred point, not a centre.
+    return l.portal === 'immoscout24' && l.detailAt != null ? `approx. ${dist}` : `town centre ${dist}`
   }
 
   /**
