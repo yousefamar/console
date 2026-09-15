@@ -12,8 +12,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,6 +38,15 @@ class InboxRulesPersistenceTest {
     private lateinit var server: MockWebServer
     private lateinit var scope: CoroutineScope
 
+    // HubConfig is process-wide and Robolectric boots the REAL ConsoleApp, whose
+    // background pollers also hit whatever base we set — a FIFO-queued response
+    // gets eaten by a stray request (flaked in the full suite). Serve by PATH.
+    private val rulesResponses = java.util.concurrent.ConcurrentLinkedQueue<MockResponse>()
+    private val rulesRequests = java.util.concurrent.LinkedBlockingQueue<RecordedRequest>()
+    private fun enqueueRules(r: MockResponse) { rulesResponses.add(r) }
+    private fun takeRulesRequest(): RecordedRequest =
+        rulesRequests.poll(10, java.util.concurrent.TimeUnit.SECONDS) ?: throw AssertionError("no /inbox/rules request")
+
     private val promoted = InboxRules(feedFeeds = mapOf("feed-1" to "inbox"))
 
     @Before
@@ -44,6 +55,15 @@ class InboxRulesPersistenceTest {
             ApplicationProvider.getApplicationContext(), ConsoleDb::class.java
         ).allowMainThreadQueries().build()
         server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path == "/hub/inbox/rules") {
+                    rulesRequests.add(request)
+                    return rulesResponses.poll() ?: MockResponse().setResponseCode(503)
+                }
+                return MockResponse().setResponseCode(404)
+            }
+        }
         server.start()
         HubConfig.init(ApplicationProvider.getApplicationContext())
         HubConfig.setHubBase(server.url("/hub").toString())
@@ -73,36 +93,34 @@ class InboxRulesPersistenceTest {
     @Test
     fun `a successful pull replaces the rules and rewrites the mirror`() = runBlocking {
         db.meta().put(MetaRow(InboxRepository.RULES_META_KEY, InboxRules.DEFAULT.toJson()))
-        server.enqueue(MockResponse().setBody(promoted.toJson()).addHeader("Content-Type", "application/json"))
+        enqueueRules(MockResponse().setBody(promoted.toJson()).addHeader("Content-Type", "application/json"))
         val r = repo()
         r.refreshRules()
         assertEquals("inbox", r.currentRules().feedFeeds["feed-1"])
         assertEquals("inbox", InboxRules.fromJson(db.meta().get(InboxRepository.RULES_META_KEY)).feedFeeds["feed-1"])
-        assertEquals("/hub/inbox/rules", server.takeRequest().path)
+        assertEquals("/hub/inbox/rules", takeRulesRequest().path)
     }
 
     @Test
     fun `a save the hub dropped stays dirty and is pushed on the next refresh instead of pulled over`() = runBlocking {
         val r = repo()
-        server.enqueue(MockResponse().setResponseCode(503))
-        r.refreshRules() // GET fails → rules stay DEFAULT, nothing dirty
-        server.takeRequest()
+        r.refreshRules() // GET → 503 (nothing queued) → rules stay DEFAULT, nothing dirty
+        takeRulesRequest()
         assertFalse(r.rulesDirty())
-        // Promote while the hub is down: the POST fails.
-        server.enqueue(MockResponse().setResponseCode(503))
+        // Promote while the hub is down: the POST fails (503, nothing queued).
         r.toggleRoute(
             InboxEntry(
                 key = "feed:i1", source = InboxSource.FEED, sourceId = "i1", routeKey = "feed-1",
                 header = "h", body = "b", ts = 1L, inInbox = false,
             )
         )
-        server.takeRequest()
+        takeRulesRequest()
         waitUntil { r.rulesDirty() && db.meta().get(InboxRepository.RULES_META_KEY)?.contains("feed-1") == true }
         assertEquals("inbox", r.currentRules().feedFeeds["feed-1"])
         // Hub is back with the STALE copy: the refresh must POST ours, not GET theirs.
-        server.enqueue(MockResponse().setBody("{}").addHeader("Content-Type", "application/json"))
+        enqueueRules(MockResponse().setBody("{}").addHeader("Content-Type", "application/json"))
         r.refreshRules()
-        val req = server.takeRequest()
+        val req = takeRulesRequest()
         assertEquals("POST", req.method)
         assertTrue(req.body.readUtf8().contains("\"feed-1\":\"inbox\""))
         assertFalse(r.rulesDirty())

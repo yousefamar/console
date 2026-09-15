@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -114,7 +115,11 @@ class InboxRepository(
     // deliberately-closed DB and throws into the NEXT test class. Stop promptly
     // on unsubscribe and contain a closed-DB throw (it can only happen at
     // shutdown/in tests; the inbox just stops updating).
-    }.catch { }
+    // The offline rules seed rides the FIRST subscription (onStart), never the
+    // constructor: an init-time Room read is the eager-collection class that
+    // reopens a closed DB under Robolectric (AppLaunchTest's stranded-DB case).
+    }.onStart { runCatching { seedRulesFromMirror() } }
+        .catch { }
         .stateIn(scope, SharingStarted.WhileSubscribed(0), InboxLists(emptyList(), emptyList()))
 
     /** Matrix `m.favourite` rooms, alphabetical — the Inbox's pinned-chats
@@ -125,7 +130,6 @@ class InboxRepository(
         .catch { }
 
     init {
-        scope.launch { runCatching { seedRulesFromMirror() } }
         scope.launch {
             while (true) {
                 delay(5 * 60 * 1000L)
