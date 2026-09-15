@@ -37,6 +37,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v100 (2026-09-15)
 - **Chat: per-room drafts are hub-synced in the composer** (^dry-wolf, 2026-09-15;
   SPA `ChatComposeInput.tsx` `useRoomDraft`, ^bold-lynx 2f39ce8a). Root cause of
   the gap: the phone's `Composer` persisted text only in the on-device
@@ -244,8 +247,6 @@ view-mode hub-sync (Room meta is fine on one device).
   `AgentLabels` resolves by agentKey + parent csid, names are display-only, so a
   `↔` name renders verbatim and roots to the target — pinned by
   `AgentLabelsTest`.
-
-## Shipped
 
 ### v99 (2026-09-13)
 
