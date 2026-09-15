@@ -7,8 +7,6 @@ import { Send, Paperclip, X } from 'lucide-react'
 import { searchEmoji } from '@/utils/emoji-shortcodes'
 import { primeRoomMembers, searchRoomMembers, getRoomMembers, type RoomMember } from '@/matrix/room-members'
 
-const DRAFT_SAVE_MS = 400
-
 /** The room's hub-synced draft (`DbChatRoom.draft`), `undefined` until the
  *  first read for THIS room lands — the result is stamped with its room so a
  *  switch never hydrates the new room's textarea with the old room's text.
@@ -116,18 +114,21 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
 
   // --- Per-room drafts -----------------------------------------------------
   // The textarea is ONE shared instance across rooms, so the draft lives on
-  // the hub's room row (DbChatRoom.draft): typing persists there (debounced),
-  // a room switch hydrates from it, and an agent's `con chat draft` shows up
-  // in the composer the same way. `hubDraftRef` = the latest Dexie value for
-  // the current room (null until its first read lands); `syncedDraftRef` =
-  // the last text this composer applied or pushed, i.e. "what the textarea
-  // held before any unsaved typing".
+  // the hub's room row (DbChatRoom.draft). While the textarea is focused the
+  // typed text is NEVER pushed: the draft is written when the textarea loses
+  // focus (also on room switch, page hide, unmount). Writing mid-typing made
+  // the room list re-sort and re-preview on every pause, and a hub delta
+  // computed before the write landed echoed the previous text back (^cool-ibis).
+  // A room switch hydrates from the row, and an agent's `con chat draft`
+  // shows up in the composer the same way. `hubDraftRef` = the latest Dexie
+  // value for the current room (null until its first read lands);
+  // `syncedDraftRef` = the last text this composer applied or pushed, i.e.
+  // "what the textarea held before any unsaved typing".
   const roomDraft = useRoomDraft(roomId)
   const setRoomDraft = useChatStore((s) => s.setRoomDraft)
   const hubDraftRef = useRef<string | null>(null)
   const syncedDraftRef = useRef<string | null>(null)
   const lastLocalWriteRef = useRef(0)
-  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const roomIdRef = useRef(roomId)
   const isEditing = !!editingMessage && editingMessage.roomId === roomId
   const isEditingRef = useRef(isEditing)
@@ -149,7 +150,6 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
    *  simply retried on the next flush. Edit mode never persists (the
    *  textarea holds the message being edited, not a draft). */
   const flushDraft = useCallback((forRoom: string, text: string) => {
-    if (draftTimerRef.current) { clearTimeout(draftTimerRef.current); draftTimerRef.current = null }
     if (hubDraftRef.current === null || text === hubDraftRef.current) return
     hubDraftRef.current = text
     syncedDraftRef.current = text
@@ -157,15 +157,8 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     void setRoomDraft(forRoom, text)
   }, [setRoomDraft])
 
-  const scheduleDraftSave = useCallback(() => {
-    if (isEditingRef.current) return
-    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
-    const forRoom = roomIdRef.current
-    draftTimerRef.current = setTimeout(() => {
-      draftTimerRef.current = null
-      if (roomIdRef.current !== forRoom || isEditingRef.current) return
-      flushDraft(forRoom, textRef.current)
-    }, DRAFT_SAVE_MS)
+  const handleBlur = useCallback(() => {
+    if (!isEditingRef.current) flushDraft(roomIdRef.current, textRef.current)
   }, [flushDraft])
 
   // Room switch: flush the old room's pending text, then start the new room
@@ -192,7 +185,8 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     const synced = syncedDraftRef.current
     if (synced === null) {
       syncedDraftRef.current = roomDraft
-      if (roomDraft !== textRef.current) setTextareaValue(roomDraft)
+      // Typed before the first read landed: keep it (it pushes on blur).
+      if (!textRef.current && roomDraft) setTextareaValue(roomDraft)
       return
     }
     if (roomDraft === synced) return
@@ -217,15 +211,15 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     wasEditingRef.current = isEditing
   }, [isEditing, setTextareaValue])
 
-  // Unmount / page hide: don't lose the debounce window's text.
+  // Unmount / page hide: a focused textarea gets no blur when the page goes
+  // away, so flush explicitly.
   useEffect(() => {
-    const onHide = () => { if (!isEditingRef.current) flushDraft(roomIdRef.current, textRef.current) }
-    window.addEventListener('pagehide', onHide)
+    window.addEventListener('pagehide', handleBlur)
     return () => {
-      window.removeEventListener('pagehide', onHide)
-      onHide()
+      window.removeEventListener('pagehide', handleBlur)
+      handleBlur()
     }
-  }, [flushDraft])
+  }, [handleBlur])
 
   // When the user picks a message to edit (only ones in this room — the store
   // is room-agnostic), pre-fill the textarea with its current body, place the
@@ -338,7 +332,6 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(!!newText.trim())
     setMentionQuery(null)
     setMentionResults([])
-    scheduleDraftSave()
     // Track this mention so the send path can attach it to m.mentions even if
     // there are multiple members with the same display name.
     if (!pendingMentionsRef.current.some((m) => m.userId === member.userId)) {
@@ -352,7 +345,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
         inputRef.current.focus()
       }
     })
-  }, [mentionQuery, scheduleDraftSave])
+  }, [mentionQuery])
 
   const selectEmoji = useCallback((result: { shortcode: string; emoji: string }) => {
     if (!emojiQuery) return
@@ -369,7 +362,6 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     setHasContent(!!newText.trim())
     setEmojiQuery(null)
     setEmojiResults([])
-    scheduleDraftSave()
     requestAnimationFrame(() => {
       if (inputRef.current) {
         const pos = emojiQuery.startIdx + result.emoji.length
@@ -378,7 +370,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
         inputRef.current.focus()
       }
     })
-  }, [emojiQuery, scheduleDraftSave])
+  }, [emojiQuery])
 
   const clearInput = useCallback(() => {
     textRef.current = ''
@@ -563,8 +555,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
     detectEmojiQuery(value, cursorPos)
     detectMentionQuery(value, cursorPos)
     useGlassesStore.getState().setComposerText('chat', value)
-    scheduleDraftSave()
-  }, [detectEmojiQuery, detectMentionQuery, autoResize, hasContent, scheduleDraftSave])
+  }, [detectEmojiQuery, detectMentionQuery, autoResize, hasContent])
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Arrow keys move cursor without triggering onChange
@@ -735,6 +726,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
             data-chat-input
             defaultValue=""
             onChange={handleChange}
+            onBlur={handleBlur}
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
             onPaste={handlePaste}
@@ -743,6 +735,7 @@ export const ChatComposeInput = memo(function ChatComposeInput({ roomId }: ChatC
             className="flex-1 w-0 resize-none bg-transparent text-sm text-text-primary placeholder:text-text-tertiary outline-none min-h-[24px] max-h-[120px] overflow-y-auto"
           />
           <button
+            onMouseDown={(e) => e.preventDefault()}
             onClick={handleSend}
             disabled={!hasContent && pendingFiles.length === 0}
             className="flex-shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-30 transition-colors duration-fast p-1"
