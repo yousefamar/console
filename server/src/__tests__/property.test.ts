@@ -385,6 +385,12 @@ describe('price qualifier', () => {
     expect(priceLabel({ ...base, priceQualifier: 'offers over', summary: 'For sale by auction, guide price' })).toBe('guide £390,000')
   })
 
+  it('an auction sold by its branch name or key features is a guide too', () => {
+    expect(priceLabel({ ...base, summary: 'Tucked away at the end of a quiet cul-de-sac', agent: 'First for Auctions, Nationwide' })).toBe('guide £390,000')
+    expect(priceLabel({ ...base, keyFeatures: ['Sale by Modern Auction (T&Cs apply)'] })).toBe('guide £390,000')
+    expect(priceLabel({ ...base, agent: 'Romans, Lower Earley', keyFeatures: ['Garage'] })).toBe('£390,000')
+  })
+
   it('newest() reads the qualifier off the list row', async () => {
     const row = { id: 92242653, displayAddress: '17 Hamilton Park', price: { amount: 390000, currencyCode: 'GBP', displayPrices: [{ displayPrice: '£390,000', displayPriceQualifier: 'Offers Over' }] }, bedrooms: 2, propertySubType: 'Detached Bungalow', location: { latitude: 55.9497, longitude: -3.1261 }, propertyUrl: '/properties/92242653' }
     const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { searchResults: { resultCount: '1', properties: [row] } } } })}</script>`

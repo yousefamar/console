@@ -1096,8 +1096,13 @@ function matchesAny(l: Listing, terms: string[]): boolean {
   return terms.some((t) => hay.includes(t))
 }
 
+// The list row's summary is truncated (~300 chars) and the sale method sits in
+// the key features or the branch name: 10 Players Green (RM 90744231, "First
+// for Auctions") drew as a plain £255,000 house; 46 of 96 UK auction rows were
+// missed the same way, most of them Modern Method (4 %+ reservation fee).
 export function auctionLike(l: Listing): boolean {
-  return AUCTION_RE.test(`${l.title ?? ''} ${l.summary ?? ''} ${l.propertyType ?? ''}`)
+  const hay = [l.title, l.summary, l.propertyType, l.agent, ...(l.keyFeatures ?? []), l.description]
+  return AUCTION_RE.test(hay.filter(Boolean).join(' '))
 }
 
 /** Exact coordinates, or a centroid that is a real place centre (`PLACE_CENTRE_PORTALS`). */
