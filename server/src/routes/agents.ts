@@ -15,6 +15,7 @@ import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
+import { missingSessionMessage } from '../agents/stale-id.js'
 import type { ClientMessage, HubMessage } from '../protocol.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
@@ -684,12 +685,13 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
     case 'send_message': {
       const session = sessions.get(msg.sessionId)
       if (!session) {
-        sendTo(ws, { type: 'hub_error', message: `Session not found: ${msg.sessionId}` })
+        sendTo(ws, { type: 'hub_error', message: missingSessionMessage(sessions, msg.sessionId) })
         return
       }
       // Offline-outbox retry safety: a mobile client re-delivering a queued
       // prompt carries the same dedupeKey — drop the duplicate silently.
       if (msg.dedupeKey && session.hasSeenDedupeKey(msg.dedupeKey)) {
+        sendTo(ws, { type: 'message_sent', sessionId: session.id })
         return
       }
       // /clear — clear the session's message log so replays start fresh
@@ -717,6 +719,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
       } else {
         session.sendMessage(withReviewReminder(ctx, session, msg.content), msg.images)
       }
+      sendTo(ws, { type: 'message_sent', sessionId: session.id })
       // Sending a message implicitly marks the session read (chat parity).
       markSessionRead(ctx, session)
       // Capture the idle→running transition in the manifest — sendMessage

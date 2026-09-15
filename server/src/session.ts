@@ -135,6 +135,9 @@ export interface SessionOptions {
    *  restore spawn counts as "being worked" for the TTL decision even though
    *  the fresh instance has no activity yet. */
   resumeMidTurn?: boolean
+  /** Hub ids this conversation had before this hub process (restore loop,
+   *  from the manifest's `hubId` + `formerHubIds`). See Session.formerIds. */
+  formerIds?: string[]
 }
 
 /** Pin the CLI's per-project directory (transcripts + auto-memory) to the
@@ -181,6 +184,9 @@ export function linkMemoryDir(fromMemory: string, toMemory: string): RelocateMem
 
 export class Session extends EventEmitter {
   readonly id: string
+  /** Hub ids this conversation carried in earlier hub processes, newest first
+   *  (hub ids are per-process; the claudeSessionId is the stable key). */
+  readonly formerIds: string[]
   claudeSessionId?: string
   name?: string
   /** claudeSessionId of the parent session if this is a fork (else undefined).
@@ -282,6 +288,7 @@ export class Session extends EventEmitter {
   constructor(options: SessionOptions) {
     super()
     this.id = `session_${++sessionCounter}_${Date.now()}`
+    this.formerIds = (options.formerIds ?? []).slice(0, 8)
     this.initialPrompt = options.prompt
     this.name = options.name
     this.parentClaudeSessionId = options.parentClaudeSessionId

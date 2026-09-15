@@ -37,6 +37,7 @@ import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
+import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths } from './kanban/board.js'
@@ -1638,7 +1639,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     }
     if (!target || !target.claudeSessionId) {
       res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: target ? 'session has no claudeSessionId yet' : `no session matching "${idParam}"` }))
+      res.end(JSON.stringify({ error: target ? 'session has no claudeSessionId yet' : missingSessionMessage(sessions, idParam) }))
       return
     }
     const history = loadSessionHistory(target.claudeSessionId, target.cwd)
@@ -2451,6 +2452,7 @@ httpServer.listen(port, host, () => {
             forkContext: entry.forkContext,
             queuedMessage: entry.queuedMessage,
             cacheTtl: entry.cacheTtl,
+            formerIds: [entry.hubId, ...(entry.formerHubIds ?? [])].filter((id): id is string => !!id),
             // The restore spawn of a mid-turn session is "being worked" for the
             // cache-TTL decision (the nudge below continues its turn).
             resumeMidTurn: entry.wasRunning,

@@ -356,17 +356,45 @@ async function agentCreate(args: string[], flags: GlobalFlags): Promise<void> {
   }
 }
 
-async function agentSend(args: string[], flags: GlobalFlags): Promise<void> {
-  const sessionId = args[0]
-  const message = args.slice(1).join(' ')
-  if (!sessionId || !message) exitWithError('USAGE', 'Usage: con agent send <session-id> <message>', flags)
+/** `<hub-id | claudeSessionId | name | agentKey>` → live hub session id. An
+ *  unmatched ref (or an unreachable /health) is returned unchanged: the hub is
+ *  the authority for NOT_FOUND, and its error names the successor of a
+ *  pre-restart id — which /health, listing only live ids, cannot. */
+async function resolveSessionRef(ref: string, flags: GlobalFlags): Promise<{ id: string; live: boolean }> {
+  let live: HealthSession[]
+  try {
+    const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
+    live = (health.sessions || []).filter((s) => s.status !== 'ended')
+  } catch { return { id: ref, live: false } }
+  if (live.some((s) => s.id === ref)) return { id: ref, live: true }
+  const byCsid = live.find((s) => s.claudeSessionId === ref)
+  if (byCsid) return { id: byCsid.id, live: true }
+  const named = live.filter((s) => (s.name || '').toLowerCase() === ref.toLowerCase())
+  const matches = named.length ? named : live.filter((s) => s.agentKey === ref)
+  if (matches.length > 1) exitWithError('AMBIGUOUS', `Multiple live sessions match "${ref}": ${matches.map((s) => s.id).join(', ')} — use the id.`, flags)
+  return matches[0] ? { id: matches[0].id, live: true } : { id: ref, live: false }
+}
 
+async function agentSend(args: string[], flags: GlobalFlags): Promise<void> {
+  const target = args[0]
+  const message = args.slice(1).join(' ')
+  if (!target || !message) exitWithError('USAGE', 'Usage: con agent send <session-id|claudeSessionId|name|agentKey> <message>', flags)
+
+  const { id: sessionId, live } = await resolveSessionRef(target!, flags)
   const { sendAndReceive } = await import('../ws-client.js')
-  await sendAndReceive(
+  // Hub ids die with the hub process, so a saved id can point at nothing. The
+  // hub answers message_sent or hub_error (naming the successor of a
+  // pre-restart id); `sent` is only reported on the ack — or, for a target
+  // /health just listed as live, on silence (a hub predating the ack).
+  const reply = await sendAndReceive(
     { type: 'send_message', sessionId, content: message },
-    () => false, // Don't wait for response
+    (msg: any) => (msg.type === 'message_sent' && msg.sessionId === sessionId)
+      || (msg.type === 'hub_error' && typeof msg.message === 'string' && msg.message.includes(sessionId)),
+    live ? 3_000 : 10_000,
   )
-  output({ sent: true, sessionId }, flags)
+  if (!reply && !live) exitWithError('ERROR', `No reply from hub for ${sessionId} — message not confirmed.`, flags)
+  if (reply?.type === 'hub_error') exitWithError('NOT_FOUND', reply.message, flags)
+  output({ sent: true, sessionId, ...(sessionId !== target ? { resolvedFrom: target } : {}) }, flags)
 }
 
 async function agentResume(args: string[], flags: GlobalFlags): Promise<void> {

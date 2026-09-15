@@ -13,7 +13,7 @@ const { saveManifest } = await import('../manifest.js')
 /** Only the fields saveManifest reads. */
 function fakeSession(over: Partial<Session>): Session {
   return {
-    claudeSessionId: 'csid-1', cwd: '/tmp', initialPrompt: 'p', name: 'S',
+    id: 'session_1_1', formerIds: [], claudeSessionId: 'csid-1', cwd: '/tmp', initialPrompt: 'p', name: 'S',
     status: 'idle', midTurn: false, endedByUser: false, messageLogLength: 0,
     ...over,
   } as unknown as Session

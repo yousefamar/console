@@ -122,6 +122,9 @@ export type HubMessage =
   | { type: 'session_handoff'; sessionId: string; targetAgentKey: string }
   /** A fork was merged into its parent (summary folded in, fork closed). */
   | { type: 'session_merged'; forkId: string; parentId: string; summary: string }
+  /** Sender-only ack that `send_message` reached a live session (the prompt
+   *  echo is broadcast to everyone BUT the sender). The negative is `hub_error`. */
+  | { type: 'message_sent'; sessionId: string }
   | { type: 'hub_error'; message: string }
 
 /** Messages that are stored in the per-session log for replay (excludes ephemeral status, deltas, list responses) */

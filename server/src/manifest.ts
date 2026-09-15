@@ -14,6 +14,12 @@ export interface ManifestEntry {
   cwd: string
   prompt: string
   name?: string
+  /** Hub session id at save time. Hub ids are minted per process, so after a
+   *  restart this becomes one of the successor's `formerHubIds` — how a stale
+   *  `con agent send session_…` gets a "resumed as …" hint instead of a void. */
+  hubId?: string
+  /** Hub ids this conversation had in earlier hub processes, newest first. */
+  formerHubIds?: string[]
   /** claudeSessionId of the parent session (forks) — restores sidebar nesting. */
   parentClaudeSessionId?: string
   /** Ticket-fork context mode (fresh | inherited) — see SessionOptions.forkContext. */
@@ -74,6 +80,8 @@ export function saveManifest(sessions: Map<string, Session>) {
       cwd: session.cwd,
       prompt: session.initialPrompt,
       name: session.name,
+      hubId: session.id,
+      ...(session.formerIds.length ? { formerHubIds: session.formerIds } : {}),
       ...(session.parentClaudeSessionId ? { parentClaudeSessionId: session.parentClaudeSessionId } : {}),
       ...(session.forkContext ? { forkContext: session.forkContext } : {}),
       ...(session.agentKey ? { agentKey: session.agentKey } : {}),
