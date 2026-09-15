@@ -332,9 +332,10 @@ export function buildBoardEnvelope(opts: {
       'DEPLOYS): do NOT merge to main. Work on a branch in your worktree',
       '(`autowt switch <ticket-slug> --terminal echo -y` prints the path), PUSH',
       'THE BRANCH, and when moving the card to Under Review add an indented',
-      'note with the branch name + the preview URL (e.g. the Vercel branch',
-      'preview). The merge to main happens only after the card owner approves —',
-      'they merge, or tell you to. Keep the worktree until then;',
+      'note with the branch name, the PR number, the gate run and the preview',
+      'URL (e.g. the Vercel branch preview). YOU NEVER MERGE — not on approval,',
+      'not when asked by a sibling: the PARENT session merges after the card',
+      'owner approves (repo rule). Keep the worktree until then;',
       'remove it only after the merge lands: `git worktree remove <path> &&',
       'git branch -d <branch>` (never `autowt cleanup --mode …` — it sweeps',
       'EVERY merged worktree, siblings included; `autowt cleanup <slug> -y`',
@@ -375,9 +376,9 @@ export function buildWindDownEnvelope(opts: {
   deployGate: 'review' | null
 }): string {
   const [header, ...steps] = opts.deployGate === 'review' ? [
-    'This board is deploy-gated: approval IS the merge signal. NOW:',
-    'Merge your branch into main (this deploys) — resolve conflicts if any.',
-    'Verify the merge landed (git log on main).',
+    'This board is deploy-gated: approval means the PARENT merges — you do NOT. NOW:',
+    'Do NOT merge. Make sure the gated head is pushed (`git push` from your worktree; `git log origin/<branch>` matches your last commit).',
+    'Note the PR number + the gate run (URL or run id) on the card if they are not already there, and put the same two facts in your final summary — the parent reads that summary and does the merge.',
     'Remove YOUR worktree only: `git worktree remove <path> && git branch -d <branch>` (never `autowt cleanup --mode …`; `-y` needs a TTY you do not have).',
   ] : [
     'Finish the lifecycle NOW:',

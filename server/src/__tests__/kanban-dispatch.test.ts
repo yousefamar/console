@@ -359,7 +359,10 @@ describe('buildWindDownEnvelope', () => {
   it('gated: approval is the merge/deploy signal', () => {
     const env = buildWindDownEnvelope({ boardAbsPath: '/v/b.md', text: 'Fix nav', blockId: 'aa', deployGate: 'review' })
     expect(env).toContain('[CARD APPROVED — wind down]')
-    expect(env).toContain('Merge your branch into main (this deploys)')
+    // Gated boards: the fork never merges — the parent does after approval (Astera rule 48, third ask 2026-09-15).
+    expect(env).toContain('Do NOT merge')
+    expect(env).toContain('PARENT merges')
+    expect(env).not.toContain('Merge your branch into main')
     // Self-scoped, scriptable cleanup — never the TTY-only `-y` form or the sibling-sweeping `--mode`.
     expect(env).toContain('git worktree remove <path> && git branch -d <branch>')
     expect(env).not.toContain('autowt cleanup <ticket-slug> -y')
