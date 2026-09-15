@@ -138,6 +138,22 @@ fun FeedsScreen(repo: FeedsRepository, onOpenItem: (String) -> Unit, onGrid: () 
     var feedMenuFor by remember { mutableStateOf<FeedRow?>(null) }
     var feedInfoFor by remember { mutableStateOf<FeedRow?>(null) }
     var refreshing by remember { mutableStateOf(false) }
+    // Command bar: land scoped to one subscription (its folder expanded once
+    // the feed list has loaded) or straight in the add dialog.
+    var pendingFeedFocus by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.FeedSelect>()?.let { r ->
+            currentScope = FeedScope.Feed(r.feedId)
+            pendingFeedFocus = r.feedId
+        }
+        if (io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.FeedAdd>() != null) showAdd = true
+    }
+    LaunchedEffect(feeds, pendingFeedFocus) {
+        val id = pendingFeedFocus ?: return@LaunchedEffect
+        if (feeds.isEmpty()) return@LaunchedEffect
+        feedById[id]?.folder?.let { expandedFolders = expandedFolders + it }
+        pendingFeedFocus = null
+    }
 
     LaunchedEffect(searchQuery) {
         searchResults = if (searchQuery.length >= 2) repo.search(searchQuery) else emptyList()

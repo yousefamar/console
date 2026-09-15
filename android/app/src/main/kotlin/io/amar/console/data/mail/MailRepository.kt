@@ -70,6 +70,7 @@ class MailRepository(
         db.mailThreads().observeInbox(System.currentTimeMillis())
 
     fun observeThread(id: String): Flow<MailThreadRow?> = db.mailThreads().observeThread(id)
+    fun observeRecent(limit: Int): Flow<List<MailThreadRow>> = db.mailThreads().observeRecent(limit)
     fun observeSnoozed(): Flow<List<MailThreadRow>> =
         db.mailThreads().observeSnoozed(System.currentTimeMillis())
     suspend fun search(q: String): List<MailThreadRow> = db.mailThreads().search(q)

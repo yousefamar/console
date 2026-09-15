@@ -131,6 +131,8 @@ fun SpacesScreen(
     onOpenSession: (String) -> Unit,
     onOpenNote: (String) -> Unit,
     onGrid: () -> Unit = {},
+    /** The Search glyph → the launcher's command bar, field focused. */
+    onSearch: () -> Unit = onGrid,
 ) {
     val spaces by spacesRepo.spaces.collectAsState()
     val sessions by agents.observeSessions().collectAsState(initial = emptyList())
@@ -234,7 +236,6 @@ fun SpacesScreen(
             .thenBy { it.title.lowercase() })
 
     var showFleet by remember { mutableStateOf(false) }
-    var showSwitcher by remember { mutableStateOf(false) }
     var newProject by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -256,9 +257,10 @@ fun SpacesScreen(
             title = "Spaces", onGrid = onGrid,
             subtitle = "${projects.size} projects · ${areas.size} areas",
             actions = {
-                // SPA `/` quick switcher — jump to any space / agent / file.
-                IconButton(onClick = { showSwitcher = true }) {
-                    Icon(Icons.Filled.Search, contentDescription = "Jump to space, agent, file", modifier = Modifier.size(20.dp))
+                // Jump to anything — the launcher's command bar (the SPA's `/`
+                // opens the same Console-wide bar since 2026-09-11).
+                IconButton(onClick = onSearch) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search", modifier = Modifier.size(20.dp))
                 }
                 IconButton(onClick = { showFleet = true }) {
                     Icon(androidx.compose.material.icons.Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
@@ -390,21 +392,6 @@ fun SpacesScreen(
         }
     }
     if (showFleet) io.amar.console.ui.agents.FleetModelSheet(agents, onDismiss = { showFleet = false })
-    if (showSwitcher) {
-        SpacesQuickSwitcher(
-            spaces = spaces, sessions = sessions, files = notesFiles,
-            running = activity.filterValues { it.running }.keys,
-            onDismiss = { showSwitcher = false },
-            onPick = { e ->
-                showSwitcher = false
-                when (e.kind) {
-                    io.amar.console.data.spaces.SpacesSwitcher.Kind.SESSION -> onOpenSession(e.target)
-                    io.amar.console.data.spaces.SpacesSwitcher.Kind.FILE -> onOpenNote(e.target)
-                    else -> onOpenSpace(e.target)
-                }
-            },
-        )
-    }
     if (newProject) {
         NewProjectDialog(
             onDismiss = { newProject = false },

@@ -99,6 +99,17 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     var showCreate by remember { mutableStateOf(false) }
     var recurringEdit by remember { mutableStateOf<GridEdit?>(null) }
     var locationPick by remember { mutableStateOf<Pair<CalEventRow?, Long>?>(null) }
+    // Command bar: an event pick lands on its day with the sheet open once
+    // that range has loaded (detailKey is dropped when the row isn't loaded
+    // yet); "New calendar event" lands in the form.
+    var pendingDetailKey by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.CalendarFocus>()?.let { r ->
+            anchorMs = startOfDay(r.dayMs)
+            pendingDetailKey = r.eventKey
+        }
+        if (io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.CalendarCreate>() != null) showCreate = true
+    }
 
     val calByKey = remember(calendars) { calendars.associateBy { it.id } }
     // Visibility keys are BARE calendarIds — the SPA's format for the shared
@@ -133,6 +144,12 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}) {
     }
     val allEvents by repo.observeEvents(rangeStart - DAY_MS, rangeEnd + DAY_MS).collectAsState(initial = emptyList())
     val events = remember(allEvents, visibleIds) { allEvents.filter { isVisible(it) } }
+    androidx.compose.runtime.LaunchedEffect(allEvents, pendingDetailKey) {
+        val key = pendingDetailKey ?: return@LaunchedEffect
+        if (allEvents.none { it.compoundKey == key }) return@LaunchedEffect
+        detailKey = key
+        pendingDetailKey = null
+    }
 
     fun deleteWithUndo(row: CalEventRow) {
         scope.launch { repo.deleteEvent(row.compoundKey) }

@@ -84,6 +84,11 @@ fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGr
     var searching by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) } // false = filename, true = content
     var showCreate by remember { mutableStateOf(false) }
+    // Command bar "New note: …" lands in the create dialog with the title filled.
+    var createTitle by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.NoteCreate>()?.let { createTitle = it.title; showCreate = true }
+    }
     var actionTarget by remember { mutableStateOf<NoteFileRow?>(null) }
     var renameTarget by remember { mutableStateOf<NoteFileRow?>(null) }
     var deleteTarget by remember { mutableStateOf<NoteFileRow?>(null) }
@@ -247,9 +252,10 @@ fun NotesBrowserScreen(repo: NotesRepository, onOpenFile: (String) -> Unit, onGr
         CreateNoteDialog(
             repo = repo,
             currentDir = currentDir,
-            onDismiss = { showCreate = false },
+            initialTitle = createTitle,
+            onDismiss = { showCreate = false; createTitle = "" },
             onCreate = { path, seed ->
-                showCreate = false
+                showCreate = false; createTitle = ""
                 scope.launch { repo.create(path, seed) }
                 onOpenFile(path)
             },
@@ -441,8 +447,9 @@ private fun CreateNoteDialog(
     currentDir: String,
     onDismiss: () -> Unit,
     onCreate: (path: String, seed: String) -> Unit,
+    initialTitle: String = "",
 ) {
-    var title by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(initialTitle) }
     var dir by remember { mutableStateOf(currentDir) }
     var dirFocused by remember { mutableStateOf(false) }
     val slug = remember(title) { slugify(title) }

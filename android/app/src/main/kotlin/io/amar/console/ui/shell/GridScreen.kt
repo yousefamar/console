@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material3.Icon
@@ -30,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -67,13 +69,26 @@ import java.util.Locale
 /** The panes the Inbox + Spaces absorb (SPA `console:ui:legacyTabs`). */
 val LEGACY_PANES: Set<Pane> = setOf(Pane.Mail, Pane.Chat, Pane.Feeds, Pane.Notes)
 
-/** Grid tile set for a search [query]; [hideLegacy] only prunes the unsearched grid. */
-fun visibleGridPanes(query: String, hideLegacy: Boolean): List<Pane> =
-    if (query.isBlank()) Pane.entries.filter { !hideLegacy || it !in LEGACY_PANES }
-    else Pane.entries.filter { it.label.contains(query, ignoreCase = true) }
+/** Grid tile set; [hideLegacy] prunes the grid only — the command bar still
+ *  reaches every pane (`CommandBarLogic` lists all of `Pane.entries`). */
+fun visibleGridPanes(hideLegacy: Boolean): List<Pane> =
+    Pane.entries.filter { !hideLegacy || it !in LEGACY_PANES }
+
+/** Other screens (the Spaces search glyph) ask the grid to focus its search
+ *  field on arrival — the bar has ONE entry point, this is how they reach it. */
+object GridSearch {
+    /** Pending focus request; the grid clears it as it focuses (one-shot, not state). */
+    val pending = kotlinx.coroutines.flow.MutableStateFlow(false)
+    fun request() { pending.value = true }
+}
 
 @Composable
-fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
+fun GridScreen(
+    app: ConsoleApp,
+    onOpen: (Pane) -> Unit,
+    /** Command-bar pick → the shell routes it through the existing nav primitives. */
+    onNavigate: (io.amar.console.data.search.CommandBarLogic.Target) -> Unit = {},
+) {
     val chatUnread by app.graph.db.chatRooms()
         .observeUnreadCount(System.currentTimeMillis()).collectAsState(initial = 0)
     // Inbox tile = the unified inbox list size (SPA tab-badge parity).
@@ -148,18 +163,17 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
             )
         }
 
-        // Launcher search: filters BOTH Console panes and installed apps.
+        // Launcher search = the command bar (SPA `\`): everything Console
+        // knows offline, plus installed apps. A blank query shows the grid.
         var query by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
         val installedApps by io.amar.console.core.InstalledApps.apps.collectAsState()
         val usageVersion by io.amar.console.core.InstalledApps.usageVersion.collectAsState()
-        val ctxForUsage = androidx.compose.ui.platform.LocalContext.current
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val usage = androidx.compose.runtime.remember(usageVersion) { io.amar.console.core.InstalledApps.usage(ctx) }
         // Frequency-first ordering (usage ledger learned from launches),
         // recency tiebreak, then alphabetical for never-launched apps.
-        val visibleApps = androidx.compose.runtime.remember(installedApps, query, usageVersion) {
-            val usage = io.amar.console.core.InstalledApps.usage(ctxForUsage)
-            val base = if (query.isBlank()) installedApps
-            else installedApps.filter { it.label.contains(query, ignoreCase = true) }
-            base.sortedWith(
+        val visibleApps = androidx.compose.runtime.remember(installedApps, usage) {
+            installedApps.sortedWith(
                 compareByDescending<io.amar.console.core.InstalledApps.Entry> { usage[it.packageName]?.first ?: 0 }
                     .thenByDescending { usage[it.packageName]?.second ?: 0L }
                     .thenBy { it.label.lowercase() }
@@ -168,16 +182,58 @@ fun GridScreen(app: ConsoleApp, onOpen: (Pane) -> Unit) {
         // Hidden legacy tiles (SPA `console:ui:legacyTabs`) drop off the grid
         // only — a search still reaches them.
         val hideLegacy by io.amar.console.core.AppPrefs.hideLegacyTiles.collectAsState()
-        val visiblePanes = androidx.compose.runtime.remember(query, hideLegacy) {
-            visibleGridPanes(query, hideLegacy)
+        val visiblePanes = androidx.compose.runtime.remember(hideLegacy) { visibleGridPanes(hideLegacy) }
+
+        var results by androidx.compose.runtime.remember {
+            androidx.compose.runtime.mutableStateOf<List<io.amar.console.data.search.CommandBarLogic.Entry>>(emptyList())
         }
-        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val searchFocus = androidx.compose.runtime.remember { androidx.compose.ui.focus.FocusRequester() }
+        val focusPending by GridSearch.pending.collectAsState()
+        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        androidx.compose.runtime.LaunchedEffect(focusPending) {
+            if (focusPending) {
+                GridSearch.pending.value = false
+                runCatching { searchFocus.requestFocus(); keyboard?.show() }
+            }
+        }
+        val appsByKey = androidx.compose.runtime.remember(installedApps) { installedApps.associateBy { appKey(it) } }
+        // One pick path for taps and the IME action: apps launch here (the grid
+        // owns the registry), everything else is routed by the shell.
+        val pick: (io.amar.console.data.search.CommandBarLogic.Target) -> Unit = { target ->
+            query = ""
+            focusManager.clearFocus()
+            if (target is io.amar.console.data.search.CommandBarLogic.Target.App) {
+                appsByKey[target.key]?.let { io.amar.console.core.InstalledApps.launch(ctx, it) }
+            } else onNavigate(target)
+        }
         androidx.compose.material3.OutlinedTextField(
             value = query, onValueChange = { query = it },
-            placeholder = { Text("Search apps") }, singleLine = true,
+            placeholder = { Text("Search") }, singleLine = true,
             leadingIcon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(18.dp)) },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+            trailingIcon = if (query.isEmpty()) null else {
+                {
+                    androidx.compose.material3.IconButton(onClick = { query = "" }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                    }
+                }
+            },
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+            // IME Search opens the top hit.
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
+                if (query.isNotBlank()) results.firstOrNull()?.let { pick(it.target) }
+                else focusManager.clearFocus()
+            }),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp).focusRequester(searchFocus),
         )
+
+        if (query.isNotBlank()) {
+            CommandBarResults(
+                app = app, query = query, installedApps = installedApps, usage = usage,
+                onPick = pick, onResults = { results = it },
+            )
+            return@Column
+        }
 
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),

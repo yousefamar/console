@@ -93,6 +93,10 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
     var searchResults by remember { mutableStateOf<List<MailThreadRow>>(emptyList()) }
     var showSnoozed by remember { mutableStateOf(false) }
     var composing by remember { mutableStateOf(false) }
+    // Command bar "Compose email" lands here with the composer already open.
+    LaunchedEffect(Unit) {
+        if (io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.MailCompose>() != null) composing = true
+    }
     var snoozeTarget by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var labelMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }

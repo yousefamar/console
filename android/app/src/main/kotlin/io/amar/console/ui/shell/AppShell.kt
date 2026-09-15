@@ -33,8 +33,10 @@ import io.amar.console.ui.longtail.MusicScreen
 import io.amar.console.ui.mail.MailInboxScreen
 import io.amar.console.ui.mail.MailThreadScreen
 import io.amar.console.ui.nav.GRID_ROUTE
+import io.amar.console.ui.nav.NavRequests
 import io.amar.console.ui.nav.Pane
 import io.amar.console.ui.notes.NoteEditorScreen
+import io.amar.console.ui.theme.isDark
 import io.amar.console.ui.notes.NotesBrowserScreen
 import io.amar.console.ui.settings.HardwareSettingsScreen
 import io.amar.console.ui.settings.SettingsScreen
@@ -135,7 +137,12 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
             ) {
                 // L0 — launcher
                 composable(GRID_ROUTE) {
-                    GridScreen(app, onOpen = { pane -> navController.openApp(pane) })
+                    val isDark = MaterialTheme.isDark
+                    GridScreen(
+                        app,
+                        onOpen = { pane -> navController.openApp(pane) },
+                        onNavigate = { target -> navController.openCommandTarget(target, isDark) },
+                    )
                 }
 
                 // L1 roots + L2 details, one pair per app.
@@ -234,6 +241,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                         onOpenSession = { sessionId -> navController.navigate("agents/${android.net.Uri.encode(sessionId)}") },
                         onOpenNote = { path -> navController.navigate("notes/${android.net.Uri.encode(path)}") },
                         onGrid = toGrid,
+                        onSearch = { GridSearch.request(); navController.navigateToGrid() },
                     )
                 }
                 composable("spaces/{spaceKey}") { entry ->
@@ -393,6 +401,41 @@ private fun freshnessLabel(ms: Long): String = when {
     ms < 3_600_000 -> "${ms / 60_000}m"
     ms < 86_400_000 -> "${ms / 3_600_000}h"
     else -> "${ms / 86_400_000}d"
+}
+
+/**
+ * Command-bar pick → the EXISTING nav primitives only: `openApp` for the root
+ * (so back walks root → grid) then the detail route where one exists; targets
+ * without a route (calendar day/event, a feed subscription, a bookmark, an
+ * app root opened into its create form) post a [NavRequests] entry the screen
+ * takes on arrival. App launches never reach here (the grid owns them).
+ */
+fun NavHostController.openCommandTarget(t: io.amar.console.data.search.CommandBarLogic.Target, isDark: Boolean) {
+    fun enc(s: String) = android.net.Uri.encode(s)
+    when (t) {
+        is io.amar.console.data.search.CommandBarLogic.Target.OpenPane -> openApp(t.pane)
+        is io.amar.console.data.search.CommandBarLogic.Target.Action -> when (t.id) {
+            "compose" -> { NavRequests.post(NavRequests.MailCompose); openApp(Pane.Mail) }
+            "event" -> { NavRequests.post(NavRequests.CalendarCreate); openApp(Pane.Calendar) }
+            "bookmark" -> { NavRequests.post(NavRequests.BookmarkAdd); openApp(Pane.Bookmarks) }
+            "feed" -> { NavRequests.post(NavRequests.FeedAdd); openApp(Pane.Feeds) }
+            "theme" -> io.amar.console.core.AppPrefs.setThemeMode(
+                if (isDark) io.amar.console.core.AppPrefs.ThemeMode.LIGHT else io.amar.console.core.AppPrefs.ThemeMode.DARK,
+            )
+        }
+        is io.amar.console.data.search.CommandBarLogic.Target.Space -> { openApp(Pane.Spaces); navigate("spaces/${enc("${t.kind}/${t.slug}")}") }
+        is io.amar.console.data.search.CommandBarLogic.Target.Session -> { openApp(Pane.Spaces); navigate("agents/${enc(t.id)}") }
+        is io.amar.console.data.search.CommandBarLogic.Target.Note -> { openApp(Pane.Notes); navigate("notes/${enc(t.path)}") }
+        is io.amar.console.data.search.CommandBarLogic.Target.Room -> { openApp(Pane.Chat); navigate("chat/${enc(t.id)}") }
+        is io.amar.console.data.search.CommandBarLogic.Target.Thread -> { openApp(Pane.Mail); navigate("mail/${enc(t.id)}") }
+        is io.amar.console.data.search.CommandBarLogic.Target.Feed -> { NavRequests.post(NavRequests.FeedSelect(t.id)); openApp(Pane.Feeds) }
+        is io.amar.console.data.search.CommandBarLogic.Target.Bookmark -> { NavRequests.post(NavRequests.BookmarkOpen(t.file)); openApp(Pane.Bookmarks) }
+        is io.amar.console.data.search.CommandBarLogic.Target.Event -> {
+            NavRequests.post(NavRequests.CalendarFocus(t.startMs, t.compoundKey)); openApp(Pane.Calendar)
+        }
+        is io.amar.console.data.search.CommandBarLogic.Target.CreateNote -> { NavRequests.post(NavRequests.NoteCreate(t.title)); openApp(Pane.Notes) }
+        is io.amar.console.data.search.CommandBarLogic.Target.App -> {}
+    }
 }
 
 /** Open an app root from the grid: single top, per-app state restored. */

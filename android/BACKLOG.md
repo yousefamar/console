@@ -34,18 +34,6 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   re-run `refreshRules()` on WS reconnect, keep a dirty flag so the
   reconnect push wins.
 
-- App-wide command bar (SPA `CommandBar.tsx`, ^dry-fox, 2026-09-11) — the
-  Spaces-only `/` switcher (ported in v95 as `SpacesQuickSwitcher.kt` /
-  `SpacesSwitcher.kt`) grew into a Console-wide jump-to-anything: panes +
-  Money sub-tabs, actions, spaces, sessions, vault files, chat rooms, mail
-  threads (recent 200 + whole-table search from 2 chars), feeds, bookmarks,
-  upcoming calendar events; opened by `\` anywhere / `/` on Spaces / a Search
-  glyph in the header. Ranking is the pure `src/commandbar/rank.ts` (launcher
-  = Recent per-kind-capped → Upcoming → Go to; query = fuzzy, structure before
-  content on a tie, then recency) — port it beside `SpacesSwitcher.kt` and
-  widen the existing switcher sheet's sources; every pick maps to an existing
-  detail route (`console://pane/<name>` + item).
-
 - Calendar: private per-event links (hub + SPA ^gray-bat, 2026-09-08) — events
   carry `extendedProperties.private` keys `console.link.<i>` (+ marker
   `console.links=1`); the SPA popover lists them (vault note → Notes editor +
@@ -182,7 +170,38 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-(empty — next batch goes here)
+- Launcher search is the command bar (^pale-fawn, 2026-09-15; SPA
+  `CommandBar.tsx` + `src/commandbar/rank.ts`, ^dry-fox 6debac42 / ^teal-eel
+  26e32dbe). Root cause of the gap: the grid's field filtered pane labels +
+  installed apps only, while the SPA's `\` bar had grown into jump-to-anything
+  and the Spaces-only switcher it replaced still survived on the phone as
+  `SpacesQuickSwitcher.kt`/`SpacesSwitcher.kt`. Now: `data/search/
+  CommandBarLogic.kt` is the pure port (fuzzyScore, entry build, rank — tests
+  in `CommandBarLogicTest`), sources = panes + the Money sections that exist
+  on the phone (Cashflow / Net worth / Transactions → Money), actions
+  (compose mail, new event, add bookmark, add feed, toggle theme), installed
+  apps (usage-ranked: score → structure → usage → recency), spaces
+  (`SpacesRepository.spaces`), live sessions, vault files (cap keeps the 2000
+  most recent), chat rooms, mail threads (recent 200 via new
+  `MailThreadDao.observeRecent` + whole-table `search` from 2 chars, debounced
+  120 ms), feeds, bookmarks, upcoming events (60 d, `endTime > now`, deduped
+  by event id). All Room / already-loaded StateFlows — no hub call in the
+  query path. UI (`ui/shell/CommandBar.kt`, hosted by `GridScreen`): the
+  existing field, placeholder "Search", results replace the grid while a query
+  is typed (flat ranked list, kind glyph + hint + unread/running dots +
+  relative time), IME Search opens the top hit, clear glyph. Picks route
+  through `NavHostController.openCommandTarget` (AppShell): `openApp` + the
+  existing detail routes; targets with no route of their own (calendar
+  day+event, a feed subscription, a bookmark, an app root opened into its
+  create form, "New note: …") post a one-shot `ui/nav/NavRequests` entry the
+  destination screen takes on entry (Calendar/Feeds/Bookmarks/Mail/Notes;
+  10 s TTL so a stale request can't fire later). The Spaces Search glyph now
+  jumps to the grid with the field focused (`GridSearch.request()`); the
+  Spaces-only switcher + its test are deleted. Empty query keeps the grid
+  (the phone's launcher already is the launcher) — the SPA's empty-query
+  Recent/Upcoming/Go-to composition is ported in `rank("")` and tested, just
+  not rendered. Not in Room on the phone: the spaces list (hub-loaded
+  StateFlow, so absent offline until the first sync) — everything else is.
 
 ## Shipped
 

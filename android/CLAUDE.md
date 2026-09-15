@@ -59,7 +59,11 @@ android/
     data/<domain>/  one repository per domain: chat (Matrix via hub, E2EE media), mail, agents, spaces
                 (boards via hub BoardOps), notes (+blog), cal (+flights), feeds, inbox, longtail (map/home/…)
     ui/nav/AppNav.kt   Pane enum + route contract: grid (L0) → app root (L1) → detail (L2)
-    ui/shell/   AppShell (NavHost, sync chip, UndoHost toast), GridScreen (launcher + app drawer), Banners
+    ui/nav/NavRequests.kt  one-shot screen-entry requests (command bar → a target with no route of its own:
+                calendar day+event, feed scope, bookmark sheet, create forms); the screen takes it on entry
+    ui/shell/   AppShell (NavHost, sync chip, UndoHost toast), GridScreen (launcher + app drawer; its search
+                field IS the command bar — CommandBar.kt renders results, data/search/CommandBarLogic.kt ranks,
+                every source Room/local so it works offline), Banners
     ui/components/  Composer (all free-text input; dictation), DictatedTextField, HtmlWebView, NetworkIcons…
     ui/<domain>/    screens per pane (spaces/ is the eventual Notes+Agents replacement — see below)
     glasses/, glasses/mirror/, pen/   G1 glasses + Neo pen BLE stacks (pure codecs unit-tested)

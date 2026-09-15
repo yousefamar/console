@@ -14,6 +14,10 @@ interface MailThreadDao {
     @Query("SELECT * FROM mail_threads WHERE isInbox = 1 AND (snoozedUntil IS NULL OR snoozedUntil < :now) ORDER BY date DESC")
     fun observeInbox(now: Long): Flow<List<MailThreadRow>>
 
+    /** Newest cached threads, inbox or not — the command bar's always-present pool. */
+    @Query("SELECT * FROM mail_threads ORDER BY date DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<MailThreadRow>>
+
     @Query("SELECT * FROM mail_threads WHERE id = :id")
     fun observeThread(id: String): Flow<MailThreadRow?>
 

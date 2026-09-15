@@ -120,6 +120,18 @@ fun BookmarksScreen(repo: BookmarksRepository, onGrid: () -> Unit = {}) {
     var addMode by remember { mutableStateOf(false) }
     var triageMode by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
+    // Command bar: open one bookmark's sheet (once the list has loaded) or add mode.
+    var pendingOpen by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.BookmarkOpen>()?.let { pendingOpen = it.file }
+        if (io.amar.console.ui.nav.NavRequests.take<io.amar.console.ui.nav.NavRequests.BookmarkAdd>() != null) addMode = true
+    }
+    LaunchedEffect(bookmarks, pendingOpen) {
+        val file = pendingOpen ?: return@LaunchedEffect
+        if (bookmarks.isEmpty()) return@LaunchedEffect
+        detail = bookmarks.firstOrNull { it.file == file }
+        pendingOpen = null
+    }
 
     val tagsByFile = remember(bookmarks) { bookmarks.associate { it.file to parseTagsJson(it.tagsJson) } }
     val allTags = remember(tagsByFile) { allBookmarkTags(tagsByFile) }
