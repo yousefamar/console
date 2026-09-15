@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "deploy": "wrangler pages deploy dist",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "heavy": "bash scripts/heavy.sh"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.0",
