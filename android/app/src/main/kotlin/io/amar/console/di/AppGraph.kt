@@ -65,6 +65,7 @@ class AppGraph(context: Context) {
         chat.registerOutboxHandlers()
         chat.wireLiveDeltas(appScope)
         spaces.wireLive(appScope)
+        inbox.wireLive(syncBus)
         syncEngine.addDomain("chat") { chat.reconcile() }
         // Warm every unread room's first page in the background once per app
         // launch, after the first sync connects (SPA useSync parity). Keeps the

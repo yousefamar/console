@@ -48,6 +48,15 @@ class InboxRepository(
 ) {
     private val rules = MutableStateFlow(InboxRules.DEFAULT)
     private val xOnly = MutableStateFlow(false)
+
+    // Rules persistence (SPA ^spry-wren `console:inbox-rules` mirror): the hub
+    // copy is authoritative; a Room meta row is the offline seed, written on
+    // every successful GET/POST. A POST the hub missed leaves `dirtyRules`
+    // set, and the next refresh PUSHES the local copy instead of pulling the
+    // stale one over it (newest save wins via `saveSeq`).
+    @Volatile private var dirtyRules = false
+    private var saveSeq = 0L
+    private var seeded = false
     val xOnlyMode: StateFlow<Boolean> = xOnly
 
     /** Bumped every 5 min + after local mutations — a compose input, so
@@ -110,6 +119,7 @@ class InboxRepository(
         .catch { }
 
     init {
+        scope.launch { runCatching { seedRulesFromMirror() } }
         scope.launch {
             while (true) {
                 delay(5 * 60 * 1000L)
@@ -123,16 +133,63 @@ class InboxRepository(
     /** Run a handling action on the repo's scope (screens have no own scope for fire-and-forget). */
     fun launch(block: suspend () -> Unit) { scope.launch { block() } }
 
-    /** Load hub rules; offline keeps whatever we have (defaults at boot). */
+    /** Seed the rules from the local mirror — composition never waits on the
+     *  hub (a DOWN hub hangs the GET for the TCP timeout; the phone would show
+     *  default routing meanwhile). Idempotent; runs before the first GET. */
+    suspend fun seedRulesFromMirror() {
+        if (seeded) return
+        seeded = true
+        val raw = runCatching { db.meta().get(RULES_META_KEY) }.getOrNull() ?: return
+        if (dirtyRules) return // a live local edit already replaced the seed
+        rules.value = InboxRules.fromJson(raw)
+    }
+
+    /**
+     * Reconcile with the hub: push the local copy when a save was dropped
+     * (dirty), else pull. Offline keeps whatever we have — the mirror-seeded
+     * rules, never DEFAULTS over a promoted/demoted source. Re-run on every
+     * sync-WS (re)connect ([wireLive]) and on Inbox open.
+     */
     suspend fun refreshRules() {
-        runCatching { rules.value = InboxRules.fromJson(hub.get("/inbox/rules")) }
+        seedRulesFromMirror()
+        if (dirtyRules) { pushRules(rules.value, saveSeq); return }
+        val fetched = runCatching { InboxRules.fromJson(hub.get("/inbox/rules")) }.getOrNull() ?: return
+        if (dirtyRules) return // a save landed while the GET was in flight — it wins
+        rules.value = fetched
+        persistMirror(fetched)
+    }
+
+    /** Re-pull on every (re)connect so a promote on the desktop reaches the
+     *  phone without an Inbox re-open, and a dropped save gets pushed. */
+    fun wireLive(syncBus: io.amar.console.sync.SyncBusClient) {
+        syncBus.onConnect { scope.launch { runCatching { refreshRules() } } }
+    }
+
+    private suspend fun persistMirror(r: InboxRules) {
+        runCatching { db.meta().put(io.amar.console.data.db.MetaRow(RULES_META_KEY, r.toJson())) }
+    }
+
+    private fun saveRules(next: InboxRules) {
+        rules.value = next
+        val seq = ++saveSeq
+        dirtyRules = true
+        scope.launch {
+            persistMirror(next)
+            pushRules(next, seq)
+        }
+    }
+
+    private suspend fun pushRules(r: InboxRules, seq: Long) {
+        val ok = runCatching { hub.post("/inbox/rules", r.toJson()) }.isSuccess
+        // Only a push of the NEWEST save clears the flag; an older in-flight
+        // save landing later must not mark a newer local edit as synced.
+        if (ok && seq == saveSeq) dirtyRules = false
     }
 
     /** Promote/demote an entry's source; optimistic, then hub-persisted. */
     fun toggleRoute(entry: InboxEntry) {
         val next = toggledRules(rules.value, entry) ?: return
-        rules.value = next
-        scope.launch { runCatching { hub.post("/inbox/rules", next.toJson()) } }
+        saveRules(next)
     }
 
     /** Every persisted override, labelled from the local room/feed tables
@@ -149,8 +206,15 @@ class InboxRepository(
     fun clearOverride(source: InboxSource, key: String) {
         val next = withoutOverride(rules.value, source, key)
         if (next == rules.value) return
-        rules.value = next
-        scope.launch { runCatching { hub.post("/inbox/rules", next.toJson()) } }
+        saveRules(next)
+    }
+
+    /** Test seam: current dirty state (a dropped save awaiting the next connect). */
+    internal fun rulesDirty(): Boolean = dirtyRules
+    internal fun currentRules(): InboxRules = rules.value
+
+    companion object {
+        const val RULES_META_KEY = "inbox:rules"
     }
 
     /** Snooze a feed item or agent session by Inbox key — local-only (SPA
