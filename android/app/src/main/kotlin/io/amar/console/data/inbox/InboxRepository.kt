@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Unified Inbox — composition over the existing per-source Room tables.
@@ -56,7 +57,12 @@ class InboxRepository(
     // stale one over it (newest save wins via `saveSeq`).
     @Volatile private var dirtyRules = false
     private var saveSeq = 0L
-    private var seeded = false
+    private val seedOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var fetchedOnce = false
+    // Seed and fetch-apply run under one lock: the boot-time seed (init) and an
+    // Inbox-open refresh race, and a late seed must never overwrite a fresher
+    // hub copy (flaked in the full suite before the lock).
+    private val rulesLock = kotlinx.coroutines.sync.Mutex()
     val xOnlyMode: StateFlow<Boolean> = xOnly
 
     /** Bumped every 5 min + after local mutations — a compose input, so
@@ -137,11 +143,13 @@ class InboxRepository(
      *  hub (a DOWN hub hangs the GET for the TCP timeout; the phone would show
      *  default routing meanwhile). Idempotent; runs before the first GET. */
     suspend fun seedRulesFromMirror() {
-        if (seeded) return
-        seeded = true
+        if (!seedOnce.compareAndSet(false, true)) return
         val raw = runCatching { db.meta().get(RULES_META_KEY) }.getOrNull() ?: return
-        if (dirtyRules) return // a live local edit already replaced the seed
-        rules.value = InboxRules.fromJson(raw)
+        rulesLock.withLock {
+            // A live local edit or a landed hub fetch already replaced the seed.
+            if (dirtyRules || fetchedOnce) return
+            rules.value = InboxRules.fromJson(raw)
+        }
     }
 
     /**
@@ -154,8 +162,11 @@ class InboxRepository(
         seedRulesFromMirror()
         if (dirtyRules) { pushRules(rules.value, saveSeq); return }
         val fetched = runCatching { InboxRules.fromJson(hub.get("/inbox/rules")) }.getOrNull() ?: return
-        if (dirtyRules) return // a save landed while the GET was in flight — it wins
-        rules.value = fetched
+        rulesLock.withLock {
+            if (dirtyRules) return // a save landed while the GET was in flight — it wins
+            fetchedOnce = true
+            rules.value = fetched
+        }
         persistMirror(fetched)
     }
 
