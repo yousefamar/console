@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodePolyline, simplifyToLatLng, outerRings, ringsInCountry, pointInGeometry } from '../property/geo.js'
 import { PropertySearchStore, PORTAL_BY_COUNTRY, withInterestedCarried } from '../property/store.js'
-import { postFilter, applyNotifyGate, PropertySync } from '../property/sync.js'
+import { postFilter, applyNotifyGate, PropertySync, priceLabel } from '../property/sync.js'
 import { PropertyInventoryStore, fetchAll } from '../property/inventory.js'
 import { groupDuplicates } from '../property/dedupe.js'
 import { coverRingWithCircles, nearGeometry, haversineKm } from '../property/geo.js'
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, exposeFields, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
-import { RightmoveClient, unflatten, detailFields } from '../property/rightmove.js'
+import { RightmoveClient, unflatten, detailFields, priceQualifier } from '../property/rightmove.js'
 import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, stackedFlatLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
@@ -362,6 +362,35 @@ describe('RightmoveClient ring fallback', () => {
   it('a rejection at every budget still throws', async () => {
     const client = new RightmoveClient(fetchOf(() => res(400, '{"notFound":true}')))
     await expect(client.count([jagged], crit)).rejects.toThrow('HTTP 400')
+  })
+})
+
+describe('price qualifier', () => {
+  const base: Listing = { portal: 'rightmove', id: '92242653', url: 'u', price: 390000, currency: 'GBP' }
+
+  it('keeps only the readings that change what the number means', () => {
+    expect(priceQualifier('Offers Over')).toBe('offers over')
+    expect(priceQualifier('Offers in Excess of')).toBe('offers over')
+    expect(priceQualifier('Offers in Region of')).toBe('OIRO')
+    expect(priceQualifier('Guide Price')).toBe('guide')
+    expect(priceQualifier('Fixed Price')).toBe('fixed price')
+    expect(priceQualifier('From')).toBeUndefined()
+    expect(priceQualifier('')).toBeUndefined()
+    expect(priceQualifier(undefined)).toBeUndefined()
+  })
+
+  it('a Scottish offers-over floor is labelled on the pin, an auction guide still wins', () => {
+    expect(priceLabel(base)).toBe('£390,000')
+    expect(priceLabel({ ...base, priceQualifier: 'offers over' })).toBe('offers over £390,000')
+    expect(priceLabel({ ...base, priceQualifier: 'offers over', summary: 'For sale by auction, guide price' })).toBe('guide £390,000')
+  })
+
+  it('newest() reads the qualifier off the list row', async () => {
+    const row = { id: 92242653, displayAddress: '17 Hamilton Park', price: { amount: 390000, currencyCode: 'GBP', displayPrices: [{ displayPrice: '£390,000', displayPriceQualifier: 'Offers Over' }] }, bedrooms: 2, propertySubType: 'Detached Bungalow', location: { latitude: 55.9497, longitude: -3.1261 }, propertyUrl: '/properties/92242653' }
+    const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { pageProps: { searchResults: { resultCount: '1', properties: [row] } } } })}</script>`
+    const client = new RightmoveClient((() => Promise.resolve(new Response(html, { status: 200 }))) as unknown as typeof fetch)
+    const out = await client.newest([[[-3.13, 55.952], [-3.121, 55.952], [-3.121, 55.947], [-3.13, 55.947], [-3.13, 55.952]]], { channel: 'buy', propertyType: 'house' }, 24)
+    expect(out.listings[0]?.priceQualifier).toBe('offers over')
   })
 })
 

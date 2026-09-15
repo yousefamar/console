@@ -10,7 +10,7 @@
 
 import type { Ring } from './geo.js'
 import { encodePolyline, simplifyToLatLng } from './geo.js'
-import type { Criteria, Listing, PortalClient, SearchResult } from './types.js'
+import type { Criteria, Listing, PortalClient, PriceQualifier, SearchResult } from './types.js'
 import { plotAreaFromText, normaliseTenure } from './land.js'
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
@@ -278,7 +278,7 @@ function compile(c: Criteria): Record<string, string> {
 
 interface RawListRow {
   id?: unknown
-  price?: { amount?: number }
+  price?: { amount?: number; displayPrices?: Array<{ displayPriceQualifier?: string }> }
   displayAddress?: string
   bedrooms?: number
   bathrooms?: number
@@ -300,6 +300,7 @@ function normalise(p: RawListRow): Listing | null {
     url: 'https://www.rightmove.co.uk' + (p.propertyUrl ?? '').split('#')[0],
     address: p.displayAddress,
     price: p.price?.amount,
+    priceQualifier: priceQualifier(p.price?.displayPrices?.[0]?.displayPriceQualifier),
     currency: 'GBP',
     bedrooms: p.bedrooms,
     bathrooms: p.bathrooms,
@@ -312,6 +313,21 @@ function normalise(p: RawListRow): Listing | null {
     agent: p.customer?.branchDisplayName,
     image: p.propertyImages?.mainImageSrc,
   }
+}
+
+// Rightmove's `displayPriceQualifier` is free text per agent ("Offers Over",
+// "Offers in Excess of", "Offers in Region of", "Guide Price", "Fixed Price",
+// "From", "POA", …). Only the readings that change what the number means are
+// kept; 17 Hamilton Park (RM 92242653) drew as £390,000 against a £400k
+// ceiling when the agent's figure was an offers-over floor (2026-09-15).
+export function priceQualifier(raw: string | undefined): PriceQualifier | undefined {
+  const q = raw?.trim().toLowerCase()
+  if (!q) return undefined
+  if (/^offers (over|in excess)/.test(q)) return 'offers over'
+  if (/^offers in (the )?region/.test(q) || q === 'oiro') return 'OIRO'
+  if (/guide price/.test(q)) return 'guide'
+  if (/^fixed price/.test(q)) return 'fixed price'
+  return undefined
 }
 
 /** "1,234 sq ft" / "115 sq m" → m². */

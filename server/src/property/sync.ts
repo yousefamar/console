@@ -1128,11 +1128,14 @@ function describe(l: Listing): string {
 
 // An auction guide is the seller's minimum expectation, not an asking price:
 // 14 Tyle Road (RM 92428200) guided £220k against a £295k 2018 sale and
-// £325k+ terraces on the same street. Say so on the pin.
-function priceLabel(l: Listing): string | undefined {
+// £325k+ terraces on the same street. Say so on the pin. Likewise a Scottish
+// "Offers Over" is the floor the sale closes above (17 Hamilton Park, RM
+// 92242653: £390k on a £400k ceiling), so the portal's qualifier is kept.
+export function priceLabel(l: Listing): string | undefined {
   if (l.price == null) return undefined
   const price = formatPrice(l.price, l.currency)
-  return auctionLike(l) ? `guide ${price}` : price
+  if (auctionLike(l)) return `guide ${price}`
+  return l.priceQualifier ? `${l.priceQualifier} ${price}` : price
 }
 
 function formatPrice(major: number, currency: string): string {

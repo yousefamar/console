@@ -135,6 +135,8 @@ export interface Criteria {
   excludePriceOnRequest?: boolean
 }
 
+export type PriceQualifier = 'offers over' | 'OIRO' | 'guide' | 'fixed price'
+
 /** A normalised listing. Fields absent from a portal stay undefined. */
 export interface Listing {
   portal: Portal
@@ -145,6 +147,12 @@ export interface Listing {
   address?: string
   /** Major units in the portal's currency. */
   price?: number
+  /**
+   * The portal's own reading of `price`, where it states one: `offers over`,
+   * `OIRO`, `guide`, `fixed price`. A Scottish "Offers Over" is a floor the
+   * sale closes above, not an asking price — the pin says so.
+   */
+  priceQualifier?: PriceQualifier
   currency: string
   bedrooms?: number
   bathrooms?: number

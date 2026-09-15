@@ -8,7 +8,7 @@
 // the triage queue and nothing else.
 
 import type { PropertyKind, PropertySearch } from './store.js'
-import type { Listing, Portal } from './types.js'
+import type { Listing, Portal, PriceQualifier } from './types.js'
 
 /** Descriptions run to several thousand chars; the card sheet needs the gist, the portal page has the rest. */
 export const DECK_DESCRIPTION_MAX = 2000
@@ -29,6 +29,8 @@ export interface DeckCard {
   address?: string
   /** Major units, raw — the client formats per currency. */
   price?: number
+  /** The portal's reading of `price` ("offers over" = a floor), as on the pin. */
+  priceQualifier?: PriceQualifier
   currency: string
   bedrooms?: number
   bathrooms?: number
@@ -83,6 +85,7 @@ export function toDeckCard(i: DeckCardInput): DeckCard {
     title: l.title,
     address: l.address,
     price: l.price,
+    priceQualifier: l.priceQualifier,
     currency: l.currency,
     bedrooms: l.bedrooms,
     bathrooms: l.bathrooms,
