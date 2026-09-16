@@ -146,6 +146,11 @@ async function main() {
         await ring(verb, rest, flags)
         break
       }
+      case 'webhook': {
+        const { webhook } = await import('./commands/webhook.js')
+        await webhook(verb, rest, flags)
+        break
+      }
       case 'whatsapp': {
         const { whatsapp } = await import('./commands/whatsapp.js')
         await whatsapp(verb, rest, flags)

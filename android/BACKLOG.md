@@ -19,6 +19,11 @@ Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
   sheet gains a category picker + ignore/transfer toggles first (one outbox
   action, `overrides` POST), then a Budgets section under Runway; scenarios
   and the ledger editor last.
+- Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
+  agent-facing — deliveries wake the project's owner session and are read via
+  `con webhook status/list/show`. No SPA surface either; an APK twin would be a
+  per-project "recent webhooks" list under the project sheet if one is ever
+  wanted.
 
 ## Desktop-only (considered, not gaps)
 

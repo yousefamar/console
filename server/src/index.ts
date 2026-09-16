@@ -35,12 +35,12 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
-import { cardImagePaths } from './kanban/board.js'
+import { cardImagePaths, boardDefaultOwner } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
@@ -77,6 +77,8 @@ import { PrefsStore } from './prefs-store.js'
 import { handleConfigRoutes } from './routes/config.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
+import { handleWebhookRoutes, type WebhookRouteCtx } from './routes/webhooks.js'
+import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
 import { audioHead } from './ring/audio.js'
@@ -946,6 +948,29 @@ function skillHintsFor(project: string | null, cardLines: readonly string[]) {
   return skillsForCard(cardLines.join('\n'), loadSkillIndex(repo))
 }
 
+/** The "* general" convention over a project's bound sessions (kanban/dispatch
+ *  resolveDefaultOwner). Board frontmatter `default_owner:` beats it — see
+ *  ownerForProject. */
+function conventionOwnerForProject(project: string): string | null {
+  const bound = [...sessions.values()]
+    .filter((s) => s.project === project && s.status !== 'ended' && s.agentKey)
+    .map((s) => ({ key: s.agentKey!, title: s.name ?? s.agentKey!, fork: !!s.parentClaudeSessionId }))
+  const owner = resolveDefaultOwner(bound)
+  if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
+  return owner
+}
+/** Who owns a project right now — the same answer the board dispatcher gives
+ *  an unassigned card: `default_owner:` on its board, else the convention. */
+function ownerForProject(project: string): string | null {
+  const boardPath = findProjectBoard(noteStore.vaultPath, project)
+  if (boardPath) {
+    try {
+      const fm = boardDefaultOwner(readFileSync(boardPath, 'utf-8'))
+      if (fm) return fm
+    } catch { /* unreadable board — fall through */ }
+  }
+  return conventionOwnerForProject(project)
+}
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit }) => {
@@ -1209,15 +1234,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // naming convention over the project's bound roles. If it's ambiguous the
   // resolver logs the pick — set default_owner: in the board frontmatter to
   // make it explicit per project.
-  resolveOwner: (project) => {
-    if (!project) return null
-    const bound = [...sessions.values()]
-      .filter((s) => s.project === project && s.status !== 'ended' && s.agentKey)
-      .map((s) => ({ key: s.agentKey!, title: s.name ?? s.agentKey!, fork: !!s.parentClaudeSessionId }))
-    const owner = resolveDefaultOwner(bound)
-    if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
-    return owner
-  },
+  resolveOwner: (project) => project ? conventionOwnerForProject(project) : null,
   // Concurrency cap: every card fork runs its own tsc/tests in its own
   // worktree, and all the worktrees share one disk. Read live from prefs so
   // raising the cap doesn't need a restart.
@@ -1470,7 +1487,25 @@ const listWatcher = new ListWatcher(noteStore, {
   log,
 })
 void listWatcher.start()
-const ringWebhookUrl = `${(process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')}/hub/ring/webhook`
+const publicOrigin = (process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')
+const ringWebhookUrl = `${publicOrigin}/hub/ring/webhook`
+
+// Project webhooks — /hook/<project> → archive → the project's owner
+// (routes/webhooks.ts, webhooks/pipeline.ts). Must sit AFTER configDir (TDZ).
+const webhookStore = new WebhookStore(configDir)
+const webhookCtx: WebhookRouteCtx = {
+  store: webhookStore,
+  authStore,
+  publicOrigin,
+  resolveOwner: ownerForProject,
+  deliverToAgent: (key, envelope) => {
+    const s = liveSessionForRole(agentCtx, key)
+    return s ? injectToSession(s.id, envelope) : false
+  },
+  agentLive: (key) => !!liveSessionForRole(agentCtx, key),
+  projectExists: (slug) => existsSync(join(noteStore.vaultPath, 'projects', slug)) || existsSync(join(noteStore.vaultPath, 'projects', `${slug}.md`)),
+  log,
+}
 const certCandidates = (() => {
   try {
     return readdirSync(configDir)
@@ -1974,6 +2009,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
   if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
   if (path.startsWith('/ring') && handleRingRoutes(req, res, path, url, ringCtx, readBody, ringWebhookUrl)) return
+  if ((path.startsWith('/hook/') || path.startsWith('/webhooks')) && handleWebhookRoutes(req, res, path, url, webhookCtx, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return

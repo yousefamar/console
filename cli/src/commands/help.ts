@@ -25,6 +25,7 @@ Services:
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav, teleprompt
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
+  webhook      Inbound project webhooks — setup, status, list, show, test, redeliver
 
 System:
   auth         Manage accounts — login, logout, status
@@ -287,6 +288,32 @@ Examples:
   con glasses nav exit
   con glasses timer 10m
   con glasses timer cancel
+`.trim(),
+
+  webhook: `
+con webhook — inbound webhooks routed to a project's owner
+
+Commands:
+  setup <project> [--rotate]   Mint the project's token; prints the URL + header to give
+                               the provider (plaintext shown once; --rotate revokes the old one)
+  status                       Every project with a token/deliveries: URL, owner, undelivered
+  list <project> [--limit N]   Deliveries for a project, newest first, with routing outcome
+  show <id>                    One delivery in full (headers, body, route, redeliveries)
+  test <project> [--body …]    Run the full pipeline as if a payload had arrived (no token needed)
+                               [--content-type <ct>]; --body may be JSON or plain text
+  redeliver <id>               Replay an archived delivery to the project's CURRENT owner
+
+Wire: ANY https://con.amar.io/hub/hook/<project>[/<subpath>] with the token as
+'Authorization: Bearer <token>' or '?token=<token>' (providers that can't set
+headers). The token is scoped to that one project. The hub archives every
+delivery under ~/.config/console/webhooks/deliveries/ (never pruned), then
+wakes the project's owner — board frontmatter default_owner:, else the
+project's bound session by the "* general" convention (the same resolver the
+board uses for an unassigned card) — with a [WEBHOOK] envelope: method, path,
+headers (credentials stripped), body (pretty JSON, clipped at 6 KB), and the
+delivery id for 'con webhook show'. The owner decides what the payload means.
+No live owner → 202, archived as undelivered; 'con webhook redeliver <id>'
+replays it once someone is live.
 `.trim(),
 
   ring: `

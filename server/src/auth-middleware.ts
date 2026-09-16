@@ -9,6 +9,7 @@
 
 import type { IncomingMessage } from 'node:http'
 import type { AuthStore, HubSession, HubToken } from './auth-store.js'
+import { isWebhookInboundPath } from './routes/webhooks.js'
 
 const SESSION_COOKIE = 'console_session'
 // Read-only canvas cookie. The SPA renders the canvas inside a
@@ -89,6 +90,11 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   if (path.startsWith('/auth/monzo/poll')) return true
   if (path === '/auth/session' && method === 'GET') return true
   if (path === '/money/webhook') return true
+  // Project webhooks: /hook/<project> carries its own per-project token
+  // (Bearer OR ?token=, since many providers can't set headers) and
+  // routes/webhooks.ts validates it — the management surface under
+  // /webhooks/* stays behind the wall.
+  if (isWebhookInboundPath(path)) return true
   // Voice: Atoms calls /voice/delegate + /voice/webhook from the public
   // internet via al.amar.io → Caddy → hub, and they are NOT exempt — the hub
   // configures both callbacks itself (al/voice.ts syncVoiceAuth) with an
