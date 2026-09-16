@@ -78,7 +78,7 @@ async function applyDelta(delta: ChatRoomsDelta): Promise<void> {
 
 /** Connect-time reconcile: send our seq, get back a patch (cheap) or a full
  *  snapshot (authoritative — prune local rows the hub no longer has). */
-async function reconcileFromHub(opts: { full?: boolean } = {}): Promise<void> {
+export async function reconcileFromHub(opts: { full?: boolean } = {}): Promise<void> {
   // `full` ignores our seq and takes the authoritative snapshot. Used on page
   // load: local rows can DIVERGE from the hub without a seq change (an
   // optimistic Dexie write whose RPC never landed — a blur-flushed draft while
@@ -104,6 +104,14 @@ async function reconcileFromHub(opts: { full?: boolean } = {}): Promise<void> {
     if (rooms.length > 0) await db.chatRooms.bulkPut(rooms).catch(() => {})
   }
   void setMeta(SEQ_KEY, String(lastSeenSeq))
+}
+
+/** An optimistic Dexie write whose RPC FAILED must not stand: the hub is the
+ *  authority and a seq-equal reconcile would never notice the divergence. Pull
+ *  the full snapshot (best-effort — if the hub is down this fails too, and the
+ *  page-load full reconcile heals it later). */
+export function healAfterFailedRpc(): void {
+  void reconcileFromHub({ full: true }).catch(() => {})
 }
 
 /** Wire the hub chat-rooms subscription. Idempotent — safe to call once on

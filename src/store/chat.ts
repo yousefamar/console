@@ -590,7 +590,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const { hubBus } = await import('@/sync-bus')
       await hubBus.rpc('chat-rooms', 'markUnread', { roomId: id })
-    } catch { /* hub will reconcile on next snapshot fetch */ }
+    } catch {
+      // The optimistic write must not outlive a failed RPC — a seq-equal
+      // reconcile never sees the divergence (Baba's draft, 2026-09-16).
+      const { healAfterFailedRpc } = await import('@/matrix/chat-rooms-subscribe')
+      healAfterFailedRpc()
+    }
   },
 
   snoozeRoom: async (option, customDate, roomId, opts) => {
@@ -619,7 +624,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const { hubBus } = await import('@/sync-bus')
       await hubBus.rpc('chat-rooms', 'snooze', { roomId: id, untilMs: snoozedUntil })
-    } catch { /* hub will reconcile on next snapshot fetch */ }
+    } catch {
+      // The optimistic write must not outlive a failed RPC — a seq-equal
+      // reconcile never sees the divergence (Baba's draft, 2026-09-16).
+      const { healAfterFailedRpc } = await import('@/matrix/chat-rooms-subscribe')
+      healAfterFailedRpc()
+    }
   },
 
   unsnoozeRoom: async (roomId) => {
@@ -630,7 +640,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // and JSON drops an undefined key — never send null, which would
       // persist as a null in the room snapshot).
       await hubBus.rpc('chat-rooms', 'snooze', { roomId })
-    } catch { /* hub will reconcile on next snapshot fetch */ }
+    } catch {
+      // The optimistic write must not outlive a failed RPC — a seq-equal
+      // reconcile never sees the divergence (Baba's draft, 2026-09-16).
+      const { healAfterFailedRpc } = await import('@/matrix/chat-rooms-subscribe')
+      healAfterFailedRpc()
+    }
   },
 
   setRoomDraft: async (roomId, text) => {
