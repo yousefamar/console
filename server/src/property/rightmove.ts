@@ -254,11 +254,11 @@ function compile(c: Criteria): Record<string, string> {
   // report a floor area, and the server-side filter drops the silent rest.
   // Post-filtering keeps them (see postFilter in sync.ts).
   //
-  // Share-of-freehold is functionally freehold for our purposes; leasehold isn't
-  // — unless excludeCommonhold asks for sole freehold specifically.
-  if (c.freeholdOnly && !rent) {
-    p.tenureTypes = c.excludeCommonhold ? 'FREEHOLD' : 'FREEHOLD,SHARE_OF_FREEHOLD'
-  }
+  // Likewise NOT sending tenureTypes for freeholdOnly: the server-side filter
+  // drops every row whose agent left tenure blank, which in Scotland — where
+  // tenure is not a concept — is ~30% of matching stock (7 of 23 Falkirk
+  // houses, 2026-09-15). The list rows carry `tenure.tenureType`, so
+  // normalise() reads it and postFilter drops stated leaseholds on the row.
   const mustHave: string[] = []
   if (c.mustHaveGarden) mustHave.push('garden')
   if (c.mustHaveParking) mustHave.push('parking')
@@ -290,11 +290,20 @@ interface RawListRow {
   customer?: { branchDisplayName?: string }
   firstVisibleDate?: string
   propertyImages?: { mainImageSrc?: string }
+  tenure?: { tenureType?: string | null }
+  keyFeatures?: unknown
 }
 
-function normalise(p: RawListRow): Listing | null {
+export function normalise(p: RawListRow): Listing | null {
   if (p.id == null) return null
+  // Only set what the row states: upsert() spreads the row over the stored
+  // entry, so an `undefined` key here would erase a detail-page value.
+  const extra: Partial<Listing> = {}
+  const tenure = normaliseTenure(p.tenure?.tenureType ?? undefined)
+  if (tenure) extra.tenure = tenure
+  if (Array.isArray(p.keyFeatures) && p.keyFeatures.length) extra.keyFeatures = p.keyFeatures.filter((k): k is string => typeof k === 'string')
   return {
+    ...extra,
     portal: 'rightmove',
     id: String(p.id),
     url: 'https://www.rightmove.co.uk' + (p.propertyUrl ?? '').split('#')[0],

@@ -11,7 +11,7 @@ import { coverRingWithCircles, nearGeometry, haversineKm } from '../property/geo
 import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirportGate } from '../property/notify-filter.js'
 import { asEntryArray, exposeFields, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
-import { RightmoveClient, unflatten, detailFields, priceQualifier } from '../property/rightmove.js'
+import { RightmoveClient, unflatten, detailFields, priceQualifier, normalise as rmNormalise } from '../property/rightmove.js'
 import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, footAccessLike, stackedFlatLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
@@ -1675,6 +1675,25 @@ describe('tenure — leasehold is an automatic disqualification', () => {
     const row = otmNormalise({ id: 1, features: ['Tenure: Leasehold', 'Garden'], price: '£200,000', location: { lat: 51, lon: -1 } } as never)
     expect(row?.tenure).toBe('leasehold')
     expect(detailFields({ tenure: { tenureType: 'FREEHOLD' } }).tenure).toBe('freehold')
+  })
+
+  it('Rightmove list rows carry tenureType too; a blank one sets no key (upsert would erase the detail value)', () => {
+    const base = { id: 92449563, displayAddress: '10 Wolfe Road, Falkirk, FK1 1SL', propertyUrl: '/properties/92449563', keyFeatures: ['Floored Attic', 'Planning Permission for a rear extension'] }
+    const blank = rmNormalise({ ...base, tenure: { tenureType: null } })!
+    expect('tenure' in blank).toBe(false)
+    expect(blank.keyFeatures).toEqual(['Floored Attic', 'Planning Permission for a rear extension'])
+    expect(rmNormalise({ ...base, tenure: { tenureType: 'LEASEHOLD' } })!.tenure).toBe('leasehold')
+    expect(rmNormalise({ ...base, tenure: { tenureType: 'FREEHOLD' } })!.tenure).toBe('freehold')
+    expect('keyFeatures' in rmNormalise({ id: 1, keyFeatures: [] })!).toBe(false)
+  })
+
+  it('freeholdOnly never reaches Rightmove as tenureTypes — the server-side filter drops blank-tenure rows (30% of Scottish stock)', async () => {
+    const urls: string[] = []
+    const fetchStub = ((url: string | URL | Request) => { urls.push(String(url)); return Promise.resolve(new Response('{"resultCount":"1"}', { status: 200 })) }) as unknown as typeof fetch
+    const client = new RightmoveClient(fetchStub)
+    await client.count([[[0, 0], [0.1, 0], [0.1, 0.1], [0, 0.1], [0, 0]]], { channel: 'buy', propertyType: 'house', freeholdOnly: true, excludeCommonhold: true })
+    expect(urls.length).toBe(1)
+    expect(new URL(urls[0]!).searchParams.has('tenureTypes')).toBe(false)
   })
 
   it('postFilter drops leasehold (and share-of-freehold/commonhold when excludeCommonhold) on every portal, passes unknown', () => {
