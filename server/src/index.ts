@@ -79,6 +79,7 @@ import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { RingStore } from './ring/store.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
+import { audioHead } from './ring/audio.js'
 import { ListWatcher } from './lists/watcher.js'
 import { execFile as execFileCb } from 'node:child_process'
 import { RingSchemaLoader } from './ring/schema-loader.js'
@@ -1435,6 +1436,10 @@ const ringCtx: RingCtx = {
     previous: async () => { await spotifyClient.previous(); spotifySync.pokeSoon(); return 'previous track' },
   },
   transcribe: transcribeAudio,
+  transcribeHead: async (audioPath, vocabulary) => {
+    const head = await audioHead(audioPath)
+    return head ? transcribeAudio(head, 'audio/mpeg', { prompt: vocabulary }) : null
+  },
   classify: (text, schema, env) => classifyWithLlm(text, schema, env, smallFastModel()),
   notify: ({ title, body, id }) => {
     pushServer.broadcast({ type: 'generic', title, body, id: `ring:${id}` })

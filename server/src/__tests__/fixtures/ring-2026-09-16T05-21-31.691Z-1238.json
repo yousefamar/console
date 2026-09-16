@@ -1,0 +1,25 @@
+{
+  "id": "2026-09-16T05-21-31.691Z-1238",
+  "recordedAt": 1789536091691,
+  "receivedAt": 1789536104660,
+  "client": "ring",
+  "transcription": "Look, these are three dreams.\n\n\n\nI had a dream that first I ordered some nice food to the house but I think I was on my own. I opened the door to pick it up from the outside windowsill of the library window. There were weird people trying to take photos, but in front of our house, also in front of the river. Anyway I picked it up. I had peach iced tea and other cool food. I was alone so I took it to my room upstairs. I felt like the outside was a bit like Egypt. It was quite hot and a bit empty, sort of like an Egyptian alleyway.\n\nI was in a tube station somewhere and I had an Oyster card that I accidentally charged somebody for that was expired. I asked one of the officers that worked there to help me remove it and they helped me do that. They said, \"How much do you charge?\" I said, \"£5.\" I couldn't remember if it was only £5 that was on there and then they removed £5 from it to their card. They can transfer from one card to another and",
+  "transcriptionSource": "ring",
+  "audio": {
+    "path": "recordings/2026-09-16T05-21-31.691Z-1238.m4a",
+    "bytes": 1452949,
+    "contentType": "audio/mp4"
+  },
+  "route": {
+    "command": {
+      "kind": "list",
+      "target": "dreams",
+      "file": "scratch/lists/dreams.md",
+      "item": "Ordered food to house, picked it up from library window, weird people taking photos, had peach iced tea in my room, felt like Egypt—hot and empty alleyway. In tube station with expired Oyster card, asked officer for help, removed £5 charge.",
+      "dated": true
+    },
+    "via": "llm",
+    "ok": true,
+    "detail": "scratch/lists/dreams.md"
+  }
+}

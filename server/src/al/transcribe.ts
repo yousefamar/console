@@ -22,13 +22,14 @@ function extFromMime(mimeType: string): string {
   return map[base] || 'ogg'
 }
 
-async function transcribeWithOpenAi(buf: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
+async function transcribeWithOpenAi(buf: Buffer, mimeType: string, apiKey: string, prompt?: string): Promise<string | null> {
   const filename = `audio.${extFromMime(mimeType)}`
   const formBoundary = '----FormBoundary' + Date.now()
+  const field = (name: string, value: string) => `\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}`
   const formBody = Buffer.concat([
     Buffer.from(`--${formBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType.split(';')[0]}\r\n\r\n`),
     buf,
-    Buffer.from(`\r\n--${formBoundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${STT_BATCH_MODEL}\r\n--${formBoundary}--\r\n`),
+    Buffer.from(`${field('model', STT_BATCH_MODEL)}${prompt ? field('prompt', prompt) : ''}\r\n--${formBoundary}--\r\n`),
   ])
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -43,7 +44,7 @@ async function transcribeWithOpenAi(buf: Buffer, mimeType: string, apiKey: strin
   return json.text?.trim() || null
 }
 
-async function transcribeWithGemini(buf: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
+async function transcribeWithGemini(buf: Buffer, mimeType: string, apiKey: string, prompt?: string): Promise<string | null> {
   const model = 'gemini-2.0-flash'
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -53,7 +54,7 @@ async function transcribeWithGemini(buf: Buffer, mimeType: string, apiKey: strin
       body: JSON.stringify({
         contents: [{
           parts: [
-            { text: 'Transcribe this audio verbatim. Return ONLY the transcript text, no commentary, no quotes.' },
+            { text: `Transcribe this audio verbatim. Return ONLY the transcript text, no commentary, no quotes.${prompt ? ` Expected vocabulary: ${prompt}` : ''}` },
             { inline_data: { mime_type: mimeType.split(';')[0], data: buf.toString('base64') } },
           ],
         }],
@@ -70,13 +71,14 @@ async function transcribeWithGemini(buf: Buffer, mimeType: string, apiKey: strin
 }
 
 /** Transcribe an audio buffer. OpenAI (OPENAI_API_KEY) preferred, Gemini
- *  (GEMINI_API_KEY) fallback. Returns null if neither key is set, or on any
+ *  (GEMINI_API_KEY) fallback. `prompt` biases the model toward a vocabulary
+ *  (Whisper's `prompt` field). Returns null if neither key is set, or on any
  *  failure — never throws. */
-export async function transcribeAudio(buf: Buffer, mimeType: string): Promise<string | null> {
+export async function transcribeAudio(buf: Buffer, mimeType: string, opts: { prompt?: string } = {}): Promise<string | null> {
   const openaiKey = process.env.OPENAI_API_KEY
   if (openaiKey) {
     try {
-      const text = await transcribeWithOpenAi(buf, mimeType, openaiKey)
+      const text = await transcribeWithOpenAi(buf, mimeType, openaiKey, opts.prompt)
       if (text) return text
     } catch (err) {
       console.warn('[al/transcribe] OpenAI failed:', (err as Error)?.message)
@@ -85,7 +87,7 @@ export async function transcribeAudio(buf: Buffer, mimeType: string): Promise<st
   const geminiKey = process.env.GEMINI_API_KEY
   if (geminiKey) {
     try {
-      const text = await transcribeWithGemini(buf, mimeType, geminiKey)
+      const text = await transcribeWithGemini(buf, mimeType, geminiKey, opts.prompt)
       if (text) return text
     } catch (err) {
       console.warn('[al/transcribe] Gemini failed:', (err as Error)?.message)

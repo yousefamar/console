@@ -25,6 +25,9 @@ export interface RingRecording {
      *  unmatched → fallback agent, 'none' = unmatched and no fallback. */
     via: 'rule' | 'llm' | 'default' | 'none'
     rule?: string
+    /** Hub-STT re-hearing of the audio's first seconds that the rule matched
+     *  on, when the ring's own opening words did not. */
+    head?: string
     ok: boolean
     detail?: string
     /** For a failed route: whether a `Ring miss:` board card was filed. */

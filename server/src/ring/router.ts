@@ -41,6 +41,10 @@ export interface RouteMatch {
   command: RingCommand
   /** Which rule fired — surfaces in the recording metadata for schema tuning. */
   rule: string
+  /** A heuristic rescue (the target was found inside the first sentence, not
+   *  in the head slot) — the pipeline lets a re-hearing of the audio head
+   *  override it before accepting. */
+  weak?: true
 }
 
 const FILLERS = /^(?:hey|hi|ok|okay|um|uh|so|please|right|yeah)[,.]?\s+/i
@@ -63,6 +67,56 @@ export function normaliseKeepCase(text: string): string {
 
 export function normalise(text: string): string {
   return normaliseKeepCase(text).toLowerCase()
+}
+
+/** A token's comparison key: lowercased, surrounding punctuation dropped, so
+ *  "Dream." ≡ "dream" and "I’m" ≡ "I'm". Empty for a bare dash/punctuation. */
+export function wordKey(token: string): string {
+  return token.toLowerCase().replace(/[‘’]/g, "'").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+}
+
+export function wordKeys(text: string): string[] {
+  return text.split(/\s+/).map(wordKey).filter(Boolean)
+}
+
+/** Index in `hay` where `needle` occurs as a contiguous run (starting at or
+ *  before `maxStart`), or -1. Empty keys in `hay` are skipped over. */
+export function findWordRun(hay: string[], needle: string[], maxStart = Infinity): number {
+  if (!needle.length) return -1
+  const idx = hay.map((k, i) => (k ? i : -1)).filter((i) => i >= 0)
+  for (let s = 0; s < idx.length && idx[s]! <= maxStart; s++) {
+    if (s + needle.length > idx.length) break
+    let ok = true
+    for (let j = 0; j < needle.length; j++) if (hay[idx[s + j]!] !== needle[j]) { ok = false; break }
+    if (ok) return idx[s]!
+  }
+  return -1
+}
+
+/** `candidate` is a verbatim stretch of `text` (word for word, case and
+ *  punctuation aside). What the LLM classifier's payloads must satisfy. */
+export function isVerbatim(candidate: string, text: string): boolean {
+  return findWordRun(wordKeys(text), wordKeys(candidate)) >= 0
+}
+
+/** Cut a spoken lead-in ("Log dream.", "Look, these are three dreams.") off
+ *  the front of an utterance, word by word with case and punctuation
+ *  ignored. Null when the lead-in is not actually a prefix; an empty string
+ *  when it consumed everything. */
+export function stripLeadIn(utterance: string, leadIn: string): string | null {
+  const lead = wordKeys(leadIn)
+  if (!lead.length) return null
+  const tokens = utterance.split(' ')
+  let i = 0
+  for (let li = 0; li < lead.length;) {
+    if (i >= tokens.length) return null
+    const k = wordKey(tokens[i++]!)
+    if (!k) continue
+    if (k !== lead[li]) return null
+    li++
+  }
+  while (i < tokens.length && !wordKey(tokens[i]!)) i++
+  return tokens.slice(i).join(' ').replace(/^[,.;:!?…\s]+/, '')
 }
 
 /** Optimal-string-alignment edit distance (Levenshtein + adjacent
@@ -297,6 +351,15 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
           const project = resolveSpoken(spoken, projects) ?? resolveSpoken(spoken.replace(/\s+/g, '-'), projects)
           if (project) return { rule: 'add.card', command: { kind: 'card', project, column: v.add.projectColumn, text: item } }
         }
+        // "Look, these are three dreams. I had a dream…" — the target is in
+        // the opening SENTENCE rather than the head slot; the sentence is
+        // command wording, the payload starts after it. Runs for a fuzzy
+        // verb too (look ≈ lock), which is how that transcript gets here.
+        const scanned = scanFirstSentence(one?.rest ?? '', spokenForms(v.add.targets))
+        if (scanned) {
+          const t = v.add.targets[scanned.target]!
+          return { rule: t.dated ? 'add.log-sentence' : 'add.list-sentence', weak: true, command: { kind: 'list', target: scanned.target, file: t.file, item: scanned.payload, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } }
+        }
         return unknown('add')
       }
       case 'start': {
@@ -316,6 +379,23 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
     }
   }
 
+  return null
+}
+
+const SENTENCE_END = /[.!?]$/
+
+/** A known target word anywhere in the FIRST sentence after the verb, when
+ *  that sentence ends within `maxWords` and something follows it. Exact
+ *  spoken forms only — a fuzzy hit ten words in is a guess, not a rescue.
+ *  Payload = everything after the sentence. */
+export function scanFirstSentence(rest: string, forms: Map<string, string>, maxWords = 10): { target: string; payload: string } | null {
+  const tokens = rest.split(' ').filter(Boolean)
+  const end = tokens.findIndex((t, i) => i < maxWords && SENTENCE_END.test(t))
+  if (end < 0 || end === tokens.length - 1) return null
+  for (let i = 0; i <= end; i++) {
+    const target = forms.get(tokens[i]!.replace(HEAD_PUNCT, '').toLowerCase())
+    if (target) return { target, payload: tokens.slice(end + 1).join(' ') }
+  }
   return null
 }
 

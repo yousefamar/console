@@ -34,6 +34,18 @@ describe('transcribeAudio', () => {
     expect((fetchSpy.mock.calls[0]![0] as string)).toContain('api.openai.com')
   })
 
+  it('sends a vocabulary prompt as the multipart `prompt` field when given', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ text: 'Log dream.' }) } as Response)
+    await transcribeAudio(Buffer.from('fake-audio'), 'audio/mpeg', { prompt: 'Log dream. Add movies.' })
+    const body = (fetchSpy.mock.calls[0]![1] as RequestInit).body as Buffer
+    expect(body.toString('latin1')).toMatch(/name="prompt"\r\n\r\nLog dream\. Add movies\.\r\n--/)
+    expect(body.toString('latin1')).toMatch(/filename="audio\.mp3"/)
+    fetchSpy.mockClear()
+    await transcribeAudio(Buffer.from('fake-audio'), 'audio/mpeg')
+    expect(((fetchSpy.mock.calls[0]![1] as RequestInit).body as Buffer).toString('latin1')).not.toContain('name="prompt"')
+  })
+
   it('falls back to Gemini when only GEMINI_API_KEY is set', async () => {
     process.env.GEMINI_API_KEY = 'gemini-test'
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({

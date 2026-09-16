@@ -4,7 +4,7 @@
 // STT) arrives through RingCtx so this stays unit-testable with stubs.
 
 import type { RingStore, RingRecording } from './store.js'
-import { routeByRules, describeCommand, type RingCommand, type RouteEnv } from './router.js'
+import { routeByRules, describeCommand, normaliseKeepCase, wordKey, wordKeys, findWordRun, type RingCommand, type RouteEnv, type RouteMatch } from './router.js'
 import { RING_SCHEMA_NOTE, type RingSchema, type SchemaDescription } from './schema.js'
 import { appendLogEntry } from './append.js'
 import { appendRow, stamp } from '../lists/table.js'
@@ -49,6 +49,10 @@ export interface RingCtx {
     previous: () => Promise<string>
   }
   transcribe: (audio: Buffer, contentType: string) => Promise<string | null>
+  /** Hub STT over the first seconds of the archived recording, primed with
+   *  the tree's vocabulary — re-hears a command head the ring mis-heard.
+   *  Null when unavailable. */
+  transcribeHead: (audioPath: string, vocabulary: string) => Promise<string | null>
   classify: (text: string, schema: RingSchema, env: RouteEnv) => Promise<RingCommand | null>
   notify: (msg: { title: string; body: string; id: string }) => void
   now?: () => Date
@@ -116,15 +120,71 @@ export interface RouteDecision {
   command: RingCommand
   via: NonNullable<RingRecording['route']>['via']
   rule?: string
+  /** The hub-STT re-hearing of the audio head that routing used. */
+  head?: string
 }
 
+/** Whisper-style STT takes a free-text prompt that biases it toward the
+ *  words in it — the tree's command phrases, so "Log dream." is heard as such
+ *  and not as "Look,". Canonical names only: the aliases ARE mis-hearings. */
+export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
+  const v = schema.verbs
+  const firstName = (u: string) => u.split('-')[0]!
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+  const phrases = [
+    ...Object.entries(v.add.targets).map(([n, t]) => `${t.dated ? 'Log' : 'Add'} ${n}.`),
+    ...env.projects.map((p) => `Add ${p.replace(/-/g, ' ')}.`),
+    ...[...new Set([...Object.keys(v.message.contacts), ...env.contacts].map(firstName))].map((c) => `Message ${cap(c)}.`),
+    'Al.', 'Echo.', 'Timer.', 'Play.', 'Pause.', 'Next.',
+  ]
+  return phrases.join(' ')
+}
+
+/** The head re-hearing fixes the COMMAND words; the payload still comes from
+ *  the ring's full transcript, verbatim: the head payload's opening words are
+ *  anchored in the ring transcript and everything from there is taken. Null
+ *  when the two cannot be aligned. Kinds without a spoken payload pass. */
+export function spliceHeadPayload(head: RingCommand, transcript: string): RingCommand | null {
+  const field = head.kind === 'list' ? 'item' : head.kind === 'echo' || head.kind === 'card' || head.kind === 'message' || head.kind === 'fallback' ? 'text' : null
+  if (!field) return head
+  const want = wordKeys(field === 'item' ? (head as { item: string }).item : (head as { text: string }).text)
+  if (!want.length) return null
+  const tokens = normaliseKeepCase(transcript).split(' ')
+  const keys = tokens.map(wordKey)
+  for (const n of new Set([Math.min(3, want.length), Math.min(2, want.length)])) {
+    const at = findWordRun(keys, want.slice(0, n), HEAD_ANCHOR_WINDOW)
+    if (at >= 0) return { ...head, [field]: tokens.slice(at).join(' ') } as RingCommand
+  }
+  return null
+}
+
+/** How far into the ring transcript the head payload may start — the lead-in
+ *  is a handful of words, and a 10 s head is ~25. */
+const HEAD_ANCHOR_WINDOW = 20
+
+const firm = (h: RouteMatch) => h.command.kind !== 'unknown-target' && !h.weak
+
 /** Transcript → command, exactly as the live pipeline decides it (rules, then
+ *  a re-hearing of the audio head when the rules did not firmly match, then
  *  the LLM classifier, then the fallback agent). Pure with respect to the
  *  world — nothing is archived, executed or pushed. */
-export async function decide(ctx: RingCtx, transcription: string): Promise<RouteDecision> {
+export async function decide(ctx: RingCtx, transcription: string, audioPath?: string | null): Promise<RouteDecision> {
   const { schema } = await ctx.schema()
   const env = await ctx.env()
   const hit = routeByRules(transcription, schema, env)
+  if (hit && firm(hit)) return { command: hit.command, via: 'rule', rule: hit.rule }
+  // The ring wrote "Look, these are three dreams" for "Log dream. These are
+  // three dreams" — the HEAD is what it mis-hears. Hub STT, primed with the
+  // tree's words, over the first seconds; the body stays the ring's.
+  if (audioPath) {
+    const head = await ctx.transcribeHead(audioPath, sttVocabulary(schema, env))
+    const rehit = head ? routeByRules(head, schema, env) : null
+    if (head && rehit && firm(rehit)) {
+      const command = spliceHeadPayload(rehit.command, transcription)
+      if (command) return { command, via: 'rule', rule: rehit.rule, head }
+      ctx.log(`[ring] head re-hearing "${head}" routed ${rehit.rule} but its payload does not align with the transcript — ignored`)
+    }
+  }
   if (hit) return { command: hit.command, via: 'rule', rule: hit.rule }
   if (schema.llmFallback) {
     const guess = await ctx.classify(transcription, schema, env)
@@ -165,12 +225,14 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
     return rec
   }
 
-  const { command, via, rule } = await decide(ctx, transcription)
+  // Only the ring's own transcript gets its head re-heard: a hub-STT
+  // transcript already IS the re-hearing.
+  const { command, via, rule, head } = await decide(ctx, transcription, source === 'ring' ? rec.audio?.path : null)
 
   const outcome = await execute(ctx, command, id)
-  rec.route = { command, via, ...(rule ? { rule } : {}), ok: outcome.ok, ...(outcome.detail ? { detail: outcome.detail } : {}) }
+  rec.route = { command, via, ...(rule ? { rule } : {}), ...(head ? { head } : {}), ok: outcome.ok, ...(outcome.detail ? { detail: outcome.detail } : {}) }
   ctx.store.update(rec)
-  ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}`)
+  ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''}${head ? ` (head re-heard: "${head}")` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}`)
 
   ctx.notify({ id, ...notification(command, outcome) })
 

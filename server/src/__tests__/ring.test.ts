@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseMultipart, buildMultipart, multipartBoundary } from '../ring/multipart.js'
-import { normalise, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, headWords, type RouteEnv } from '../ring/router.js'
-import { parseClassifyReply, buildClassifyPrompt } from '../ring/llm-fallback.js'
+import { normalise, normaliseKeepCase, routeByRules, describeCommand, editDistance, fuzzyEqual, pickFuzzy, resolveSpoken, matchVerb, matchMusicTransport, headWords, stripLeadIn, isVerbatim, findWordRun, wordKeys, scanFirstSentence, type RouteEnv } from '../ring/router.js'
+import { parseClassifyReply, buildClassifyPrompt, payloadFor } from '../ring/llm-fallback.js'
 import { parseSchemaNote, seedSchemaNote, DEFAULT_SCHEMA, describeSchema, spokenForms, contactForms, type RingSchema } from '../ring/schema.js'
 import { RingSchemaLoader } from '../ring/schema-loader.js'
 import { appendLogEntry } from '../ring/append.js'
@@ -12,7 +12,7 @@ import { parseTable, ensureColumns, appendRow, setCells, removeRow, rowRecord, s
 import { ENRICHERS, columnsFor, rawRow, GROCERIES_ORDERED_LOG, type EnricherDeps } from '../lists/enrichers.js'
 import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
-import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, type RingCtx } from '../ring/pipeline.js'
+import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, spliceHeadPayload, sttVocabulary, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
@@ -21,6 +21,16 @@ const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
 const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
 SCHEMA.verbs.message.contacts = { al: ['owl', 'hal'], 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
+
+// Recording 2026-09-16T05-21-31.691Z-1238: Yousef said "Log dream. These are
+// three dreams. I had a dream…" (~200 words); the ring wrote "Look, these are
+// three dreams." and the LLM fallback logged a 40-word SUMMARY (^green-carp).
+const DREAM = JSON.parse(readFileSync(new URL('./fixtures/ring-2026-09-16T05-21-31.691Z-1238.json', import.meta.url), 'utf8')) as { transcription: string; route: { command: { item: string } } }
+const DREAM_LEAD_IN = 'Look, these are three dreams.'
+/** What must be logged: every word after the lead-in, as spoken (bullets are one line, so paragraph breaks collapse). */
+const DREAM_BODY = DREAM.transcription.slice(DREAM_LEAD_IN.length).replace(/\s+/g, ' ').trim()
+/** What hub STT hears in the first 10 s, primed with the tree's vocabulary. */
+const DREAM_HEAD = 'Log dream. These are three dreams. I had a dream that first I ordered some nice food to the house but I'
 
 describe('multipart', () => {
   it('round-trips text + binary parts byte-exactly', () => {
@@ -307,28 +317,101 @@ describe('routeByRules (schema-driven tree)', () => {
   })
 })
 
+describe('add: target inside the first sentence', () => {
+  const r = (t: string) => routeByRules(t, SCHEMA, ENV)
+  it('"Look, these are three dreams. I had…" — look ≈ lock reaches add, the target is in the sentence, the payload follows it', () => {
+    const m = r(DREAM.transcription)!
+    expect(m).toMatchObject({ rule: 'add.log-sentence', weak: true, command: { kind: 'list', target: 'dream', dated: true } })
+    expect((m.command as { item: string }).item).toBe(DREAM_BODY)
+    expect(r('Log my dreams. Last night I was flying.')).toMatchObject({ rule: 'add.log-sentence', command: { target: 'dream', item: 'Last night I was flying' } })
+    expect(r('Add to the movie list! Dune')).toMatchObject({ rule: 'add.list-sentence', command: { target: 'movies', item: 'Dune' } })
+  })
+  it('a head-slot target still wins outright, and is never weak', () => {
+    expect(r('Log dream. These are three dreams. I had a dream.')).toMatchObject({ rule: 'add.log', command: { item: 'These are three dreams. I had a dream' } })
+    expect(r('Log dream. These are three dreams. I had a dream.')!.weak).toBeUndefined()
+  })
+  it('no sentence boundary within ten words, or nothing after it → unknown-target as before (never a guess ten words in)', () => {
+    expect(r('Look at the movie titles that Veronica sent me and open the URLs')).toBeNull() // fuzzy verb, no sentence → still not a command
+    expect(r('Log my dreams I was flying over London and the river')).toMatchObject({ rule: 'add.unknown-target' })
+    expect(r('Log these are three dreams.')).toMatchObject({ rule: 'add.unknown-target' })
+    expect(scanFirstSentence('one two three four five six seven eight nine ten dreams. payload', spokenForms(SCHEMA.verbs.add.targets))).toBeNull()
+    expect(scanFirstSentence('these are dreems. payload', spokenForms(SCHEMA.verbs.add.targets))).toBeNull() // exact forms only
+  })
+})
+
 describe('llm fallback parsing', () => {
   it('accepts only on-schema replies with known targets', () => {
     expect(parseClassifyReply('{"kind":"agent","targetId":"s2","message":"buy milk"}', SCHEMA, ENV, 'x')).toBeNull() // no agent verb
-    expect(parseClassifyReply('{"kind":"list","target":"dream","item":"flying"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', file: 'scratch/lists/dream.md', dated: true })
-    expect(parseClassifyReply('{"kind":"list","target":"food","item":"eggs"}', SCHEMA, ENV, 'x')).toBeNull()
-    expect(parseClassifyReply('{"kind":"list","target":"movies","item":"Dune"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'list', enrich: 'movie', dated: false })
-    expect(parseClassifyReply('{"kind":"echo","text":"hi"}', SCHEMA, ENV, 'x')).toEqual({ kind: 'echo', text: 'hi' })
-    expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'Backlog' })
-    expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix","start":true}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'card', column: 'In Progress' })
-    expect(parseClassifyReply('{"kind":"card","project":"nope","text":"fix"}', SCHEMA, ENV, 'x')).toBeNull()
-    expect(parseClassifyReply('{"kind":"message","contact":"nica","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'nica' })
-    expect(parseClassifyReply('{"kind":"message","contact":"al","text":"hi"}', SCHEMA, ENV, 'x')).toMatchObject({ kind: 'message', contact: 'al' }) // a real send to AL's DM, not rerouted
+    expect(parseClassifyReply('{"kind":"list","target":"dream","lead_in":"lock dreem"}', SCHEMA, ENV, 'lock dreem flying')).toMatchObject({ kind: 'list', file: 'scratch/lists/dream.md', dated: true, item: 'flying' })
+    expect(parseClassifyReply('{"kind":"list","target":"food","lead_in":"lock"}', SCHEMA, ENV, 'lock eggs')).toBeNull()
+    expect(parseClassifyReply('{"kind":"list","target":"movies","lead_in":"at flims"}', SCHEMA, ENV, 'at flims Dune')).toMatchObject({ kind: 'list', enrich: 'movie', dated: false, item: 'Dune' })
+    expect(parseClassifyReply('{"kind":"echo","lead_in":"ecko"}', SCHEMA, ENV, 'ecko hi')).toEqual({ kind: 'echo', text: 'hi' })
+    expect(parseClassifyReply('{"kind":"card","project":"console","lead_in":"consul"}', SCHEMA, ENV, 'consul fix')).toMatchObject({ kind: 'card', column: 'Backlog', text: 'fix' })
+    expect(parseClassifyReply('{"kind":"card","project":"console","lead_in":"consul","start":true}', SCHEMA, ENV, 'consul fix')).toMatchObject({ kind: 'card', column: 'In Progress' })
+    expect(parseClassifyReply('{"kind":"card","project":"nope","lead_in":"nope"}', SCHEMA, ENV, 'nope fix')).toBeNull()
+    expect(parseClassifyReply('{"kind":"message","contact":"nica","lead_in":"massage nika"}', SCHEMA, ENV, 'massage nika hi')).toMatchObject({ kind: 'message', contact: 'nica', text: 'hi' })
+    expect(parseClassifyReply('{"kind":"message","contact":"al","lead_in":"massage owl"}', SCHEMA, ENV, 'massage owl hi')).toMatchObject({ kind: 'message', contact: 'al' }) // a real send to AL's DM, not rerouted
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"unknown"}', SCHEMA, ENV, 'raw')).toEqual({ kind: 'unknown', text: 'raw' })
     expect(parseClassifyReply('I cannot help', SCHEMA, ENV, 'x')).toBeNull()
   })
-  it('prompt carries the tree, roster and transcript verbatim', () => {
+  it('prompt carries the tree, roster and transcript verbatim — and asks for a lead-in, never the payload', () => {
     const p = buildClassifyPrompt('tel owl buy "milk"', SCHEMA, ENV)
     expect(p).not.toContain('"agent"')
     expect(p).toContain('one of: dream')
     expect(p).toContain('yasmina-amar←mum/sister/yasmina')
     expect(p).toContain(JSON.stringify('tel owl buy "milk"'))
+    expect(p).toContain('"lead_in"')
+    expect(p).not.toContain('"item"')
+    expect(p).toMatch(/never summarise, rewrite/i)
+  })
+  it('the dream: the payload is the transcript minus the lead-in, word for word', () => {
+    expect(DREAM.transcription.split(/\s+/).length).toBeGreaterThan(150)
+    const c = parseClassifyReply(`{"kind":"list","target":"dream","lead_in":${JSON.stringify(DREAM_LEAD_IN)}}`, SCHEMA, ENV, DREAM.transcription)
+    expect(c).toMatchObject({ kind: 'list', target: 'dream', dated: true })
+    expect((c as { item: string }).item).toBe(DREAM_BODY)
+    expect((c as { item: string }).item.startsWith('I had a dream that first I ordered some nice food')).toBe(true)
+    expect((c as { item: string }).item.endsWith('from one card to another and')).toBe(true)
+  })
+  it('the dream: the summary the model actually wrote is refused', () => {
+    const summary = DREAM.route.command.item // "Ordered food to house, picked it up from library window, …"
+    expect(summary.split(' ').length).toBeLessThan(50)
+    expect(parseClassifyReply(`{"kind":"list","target":"dream","item":${JSON.stringify(summary)}}`, SCHEMA, ENV, DREAM.transcription)).toBeNull()
+    expect(parseClassifyReply('{"kind":"card","project":"console","text":"fix the misaligned login button"}', SCHEMA, ENV, 'the login button is misaligned, fix it')).toBeNull()
+    expect(parseClassifyReply('{"kind":"message","contact":"nica","text":"running late"}', SCHEMA, ENV, "massage nika I'm going to be late")).toBeNull()
+  })
+  it('payload rules: verbatim legacy item ok; lead-in mismatch → whole transcript for logs/cards/echo, refused for a message; lead-in eating everything → nothing', () => {
+    expect(parseClassifyReply('{"kind":"list","target":"dream","item":"I was flying"}', SCHEMA, ENV, 'Log dreem I was flying.')).toMatchObject({ item: 'I was flying' })
+    expect(parseClassifyReply('{"kind":"list","target":"dream","lead_in":"Log dreams."}', SCHEMA, ENV, 'Lock dreem, I was flying.')).toMatchObject({ item: 'Lock dreem, I was flying' })
+    expect(parseClassifyReply('{"kind":"card","project":"console","lead_in":"Console please."}', SCHEMA, ENV, 'Consul: the login button is misaligned')).toMatchObject({ text: 'Consul: the login button is misaligned' })
+    expect(parseClassifyReply('{"kind":"echo"}', SCHEMA, ENV, 'ecko testing')).toEqual({ kind: 'echo', text: 'ecko testing' })
+    expect(parseClassifyReply('{"kind":"message","contact":"nica","lead_in":"Message Nica"}', SCHEMA, ENV, "massage nika I'm late")).toBeNull()
+    expect(parseClassifyReply('{"kind":"message","contact":"nica"}', SCHEMA, ENV, "massage nika I'm late")).toBeNull()
+    expect(parseClassifyReply('{"kind":"message","contact":"nica","lead_in":"massage nika"}', SCHEMA, ENV, "massage nika I'm late")).toMatchObject({ kind: 'message', text: "I'm late" })
+    expect(parseClassifyReply('{"kind":"list","target":"dream","lead_in":"log dream"}', SCHEMA, ENV, 'Log dream.')).toBeNull()
+    expect(parseClassifyReply('{"kind":"music","action":"play","query":"Taylor Swift"}', SCHEMA, ENV, 'put on some Taylor Swift please')).toEqual({ kind: 'music', action: 'play', query: 'Taylor Swift' })
+    expect(parseClassifyReply('{"kind":"music","action":"play","query":"Taylor Swift"}', SCHEMA, ENV, 'put on some tailor swift please')).toBeNull()
+    expect(payloadFor('Okay so, log dream I flew', 'Okay so, log dream', '', true)).toBe('I flew') // fillers stripped on both sides
+  })
+})
+
+describe('lead-in / verbatim helpers', () => {
+  it('stripLeadIn: word-wise prefix, punctuation and case ignored, null when not a prefix', () => {
+    expect(stripLeadIn(normaliseKeepCase(DREAM.transcription), DREAM_LEAD_IN)).toBe(DREAM_BODY)
+    expect(stripLeadIn('Log dream. I was flying', 'log dream')).toBe('I was flying')
+    expect(stripLeadIn("Message Nica — I'm late", 'Message Nica')).toBe("I'm late")
+    expect(stripLeadIn('Log dream. I was flying', 'Log dreams')).toBeNull()
+    expect(stripLeadIn('Log dream', 'Log dream.')).toBe('')
+    expect(stripLeadIn('Log dream', '')).toBeNull()
+  })
+  it('isVerbatim / findWordRun / wordKeys', () => {
+    expect(wordKeys('Look, these are three dreams.')).toEqual(['look', 'these', 'are', 'three', 'dreams'])
+    expect(isVerbatim('these are three dreams', DREAM.transcription)).toBe(true)
+    expect(isVerbatim('I had peach iced tea', DREAM.transcription)).toBe(true)
+    expect(isVerbatim('peach tea', DREAM.transcription)).toBe(false)
+    expect(isVerbatim('', 'x')).toBe(false)
+    expect(findWordRun(['a', 'b', '', 'c'], ['b', 'c'])).toBe(1) // empty (dash) keys are skipped
+    expect(findWordRun(['a', 'b', 'c'], ['b', 'c'], 0)).toBe(-1) // beyond maxStart
   })
 })
 
@@ -631,13 +714,14 @@ describe('RingStore + pipeline', () => {
   let timers: Array<number | null>
   let notes: Map<string, string>
   let cards: string[]
+  let heads: Array<{ path: string; vocabulary: string }>
   let schema: RingSchema
   let ctx: RingCtx
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []; timers = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []; timers = []; heads = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -660,6 +744,7 @@ describe('RingStore + pipeline', () => {
       },
       glassesTimer: async (seconds) => { timers.push(seconds); return seconds === null ? 'timer cancelled' : `timer running` },
       transcribe: async () => 'weather from stt',
+      transcribeHead: async (path, vocabulary) => { heads.push({ path, vocabulary }); return null },
       classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
       notify: (m) => notified.push({ title: m.title, body: m.body }),
       now: () => new Date(2026, 8, 2, 23, 7),
@@ -796,6 +881,64 @@ describe('RingStore + pipeline', () => {
     expect(none.route).toMatchObject({ via: 'none', ok: false, command: { kind: 'unknown' } })
     expect(none.route?.card).toBeUndefined() // no fallback configured is a choice, not a miss
     expect(notified.at(-1)!.title).toBe('Ring: not delivered')
+  })
+
+  const M4A = { data: Buffer.from('fake-m4a-bytes'), contentType: 'audio/mp4' }
+  const deliverRing = (transcription: string) => processDelivery(ctx, { transcription, audio: M4A, recordedAt: null, client: 'ring' })
+
+  it('the dream, end to end: the mis-heard head is re-heard by hub STT and the ring transcript is logged verbatim from there', async () => {
+    ctx.transcribeHead = async (path, vocabulary) => { heads.push({ path, vocabulary }); return DREAM_HEAD }
+    const rec = await deliverRing(DREAM.transcription)
+    expect(rec.route).toMatchObject({ via: 'rule', rule: 'add.log', head: DREAM_HEAD, ok: true, command: { kind: 'list', target: 'dream' } })
+    const item = `these are three dreams. ${DREAM_BODY}`
+    expect((rec.route!.command as { item: string }).item).toBe(item)
+    expect(notes.get('scratch/lists/dream.md')).toBe(`## 2026-09-02\n- 23:07 ${item}\n`)
+    expect(heads).toHaveLength(1)
+    expect(heads[0]!.path).toBe(rec.audio!.path)
+    expect(heads[0]!.vocabulary).toContain('Log dream.')
+    expect(JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${rec.id}.json`), 'utf8')).route.head).toBe(DREAM_HEAD)
+  })
+
+  it('no re-hearing (STT down) → the first-sentence rescue stands; a re-hearing that cannot be aligned is ignored', async () => {
+    const rec = await deliverRing(DREAM.transcription)
+    expect(rec.route).toMatchObject({ via: 'rule', rule: 'add.log-sentence', ok: true })
+    expect(rec.route!.head).toBeUndefined()
+    expect((rec.route!.command as { item: string }).item).toBe(DREAM_BODY)
+    ctx.transcribeHead = async () => 'Log dream. Those were three dreams and then'
+    expect((await deliverRing(DREAM.transcription)).route).toMatchObject({ rule: 'add.log-sentence' })
+  })
+
+  it('the head is re-heard only when the rules did not firmly match, only on ring transcripts with audio, and before the LLM', async () => {
+    await deliverRing('log dream I was escaping a prison made of cheese')
+    expect(heads).toHaveLength(0) // firm match
+    await deliver('uh skippity doo')
+    expect(heads).toHaveLength(0) // no audio (simulated)
+    await processDelivery(ctx, { transcription: null, audio: M4A, recordedAt: null, client: 'ring' })
+    expect(heads).toHaveLength(0) // hub-stt transcript already IS the re-hearing
+    await deliverRing('log food two eggs')
+    expect(heads).toHaveLength(1) // unknown-target is not firm
+    let classified = 0
+    ctx.classify = async () => { classified++; return null }
+    ctx.transcribeHead = async () => 'Pause the music.'
+    expect((await deliverRing('Paws the music.')).route).toMatchObject({ rule: 'music.pause', head: 'Pause the music.', ok: true })
+    expect(classified).toBe(0)
+    ctx.transcribeHead = async () => "Message Nica, I'll be home in 30 minutes, maybe"
+    const msg = await deliverRing("Massive Nika. I'll be home in 30 minutes, maybe 40.") // "massive" is two edits off any verb — the rules miss
+    expect(msg.route).toMatchObject({ rule: 'message', head: expect.stringContaining('Message Nica'), command: { contact: 'nica', text: "I'll be home in 30 minutes, maybe 40" } })
+    expect(sentAsYousef.at(-1)).toEqual({ contact: 'nica', text: "I'll be home in 30 minutes, maybe 40" })
+  })
+
+  it('spliceHeadPayload + sttVocabulary', () => {
+    expect(spliceHeadPayload({ kind: 'music', action: 'pause' }, 'anything')).toEqual({ kind: 'music', action: 'pause' })
+    expect(spliceHeadPayload({ kind: 'echo', text: 'one two three four' }, 'Ecko! one, two, three, four, five')).toEqual({ kind: 'echo', text: 'one, two, three, four, five' })
+    expect(spliceHeadPayload({ kind: 'echo', text: 'six seven' }, 'Ecko! one two three')).toBeNull()
+    expect(spliceHeadPayload({ kind: 'echo', text: '' }, 'Ecko! one two three')).toBeNull()
+    const vocab = sttVocabulary(SCHEMA, ENV)
+    expect(vocab).toContain('Log dream.')
+    expect(vocab).toContain('Add movies.')
+    expect(vocab).toContain('Add reflection tools.')
+    expect(vocab).toContain('Message Yasmina.')
+    expect(vocab).not.toContain('dreem') // aliases are mis-hearings, never primed
   })
 
   it('reports a dead AL instead of pretending', async () => {
