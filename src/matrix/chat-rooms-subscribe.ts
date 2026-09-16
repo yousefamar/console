@@ -78,8 +78,13 @@ async function applyDelta(delta: ChatRoomsDelta): Promise<void> {
 
 /** Connect-time reconcile: send our seq, get back a patch (cheap) or a full
  *  snapshot (authoritative — prune local rows the hub no longer has). */
-async function reconcileFromHub(): Promise<void> {
-  const since = lastSeenSeq > 0 ? lastSeenSeq : undefined
+async function reconcileFromHub(opts: { full?: boolean } = {}): Promise<void> {
+  // `full` ignores our seq and takes the authoritative snapshot. Used on page
+  // load: local rows can DIVERGE from the hub without a seq change (an
+  // optimistic Dexie write whose RPC never landed — a blur-flushed draft while
+  // the bus was down), and a seq-equal `snapshotSince` answers "nothing
+  // changed" forever, so F5 never healed it (Baba's draft, 2026-09-16).
+  const since = !opts.full && lastSeenSeq > 0 ? lastSeenSeq : undefined
   const result = await hubBus.rpc<ChatRoomsDelta>('chat-rooms', 'snapshotSince', { since })
   if (typeof result?.seq !== 'number') return
 
@@ -107,12 +112,13 @@ export function wireChatRoomsSubscription(): () => void {
   let stopped = false
   void migrateOnce().then(async () => {
     if (stopped) return
-    // Restore the persisted seq so a page reload can reconcile with a patch
-    // instead of re-downloading the full snapshot.
+    // Restore the persisted seq (mid-session reconnects reconcile with a
+    // patch), but the page-load reconcile is always FULL — a reload is the
+    // user's "make it right" gesture and must heal any diverged local row.
     const saved = await getMeta(SEQ_KEY)
     const n = Number(saved)
     if (Number.isFinite(n) && n > lastSeenSeq) lastSeenSeq = n
-    void reconcileFromHub().catch(() => {})
+    void reconcileFromHub({ full: true }).catch(() => {})
   })
 
   // Stream live deltas.

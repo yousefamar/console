@@ -638,6 +638,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const existing = await db.chatRooms.get(roomId)
     if (!existing || (existing.draft ?? undefined) === draft) return
     const patch = { draft, draftUpdatedAt: draft ? Date.now() : undefined }
+    const before = { draft: existing.draft, draftUpdatedAt: existing.draftUpdatedAt }
     // Optimistic — the hub's chat-rooms delta lands within a tick and
     // overwrites identically.
     await db.chatRooms.update(roomId, patch)
@@ -645,7 +646,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const { hubBus } = await import('@/sync-bus')
       await hubBus.rpc('chat-rooms', 'setDraft', { roomId, text: draft ?? '' })
-    } catch { /* hub will reconcile on next snapshot fetch */ }
+    } catch {
+      // The hub never saw this write, so no seq bump will ever reconcile it —
+      // a seq-equal snapshotSince returns nothing. Put the row back to what
+      // the hub still has, or Dexie diverges silently (a lost blur-flush hid
+      // Baba's cron-written draft behind an empty composer, 2026-09-16).
+      await db.chatRooms.update(roomId, before).catch(() => {})
+      set((s) => ({ rooms: s.rooms.map((r) => (r.id === roomId ? { ...r, ...before } : r)) }))
+    }
   },
 
   sendMessage: async (roomId, body, formattedBody, mentionUserIds) => {
