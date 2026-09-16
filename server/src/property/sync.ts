@@ -208,10 +208,18 @@ export class PropertySync {
    * from it (interest-card.ts); unset = nothing happens beyond the repaint.
    */
   onInterested: ((listing: Listing, search: PropertySearch) => Promise<void>) | null = null
+  /**
+   * Fires once when a listing Yousef had marked interested is dismissed or
+   * cleared — the moment a lesson exists (Yousef, 2026-09-15: "every time we
+   * dismiss an interested, make the learnings from that durable"). index.ts
+   * files the lesson card from it (interest-card.ts).
+   */
+  onDroppedInterest: ((listing: Listing, search: PropertySearch, state: ReviewState) => Promise<void>) | null = null
 
   /** Yousef's verdict on a listing — repaints the pin (or removes it) at once. */
   review(id: string, listingId: string, state: ReviewState): PropertySearch | undefined {
     const wasInterested = this.searches.get(id)?.interestedIds?.includes(listingId) ?? false
+    const before = wasInterested ? this.findListing(this.searches.get(id)!, listingId) : undefined
     const s = this.searches.review(id, listingId, state)
     if (!s) return undefined
     this.updateLayer(s)
@@ -220,6 +228,11 @@ export class PropertySync {
       const listing = this.findListing(s, listingId)
       if (!listing) this.log(`[property-sync] ${id}: interested ${listingId} is in neither the inventory nor the snapshot — no vetting card`)
       else this.onInterested(listing, s).catch((e) => this.log(`[property-sync] ${id}: vetting card for ${listingId} failed: ${e}`))
+    }
+    if (state !== 'interested' && wasInterested && this.onDroppedInterest) {
+      const listing = before ?? this.findListing(s, listingId)
+      if (!listing) this.log(`[property-sync] ${id}: dropped ${listingId} is in neither the inventory nor the snapshot — no lesson card`)
+      else this.onDroppedInterest(listing, s, state).catch((e) => this.log(`[property-sync] ${id}: lesson card for ${listingId} failed: ${e}`))
     }
     return s
   }

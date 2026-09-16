@@ -105,3 +105,38 @@ function typeText(l: Listing): string | undefined {
   if (beds && type) return `${beds} ${type.toLowerCase()}`
   return beds ?? type
 }
+
+/** The vetting report a "What's the catch?" card writes; the lesson card points at it. */
+export function reportPath(l: Listing): string {
+  return `research/listings/${l.portal}-${l.id}.md`
+}
+
+/**
+ * File the lesson card when an interested listing is dismissed or cleared —
+ * the learning loop's trigger. One per listing URL, matched like the vetting
+ * card but on its own text so both can coexist on the board (the vetting card
+ * is usually already Done by then).
+ */
+export async function fileDroppedInterestCard(board: InterestBoard, l: Listing, s: PropertySearch, state: 'dismissed' | 'none', target: InterestCardTarget = DEFAULT_INTEREST_TARGET): Promise<{ filed: boolean; column: string; blockId: string | null }> {
+  const { columns } = await board.show(target.project)
+  const key = listingUrlKey(l.url)
+  const re = new RegExp(`^Lesson from (?:dismissing|clearing) .*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9_-])`, 'i')
+  for (const col of columns) for (const card of col.cards) if (re.test(card.text)) return { filed: false, column: col.title, blockId: card.blockId }
+  const { text, detail } = buildDroppedInterestCard(l, s, state)
+  const card = await board.add(target.project, text, { column: target.column, agentKey: target.owner, detail, top: true })
+  return { filed: true, column: card.column, blockId: card.blockId }
+}
+
+export function buildDroppedInterestCard(l: Listing, s: PropertySearch, state: 'dismissed' | 'none'): InterestCard {
+  const verb = state === 'dismissed' ? 'dismissing' : 'clearing'
+  const facts = [priceText(l), typeText(l), l.address ?? l.title].filter((x): x is string => Boolean(x))
+  const where = `${s.kind ?? 'house'}${s.tier ? `-${s.tier}` : ''} search ${s.id} (${s.country}, ${l.portal} ${l.id})`
+  return {
+    text: `Lesson from ${verb} ${l.url}`,
+    detail: [
+      `Yousef marked this interested and then ${state === 'dismissed' ? 'dismissed' : 'cleared'} it: ${facts.join(' · ')} — ${where}.`,
+      `Read \`${reportPath(l)}\` if it exists and the card that vetted it; if the reason for dropping it is not already on record, ask Yousef in ONE line. Then: append a row to the "Lessons from vettings" table in \`decision-log.md\` (dig → catch → lesson → search/preference change → proposed/applied); add an "Outcome" line to the report; update \`yousef-preferences.md\` if a preference was revealed and \`${VETTING_DOC}\` if a new class of catch was; propose — never silently apply — any criteria change. Two-line note here, then Under Review.`,
+    ],
+  }
+}
+

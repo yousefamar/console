@@ -8,7 +8,7 @@ import { parseBoard } from '../kanban/board.js'
 import { PropertySearchStore } from '../property/store.js'
 import { PropertyInventoryStore } from '../property/inventory.js'
 import { PropertySync } from '../property/sync.js'
-import { buildInterestCard, fileInterestCard, findInterestCard, listingUrlKey } from '../property/interest-card.js'
+import { buildInterestCard, fileInterestCard, findInterestCard, listingUrlKey, fileDroppedInterestCard } from '../property/interest-card.js'
 import type { Listing } from '../property/types.js'
 import type { PropertySearch } from '../property/store.js'
 
@@ -92,8 +92,13 @@ kanban-plugin: board
       const r = await fileInterestCard(ops, l, s)
       filed.push(`${r.filed ? 'filed' : 'exists'}:${r.column}`)
     }
+    const dropped: string[] = []
+    sync.onDroppedInterest = async (l, s, state) => {
+      const r = await fileDroppedInterestCard(ops, l, s, state === 'dismissed' ? 'dismissed' : 'none')
+      dropped.push(`${state}:${r.filed ? 'filed' : 'exists'}:${r.column}`)
+    }
     const board = () => parseBoard(readFileSync(join(dir, 'projects', 'home', 'board.md'), 'utf-8'))
-    return { dir, store, inventory, sync, filed, board }
+    return { dir, store, inventory, sync, filed, dropped, board }
   }
 
   it('adds the card at the top of In Progress, assigned to home, with the facts as detail', async () => {
@@ -122,6 +127,37 @@ kanban-plugin: board
     await new Promise((r) => setTimeout(r, 20))
     expect(filed).toEqual(['exists:In Progress'])
     expect(board().columns.find((c) => c.title === 'In Progress')!.cards).toHaveLength(1)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('dismissing or clearing an interested listing files ONE lesson card; a plain dismissal never does', async () => {
+    const { dir, store, sync, filed, dropped, board } = setup()
+    const s = store.create({ country: 'UK', layer: 'l', kind: 'house' })
+    store.recordPoll(s.id, { listings: [listing({ id: '777', url: 'https://www.rightmove.co.uk/properties/777', lat: 1, lon: 1 }), listing({ id: '778', url: 'https://www.rightmove.co.uk/properties/778', lat: 1, lon: 1 })] })
+    // Never interested → dismissed: no lesson, nothing to learn from.
+    sync.review(s.id, '778', 'dismissed')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(dropped).toEqual([])
+    // Interested → dismissed: the lesson card, once.
+    sync.review(s.id, '777', 'interested')
+    await new Promise((r) => setTimeout(r, 20))
+    sync.review(s.id, '777', 'dismissed')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(filed).toEqual(['filed:In Progress'])
+    expect(dropped).toEqual(['dismissed:filed:In Progress'])
+    const col = board().columns.find((c) => c.title === 'In Progress')!
+    expect(col.cards[0]!.text).toBe('Lesson from dismissing https://www.rightmove.co.uk/properties/777')
+    expect(col.cards[0]!.agentKey).toBe('home')
+    expect(col.cards[0]!.lines.join('\n')).toContain('research/listings/rightmove-777.md')
+    expect(col.cards[0]!.lines.join('\n')).toContain('Lessons from vettings')
+    // Repeat dismissal (already not interested) and a re-dismiss after clear don't duplicate the card.
+    sync.review(s.id, '777', 'dismissed')
+    sync.review(s.id, '777', 'interested')
+    await new Promise((r) => setTimeout(r, 20))
+    sync.review(s.id, '777', 'none')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(dropped).toEqual(['dismissed:filed:In Progress', 'none:exists:In Progress'])
+    expect(board().columns.find((c) => c.title === 'In Progress')!.cards.filter((c) => c.text.startsWith('Lesson from'))).toHaveLength(1)
     rmSync(dir, { recursive: true, force: true })
   })
 

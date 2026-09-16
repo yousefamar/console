@@ -151,7 +151,7 @@ import { SubitoClient } from './property/subito.js'
 import { SmallholdingsClient } from './property/smallholdings.js'
 import { KleinanzeigenClient } from './property/kleinanzeigen.js'
 import { PropertySync } from './property/sync.js'
-import { DEFAULT_INTEREST_TARGET, fileInterestCard } from './property/interest-card.js'
+import { DEFAULT_INTEREST_TARGET, fileInterestCard, fileDroppedInterestCard } from './property/interest-card.js'
 import { HighStreetIndex } from './property/place.js'
 import { RightmoveClient } from './property/rightmove.js'
 import { ImmobiliareClient } from './property/immobiliare.js'
@@ -874,6 +874,14 @@ propertySync.onInterested = async (listing, search) => {
   log(r.filed
     ? `[property-sync] ${listing.portal} ${listing.id}: vetting card filed on ${interestTarget.project} → ${r.column}${id} @${interestTarget.owner}`
     : `[property-sync] ${listing.portal} ${listing.id}: vetting card already on ${interestTarget.project} (${r.column}${id}) — not re-filed`)
+}
+// Dropping an interested listing is where the lesson lives (Yousef, 2026-09-15).
+propertySync.onDroppedInterest = async (listing, search, state) => {
+  const r = await fileDroppedInterestCard(boardOps, listing, search, state === 'dismissed' ? 'dismissed' : 'none', interestTarget)
+  const id = r.blockId ? ` ^${r.blockId}` : ''
+  log(r.filed
+    ? `[property-sync] ${listing.portal} ${listing.id}: lesson card filed on ${interestTarget.project} → ${r.column}${id} @${interestTarget.owner}`
+    : `[property-sync] ${listing.portal} ${listing.id}: lesson card already on ${interestTarget.project} (${r.column}${id}) — not re-filed`)
 }
 // How long an assignee's own /board/* write masks the watcher's echo of it
 // (onCardEdited / onReopen). The watcher polls every 10 s, so its own edit is
