@@ -16,10 +16,11 @@ import { handleClientMessage, type AgentContext } from '../routes/agents.js'
 import type { Session } from '../session.js'
 
 function fakeSession(over: Record<string, unknown>) {
+  const sent: string[] = []
   return {
     formerIds: [], status: 'idle', messageLogLength: 0, needsAttention: null, pendingApprovalRequest: undefined,
-    sent: [] as string[],
-    sendMessage(c: string) { (this.sent as string[]).push(c) },
+    sent,
+    sendMessage(c: string) { sent.push(c) },
     logMessage() {}, hasSeenDedupeKey: () => false, cancelTransientResume() {},
     ...over,
   } as unknown as Session & { sent: string[] }
