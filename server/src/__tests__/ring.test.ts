@@ -18,7 +18,7 @@ import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
-const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'] }
+const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
 SCHEMA.verbs.message.contacts = { al: ['owl', 'hal'], 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
 
@@ -101,6 +101,13 @@ describe('schema note', () => {
     expect(p.schema.verbs.add.aliases).toContain('log')
     expect(p.schema.verbs.echo.aliases).toContain('ping')
     expect(p.schema.onFailure).toEqual({ column: 'In Progress' })
+    expect(p.schema.projects).toEqual({ al: ['l', 'el', 'owl', 'hal'] })
+  })
+  it('projects: slug → spoken forms; a string value is rejected like a contact', () => {
+    const p = parseSchemaNote('```yaml\nprojects:\n  Console: [consul, council]\n  astera: al\n```')
+    expect(p.schema.projects).toEqual({ console: ['consul', 'council'] })
+    expect(p.errors.join('\n')).toMatch(/projects.astera: expected a LIST/)
+    expect(parseSchemaNote('```yaml\nfallback: al\n```').schema.projects).toEqual(DEFAULT_SCHEMA.projects)
   })
   it('on_failure: column, string shorthand, null = off', () => {
     expect(parseSchemaNote('```yaml\non_failure: { column: Backlog }\n```').schema.onFailure).toEqual({ column: 'Backlog' })
@@ -132,6 +139,10 @@ describe('schema note', () => {
     const p = parseSchemaNote('```yaml\nverbs:\n  add:\n    targets:\n      dream: { aliases: [log] }\n      diary: { aliases: [log] }\n  message:\n    contacts:\n      mai: [mum]\n      nica: [mum]\n```')
     expect(p.errors.join('\n')).toMatch(/"log" is claimed by both target dream and target diary/)
     expect(p.errors.join('\n')).toMatch(/"mum" is claimed by both contacts mai and nica/)
+    // Projects share the add namespace with list targets: `add <word> …` must resolve one way.
+    const q = parseSchemaNote('```yaml\nprojects:\n  al: [l, films]\n  console: [l]\n```')
+    expect(q.errors.join('\n')).toMatch(/"films" is claimed by both target movies and project al/)
+    expect(q.errors.join('\n')).toMatch(/"l" is claimed by both project al and project console/)
   })
 })
 
@@ -157,6 +168,16 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('add console the login button is misaligned')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'console', column: 'Backlog', text: 'the login button is misaligned' } })
     expect(r('add reflection tools export to csv')).toMatchObject({ command: { kind: 'card', project: 'reflection-tools', text: 'export to csv' } })
     expect(r('add nonsense thing')).toMatchObject({ command: { kind: 'unknown-target', verb: 'add', target: 'nonsense' } })
+  })
+  it('project spoken forms from the note: "al" is too short to fuzzy-match, the STT hears "L"', () => {
+    expect(r('Add L test card.')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'al', column: 'Backlog', text: 'test card' } })
+    expect(r('add el test card')).toMatchObject({ command: { kind: 'card', project: 'al' } })
+    expect(r('add al test card')).toMatchObject({ command: { kind: 'card', project: 'al' } })
+    expect(r('start owl fix the draft')).toMatchObject({ rule: 'start.card', command: { kind: 'card', project: 'al', column: 'In Progress', text: 'fix the draft' } })
+    expect(r('add fix the draft to hal')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'al', text: 'fix the draft' } })
+    // A form for a slug the hub has no board for never resolves — unknown-target, not a card into the void.
+    expect(routeByRules('add l test card', { ...SCHEMA, projects: { ghost: ['l'] } }, ENV)).toMatchObject({ command: { kind: 'unknown-target', verb: 'add', target: 'l' } })
+    expect(routeByRules('add l test card', SCHEMA, { ...ENV, projects: ['console'] })).toMatchObject({ command: { kind: 'unknown-target' } })
   })
   it('trailing target: "<item> to [the|my] <target> [list]" — natural speech puts the target last', () => {
     expect(r('Add Count of Monte Cristo to movie list')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Count of Monte Cristo', dated: false, enrich: 'movie' } })
@@ -584,6 +605,10 @@ describe('describeSchema', () => {
     expect(add.targets.find((t) => t.name === 'movies')!.note).toBeUndefined()
     expect(add.targets.find((t) => t.name === 'groceries')!.note).toMatch(/created on first use/)
     expect(add.targets.find((t) => t.name === 'console')!.resolves).toBe('board card → Backlog')
+    expect(add.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, aliases: ['l', 'el', 'owl', 'hal'], resolves: 'board card → Backlog' })
+    expect(d.verbs.find((v) => v.verb === 'start')!.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, aliases: ['l', 'el', 'owl', 'hal'] })
+    const ghost = await describeSchema({ schema: { ...SCHEMA, projects: { ghost: ['g'] } }, errors: [], stale: false, path: 'p.md' }, { ...ENV, agents: AGENTS, echoConfigured: false }, async () => true)
+    expect(ghost.verbs.find((v) => v.verb === 'add')!.targets.find((t) => t.name === 'ghost')).toMatchObject({ ok: false, note: /no project with a board/ })
     expect(add.targets.find((t) => t.name === 'dream')!.resolves).toMatch(/^log scratch\/lists\/dream.md/)
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled

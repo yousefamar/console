@@ -33,6 +33,10 @@ export interface RingSchema {
   /** A failed delivery files a `Ring miss:` card on the console board in this
    *  column (In Progress = a fork fixes it now; Backlog = triage; null = off). */
   onFailure: { column: string | null }
+  /** Vault project slug → spoken forms, for `add|start <project> …`. Slugs
+   *  match by name anyway; this covers what fuzzy can't (short slugs — `al`
+   *  is heard as "L"/"el"/"owl"). Only slugs the hub knows (a board) resolve. */
+  projects: Record<string, string[]>
   verbs: {
     /** add|log <target> <text> — a list target, or a project slug (→ card). */
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
@@ -56,6 +60,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
   fallback: 'al',
   llmFallback: true,
   onFailure: { column: 'In Progress' },
+  projects: { al: ['l', 'el', 'owl', 'hal'] },
   verbs: {
     add: {
       aliases: ['log', 'ad', 'at', 'lock', 'blog', 'note'],
@@ -169,6 +174,7 @@ export function parseSchemaNote(md: string): SchemaParse {
     fallback: r.fallback === null ? null : typeof r.fallback === 'string' ? r.fallback.toLowerCase().trim() || null : DEFAULT_SCHEMA.fallback,
     llmFallback: typeof r.llm_fallback === 'boolean' ? r.llm_fallback : DEFAULT_SCHEMA.llmFallback,
     onFailure: parseOnFailure(r.on_failure, errors),
+    projects: r.projects === undefined ? structuredClone(DEFAULT_SCHEMA.projects) : aliasMap(r.projects, 'projects', errors),
     verbs: {
       add: {
         aliases: add.aliases === undefined ? [...d.add.aliases] : strList(add.aliases, 'verbs.add.aliases', errors),
@@ -205,6 +211,7 @@ export function parseSchemaNote(md: string): SchemaParse {
     seen.set(token, owner)
   }
   for (const [name, t] of Object.entries(schema.verbs.add.targets)) { claim(name, `target ${name}`); for (const a of t.aliases) claim(a, `target ${name}`) }
+  for (const [slug, forms] of Object.entries(schema.projects)) { claim(slug, `project ${slug}`); for (const f of forms) claim(f, `project ${slug}`) }
   const contactsSeen = new Map<string, string>()
   for (const [user, forms] of Object.entries(schema.verbs.message.contacts)) {
     for (const f of [user, ...forms]) {
@@ -220,6 +227,19 @@ export function parseSchemaNote(md: string): SchemaParse {
 export function spokenForms(targets: Record<string, { aliases: string[] }>): Map<string, string> {
   const out = new Map<string, string>()
   for (const [name, t] of Object.entries(targets)) { out.set(name, name); for (const a of t.aliases) out.set(a, name) }
+  return out
+}
+
+/** Every way to say a project → its slug: each board project by name, plus
+ *  the note's spoken forms — only for slugs the hub knows, so a stale alias
+ *  can't file a card on a board that doesn't exist. */
+export function projectForms(aliases: Record<string, string[]>, projects: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const p of projects) out.set(p, p)
+  for (const [slug, forms] of Object.entries(aliases)) {
+    if (!projects.includes(slug)) continue
+    for (const f of forms) out.set(f, slug)
+  }
   return out
 }
 
@@ -288,6 +308,9 @@ llm_fallback: true      # consult the LLM classifier before falling back
 on_failure:             # a delivery that fails files a "Ring miss:" card on the console board…
   column: In Progress   # …here — In Progress = a fork fixes the note/code now; Backlog = triage later; null = off
 
+projects:               # project slug (one with a board) → spoken forms, for add|start <project> …; unlisted slugs still match by name (one edit tolerated, 4+ letters)
+  al: [l, el, owl, hal] # too short to fuzzy-match — the STT hears "L"
+
 verbs:
   add:                  # add|log <target> <text>
     aliases: [log, ad, at, lock, blog, note]
@@ -355,7 +378,12 @@ export async function describeSchema(
       ...(ok ? {} : { note: 'file will be created on first use' }),
     }
   }))
-  const projectTargets = env.projects.map((p) => ({ name: p, aliases: [], resolves: `board card → ${v.add.projectColumn}`, ok: true }))
+  const projectAliases = (p: string) => loaded.schema.projects[p] ?? []
+  const noBoard = Object.keys(loaded.schema.projects).filter((p) => !env.projects.includes(p))
+  const projectTargets = (column: string) => [
+    ...env.projects.map((p) => ({ name: p, aliases: projectAliases(p), resolves: `board card → ${column}`, ok: true })),
+    ...noBoard.map((p) => ({ name: p, aliases: projectAliases(p), resolves: `board card → ${column}`, ok: false, note: 'no project with a board has this slug' })),
+  ]
   const derived = contactForms(v.message.contacts, env.contacts)
   const contacts = Object.entries(v.message.contacts).map(([user, forms]) => {
     const isAl = user === AL_CONTACT
@@ -370,8 +398,8 @@ export async function describeSchema(
     fallback: { agentKey: loaded.schema.fallback, live: liveKey(loaded.schema.fallback) },
     llmFallback: loaded.schema.llmFallback,
     verbs: [
-      { verb: 'add', aliases: v.add.aliases, usage: 'add|log <target> <text>', targets: [...listTargets, ...projectTargets] },
-      { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: env.projects.map((p) => ({ name: p, aliases: [], resolves: `board card → ${v.start.column} (dispatches now)`, ok: true })) },
+      { verb: 'add', aliases: v.add.aliases, usage: 'add|log <target> <text>', targets: [...listTargets, ...projectTargets(v.add.projectColumn)] },
+      { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: projectTargets(`${v.start.column} (dispatches now)`) },
       { verb: 'message', aliases: v.message.aliases, usage: 'message <person> <text>', targets: contacts, note: `also any of: ${env.contacts.join(', ') || '-'}` },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },

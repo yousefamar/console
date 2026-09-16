@@ -9,7 +9,7 @@
 // (`add <project> …` files a card, the board forks an agent for it), not to
 // agents. AL is reached only as the fallback for text no verb claims.
 
-import { spokenForms, contactForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
+import { spokenForms, contactForms, projectForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
 import { parseDuration, formatDuration } from '../glasses/timer.js'
 
 /** What the router can see besides the transcript — all resolved by the hub. */
@@ -268,6 +268,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
 
   if (matched && parts) {
     const { target, payload } = parts
+    const projects = projectForms(schema.projects, env.projects)
     // A verb matched only FUZZILY ("look" ≈ alias "lock") with a target
     // nothing recognises is almost certainly not a command at all — let it
     // fall through to the LLM/fallback instead of dying as unknown-target.
@@ -281,7 +282,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
           const t = v.add.targets[list]!
           return { rule: t.dated ? 'add.log' : 'add.list', command: { kind: 'list', target: list, file: t.file, item: payload, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } }
         }
-        const card = projectCard(target, payload, env.projects, v.add.projectColumn)
+        const card = projectCard(target, payload, projects, v.add.projectColumn)
         if (card) return { rule: 'add.card', command: card }
         // Trailing-target phrasing, tried only now: "add Count of Monte Cristo
         // to movie list" puts the target at the END, so the second word is the
@@ -293,13 +294,13 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
             const t = v.add.targets[t2]!
             return { rule: t.dated ? 'add.log' : 'add.list', command: { kind: 'list', target: t2, file: t.file, item, dated: t.dated, ...(t.enrich ? { enrich: t.enrich } : {}) } }
           }
-          const project = pickFuzzy(spoken, env.projects) ?? pickFuzzy(spoken.replace(/\s+/g, '-'), env.projects)
+          const project = resolveSpoken(spoken, projects) ?? resolveSpoken(spoken.replace(/\s+/g, '-'), projects)
           if (project) return { rule: 'add.card', command: { kind: 'card', project, column: v.add.projectColumn, text: item } }
         }
         return unknown('add')
       }
       case 'start': {
-        const card = projectCard(target, payload, env.projects, v.start.column)
+        const card = projectCard(target, payload, projects, v.start.column)
         if (card) return { rule: 'start.card', command: card }
         return unknown('start')
       }
@@ -342,10 +343,10 @@ export function splitTrailingTarget(payload: string): Array<{ item: string; spok
 /** `<target> <payload>` against the project slugs — slugs may be hyphenated
  *  two-word names ("reflection tools"), so the payload's first word is tried
  *  as the second half. */
-function projectCard(target: string, payload: string, projects: string[], column: string): RingCommand | null {
+function projectCard(target: string, payload: string, projects: Map<string, string>, column: string): RingCommand | null {
   const second = headWords(payload, 1)
-  const twoWord = second?.rest ? pickFuzzy(`${target}-${second.words[0]!}`, projects) : null
-  const project = pickFuzzy(target, projects) ?? twoWord
+  const twoWord = second?.rest ? resolveSpoken(`${target}-${second.words[0]!}`, projects) : null
+  const project = resolveSpoken(target, projects) ?? twoWord
   if (!project) return null
   return { kind: 'card', project, column, text: project === twoWord ? second!.rest : payload }
 }
