@@ -44,6 +44,9 @@ export interface RingSchema {
     start: { aliases: string[]; column: string }
     /** message <person> <text> → sent AS Yousef via his own chat account. contacts: username → spoken forms. */
     message: { aliases: string[]; contacts: Record<string, string[]> }
+    /** voice <person> <speech> → the RECORDING itself, minus the command head,
+     *  sent AS Yousef as a WhatsApp voice note. Contacts are `message`'s. */
+    voice: { aliases: string[] }
     /** echo <text> → the payload lands on Yousef's WhatsApp, no LLM — the smoke test. */
     echo: { aliases: string[] }
     music: { aliases: string[]; enabled: boolean }
@@ -77,6 +80,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
     },
     start: { aliases: ['do', 'go', 'kick', 'begin', 'now'], column: 'In Progress' },
     message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {} },
+    voice: { aliases: ['voicenote', 'audio'] },
     echo: { aliases: ['test', 'ping', 'repeat'] },
     music: { aliases: [], enabled: true },
     timer: { aliases: ['countdown', 'set'], enabled: true },
@@ -166,6 +170,7 @@ export function parseSchemaNote(md: string): SchemaParse {
   const add = verbs.add ?? {}
   const start = verbs.start ?? {}
   const message = verbs.message ?? {}
+  const voice = verbs.voice ?? {}
   const echo = verbs.echo ?? {}
   const music = verbs.music ?? {}
   const timer = verbs.timer ?? {}
@@ -188,6 +193,9 @@ export function parseSchemaNote(md: string): SchemaParse {
       message: {
         aliases: message.aliases === undefined ? [...d.message.aliases] : strList(message.aliases, 'verbs.message.aliases', errors),
         contacts: aliasMap(message.contacts, 'verbs.message.contacts', errors),
+      },
+      voice: {
+        aliases: voice.aliases === undefined ? [...d.voice.aliases] : strList(voice.aliases, 'verbs.voice.aliases', errors),
       },
       echo: {
         aliases: echo.aliases === undefined ? [...d.echo.aliases] : strList(echo.aliases, 'verbs.echo.aliases', errors),
@@ -296,7 +304,9 @@ it waits; the weekly cron drains it right after placing one). \`con notes enrich
 forces a pass.
 \`add\` and \`log\` are the same verb. Examples: \`log dream I was escaping a prison made of cheese\`,
 \`add movies Spiderman\`, \`log journal just finished sowing the seeds\`,
-\`message mum I'll be home in 30 mins\`, \`add console the login button is
+\`message mum I'll be home in 30 mins\`, \`voice mum <keep talking>\` (the recording
+itself, minus those two words, sent as a WhatsApp voice note from your account —
+\`voice note mum …\` works too), \`add console the login button is
 misaligned\` (a project slug → Backlog card), \`start console fix the login
 button\` (→ In Progress, an agent forks now), \`echo testing one two\` (→ your own
 WhatsApp, pure software — the smoke test), \`al <anything>\` (escape hatch: straight
@@ -334,6 +344,9 @@ verbs:
       # a hyphenated username's first name is understood automatically (sam-miller ← sam)
       al: [owl, hal, el, alan]     # AL himself — his WhatsApp DM, sent from your account
       # mai: [mum, mom, mother]
+
+  voice:                # voice <person> <speech> → the RECORDING itself, minus the command words, as a WhatsApp voice note from your account (contacts as above; "voice note mum …" / "voice message to mum …" work)
+    aliases: [voicenote, audio]
 
   echo:                 # echo <text> → straight to your own WhatsApp, no LLM
     aliases: [test, ping, repeat]
@@ -401,6 +414,7 @@ export async function describeSchema(
       { verb: 'add', aliases: v.add.aliases, usage: 'add|log <target> <text>', targets: [...listTargets, ...projectTargets(v.add.projectColumn)] },
       { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: projectTargets(`${v.start.column} (dispatches now)`) },
       { verb: 'message', aliases: v.message.aliases, usage: 'message <person> <text>', targets: contacts, note: `also any of: ${env.contacts.join(', ') || '-'}` },
+      { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person> <speech>', targets: contacts, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts as message' },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
     ],

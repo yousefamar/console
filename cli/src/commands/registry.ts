@@ -560,7 +560,7 @@ export const COMMANDS: CommandDef[] = [
   { name: 'ring say', description: 'Simulate a ring transcript through the command router — EXECUTES the result (plays, sends, files); --dry only reports the route', safety: 'write',
     args: [{ name: 'text', required: true, description: 'Transcript text' }],
     flags: { dry: { type: 'boolean', description: 'Route only: no recording, no side effects' } },
-    examples: ['con ring say "tell al to buy milk"', 'con ring say --dry "Music plays."'] },
+    examples: ['con ring say "tell al to buy milk"', 'con ring say --dry "Music plays."', 'con ring say --dry "voice note mum running late"'] },
   { name: 'ring schema', description: 'Print the effective ring command tree with every target resolved', safety: 'read',
     flags: { check: { type: 'boolean', description: 'Exit non-zero on parse errors or unresolved targets' } },
     examples: ['con ring schema', 'con ring schema --check'] },

@@ -26,6 +26,9 @@ export type RingCommand =
   | { kind: 'echo'; text: string }
   | { kind: 'card'; project: string; column: string; text: string }
   | { kind: 'message'; contact: string; spoken: string; text: string }
+  /** The recording itself, minus the command head, as a voice note. `text`
+   *  is the payload transcript — it anchors the cut and captions the push. */
+  | { kind: 'voice'; contact: string; spoken: string; text: string }
   /** Only ever minted by the FALLBACK (unclaimed text → the fallback agent) —
    *  there is no spoken "agent" verb: Yousef talks to projects (`add <project>
    *  …` forks a card), not to agents. */
@@ -167,6 +170,10 @@ export function resolveSpoken(spoken: string, forms: Map<string, string>): strin
 }
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
+/** "voice NOTE mum", "voice message TO mum" — verb-phrase words the person
+ *  may sit behind. Skipped one at a time, never more than this many. */
+const VOICE_PHRASE = new Set(['note', 'message', 'memo', 'to', 'for'])
+const VOICE_PHRASE_MAX = 2
 
 // The STT decorates the HEAD of a command with punctuation — "Log dream.",
 // "Music, play", "Al: …", "Message Nica — I'm late", "Music… pause" — so every
@@ -368,9 +375,24 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         return unknown('start')
       }
       case 'message': {
-        const contact = resolveSpoken(target, contactForms(v.message.contacts, env.contacts)) ?? pickFuzzy(target, env.contacts)
+        const contact = resolveContact(target, v.message.contacts, env)
         if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
         return unknown('message')
+      }
+      case 'voice': {
+        // The person may sit behind verb-phrase words: "voice mum …",
+        // "voice note mum …", "voice message to mum …".
+        let head = two
+        for (let skipped = 0; head?.rest; skipped++) {
+          const spoken = head.words.at(-1)!
+          const contact = resolveContact(spoken, v.message.contacts, env)
+          if (contact) return { rule: 'voice', command: { kind: 'voice', contact, spoken, text: head.rest } }
+          if (skipped >= VOICE_PHRASE_MAX || !VOICE_PHRASE.has(spoken)) {
+            return matched.exact ? { rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: spoken, text } } : null
+          }
+          head = headWords(cased, head.words.length + 1)
+        }
+        return unknown('voice')
       }
       case 'echo':
       case 'music':
@@ -380,6 +402,12 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   }
 
   return null
+}
+
+/** A spoken name → username: the note's nicknames and derived first names,
+ *  else a fuzzy hit on the workspace's usernames. */
+function resolveContact(spoken: string, contacts: Record<string, string[]>, env: RouteEnv): string | null {
+  return resolveSpoken(spoken, contactForms(contacts, env.contacts)) ?? pickFuzzy(spoken, env.contacts)
 }
 
 const SENTENCE_END = /[.!?]$/
@@ -438,6 +466,7 @@ export function describeCommand(c: RingCommand): string {
     case 'echo': return `echo: ${c.text}`
     case 'card': return `card → ${c.project} (${c.column}): ${c.text}`
     case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
+    case 'voice': return `voice note → ${c.spoken} (${c.contact}): ${c.text}`
     case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
     case 'timer': return c.seconds === null ? 'timer cancel' : `timer ${formatDuration(c.seconds)} (${c.spoken})`

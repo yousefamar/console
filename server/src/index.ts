@@ -82,11 +82,12 @@ import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
 import { audioHead } from './ring/audio.js'
+import { cutVoiceNote, audioEnvelope } from './ring/voice.js'
 import { ListWatcher } from './lists/watcher.js'
 import { execFile as execFileCb } from 'node:child_process'
 import { RingSchemaLoader } from './ring/schema-loader.js'
 import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
-import { transcribeAudio } from './al/transcribe.js'
+import { transcribeAudio, transcribeWords } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import { formatDuration } from './glasses/timer.js'
 import type { RouteEnv } from './ring/router.js'
@@ -1374,6 +1375,17 @@ const ringEnv = async (): Promise<RouteEnv> => {
     contacts: [AL_CONTACT, ...users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase())],
   }
 }
+/** The contact's bridged WhatsApp DM in Yousef's own account. Beeper names a
+ *  ghost by phone OR lid — expand every known phone to its lid via AL's socket
+ *  so a users/<name>.md that only lists the number still finds a lid-keyed
+ *  room (the class that hid AL's own DM). Throws when nothing resolves. */
+const yousefDmRoomFor = async (contact: string) => {
+  const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)
+  const ids = await expandIdentifiers(known, alWa.lidForNumber)
+  const room = await ringContactRooms.resolve(contact, ids)
+  if (!room) throw new Error(contact === AL_CONTACT ? "no WhatsApp DM room found for AL's own identifiers" : `no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
+  return room
+}
 const ringCtx: RingCtx = {
   store: ringStore,
   schema: () => ringSchema.load(),
@@ -1392,14 +1404,26 @@ const ringCtx: RingCtx = {
   // message: AS YOUSEF, through his own Matrix account → the contact's bridged
   // WhatsApp DM (resolved by ghost member id; encryption-aware send).
   chatSendAsYousef: async (contact, text) => {
-    // Beeper names a ghost by phone OR lid — expand every known phone to its
-    // lid via AL's socket so a users/<name>.md that only lists the number
-    // still finds a lid-keyed room (the class that hid AL's own DM).
-    const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)
-    const ids = await expandIdentifiers(known, alWa.lidForNumber)
-    const room = await ringContactRooms.resolve(contact, ids)
-    if (!room) throw new Error(contact === AL_CONTACT ? "no WhatsApp DM room found for AL's own identifiers" : `no WhatsApp DM room found for ${contact} (users/${contact}.md ids vs bridge ghosts)`)
+    const room = await yousefDmRoomFor(contact)
     await matrixSync.sendRoomEvent({ roomId: room.id, type: 'm.room.message', content: { msgtype: 'm.text', body: text } })
+    return room.name
+  },
+  // voice: the same room, an m.audio event carrying the MSC3245 voice key so
+  // the WhatsApp bridge sends push-to-talk. Media uploaded RAW (Beeper
+  // bridges can't decrypt encrypted attachments); the event is encrypted.
+  chatSendVoiceAsYousef: async (contact, clip) => {
+    const room = await yousefDmRoomFor(contact)
+    const filename = 'voice.ogg'
+    const upload = await matrixClient.uploadMedia(clip.data, clip.contentType, filename)
+    await matrixSync.sendRoomEvent({
+      roomId: room.id, type: 'm.room.message',
+      content: {
+        msgtype: 'm.audio', body: filename, filename, url: upload.content_uri,
+        info: { mimetype: clip.contentType, size: clip.data.length, duration: clip.durationMs },
+        'org.matrix.msc3245.voice': {},
+        'org.matrix.msc1767.audio': { duration: clip.durationMs },
+      },
+    })
     return room.name
   },
   // echo: pure software — AL's WhatsApp socket, Yousef's own number.
@@ -1464,6 +1488,14 @@ const ringCtx: RingCtx = {
   transcribeHead: async (audioPath, vocabulary) => {
     const head = await audioHead(audioPath)
     return head ? transcribeAudio(head, 'audio/mpeg', { prompt: vocabulary }) : null
+  },
+  voiceAudio: {
+    words: async (audioPath, vocabulary) => {
+      const head = await audioHead(audioPath)
+      return head ? transcribeWords(head, 'audio/mpeg', { prompt: vocabulary }) : null
+    },
+    envelope: audioEnvelope,
+    cut: cutVoiceNote,
   },
   classify: (text, schema, env) => classifyWithLlm(text, schema, env, smallFastModel()),
   notify: ({ title, body, id }) => {

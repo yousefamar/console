@@ -81,6 +81,11 @@ export function pushCapped(buf: string[], frame: string, bytes: number, maxBytes
  *  this id and vice versa, so they can't be collapsed into one constant. */
 export const STT_BATCH_MODEL = 'gpt-transcribe'
 
+/** Batch model for WORD TIMESTAMPS (`timestamp_granularities[]=word`) — the
+ *  ring's voice-note head cut. Only whisper-1 returns them; the gpt-*
+ *  transcribe models reject `verbose_json`. Verified live 2026-09-17. */
+export const STT_TIMESTAMP_MODEL = 'whisper-1'
+
 /** Headers for the GA handshake. Notably NO `OpenAI-Beta: realtime=v1` —
  *  sending it flips the connection into the disabled beta shape. */
 export function buildSttHeaders(apiKey: string): Record<string, string> {

@@ -14,6 +14,7 @@ import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
 import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, spliceHeadPayload, sttVocabulary, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
+import { payloadStart, snapToGap, parseEnvelope, type TimedWord, type Frame, type VoiceClip } from '../ring/voice.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
@@ -213,6 +214,19 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('message sam hi')).toMatchObject({ rule: 'message', command: { contact: 'sam-miller' } }) // first name, derived
     expect(r('message stranger hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'message' } })
   })
+  it('voice <person> <speech> — the recording as a voice note; the person may sit behind "note"/"message"/"to"', () => {
+    expect(r("Voice mum, I'll be home in 30 mins")).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
+    expect(r('voice note nika running late')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'nica', spoken: 'nika', text: 'running late' } })
+    expect(r('Voice message to Sam. Hi Sam, calling about Tuesday.')).toMatchObject({ rule: 'voice', command: { contact: 'sam-miller', spoken: 'sam', text: 'Hi Sam, calling about Tuesday' } })
+    expect(r('voicenote al are you there')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'al', text: 'are you there' } })
+    expect(r('audio owl ping')).toMatchObject({ rule: 'voice', command: { contact: 'al' } })
+    expect(r('voice stranger hi')).toMatchObject({ rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: 'stranger' } })
+    expect(r('voice note stranger hi')).toMatchObject({ rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: 'stranger' } })
+    expect(r('voice note to for the record hi')).toMatchObject({ command: { kind: 'unknown-target', verb: 'voice', target: 'for' } }) // two phrase words max
+    expect(r('voyce stranger hi')).toBeNull() // fuzzy verb + unknown person is not a command
+    expect(r('voice mum')).toBeNull() // nothing to send
+    expect(describeCommand(r("voice mum I'm late")!.command)).toBe("voice note → mum (yasmina-amar): I'm late")
+  })
   it('message/text/tell AL is a WhatsApp send FROM YOUSEF to AL\'s DM — he wants AL to reply on WhatsApp (never rerouted to al.direct)', () => {
     expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'are you there' } })
     expect(r('Message Al Hi')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'Hi' } })
@@ -339,6 +353,61 @@ describe('add: target inside the first sentence', () => {
   })
 })
 
+describe('voice note cut point', () => {
+  // whisper-1 word timestamps over the head of recording 2026-09-17T14-23-31.175Z-eacb
+  // ("Start console. I want to be able to speak a voice note…"), verified live.
+  const W: TimedWord[] = [
+    { word: 'Start', start: 0, end: 0.84 }, { word: 'console', start: 0.84, end: 1.58 }, { word: 'I', start: 1.94, end: 2.44 },
+    { word: 'want', start: 2.44, end: 2.68 }, { word: 'a', start: 2.68, end: 3.08 }, { word: 'way', start: 3.08, end: 3.12 }, { word: 'to', start: 3.12, end: 3.64 },
+  ]
+  const T = 'Start console. I want to be able to speak a voice note directly into my ring.'
+  const GAP = { lo: 1.58, hi: 1.94 }
+  it('anchors the payload\'s opening words and cuts just ahead of the first one', () => {
+    expect(payloadStart(W, T, 'I want to be able to speak a voice note directly into my ring')).toEqual({ t: 1.79, ...GAP }) // 1.94 − 0.15
+  })
+  it('tolerates a mis-heard payload word (3-word anchor fails, 2-word succeeds; both fail → head word count)', () => {
+    expect(payloadStart(W, T, 'I want two be able')).toEqual({ t: 1.79, ...GAP })
+    expect(payloadStart(W, 'Start console. Eye wants too be able', 'Eye wants too be able')).toEqual({ t: 1.79, ...GAP }) // nothing anchors → as many words as the head has (2)
+    expect(payloadStart(W, 'Start console. Yes', 'Yes')).toEqual({ t: 1.79, ...GAP }) // one-word payload, unheard → head count
+  })
+  it('never cuts inside a word: a tight gap splits it, an overlap cuts at the onset', () => {
+    const tight: TimedWord[] = [{ word: 'voice', start: 0, end: 0.5 }, { word: 'mum', start: 0.5, end: 0.9 }, { word: 'hi', start: 1.0, end: 1.3 }]
+    expect(payloadStart(tight, 'voice mum hi', 'hi')).toEqual({ t: 0.95, lo: 0.9, hi: 1 })
+    const overlap: TimedWord[] = [{ word: 'voice', start: 0, end: 0.5 }, { word: 'mum', start: 0.5, end: 1.1 }, { word: 'hi', start: 1.0, end: 1.3 }]
+    expect(payloadStart(overlap, 'voice mum hi', 'hi')).toEqual({ t: 1, lo: 1, hi: 1 })
+  })
+  it('null when nothing can be placed', () => {
+    expect(payloadStart([], T, 'I want')).toBeNull()
+    expect(payloadStart(W, 'I want', 'I want')).toBeNull() // no head
+    expect(payloadStart(W.slice(0, 2), T, 'I want a way')).toBeNull() // clip ends inside the head
+    expect(payloadStart(W, T, '')).toBeNull()
+  })
+
+  // The same recording's 50 ms RMS envelope, idealised: speech ≈ −12 dB,
+  // the pause between "console" and "I" ≈ −29 dB from 1.55 s to 2.20 s —
+  // whisper put "I" at 1.94 s in one run and 2.40 s in another.
+  const env = (quietFrom: number, quietTo: number, n = 200): Frame[] =>
+    Array.from({ length: n }, (_, i) => { const t = i * 0.05; return { t, db: i < 2 ? -Infinity : t >= quietFrom && t < quietTo ? -29 + (i % 3) : -12 + (i % 5) } })
+  it('snaps the words\' estimate to the real pause and cuts just before speech resumes', () => {
+    expect(snapToGap(env(1.55, 2.2), { t: 1.79, lo: 1.58, hi: 1.94 })).toBe(2.1) // 2.20 − 0.10
+    expect(snapToGap(env(1.55, 2.2), { t: 2.25, lo: 1.64, hi: 2.4 })).toBe(2.1) // the late run lands on the same cut
+  })
+  it('keeps the estimate when the envelope is flat, short, or shows no pause near the words', () => {
+    const est = { t: 1.79, lo: 1.58, hi: 1.94 }
+    expect(snapToGap(env(1.55, 2.2).map((f) => ({ ...f, db: -20 })), est)).toBe(1.79) // flat
+    expect(snapToGap(env(1.55, 2.2).slice(0, 10), est)).toBe(1.79) // short
+    expect(snapToGap(env(4, 4.5), est)).toBe(1.79) // a pause, but 2 s away
+    expect(snapToGap(env(1.55, 1.65), est)).toBe(1.79) // two quiet frames are a plosive, not a pause
+  })
+  it('picks the run covering the words\' gap when several are near', () => {
+    const two = env(1.55, 2.2).map((f) => (f.t >= 1.25 && f.t < 1.4 ? { ...f, db: -29 } : f)) // a 150 ms dip inside "console"
+    expect(snapToGap(two, { t: 1.79, lo: 1.58, hi: 1.94 })).toBe(2.1)
+  })
+  it('parses ametadata output, -inf included', () => {
+    expect(parseEnvelope('frame:0    pts:0       pts_time:0\nlavfi.astats.Overall.RMS_level=-inf\nframe:1    pts:800     pts_time:0.05\nlavfi.astats.Overall.RMS_level=-18.986382\n')).toEqual([{ t: 0, db: -Infinity }, { t: 0.05, db: -18.986382 }])
+  })
+})
+
 describe('llm fallback parsing', () => {
   it('accepts only on-schema replies with known targets', () => {
     expect(parseClassifyReply('{"kind":"agent","targetId":"s2","message":"buy milk"}', SCHEMA, ENV, 'x')).toBeNull() // no agent verb
@@ -351,6 +420,9 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"card","project":"nope","lead_in":"nope"}', SCHEMA, ENV, 'nope fix')).toBeNull()
     expect(parseClassifyReply('{"kind":"message","contact":"nica","lead_in":"massage nika"}', SCHEMA, ENV, 'massage nika hi')).toMatchObject({ kind: 'message', contact: 'nica', text: 'hi' })
     expect(parseClassifyReply('{"kind":"message","contact":"al","lead_in":"massage owl"}', SCHEMA, ENV, 'massage owl hi')).toMatchObject({ kind: 'message', contact: 'al' }) // a real send to AL's DM, not rerouted
+    expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voys note for Nika,"}', SCHEMA, ENV, "Voys note for Nika, I'm late")).toEqual({ kind: 'voice', contact: 'nica', spoken: 'nica', text: "I'm late" })
+    expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voice Nica"}', SCHEMA, ENV, "voys nika I'm late")).toBeNull() // lead-in not a prefix: never send the command words
+    expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"kind":"voice".*VOICE note/)
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"unknown"}', SCHEMA, ENV, 'raw')).toEqual({ kind: 'unknown', text: 'raw' })
     expect(parseClassifyReply('I cannot help', SCHEMA, ENV, 'x')).toBeNull()
@@ -697,7 +769,10 @@ describe('describeSchema', () => {
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
     expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's own WhatsApp DM (as Yousef)" })
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
-    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'echo', 'music'])
+    const voice = d.verbs.find((v) => v.verb === 'voice')!
+    expect(voice).toMatchObject({ aliases: ['voicenote', 'audio'], note: /voice note/ })
+    expect(voice.targets.map((t) => t.name)).toEqual(msg.targets.map((t) => t.name))
+    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'voice', 'echo', 'music'])
   })
 })
 
@@ -708,6 +783,10 @@ describe('RingStore + pipeline', () => {
   let toAgent: Array<{ key: string; content: string }>
   let echoed: string[]
   let sentAsYousef: Array<{ contact: string; text: string }>
+  let voiceSent: Array<{ contact: string; clip: VoiceClip }>
+  let cuts: Array<{ path: string; from: number }>
+  let timedWords: TimedWord[] | null
+  let envelope: Frame[] | null
   let missCards: Array<{ text: string; column: string }>
   let notified: Array<{ title: string; body: string }>
   let music: string[]
@@ -721,7 +800,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; missCards = []; notified = []; music = []; cards = []; timers = []; heads = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; heads = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -733,6 +812,12 @@ describe('RingStore + pipeline', () => {
       deliverToAgent: (key, content) => { if (key === 'dead') return false; toAgent.push({ key, content }); return true },
       whatsappToYousef: async (text) => { echoed.push(text); return '447000@s.whatsapp.net' },
       chatSendAsYousef: async (contact, text) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); sentAsYousef.push({ contact, text }); return `${contact} (dm)` },
+      chatSendVoiceAsYousef: async (contact, clip) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); voiceSent.push({ contact, clip }); return `${contact} (dm)` },
+      voiceAudio: {
+        words: async () => timedWords,
+        envelope: async () => envelope,
+        cut: async (path, from) => { cuts.push({ path, from }); return { data: Buffer.from(`ogg-from-${from}`), contentType: 'audio/ogg', durationMs: Math.round((21.3 - from) * 1000) } },
+      },
       notes: { read: async (p) => notes.get(p) ?? null, write: async (p, c) => { notes.set(p, c) } },
       addCard: async (project, text, column) => { cards.push(`${project}/${column}: ${text}`); return `"${text}" → ${column}` },
       fileMissCard: async (miss, column) => { missCards.push({ text: buildMissCard(miss).text, column }); return 'filed' },
@@ -824,6 +909,33 @@ describe('RingStore + pipeline', () => {
     ENV.contacts.push('nobody')
     expect((await deliver('message nobody hi')).route).toMatchObject({ ok: false, detail: 'no WhatsApp DM room found for nobody' })
     ENV.contacts.pop()
+  })
+
+  it('voice sends the RECORDING as a voice note from Yousef\'s account, cut where the payload starts', async () => {
+    // Whisper over the head clip: "Voice mum." ends at 1.58 s, "I'll" starts at 1.94 s.
+    timedWords = [{ word: 'Voice', start: 0, end: 0.8 }, { word: 'mum.', start: 0.84, end: 1.58 }, { word: "I'll", start: 1.94, end: 2.2 }, { word: 'be', start: 2.2, end: 2.4 }, { word: 'home', start: 2.4, end: 2.9 }]
+    const rec = await processDelivery(ctx, { transcription: "Voice mum. I'll be home in 30 mins.", audio: { data: Buffer.from('m4a'), contentType: 'audio/mp4' }, recordedAt: 1756800000000, client: 'ring' })
+    expect(rec.route).toMatchObject({ rule: 'voice', ok: true, detail: 'yasmina-amar (dm), 00:20, head cut at 1.79s', command: { kind: 'voice', contact: 'yasmina-amar', text: "I'll be home in 30 mins" } })
+    expect(cuts).toEqual([{ path: rec.audio!.path, from: 1.79 }])
+    expect(voiceSent).toEqual([{ contact: 'yasmina-amar', clip: { data: Buffer.from('ogg-from-1.79'), contentType: 'audio/ogg', durationMs: 19510 } }])
+    expect(sentAsYousef).toHaveLength(0)
+    expect(toAl).toHaveLength(0)
+    expect(notified[0]).toMatchObject({ title: 'Ring → mum · voice note (yasmina-amar (dm), 00:20, head cut at 1.79s)', body: "I'll be home in 30 mins" })
+    // With the signal's envelope the cut snaps to the real pause (quiet 1.55–2.20 s).
+    envelope = Array.from({ length: 200 }, (_, i) => { const t = i * 0.05; return { t, db: t >= 1.55 && t < 2.2 ? -29 : -12 } })
+    await processDelivery(ctx, { transcription: "Voice mum. I'll be home in 30 mins.", audio: { data: Buffer.from('m4a'), contentType: 'audio/mp4' }, recordedAt: 1756800001000, client: 'ring' })
+    expect(cuts.at(-1)!.from).toBe(2.1)
+  })
+
+  it('voice without word timestamps ships the whole recording and says so; typed text has no recording to send', async () => {
+    timedWords = null
+    const rec = await processDelivery(ctx, { transcription: 'voice nika running late', audio: { data: Buffer.from('m4a'), contentType: 'audio/mp4' }, recordedAt: null, client: 'ring' })
+    expect(rec.route).toMatchObject({ ok: true, detail: 'nica (dm), 00:21, UNCUT — command words included' })
+    expect(cuts).toEqual([{ path: rec.audio!.path, from: 0 }])
+    const typed = await deliver('voice nika running late')
+    expect(typed.route).toMatchObject({ ok: false, detail: expect.stringMatching(/no recording to send/) })
+    expect(voiceSent).toHaveLength(1)
+    expect(missCards.at(-1)!.text).toMatch(/^Ring miss: "voice nika running late"/)
   })
 
   it('a verb with an unknown target is actionable feedback, not a fallback — and files a Ring miss card', async () => {
