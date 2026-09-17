@@ -14,7 +14,7 @@ import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
 import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, spliceHeadPayload, sttVocabulary, type RingCtx } from '../ring/pipeline.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
-import { payloadStart, snapToGap, parseEnvelope, type TimedWord, type Frame, type VoiceClip } from '../ring/voice.js'
+import { payloadStart, snapToGap, parseEnvelope, patchOpusVendor, oggCrc, pcmWaveform, type TimedWord, type Frame, type VoiceClip } from '../ring/voice.js'
 import { deliveryFromRequest } from '../routes/ring.js'
 import { NoteStore } from '../notes.js'
 
@@ -405,6 +405,65 @@ describe('voice note cut point', () => {
   })
   it('parses ametadata output, -inf included', () => {
     expect(parseEnvelope('frame:0    pts:0       pts_time:0\nlavfi.astats.Overall.RMS_level=-inf\nframe:1    pts:800     pts_time:0.05\nlavfi.astats.Overall.RMS_level=-18.986382\n')).toEqual([{ t: 0, db: -Infinity }, { t: 0.05, db: -18.986382 }])
+  })
+})
+
+describe('opus vendor patch (WhatsApp playability)', () => {
+  /** A minimal ogg page: real header layout, correct CRC. */
+  const page = (payload: Buffer, seq: number, type = 0): Buffer => {
+    const lacing: number[] = []
+    let rest = payload.length
+    while (rest >= 255) { lacing.push(255); rest -= 255 }
+    lacing.push(rest)
+    const p = Buffer.concat([Buffer.from('OggS', 'latin1'), Buffer.alloc(22), Buffer.from([lacing.length, ...lacing]), payload])
+    p[4] = 0; p[5] = type
+    p.writeUInt32LE(0xdeadbeef, 14) // serial
+    p.writeUInt32LE(seq, 18)
+    p.writeUInt32LE(oggCrc(p), 22)
+    return p
+  }
+  const opusHead = Buffer.concat([Buffer.from('OpusHead', 'latin1'), Buffer.from([1, 1, 56, 1, 0x80, 0x3e, 0, 0, 0, 0, 0])]) // 16 kHz mono
+  const opusTags = (vendor: string): Buffer => {
+    const v = Buffer.from(vendor, 'utf8')
+    const comment = Buffer.from('encoder=Lavc61', 'utf8')
+    const out = Buffer.alloc(8 + 4 + v.length + 4 + 4 + comment.length)
+    out.write('OpusTags', 0, 'latin1'); out.writeUInt32LE(v.length, 8); v.copy(out, 12)
+    out.writeUInt32LE(1, 12 + v.length); out.writeUInt32LE(comment.length, 16 + v.length); comment.copy(out, 20 + v.length)
+    return out
+  }
+  const audioPage = page(Buffer.from([0xf8, 1, 2, 3]), 2)
+
+  it('replaces an Lavf vendor with "WhatsApp", drops comments, keeps a valid CRC, leaves other pages alone', () => {
+    const ogg = Buffer.concat([page(opusHead, 0, 2), page(opusTags('Lavf60.16.100'), 1), audioPage])
+    const patched = patchOpusVendor(ogg)
+    expect(patched.includes('WhatsApp')).toBe(true)
+    expect(patched.includes('Lavf60')).toBe(false)
+    expect(patched.includes('encoder=Lavc61')).toBe(false)
+    expect(patched.subarray(0, page(opusHead, 0, 2).length)).toEqual(page(opusHead, 0, 2)) // head page untouched
+    expect(patched.subarray(patched.length - audioPage.length)).toEqual(audioPage) // audio untouched
+    // the rebuilt tags page carries a self-consistent CRC
+    const tagsOff = page(opusHead, 0, 2).length
+    const rebuilt = Buffer.from(patched.subarray(tagsOff, patched.length - audioPage.length))
+    const stored = rebuilt.readUInt32LE(22)
+    rebuilt.writeUInt32LE(0, 22)
+    expect(oggCrc(rebuilt)).toBe(stored)
+    // idempotent-ish: patching again still yields WhatsApp
+    expect(patchOpusVendor(patched).includes('WhatsApp')).toBe(true)
+  })
+  it('returns the input untouched when there is no tags page or the stream is not ogg', () => {
+    expect(patchOpusVendor(Buffer.from('not ogg at all'))).toEqual(Buffer.from('not ogg at all'))
+    const headOnly = page(opusHead, 0, 2)
+    expect(patchOpusVendor(headOnly)).toEqual(headOnly)
+  })
+  it('pcmWaveform: 64 buckets scaled 0–100, silence is all zeros', () => {
+    const loud = Buffer.alloc(640) // 320 samples: first half loud, second half near-silent
+    for (let i = 0; i < 320; i++) loud.writeInt16LE(i < 160 ? 30000 : 300, i * 2)
+    const w = pcmWaveform(loud)
+    expect(w).toHaveLength(64)
+    expect(Math.max(...w)).toBe(100)
+    expect(w[0]).toBe(100)
+    expect(w.at(-1)!).toBeLessThan(10)
+    expect(pcmWaveform(Buffer.alloc(256))).toEqual(Array.from({ length: 64 }, () => 0))
   })
 })
 

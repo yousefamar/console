@@ -1421,7 +1421,9 @@ const ringCtx: RingCtx = {
         msgtype: 'm.audio', body: filename, filename, url: upload.content_uri,
         info: { mimetype: clip.contentType, size: clip.data.length, duration: clip.durationMs },
         'org.matrix.msc3245.voice': {},
-        'org.matrix.msc1767.audio': { duration: clip.durationMs },
+        // Waveform on WhatsApp's own 0–100 scale, like the bridge writes for
+        // real notes — the bridge forwards it to the proto.
+        'org.matrix.msc1767.audio': { duration: clip.durationMs, ...(clip.waveform ? { waveform: clip.waveform } : {}) },
       },
     })
     return room.name

@@ -46,6 +46,7 @@ import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
 import { transcribeAudio } from './transcribe.js'
+import { encodeVoiceNote } from '../ring/voice.js'
 import { formatHistoryLine, formatTime, type HistoryEntry } from './wa-history.js'
 
 const logger = pino({ level: 'silent' })
@@ -492,35 +493,13 @@ const execFileP = promisify(execFile)
  * Baileys would compute the waveform itself only with the optional
  * `audio-decode` dep; ffmpeg is already here, so we do both in one pass.
  */
+/** WhatsApp mobile refuses ffmpeg's defaults (48 kHz / Lavf vendor tag) with
+ *  "something is wrong with the audio file" — encodeVoiceNote produces the
+ *  playable shape: 16 kHz mono opus, OpusTags vendor "WhatsApp". */
 export async function toVoiceNote(audio: Buffer): Promise<{ ogg: Buffer; seconds: number; waveform: Uint8Array }> {
-  const dir = join(tmpdir(), `console-al-vn-${process.pid}-${Date.now()}`)
-  await mkdir(dir, { recursive: true })
-  try {
-    const src = join(dir, 'in')
-    const ogg = join(dir, 'out.ogg')
-    const pcm = join(dir, 'out.pcm')
-    await writeFile(src, audio)
-    await execFileP('ffmpeg', ['-v', 'error', '-y', '-i', src,
-      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip', ogg,
-      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-c:a', 'pcm_s16le', pcm])
-    const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', ogg])
-    const seconds = Math.max(1, Math.round(Number(stdout)))
-    if (!Number.isFinite(seconds)) throw new Error('ffprobe could not read the converted clip')
-    const raw = await readFile(pcm)
-    const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2))
-    const buckets = 64
-    const block = Math.max(1, Math.floor(samples.length / buckets))
-    const peaks = Array.from({ length: buckets }, (_, i) => {
-      let sum = 0
-      for (let j = 0; j < block; j++) sum += Math.abs(samples[i * block + j] ?? 0)
-      return sum / block
-    })
-    const max = Math.max(...peaks, 1)
-    const waveform = Uint8Array.from(peaks, (p) => Math.round((p / max) * 100))
-    return { ogg: await readFile(ogg), seconds, waveform }
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
+  const clip = await encodeVoiceNote({ data: audio })
+  if (!clip) throw new Error('ffmpeg could not convert the clip into a voice note')
+  return { ogg: clip.data, seconds: Math.max(1, Math.round(clip.durationMs / 1000)), waveform: Uint8Array.from(clip.waveform ?? []) }
 }
 
 /** Outbound voice note (the mic-button kind, not a shared audio file). Accepts any ffmpeg-readable audio. */

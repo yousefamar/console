@@ -9,6 +9,7 @@ import type { HubMatrixCrypto } from '../matrix/crypto.js'
 import type { AuthStore } from '../auth-store.js'
 import type { MatrixSync } from '../matrix/sync.js'
 import { matrixPasswordLogin } from '../matrix/login.js'
+import { encodeVoiceNote } from '../ring/voice.js'
 import { restoreFromRecoveryKey, restoreCrossSigningFromRecoveryKey } from '../matrix/backup-restore.js'
 
 // Bridge detection — mirrored from src/matrix/sync.ts (browser side). Looks
@@ -284,10 +285,22 @@ export function handleMatrixRoutes(
       const roomId = decodeURIComponent(sendFileMatch[1]!)
       const body = JSON.parse(await readBody(req))
 
-      const fileData = Buffer.from(body.content, 'base64')
-      const contentType: string = body.mimeType || mimeFromFilename(body.filename) || 'application/octet-stream'
+      let fileData: Buffer = Buffer.from(body.content, 'base64')
+      let contentType: string = body.mimeType || mimeFromFilename(body.filename) || 'application/octet-stream'
       const voice = body.voice === true
       if (voice && !contentType.startsWith('audio/')) throw new Error('voice requires an audio file')
+      // A voice note is normalised into the ONLY shape WhatsApp mobile plays
+      // (16 kHz ogg/opus, vendor "WhatsApp") whatever was uploaded, and gets
+      // its duration + waveform measured here rather than trusted.
+      let waveform: number[] | undefined
+      if (voice) {
+        const clip = await encodeVoiceNote({ data: fileData })
+        if (!clip) throw new Error('ffmpeg could not convert the file into a voice note')
+        fileData = clip.data
+        contentType = clip.contentType
+        body.durationMs = clip.durationMs
+        waveform = clip.waveform
+      }
       const upload = await matrix.uploadMedia(fileData, contentType, body.filename)
 
       const msgtype = contentType.startsWith('image/') ? 'm.image'
@@ -308,7 +321,10 @@ export function handleMatrixRoutes(
       // this key is present, in which case it goes out as a push-to-talk voice note.
       if (voice) {
         content['org.matrix.msc3245.voice'] = {}
-        content['org.matrix.msc1767.audio'] = typeof body.durationMs === 'number' ? { duration: body.durationMs } : {}
+        content['org.matrix.msc1767.audio'] = {
+          ...(typeof body.durationMs === 'number' ? { duration: body.durationMs } : {}),
+          ...(waveform ? { waveform } : {}),
+        }
       }
 
       const result = await matrixSync.sendRoomEvent({

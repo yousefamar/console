@@ -10,6 +10,9 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { wordKey, wordKeys, fuzzyEqual } from './router.js'
 import { HEAD_SECONDS } from './audio.js'
 
@@ -18,12 +21,16 @@ const execFileP = promisify(execFile)
 export interface TimedWord { word: string; start: number; end: number }
 /** One RMS frame of the head clip: start time (s) and level (dBFS, -Infinity for digital silence). */
 export interface Frame { t: number; db: number }
-export interface VoiceClip { data: Buffer; contentType: string; durationMs: number }
+/** `waveform`: 64 peak buckets 0–100, the scale WhatsApp itself uses — real
+ *  voice notes always carry one and the bridge forwards it to the proto. */
+export interface VoiceClip { data: Buffer; contentType: string; durationMs: number; waveform?: number[] }
 /** Where the payload starts, per the words: `t` is the best guess, `lo`/`hi`
  *  bound the gap between the last head word and the first payload word. */
 export interface CutEstimate { t: number; lo: number; hi: number }
 
-export const VOICE_NOTE_MIME = 'audio/ogg'
+/** What real WhatsApp voice notes carry in the bridge event — the bare
+ *  `audio/ogg` also plays, but match the native shape exactly. */
+export const VOICE_NOTE_MIME = 'audio/ogg; codecs=opus'
 export const FRAME_MS = 50
 
 /** How many words into the recording the payload may start — a command head
@@ -145,29 +152,114 @@ export function parseEnvelope(out: string): Frame[] {
   return frames
 }
 
-/** The recording from `fromSeconds` on, as mono ogg/opus. Null when ffmpeg fails. */
-export async function cutVoiceNote(path: string, fromSeconds: number): Promise<VoiceClip | null> {
+/** WhatsApp mobile (verified on-device, Sept 2026) refuses voice notes that
+ *  are not Ogg/Opus at 16 kHz with the OpusTags vendor string "WhatsApp" —
+ *  48 kHz or an ffmpeg "Lavf…" vendor both land as "something is wrong with
+ *  the audio file". Hence: encode at 16 kHz, then byte-patch the vendor. */
+const VOICE_RATE = 16_000
+const VOICE_VENDOR = 'WhatsApp'
+
+/** The recording from `fromSeconds` on, as a WhatsApp-playable voice note. */
+export function cutVoiceNote(path: string, fromSeconds: number): Promise<VoiceClip | null> {
+  return encodeVoiceNote({ path, fromSeconds })
+}
+
+/** Any ffmpeg-readable audio → a WhatsApp-playable voice note: 16 kHz mono
+ *  ogg/opus, vendor patched, 64-bucket waveform. Null when ffmpeg fails. */
+export async function encodeVoiceNote(src: { path: string; fromSeconds?: number } | { data: Buffer }): Promise<VoiceClip | null> {
+  const dir = join(tmpdir(), `console-ring-vn-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   try {
-    const seek = fromSeconds > 0 ? ['-ss', fromSeconds.toFixed(3)] : []
-    const [{ stdout }, total] = await Promise.all([
-      execFileP('ffmpeg', ['-v', 'error', ...seek, '-i', path, '-vn', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip', '-f', 'ogg', 'pipe:1'], { encoding: 'buffer', maxBuffer: 32 << 20, timeout: 30_000 }),
-      audioDurationSeconds(path),
-    ])
-    if (!stdout.length) return null
-    const durationMs = Math.max(0, Math.round(((total ?? fromSeconds) - fromSeconds) * 1000))
-    return { data: stdout, contentType: VOICE_NOTE_MIME, durationMs }
+    await mkdir(dir, { recursive: true })
+    let input: string
+    if ('data' in src) { input = join(dir, 'in'); await writeFile(input, src.data) } else input = src.path
+    const seek = 'fromSeconds' in src && src.fromSeconds && src.fromSeconds > 0 ? ['-ss', src.fromSeconds.toFixed(3)] : []
+    const ogg = join(dir, 'out.ogg')
+    const pcm = join(dir, 'out.pcm')
+    await execFileP('ffmpeg', ['-v', 'error', '-y', ...seek, '-i', input,
+      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', String(VOICE_RATE), '-c:a', 'libopus', '-b:a', '24k', '-application', 'voip', ogg,
+      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-c:a', 'pcm_s16le', pcm,
+    ], { timeout: 60_000 })
+    const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', ogg], { encoding: 'utf8', timeout: 15_000 })
+    const secs = parseFloat(String(stdout).trim())
+    const raw = await readFile(ogg)
+    if (!raw.length) return null
+    return {
+      data: patchOpusVendor(raw),
+      contentType: VOICE_NOTE_MIME,
+      durationMs: Number.isFinite(secs) ? Math.round(secs * 1000) : 0,
+      waveform: pcmWaveform(await readFile(pcm)),
+    }
   } catch (err) {
-    console.warn(`[ring] voice note cut failed: ${(err as Error).message.slice(0, 200)}`)
+    console.warn(`[ring] voice note encode failed: ${(err as Error).message.slice(0, 200)}`)
     return null
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
-async function audioDurationSeconds(path: string): Promise<number | null> {
-  try {
-    const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path], { encoding: 'utf8', timeout: 15_000 })
-    const secs = parseFloat(String(stdout).trim())
-    return Number.isFinite(secs) ? secs : null
-  } catch {
-    return null
+/** 64 peak buckets, 0–100 — WhatsApp's own waveform scale (the bridge writes
+ *  real notes' waveforms into events verbatim on that scale). */
+export function pcmWaveform(raw: Buffer, buckets = 64): number[] {
+  const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2))
+  if (!samples.length) return Array.from({ length: buckets }, () => 0)
+  const block = Math.max(1, Math.floor(samples.length / buckets))
+  const peaks = Array.from({ length: buckets }, (_, i) => {
+    let sum = 0
+    for (let j = 0; j < block; j++) sum += Math.abs(samples[i * block + j] ?? 0)
+    return sum / block
+  })
+  const max = Math.max(...peaks, 1)
+  return peaks.map((p) => Math.round((p / max) * 100))
+}
+
+// --------------------------------------------------------------------------
+// Ogg surgery — replace the OpusTags vendor string in place.
+// --------------------------------------------------------------------------
+
+/** Rewrite the OpusTags packet (page 1) so the vendor reads `vendor` with no
+ *  user comments, recomputing that page's CRC. Anything unexpected (no tags
+ *  page, packet spanning pages) returns the input untouched. */
+export function patchOpusVendor(ogg: Buffer, vendor = VOICE_VENDOR): Buffer {
+  let off = 0
+  while (off + 27 <= ogg.length) {
+    if (ogg.toString('latin1', off, off + 4) !== 'OggS') return ogg
+    const segCount = ogg[off + 26]!
+    const headerLen = 27 + segCount
+    if (off + headerLen > ogg.length) return ogg
+    let payloadLen = 0
+    for (let i = 0; i < segCount; i++) payloadLen += ogg[off + 27 + i]!
+    const payloadStart = off + headerLen
+    const payloadEnd = payloadStart + payloadLen
+    if (payloadEnd > ogg.length) return ogg
+    if (ogg.toString('latin1', payloadStart, payloadStart + 8) === 'OpusTags') {
+      // The packet must end within this page (a lacing value of 255 means it
+      // continues into the next page — bail rather than corrupt).
+      if (segCount > 0 && ogg[off + 27 + segCount - 1] === 255) return ogg
+      const packet = Buffer.alloc(8 + 4 + Buffer.byteLength(vendor) + 4)
+      packet.write('OpusTags', 0, 'latin1')
+      packet.writeUInt32LE(Buffer.byteLength(vendor), 8)
+      packet.write(vendor, 12, 'utf8')
+      packet.writeUInt32LE(0, 12 + Buffer.byteLength(vendor))
+      const lacing: number[] = []
+      let rest = packet.length
+      while (rest >= 255) { lacing.push(255); rest -= 255 }
+      lacing.push(rest)
+      const page = Buffer.concat([ogg.subarray(off, off + 26), Buffer.from([lacing.length, ...lacing]), packet])
+      page.writeUInt32LE(0, 22)
+      page.writeUInt32LE(oggCrc(page), 22)
+      return Buffer.concat([ogg.subarray(0, off), page, ogg.subarray(payloadEnd)])
+    }
+    off = payloadEnd
   }
+  return ogg
+}
+
+/** Ogg's CRC-32: poly 0x04C11DB7, init 0, no reflection, no final xor. */
+export function oggCrc(buf: Buffer): number {
+  let crc = 0
+  for (const b of buf) {
+    crc ^= b << 24
+    for (let i = 0; i < 8; i++) crc = ((crc & 0x80000000 ? (crc << 1) ^ 0x04c11db7 : crc << 1)) >>> 0
+  }
+  return crc >>> 0
 }
