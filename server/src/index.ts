@@ -1246,6 +1246,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // A card only holds a slot while its worker is actually alive — a dead fork
   // (crashed, killed, ended without moving its card) must not block the queue.
   isWorkerAlive: (agentKey) => !!liveSessionForRole(agentCtx, agentKey),
+  isWorkerWaitingOnUser: (agentKey) => !!liveSessionForRole(agentCtx, agentKey)?.approvalPending,
   // A fresh ^id must not collide with any session that already carries one
   // in its key/title — ended and hibernated included: their card may be gone
   // from the board, but the fork key convention and `con agent chat <name>`

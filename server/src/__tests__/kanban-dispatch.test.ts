@@ -957,6 +957,36 @@ describe('BoardWatcher onReopen', () => {
     }
   })
 
+  it('a worker waiting on an AskUserQuestion is not nudged — and the nudge is not burnt (^snug-seal)', async () => {
+    const stales: string[] = []
+    const dir = mkdtempSync(join(tmpdir(), 'boards-'))
+    mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
+    writeFileSync(join(dir, 'projects', 'demo', 'board.md'), b('\n- [ ] Work @eng ^ws1\n'))
+    let clock = 1_000_000
+    let waiting = true
+    const watcher = new BoardWatcher(new NoteStore(dir), {
+      log: () => {}, onDispatch: () => true,
+      onStale: (t) => stales.push(t.blockId),
+      isWorkerWaitingOnUser: () => waiting,
+      pollMs: 999_999, staleMs: 60_000, now: () => clock,
+    })
+    try {
+      await watcher.start()
+      clock += 61_000
+      await watcher.poll()
+      expect(stales).toEqual([]) // waiting on Yousef — no nudge, none burnt
+      clock += 61_000
+      await watcher.poll()
+      expect(stales).toEqual([])
+      waiting = false // question answered, card still sitting there
+      await watcher.poll()
+      expect(stales).toEqual(['ws1']) // first nudge fires now, not the third
+    } finally {
+      watcher.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('redispatch(): manual re-fire for a stamped open card; refuses Done cards and unknown ids', async () => {
     const reopens: string[] = []
     const { dir, boardAbs, watcher } = await setup(b('\n- [ ] Work @eng ^ro6\n'), (t) => { reopens.push(t.blockId); return true })
