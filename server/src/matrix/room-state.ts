@@ -264,10 +264,15 @@ export function computeRoomState(
 ): RoomState {
   const stateEvents = delta.state?.events ?? []
   const timelineEvents = delta.timeline?.events ?? []
-  const allStateForRoom = [...stateEvents]
+  // Room state is keyed by (type, state_key); the same member's join can
+  // appear in both `state` and `timeline` of one delta, and counting it twice
+  // is how a 2-person DM was stored as a 3-member group. Latest wins.
+  const latestState = new Map<string, MatrixEvent>()
+  for (const event of stateEvents) latestState.set(`${event.type} ${event.state_key}`, event)
   for (const event of timelineEvents) {
-    if (event.state_key !== undefined) allStateForRoom.push(event)
+    if (event.state_key !== undefined) latestState.set(`${event.type} ${event.state_key}`, event)
   }
+  const allStateForRoom = Array.from(latestState.values())
 
   const senderInfo = getSenderInfo(allStateForRoom)
 
@@ -344,7 +349,16 @@ export function computeRoomState(
   const hasNewMessages = !!lastMsg
   const hadMessages = !!existing?.lastMessageBody
   const newestMessageTime = lastMsg?.timestamp ?? 0
-  const advancesPreview = newestMessageTime > (existing?.lastMessageTime ?? 0)
+  // A room that has never previewed a message (a bridge portal that arrived
+  // state-only) carries a lastMessageTime borrowed from its newest state
+  // event (fallback below). A bridged message can legitimately predate that:
+  // the bridge stamps WhatsApp's original send time, so a new contact's first
+  // message is dated seconds BEFORE the room that carries it and used to be
+  // dropped as "older than the preview" — no preview, no unread (^rare-deer).
+  // The first real message always wins; "newer than the preview" applies only
+  // once there is a real preview to compare against.
+  const hadPreview = !!existing?.lastMessageSender
+  const advancesPreview = !!lastMsg && (!hadPreview || newestMessageTime > (existing?.lastMessageTime ?? 0))
   const hasNewerMessagesFromOthers = existing
     ? advancesPreview && !!lastMsg && lastMsg.senderId !== ctx.myUserId
     : false
@@ -424,8 +438,10 @@ export function computeRoomState(
               : existing.unreadCount))
         : serverNotifCount || undefined,
     lastReadEventId: existing?.lastReadEventId,
+    // Seed the unread divider at the previous message — never at a borrowed
+    // state-event time, which can sit AFTER the first real message.
     lastReadTs: existing?.lastReadTs
-      ?? (hasNewerMessagesFromOthers && existing?.lastMessageTime
+      ?? (hasNewerMessagesFromOthers && hadPreview && existing?.lastMessageTime
         ? existing.lastMessageTime
         : undefined),
     isMuted: ctx.mutedRoomIds.has(roomId),

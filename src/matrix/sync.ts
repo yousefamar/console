@@ -705,8 +705,12 @@ async function processJoinedRoom(
   const newestMessageTime = lastMsg?.timestamp ?? 0
   // Only advance the room preview if the batch's newest message is newer than
   // what we already have. Prevents out-of-order resume ingestion from rolling
-  // the preview back to an older message.
-  const advancesPreview = newestMessageTime > (existing?.lastMessageTime ?? 0)
+  // the preview back to an older message. A room with no preview yet has a
+  // lastMessageTime borrowed from a state event, which a bridged first message
+  // (stamped with the network's original send time) can predate — so the first
+  // real message always wins. Mirrors server/src/matrix/room-state.ts.
+  const hadPreview = !!existing?.lastMessageSender
+  const advancesPreview = !!lastMsg && (!hadPreview || newestMessageTime > (existing?.lastMessageTime ?? 0))
   // For existing rooms, only re-unread when genuinely new messages from others arrive —
   // don't let stale server notification_count override local read state.
   // But DO respect server notification_count dropping to 0 (read on another client/platform).
@@ -793,7 +797,7 @@ async function processJoinedRoom(
     // When new unread messages arrive and there's no lastReadTs yet, set it to the
     // previous last message time so the "New" divider renders at the right boundary.
     lastReadTs: existing?.lastReadTs
-      ?? (hasNewerMessagesFromOthers && existing?.lastMessageTime
+      ?? (hasNewerMessagesFromOthers && hadPreview && existing?.lastMessageTime
         ? existing.lastMessageTime
         : undefined),
     isMuted: existing?.isMuted ?? false,
