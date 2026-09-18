@@ -45,9 +45,14 @@ export class WebhookStore {
     mkdirSync(this.deliveriesDir, { recursive: true })
   }
 
-  /** Sortable, filesystem-safe id: `2026-09-16T10-15-30.123Z-ab12`. */
+  private lastMintedAt = 0
+
+  /** Sortable, filesystem-safe id: `2026-09-16T10-15-30.123Z-ab12`. Two
+   *  deliveries in the same millisecond would otherwise sort by the random
+   *  suffix, so the id's clock is nudged forward to stay strictly monotone. */
   mintId(at: number): string {
-    return `${new Date(at).toISOString().replace(/:/g, '-')}-${randomBytes(2).toString('hex')}`
+    this.lastMintedAt = Math.max(at, this.lastMintedAt + 1)
+    return `${new Date(this.lastMintedAt).toISOString().replace(/:/g, '-')}-${randomBytes(2).toString('hex')}`
   }
 
   save(rec: WebhookDelivery): WebhookDelivery {
