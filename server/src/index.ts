@@ -620,7 +620,8 @@ matrixSync.start()
 // marker file so it runs once after this code ships, not on every restart.
 // Delayed so it lands after the first sync tick has populated the snapshot.
 {
-  const SWEEP_VERSION = 1
+  // v2: state events deduped by (type, state_key) — re-derive DMs a doubled join had inflated (^rare-deer)
+  const SWEEP_VERSION = 2
   const markerPath = join(feedsConfigDir, 'chat-rooms-sweep.json')
   let lastVersion = 0
   try {
