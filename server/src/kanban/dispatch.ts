@@ -11,7 +11,8 @@
 // Completion is the agent (or Yousef) moving the line to a done column —
 // detected by diffing, not reported via any RPC.
 
-import type { KanbanBoard, BoardCard } from './board.js'
+import { join } from 'node:path'
+import { isVideoAsset, type KanbanBoard, type BoardCard } from './board.js'
 import { skillHintLines, type SkillHint } from './skill-hints.js'
 
 /** Columns whose cards get dispatched when assigned. Deliberately narrow —
@@ -203,7 +204,7 @@ export function handbackStanza(ref: string, blockId: string): string[] {
   return [
     'HAND-BACK (Yousef reads the CARD, not your transcript — often days later):',
     `1. \`con spaces board ${ref} note "^${blockId}" "- …"\` — a concise bulleted summary of EXACTLY what you did: what changed (files/commands/commits), how you verified it, anything he must know or decide. One \`- \` bullet per line; newlines are fine.`,
-    `2. \`con spaces board ${ref} attach "^${blockId}" <screenshot.png> [--caption "…"]\` — screenshots wherever a visual check helps. REQUIRED when you worked in a worktree or touched UI: he can't easily run your worktree, so show him (capture your own dev server via Playwright/grim — never his live tab).`,
+    `2. \`con spaces board ${ref} attach "^${blockId}" <screenshot.png|clip.webm> [--caption "…"]\` — screenshots (png/jpg/gif/webp) or short clips (webm/mp4, ≤20 MB) wherever a visual check helps. REQUIRED when you worked in a worktree or touched UI: he can't easily run your worktree, so show him (capture your own dev server via Playwright/grim — never his live tab).`,
     `3. Only THEN \`con spaces board ${ref} move "^${blockId}" "Under Review"\`. Finish your turn with the same bullets as your final message.`,
   ]
 }
@@ -278,13 +279,23 @@ export function buildBoardEnvelope(opts: {
    *  fork reads the SKILL.md before its first edit; `paths:`-scoped skills
    *  aren't in its listing until then. */
   skills?: readonly SkillHint[] | null
+  /** Absolute path of the vault's sibling assets dir — lets video clips on the
+   *  card be named by a path the reader can locate. */
+  assetsAbsPath?: string | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills, assetsAbsPath } = opts
   const inherited = forkIdentity?.context !== 'fresh'
   // Image detail lines are delivered as REAL image attachments on the wake —
-  // echoing them as text renders a broken ![img] box in the transcript.
-  const detail = card.lines.slice(1).map((l) => l.trim())
-    .filter((l) => l && !/^!\[[^\]]*\]\([^)]+\)$/.test(l))
+  // echoing them as text renders a broken ![img] box in the transcript. Clips
+  // have no such channel (the API takes no video), so they stay as a path.
+  const detail: string[] = []
+  for (const raw of card.lines.slice(1)) {
+    const l = raw.trim()
+    if (!l) continue
+    const media = l.match(/^!\[[^\]]*\]\(([^)]+)\)$/)
+    if (!media) { detail.push(l); continue }
+    if (isVideoAsset(media[1]!)) detail.push(`(video clip, not viewable by you: ${assetsAbsPath ? join(assetsAbsPath, media[1]!) : media[1]!})`)
+  }
   return [
     '[BOARD TASK — action required]',
     ...(forkIdentity ? [

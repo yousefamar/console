@@ -217,7 +217,7 @@ describe('buildBoardEnvelope', () => {
     })
     expect(env).toContain('HAND-BACK')
     expect(env).toContain('con spaces board astera note "^abc123" "- …"')
-    expect(env).toContain('con spaces board astera attach "^abc123" <screenshot.png>')
+    expect(env).toContain('con spaces board astera attach "^abc123" <screenshot.png|clip.webm>')
     expect(env).toMatch(/REQUIRED when you worked in a worktree/)
     // Order: note (1) → attach (2) → move (3).
     expect(env.indexOf('note "^abc123"')).toBeLessThan(env.indexOf('attach "^abc123"'))
@@ -227,6 +227,22 @@ describe('buildBoardEnvelope', () => {
     // No project slug → the CLI ref falls back to the board path.
     const noProj = buildBoardEnvelope({ boardAbsPath: '/vault/notes/side.md', card: { text: 'x', blockId: 'zz', lines: ['- [ ] x ^zz'] }, column: 'In Progress' })
     expect(noProj).toContain('con spaces board /vault/notes/side.md note "^zz"')
+  })
+
+  it('stills are stripped (they ride as real images); clips stay as an absolute path the reader can locate (^hazy-swan)', () => {
+    const env = buildBoardEnvelope({
+      boardAbsPath: '/vault/projects/console/board.md',
+      assetsAbsPath: '/vault-assets',
+      card: { text: 'Fix it', blockId: 'abc123', lines: ['- [ ] Fix it ^abc123', '  a note', '  ![shot](board/card-1.png)', '  ![clip](board/card-2.webm)'] },
+      column: 'In Progress',
+      project: 'console',
+    })
+    expect(env).toContain('a note')
+    expect(env).not.toContain('card-1.png')
+    expect(env).toContain('(video clip, not viewable by you: /vault-assets/board/card-2.webm)')
+    // Without an assets root the relative path still names the clip.
+    const rel = buildBoardEnvelope({ boardAbsPath: '/v/b.md', card: { text: 'x', blockId: 'zz', lines: ['- [ ] x ^zz', '  ![c](board/c.mp4)'] }, column: 'In Progress' })
+    expect(rel).toContain('not viewable by you: board/c.mp4)')
   })
 })
 

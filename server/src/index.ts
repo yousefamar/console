@@ -1017,6 +1017,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     }
     wakeWorker(worker, forked, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
+      assetsAbsPath: noteStore.assetsPath,
       card: { text: card.text, blockId: card.blockId!, lines: card.lines },
       column,
       project,
@@ -1191,6 +1192,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     }
     wakeWorker(worker, forked, buildBoardEnvelope({
       boardAbsPath,
+      assetsAbsPath: noteStore.assetsPath,
       card: { text: t.text, blockId: t.blockId, lines: t.lines },
       column: t.column,
       project: projectForBoardPath(t.boardPath),

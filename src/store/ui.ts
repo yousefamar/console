@@ -147,7 +147,9 @@ interface UiState {
 
   // Global image lightbox (agent transcripts etc. — chat has its own gallery-aware one)
   lightboxSrc: string | null
-  setLightboxSrc: (src: string | null) => void
+  /** `video` renders a <video controls> instead of the zoomable <img>. */
+  lightboxKind: 'image' | 'video'
+  setLightboxSrc: (src: string | null, kind?: 'image' | 'video') => void
 
   // Auth
   userEmail: string
@@ -162,7 +164,8 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   lightboxSrc: null,
-  setLightboxSrc: (src) => set({ lightboxSrc: src }),
+  lightboxKind: 'image',
+  setLightboxSrc: (src, kind = 'image') => set({ lightboxSrc: src, lightboxKind: src ? kind : 'image' }),
 
   darkMode: true,
   emailDarkMode: true,

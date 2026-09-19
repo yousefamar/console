@@ -24,6 +24,13 @@ import { REVIEW_COLUMN_RE, hasSummaryBullets, handbackWarning } from './dispatch
  *  `publicAssetDirs` allow-list in the vault's .eleventy.js. */
 export const CARD_ASSET_DIR = 'board'
 
+/** Attachment types `attach` accepts, by normalised extension. Videos are
+ *  Playwright's webm and ffmpeg's mp4 — what hand-back clips actually are. */
+export const ATTACH_IMAGE_EXTS = ['png', 'jpg', 'gif', 'webp'] as const
+export const ATTACH_VIDEO_EXTS = ['webm', 'mp4'] as const
+/** Same ceiling as the transcript media bridge (agents/local-file.ts). */
+export const MAX_ATTACH_BYTES = 20 * 1024 * 1024
+
 /** Detail text → indented card continuation lines. A note may span several
  *  lines (a bulleted hand-back summary); pushing it as ONE line would put a
  *  raw newline inside a card line and the next parse would read the tail as
@@ -338,11 +345,13 @@ export class BoardOps {
     })
   }
 
-  /** Attach an image (a hand-back screenshot) to a card: the bytes land in
-   *  the vault's sibling assets dir under `board/` (same convention as the
-   *  SPA's paste-upload), and the card gains a `![caption](board/…)` detail
-   *  line — rendered as a thumbnail by the board UI and delivered as a real
-   *  image attachment on any later dispatch of the card.
+  /** Attach a hand-back screenshot or clip to a card: the bytes land in the
+   *  vault's sibling assets dir under `board/` (same convention as the SPA's
+   *  paste-upload), and the card gains a `![caption](board/…)` detail line —
+   *  rendered as a thumbnail (images) or a playable tile (webm/mp4) by the
+   *  board UI. Images are also delivered as real image attachments on any
+   *  later dispatch of the card; clips can't be (no video input), so the
+   *  envelope names their path instead.
    *
    *  `board/` and NOT `images/`: the website publishes assets/ by a dir
    *  allow-list, so an unlisted dir is private by construction. Card
@@ -351,12 +360,19 @@ export class BoardOps {
    *  but a dir nobody lists is the survivable location. */
   async attach(project: string, query: string, image: { data: Buffer; ext: string; caption?: string }, actor?: string): Promise<CardView & { asset: string }> {
     const ext = image.ext.replace(/^\./, '').toLowerCase().replace('jpeg', 'jpg')
-    if (!/^(png|jpg|gif|webp)$/.test(ext)) throw new Error(`unsupported image type "${image.ext}" (png/jpg/gif/webp)`)
+    const isVideo = (ATTACH_VIDEO_EXTS as readonly string[]).includes(ext)
+    if (!isVideo && !(ATTACH_IMAGE_EXTS as readonly string[]).includes(ext)) {
+      throw new Error(`unsupported attachment type "${image.ext}" (${ATTACH_IMAGE_EXTS.join('/')} images, ${ATTACH_VIDEO_EXTS.join('/')} clips)`)
+    }
+    if (image.data.length > MAX_ATTACH_BYTES) {
+      const mb = (n: number) => (n / 1024 / 1024).toFixed(1)
+      throw new Error(`attachment too large: ${mb(image.data.length)} MB (cap ${mb(MAX_ATTACH_BYTES)} MB)${isVideo ? ' — trim or compress the clip' : ''}`)
+    }
     // Resolve first so a bad card query doesn't leave an orphan asset behind.
     const hit = await this.resolveCard(project, query)
     const asset = `${CARD_ASSET_DIR}/card-${Date.now()}-${hit.blockId ?? 'card'}.${ext}`
     await this.store.writeAsset(asset, image.data)
-    const caption = image.caption?.trim().replace(/[\[\]]/g, '') || 'screenshot'
+    const caption = image.caption?.trim().replace(/[\[\]]/g, '') || (isVideo ? 'clip' : 'screenshot')
     const view = await this.note(project, query, `![${caption}](${asset})`, actor)
     return { ...view, asset }
   }

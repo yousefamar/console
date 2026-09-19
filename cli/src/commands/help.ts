@@ -420,7 +420,7 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> block "<card>"        Tag #blocked (keeps column position) [--note "why"]
   board <project> unblock "<card>"
   board <project> note "<card>" "text"  Append note lines under a card (newlines → one line each)
-  board <project> attach "<card>" <img>  Attach a screenshot (png/jpg/gif/webp) [--caption "what"]
+  board <project> attach "<card>" <file> Attach a screenshot (png/jpg/gif/webp) or clip (webm/mp4, ≤20 MB) [--caption "what"]
   board <project> edit "<card>"         Rewrite text/detail [--text "new"] [--detail "a|b"]
   board <project> remove "<card>"       Delete a card (human judgment — agents move, never delete)
   board <project> redispatch "<card>"   Re-wake a stamped card's assignee (re-forks if its session is gone)

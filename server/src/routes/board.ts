@@ -8,7 +8,7 @@
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
 //   POST /board/:project/note               {card, note}       multi-line OK — one detail line per line
-//   POST /board/:project/attach             {card, image: base64, ext?, caption?}   screenshot → asset + image detail line
+//   POST /board/:project/attach             {card, image: base64, ext?, caption?}   screenshot/clip (png/jpg/gif/webp/webm/mp4, ≤20 MB) → asset + media detail line
 //   POST /board/:project/owner              {agent|null}       board frontmatter default_owner
 //   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
 //   POST /board/:project/edit               {card, text?, detail?}

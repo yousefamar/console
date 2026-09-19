@@ -38,7 +38,10 @@ import { ImageLightbox } from './ImageLightbox'
 
 function GlobalLightbox() {
   const src = useUiStore((s) => s.lightboxSrc)
+  const kind = useUiStore((s) => s.lightboxKind)
   if (!src) return null
+  // Clips play alone — no zoom, no paging through the card's stills.
+  if (kind === 'video') return <ImageLightbox src={src} video onClose={() => useUiStore.getState().setLightboxSrc(null)} />
   // Gallery order for ←/→ paging, in DOM order — the chat lightbox's pattern
   // (ChatRoomView). Queried live at navigation time; offsetParent filters out
   // images in display:none pre-rendered panes. Two galleries: a kanban card

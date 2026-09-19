@@ -10,7 +10,7 @@
 //   con spaces board <project> assign "<card>" <agentKey|none>
 //   con spaces board <project> block "<card>" [--note "why"] / unblock "<card>"
 //   con spaces board <project> note "<card>" "text"           # multi-line OK: one detail line per line
-//   con spaces board <project> attach "<card>" <image.png> [--caption "what it shows"]
+//   con spaces board <project> attach "<card>" <image.png|clip.webm> [--caption "what it shows"]
 //   con spaces board <project> edit "<card>" [--text "new"] [--detail "a|b"]
 //   con spaces board <project> remove "<card>"
 //
@@ -143,9 +143,12 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
     }
     case 'attach': {
       const [card, file] = [pos[0], pos[1]]
-      if (!card || !file) { exitWithError('USAGE', 'Usage: con spaces board <project> attach "<card>" <image.png|jpg|gif|webp> [--caption "what it shows"]', flags); return }
+      if (!card || !file) { exitWithError('USAGE', 'Usage: con spaces board <project> attach "<card>" <screenshot.png|jpg|gif|webp | clip.webm|mp4> [--caption "what it shows"]', flags); return }
       let data: Buffer
       try { data = await readFile(file) } catch (e) { exitWithError('NOT_FOUND', `cannot read ${file}: ${(e as Error).message}`, flags); return }
+      // Fail before base64-ing a 200 MB recording; the hub enforces the same cap.
+      const MAX_ATTACH_BYTES = 20 * 1024 * 1024
+      if (data.length > MAX_ATTACH_BYTES) { exitWithError('TOO_LARGE', `${file} is ${(data.length / 1024 / 1024).toFixed(1)} MB; attachments are capped at 20 MB — trim or compress it (e.g. ffmpeg -i in.webm -vf scale=1280:-2 -crf 32 out.webm)`, flags); return }
       const ext = extname(file).slice(1) || 'png'
       const caption = opts.caption ?? basename(file, extname(file))
       output(await hubFetch(`/board/${enc}/attach`, { method: 'POST', body: { card, image: data.toString('base64'), ext, caption } }), flags)

@@ -1,10 +1,11 @@
-// Card image attachments — shared plumbing for the board UI.
+// Card media attachments — shared plumbing for the board UI.
 //
 // An image on a card IS a markdown image detail line (`![img](board/x.png)`)
 // under the card, path relative to the vault's sibling assets dir and served
 // by the hub at /notes/asset/<path>. The UI renders those lines as thumbnails
 // instead of text; pasting into a card editor uploads the blob and appends
-// the line.
+// the line. Video clips (webm/mp4, via `con board attach`) use the same line
+// shape and render as a play tile that opens the lightbox in video mode.
 //
 // New uploads go under `board/`, never `images/`: the website publishes
 // assets/ by a dir allow-list, so an unlisted dir is private by construction
@@ -24,6 +25,8 @@ export function isImageLine(line: string): boolean {
 export function imagePathOf(line: string): string | null {
   return line.trim().match(IMAGE_LINE_RE)?.[1] ?? null
 }
+
+export { isVideoAsset } from '@/kanban/board'
 
 export function imageLineFor(assetPath: string): string {
   return `![img](${assetPath})`
@@ -59,7 +62,8 @@ export function imagesFromPaste(e: React.ClipboardEvent): Blob[] {
 }
 
 // Blob-URL cache so thumbnails don't refetch on every render. Keyed by asset
-// path; entries live for the page lifetime (small images, bounded set).
+// path; entries live for the page lifetime (small images, bounded set). Clips
+// (≤20 MB) only enter it on click — the play tile itself fetches nothing.
 const urlCache = new Map<string, Promise<string | null>>()
 
 export function assetBlobUrl(assetPath: string): Promise<string | null> {

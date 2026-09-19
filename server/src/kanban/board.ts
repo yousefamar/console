@@ -316,10 +316,6 @@ export function refreshCardLine(card: BoardCard): void {
   card.lines[0] = cardFirstLine(card)
 }
 
-
-/** Image attachments on a card: detail lines that are markdown images
- *  (`![alt](path)`). Paths are relative to the vault's sibling assets dir
- *  (the pasteImage convention) — served at /notes/asset/<path>. */
 /** Every http(s) URL on a card (text + detail lines), for click-from-the-tile
  *  affordances. Markdown links yield their label; bare URLs label as their
  *  hostname. Image lines are EXCLUDED — they render as thumbnails already. */
@@ -353,13 +349,33 @@ export function cardUrls(card: BoardCard): Array<{ url: string; label: string }>
   return out
 }
 
-export function cardImagePaths(card: Pick<BoardCard, 'lines'>): string[] {
+/** Media attachments on a card are detail lines that are EXACTLY a markdown
+ *  image (`![alt](path)`), path relative to the vault's sibling assets dir
+ *  (the paste-upload convention) — served at /notes/asset/<path>. Video clips
+ *  use the same line shape; the extension tells them apart. */
+export const VIDEO_ASSET_RE = /\.(webm|mp4)$/i
+
+export function isVideoAsset(path: string): boolean {
+  return VIDEO_ASSET_RE.test(path)
+}
+
+export function cardMediaPaths(card: Pick<BoardCard, 'lines'>): string[] {
   const out: string[] = []
   for (const line of card.lines.slice(1)) {
     const m = line.trim().match(/^!\[[^\]]*\]\(([^)]+)\)$/)
     if (m) out.push(m[1]!)
   }
   return out
+}
+
+/** Still images only — the ones a dispatch wake can hand the model as real
+ *  image attachments (the API has no video input; clips stay a path). */
+export function cardImagePaths(card: Pick<BoardCard, 'lines'>): string[] {
+  return cardMediaPaths(card).filter((p) => !isVideoAsset(p))
+}
+
+export function cardVideoPaths(card: Pick<BoardCard, 'lines'>): string[] {
+  return cardMediaPaths(card).filter(isVideoAsset)
 }
 
 export interface CardRef {

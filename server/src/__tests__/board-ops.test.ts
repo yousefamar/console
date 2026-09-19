@@ -204,10 +204,27 @@ describe('hand-back (^shy-boar)', () => {
     expect(readFileSync(join(store.assetsPath, r.asset))).toEqual(png)
     expect(r.detail).toContain(`![after fix](${r.asset})`)
     expect(onDisk()).toContain(`  ![after fix](${r.asset})`)
-    await expect(ops.attach('demo', '^cc22dd', { data: png, ext: 'svg' })).rejects.toThrow(/unsupported image type/)
+    await expect(ops.attach('demo', '^cc22dd', { data: png, ext: 'svg' })).rejects.toThrow(/unsupported attachment type/)
     // A bad card query leaves no orphan asset behind.
     const before = readFileSync(join(store.assetsPath, r.asset)).length
     await expect(ops.attach('demo', '^nope', { data: png, ext: 'png' })).rejects.toThrow(/no card with id/)
     expect(readFileSync(join(store.assetsPath, r.asset)).length).toBe(before)
+  })
+
+  it('attach accepts webm/mp4 clips (default caption "clip"), size-capped at 20 MB (^hazy-swan)', async () => {
+    const webm = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 9, 9, 9])
+    const r = await ops.attach('demo', '^cc22dd', { data: webm, ext: '.webm' })
+    expect(r.asset).toMatch(/^board\/card-\d+-cc22dd\.webm$/)
+    expect(readFileSync(join(store.assetsPath, r.asset))).toEqual(webm)
+    expect(onDisk()).toContain(`  ![clip](${r.asset})`)
+    const mp4 = await ops.attach('demo', '^cc22dd', { data: webm, ext: 'MP4', caption: 'flow' })
+    expect(mp4.asset).toMatch(/\.mp4$/)
+    expect(mp4.detail).toContain(`![flow](${mp4.asset})`)
+    await expect(ops.attach('demo', '^cc22dd', { data: webm, ext: 'mov' })).rejects.toThrow(/unsupported attachment type/)
+    const huge = Buffer.alloc(20 * 1024 * 1024 + 1)
+    await expect(ops.attach('demo', '^cc22dd', { data: huge, ext: 'webm' })).rejects.toThrow(/too large: 20\.0 MB \(cap 20\.0 MB\)/)
+    // The cap applies to stills too, and the refusal leaves no asset behind.
+    await expect(ops.attach('demo', '^cc22dd', { data: huge, ext: 'png' })).rejects.toThrow(/too large/)
+    expect(onDisk().match(/!\[/g)?.length).toBe(2)
   })
 })

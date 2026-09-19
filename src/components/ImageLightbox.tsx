@@ -10,12 +10,14 @@ interface ImageLightboxProps {
   onNext?: () => void
   /** 1-based position + total for the counter chip. */
   position?: { index: number; total: number }
+  /** Render a playing <video controls> instead of the zoomable <img>. */
+  video?: boolean
 }
 
 const MIN_SCALE = 1
 const MAX_SCALE = 8
 
-export function ImageLightbox({ src, onClose, onPrev, onNext, position }: ImageLightboxProps) {
+export function ImageLightbox({ src, onClose, onPrev, onNext, position, video }: ImageLightboxProps) {
   // Zoom/pan transform: translate(tx,ty) scale(s), origin center.
   const [t, setT] = useState({ s: 1, x: 0, y: 0 })
   const imgRef = useRef<HTMLImageElement>(null)
@@ -140,24 +142,35 @@ export function ImageLightbox({ src, onClose, onPrev, onNext, position }: ImageL
           <ChevronLeft size={22} />
         </button>
       )}
-      <img
-        ref={imgRef}
-        src={src}
-        alt=""
-        draggable={false}
-        className="max-h-[90vh] max-w-[90vw] object-contain select-none"
-        style={{
-          transform: `translate(${t.x}px, ${t.y}px) scale(${t.s})`,
-          cursor: t.s > 1 ? 'grab' : 'zoom-in',
-          transition: pointers.current.size ? 'none' : 'transform 120ms ease-out',
-        }}
-        onClick={(e) => { e.stopPropagation(); if (dragged.current) { dragged.current = false } }}
-        onDoubleClick={onDoubleClick}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      />
+      {video ? (
+        <video
+          src={src}
+          controls
+          autoPlay
+          playsInline
+          className="max-h-[90vh] max-w-[90vw] cursor-default select-none rounded-sm bg-black"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <img
+          ref={imgRef}
+          src={src}
+          alt=""
+          draggable={false}
+          className="max-h-[90vh] max-w-[90vw] object-contain select-none"
+          style={{
+            transform: `translate(${t.x}px, ${t.y}px) scale(${t.s})`,
+            cursor: t.s > 1 ? 'grab' : 'zoom-in',
+            transition: pointers.current.size ? 'none' : 'transform 120ms ease-out',
+          }}
+          onClick={(e) => { e.stopPropagation(); if (dragged.current) { dragged.current = false } }}
+          onDoubleClick={onDoubleClick}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        />
+      )}
       {onNext && (
         <button
           onClick={(e) => { e.stopPropagation(); onNext() }}

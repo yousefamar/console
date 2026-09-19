@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   cardUrls,
-  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, splitTrailingTags, modelToken,
+  isKanbanBoard, parseCardTokens, parseBoard, serializeBoard, sanitizeCardText, cardImagePaths, cardVideoPaths, cardMediaPaths, splitTrailingTags, modelToken,
   findCardByBlockId, getCard, moveCard, addCard, refreshCardLine,
   boardDefaultOwner, setBoardDefaultOwner, boardForkContext,
 } from '../kanban/board.js'
@@ -192,6 +192,14 @@ describe('cardImagePaths', () => {
   it('empty for a card with no image lines', () => {
     const board = parseBoard(`---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Plain card\n  just text\n`)
     expect(cardImagePaths(board.columns[0]!.cards[0]!)).toEqual([])
+  })
+
+  it('clips (webm/mp4) split off from stills — a wake attaches only the stills (^hazy-swan)', () => {
+    const board = parseBoard(`---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Card ^ab12cd\n  ![shot](board/card-1.png)\n  ![clip](board/card-2.webm)\n  ![flow](board/card-3.MP4)\n`)
+    const card = board.columns[0]!.cards[0]!
+    expect(cardMediaPaths(card)).toEqual(['board/card-1.png', 'board/card-2.webm', 'board/card-3.MP4'])
+    expect(cardImagePaths(card)).toEqual(['board/card-1.png'])
+    expect(cardVideoPaths(card)).toEqual(['board/card-2.webm', 'board/card-3.MP4'])
   })
 })
 

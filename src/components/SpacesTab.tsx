@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Play, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
@@ -36,7 +36,7 @@ import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
 import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
-import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl } from '@/kanban/card-images'
+import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl, isVideoAsset } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
 import { compareSpacesForRail } from '@/spaces/rail-order'
 import { effectiveOwnerKey } from '@/spaces/owner'
@@ -1656,7 +1656,7 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
                   <button
                     onClick={() => { setImages((cur) => cur.filter((x) => x !== path)); setTimeout(commitContent, 0) }}
                     className="absolute -right-1.5 -top-1.5 hidden rounded-full border border-border bg-surface-0 p-0.5 text-text-tertiary hover:text-destructive group-hover/thumb:block"
-                    title="Remove image"
+                    title="Remove attachment"
                   >
                     <X size={10} />
                   </button>
@@ -1846,8 +1846,43 @@ function CardEditor({ initial, placeholder, onCommit, onCancel }: {
 
 /** Async blob-URL thumbnail for a card image (asset-relative path). Click
  *  opens the global lightbox; `group` (the card's identity) tags the <img> so
- *  GlobalLightbox pages ←/→ across THIS card's images only. */
+ *  GlobalLightbox pages ←/→ across THIS card's images only. Clips (webm/mp4)
+ *  render as a play tile instead — nothing is fetched until it is clicked,
+ *  then the lightbox plays the blob. */
 function CardImageThumb({ path, size, group }: { path: string; size: number; group: string }) {
+  if (isVideoAsset(path)) return <CardClipTile path={path} size={size} />
+  return <CardStillThumb path={path} size={size} group={group} />
+}
+
+function CardClipTile({ path, size }: { path: string; size: number }) {
+  const [loading, setLoading] = useState(false)
+  const ext = path.split('.').pop()?.toLowerCase() ?? 'clip'
+  const open = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (loading) return
+    setLoading(true)
+    const url = await assetBlobUrl(path)
+    setLoading(false)
+    if (url) useUiStore.getState().setLightboxSrc(url, 'video')
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => void open(e)}
+      title={`Play ${ext} clip`}
+      style={{ width: size, height: size }}
+      className={clsx(
+        'flex flex-col items-center justify-center gap-0.5 rounded-sm border border-border bg-black/70 text-white/80 hover:text-white',
+        loading && 'animate-pulse',
+      )}
+    >
+      <Play size={Math.max(12, size / 3)} fill="currentColor" />
+      <span className="text-[8px] uppercase tracking-wider">{ext}</span>
+    </button>
+  )
+}
+
+function CardStillThumb({ path, size, group }: { path: string; size: number; group: string }) {
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
     let alive = true
