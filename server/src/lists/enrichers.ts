@@ -19,8 +19,9 @@ export type RowResult =
   /** Remove the row; `note` is appended (dated) to `logTo` when given. */
   | { kind: 'remove'; note?: string; logTo?: string }
   /** Still pending — nothing to do yet (no open order) or couldn't act. `retry`
-   *  = a genuine failure worth backing off; false = "not yet", check again next sweep. */
-  | { kind: 'skip'; retry: boolean; reason?: string }
+   *  = a genuine failure worth backing off; false = "not yet", check again next sweep.
+   *  `alert` = Yousef should hear about it now (an open order is waiting on it). */
+  | { kind: 'skip'; retry: boolean; reason?: string; alert?: boolean }
 
 export interface Enricher {
   /** Columns this enricher owns, in table order (the raw row leaves them blank). */
@@ -94,13 +95,26 @@ function parseJson<T>(s: string): T | null {
   try { return JSON.parse(s) as T } catch { return null }
 }
 
+/** Sainsbury's search matches every word literally — "kitty litter, the big
+ *  one" returns Fairy "The Big One" pods and no litter at all (2026-09-07).
+ *  Ask for the bare product term; the qualifiers still steer the pick. */
+async function searchTerm(spoken: string, deps: EnricherDeps): Promise<string> {
+  const reply = await deps.llm([
+    `A user said ${JSON.stringify(spoken)} for their grocery list. Give the plain product name to type into a UK supermarket's search box: the product noun phrase only, in the shop's own wording (e.g. "cat litter", "semi-skimmed milk"); drop size, brand preferences, quantities and asides. Reply with exactly one JSON object, nothing else: {"query": "<term>"}`,
+    'JSON:',
+  ].join('\n'))
+  const m = reply ? /\{[\s\S]*\}/.exec(reply) : null
+  const q = m ? parseJson<{ query?: unknown }>(m[0])?.query : undefined
+  return typeof q === 'string' && q.trim() ? q.trim() : spoken
+}
+
 /** Pick the product for a spoken item: the LLM chooses among the top hits
  *  (or says none); without an LLM the top hit stands. */
 async function pickProduct(spoken: string, products: Product[], deps: EnricherDeps): Promise<Product | null> {
   if (!products.length) return null
   const top = products.slice(0, 6)
   const reply = await deps.llm([
-    `A user asked for "${spoken}" on their grocery list. Which of these Sainsbury's products is what they meant? Reply with exactly one JSON object, nothing else: {"index": <0-based index>} or {"index": null} if none fits.`,
+    `A user asked for "${spoken}" on their grocery list. Which of these Sainsbury's products is what they meant? Honour any size, brand or variant preference in their words. Reply with exactly one JSON object, nothing else: {"index": <0-based index>} or {"index": null} if none fits.`,
     ...top.map((p, i) => `${i}. ${p.name}${p.retail_price?.price != null ? ` (£${p.retail_price.price})` : ''}`),
     'JSON:',
   ].join('\n'))
@@ -116,7 +130,7 @@ const groceryOrder: Enricher = {
   columns: [],
   pending: (row) => !!row.item,
   run: async (rows, deps) => {
-    const skipAll = (retry: boolean, reason: string): RowResult[] => rows.map(() => ({ kind: 'skip', retry, reason }))
+    const skipAll = (retry: boolean, reason: string): RowResult[] => rows.map(() => ({ kind: 'skip', retry, reason, ...(retry ? { alert: true } : {}) }))
     const status = await deps.exec('sainsburys', ['order', 'status', '--json'])
     const st = parseJson<OrderStatus>(status.stdout)
     if (status.code !== 0 || !st) {
@@ -141,12 +155,13 @@ const groceryOrder: Enricher = {
     const added: Array<{ item: string; product: Product }> = []
     for (const row of rows) {
       const item = row.item ?? ''
-      const search = await deps.exec('sainsburys', ['product', 'search', item, '--json'])
+      const term = await searchTerm(item, deps)
+      const search = await deps.exec('sainsburys', ['product', 'search', term, '--json'])
       const products = parseJson<{ products?: Product[] }>(search.stdout)?.products ?? []
       const product = await pickProduct(item, products, deps)
-      if (!product) { results.push({ kind: 'skip', retry: true, reason: `no product matched "${item}"` }); continue }
+      if (!product) { results.push({ kind: 'skip', retry: true, alert: true, reason: `no product matched "${item}"${term !== item ? ` (searched "${term}")` : ''}` }); continue }
       const add = await deps.exec('sainsburys', ['basket', 'add', product.product_uid, '-q', '1', '--slot-booked'])
-      if (add.code !== 0) { results.push({ kind: 'skip', retry: true, reason: `basket add failed for "${item}"` }); continue }
+      if (add.code !== 0) { results.push({ kind: 'skip', retry: true, alert: true, reason: `basket add failed for "${item}"` }); continue }
       added.push({ item, product })
       results.push({ kind: 'remove', note: `${item} → ${product.name} (order ${orderId})`, logTo: GROCERIES_ORDERED_LOG })
     }
@@ -157,7 +172,7 @@ const groceryOrder: Enricher = {
     const checkout = await deps.exec('sainsburys', ['checkout', '--yes', '--headless', '--slot-booked'], { timeoutMs: CHECKOUT_TIMEOUT_MS })
     if (checkout.code !== 0) {
       deps.log(`[lists/grocery-order] checkout failed for order ${orderId}: ${(checkout.stderr || checkout.stdout).slice(-300)}`)
-      return results.map((r) => (r.kind === 'remove' ? { kind: 'skip', retry: true, reason: 'checkout failed (items sit in the basket, amend not confirmed)' } : r))
+      return results.map((r) => (r.kind === 'remove' ? { kind: 'skip', retry: true, alert: true, reason: 'checkout failed (items sit in the basket, amend not confirmed)' } : r))
     }
     deps.log(`[lists/grocery-order] added ${added.length} item(s) to order ${orderId}: ${added.map((a) => a.product.name).join('; ')}`)
     return results

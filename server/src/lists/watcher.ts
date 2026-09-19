@@ -23,6 +23,8 @@ export interface ListWatcherOpts {
   targets: () => Promise<Record<string, ListTargetSpec>>
   deps: Omit<EnricherDeps, 'log'>
   log: (msg: string) => void
+  /** Push to Yousef when a row is stuck and time matters (enricher said `alert`). */
+  notify?: (msg: { title: string; body: string; id: string }) => void
   pollMs?: number
   quietMs?: number
   retryMs?: number
@@ -44,6 +46,8 @@ export class ListWatcher {
   private pending = new Set<string>()
   /** `${file}\n${rowKey}` → next attempt time, after a failed enrichment. */
   private backoff = new Map<string, number>()
+  /** Rows Yousef has already been pushed about; hourly retries must not nag. */
+  private alerted = new Set<string>()
 
   constructor(private store: NoteStore, private opts: ListWatcherOpts) {}
 
@@ -156,6 +160,10 @@ export class ListWatcher {
       if (res.kind === 'skip') {
         if (res.retry) this.backoff.set(key, this.now() + (this.opts.retryMs ?? DEFAULT_RETRY_MS))
         this.opts.log(`[lists] ${target}: "${item}" left pending${res.reason ? ` — ${res.reason}` : ''}`)
+        if (res.alert && this.opts.notify && !this.alerted.has(key)) {
+          this.alerted.add(key)
+          this.opts.notify({ title: `${target[0]!.toUpperCase()}${target.slice(1)}: ${item}`, body: `Not added${res.reason ? `: ${res.reason}` : ''}`, id: `lists:${target}:${item}` })
+        }
         continue
       }
       const cur = parseTable(latest.split('\n'))
@@ -170,6 +178,7 @@ export class ListWatcher {
         this.opts.log(`[lists] ${target}: "${item}" drained${res.note ? ` — ${res.note}` : ''}`)
       }
       this.backoff.delete(key)
+      this.alerted.delete(key)
       changed++
     }
     if (changed) await this.store.write(file, latest)

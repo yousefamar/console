@@ -668,12 +668,35 @@ describe('grocery-order enricher (queue drain)', () => {
     expect(out).toEqual([
       { kind: 'remove', note: 'eggs → Free Range Eggs x6 (order 1342297016)', logTo: GROCERIES_ORDERED_LOG },
       { kind: 'remove', note: 'cereal → Crunchy Nut (order 1342297016)', logTo: GROCERIES_ORDERED_LOG },
-      { kind: 'skip', retry: true, reason: 'no product matched "unobtainium"' },
+      { kind: 'skip', retry: true, alert: true, reason: 'no product matched "unobtainium"' },
     ])
     const seq = f.calls.map((c) => c.args.slice(0, 2).join(' '))
     expect(seq).toEqual(['order status', 'order amend', 'product search', 'basket add', 'product search', 'basket add', 'product search', 'checkout --yes'])
     expect(f.calls.find((c) => c.args[0] === 'basket')!.args).toEqual(['basket', 'add', '111', '-q', '1', '--slot-booked'])
     expect(f.calls.filter((c) => c.args[0] === 'checkout')).toHaveLength(1)
+  })
+  it('searches the LLM\'s plain product term, picks with the spoken qualifiers (2026-09-07: "kitty litter, the big one" found only "The Big One" pods)', async () => {
+    const f = fakeSainsburys(OPEN, { searchHits: {
+      'kitty litter, the big one': [{ product_uid: '8215801', name: 'Fairy Non Bio The Big One Pods 21 Washes' }],
+      'cat litter': [{ product_uid: '8111841', name: 'Cat Litter Non Clumping 10L' }, { product_uid: '2533407', name: 'Catsan Odour Control Cat Litter 20L' }],
+    } })
+    const prompts: string[] = []
+    const llm = async (p: string) => {
+      prompts.push(p)
+      if (p.includes('"query"')) return '{"query": "cat litter"}'
+      if (p.includes('none fits')) return p.includes('20L') ? '{"index": 1}' : '{"index": null}'
+      return null
+    }
+    const out = await g.run([{ item: 'kitty litter, the big one' }], { llm, exec: f.exec, log: () => {} })
+    expect(out).toEqual([{ kind: 'remove', note: 'kitty litter, the big one → Catsan Odour Control Cat Litter 20L (order 1342297016)', logTo: GROCERIES_ORDERED_LOG }])
+    expect(f.calls.find((c) => c.args[1] === 'search')!.args[2]).toBe('cat litter')
+    expect(prompts.find((p) => p.includes('none fits'))).toContain('"kitty litter, the big one"')
+    // LLM down → the spoken words are the search term, as before.
+    const g2 = fakeSainsburys(OPEN, { searchHits: { eggs: [{ product_uid: '1', name: 'Eggs' }] } })
+    expect(await g.run([{ item: 'eggs' }], { llm: async () => null, exec: g2.exec, log: () => {} })).toMatchObject([{ kind: 'remove' }])
+    // Nothing matched even with the plain term → alert, reason names both.
+    const g3 = fakeSainsburys(OPEN)
+    expect(await g.run([{ item: 'kitty litter, the big one' }], { llm, exec: g3.exec, log: () => {} })).toEqual([{ kind: 'skip', retry: true, alert: true, reason: 'no product matched "kitty litter, the big one" (searched "cat litter")' }])
   })
   it('already in amend mode → no second amend; checkout failure → nothing leaves the list', async () => {
     const f = fakeSainsburys({ ...OPEN, is_in_amend_mode: true }, { searchHits: { eggs: [{ product_uid: '111', name: 'Eggs' }] }, checkoutCode: 1 })
@@ -780,6 +803,39 @@ describe('ListWatcher', () => {
     expect(calls).toHaveLength(1)
     expect(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8')).toMatch(/\| Dune\s+\| 2021 \| No\s+\| No\s+\| 2026-09-06 10:47 \|/)
     w.stop()
+  })
+
+  it('boot sweep: a row written while the hub was down is enriched on start(), with no file event', async () => {
+    const store = new NoteStore(dir, join(dir, 'tomb.json'))
+    mkdirSync(join(dir, 'lists'), { recursive: true })
+    writeFileSync(join(dir, 'lists', 'movies.md'), appendRow(null, columnsFor('movie'), rawRow('movie', 'dune', '2026-09-06 10:47')))
+    const calls: string[] = []
+    const w = new ListWatcher(store, { targets, deps: { llm: async (p) => { calls.push(p); return '{"title":"Dune","year":"2021","series":"No"}' }, exec: noExec }, log: () => {}, now: () => Date.now() + 10_000, quietMs: 5_000 })
+    await w.start()
+    w.stop()
+    expect(calls).toHaveLength(1)
+    expect(readFileSync(join(dir, 'lists', 'movies.md'), 'utf8')).toMatch(/\| Dune\s+\| 2021 \|/)
+  })
+
+  it('a stuck grocery row pushes ONCE while an order is open; hourly retries stay silent; draining clears it', async () => {
+    const store = new NoteStore(dir, join(dir, 'tomb.json'))
+    mkdirSync(join(dir, 'lists'), { recursive: true })
+    writeFileSync(join(dir, 'lists', 'groceries.md'), appendRow(null, columnsFor('grocery-order'), rawRow('grocery-order', 'unobtainium', '2026-09-06 10:47')))
+    let hits: object[] = []
+    const exec: EnricherDeps['exec'] = async (_cmd, args) => {
+      const sub = args.slice(0, 2).join(' ')
+      if (sub === 'order status') return { code: 0, stdout: JSON.stringify({ active: true, order_uid: '42', is_in_amend_mode: true, is_cutoff: false }), stderr: '' }
+      if (sub === 'product search') return { code: 0, stdout: JSON.stringify({ products: hits }), stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    const pushes: Array<{ title: string; body: string; id: string }> = []
+    const w = new ListWatcher(store, { targets, deps: { llm: async (p) => (p.includes('none fits') ? '{"index": 0}' : null), exec }, notify: (m) => pushes.push(m), log: () => {}, now: () => new Date(2026, 8, 6, 11, 0).getTime(), quietMs: 0 })
+    expect(await w.runNow()).toBe(0)
+    expect(await w.runNow()).toBe(0)
+    expect(pushes).toEqual([{ title: 'Groceries: unobtainium', body: 'Not added: no product matched "unobtainium"', id: 'lists:groceries:unobtainium' }])
+    hits = [{ product_uid: '1', name: 'Unobtainium 1kg' }]
+    expect(await w.runNow()).toBe(1)
+    expect(pushes).toHaveLength(1)
   })
 
   it('queue drain: removed rows leave the table and land in the dated ordered-log; skipped rows stay', async () => {

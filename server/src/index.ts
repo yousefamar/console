@@ -1520,6 +1520,7 @@ const listWatcher = new ListWatcher(noteStore, {
       })
     }),
   },
+  notify: ({ title, body, id }) => pushServer.broadcast({ type: 'generic', title, body, id }),
   log,
 })
 void listWatcher.start()
