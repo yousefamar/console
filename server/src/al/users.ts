@@ -8,6 +8,7 @@
 
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import { WORKSPACE_DIR } from './identity.js'
 
 const IDENTIFIER_KEYS = new Set(['whatsapp', 'slack', 'phone'])
@@ -26,30 +27,32 @@ export function setUserNotifier(cb: (text: string) => void): void {
   notifyCallback = cb
 }
 
-function parseFrontmatter(content: string): Record<string, string | string[]> {
+function scalar(v: unknown): string | null {
+  if (typeof v === 'string') return v.trim() || null
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+export function parseFrontmatter(content: string, file = '<inline>'): Record<string, string | string[]> {
   const match = content.match(/^---\n([\s\S]*?)\n---/)
   if (!match?.[1]) return {}
+  let doc: unknown
+  try {
+    // bigint so an unquoted 15-digit @lid id survives with every digit intact
+    doc = parseYaml(match[1], { intAsBigInt: true })
+  } catch (err) {
+    console.error(`[al/users] bad frontmatter in ${file}: ${(err as Error).message}`)
+    return {}
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return {}
+
   const result: Record<string, string | string[]> = {}
-  let listKey: string | null = null
-
-  for (const line of match[1].split('\n')) {
-    if (listKey && /^\s+-\s+/.test(line)) {
-      const val = line.replace(/^\s+-\s+/, '').trim().replace(/^["']|["']$/g, '')
-      if (val) (result[listKey] as string[]).push(val)
-      continue
-    }
-    listKey = null
-
-    const idx = line.indexOf(':')
-    if (idx === -1) continue
-    const key = line.slice(0, idx).trim()
-    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, '')
-
-    if (key && !val) {
-      result[key] = []
-      listKey = key
-    } else if (key && val) {
-      result[key] = val
+  for (const [key, val] of Object.entries(doc as Record<string, unknown>)) {
+    if (Array.isArray(val)) {
+      result[key] = val.map(scalar).filter((s): s is string => s !== null)
+    } else {
+      const s = scalar(val)
+      if (s !== null) result[key] = s
     }
   }
   return result
@@ -78,7 +81,7 @@ async function buildLookupMap(): Promise<Map<string, UserEntry>> {
       continue
     }
 
-    const frontmatter = parseFrontmatter(content)
+    const frontmatter = parseFrontmatter(content, filePath)
     const allow = Array.isArray(frontmatter.allow) ? frontmatter.allow : []
     const entry: UserEntry = { username, filePath, allow }
 
