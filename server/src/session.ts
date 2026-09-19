@@ -7,7 +7,7 @@
 // internal event emitter interface.
 // ============================================================================
 
-import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { createInterface } from 'node:readline'
@@ -28,6 +28,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getLastReadIndex, isReadPinned, setLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
+import { gitStatusSync } from './git-status.js'
 import { HUB_PID_ENV } from './agents/process-reaper.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
@@ -1018,7 +1019,6 @@ export class Session extends EventEmitter {
     }
     const memory = linkMemoryDir(join(projects, cwdToProjectDir(this.cwd), 'memory'), join(toDir, 'memory'))
     this.cwd = newCwd
-    this.gitCheckedAt = 0
     return { ok: true, memory }
   }
 
@@ -1148,13 +1148,6 @@ export class Session extends EventEmitter {
     }
   }
 
-  private gitBranch?: string
-  private gitDirty?: boolean
-  private gitStats?: { added: number; deleted: number }
-  /** Where the git chip's numbers come from when it isn't the cwd itself. */
-  private gitRepo?: string
-  private gitCheckedAt = 0
-
   /** The checkout the status bar should describe. A space-bound session runs
    *  from its VAULT project dir; when that dir carries a `repo` symlink to the
    *  code, the vault's own branch/+/- is noise (Yousef, ^spry-seal) — report
@@ -1165,57 +1158,12 @@ export class Session extends EventEmitter {
     return this.cwd
   }
 
-  private checkGit(): void {
-    // Cache for 10 seconds
-    if (Date.now() - this.gitCheckedAt < 10_000) return
-    this.gitCheckedAt = Date.now()
-    const gitCwd = this.gitCwd()
-    this.gitRepo = gitCwd === this.cwd ? undefined : gitCwd
-    try {
-      this.gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
-      }).toString().trim()
-      const status = execSync('git status --porcelain', {
-        cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000,
-      }).toString().trim()
-      this.gitDirty = status.length > 0
-      // Get line-level diff stats: staged + unstaged + count untracked files
-      if (this.gitDirty) {
-        let added = 0, deleted = 0
-        // Staged changes
-        const staged = execSync('git diff --cached --numstat', {
-          cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
-        }).toString().trim()
-        for (const line of staged.split('\n')) {
-          const [a, d] = line.split('\t')
-          if (a && d && a !== '-') { added += parseInt(a, 10); deleted += parseInt(d, 10) }
-        }
-        // Unstaged changes to tracked files
-        const unstaged = execSync('git diff --numstat', {
-          cwd: gitCwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: 3000,
-        }).toString().trim()
-        for (const line of unstaged.split('\n')) {
-          const [a, d] = line.split('\t')
-          if (a && d && a !== '-') { added += parseInt(a, 10); deleted += parseInt(d, 10) }
-        }
-        // Count untracked files as 1 added line each
-        for (const line of status.split('\n')) {
-          if (line.startsWith('?? ')) added += 1
-        }
-        this.gitStats = { added, deleted }
-      } else {
-        this.gitStats = undefined
-      }
-    } catch {
-      this.gitBranch = undefined
-      this.gitDirty = undefined
-      this.gitStats = undefined
-    }
-  }
-
   /** Get session info for listing */
   getInfo(): SessionInfo {
-    this.checkGit()
+    // Served from the shared per-checkout snapshot (git-status.ts) — never a
+    // blocking shell-out; the SPA calls this for every session every 10 s.
+    const gitCwd = this.gitCwd()
+    const git = gitStatusSync(gitCwd)
     return {
       id: this.id,
       claudeSessionId: this.claudeSessionId,
@@ -1244,10 +1192,10 @@ export class Session extends EventEmitter {
       lastTextSnippet: this.lastTextSnippet,
       queuedMessage: this.queuedMessage,
       todos: this.visibleTodos().length ? this.visibleTodos() : undefined,
-      gitBranch: this.gitBranch,
-      gitRepo: this.gitRepo,
-      gitDirty: this.gitDirty,
-      gitStats: this.gitStats,
+      gitBranch: git.branch,
+      gitRepo: gitCwd === this.cwd ? undefined : gitCwd,
+      gitDirty: git.dirty,
+      gitStats: git.stats,
     }
   }
 

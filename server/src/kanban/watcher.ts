@@ -460,12 +460,20 @@ export class BoardWatcher {
     // `as` keeps the declared union: assigned inside the mutate() closure, so
     // control-flow analysis would otherwise narrow the initial `null` to `never`.
     let after = null as { content: string; board: KanbanBoard } | null
+    // Cards whose stamp landed in this write — woken AFTER the lock is released
+    // (below), so the lock section is pure file I/O and a CLI `move` queued on
+    // the same board proceeds the moment the write lands, not after N fork
+    // spawns. The stamp still precedes every wake (crash contract), and a
+    // conflict retry re-runs only the closure, never a wake.
+    let dispatchNow: DispatchableCard[] = []
+    let stamped = ''
     try {
       // The whole read-modify-write runs INSIDE the lock shared with BoardOps,
       // against a FRESH read — the classification read that chose these cards
       // was lock-free and may be stale by now (a `move` could have landed).
       // A card no longer dispatchable in the fresh read is simply skipped.
       await this.files.mutate(path, async (io) => {
+        dispatchNow = []
         const { content } = await io.read()
         const board = parseBoard(content)
         // The fresh read is the truth for this board's own ids (the ledger
@@ -473,7 +481,6 @@ export class BoardWatcher {
         this.recordIds(board)
         const todo = findDispatchable(board).filter((d) => wanted.has(d.card.text))
         if (!todo.length) return
-        const dispatchNow: DispatchableCard[] = []
         const fmOwner = boardDefaultOwner(content)
         // Word-pair ids collide far sooner than 36^6 — check every id known
         // anywhere (boards, ledger, sessions) PLUS ids minted earlier in this
@@ -509,28 +516,34 @@ export class BoardWatcher {
         const next = serializeBoard(board)
         if (next !== content) await io.write(next)
         after = { content: next, board }
-        const cap = this.cap(content)
-        let running = this.runningForks()
-        for (const d of dispatchNow) {
-          running++
-          const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate: boardDeployGate(content), load: { running, cap }, inherit: d.card.inherit || boardForkContext(content) === 'inherit' })
-          // A string result = the worker is a ticket-FORK with its own @key —
-          // rewrite the card's assignee so everything downstream (stale nudges,
-          // transition wakes, the assignee filter) targets the fork, not the
-          // source role that stayed free for conversation.
-          if (typeof res === 'string' && res !== d.card.agentKey) reassign.set(d.card.blockId!, res)
-          // A wake that never happened holds no slot.
-          if (res === false) running--
-          this.opts.log(`[boards] dispatch ${path} ^${d.card.blockId} → @${typeof res === 'string' ? res : d.card.agentKey}${res === false ? ' (wake FAILED)' : ''} [${running}/${cap}]`)
-          this.staleTrack.set(d.card.blockId!, { since: this.now(), nudges: 0 })
-        }
+        stamped = content
       })
     } catch (e) {
       this.opts.log(`[boards] stamp write failed for ${path}: ${(e as Error).message}`)
       return null
     }
-    // The reassign is its OWN locked section: a conflict retry inside the
-    // stamp section would re-run onDispatch and fork the same card twice.
+    // Lock released; the stamps are on disk. Now wake the workers.
+    if (dispatchNow.length) {
+      const cap = this.cap(stamped)
+      const deployGate = boardDeployGate(stamped)
+      const boardInherit = boardForkContext(stamped) === 'inherit'
+      let running = this.runningForks()
+      for (const d of dispatchNow) {
+        running++
+        const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate, load: { running, cap }, inherit: d.card.inherit || boardInherit })
+        // A string result = the worker is a ticket-FORK with its own @key —
+        // rewrite the card's assignee so everything downstream (stale nudges,
+        // transition wakes, the assignee filter) targets the fork, not the
+        // source role that stayed free for conversation.
+        if (typeof res === 'string' && res !== d.card.agentKey) reassign.set(d.card.blockId!, res)
+        // A wake that never happened holds no slot.
+        if (res === false) running--
+        this.opts.log(`[boards] dispatch ${path} ^${d.card.blockId} → @${typeof res === 'string' ? res : d.card.agentKey}${res === false ? ' (wake FAILED)' : ''} [${running}/${cap}]`)
+        this.staleTrack.set(d.card.blockId!, { since: this.now(), nudges: 0 })
+      }
+    }
+    // The reassign is its OWN locked section: the fork's @key only exists once
+    // the wake has run, and wakes happen outside the stamp lock.
     if (reassign.size && after) {
       const board = after.board
       for (const [blockId, key] of reassign) {

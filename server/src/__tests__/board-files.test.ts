@@ -267,6 +267,31 @@ describe('BoardOps + BoardWatcher share one lock (FIX 2)', () => {
     expect(logs.some((l) => l.includes('refusing suspicious write'))).toBe(true)
   })
 
+  it('the wake fires after the stamp is on disk and the lock is free — a CLI write issued mid-wake lands (^plum-bee)', async () => {
+    const { store, files, ops } = setup('- [ ] Ship it @eng\n')
+    const events: string[] = []
+    let cli: Promise<unknown> | null = null
+    const watcher = new BoardWatcher(store, {
+      log: () => {}, files, pollMs: 999_999,
+      onDispatch: (d) => {
+        // Crash contract: the stamp precedes the wake.
+        expect(readFileSync(join(dir, boardPath), 'utf-8')).toContain(`^${d.card.blockId}`)
+        // A CLI mutation issued while the worker is being spawned. It must
+        // not conflict with, nor be clobbered by, the reassign that follows.
+        cli = ops.note('demo', `^${d.card.blockId}`, '- noted during the wake').then(() => events.push('cli'))
+        events.push('dispatch')
+        return 'eng-fork'   // ticket-fork key → watcher rewrites the assignee
+      },
+    })
+    await watcher.start()
+    watcher.stop()
+    await cli
+    expect(events).toEqual(['dispatch', 'cli'])
+    const final = readFileSync(join(dir, boardPath), 'utf-8')
+    expect(final).toMatch(/- \[ \] Ship it @eng-fork \^[a-z0-9-]+\n  - noted during the wake/)
+    expect(final.split('- [x] Done card').length - 1).toBe(30)
+  })
+
   it('restore overwrites from the journal, journaling the current file first', async () => {
     const { ops } = setup('')
     const before = readFileSync(join(dir, boardPath), 'utf-8')

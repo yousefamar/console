@@ -34,17 +34,23 @@ export function detailLines(text: string): string[] {
 
 /** Resolve a project slug to its board path (same preference order as
  *  spaces.ts listSpaces): board.md / kanban.md by name, else the first
- *  kanban-flagged file in the folder. Accepts a vault-relative .md path too. */
+ *  kanban-flagged file in the folder. Accepts a vault-relative .md path too.
+ *
+ *  Reads the two conventional names directly — every /board/* request runs
+ *  this, and the old `store.list()` walked and stat-ed the whole vault
+ *  (~2,500 files, 0.3–0.6 s idle, far worse under fork start-up disk load)
+ *  to answer a question one open() settles. The vault walk is now only the
+ *  fallback for boards with an unconventional filename. */
 export async function resolveBoardPath(store: NoteStore, project: string): Promise<string | null> {
   if (project.endsWith('.md')) {
     try { return isKanbanBoard(await store.read(project)) ? project : null } catch { return null }
   }
+  for (const name of ['board.md', 'kanban.md']) {
+    const path = `projects/${project}/${name}`
+    try { await store.read(path); return path } catch { /* not there */ }
+  }
   const all = await store.list()
   const inProject = all.filter((f) => f.path.startsWith(`projects/${project}/`) && f.path.endsWith('.md'))
-  for (const name of ['board.md', 'kanban.md']) {
-    const hit = inProject.find((f) => f.path === `projects/${project}/${name}`)
-    if (hit) return hit.path
-  }
   for (const f of inProject) {
     try { if (isKanbanBoard(await store.read(f.path))) return f.path } catch { /* skip */ }
   }
