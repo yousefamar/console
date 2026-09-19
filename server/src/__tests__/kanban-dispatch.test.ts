@@ -957,7 +957,7 @@ describe('BoardWatcher onReopen', () => {
     }
   })
 
-  it('a worker waiting on an AskUserQuestion is not nudged — and the nudge is not burnt (^snug-seal)', async () => {
+  it('a worker waiting on an AskUserQuestion is not nudged, and the clock restarts at the answer (^snug-seal, ^red-loon)', async () => {
     const stales: string[] = []
     const dir = mkdtempSync(join(tmpdir(), 'boards-'))
     mkdirSync(join(dir, 'projects', 'demo'), { recursive: true })
@@ -966,7 +966,7 @@ describe('BoardWatcher onReopen', () => {
     let waiting = true
     const watcher = new BoardWatcher(new NoteStore(dir), {
       log: () => {}, onDispatch: () => true,
-      onStale: (t) => stales.push(t.blockId),
+      onStale: (t, n) => stales.push(`${t.blockId}:${n}`),
       isWorkerWaitingOnUser: () => waiting,
       pollMs: 999_999, staleMs: 60_000, now: () => clock,
     })
@@ -975,12 +975,21 @@ describe('BoardWatcher onReopen', () => {
       clock += 61_000
       await watcher.poll()
       expect(stales).toEqual([]) // waiting on Yousef — no nudge, none burnt
-      clock += 61_000
+      clock += 6 * 60 * 60_000 // an overnight question
       await watcher.poll()
       expect(stales).toEqual([])
       waiting = false // question answered, card still sitting there
       await watcher.poll()
-      expect(stales).toEqual(['ws1']) // first nudge fires now, not the third
+      expect(stales).toEqual([]) // NOT the instant he answers (^red-loon: both nudges 10 s apart)
+      clock += 10_000
+      await watcher.poll()
+      expect(stales).toEqual([]) // and not the second one either
+      clock += 61_000
+      await watcher.poll()
+      expect(stales).toEqual(['ws1:1']) // first nudge, staleMs after the answer
+      clock += 61_000
+      await watcher.poll()
+      expect(stales).toEqual(['ws1:1', 'ws1:2']) // second, staleMs later again
     } finally {
       watcher.stop()
       rmSync(dir, { recursive: true, force: true })
