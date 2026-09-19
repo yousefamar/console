@@ -1,18 +1,29 @@
 package io.amar.console.ui.agents
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import io.amar.console.ui.components.DictatedTextField
@@ -20,27 +31,25 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.amar.console.data.agents.AgentsRepository
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 
 private val json = Json { ignoreUnknownKeys = true }
 
@@ -76,89 +85,122 @@ fun ApprovalCard(repo: AgentsRepository, approval: AgentsRepository.Approval) {
 
 // ------------------------------------------------------------------ //
 
+/**
+ * One question per page (desktop AgentToolApproval pager): header + counter,
+ * vertical option rows with descriptions, free-text field, then a pinned
+ * footer of prev / dots / next + "Send all (n/N)". The body scrolls inside a
+ * cap of half the space left below the status bar — the card lives in the
+ * screen's outer Column, so an uncapped body with many options grew past the
+ * screen and took its own Send button with it (^soft-orca).
+ */
 @Composable
 private fun AskUserQuestionUi(
     repo: AgentsRepository,
     approval: AgentsRepository.Approval,
     input: JsonObject,
 ) {
-    val questions = remember(input) {
-        // Accept input.questions[] OR a legacy top-level single-question shape
-        // (question/options/multiSelect). Renders nothing if neither present.
-        (input["questions"] as? JsonArray)?.mapNotNull { it as? JsonObject }
-            ?: input["question"]?.let {
-                listOf(buildJsonObject {
-                    put("question", it)
-                    input["options"]?.let { o -> put("options", o) }
-                    input["multiSelect"]?.let { m -> put("multiSelect", m) }
-                })
-            }
-            ?: emptyList()
-    }
-    // question text -> selected option labels; free-text rides as a one-element
-    // list. Keyed on requestId so a new approval resets the state (no leak).
-    var answers by remember(approval.requestId) { mutableStateOf(mapOf<String, List<String>>()) }
-    var otherDrafts by remember(approval.requestId) { mutableStateOf(mapOf<String, String>()) }
+    val questions = remember(input) { AskQuestions.parse(input) }
+    if (questions.isEmpty()) return
+    // Keyed on requestId so a new approval resets the state (no leak).
+    var page by remember(approval.requestId) { mutableIntStateOf(0) }
+    var selections by remember(approval.requestId) { mutableStateOf(questions.map { emptySet<Int>() }) }
+    var freeTexts by remember(approval.requestId) { mutableStateOf(questions.map { "" }) }
+    val multi = questions.size > 1
+    val q = questions[page.coerceIn(0, questions.lastIndex)]
+    val answeredCount = questions.indices.count { AskQuestions.isAnswered(questions[it], selections[it], freeTexts[it]) }
+    val allAnswered = answeredCount == questions.size
 
-    Text("Question from the agent", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-
-    for (q in questions) {
-        val qText = q["question"]?.jsonPrimitive?.content ?: continue
-        val multi = q["multiSelect"]?.jsonPrimitive?.booleanOrNull ?: false
-        val options = (q["options"] as? JsonArray)?.mapNotNull {
-            (it as? JsonObject)?.get("label")?.jsonPrimitive?.content
-        } ?: emptyList()
-        val selected = answers[qText] ?: emptyList()
-
-        Text(qText, style = MaterialTheme.typography.bodyMedium)
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+    Text(
+        if (multi) "Claude is asking · ${page + 1}/${questions.size}" else "Claude is asking",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val bodyMax = if (maxHeight != Dp.Infinity) (maxHeight * 0.5f).coerceAtLeast(120.dp) else 320.dp
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = bodyMax)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            for (opt in options) {
-                FilterChip(
-                    selected = opt in selected,
-                    onClick = {
-                        answers = answers + (qText to if (multi) {
-                            if (opt in selected) selected - opt else selected + opt
-                        } else listOf(opt))
-                    },
-                    label = { Text(opt, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            q.header?.let {
+                Text(it.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(q.question, style = MaterialTheme.typography.bodyMedium)
+            q.options.forEachIndexed { i, opt ->
+                val on = i in selections[page]
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (on) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background)
+                        .border(
+                            1.dp,
+                            if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            RoundedCornerShape(8.dp),
+                        )
+                        .clickable { selections = selections.toMutableList().also { it[page] = AskQuestions.toggle(q, it[page], i) } }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Text(opt.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    opt.description?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            // Keyed per page: leaving a page disposes the field, which cancels
+            // a dictation mid-sentence instead of routing its tail to the next
+            // question (desktop stops dictation on a page flip for the same reason).
+            key(page) {
+                DictatedTextField(
+                    value = freeTexts[page],
+                    onValueChange = { v -> freeTexts = freeTexts.toMutableList().also { it[page] = v } },
+                    placeholder = if (q.options.isEmpty()) "Type your response…" else "Select above or type a response…",
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
-        DictatedTextField(
-            value = otherDrafts[qText] ?: "",
-            onValueChange = { otherDrafts = otherDrafts + (qText to it) },
-            placeholder = "Other…",
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
-
-    val complete = questions.all { q ->
-        val qText = q["question"]?.jsonPrimitive?.content ?: return@all true
-        !(answers[qText].isNullOrEmpty() && otherDrafts[qText].isNullOrBlank())
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
-            enabled = complete,
-            onClick = {
-                // Answers schema: Record<question, string[]> (free-text wins if typed).
-                val merged = buildJsonObject {
-                    put("questions", JsonArray(questions))
-                    putJsonObject("answers") {
-                        for (q in questions) {
-                            val qText = q["question"]?.jsonPrimitive?.content ?: continue
-                            val other = otherDrafts[qText]?.trim().orEmpty()
-                            val chosen = if (other.isNotEmpty()) listOf(other) else answers[qText] ?: emptyList()
-                            put(qText, JsonArray(chosen.map { kotlinx.serialization.json.JsonPrimitive(it) }))
-                        }
-                    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (multi) {
+            IconButton(onClick = { page-- }, enabled = page > 0, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.ChevronLeft, contentDescription = "Previous question", modifier = Modifier.size(20.dp))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                questions.indices.forEach { i ->
+                    val done = AskQuestions.isAnswered(questions[i], selections[i], freeTexts[i])
+                    Box(
+                        Modifier
+                            .size(if (i == page) 10.dp else 8.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    i == page -> MaterialTheme.colorScheme.primary
+                                    done -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                    else -> MaterialTheme.colorScheme.outlineVariant
+                                },
+                            )
+                            .clickable { page = i },
+                    )
                 }
-                repo.approve(approval.sessionId, approval.requestId, merged.toString())
+            }
+            IconButton(onClick = { page++ }, enabled = page < questions.lastIndex, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Filled.ChevronRight, contentDescription = "Next question", modifier = Modifier.size(20.dp))
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = { repo.deny(approval.sessionId, approval.requestId) },
+            contentPadding = PaddingValues(horizontal = 8.dp),
+        ) { Text("Dismiss", maxLines = 1) }
+        Button(
+            enabled = allAnswered,
+            onClick = {
+                repo.approve(approval.sessionId, approval.requestId, AskQuestions.payload(questions, selections, freeTexts).toString())
             },
-        ) { Text("Answer") }
-        OutlinedButton(onClick = { repo.deny(approval.sessionId, approval.requestId) }) { Text("Dismiss") }
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) { Text(if (multi) "Send all ($answeredCount/${questions.size})" else "Send", maxLines = 1) }
     }
 }
 

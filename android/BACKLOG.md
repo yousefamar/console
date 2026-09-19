@@ -42,9 +42,34 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-- Property deck: `foot only` badge (server `DeckCard.footAccess` — a house no car reaches, `footAccessLike()`), beside `needs work`. `PropertyDeckRepository.kt`, `PropertyDeckScreen.kt`; SPA pin popup shows `access: foot only`.
+(none)
 
 ## Shipped
+
+### v101 (2026-09-19)
+- **Agents: AskUserQuestion card is a pager** (^soft-orca, 2026-09-19; Yousef:
+  "When there are many questions, I can't even scroll"). Root cause: the card
+  sits in `AgentSessionScreen`'s outer non-scrolling `Column` above the
+  `weight(1f)` transcript, and `AskUserQuestionUi` stacked EVERY question with
+  a horizontal chip row and an "Other…" field each — with 4+ questions the
+  card outgrew the screen, the transcript collapsed to 0 and the card's own
+  Answer button + the composer were pushed off the bottom, with nothing to
+  scroll. Now the desktop `AgentToolApproval.tsx` pager: one question per
+  page ("Claude is asking · 2/5"), optional `header` label, vertical
+  full-width option rows with their `description` (chips truncated labels and
+  dropped descriptions), the free-text field, then a pinned footer of ‹ dots ›
+  + Dismiss + "Send all (n/N)" (disabled until every page has a selection or
+  text). The body scrolls inside a cap of half the height left below the
+  status bar (`BoxWithConstraints` — the Column hands children the remaining
+  height, IME-reduced via the screen's `imePadding()`), so a single question
+  with many options scrolls too and the composer stays on screen with the
+  keyboard up. Payload now matches the desktop exactly — selected labels then
+  the free text (the old card let typed text REPLACE the selection). Pure
+  `ui/agents/AskQuestions.kt` (parse incl. legacy single-question shape,
+  toggle, answerFor, payload) — `AskQuestionsTest`. The `DictatedTextField` is
+  `key(page)`-ed so a page flip disposes it and cancels a dictation
+  mid-sentence, the desktop's stop-on-flip.
+- Property deck: `foot only` badge (server `DeckCard.footAccess` — a house no car reaches, `footAccessLike()`), beside `needs work`. `PropertyDeckRepository.kt`, `PropertyDeckScreen.kt`; SPA pin popup shows `access: foot only`.
 
 ### v100 (2026-09-15)
 - **Chat: per-room drafts are hub-synced in the composer** (^dry-wolf, 2026-09-15;
