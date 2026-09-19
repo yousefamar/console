@@ -18,6 +18,14 @@ const listing = (over: Partial<Listing> = {}): Listing => ({
 })
 const search = (over: Partial<PropertySearch> = {}): PropertySearch => ({ id: 'ps_abc', country: 'UK', layer: 'where-to-move/livable-zone', criteria: {}, ...over } as PropertySearch)
 
+/** The review hooks run as fire-and-forget promises; wait for `n` of them
+ *  rather than a fixed 20 ms, which lost the race under full-suite load. */
+async function settled(filed: string[], dropped: string[], n: number): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (filed.length + dropped.length < n && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+  await new Promise((r) => setTimeout(r, 5))
+}
+
 describe('listingUrlKey', () => {
   it('strips fragment, query and trailing slash so a hand-pasted URL matches the stored one', () => {
     expect(listingUrlKey('https://www.rightmove.co.uk/properties/93068658#/')).toBe('https://www.rightmove.co.uk/properties/93068658')
@@ -106,7 +114,7 @@ kanban-plugin: board
     const s = store.create({ country: 'UK', layer: 'l', kind: 'house' })
     store.recordPoll(s.id, { listings: [listing({ id: '555', url: 'https://www.rightmove.co.uk/properties/555', lat: 1, lon: 1 })] })
     sync.review(s.id, '555', 'interested')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, [], 1)
     expect(filed).toEqual(['filed:In Progress'])
     const col = board().columns.find((c) => c.title === 'In Progress')!
     expect(col.cards).toHaveLength(2)
@@ -124,7 +132,7 @@ kanban-plugin: board
     const s = store.create({ country: 'UK', layer: 'l' })
     store.recordPoll(s.id, { listings: [listing({ id: '93068658', lat: 1, lon: 1 })] })
     sync.review(s.id, '93068658', 'interested')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, [], 1)
     expect(filed).toEqual(['exists:In Progress'])
     expect(board().columns.find((c) => c.title === 'In Progress')!.cards).toHaveLength(1)
     rmSync(dir, { recursive: true, force: true })
@@ -140,9 +148,9 @@ kanban-plugin: board
     expect(dropped).toEqual([])
     // Interested → dismissed: the lesson card, once.
     sync.review(s.id, '777', 'interested')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, dropped, 1)
     sync.review(s.id, '777', 'dismissed')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, dropped, 2)
     expect(filed).toEqual(['filed:In Progress'])
     expect(dropped).toEqual(['dismissed:filed:In Progress'])
     const col = board().columns.find((c) => c.title === 'In Progress')!
@@ -153,9 +161,9 @@ kanban-plugin: board
     // Repeat dismissal (already not interested) and a re-dismiss after clear don't duplicate the card.
     sync.review(s.id, '777', 'dismissed')
     sync.review(s.id, '777', 'interested')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, dropped, 3)
     sync.review(s.id, '777', 'none')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, dropped, 4)
     expect(dropped).toEqual(['dismissed:filed:In Progress', 'none:exists:In Progress'])
     expect(board().columns.find((c) => c.title === 'In Progress')!.cards.filter((c) => c.text.startsWith('Lesson from'))).toHaveLength(1)
     rmSync(dir, { recursive: true, force: true })
@@ -167,7 +175,7 @@ kanban-plugin: board
     store.recordPoll(s.id, { listings: [listing({ id: '9', url: 'https://www.rightmove.co.uk/properties/9', lat: 1, lon: 1, tenure: undefined })] })
     inventory.upsert(s.id, [listing({ id: '9', url: 'https://www.rightmove.co.uk/properties/9', lat: 1, lon: 1, tenure: 'leasehold', plotArea: 950 })], { full: false })
     sync.review(s.id, '9', 'interested')
-    await new Promise((r) => setTimeout(r, 20))
+    await settled(filed, [], 1)
     expect(filed).toEqual(['filed:In Progress'])
     expect(board().columns.find((c) => c.title === 'In Progress')!.cards[0]!.lines[1]).toContain('leasehold · 950 m² plot')
     rmSync(dir, { recursive: true, force: true })

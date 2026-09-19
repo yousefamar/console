@@ -33,7 +33,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
-import { isTransientApiError, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
+import { isTransientApiError, isUpstreamOutageError, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 
@@ -654,11 +654,17 @@ export class Session extends EventEmitter {
     const wait = RESUME_BACKOFF_MS[Math.min(this.transientResumeAttempt, RESUME_BACKOFF_MS.length - 1)]
     this.transientResumeAttempt++
     console.log(`[auto-resume] ${this.id}: transient API error, resuming in ${Math.round(wait / 1000)}s (attempt ${this.transientResumeAttempt})`)
+    const failedModel = this.spawnedModel
     this.transientResumeTimer = setTimeout(() => {
       this.transientResumeTimer = null
       if (this.status === 'ended' || this.status === 'running') return
       this.transientResumeTimestamps.push(Date.now())
-      const content = 'The previous request hit a transient API error (rate limit / overloaded). Continue from where you left off.'
+      // The model may have been swapped under us while we waited (outage
+      // fallback or a manual `con agent model set`) — tell the agent, or it
+      // carries on believing it is still the model that failed.
+      const content = this.spawnedModel !== failedModel
+        ? `The previous request failed because ${failedModel} was unavailable upstream; this session now runs on ${this.spawnedModel}. Continue from where you left off.`
+        : 'The previous request hit a transient API error (rate limit / overloaded). Continue from where you left off.'
       const userMsg = { type: 'user_prompt' as const, sessionId: this.id, content }
       this.emitHub(userMsg)
       this.logMessage(userMsg)
@@ -1324,6 +1330,13 @@ export class Session extends EventEmitter {
                 // Schedule a backoff "Continue." nudge instead of sitting
                 // idle until someone notices (auto-resume, like hub restarts).
                 this.scheduleTransientResume(text)
+                // ...unless 503s keep landing on this one model fleet-wide,
+                // which is a model outage wearing a transient's clothes —
+                // hand it to the chain-advance path (2026-09-17 fable-5-1).
+                if (isUpstreamOutageError(text)) {
+                  const outage = upstreamOutages.recordFailure(this.spawnedModel)
+                  if (outage) this.signalModelFailure(`upstream outage: ${outage} (last: ${text.slice(0, 120)})`)
+                }
               } else if (looksLikeModelError(text)) {
                 this.signalModelFailure(`api error: ${text.slice(0, 200)}`)
               }
@@ -1456,7 +1469,10 @@ export class Session extends EventEmitter {
     // cleared midTurn, so every mid-turn session was saved wasRunning=false
     // and came back without its "continue" nudge (^neat-wren). A user
     // interrupt() clears the bit itself before sending SIGINT.
-    if (!msg.is_error && !msg.subtype.startsWith('error')) this.midTurn = false
+    if (!msg.is_error && !msg.subtype.startsWith('error')) {
+      this.midTurn = false
+      upstreamOutages.recordSuccess(this.spawnedModel)
+    }
     this.lastActivityAt = Date.now()
     this.turnCount++
     // total_cost_usd is cumulative for THIS process, not per-turn — add the
@@ -1742,6 +1758,10 @@ export class Session extends EventEmitter {
     const res = await this.sendControlRequest('set_model', { model: taggedModelId(model) })
     if (!res.ok) return false
     this.spawnedModel = model
+    // New model, fresh failure budget — only the respawn path reset this
+    // before, so a session moved here in place could never report the NEW
+    // model dying.
+    this.modelFailureSignaled = false
     const { displayName, contextWindow } = parseModelString(model)
     this.contextWindow = contextWindow
     // Re-announce init-level metadata so clients update the model label.

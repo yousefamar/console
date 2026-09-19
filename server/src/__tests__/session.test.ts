@@ -934,6 +934,101 @@ describe('Session per-session model pin', () => {
 })
 
 // --------------------------------------------------------------------------
+// Upstream outage → chain advance (2026-09-17: one Bedrock model 503'd for
+// hours; every 503 was "transient" so the fleet hung in auto-resume purgatory)
+// --------------------------------------------------------------------------
+
+describe('Session upstream-outage fallback', () => {
+  const BEDROCK_503 = 'API Error: 503 Bedrock is unable to process your request. This is a server-side issue, usually temporary — try again in a moment.'
+  const tick = () => new Promise((r) => setTimeout(r, 10))
+  let nowSpy: ReturnType<typeof vi.spyOn>
+  let clock = 0
+  beforeEach(() => {
+    clock = 1_700_000_000_000
+    nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  })
+  afterEach(() => { nowSpy.mockRestore() })
+
+  async function inited(model: string): Promise<{ session: Session; proc: MockProcess; failures: string[] }> {
+    setAgentModelResolver(() => model)
+    const session = new Session({ prompt: 'x' })
+    const proc = mockProcess
+    const failures: string[] = []
+    session.on('model_failure', (failed: string, reason: string) => failures.push(`${failed}: ${reason}`))
+    proc.stdout.push(JSON.stringify({ type: 'system', subtype: 'init', session_id: `c_${model}`, model, slash_commands: [] }) + '\n')
+    await tick()
+    return { session, proc, failures }
+  }
+  function apiError(proc: MockProcess, text: string) {
+    proc.stdout.push(JSON.stringify({
+      type: 'assistant', is_api_error_message: true,
+      message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text }] },
+    }) + '\n')
+  }
+
+  it('a fleet of sessions 503ing on one model for minutes emits exactly one model_failure, naming that model', async () => {
+    const a = await inited('claude-outage-a')
+    const b = await inited('claude-outage-a')
+    try {
+      for (const s of [a, b]) apiError(s.proc, BEDROCK_503) // wave 1
+      await tick()
+      clock += 60_000
+      for (const s of [a, b]) apiError(s.proc, BEDROCK_503) // wave 2 (backoff 60 s)
+      await tick()
+      expect([...a.failures, ...b.failures]).toHaveLength(0) // 4 failures but only a minute in
+      clock += 180_000
+      apiError(a.proc, BEDROCK_503) // wave 3 (backoff 180 s) → 4 min of 503
+      await tick()
+      const all = [...a.failures, ...b.failures]
+      expect(all).toHaveLength(1)
+      expect(all[0]).toMatch(/^claude-outage-a: upstream outage: 5 upstream failures over 4\.0 min vs 0 successes/)
+      // Neither session was killed — the hub's handler does the in-place move.
+      expect(a.proc.killed).toBe(false)
+      expect(b.proc.killed).toBe(false)
+    } finally {
+      a.session.kill(); b.session.kill()
+      setAgentModelResolver(() => 'claude-opus-4-8')
+    }
+  })
+
+  it('rate limits and timeouts never advance the chain, however many', async () => {
+    const a = await inited('claude-outage-b')
+    try {
+      for (let i = 0; i < 6; i++) {
+        apiError(a.proc, i % 2 ? 'API Error: 429 rate_limit_error' : 'API Error: The operation timed out.')
+        await tick()
+        clock += 120_000
+      }
+      expect(a.failures).toHaveLength(0)
+    } finally {
+      a.session.kill()
+      setAgentModelResolver(() => 'claude-opus-4-8')
+    }
+  })
+
+  it('a completed turn on the model counts against the streak', async () => {
+    const a = await inited('claude-outage-c')
+    try {
+      apiError(a.proc, BEDROCK_503); await tick()
+      clock += 60_000
+      a.proc.stdout.push(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'c', total_cost_usd: 0, duration_ms: 1, usage: { input_tokens: 1, output_tokens: 1 } }) + '\n')
+      await tick()
+      clock += 60_000
+      a.proc.stdout.push(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'c', total_cost_usd: 0, duration_ms: 1, usage: { input_tokens: 1, output_tokens: 1 } }) + '\n')
+      await tick()
+      clock += 60_000
+      apiError(a.proc, BEDROCK_503); await tick()
+      clock += 60_000
+      apiError(a.proc, BEDROCK_503); await tick() // 3 fails vs 2 oks over 4 min → hold
+      expect(a.failures).toHaveLength(0)
+    } finally {
+      a.session.kill()
+      setAgentModelResolver(() => 'claude-opus-4-8')
+    }
+  })
+})
+
+// --------------------------------------------------------------------------
 // Idle hibernation — reap idle subprocesses, wake on demand via --resume
 // --------------------------------------------------------------------------
 
