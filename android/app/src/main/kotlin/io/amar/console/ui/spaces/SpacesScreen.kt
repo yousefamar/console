@@ -1,7 +1,11 @@
 package io.amar.console.ui.spaces
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
+import io.amar.console.ui.notes.prepareImage
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.combinedClickable
@@ -31,6 +35,8 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Search
@@ -1136,24 +1142,89 @@ fun CardSheet(
                     )
                 }
             }
-            if (sheetImages.isNotEmpty()) {
-                var lightbox by remember(sheetImages) { mutableStateOf<Int?>(null) }
-                val models = remember(sheetImages) { sheetImages.map { assetUrl(it) } }
-                Row(
-                    Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    for ((i, path) in sheetImages.withIndex()) {
-                        coil.compose.AsyncImage(
-                            model = assetUrl(path),
-                            contentDescription = path,
-                            modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).clickable { lightbox = i },
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        )
+            // Attachments. `card` is a snapshot (the sheet outlives the board
+            // refresh), so images attached from here are appended locally from
+            // the hub's returned asset path and show at once. Upload goes
+            // through POST /board/:project/attach — the hub writes the asset
+            // under assets/board/ and the detail line under its board lock.
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            var attached by remember(card.blockId ?: card.text) { mutableStateOf(listOf<String>()) }
+            var uploading by remember { mutableStateOf(0) }
+            var attachError by remember { mutableStateOf<String?>(null) }
+            val allImages = sheetImages + attached
+            suspend fun attachUri(uri: android.net.Uri) {
+                uploading++
+                try {
+                    val prepared = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { prepareImage(ctx, uri) }
+                    if (prepared == null) { attachError = "Couldn't read that image"; return }
+                    val asset = spacesRepo.attachImage(slug, card, prepared.bytes, prepared.ext, caption = "img")
+                    if (asset != null) { attached = attached + asset; attachError = null }
+                    else attachError = spacesRepo.boardError.value ?: "Upload failed"
+                } finally { uploading-- }
+            }
+            val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(8)) { uris ->
+                if (uris.isNotEmpty()) scope.launch { for (u in uris) attachUri(u) }
+            }
+            // Camera capture into the FileProvider-shared cache subpath the
+            // blog editor already uses (no manifest change).
+            val cameraUri = remember {
+                val dir = java.io.File(ctx.cacheDir, "mail-attachments").apply { mkdirs() }
+                androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", java.io.File(dir, "card-camera.jpg"))
+            }
+            val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+                if (ok) scope.launch { attachUri(cameraUri) }
+            }
+            val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) cameraLauncher.launch(cameraUri)
+            }
+            var lightbox by remember(allImages) { mutableStateOf<Int?>(null) }
+            val models = remember(allImages) { allImages.map { assetUrl(it) } }
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for ((i, path) in allImages.withIndex()) {
+                    coil.compose.AsyncImage(
+                        model = assetUrl(path),
+                        contentDescription = path,
+                        modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).clickable { lightbox = i },
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                }
+                if (uploading > 0) {
+                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                        androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     }
                 }
-                lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
+                Surface(
+                    onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Image, "Attach image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
+                }
+                Surface(
+                    onClick = {
+                        if (ctx.checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) cameraLauncher.launch(cameraUri)
+                        else cameraPermission.launch(android.Manifest.permission.CAMERA)
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.CameraAlt, "Take photo", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
+                }
             }
+            attachError?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 2.dp))
+            }
+            lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
             if (sheetUrls.isNotEmpty()) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                 Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -1294,7 +1365,9 @@ fun CardSheet(
             var editing by remember { mutableStateOf(false) }
             if (editing) {
                 // Line 1 = card text, rest = detail (SPA card editor shape).
-                var editText by remember { mutableStateOf((listOf(card.text) + card.detail).joinToString("\n")) }
+                // `edit` REPLACES the detail lines, so images attached in this
+                // sheet must be in the buffer or Save would drop them.
+                var editText by remember { mutableStateOf((listOf(card.text) + card.detail + attached.map { "![img]($it)" }).joinToString("\n")) }
                 DictatedTextField(
                     value = editText, onValueChange = { editText = it },
                     placeholder = "Card text\ndetail lines…",

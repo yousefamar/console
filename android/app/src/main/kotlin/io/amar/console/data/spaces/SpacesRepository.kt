@@ -247,17 +247,25 @@ class SpacesRepository(
     // --- mutations (hub-serialized; every call re-loads the board after) --- //
 
     private suspend fun post(project: String, verb: String, body: JsonObject): Boolean {
-        val ok = runCatching {
+        val result = runCatching {
             val resp = hub.post("/board/" + java.net.URLEncoder.encode(project, "UTF-8") + "/" + verb, body.toString())
             val o = json.parseToJsonElement(resp).jsonObject
             if (o["error"] != null) throw IllegalStateException(o["error"]!!.jsonPrimitive.content)
-        }.onFailure { _boardError.value = it.message }.isSuccess
-        // Truth after every attempt, success or not — for the OPEN board only.
-        // A mutation on another project's board (Inbox-hosted card sheet,
-        // approve-from-Inbox) must not swap what the Spaces screen shows.
+        }
+        reloadAfterMutation(project, result.exceptionOrNull()?.message)
+        return result.isSuccess
+    }
+
+    /** Truth after every attempt, success or not — for the OPEN board only.
+     *  A mutation on another project's board (Inbox-hosted card sheet,
+     *  approve-from-Inbox) must not swap what the Spaces screen shows. The
+     *  mutation's error is re-asserted AFTER the reload: a successful
+     *  `loadBoard` clears `boardError`, which used to wipe the very message
+     *  the banner exists to show whenever the hub itself was up. */
+    private suspend fun reloadAfterMutation(project: String, error: String?) {
         val open = _board.value
         if (open == null || open.project == project) loadBoard(project)
-        return ok
+        if (error != null) _boardError.value = error
     }
 
     suspend fun setNofork(project: String, card: CardView, nofork: Boolean): Boolean =
@@ -330,6 +338,28 @@ class SpacesRepository(
 
     suspend fun removeCard(project: String, card: CardView): Boolean =
         post(project, "remove", buildJsonObject { put("card", cardAddress(card)) })
+
+    /** Attach an image to a card (`POST /board/:project/attach`): the hub
+     *  writes the asset under the vault's `assets/board/` and appends the
+     *  `![caption](board/…)` detail line under its board lock — the same path
+     *  `con spaces board attach` takes. Returns the asset path (the new
+     *  thumbnail's address) or null on failure, with [boardError] set. */
+    suspend fun attachImage(project: String, card: CardView, bytes: ByteArray, ext: String, caption: String? = null): String? {
+        val body = buildJsonObject {
+            put("card", cardAddress(card))
+            put("image", java.util.Base64.getEncoder().encodeToString(bytes))
+            put("ext", ext)
+            caption?.let { put("caption", it) }
+        }
+        val result = runCatching {
+            val resp = hub.post("/board/" + java.net.URLEncoder.encode(project, "UTF-8") + "/attach", body.toString())
+            val o = json.parseToJsonElement(resp).jsonObject
+            o["error"]?.let { throw IllegalStateException(it.jsonPrimitive.content) }
+            o["asset"]?.jsonPrimitive?.content ?: throw IllegalStateException("attach returned no asset")
+        }
+        reloadAfterMutation(project, result.exceptionOrNull()?.message)
+        return result.getOrNull()
+    }
 
     /** Create a fresh board for a board-less project (SPA createBoard parity:
      *  writing a NEW file via /notes/file is the sanctioned path — BoardOps

@@ -147,7 +147,9 @@ while the app is foregrounded (plus short background borrows), so a remote
 **Boards / Spaces**
 - Board reads via `GET /board/:project` (CardView incl. `nofork`/`model`,
   `defaultOwner`); ALL mutations via `POST /board/:project/{cards,move,assign,
-  block,model,nofork,note,edit,remove,redispatch}`. The hub's per-board write
+  block,model,nofork,note,attach,edit,remove,redispatch}` (`attach` = base64
+  image → the hub writes the asset AND the `![img](board/…)` line; never PUT
+  the asset yourself). The hub's per-board write
   queue serializes Obsidian/agents/SPA/APK. **Never write board markdown**
   through `/notes/file/` (creating a NEW board from the template is the one
   sanctioned exception). Cards address by `^id`, falling back to exact text.

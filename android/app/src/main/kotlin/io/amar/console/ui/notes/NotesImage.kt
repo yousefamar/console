@@ -41,9 +41,11 @@ suspend fun insertImageFromUri(
     onEdit(EditorActions.insert(tfv.text, tfv.selection.end, embed))
 }
 
-private data class PreparedImage(val bytes: ByteArray, val ext: String, val contentType: String)
+data class PreparedImage(val bytes: ByteArray, val ext: String, val contentType: String)
 
-private fun prepareImage(context: Context, uri: Uri): PreparedImage? {
+/** Picker/camera Uri → upload-ready bytes: 2000px long edge, JPEG q85; GIFs
+ *  pass through. Shared by the blog editor and the board card sheet. */
+fun prepareImage(context: Context, uri: Uri): PreparedImage? {
     val raw = runCatching {
         context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
     }.getOrNull() ?: return null

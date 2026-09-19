@@ -50,8 +50,26 @@ view-mode hub-sync (Room meta is fine on one device).
   render inside a `BoxWithConstraints` → `Column.heightIn(max = 40 % of the
   remaining height).verticalScroll(...)`, so the transcript and composer stay
   reachable however many cards a fork owns.
-
-(none)
+- **Boards: attach images to a card from the phone** (^odd-owl). The card
+  sheet rendered `![img](board/…)` thumbnails but had no way to ADD one — the
+  SPA's only affordance is clipboard paste, which a phone never has. The sheet's
+  attachment row now ends in two tiles: Photo (system photo picker, up to 8 at
+  once) and Camera (FileProvider temp file, the blog editor's `mail-attachments/`
+  cache subpath — no manifest change). Each picked image goes through the blog
+  editor's `prepareImage` (2000 px long edge, JPEG q85, GIFs untouched; now
+  public in `ui/notes/NotesImage.kt`) then `SpacesRepository.attachImage` →
+  `POST /board/:project/attach {card:"^id", image:<base64>, ext, caption:"img"}`
+  — the hub writes `assets/board/card-<ts>-<id>.<ext>` and appends the detail
+  line under its board lock (the path `con spaces board attach` takes; never a
+  raw asset PUT + `/notes/file/` edit). The sheet stays open: the returned
+  asset path is appended to a local list so the thumbnail shows at once (the
+  sheet's `card` is a snapshot), and the Edit buffer includes those lines so a
+  Save after attaching can't drop them (`edit` REPLACES detail). Also fixed:
+  `post()` set `boardError` on a failed mutation, then the post-mutation
+  `loadBoard()` succeeded and cleared it — the sticky error banner never showed
+  while the hub was up (`reloadAfterMutation` re-asserts it). Tests:
+  `SpacesAttachTest` (wire shape by `^id`, base64 round-trip, hub error
+  surfaces, error survives the reload).
 
 ## Shipped
 
