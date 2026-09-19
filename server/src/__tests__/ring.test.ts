@@ -279,6 +279,17 @@ describe('routeByRules (schema-driven tree)', () => {
     // Payload punctuation survives: the dream keeps its full stop and comma.
     expect(r('Log dream. I was late, then early.')).toMatchObject({ command: { item: 'I was late, then early' } }) // only the utterance-final "." goes (normalise)
   })
+  it('a glued "@" is the spoken verb "at"/"add" — "@Estera, …" is add astera (recording 2026-09-15T22-08-57.774Z, ^tidy-toad)', () => {
+    expect(headWords('@Estera, this is a test ticket', 1)).toEqual({ words: ['at'], rest: 'Estera, this is a test ticket' })
+    expect(headWords('@Estera, this is a test ticket', 2)).toEqual({ words: ['at', 'estera'], rest: 'this is a test ticket' })
+    expect(headWords('@ Estera this is a test ticket', 2)).toEqual({ words: ['at', 'estera'], rest: 'this is a test ticket' }) // bare "@" token
+    expect(r('@Estera, this is a test ticket.')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'astera', column: 'Backlog', text: 'this is a test ticket' } })
+    expect(r('@console the login button is misaligned')).toMatchObject({ rule: 'add.card', command: { kind: 'card', project: 'console', text: 'the login button is misaligned' } })
+    expect(r('@movies Dune')).toMatchObject({ rule: 'add.list', command: { kind: 'list', target: 'movies', item: 'Dune' } })
+    // Only head words are split — an "@" inside the payload is left as spoken.
+    expect(r('add console mention @yousef in the release note')).toMatchObject({ command: { kind: 'card', project: 'console', text: 'mention @yousef in the release note' } })
+    expect(r("message mum meet you @ the station")).toMatchObject({ command: { kind: 'message', text: 'meet you @ the station' } })
+  })
   it('music transport is a word set — any order, one action — plus play <query>', () => {
     expect(r('pause the music')).toMatchObject({ rule: 'music.pause' })
     expect(r('Skip.')).toMatchObject({ command: { action: 'next' } })

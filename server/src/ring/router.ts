@@ -183,18 +183,28 @@ const VOICE_PHRASE_MAX = 2
 // cleaned, and a free-standing dash between head and payload is a separator.
 const HEAD_PUNCT = /[,.:;!?…]+$/
 const DASH_TOKEN = /^[-–—]+$/
+// Whisper writes a spoken "at"/"add" before a name as a handle — "add Astera"
+// arrives as the single token "@Estera" (recording 2026-09-15T22-08-57.774Z).
+// The "@" IS the verb: split it off as the word "at" (an `add` alias).
+const AT_GLUED = /^@(.*)$/
 
 /** Peel the first `n` head words off a normalised utterance — lowercased,
- *  trailing punctuation dropped, dash tokens skipped — with `rest` = the
- *  payload exactly as spoken (empty when nothing follows). Null when the
- *  utterance has fewer than `n` words. */
+ *  trailing punctuation dropped, dash tokens skipped, a glued "@" split into
+ *  its own word — with `rest` = the payload exactly as spoken (empty when
+ *  nothing follows). Null when the utterance has fewer than `n` words. */
 export function headWords(cased: string, n: number): { words: string[]; rest: string } | null {
   const tokens = cased.split(' ')
   const words: string[] = []
   let i = 0
   while (words.length < n && i < tokens.length) {
-    const t = tokens[i++]!
-    if (DASH_TOKEN.test(t)) continue
+    let t = tokens[i]!
+    if (DASH_TOKEN.test(t)) { i++; continue }
+    const at = AT_GLUED.exec(t)
+    if (at) {
+      tokens.splice(i, 1, 'at', ...(at[1] ? [at[1]] : []))
+      t = 'at'
+    }
+    i++
     const w = t.replace(HEAD_PUNCT, '').toLowerCase()
     if (w) words.push(w)
   }
