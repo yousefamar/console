@@ -259,18 +259,21 @@ before folding; keep both intents on conflict. Forks never cut releases — the
 parent reconciles all sibling cards, runs the FULL suite on the folded state,
 restarts the hub if any fork touched `server/`, then cuts.
 
-## The Mobile agent and the weekly parity sweep
+## The Mobile agent and the nightly parity sweep
 
 The durable session for this directory is **"Console mobile"** (agentKey
 `new-mobile-app`, bound to project `console`, cwd = this `android/` dir since
 2026-09-05 so this file loads natively). Cards on the console board assigned
 `@new-mobile-app` dispatch as forks of it.
 
-**Cron `tZZPux0`** (hub scheduler, bound to that session's csid, `0 5 * * 0` =
-every Sunday 05:00 local, guard `~/exec/mobile-parity-guard.sh`) wakes the
-agent only when there is something to sweep — hub/SPA commits since the last
-sweep, `## Open` entries still waiting, or board cards newly Done; a quiet
-week costs zero tokens. The woken PARENT runs the loop end to end: sweep →
+**Cron `gBQ18EE`** (hub scheduler, bound to that session's csid, `0 4 * * *` =
+every night 04:00 local since 2026-09-19 — was weekly `tZZPux0`; guard
+`~/exec/mobile-parity-guard.sh`) wakes the agent ONLY when there are hub/SPA
+commits since the last sweep (Yousef: "nightly, but if there haven't been any
+commits we silently ignore and don't fire a card"). `## Open` entries and
+newly-Done cards are reported in the guard output for context but never wake
+on their own — the Open list is rarely empty, so gating on it would fire every
+night. A quiet night costs zero tokens. The woken PARENT runs the loop end to end: sweep →
 group gaps into 3–6 self-contained board cards assigned to `@new-mobile-app`
 (each dispatches as a fork of it, working in its own worktree) → reconcile the
 folded state → full suite → cut the release (forks never cut; the parent
@@ -281,10 +284,10 @@ vanish** — the original `KqtDQQU` disappeared from the scheduler between
 2026-09-06 and 09-13 with no removal in the hub log (persisted-task count just
 dropped across restarts), so a Sunday passed unswept. If `con cron list` has no
 task on this session's csid with the parity guard, re-register: `con cron add
---session <this csid> --trigger "0 5 * * 0" --guard "bash
+--session <this csid> --trigger "0 4 * * *" --guard "bash
 /home/amar/exec/mobile-parity-guard.sh" --prompt "$(cat …)"` with the prompt
-recovered from this session's transcript (`con agent read <s8> --grep "WEEKLY
-MOBILE PARITY SWEEP"`), then fix the id here.
+recovered from this session's transcript (`con agent read <s8> --grep "MOBILE
+PARITY SWEEP"`), then fix the id here.
 
 **The sweep (what each card's fork does; the parent does 1–2 for the whole
 batch and 5 once everything is folded):**
@@ -309,7 +312,7 @@ batch and 5 once everything is folded):**
    standing "cut" for its own batch. Then re-baseline the guard's state file
    (`~/.cache/mobile-parity-sweep.json` → current HEAD + Done-card count): the
    guard writes it at the START of a fire, so the sweep's own Done cards would
-   otherwise wake the agent again next Sunday.
+   otherwise wake the agent again the next night.
 6. Hand back per the board contract: `note` bullets (gaps found / built /
    released / left Open and why), then `move … "Under Review"`. Write the note
    as `con spaces board console note "^id" "- bullets"` — a `--` separator

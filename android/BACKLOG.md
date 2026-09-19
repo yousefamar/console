@@ -7,8 +7,8 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 
 ## Open (not yet built)
 
-Each entry = the gap + the phone equivalent. Filed by the weekly parity sweep
-(`android/CLAUDE.md` → "Weekly parity sweep") or by SPA forks as they ship.
+Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
+(`android/CLAUDE.md` → "nightly parity sweep") or by SPA forks as they ship.
 
 - Money: editing parity — the read-only pane shipped (^quick-gull); still
   SPA-only: Budgets (`/finance/budgets` + `/finance/budget-status`), Scenarios
