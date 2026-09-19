@@ -19,8 +19,9 @@ export async function ring(verb: string | undefined, args: string[], flags: Glob
     case 'audio': return ringAudio(args, flags)
     case 'say': return ringSay(args, flags)
     case 'schema': return ringSchema(args, flags)
+    case 'reminders': return ringReminders(args, flags)
     default:
-      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, schema. Run 'con help ring'.`, flags)
+      exitWithError('USAGE', `Unknown ring command: ${verb}. Verbs: status, setup, list, show, audio, say, schema, reminders. Run 'con help ring'.`, flags)
   }
 }
 
@@ -115,4 +116,22 @@ async function ringSchema(args: string[], flags: GlobalFlags): Promise<void> {
   if (check && (d.stale || d.errors.length || broken.length || (d.fallback.agentKey && !d.fallback.live))) {
     exitWithError('SCHEMA', `${d.errors.length} error(s), ${broken.length} unresolved target(s)`, flags)
   }
+}
+
+// con ring reminders [cancel <id>] — pending `remind` one-shots (soonest
+// first), or cancel one before it fires.
+async function ringReminders(args: string[], flags: GlobalFlags): Promise<void> {
+  if (args[0] === 'cancel') {
+    const id = args[1]
+    if (!id) exitWithError('USAGE', 'Usage: con ring reminders cancel <id>', flags)
+    output(await hubFetch(`/ring/reminders/${encodeURIComponent(id!)}`, { method: 'DELETE' }), flags)
+    return
+  }
+  const data = await hubFetch<{ reminders: Array<{ id: string; text: string; dueAt: number; recordingId?: string; attempts: number; error?: string }> }>('/ring/reminders')
+  if (flags.json) { output(data, flags); return }
+  for (const r of data.reminders) {
+    const due = new Date(r.dueAt).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    info(`${r.id}  ${due}  ${r.text}${r.error ? `   (last attempt failed: ${r.error})` : ''}`)
+  }
+  if (!data.reminders.length) info('No pending reminders.')
 }

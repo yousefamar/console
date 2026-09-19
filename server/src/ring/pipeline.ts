@@ -11,6 +11,7 @@ import { payloadStart, snapToGap, type TimedWord, type Frame, type VoiceClip } f
 import { appendRow, stamp } from '../lists/table.js'
 import { columnsFor, rawRow } from '../lists/enrichers.js'
 import { formatDuration } from '../glasses/timer.js'
+import { dueAt, formatDue, parseReminder, type Reminder } from './remind.js'
 
 export interface RingCtx {
   store: RingStore
@@ -58,6 +59,12 @@ export interface RingCtx {
   /** `timer` — the glasses' native countdown (0x07). Returns a one-line
    *  outcome; throws when the APK is not connected or the frame is refused. */
   glassesTimer: (seconds: number | null) => Promise<string>
+  /** `remind` — hub-scheduled one-shots to Yousef's own WhatsApp (ring/remind.ts). */
+  reminders: {
+    schedule: (text: string, dueAt: number, recordingId: string) => Reminder
+    pending: () => Reminder[]
+    cancel: (id: string) => boolean
+  }
   music: {
     play: (query?: string) => Promise<string>
     pause: () => Promise<string>
@@ -116,6 +123,7 @@ export function buildRingForkSeed(schema: RingSchema): string {
     `message <person> <text>  → sent AS YOUSEF from his own chat account (not via you)`,
     'voice <person> <speech>  → the recording itself, minus the command words, as a WhatsApp voice note FROM YOUSEF (not via you)',
     'echo <text>              → straight to Yousef\'s WhatsApp (pure software smoke test)',
+    'remind [me] [in <duration> | at <time> | tomorrow …] <text> → the text to Yousef\'s WhatsApp at that time (no time → 2 h), his words verbatim; pure software',
     'al <text>                → straight to YOU (this fork), skipping the tree — he addressed you by name ("message al …" is different: that is a WhatsApp send FROM YOUSEF to your DM, answer it on WhatsApp)',
     'play | pause | next | previous | play <query>',
   ]
@@ -152,7 +160,7 @@ export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
     ...Object.entries(v.add.targets).map(([n, t]) => `${t.dated ? 'Log' : 'Add'} ${n}.`),
     ...env.projects.map((p) => `Add ${p.replace(/-/g, ' ')}.`),
     ...[...new Set([...Object.keys(v.message.contacts), ...env.contacts].map(firstName))].map((c) => `Message ${cap(c)}.`),
-    'Al.', 'Echo.', 'Voice.', 'Timer.', 'Play.', 'Pause.', 'Next.',
+    'Al.', 'Echo.', 'Voice.', 'Timer.', 'Remind me.', 'Play.', 'Pause.', 'Next.',
   ]
   return phrases.join(' ')
 }
@@ -162,7 +170,7 @@ export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
  *  anchored in the ring transcript and everything from there is taken. Null
  *  when the two cannot be aligned. Kinds without a spoken payload pass. */
 export function spliceHeadPayload(head: RingCommand, transcript: string): RingCommand | null {
-  const field = head.kind === 'list' ? 'item' : head.kind === 'echo' || head.kind === 'card' || head.kind === 'message' || head.kind === 'voice' || head.kind === 'fallback' ? 'text' : null
+  const field = head.kind === 'list' ? 'item' : head.kind === 'echo' || head.kind === 'card' || head.kind === 'message' || head.kind === 'voice' || head.kind === 'fallback' || head.kind === 'remind' ? 'text' : null
   if (!field) return head
   const want = wordKeys(field === 'item' ? (head as { item: string }).item : (head as { text: string }).text)
   if (!want.length) return null
@@ -170,7 +178,15 @@ export function spliceHeadPayload(head: RingCommand, transcript: string): RingCo
   const keys = tokens.map(wordKey)
   for (const n of new Set([Math.min(3, want.length), Math.min(2, want.length)])) {
     const at = findWordRun(keys, want.slice(0, n), HEAD_ANCHOR_WINDOW)
-    if (at >= 0) return { ...head, [field]: tokens.slice(at).join(' ') } as RingCommand
+    if (at < 0) continue
+    const spliced = tokens.slice(at).join(' ')
+    // A reminder's time phrase may sit at the END of the full transcript,
+    // past the head — re-read the spliced text unless the head already had one.
+    if (head.kind === 'remind' && !head.spoken) {
+      const re = parseReminder(spliced, head.when.kind === 'in' ? head.when.seconds : 0)
+      return re ? { kind: 'remind', ...re } : { ...head, text: spliced }
+    }
+    return { ...head, [field]: spliced } as RingCommand
   }
   return null
 }
@@ -277,6 +293,7 @@ function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { ti
     case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
     case 'music': return { title: 'Ring · music', body: o.detail ?? describeCommand(c) }
     case 'timer': return { title: 'Ring · timer', body: o.detail ?? describeCommand(c) }
+    case 'remind': return { title: `Ring · reminder ${o.detail ?? ''}`.trim(), body: c.text }
     default: return { title: 'Ring', body: describeCommand(c) }
   }
 }
@@ -331,6 +348,11 @@ async function execute(ctx: RingCtx, c: RingCommand, rec: RingRecording): Promis
       case 'timer': {
         const detail = await ctx.glassesTimer(c.seconds)
         return { ok: true, detail }
+      }
+      case 'remind': {
+        const due = dueAt(c.when, now)
+        const r = ctx.reminders.schedule(c.text, due.getTime(), rec.id)
+        return { ok: true, detail: `${formatDue(due, now)} → WhatsApp (${r.id})` }
       }
       case 'music': {
         const detail = c.action === 'play' ? await ctx.music.play(c.query)

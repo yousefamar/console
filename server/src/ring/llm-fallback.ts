@@ -14,6 +14,7 @@
 import { execFile } from 'node:child_process'
 import { normaliseKeepCase, stripLeadIn, isVerbatim, type RingCommand, type RouteEnv } from './router.js'
 import type { RingSchema } from './schema.js'
+import { parseReminder } from './remind.js'
 
 const TIMEOUT_MS = 20_000
 
@@ -30,10 +31,11 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.keys(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","lead_in":"<opening words>"}`,
     '  {"kind":"voice","contact":"<same contacts as message>","lead_in":"<opening words>"}   ← only when the speaker asks for a VOICE note / audio / recording to be sent, not a text',
     '  {"kind":"echo","lead_in":"<opening words>"}',
+    '  {"kind":"remind","lead_in":"<opening words>"}   ← the speaker wants to be reminded of something later ("remind me…", "don\'t let me forget…"); lead_in ends where the thing to remember (or its time phrase) begins',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: the transcript\'s own words naming what to play, copied exactly>"}',
     '  {"kind":"unknown"}',
     '',
-    `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; voice=${v.voice.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
+    `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; voice=${v.voice.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}; remind=${v.remind.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
     '',
     `Transcript: ${JSON.stringify(text)}`,
     '',
@@ -74,6 +76,11 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
     case 'echo': {
       const t = payload('text', true)
       return t ? { kind: 'echo', text: t } : null
+    }
+    case 'remind': {
+      const t = payload('text', false)
+      const parsed = t ? parseReminder(t, v.remind.defaultIn) : null
+      return parsed ? { kind: 'remind', ...parsed } : null
     }
     case 'card': {
       const project = str('project').toLowerCase(); const t = payload('text', true)

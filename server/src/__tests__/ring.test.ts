@@ -16,6 +16,7 @@ import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCar
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
 import { payloadStart, snapToGap, parseEnvelope, patchOpusVendor, oggCrc, pcmWaveform, type TimedWord, type Frame, type VoiceClip } from '../ring/voice.js'
 import { deliveryFromRequest } from '../routes/ring.js'
+import { parseReminder, parseClockTime, dueAt, formatDue, formatReminder, describeWhen, RingReminders } from '../ring/remind.js'
 import { NoteStore } from '../notes.js'
 
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
@@ -256,6 +257,34 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('time to leave for the station')).toBeNull() // time ≈ timer fuzzily; not a duration
     expect(r('timer')).toBeNull()
   })
+  it('remind [me] <text> — the words verbatim, default delay; a time phrase leads or trails (^prim-fawn)', () => {
+    const THE_RING = 'to not leave the ring in the bathroom or it will be sold on the black market'
+    expect(r(`Remind me ${THE_RING}.`)).toMatchObject({ rule: 'remind.default', command: { kind: 'remind', text: THE_RING, when: { kind: 'in', seconds: 7200 }, spoken: null } })
+    expect(r('Reminder: buy milk')).toMatchObject({ rule: 'remind.default', command: { kind: 'remind', text: 'buy milk' } })
+    expect(r('remember the parcel')).toMatchObject({ command: { kind: 'remind', text: 'the parcel' } })
+    // Leading time phrase — the longest run that parses ("an hour and a half", not "an hour").
+    expect(r('remind me in 20 minutes to check the oven')).toMatchObject({ rule: 'remind.at', command: { kind: 'remind', text: 'to check the oven', when: { kind: 'in', seconds: 1200 }, spoken: 'in 20 minutes' } })
+    expect(r('remind me in an hour and a half to call mum')).toMatchObject({ command: { text: 'to call mum', when: { kind: 'in', seconds: 5400 } } })
+    expect(r('remind me at 5pm to leave')).toMatchObject({ command: { text: 'to leave', when: { kind: 'at', hour: 17, minute: 0, explicit: true, dayOffset: 0 }, spoken: 'at 5pm' } })
+    expect(r('remind me tomorrow morning to water the plants')).toMatchObject({ command: { text: 'to water the plants', when: { kind: 'at', hour: 9, minute: 0, dayOffset: 1 } } })
+    expect(r('remind me tomorrow at 9 to water the plants')).toMatchObject({ command: { text: 'to water the plants', when: { kind: 'at', hour: 9, dayOffset: 1 } } })
+    // Trailing — the rightmost marker whose tail parses wholly wins.
+    expect(r('remind me to check the oven in 20 minutes')).toMatchObject({ command: { text: 'to check the oven', when: { kind: 'in', seconds: 1200 }, spoken: 'in 20 minutes' } })
+    expect(r('remind me to check the oven in 20')).toMatchObject({ command: { text: 'to check the oven', when: { kind: 'in', seconds: 1200 } } })
+    expect(r('remind me to be at the station at 6')).toMatchObject({ command: { text: 'to be at the station', when: { kind: 'at', hour: 6, explicit: false } } })
+    expect(r('remind me to call Max, at half past five')).toMatchObject({ command: { text: 'to call Max', when: { kind: 'at', hour: 5, minute: 30 } } })
+    expect(r('remind me to call mum tomorrow')).toMatchObject({ command: { text: 'to call mum', when: { kind: 'at', hour: 9, dayOffset: 1 } } })
+    expect(r('remind me to call mum tomorrow at 5')).toMatchObject({ command: { text: 'to call mum', when: { kind: 'at', hour: 17, dayOffset: 1 } } })
+    // Words that only LOOK like time markers stay in the text.
+    expect(r('remind me to put the ring in the bathroom')).toMatchObject({ command: { text: 'to put the ring in the bathroom', spoken: null } })
+    expect(r('remind me to look at the report')).toMatchObject({ command: { text: 'to look at the report', spoken: null } })
+    expect(r('remind me to pay the bill at the end of the month')).toMatchObject({ command: { text: 'to pay the bill at the end of the month', spoken: null } })
+    // A fuzzy verb needs "me" or a time phrase; "remind" alone or a time with nothing to remember is no command.
+    expect(r('rewind to 2 minutes')).toBeNull()
+    expect(r('remind')).toBeNull()
+    expect(r('remind me tomorrow')).toBeNull()
+    expect(r('remind me at 5')).toBeNull()
+  })
   it('head punctuation is dropped for EVERY rule, payloads keep theirs (^quick-deer review)', () => {
     // headWords: the one tokeniser every rule reads through.
     expect(headWords('Log dream. I was late, then early.', 2)).toEqual({ words: ['log', 'dream'], rest: 'I was late, then early.' })
@@ -329,7 +358,7 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('all good here')).toBeNull() // exact match only
   })
   it('unmatched → null (caller decides LLM / fallback)', () => {
-    expect(r('remind me to water the plants')).toBeNull()
+    expect(r('book me a table for two')).toBeNull()
     expect(r('Al')).toBeNull()
     expect(r('')).toBeNull()
   })
@@ -339,6 +368,122 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(describeCommand({ kind: 'fallback', agentKey: 'al', text: 'hi' })).toBe('→ @al (fallback): hi')
     expect(describeCommand({ kind: 'list', target: 'dream', file: 'f', item: 'x', dated: true })).toBe('log dream: x')
     expect(describeCommand({ kind: 'echo', text: 'x' })).toBe('echo: x')
+    expect(describeCommand({ kind: 'remind', text: 'to leave', when: { kind: 'in', seconds: 7200 }, spoken: null })).toBe('remind in 2h: to leave')
+    expect(describeCommand({ kind: 'remind', text: 'to leave', when: { kind: 'at', hour: 5, minute: 0, explicit: false, dayOffset: 0 }, spoken: 'at 5' })).toBe('remind at 05:00 or 17:00 ("at 5"): to leave')
+  })
+})
+
+describe('reminder time parsing', () => {
+  const NOW = new Date(2026, 8, 19, 10, 0)   // Sat 19 Sep, 10:00 local
+
+  it('parseClockTime: numbers, words, am/pm, 24 h, half/quarter past, named times, trailing tomorrow', () => {
+    expect(parseClockTime('5')).toMatchObject({ hour: 5, minute: 0, explicit: false })
+    expect(parseClockTime('5pm')).toMatchObject({ hour: 17, explicit: true })
+    expect(parseClockTime('5 p.m.')).toMatchObject({ hour: 17, explicit: true })
+    expect(parseClockTime('12 am')).toMatchObject({ hour: 0, explicit: true })
+    expect(parseClockTime('5:30')).toMatchObject({ hour: 5, minute: 30, explicit: false })
+    expect(parseClockTime('17.30')).toMatchObject({ hour: 17, minute: 30, explicit: true })
+    expect(parseClockTime('05:00')).toMatchObject({ hour: 5, explicit: true })
+    expect(parseClockTime("five o'clock")).toMatchObject({ hour: 5, explicit: false })
+    expect(parseClockTime('half past five')).toMatchObject({ hour: 5, minute: 30 })
+    expect(parseClockTime('quarter to six')).toMatchObject({ hour: 5, minute: 45 })
+    expect(parseClockTime('6 in the evening')).toMatchObject({ hour: 18, explicit: true })
+    expect(parseClockTime('noon')).toMatchObject({ hour: 12, explicit: true })
+    expect(parseClockTime('midnight')).toMatchObject({ hour: 0, explicit: true })
+    expect(parseClockTime('9 tomorrow')).toMatchObject({ hour: 9, dayOffset: 1 })
+    for (const bad of ['the report', 'it', 'the end of the month', '25', '5:75', 'one thing', '17pm']) expect(parseClockTime(bad)).toBeNull()
+  })
+
+  it('dueAt: a bare hour is the next one ahead (05 or 17), explicit hours roll to tomorrow once passed', () => {
+    const at = (h: number, explicit: boolean, dayOffset = 0) => dueAt({ kind: 'at', hour: h, minute: 0, explicit, dayOffset }, NOW)
+    expect(at(5, false)).toEqual(new Date(2026, 8, 19, 17, 0))     // 05:00 gone → 17:00
+    expect(at(11, false)).toEqual(new Date(2026, 8, 19, 11, 0))    // ahead today
+    expect(at(12, false)).toEqual(new Date(2026, 8, 19, 12, 0))
+    expect(at(9, true)).toEqual(new Date(2026, 8, 20, 9, 0))       // 09:00 explicit, gone → tomorrow
+    expect(at(17, true)).toEqual(new Date(2026, 8, 19, 17, 0))
+    expect(at(9, true, 1)).toEqual(new Date(2026, 8, 20, 9, 0))
+    expect(dueAt({ kind: 'at', hour: 5, minute: 0, explicit: false, dayOffset: 0 }, new Date(2026, 8, 19, 20, 0))).toEqual(new Date(2026, 8, 20, 5, 0))  // both gone → 05:00 tomorrow
+    expect(dueAt({ kind: 'in', seconds: 7200 }, NOW)).toEqual(new Date(2026, 8, 19, 12, 0))
+  })
+
+  it('parseReminder default delay comes from the schema; formatDue / describeWhen / formatReminder', () => {
+    expect(parseReminder('me to leave', 900)).toMatchObject({ when: { kind: 'in', seconds: 900 }, spoken: null })
+    expect(formatDue(new Date(2026, 8, 19, 12, 0), NOW)).toBe('12:00')
+    expect(formatDue(new Date(2026, 8, 20, 9, 0), NOW)).toBe('tomorrow 09:00')
+    expect(formatDue(new Date(2026, 8, 22, 9, 0), NOW)).toBe('Tue 22 Sept 09:00')
+    expect(describeWhen({ kind: 'in', seconds: 5400 })).toBe('in 1h30m')
+    expect(describeWhen({ kind: 'in', seconds: 45 })).toBe('in 45s')
+    expect(describeWhen({ kind: 'at', hour: 9, minute: 0, explicit: true, dayOffset: 1 })).toBe('tomorrow at 09:00')
+    expect(formatReminder('to not leave the ring in the bathroom')).toBe('Reminder to not leave the ring in the bathroom')
+    expect(formatReminder('that the parcel arrives at 5')).toBe('Reminder: the parcel arrives at 5')
+    expect(formatReminder('buy milk')).toBe('Reminder: buy milk')
+    expect(formatReminder('buy milk', { due: new Date(2026, 8, 19, 9, 0), now: NOW })).toBe('Reminder: buy milk (was due 09:00)')
+    expect(formatReminder('buy milk', { due: new Date(2026, 8, 19, 9, 58), now: NOW })).toBe('Reminder: buy milk')
+  })
+})
+
+describe('RingReminders (hub-scheduled one-shots)', () => {
+  let dir: string
+  let sent: string[]
+  let notified: Array<{ title: string; body: string }>
+  let clock: Date
+  let failSend: string | null
+  const deps = () => ({
+    deliver: async (m: string) => { if (failSend) throw new Error(failSend); sent.push(m) },
+    notify: (m: { title: string; body: string }) => notified.push({ title: m.title, body: m.body }),
+    log: () => {},
+    now: () => clock,
+  })
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'ring-rem-')); sent = []; notified = []; failSend = null; clock = new Date(2026, 8, 19, 10, 0) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('persists, lists pending soonest-first, cancels, and fires with the formatted line + a push', async () => {
+    const rem = new RingReminders(dir, deps())
+    const late = rem.add('to leave', clock.getTime() + 3_600_000, 'rec-1')
+    const soon = rem.add('that the parcel arrives', clock.getTime() + 60_000)
+    expect(rem.pending().map((r) => r.id)).toEqual([soon.id, late.id])
+    expect(JSON.parse(readFileSync(join(dir, 'ring', 'reminders.json'), 'utf8')).reminders).toHaveLength(2)
+    expect(rem.cancel(late.id)).toBe(true)
+    expect(rem.cancel(late.id)).toBe(false)
+    expect(rem.pending().map((r) => r.id)).toEqual([soon.id])
+    await rem.fire(soon.id)
+    expect(sent).toEqual(['Reminder: the parcel arrives'])
+    expect(notified).toEqual([{ title: 'Reminder', body: 'that the parcel arrives' }])
+    expect(rem.pending()).toEqual([])
+    expect(rem.list()[0]).toMatchObject({ id: late.id, cancelledAt: clock.getTime() })
+    await rem.fire(soon.id)   // idempotent — a fired reminder never sends twice
+    expect(sent).toHaveLength(1)
+    rem.stop()
+  })
+
+  it('a reminder that came due while the hub was down fires at start, marked late; a fresh instance re-arms the rest', async () => {
+    const a = new RingReminders(dir, deps())
+    a.add('to take the ring off', clock.getTime() + 60_000)
+    a.add('to call mum', clock.getTime() + 86_400_000)
+    a.stop()
+    clock = new Date(clock.getTime() + 30 * 60_000)   // hub down for 30 min
+    const b = new RingReminders(dir, deps())
+    b.start()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(sent).toEqual(['Reminder to take the ring off (was due 10:01)'])
+    expect(b.pending().map((r) => r.text)).toEqual(['to call mum'])
+    b.stop()
+  })
+
+  it('a failed send keeps the reminder pending for a retry; the push still went out once', async () => {
+    const rem = new RingReminders(dir, deps())
+    const r = rem.add('buy milk', clock.getTime() + 60_000)
+    failSend = 'WhatsApp not connected'
+    await rem.fire(r.id)
+    expect(sent).toEqual([])
+    expect(notified).toEqual([{ title: 'Reminder', body: 'buy milk' }])
+    expect(rem.pending()[0]).toMatchObject({ id: r.id, attempts: 1, error: 'WhatsApp not connected' })
+    failSend = null
+    await rem.fire(r.id)   // the retry (here driven by hand)
+    expect(sent).toEqual(['Reminder: buy milk'])
+    expect(notified).toHaveLength(1)
+    expect(rem.pending()).toEqual([])
+    rem.stop()
   })
 })
 
@@ -898,7 +1043,7 @@ describe('describeSchema', () => {
     const voice = d.verbs.find((v) => v.verb === 'voice')!
     expect(voice).toMatchObject({ aliases: ['voicenote', 'audio'], note: /voice note/ })
     expect(voice.targets.map((t) => t.name)).toEqual(msg.targets.map((t) => t.name))
-    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'voice', 'echo', 'music'])
+    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'voice', 'echo', 'music', 'timer', 'remind'])
   })
 })
 
@@ -917,6 +1062,7 @@ describe('RingStore + pipeline', () => {
   let notified: Array<{ title: string; body: string }>
   let music: string[]
   let timers: Array<number | null>
+  let reminders: Array<{ text: string; dueAt: number; recordingId: string }>
   let notes: Map<string, string>
   let cards: string[]
   let heads: Array<{ path: string; vocabulary: string }>
@@ -926,7 +1072,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; heads = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -954,6 +1100,11 @@ describe('RingStore + pipeline', () => {
         previous: async () => { music.push('prev'); return 'ok' },
       },
       glassesTimer: async (seconds) => { timers.push(seconds); return seconds === null ? 'timer cancelled' : `timer running` },
+      reminders: {
+        schedule: (text, dueAt, recordingId) => { reminders.push({ text, dueAt, recordingId }); return { id: 'ab12', text, dueAt, createdAt: 0, attempts: 0, recordingId } },
+        pending: () => [],
+        cancel: () => true,
+      },
       transcribe: async () => 'weather from stt',
       transcribeHead: async (path, vocabulary) => { heads.push({ path, vocabulary }); return null },
       classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
@@ -998,6 +1149,17 @@ describe('RingStore + pipeline', () => {
     expect(timers).toEqual([600, null])
     ctx.glassesTimer = async () => { throw new Error('glasses APK not connected') }
     expect((await deliver('timer 5 minutes')).route).toMatchObject({ ok: false, detail: 'glasses APK not connected' })
+  })
+
+  it('remind schedules a hub reminder due from the spoken time and the clock now; the push says when', async () => {
+    const rec = await deliver('remind me to take the ring off')       // now = 23:07 → 01:07 tomorrow
+    expect(rec.route).toMatchObject({ rule: 'remind.default', ok: true, detail: 'tomorrow 01:07 → WhatsApp (ab12)' })
+    expect(reminders).toEqual([{ text: 'to take the ring off', dueAt: new Date(2026, 8, 3, 1, 7).getTime(), recordingId: rec.id }])
+    expect(notified[0]).toMatchObject({ title: 'Ring · reminder tomorrow 01:07 → WhatsApp (ab12)', body: 'to take the ring off' })
+    await deliver('remind me at 5 to leave')                          // 05:00 and 17:00 both gone → 05:00 tomorrow
+    expect(reminders[1]).toMatchObject({ text: 'to leave', dueAt: new Date(2026, 8, 3, 5, 0).getTime() })
+    ctx.reminders.schedule = () => { throw new Error('reminders file unwritable') }
+    expect((await deliver('remind me to fail')).route).toMatchObject({ ok: false, detail: 'reminders file unwritable' })
   })
 
   it('echo goes straight to WhatsApp, no LLM', async () => {
@@ -1108,14 +1270,14 @@ describe('RingStore + pipeline', () => {
   it('LLM only when rules miss, then the fallback agent, then unknown', async () => {
     expect((await deliver('uh skippity doo')).route).toMatchObject({ via: 'llm', command: { kind: 'music', action: 'next' } })
     expect(music).toEqual(['next'])
-    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
+    expect((await deliver('book me a table for two')).route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
     schema.fallback = 'console-general'
-    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: true })
+    expect((await deliver('book me a table for two')).route).toMatchObject({ via: 'default', ok: true })
     expect(toAgent.at(-1)!.key).toBe('console-general')
     schema.fallback = 'dead'
-    expect((await deliver('remind me to water the plants')).route).toMatchObject({ via: 'default', ok: false, detail: '@dead is not live' })
+    expect((await deliver('book me a table for two')).route).toMatchObject({ via: 'default', ok: false, detail: '@dead is not live' })
     schema.fallback = null; schema.llmFallback = false
-    const none = await deliver('remind me to water the plants')
+    const none = await deliver('book me a table for two')
     expect(none.route).toMatchObject({ via: 'none', ok: false, command: { kind: 'unknown' } })
     expect(none.route?.card).toBeUndefined() // no fallback configured is a choice, not a miss
     expect(notified.at(-1)!.title).toBe('Ring: not delivered')

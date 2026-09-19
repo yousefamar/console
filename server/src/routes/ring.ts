@@ -100,6 +100,7 @@ export function handleRingRoutes(
         webhookUrl,
         recordings: ctx.store.count(),
         lastRecordedAt: latest?.recordedAt ?? null,
+        pendingReminders: ctx.reminders.pending().length,
         fallback: sch.schema.fallback,
         llmFallback: sch.schema.llmFallback,
         schemaErrors: sch.errors,
@@ -115,6 +116,18 @@ export function handleRingRoutes(
   // note is visible before the ring hits it.
   if (path === '/ring/schema' && req.method === 'GET') {
     ctx.describeSchema().then((d) => json(d)).catch((err: Error) => json({ error: err.message }, 500))
+    return true
+  }
+
+  // Pending reminders (`remind` verb) — soonest first; DELETE cancels one.
+  if (path === '/ring/reminders' && req.method === 'GET') {
+    json({ reminders: ctx.reminders.pending() })
+    return true
+  }
+  const reminderMatch = /^\/ring\/reminders\/([A-Za-z0-9]+)$/.exec(path)
+  if (reminderMatch && req.method === 'DELETE') {
+    const ok = ctx.reminders.cancel(reminderMatch[1]!)
+    json(ok ? { ok, id: reminderMatch[1] } : { error: 'no pending reminder with that id' }, ok ? 200 : 404)
     return true
   }
 

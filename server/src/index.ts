@@ -80,6 +80,7 @@ import { handleRingRoutes } from './routes/ring.js'
 import { handleWebhookRoutes, type WebhookRouteCtx } from './routes/webhooks.js'
 import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
+import { RingReminders } from './ring/remind.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
 import { audioHead } from './ring/audio.js'
 import { cutVoiceNote, audioEnvelope } from './ring/voice.js'
@@ -1351,6 +1352,13 @@ const configDir = join(homedir(), '.config', 'console')
 // Pebble Index 01 ring — webhook archive + command router (ring/pipeline.ts)
 // --------------------------------------------------------------------------
 const ringStore = new RingStore(configDir)
+// Reminders fire from here, not from an agent cron: a WhatsApp line at a time
+// is pure software (the `echo` channel) and must not wake a session.
+const ringReminders = new RingReminders(configDir, {
+  deliver: (message) => ringCtx.whatsappToYousef(message),
+  notify: ({ title, body, id }) => pushServer.broadcast({ type: 'generic', title, body, id: `ring:${id}` }),
+  log,
+})
 /** Live keyed sessions — only for `describeSchema`'s fallback-is-live check. */
 const ringLiveAgents = () => [...sessions.values()].filter((s) => s.status !== 'ended').map((s) => ({ agentKey: s.getInfo().agentKey ?? null }))
 const ringSchema = new RingSchemaLoader(noteStore, log)
@@ -1468,6 +1476,11 @@ const ringCtx: RingCtx = {
       return 'failed'
     }
   },
+  reminders: {
+    schedule: (text, dueAt, recordingId) => ringReminders.add(text, dueAt, recordingId),
+    pending: () => ringReminders.pending(),
+    cancel: (id) => ringReminders.cancel(id),
+  },
   glassesTimer: async (seconds) => {
     if (!glassesHub.hasClient()) throw new Error('glasses APK not connected')
     const ack = await glassesHub.countdownTimer(seconds)
@@ -1524,6 +1537,7 @@ const listWatcher = new ListWatcher(noteStore, {
   log,
 })
 void listWatcher.start()
+ringReminders.start()
 const publicOrigin = (process.env.CONSOLE_PUBLIC_ORIGIN || 'https://con.amar.io').replace(/\/$/, '')
 const ringWebhookUrl = `${publicOrigin}/hub/ring/webhook`
 

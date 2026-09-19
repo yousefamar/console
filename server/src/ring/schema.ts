@@ -10,6 +10,8 @@
 // mid-flight) and surface via `con ring schema --check`.
 
 import { parse as parseYaml } from 'yaml'
+import { parseDuration } from '../glasses/timer.js'
+import { describeWhen } from './remind.js'
 
 export const RING_SCHEMA_NOTE = 'projects/console/ring-schema.md'
 /** Every list/log lives here unless the target names its own file. */
@@ -52,6 +54,9 @@ export interface RingSchema {
     music: { aliases: string[]; enabled: boolean }
     /** timer <duration> → the glasses' native countdown (0x07); timer cancel|stop|off clears it. */
     timer: { aliases: string[]; enabled: boolean }
+    /** remind [me] [in <duration> | at <time>] <text> → the text to Yousef's
+     *  WhatsApp at that time; `defaultIn` seconds when no time was spoken. */
+    remind: { aliases: string[]; defaultIn: number }
   }
 }
 
@@ -84,6 +89,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
     echo: { aliases: ['test', 'ping', 'repeat'] },
     music: { aliases: [], enabled: true },
     timer: { aliases: ['countdown', 'set'], enabled: true },
+    remind: { aliases: ['reminder', 'remember'], defaultIn: 2 * 3600 },
   },
 }
 
@@ -174,6 +180,9 @@ export function parseSchemaNote(md: string): SchemaParse {
   const echo = verbs.echo ?? {}
   const music = verbs.music ?? {}
   const timer = verbs.timer ?? {}
+  const remind = verbs.remind ?? {}
+  const defaultIn = remind.default_in === undefined ? d.remind.defaultIn : parseDuration(String(remind.default_in))
+  if (defaultIn === null) errors.push(`verbs.remind.default_in: not a duration ("${String(remind.default_in)}" — try "2 hours", "90 minutes", "2h")`)
 
   const schema: RingSchema = {
     fallback: r.fallback === null ? null : typeof r.fallback === 'string' ? r.fallback.toLowerCase().trim() || null : DEFAULT_SCHEMA.fallback,
@@ -207,6 +216,10 @@ export function parseSchemaNote(md: string): SchemaParse {
       timer: {
         aliases: timer.aliases === undefined ? [...d.timer.aliases] : strList(timer.aliases, 'verbs.timer.aliases', errors),
         enabled: typeof timer.enabled === 'boolean' ? timer.enabled : true,
+      },
+      remind: {
+        aliases: remind.aliases === undefined ? [...d.remind.aliases] : strList(remind.aliases, 'verbs.remind.aliases', errors),
+        defaultIn: defaultIn ?? d.remind.defaultIn,
       },
     },
   }
@@ -309,8 +322,11 @@ itself, minus those two words, sent as a WhatsApp voice note from your account �
 \`voice note mum …\` works too), \`add console the login button is
 misaligned\` (a project slug → Backlog card), \`start console fix the login
 button\` (→ In Progress, an agent forks now), \`echo testing one two\` (→ your own
-WhatsApp, pure software — the smoke test), \`al <anything>\` (escape hatch: straight
-to AL's ring fork, skipping the tree). Failed deliveries show in Home → Alerts.
+WhatsApp, pure software — the smoke test), \`remind me to take the ring off\` (→ your
+own WhatsApp in 2 h; \`remind me in 20 minutes to …\` / \`remind me to … at 5pm\` /
+\`… tomorrow at 9\` set the time; your words are kept as spoken), \`al <anything>\`
+(escape hatch: straight to AL's ring fork, skipping the tree). Failed deliveries
+show in Home → Alerts.
 
 \`\`\`yaml
 fallback: al            # agentKey for anything no verb claims; null = only notify
@@ -357,6 +373,10 @@ verbs:
   timer:                # timer <duration> → the glasses' native countdown (hh:mm:ss on the lens); timer cancel|stop|off clears it
     aliases: [countdown, set]   # "set a timer for ten minutes" works — a remainder that is not a duration falls through
     enabled: true
+
+  remind:               # remind [me] [in <duration> | at <time> | tomorrow …] <text> → the text to your own WhatsApp at that time (time phrase may lead or trail; text kept verbatim)
+    aliases: [reminder, remember]
+    default_in: 2 hours # when no time was spoken
 \`\`\`
 `
 }
@@ -417,6 +437,8 @@ export async function describeSchema(
       { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person> <speech>', targets: contacts, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts as message' },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
+      { verb: 'timer', aliases: v.timer.aliases, usage: 'timer <duration> | timer cancel', targets: [], ...(v.timer.enabled ? {} : { note: 'disabled' }) },
+      { verb: 'remind', aliases: v.remind.aliases, usage: 'remind [me] [in <duration> | at <time> | tomorrow …] <text>', targets: [], note: `to Yousef's own WhatsApp at that time; no time spoken → ${describeWhen({ kind: 'in', seconds: v.remind.defaultIn })}${env.echoConfigured ? '' : ' — NOTIFY_JID unset, nowhere to send'}` },
     ],
   }
 }

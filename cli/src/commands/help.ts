@@ -328,6 +328,7 @@ Commands:
   say "<text>" Simulate a ring transcript (no audio) — runs the FULL pipeline, so a
                "play" resumes Spotify and a "message" sends; --dry routes only
   schema       Print the effective command tree, every target resolved (--check → exit 1 on problems)
+  reminders    Pending "remind" one-shots (id, due, text); reminders cancel <id> drops one
 
 The ring's app POSTs multipart (audio/mp4 + transcription + recordedAt) to
 https://con.amar.io/hub/ring/webhook with the bearer from 'setup'. The hub
@@ -344,6 +345,8 @@ text through the command tree in the vault note projects/console/ring-schema.md:
   start <project> <text>     board card in In Progress (dispatched — an agent forks now)
   message <person> <text>    sent AS YOU through your own chat (Beeper WhatsApp DM)
   echo <text>                straight to your own WhatsApp, no LLM (smoke test)
+  remind [me] [in …|at …] <text>  your own words back to your WhatsApp at that time
+                             (time phrase may lead or trail; none → in 2 h)
   al <text>                  escape hatch: straight to AL's ring fork, skipping the tree
   play | pause | next | previous | play <query>   (any word order: "music plays" works)
 Every note entry is "canonical: [ways to say it]". There is no "agent" verb —

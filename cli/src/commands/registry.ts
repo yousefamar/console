@@ -564,6 +564,9 @@ export const COMMANDS: CommandDef[] = [
   { name: 'ring schema', description: 'Print the effective ring command tree with every target resolved', safety: 'read',
     flags: { check: { type: 'boolean', description: 'Exit non-zero on parse errors or unresolved targets' } },
     examples: ['con ring schema', 'con ring schema --check'] },
+  { name: 'ring reminders', description: 'Pending `remind` one-shots (id, due, text) — hub-scheduled WhatsApp lines to Yousef; `cancel <id>` drops one before it fires', safety: 'write',
+    args: [{ name: 'cancel <id>', required: false, description: 'Cancel a pending reminder by id' }],
+    examples: ['con ring reminders', 'con ring reminders cancel ab12cd34', 'con ring say --dry "remind me in 20 minutes to check the oven"'] },
 
   // webhook (inbound project webhooks → the project's owner)
   { name: 'webhook status', description: 'Every project with a webhook token or deliveries: URL, owner (live?), undelivered count', safety: 'read',

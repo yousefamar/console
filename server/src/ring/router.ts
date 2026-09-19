@@ -11,6 +11,7 @@
 
 import { spokenForms, contactForms, projectForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
 import { parseDuration, formatDuration } from '../glasses/timer.js'
+import { parseReminder, describeWhen, type ReminderWhen } from './remind.js'
 
 /** What the router can see besides the transcript — all resolved by the hub. */
 export interface RouteEnv {
@@ -36,6 +37,9 @@ export type RingCommand =
   | { kind: 'music'; action: 'play' | 'pause' | 'next' | 'previous'; query?: string }
   /** The glasses' native countdown (0x07): `seconds` runs one, null cancels. */
   | { kind: 'timer'; seconds: number | null; spoken: string }
+  /** `text` to Yousef's own WhatsApp when `when` comes round. `spoken` is the
+   *  time phrase as said; null = the schema's default delay applied. */
+  | { kind: 'remind'; text: string; when: ReminderWhen; spoken: string | null }
   /** A verb matched but its target didn't — actionable feedback, not a fallback. */
   | { kind: 'unknown-target'; verb: string; target: string; text: string }
   | { kind: 'unknown'; text: string }
@@ -334,6 +338,18 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
     if (seconds !== null) return { rule: 'timer.start', command: { kind: 'timer', seconds, spoken: one.rest } }
   }
 
+  // remind [me] [in <duration> | at <time> | tomorrow …] <text> — no target
+  // word: the remainder is the text, with a time phrase peeled off either end.
+  // A FUZZY verb hit ("rewind" ≈ "remind") needs "me" or a time phrase to
+  // count — free text alone would make every near-miss a reminder.
+  if (one?.rest) {
+    const m = matchVerb(one.words[0]!, schema)
+    if (m?.verb === 'remind') {
+      const parsed = parseReminder(one.rest, v.remind.defaultIn, !m.exact)
+      if (parsed) return { rule: parsed.spoken ? 'remind.at' : 'remind.default', command: { kind: 'remind', ...parsed } }
+    }
+  }
+
   const parts = two?.rest ? { verb: two.words[0]!, target: two.words[1]!, payload: two.rest } : null
   const matched = parts ? matchVerb(parts.verb, schema) : null
 
@@ -407,6 +423,7 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
       case 'echo':
       case 'music':
       case 'timer':
+      case 'remind':
         break
     }
   }
@@ -480,6 +497,7 @@ export function describeCommand(c: RingCommand): string {
     case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
     case 'timer': return c.seconds === null ? 'timer cancel' : `timer ${formatDuration(c.seconds)} (${c.spoken})`
+    case 'remind': return `remind ${describeWhen(c.when)}${c.spoken ? ` ("${c.spoken}")` : ''}: ${c.text}`
     case 'unknown-target': return `${c.verb}: no target called "${c.target}"`
     case 'unknown': return `unrecognised: ${c.text}`
   }
