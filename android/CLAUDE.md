@@ -191,6 +191,13 @@ while the app is foregrounded (plus short background borrows), so a remote
   `AnnotatedString`. (The "huge padding above edited messages" bug.)
 - Collapse state that combines with a derived default must be a nullable
   override (`collapsed ?: allDone`), not `collapsed || allDone`.
+- `AgentSessionScreen`'s outer `Column` does not scroll: anything mounted above
+  the `weight(1f)` transcript (approval cards, hand-back strips) must cap its
+  OWN height or it eats the transcript and pushes the composer off screen with
+  nothing to scroll (^soft-orca: a 4-question AskUserQuestion). A `Column`
+  measures non-weighted children with the REMAINING height, so a
+  `BoxWithConstraints` there sees exactly the space left (IME-reduced via the
+  screen's `imePadding()`) — cap against its `maxHeight`, not `screenHeightDp`.
 - Externally-grown text (dictation) needs `TextFieldValue` with the selection
   pinned to the end, or the caret strands mid-text.
 - `AnnotatedString.fromHtml` only links real `<a>`; bridges send bare-URL
