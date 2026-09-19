@@ -2,7 +2,7 @@
 // Pure (no React) so it can be unit-tested in the node vitest environment.
 
 export type ListItem = {
-  /** Nesting depth from leading indentation (2 spaces or a tab per level). */
+  /** Nesting depth: an item indented ≥2 columns past the previous item's marker nests under it. */
   depth: number
   ordered: boolean
   /** The written number of an ordered item (`3.` → 3). */
@@ -11,6 +11,8 @@ export type ListItem = {
   checked?: boolean
   text: string
 }
+
+type ParsedListItem = Omit<ListItem, 'depth'> & { indent: number }
 
 export type BlockSegment =
   | { kind: 'text'; lines: string[] }
@@ -25,11 +27,19 @@ const HEADING_RE = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/
 // `- item`, `* item`, `+ item`, `1. item`, `1) item`, optional `[ ]`/`[x]` task box.
 const LIST_RE = /^([ \t]*)(?:([-*+])|(\d{1,3})[.)])\s+(?:\[([ xX])\]\s+)?(.*)$/
 
-export function parseListItem(line: string): ListItem | null {
+export function parseListItem(line: string): ParsedListItem | null {
   const m = line.match(LIST_RE)
   if (!m) return null
   const indent = m[1]!.replace(/\t/g, '  ').length
-  return { depth: Math.floor(indent / 2), ordered: !!m[3], ...(m[3] ? { num: Number(m[3]) } : {}), checked: m[4] === undefined ? undefined : m[4] !== ' ', text: m[5] ?? '' }
+  return { indent, ordered: !!m[3], ...(m[3] ? { num: Number(m[3]) } : {}), checked: m[4] === undefined ? undefined : m[4] !== ' ', text: m[5] ?? '' }
+}
+
+/** Transcript text as the renderer should see it: the `@handoff(<key>)` control
+ *  sentinel stripped (it drives the "Talk to X" banner, not message text) and
+ *  trailing whitespace trimmed. Leading indentation is left alone — it is what
+ *  nests list items and indents fenced code. */
+export function prepareTranscriptText(content: string): string {
+  return content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').trimEnd()
 }
 
 export function parseHeading(line: string): { level: number; text: string } | null {
@@ -68,11 +78,21 @@ export function segmentBlocks(text: string): BlockSegment[] {
       out.push({ kind: 'heading', ...heading })
       i++
     } else if (item) {
-      const items: ListItem[] = [item]
+      const items: ListItem[] = []
+      // Marker columns of the open ancestors. CommonMark nests an item under the
+      // nearest ancestor whose content it is indented past; `+ 2` (a `- ` marker)
+      // is the lenient version so `  - b` still nests under `1. a`.
+      const open: number[] = []
+      const push = ({ indent, ...rest }: ParsedListItem) => {
+        while (open.length && indent < open[open.length - 1]! + 2) open.pop()
+        items.push({ depth: open.length, ...rest })
+        open.push(indent)
+      }
+      push(item)
       i++
       while (i < lines.length) {
         const next = parseListItem(lines[i]!)
-        if (next) { items.push(next); i++; continue }
+        if (next) { push(next); i++; continue }
         // Indented continuation of the previous item (not blank, not a new block).
         if (/^(?: {2,}|\t)\S/.test(lines[i]!) && !startsBlock(i)) { items[items.length - 1]!.text += ' ' + lines[i]!.trim(); i++; continue }
         break
@@ -91,7 +111,9 @@ export function segmentBlocks(text: string): BlockSegment[] {
     } else {
       const start = i
       while (i < lines.length && !startsBlock(i)) i++
-      out.push({ kind: 'text', lines: lines.slice(start, i) })
+      // Prose renders pre-wrap, so runs of spaces would show; collapse them here
+      // only — list/code indentation must reach the parser intact.
+      out.push({ kind: 'text', lines: lines.slice(start, i).map((l) => l.replace(/[ \t]{2,}/g, ' ')) })
     }
   }
   return out

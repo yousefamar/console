@@ -4,7 +4,7 @@ import { useAgentStore } from '@/store/agent'
 import { getHubUrl } from '@/hub'
 import { useUiStore } from '@/store/ui'
 import { TodoList, todoLabel, todoProgress } from './agent/TodoList'
-import { segmentBlocks } from '@/agents/markdown-blocks'
+import { segmentBlocks, prepareTranscriptText } from '@/agents/markdown-blocks'
 import {
   ChevronRight, ChevronDown, Brain, Terminal, FileText, Search,
   Pencil, Globe, AlertTriangle, ClipboardList, ArrowRightLeft, Volume2, Square,
@@ -67,15 +67,13 @@ export const AgentMessageBlock = memo(function AgentMessageBlock({ message, tool
 // --------------------------------------------------------------------------
 
 function TextBlock({ content }: { content: string }) {
-  // Hide the `@handoff(<key>)` control sentinel from display — it drives the
-  // "Talk to X" banner (see store `session_handoff`), it's not message text.
-  const rendered = useMemo(() => renderMarkdownLite(content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').replace(/[ \t]{2,}/g, ' ').trimEnd()), [content])
+  const rendered = useMemo(() => renderMarkdownLite(prepareTranscriptText(content)), [content])
   const [speaking, setSpeaking] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const copyMarkdown = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(content.replace(/\B@handoff\([a-z0-9-]+\)/gi, '').trimEnd())
+      await navigator.clipboard.writeText(prepareTranscriptText(content))
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch { /* ignore — clipboard may be blocked */ }

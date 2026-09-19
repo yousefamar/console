@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { segmentBlocks, unquoteLine, isQuoteLine } from '@/agents/markdown-blocks'
+import { segmentBlocks, unquoteLine, isQuoteLine, prepareTranscriptText } from '@/agents/markdown-blocks'
 
 describe('segmentBlocks — blockquotes', () => {
   it('a run of `>` lines becomes ONE quote segment with the marker stripped', () => {
@@ -72,5 +72,31 @@ describe('headings + lists (^gray-bat: vault-note peeks, transcript parity)', ()
   })
   it('dashes without a following space are not lists (`---`, `-x`)', () => {
     expect(segmentBlocks('---\n-x\n2026 - a year').every((s) => s.kind === 'text')).toBe(true)
+  })
+})
+
+describe('list nesting (^keen-boar: sub-bullets rendered flat)', () => {
+  const depths = (md: string) => (segmentBlocks(md)[0] as { items: { depth: number }[] }).items.map((it) => it.depth)
+
+  it('the reported shape: `- **bold**` parents with two-space `- ` children nest one level', () => {
+    expect(depths('- **Email in** foo\n  - Agree: x\n  - Disagree: y\n- **Email out** bar\n  - Agree: z')).toEqual([0, 1, 1, 0, 1])
+  })
+  it('depth is relative to the enclosing item, not indent/2 (four-space children are depth 1)', () => {
+    expect(depths('- a\n    - b\n        - c\n- d')).toEqual([0, 1, 2, 0])
+    expect(depths('1. a\n   - b\n   - c\n2. d')).toEqual([0, 1, 1, 0])
+    expect(depths('- a\n\t- b\n\t\t- c')).toEqual([0, 1, 2])
+  })
+  it('a child indented less than its would-be parent closes back to the matching ancestor', () => {
+    expect(depths('- a\n  - b\n    - c\n  - d\n- e')).toEqual([0, 1, 2, 1, 0])
+    expect(depths('- a\n  - b\n   - c')).toEqual([0, 1, 1])
+  })
+  it('prepareTranscriptText keeps list indentation and fenced code, strips the handoff sentinel', () => {
+    expect(prepareTranscriptText('- a\n  - b\n\n```\n    indented\n```\n@handoff(al-x) done  \n')).toBe('- a\n  - b\n\n```\n    indented\n```\n done')
+  })
+  it('runs of spaces collapse only inside prose text segments', () => {
+    expect(segmentBlocks('col   a    b\n- x  y')).toEqual([
+      { kind: 'text', lines: ['col a b'] },
+      { kind: 'list', items: [{ depth: 0, ordered: false, checked: undefined, text: 'x  y' }] },
+    ])
   })
 })
