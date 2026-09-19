@@ -49,6 +49,19 @@ export interface HubCronTask {
   lastSkipReason?: string
   consecutiveSkips: number
   disabledAt?: number
+  /** Stamped synchronously on ENTRY to every fire attempt, before any await —
+   *  so an attempt that then throws, skips or queues still leaves a trace.
+   *  `lastFiredAt` answers "was the agent woken"; this answers "did the
+   *  scheduler run at all". The 2026-09-14 drop was invisible because only
+   *  the happy path wrote anything. */
+  lastAttemptAt?: number
+  /** Human-readable result of the most recent attempt ("fired", "queued
+   *  (session mid-turn)", "skipped: session not found", …). */
+  lastOutcome?: string
+  /** croner's next scheduled fire, refreshed after every (re)schedule and
+   *  attempt. Persisted so the missed-fire sweep can judge "this should have
+   *  run by now" from state, not from the timer chain it is checking. */
+  nextFireAt?: number
   /** Transient (never persisted): the current fire's captured guard stdout,
    *  set by runGuard and consumed by fire when composing the wake prompt. */
   guardOutput?: string
@@ -59,6 +72,8 @@ interface State {
   icsToken: string
 }
 
+type FireResult = { ok: true } | { ok: false; reason: string }
+
 const MAX_SKIPS_BEFORE_DISABLE = 10
 /** Warn well before auto-disable so a dead session can be revived in time. */
 const SKIPS_BEFORE_WARN = 3
@@ -67,6 +82,19 @@ const SAVE_DEBOUNCE_MS = 500
 const GUARD_TIMEOUT_MS = 60_000
 /** Cap on guard stdout appended to the wake prompt (chars). */
 const GUARD_OUTPUT_CAP = 4000
+/** How often the missed-fire sweep runs. */
+const SWEEP_INTERVAL_MS = 60_000
+/** Slack after `nextFireAt` before an un-attempted fire counts as missed:
+ *  croner re-checks its timers every ≤30 s, and a blocked event loop delays
+ *  the sweep and the job alike. */
+const MISSED_FIRE_GRACE_MS = 90_000
+/** A one-shot found overdue (hub down across its time, or its fire dropped)
+ *  is delivered late rather than lost — the agent asked to be woken. Give
+ *  the session restore loop time to repopulate `getSessions()` first. */
+const OVERDUE_ONESHOT_DELAY_MS = 30_000
+/** …unless it is this late, in which case waking an agent about something
+ *  a day old is noise: record the miss and disable it instead. */
+const OVERDUE_ONESHOT_MAX_MS = 24 * 60 * 60 * 1000
 
 function newId(): string {
   // 8 chars base32 — same shape Claude uses for cron task IDs
@@ -77,6 +105,7 @@ export class HubCronScheduler {
   private state: State = { tasks: [], icsToken: '' }
   private jobs = new Map<string, Cron>()
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private sweepTimer: ReturnType<typeof setInterval> | null = null
   private publicBaseCache: { url: string | null } | null = null
   private publicBaseExpiry = 0
 
@@ -91,15 +120,69 @@ export class HubCronScheduler {
   }
 
   start(): void {
+    // Judge misses against the PERSISTED nextFireAt before re-arming: a fire
+    // the previous hub process should have run (it was down, or dropped it)
+    // is recorded here, not silently superseded by a fresh schedule.
     for (const t of this.state.tasks) {
+      if (t.disabledAt) continue
+      this.checkMissed(t, 'hub was not running')
       if (!t.disabledAt) this.scheduleJob(t)
     }
+    this.persist()
     this.log(`[cron] scheduled ${this.jobs.size} task(s) of ${this.state.tasks.length} persisted`)
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS)
+      this.sweepTimer.unref?.()
+    }
+  }
+
+  stop(): void {
+    if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = null }
+    for (const job of this.jobs.values()) job.stop()
+    this.jobs.clear()
+    this.flush()
   }
 
   flush(): void {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     this.persistSync()
+  }
+
+  /** Missed-fire watchdog. croner drives each task from its own setTimeout
+   *  chain and tells nobody when a link goes missing: on 2026-09-14 a weekly
+   *  task's fire vanished (no wake, no skip, no throw) while two other tasks
+   *  on the identical trigger fired that same second. This is the one path
+   *  that can notice: any active task whose persisted `nextFireAt` is past
+   *  the grace with no attempt stamped since is recorded as a skip — it IS
+   *  one — and its job re-armed so a dead chain does not stay dead. Runs
+   *  every SWEEP_INTERVAL_MS; public so tests and `runOnce`-style tooling
+   *  can drive it. Returns the tasks it caught. */
+  sweep(): HubCronTask[] {
+    const caught: HubCronTask[] = []
+    for (const t of this.state.tasks) {
+      if (t.disabledAt) continue
+      if (!this.checkMissed(t, 'scheduler never ran it')) continue
+      caught.push(t)
+      if (!t.disabledAt) this.scheduleJob(t)
+    }
+    if (caught.length) this.persist()
+    return caught
+  }
+
+  private checkMissed(task: HubCronTask, why: string): boolean {
+    const due = task.nextFireAt
+    if (!due || Date.now() < due + MISSED_FIRE_GRACE_MS) return false
+    if ((task.lastAttemptAt ?? 0) >= due) return false
+    this.skipOutsideFire(task, `missed fire due ${new Date(due).toISOString()} — ${why}`)
+    return true
+  }
+
+  /** A skip decided outside fire() (missed slot, protect overlap) still gets
+   *  the same outcome + log line a fire would have written. */
+  private skipOutsideFire(task: HubCronTask, reason: string): void {
+    this.recordSkip(task, reason)
+    task.lastOutcome = `skipped: ${reason}`
+    this.log(`[cron] ${task.id} ${task.lastOutcome}`)
   }
 
   // --------------------------------------------------------------------------
@@ -274,20 +357,73 @@ export class HubCronScheduler {
   // --------------------------------------------------------------------------
 
   private scheduleJob(task: HubCronTask) {
+    this.unscheduleJob(task.id)
     try {
-      // protect: prevent overlapping fires of the same task while a previous
-      // one is still in-flight (Claude may take >1 min to respond on a
-      // per-minute cron; without protect we'd queue infinitely).
-      const job = new Cron(task.trigger, { protect: true }, () => { void this.fire(task) })
+      const job = this.buildJob(task, task.trigger)
+      let next = job.nextRun()
+      if (!next && !task.recurring) {
+        // An ISO one-shot whose time has passed: croner arms no timer and
+        // the task would sit in the list forever, never firing, never
+        // failing. Deliver it late (the agent asked to be woken) unless it
+        // is a day stale, in which case record + disable.
+        const once = job.getOnce()
+        const overdueMs = once ? Date.now() - once.getTime() : Infinity
+        job.stop()
+        if (overdueMs > OVERDUE_ONESHOT_MAX_MS) {
+          task.lastSkipReason = `one-shot ${Math.round(overdueMs / 3_600_000)}h overdue — not delivered`
+          task.lastOutcome = `skipped: ${task.lastSkipReason}`
+          task.disabledAt = Date.now()
+          delete task.nextFireAt
+          this.log(`[cron] ${task.id} ${task.lastOutcome}`)
+          return
+        }
+        const late = this.buildJob(task, new Date(Date.now() + OVERDUE_ONESHOT_DELAY_MS))
+        next = late.nextRun()
+        this.jobs.set(task.id, late)
+        task.nextFireAt = next?.getTime()
+        this.log(`[cron] ${task.id} one-shot overdue by ${Math.round(overdueMs / 1000)}s — firing in ${OVERDUE_ONESHOT_DELAY_MS / 1000}s`)
+        return
+      }
       this.jobs.set(task.id, job)
+      task.nextFireAt = next?.getTime()
     } catch (e) {
       this.log(`[cron] failed to schedule ${task.id}: ${(e as Error).message}`)
     }
   }
 
-  private async fire(task: HubCronTask): Promise<{ ok: true } | { ok: false; reason: string }> {
-    if (task.disabledAt) return { ok: false, reason: 'disabled' }
+  private buildJob(task: HubCronTask, trigger: string | Date): Cron {
+    return new Cron(trigger, {
+      // croner honours `protect` only while the callback's RETURNED promise
+      // is pending. The old callback `void`ed fire(), so it "finished" on the
+      // spot and protect never blocked anything. Returning the promise makes
+      // it real (an overlap is now only possible when a guard outlives a
+      // per-minute trigger), and the callback form records the overlap
+      // instead of dropping the fire silently.
+      protect: () => { this.skipOutsideFire(task, 'previous fire still in flight') },
+    }, async () => { await this.fire(task) })
+  }
 
+  /** One attempt, whatever happens: `lastAttemptAt` is stamped before the
+   *  first await and the outcome is written on EVERY path — including a
+   *  throw, which used to escape into a `void`ed promise and leave the task
+   *  untouched (no lastFiredAt, no skip, no push: the 2026-09-14 drop). */
+  private async fire(task: HubCronTask): Promise<FireResult> {
+    if (task.disabledAt) return { ok: false, reason: 'disabled' }
+    task.lastAttemptAt = Date.now()
+    let result: FireResult
+    try {
+      result = await this.attempt(task)
+    } catch (e) {
+      result = this.recordSkip(task, `fire threw: ${(e as Error).message}`)
+    }
+    if (!result.ok) task.lastOutcome = `skipped: ${result.reason}`
+    task.nextFireAt = this.jobs.get(task.id)?.nextRun()?.getTime()
+    this.log(`[cron] ${task.id} ${task.lastOutcome}`)
+    this.persist()
+    return result
+  }
+
+  private async attempt(task: HubCronTask): Promise<FireResult> {
     // Guard gate: run the script FIRST (cheap, token-free). Only proceed to
     // wake the agent when it exits 0. A non-zero exit is the normal
     // "nothing to do" case — skip silently, keep the task scheduled, and do
@@ -299,7 +435,6 @@ export class HubCronScheduler {
       if (!g.proceed) {
         task.lastGuardResult = g.error ? 'error' : 'skipped'
         task.lastSkipReason = g.error ? `guard error: ${g.error}` : 'guard: no change'
-        this.persist()
         return { ok: false, reason: task.lastSkipReason }
       }
       task.lastGuardResult = 'fired'
@@ -319,23 +454,34 @@ export class HubCronScheduler {
       : task.prompt
     delete task.guardOutput
 
-    // Mirror the "Continue." nudge path: broadcast + log + writeStdin
-    const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content }
-    this.broadcast(userMsg)
-    session.logMessage(userMsg)
-    session.sendMessage(content)
+    if (session.status === 'running') {
+      // Mid-turn. A stdin write now lands at the CLI's next tool boundary as
+      // a second user message inside the running turn — the stream-json
+      // behaviour ~/CLAUDE.md records as broken. The session's own queue
+      // exists for exactly this: it delivers at `result`, which for a cron
+      // prompt is the right moment anyway. A per-minute task firing through
+      // a long turn must not stack the same prompt N times.
+      if (session.queuedMessage?.includes(content)) {
+        task.lastOutcome = 'queued (already pending from an earlier fire)'
+      } else {
+        session.queueMessage(content)
+        task.lastOutcome = 'queued (session mid-turn)'
+      }
+    } else {
+      // Mirror the "Continue." nudge path: broadcast + log + writeStdin
+      const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content }
+      this.broadcast(userMsg)
+      session.logMessage(userMsg)
+      session.sendMessage(content)
+      task.lastOutcome = 'fired'
+    }
 
     task.lastFiredAt = Date.now()
     task.consecutiveSkips = 0
     delete task.lastSkipReason
 
     // One-shot tasks remove themselves after firing
-    if (!task.recurring) {
-      this.remove(task.id, { actor: 'hub', reason: 'fired' })
-      return { ok: true }
-    }
-
-    this.persist()
+    if (!task.recurring) this.remove(task.id, { actor: 'hub', reason: 'fired' })
     return { ok: true }
   }
 
@@ -364,10 +510,12 @@ export class HubCronScheduler {
     }
   }
 
-  /** A skip = the target session is gone (guard no-changes deliberately do NOT
-   *  come through here — they never count toward auto-disable). Warns once at
-   *  SKIPS_BEFORE_WARN so a dead session can be revived before the task
-   *  auto-disables, and alerts on the disable itself. */
+  /** A skip = the fire could not be delivered: session gone, fire threw,
+   *  previous fire still in flight, or the timer chain missed the slot (guard
+   *  no-changes deliberately do NOT come through here — they never count
+   *  toward auto-disable). Warns once at SKIPS_BEFORE_WARN so a dead session
+   *  can be revived before the task auto-disables, and alerts on the disable
+   *  itself. */
   private recordSkip(task: HubCronTask, reason: string): { ok: false; reason: string } {
     task.consecutiveSkips++
     task.lastSkipReason = reason

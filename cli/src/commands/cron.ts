@@ -17,6 +17,9 @@ interface HubCronTask {
   prompt: string
   createdAt: number
   lastFiredAt?: number
+  lastAttemptAt?: number
+  lastOutcome?: string
+  nextFireAt?: number
   lastSkipReason?: string
   consecutiveSkips: number
   disabledAt?: number

@@ -104,7 +104,7 @@ function TaskRow({ task, onRun, onRemove }: { task: HubCronTask; onRun: () => vo
           </div>
           <div className="text-[10px] text-text-tertiary mt-0.5 flex items-center gap-2 flex-wrap">
             {nextIn && !task.disabledAt && <span>next {nextIn}</span>}
-            {lastFiredAgo && <span>fired {lastFiredAgo}</span>}
+            {lastFiredAgo && <span>{task.lastOutcome?.startsWith('queued') ? 'queued' : 'fired'} {lastFiredAgo}</span>}
             {task.lastSkipReason && <span className="text-yellow-400" title={`${task.consecutiveSkips} consecutive skips`}>skip: {task.lastSkipReason}</span>}
           </div>
         </div>

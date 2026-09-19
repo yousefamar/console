@@ -34,8 +34,10 @@ function liveSession(claudeSessionId: string): Session {
     id: 'hub-1',
     claudeSessionId,
     status: 'running',
+    queuedMessage: null,
     logMessage: vi.fn(),
     sendMessage: vi.fn(),
+    queueMessage: vi.fn(),
   } as unknown as Session
 }
 

@@ -22,6 +22,12 @@ export interface HubCronTask {
   lastSkipReason?: string
   consecutiveSkips: number
   disabledAt?: number
+  /** Every attempt stamps this, whatever the outcome; lastFiredAt only
+   *  advances when the agent was woken. */
+  lastAttemptAt?: number
+  /** "fired" | "queued (session mid-turn)" | "skipped: …" */
+  lastOutcome?: string
+  nextFireAt?: number
 }
 
 interface CronState {
