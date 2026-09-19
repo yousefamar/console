@@ -42,6 +42,15 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Agent session: hand-back + blocked strips capped like the question pager**
+  (^soft-orca follow-up): the `ReviewHandbackStrip`/`BlockedCardStrip` rows
+  sit above the `weight(1f)` transcript in the session screen's non-scrolling
+  `Column` — the exact trap that made a 4-question AskUserQuestion push the
+  composer off screen in v100. Many owned cards would do the same. They now
+  render inside a `BoxWithConstraints` → `Column.heightIn(max = 40 % of the
+  remaining height).verticalScroll(...)`, so the transcript and composer stay
+  reachable however many cards a fork owns.
+
 (none)
 
 ## Shipped

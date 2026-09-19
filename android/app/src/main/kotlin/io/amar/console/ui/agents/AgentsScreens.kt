@@ -7,11 +7,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -310,45 +314,54 @@ fun AgentSessionScreen(
             }
             var busyCard by remember { mutableStateOf<String?>(null) }
             var openCard by remember { mutableStateOf<Pair<String, String>?>(null) }
-            for (c in blocked) {
-                BlockedCardStrip(
-                    c, busy = busyCard == c.query,
-                    onOpen = { openCard = c.project to c.query },
-                    onUnblock = {
-                        scope.launch {
-                            busyCard = c.query
-                            if (!spaces.setBlockedByQuery(c.project, c.query, false)) {
-                                io.amar.console.ui.shell.AppToast.show("Couldn't unblock the card: ${spaces.boardError.value ?: "hub error"}", error = true)
-                                spaces.clearError()
-                            }
-                            spaces.refreshSpaces()
-                            busyCard = null
+            // Same trap as the AskUserQuestion pager (^soft-orca): this outer
+            // Column never scrolls, so many strips would eat the transcript and
+            // push the composer off screen. Cap against the REMAINING height.
+            if (blocked.isNotEmpty() || handbacks.isNotEmpty()) {
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    Column(Modifier.heightIn(max = maxHeight * 0.4f).verticalScroll(rememberScrollState())) {
+                        for (c in blocked) {
+                            BlockedCardStrip(
+                                c, busy = busyCard == c.query,
+                                onOpen = { openCard = c.project to c.query },
+                                onUnblock = {
+                                    scope.launch {
+                                        busyCard = c.query
+                                        if (!spaces.setBlockedByQuery(c.project, c.query, false)) {
+                                            io.amar.console.ui.shell.AppToast.show("Couldn't unblock the card: ${spaces.boardError.value ?: "hub error"}", error = true)
+                                            spaces.clearError()
+                                        }
+                                        spaces.refreshSpaces()
+                                        busyCard = null
+                                    }
+                                },
+                            )
+                    }
+                    for (hb in handbacks) {
+                        ReviewHandbackStrip(
+                            hb, busy = busyCard == hb.query,
+                            onOpen = { openCard = hb.project to hb.query },
+                            onApprove = {
+                                scope.launch {
+                                    busyCard = hb.query
+                                    val outcome = io.amar.console.data.inbox.approveHandbacks(listOf(hb)) { p, q, col -> spaces.moveCardByQuery(p, q, col) }
+                                    if (outcome.failed != null) {
+                                        io.amar.console.ui.shell.AppToast.show("Couldn't move the card to ${hb.doneColumn}: ${spaces.boardError.value ?: "hub error"}", error = true)
+                                        spaces.clearError()
+                                    } else {
+                                        spaces.refreshSpaces()
+                                        // Only the LAST of several cards handles the session.
+                                        val remaining = io.amar.console.data.inbox.reviewHandbacksFor(session?.agentKey, spaces.spaces.value)
+                                            .count { !(it.project == hb.project && it.query == hb.query) }
+                                        if (remaining == 0) repo.markRead(sessionId, sticky = true)
+                                    }
+                                    busyCard = null
+                                }
+                            },
+                        )
                         }
-                    },
-                )
-            }
-            for (hb in handbacks) {
-                ReviewHandbackStrip(
-                    hb, busy = busyCard == hb.query,
-                    onOpen = { openCard = hb.project to hb.query },
-                    onApprove = {
-                        scope.launch {
-                            busyCard = hb.query
-                            val outcome = io.amar.console.data.inbox.approveHandbacks(listOf(hb)) { p, q, col -> spaces.moveCardByQuery(p, q, col) }
-                            if (outcome.failed != null) {
-                                io.amar.console.ui.shell.AppToast.show("Couldn't move the card to ${hb.doneColumn}: ${spaces.boardError.value ?: "hub error"}", error = true)
-                                spaces.clearError()
-                            } else {
-                                spaces.refreshSpaces()
-                                // Only the LAST of several cards handles the session.
-                                val remaining = io.amar.console.data.inbox.reviewHandbacksFor(session?.agentKey, spaces.spaces.value)
-                                    .count { !(it.project == hb.project && it.query == hb.query) }
-                                if (remaining == 0) repo.markRead(sessionId, sticky = true)
-                            }
-                            busyCard = null
-                        }
-                    },
-                )
+                    }
+                }
             }
             openCard?.let { (project, query) ->
                 io.amar.console.ui.inbox.InboxCardSheet(
