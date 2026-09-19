@@ -28,14 +28,14 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     'Tree: <verb> <target> <payload>. Output exactly one JSON object, nothing else:',
     `  {"kind":"list","target":"<one of: ${Object.keys(v.add.targets).join(', ') || '-'}>","lead_in":"<opening words>"}`,
     `  {"kind":"card","project":"<one of: ${env.projects.join(', ') || '-'}>","lead_in":"<opening words>","start":<true only if the speaker clearly wants work to begin NOW (verbs like start/do/go/kick off), else false>}`,
-    `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.keys(v.message.contacts), ...env.contacts])].join(', ') || '-'}>","lead_in":"<opening words>"}`,
-    '  {"kind":"voice","contact":"<same contacts as message>","lead_in":"<opening words>"}   ← only when the speaker asks for a VOICE note / audio / recording to be sent, not a text',
+    `  {"kind":"message","contact":"<one of: ${[...new Set([...Object.keys(v.message.contacts), ...env.contacts, ...Object.keys(v.message.rooms)])].join(', ') || '-'}>","lead_in":"<opening words>"}`,
+    '  {"kind":"voice","contact":"<same contacts/rooms as message>","lead_in":"<opening words>"}   ← only when the speaker asks for a VOICE note / audio / recording to be sent, not a text',
     '  {"kind":"echo","lead_in":"<opening words>"}',
     '  {"kind":"remind","lead_in":"<opening words>"}   ← the speaker wants to be reminded of something later ("remind me…", "don\'t let me forget…"); lead_in ends where the thing to remember (or its time phrase) begins',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: the transcript\'s own words naming what to play, copied exactly>"}',
     '  {"kind":"unknown"}',
     '',
-    `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; voice=${v.voice.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}; remind=${v.remind.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
+    `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; voice=${v.voice.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}; remind=${v.remind.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}. Rooms (group chats): ${Object.entries(v.message.rooms).map(([r, f]) => `${r}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
     '',
     `Transcript: ${JSON.stringify(text)}`,
     '',
@@ -89,7 +89,7 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
     case 'message':
     case 'voice': {
       const contact = str('contact').toLowerCase(); const t = payload('text', false)
-      const known = contact in v.message.contacts || env.contacts.includes(contact)
+      const known = contact in v.message.contacts || env.contacts.includes(contact) || contact in v.message.rooms
       return known && t ? { kind: obj.kind, contact, spoken: contact, text: t } : null
     }
     case 'music': {

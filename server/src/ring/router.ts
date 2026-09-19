@@ -9,7 +9,7 @@
 // (`add <project> …` files a card, the board forks an agent for it), not to
 // agents. AL is reached only as the fallback for text no verb claims.
 
-import { spokenForms, contactForms, projectForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
+import { spokenForms, recipientForms, projectForms, AL_CONTACT, type RingSchema, type ListTarget } from './schema.js'
 import { parseDuration, formatDuration } from '../glasses/timer.js'
 import { parseReminder, describeWhen, type ReminderWhen } from './remind.js'
 
@@ -19,6 +19,8 @@ export interface RouteEnv {
   projects: string[]
   /** AL workspace usernames (users/<name>.md) for `message`. */
   contacts: string[]
+  /** Chat room names, lowercased — only for checking the note's `rooms:` resolve. */
+  rooms: string[]
 }
 
 export type RingCommand =
@@ -26,6 +28,8 @@ export type RingCommand =
   | { kind: 'list'; target: string; file: string; item: string; dated: boolean; enrich?: ListTarget['enrich'] }
   | { kind: 'echo'; text: string }
   | { kind: 'card'; project: string; column: string; text: string }
+  /** `contact` is the recipient's canonical: a users/<name>.md username, AL,
+   *  or a `rooms:` key (a chat room's name) — the ctx resolves each its way. */
   | { kind: 'message'; contact: string; spoken: string; text: string }
   /** The recording itself, minus the command head, as a voice note. `text`
    *  is the payload transcript — it anchors the cut and captions the push. */
@@ -401,24 +405,23 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         return unknown('start')
       }
       case 'message': {
-        const contact = resolveContact(target, v.message.contacts, env)
-        if (contact) return { rule: 'message', command: { kind: 'message', contact, spoken: target, text: payload.replace(MESSAGE_LEAD, '') } }
+        const hit = resolveRecipientAt(cased, 1, schema, env)
+        if (hit) return hit.rest ? { rule: 'message', command: { kind: 'message', contact: hit.contact, spoken: hit.spoken, text: hit.rest.replace(MESSAGE_LEAD, '') } } : null
         return unknown('message')
       }
       case 'voice': {
-        // The person may sit behind verb-phrase words: "voice mum …",
+        // The recipient may sit behind verb-phrase words: "voice mum …",
         // "voice note mum …", "voice message to mum …".
-        let head = two
-        for (let skipped = 0; head?.rest; skipped++) {
-          const spoken = head.words.at(-1)!
-          const contact = resolveContact(spoken, v.message.contacts, env)
-          if (contact) return { rule: 'voice', command: { kind: 'voice', contact, spoken, text: head.rest } }
+        for (let p = 1, skipped = 0; ; p++, skipped++) {
+          const hit = resolveRecipientAt(cased, p, schema, env)
+          if (hit) return hit.rest ? { rule: 'voice', command: { kind: 'voice', contact: hit.contact, spoken: hit.spoken, text: hit.rest } } : null
+          const head = headWords(cased, p + 1)
+          if (!head?.rest) return unknown('voice')
+          const spoken = head.words[p]!
           if (skipped >= VOICE_PHRASE_MAX || !VOICE_PHRASE.has(spoken)) {
             return matched.exact ? { rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: spoken, text } } : null
           }
-          head = headWords(cased, head.words.length + 1)
         }
-        return unknown('voice')
       }
       case 'echo':
       case 'music':
@@ -431,10 +434,23 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   return null
 }
 
-/** A spoken name → username: the note's nicknames and derived first names,
- *  else a fuzzy hit on the workspace's usernames. */
-function resolveContact(spoken: string, contacts: Record<string, string[]>, env: RouteEnv): string | null {
-  return resolveSpoken(spoken, contactForms(contacts, env.contacts)) ?? pickFuzzy(spoken, env.contacts)
+/** The recipient named at head word `p`: the LONGEST run of words (up to the
+ *  longest form in the note — "control room" is two) that is a contact or room
+ *  form, then derived first names, then a fuzzy hit on a single word against
+ *  the workspace's usernames. A recipient with nothing after it comes back
+ *  with an empty `rest` — no command, and never a shorter match with the
+ *  name's tail as the payload ("message control room" must not send "room"). */
+function resolveRecipientAt(cased: string, p: number, schema: RingSchema, env: RouteEnv): { contact: string; spoken: string; rest: string } | null {
+  const forms = recipientForms(schema.verbs.message, env.contacts)
+  const longest = Math.max(1, ...[...forms.keys()].map((f) => f.split(' ').length))
+  for (let k = longest; k >= 1; k--) {
+    const head = headWords(cased, p + k)
+    if (!head) continue
+    const spoken = head.words.slice(p).join(' ')
+    const contact = resolveSpoken(spoken, forms) ?? (k === 1 ? pickFuzzy(spoken, env.contacts) : null)
+    if (contact) return { contact, spoken, rest: head.rest }
+  }
+  return null
 }
 
 const SENTENCE_END = /[.!?]$/

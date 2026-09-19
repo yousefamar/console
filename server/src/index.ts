@@ -1385,13 +1385,21 @@ const ringEnv = async (): Promise<RouteEnv> => {
     // Only projects with a board can take a card — keeps ~70 vault slugs out of the fuzzy match.
     projects: spaces.filter((sp) => sp.kind === 'project' && sp.boardPath).map((sp) => sp.slug.toLowerCase()),
     contacts: [AL_CONTACT, ...users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase())],
+    rooms: Object.values(chatRoomsStore.snapshot().data).map((r) => r.name.trim().toLowerCase()),
   }
 }
-/** The contact's bridged WhatsApp DM in Yousef's own account. Beeper names a
- *  ghost by phone OR lid — expand every known phone to its lid via AL's socket
- *  so a users/<name>.md that only lists the number still finds a lid-keyed
- *  room (the class that hid AL's own DM). Throws when nothing resolves. */
+/** The recipient's room in Yousef's own account. A `rooms:` key from the
+ *  schema note is a chat room by NAME (a group — "Control Room"); anyone else
+ *  is a contact whose bridged WhatsApp DM is found by ghost member id. Beeper
+ *  names a ghost by phone OR lid — expand every known phone to its lid via
+ *  AL's socket so a users/<name>.md that only lists the number still finds a
+ *  lid-keyed room (the class that hid AL's own DM). Throws when nothing resolves. */
 const yousefDmRoomFor = async (contact: string) => {
+  if (contact in ringSchema.current().verbs.message.rooms) {
+    const hits = Object.values(chatRoomsStore.snapshot().data).filter((r) => r.name.trim().toLowerCase() === contact)
+    if (hits.length === 1) return hits[0]!
+    throw new Error(hits.length ? `${hits.length} chat rooms are named "${contact}"` : `no chat room named "${contact}"`)
+  }
   const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)
   const ids = await expandIdentifiers(known, alWa.lidForNumber)
   const room = await ringContactRooms.resolve(contact, ids)

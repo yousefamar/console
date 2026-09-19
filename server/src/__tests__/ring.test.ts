@@ -20,9 +20,10 @@ import { parseReminder, parseClockTime, dueAt, formatDue, formatReminder, descri
 import { NoteStore } from '../notes.js'
 
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
-const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'] }
+const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'], rooms: ['control room', 'al', 'family'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
 SCHEMA.verbs.message.contacts = { al: ['owl', 'hal'], 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
+SCHEMA.verbs.message.rooms = { 'control room': ['control'], 'yes theory london fam': ['yes theory'] }
 
 // Recording 2026-09-16T05-21-31.691Z-1238: Yousef said "Log dream. These are
 // three dreams. I had a dream…" (~200 words); the ring wrote "Look, these are
@@ -147,10 +148,12 @@ describe('schema note', () => {
     expect(p.errors.join('\n')).toMatch(/contacts.mum: expected a LIST/) // old nickname→user shape rejected, not inverted
     expect(p.errors.join('\n')).toMatch(/verbs.dance: unknown verb/)
   })
-  it('flags a spoken form claimed by two targets or two contacts', () => {
-    const p = parseSchemaNote('```yaml\nverbs:\n  add:\n    targets:\n      dream: { aliases: [log] }\n      diary: { aliases: [log] }\n  message:\n    contacts:\n      mai: [mum]\n      nica: [mum]\n```')
+  it('flags a spoken form claimed by two targets, two contacts, or a contact and a room', () => {
+    const p = parseSchemaNote('```yaml\nverbs:\n  add:\n    targets:\n      dream: { aliases: [log] }\n      diary: { aliases: [log] }\n  message:\n    contacts:\n      mai: [mum]\n      nica: [mum, fam]\n    rooms:\n      family: [fam]\n```')
     expect(p.errors.join('\n')).toMatch(/"log" is claimed by both target dream and target diary/)
-    expect(p.errors.join('\n')).toMatch(/"mum" is claimed by both contacts mai and nica/)
+    expect(p.errors.join('\n')).toMatch(/"mum" is claimed by both contact mai and contact nica/)
+    expect(p.errors.join('\n')).toMatch(/"fam" is claimed by both contact nica and room family/)
+    expect(p.schema.verbs.message.rooms).toEqual({ family: ['fam'] })
     // Projects share the add namespace with list targets: `add <word> …` must resolve one way.
     const q = parseSchemaNote('```yaml\nprojects:\n  al: [l, films]\n  console: [l]\n```')
     expect(q.errors.join('\n')).toMatch(/"films" is claimed by both target movies and project al/)
@@ -227,6 +230,19 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('voyce stranger hi')).toBeNull() // fuzzy verb + unknown person is not a command
     expect(r('voice mum')).toBeNull() // nothing to send
     expect(describeCommand(r("voice mum I'm late")!.command)).toBe("voice note → mum (yasmina-amar): I'm late")
+  })
+  it('message|voice <room> — a group chat from the note\'s rooms:, by its (multi-word) name or a spoken form (^fond-bass)', () => {
+    // Recording 2026-09-19T09-56-52.948Z-e313: "Voice control room. This is a test." died as `no voice target called "control"`.
+    expect(r('Voice control room. This is a test.')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'control room', spoken: 'control room', text: 'This is a test' } })
+    expect(r('voice control this is a test')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'control room', spoken: 'control', text: 'this is a test' } })
+    expect(r('voice note to control room testing')).toMatchObject({ rule: 'voice', command: { contact: 'control room', text: 'testing' } })
+    expect(r('message control room hello all')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'control room', spoken: 'control room', text: 'hello all' } })
+    expect(r('message yes theory london fam anyone around?')).toMatchObject({ rule: 'message', command: { contact: 'yes theory london fam', text: 'anyone around' } })
+    expect(r('message yes theory anyone around?')).toMatchObject({ rule: 'message', command: { contact: 'yes theory london fam', spoken: 'yes theory' } })
+    expect(r('message control roon hello')).toMatchObject({ rule: 'message', command: { contact: 'control room', text: 'hello' } }) // one edit, multi-word
+    expect(r('message control room')).toBeNull() // a recipient with nothing after it is no command — never "room" as the payload
+    expect(r('message mum control the room')).toMatchObject({ command: { contact: 'yasmina-amar', text: 'control the room' } }) // a person first still wins
+    expect(describeCommand(r('voice control room testing')!.command)).toBe('voice note → control room (control room): testing')
   })
   it('message/text/tell AL is a WhatsApp send FROM YOUSEF to AL\'s DM — he wants AL to reply on WhatsApp (never rerouted to al.direct)', () => {
     expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'are you there' } })
@@ -638,6 +654,9 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voys note for Nika,"}', SCHEMA, ENV, "Voys note for Nika, I'm late")).toEqual({ kind: 'voice', contact: 'nica', spoken: 'nica', text: "I'm late" })
     expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voice Nica"}', SCHEMA, ENV, "voys nika I'm late")).toBeNull() // lead-in not a prefix: never send the command words
     expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"kind":"voice".*VOICE note/)
+    expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"contact":"<one of: .*control room/) // rooms are recipients too
+    expect(parseClassifyReply('{"kind":"voice","contact":"control room","lead_in":"Voys, control room."}', SCHEMA, ENV, 'Voys, control room. This is a test.')).toEqual({ kind: 'voice', contact: 'control room', spoken: 'control room', text: 'This is a test' })
+    expect(parseClassifyReply('{"kind":"message","contact":"some room","lead_in":"message some room"}', SCHEMA, ENV, 'message some room hi')).toBeNull() // off-schema room
     expect(parseClassifyReply('{"kind":"music","action":"louder"}', SCHEMA, ENV, 'x')).toBeNull()
     expect(parseClassifyReply('{"kind":"unknown"}', SCHEMA, ENV, 'raw')).toEqual({ kind: 'unknown', text: 'raw' })
     expect(parseClassifyReply('I cannot help', SCHEMA, ENV, 'x')).toBeNull()
@@ -1039,6 +1058,9 @@ describe('describeSchema', () => {
     const msg = d.verbs.find((v) => v.verb === 'message')!
     expect(msg.targets.find((t) => t.name === 'yasmina-amar')).toMatchObject({ ok: true, aliases: ['mum', 'sister', 'yasmina'] }) // 'yasmina' listed explicitly here, so not doubled
     expect(msg.targets.find((t) => t.name === 'al')).toMatchObject({ ok: true, resolves: "AL's own WhatsApp DM (as Yousef)" })
+    expect(msg.targets.find((t) => t.name === 'control room')).toMatchObject({ ok: true, aliases: ['control'], resolves: 'chat room by name (as Yousef)' })
+    expect(msg.targets.find((t) => t.name === 'yes theory london fam')).toMatchObject({ ok: false, note: 'no chat room has this name' })
+    expect(d.verbs.find((v) => v.verb === 'voice')!.targets.map((t) => t.name)).toContain('control room')
     expect(d.verbs.find((v) => v.verb === 'echo')!.note).toMatch(/NOTIFY_JID unset/)
     const voice = d.verbs.find((v) => v.verb === 'voice')!
     expect(voice).toMatchObject({ aliases: ['voicenote', 'audio'], note: /voice note/ })

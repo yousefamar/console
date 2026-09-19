@@ -44,8 +44,10 @@ export interface RingSchema {
     add: { aliases: string[]; targets: Record<string, ListTarget>; projectColumn: string }
     /** start <project> <text> → card straight into the dispatch column (forks an agent now). */
     start: { aliases: string[]; column: string }
-    /** message <person> <text> → sent AS Yousef via his own chat account. contacts: username → spoken forms. */
-    message: { aliases: string[]; contacts: Record<string, string[]> }
+    /** message <person|room> <text> → sent AS Yousef via his own chat account.
+     *  contacts: username → spoken forms. rooms: a chat room's NAME (lowercased;
+     *  group chats — "control room") → spoken forms; one namespace with contacts. */
+    message: { aliases: string[]; contacts: Record<string, string[]>; rooms: Record<string, string[]> }
     /** voice <person> <speech> → the RECORDING itself, minus the command head,
      *  sent AS Yousef as a WhatsApp voice note. Contacts are `message`'s. */
     voice: { aliases: string[] }
@@ -84,7 +86,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
       projectColumn: 'Backlog',
     },
     start: { aliases: ['do', 'go', 'kick', 'begin', 'now'], column: 'In Progress' },
-    message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {} },
+    message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {}, rooms: {} },
     voice: { aliases: ['voicenote', 'audio'] },
     echo: { aliases: ['test', 'ping', 'repeat'] },
     music: { aliases: [], enabled: true },
@@ -202,6 +204,7 @@ export function parseSchemaNote(md: string): SchemaParse {
       message: {
         aliases: message.aliases === undefined ? [...d.message.aliases] : strList(message.aliases, 'verbs.message.aliases', errors),
         contacts: aliasMap(message.contacts, 'verbs.message.contacts', errors),
+        rooms: aliasMap(message.rooms, 'verbs.message.rooms', errors),
       },
       voice: {
         aliases: voice.aliases === undefined ? [...d.voice.aliases] : strList(voice.aliases, 'verbs.voice.aliases', errors),
@@ -233,14 +236,15 @@ export function parseSchemaNote(md: string): SchemaParse {
   }
   for (const [name, t] of Object.entries(schema.verbs.add.targets)) { claim(name, `target ${name}`); for (const a of t.aliases) claim(a, `target ${name}`) }
   for (const [slug, forms] of Object.entries(schema.projects)) { claim(slug, `project ${slug}`); for (const f of forms) claim(f, `project ${slug}`) }
-  const contactsSeen = new Map<string, string>()
-  for (const [user, forms] of Object.entries(schema.verbs.message.contacts)) {
-    for (const f of [user, ...forms]) {
-      const prev = contactsSeen.get(f)
-      if (prev && prev !== user) errors.push(`"${f}" is claimed by both contacts ${prev} and ${user}`)
-      contactsSeen.set(f, user)
-    }
+  // Contacts and rooms are one namespace (`message`/`voice <recipient>`).
+  const recipientsSeen = new Map<string, string>()
+  const claimRecipient = (token: string, owner: string) => {
+    const prev = recipientsSeen.get(token)
+    if (prev && prev !== owner) errors.push(`"${token}" is claimed by both ${prev} and ${owner}`)
+    recipientsSeen.set(token, owner)
   }
+  for (const [user, forms] of Object.entries(schema.verbs.message.contacts)) for (const f of [user, ...forms]) claimRecipient(f, `contact ${user}`)
+  for (const [room, forms] of Object.entries(schema.verbs.message.rooms)) for (const f of [room, ...forms]) claimRecipient(f, `room ${room}`)
   return { schema, errors, found: true }
 }
 
@@ -288,6 +292,15 @@ export function contactForms(contacts: Record<string, string[]>, allUsers: strin
   for (const [first, owners] of firstNames) {
     if (owners.size === 1 && !out.has(first)) out.set(first, [...owners][0]!)
   }
+  return out
+}
+
+/** Every way to name a `message`/`voice` recipient → its canonical: contacts
+ *  (as `contactForms`) plus rooms, whose canonical is the chat room's name —
+ *  often two words ("control room"), so forms may contain spaces. */
+export function recipientForms(message: RingSchema['verbs']['message'], allUsers: string[] = []): Map<string, string> {
+  const out = contactForms(message.contacts, allUsers)
+  for (const [room, forms] of Object.entries(message.rooms)) { out.set(room, room); for (const f of forms) out.set(f, room) }
   return out
 }
 
@@ -360,8 +373,10 @@ verbs:
       # a hyphenated username's first name is understood automatically (sam-miller ← sam)
       al: [owl, hal, el, alan]     # AL himself — his WhatsApp DM, sent from your account
       # mai: [mum, mom, mother]
+    rooms:              # group chats by their name in Chat → spoken forms (message|voice <room> … posts there as you; multi-word names are fine)
+      # control room: [control]
 
-  voice:                # voice <person> <speech> → the RECORDING itself, minus the command words, as a WhatsApp voice note from your account (contacts as above; "voice note mum …" / "voice message to mum …" work)
+  voice:                # voice <person|room> <speech> → the RECORDING itself, minus the command words, as a WhatsApp voice note from your account (contacts and rooms as above; "voice note mum …" / "voice message to mum …" work)
     aliases: [voicenote, audio]
 
   echo:                 # echo <text> → straight to your own WhatsApp, no LLM
@@ -397,7 +412,7 @@ export interface SchemaDescription {
 
 export async function describeSchema(
   loaded: { schema: RingSchema; errors: string[]; stale: boolean; path: string },
-  env: { projects: string[]; contacts: string[]; agents: Array<{ agentKey: string | null }>; echoConfigured: boolean },
+  env: { projects: string[]; contacts: string[]; rooms: string[]; agents: Array<{ agentKey: string | null }>; echoConfigured: boolean },
   exists: (vaultPath: string) => Promise<boolean>,
 ): Promise<SchemaDescription> {
   const v = loaded.schema.verbs
@@ -424,6 +439,11 @@ export async function describeSchema(
     const first = [...derived].filter(([f, u]) => u === user && f !== user && !forms.includes(f)).map(([f]) => f)
     return { name: user, aliases: [...first, ...forms], resolves: isAl ? "AL's own WhatsApp DM (as Yousef)" : `users/${user}.md`, ok, ...(ok ? {} : { note: 'no such contact in AL\'s workspace' }) }
   })
+  const rooms = Object.entries(v.message.rooms).map(([room, forms]) => {
+    const n = env.rooms.filter((r) => r === room).length
+    return { name: room, aliases: forms, resolves: 'chat room by name (as Yousef)', ok: n === 1, ...(n === 1 ? {} : { note: n ? `${n} chat rooms have this name` : 'no chat room has this name' }) }
+  })
+  const recipients = [...contacts, ...rooms]
   return {
     path: loaded.path,
     errors: loaded.errors,
@@ -433,8 +453,8 @@ export async function describeSchema(
     verbs: [
       { verb: 'add', aliases: v.add.aliases, usage: 'add|log <target> <text>', targets: [...listTargets, ...projectTargets(v.add.projectColumn)] },
       { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: projectTargets(`${v.start.column} (dispatches now)`) },
-      { verb: 'message', aliases: v.message.aliases, usage: 'message <person> <text>', targets: contacts, note: `also any of: ${env.contacts.join(', ') || '-'}` },
-      { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person> <speech>', targets: contacts, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts as message' },
+      { verb: 'message', aliases: v.message.aliases, usage: 'message <person|room> <text>', targets: recipients, note: `also any of: ${env.contacts.join(', ') || '-'}` },
+      { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person|room> <speech>', targets: recipients, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts and rooms as message' },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
       { verb: 'timer', aliases: v.timer.aliases, usage: 'timer <duration> | timer cancel', targets: [], ...(v.timer.enabled ? {} : { note: 'disabled' }) },

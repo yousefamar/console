@@ -28,10 +28,10 @@ export interface RingCtx {
    *  Returns the JID it went to; throws when WhatsApp is down / unconfigured. */
   whatsappToYousef: (text: string) => Promise<string>
   /** `message` — send AS YOUSEF through his own chat account (Matrix/Beeper
-   *  WhatsApp bridge) to the contact's DM room. Returns the room name; throws
-   *  when no room resolves or the send fails. */
+   *  WhatsApp bridge) to the contact's DM room, or to the room a `rooms:` key
+   *  names. Returns the room name; throws when no room resolves or the send fails. */
   chatSendAsYousef: (contact: string, text: string) => Promise<string>
-  /** `voice` — the clip AS YOUSEF to the contact's DM as a push-to-talk voice
+  /** `voice` — the clip AS YOUSEF to the same room as a push-to-talk voice
    *  note (MSC3245). Same room resolution as chatSendAsYousef. */
   chatSendVoiceAsYousef: (contact: string, clip: VoiceClip) => Promise<string>
   /** Head-clip analysis + the cut behind `voice` (ring/voice.ts). Each null
@@ -160,6 +160,7 @@ export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
     ...Object.entries(v.add.targets).map(([n, t]) => `${t.dated ? 'Log' : 'Add'} ${n}.`),
     ...env.projects.map((p) => `Add ${p.replace(/-/g, ' ')}.`),
     ...[...new Set([...Object.keys(v.message.contacts), ...env.contacts].map(firstName))].map((c) => `Message ${cap(c)}.`),
+    ...Object.keys(v.message.rooms).map((r) => `Message ${r.split(' ').map(cap).join(' ')}.`),
     'Al.', 'Echo.', 'Voice.', 'Timer.', 'Remind me.', 'Play.', 'Pause.', 'Next.',
   ]
   return phrases.join(' ')
