@@ -42,6 +42,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v102 (2026-09-20)
 - **Agent session: hand-back + blocked strips capped like the question pager**
   (^soft-orca follow-up): the `ReviewHandbackStrip`/`BlockedCardStrip` rows
   sit above the `weight(1f)` transcript in the session screen's non-scrolling
@@ -183,8 +186,6 @@ view-mode hub-sync (Room meta is fine on one device).
   markRead, markUnread, snooze, unsnooze; forced snapshot at equal seq),
   `OutboxTest` (`Fail` fires `onFailed`). No emulator here — blur/background
   behaviour is verified on the phone after release.
-
-## Shipped
 
 ### v101 (2026-09-19)
 - **Agents: AskUserQuestion card is a pager** (^soft-orca, 2026-09-19; Yousef:
