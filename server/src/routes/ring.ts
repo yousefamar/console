@@ -133,7 +133,7 @@ export function handleRingRoutes(
 
   if (path === '/ring/recordings' && req.method === 'GET') {
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
-    json({ recordings: ctx.store.list(limit).map(({ audio, ...r }) => ({ ...r, audio: audio ? { bytes: audio.bytes, contentType: audio.contentType } : null })) })
+    json({ recordings: ctx.store.list(limit).map(({ audio, ...r }) => ({ ...r, audio: audio ? { bytes: audio.bytes, contentType: audio.contentType, ...(audio.durationMs ? { durationMs: audio.durationMs } : {}) } : null })) })
     return true
   }
 
