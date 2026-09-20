@@ -107,7 +107,15 @@ while the app is foregrounded (plus short background borrows), so a remote
   `NotReady` (row returns to pending, retry budget untouched) — treating it as
   `Retry` burned all 3 retries during reconnect storms and parked rows as
   terminal `failed` forever. `Outbox.retryOrNotReady(e, fallback)` classifies
-  exceptions. `drain()` recovers rows leaked in `processing`.
+  exceptions. `drain()` recovers rows leaked in `processing`. **Every terminal
+  outcome (`Fail` AND an exhausted `Retry`) fires the `<type>:onFailed` hook**
+  (since ^blue-bee — a 4xx used to park the row with the optimistic write
+  standing). An optimistic Room-row write must carry its `before` in the
+  payload and register an `:onFailed` that heals: chat rooms use
+  `healRoomAfterFailedWrite` (force-applied full `chat-rooms` snapshot, else
+  restore `before`) because the seq-based reconcile never sees a divergence
+  the hub never saw. The first `reconcile()` per process and pull-to-refresh
+  take the FULL rooms snapshot for the same reason.
 
 **Coroutine cancellation (three separate incidents)**
 - Never let a debounce cancel the job the WORK runs inside. `trigger()`
