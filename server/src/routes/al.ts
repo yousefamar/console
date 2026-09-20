@@ -17,7 +17,7 @@
 //                                           {type:text|tool|result|error} until the fork's turn ends
 //   POST /voice/interrupt {callId}        → { ok, method }  (barge-in: stop the fork's turn)
 //   POST /voice/hangup {callId}           → { ok }          (the fork's own `con whatsapp hangup`; → pipeline)
-//   POST /voice/transcript {callId,jid,direction,outcome,turns,…} → { ok, file, fork }  (pipeline, post-call)
+//   POST /voice/transcript {callId,jid,direction,outcome,turns,…} → { ok, file, fork }  (pipeline, post-call; the fork merges into AL as a digest)
 //   POST /voice/call {to,task}            → { ok, callId, to } | { error }  (→ pipeline → sidecar)
 //   GET  /voice/calls?limit=N             → { live: [...], calls: [...] }
 //
@@ -307,11 +307,14 @@ export function handleAlRoutes(
       }
       try {
         const alJid = wa.ownNumber() ? `${wa.ownNumber()}@s.whatsapp.net` : (voice.getSidecarStatus().jid ?? 'al')
-        const fork = await voiceFork.endCallFork(payload.callId, voice.closingTurn(payload))
+        const fork = await voiceFork.endCallFork(payload.callId, voice.closingTurn(payload), { merge: payload.outcome === 'completed' })
         const { envelope, file, displayName } = await voice.foldBackCall(payload, alJid, fork ? { forkKey: fork.forkKey, ttftMs: fork.ttftMs, turnMs: fork.turnMs } : undefined)
-        const injected = voiceBroadcast ? injectToAl(envelope, voiceBroadcast) : false
-        console.log(`[al/voice] call ${payload.callId} with ${displayName}: ${payload.outcome}, ${payload.turns.length} turns → ${file}${injected ? ', folded into AL' : ', AL not injected'}${fork ? `, fork ${fork.forkKey} closing` : ''}`)
-        jsonResponse(res, 200, { ok: true, file, injected, fork: fork ? { forkSessionId: fork.forkSessionId, forkKey: fork.forkKey } : null })
+        // A fork that ran the call hands itself back as a digest (chat-fork
+        // merge); the parent gets the transcript envelope only when nobody
+        // else has it — rejected/missed/unanswered calls, or no fork at all.
+        const injected = fork?.merging ? false : (voiceBroadcast ? injectToAl(envelope, voiceBroadcast) : false)
+        console.log(`[al/voice] call ${payload.callId} with ${displayName}: ${payload.outcome}, ${payload.turns.length} turns → ${file}${fork?.merging ? `, fork ${fork.forkKey} merging into AL` : injected ? ', envelope into AL' : ', AL not injected'}`)
+        jsonResponse(res, 200, { ok: true, file, injected, fork: fork ? { forkSessionId: fork.forkSessionId, forkKey: fork.forkKey, merging: fork.merging } : null })
       } catch (err) {
         jsonResponse(res, 500, { error: (err as Error).message })
       }

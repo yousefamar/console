@@ -6,11 +6,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 
-vi.mock('../routes/agents.js', () => ({ closeSession: vi.fn(), createSession: vi.fn(), mintAgentKey: vi.fn(() => 'k') }))
+vi.mock('../routes/agents.js', () => ({
+  closeSession: vi.fn(), createSession: vi.fn(), mintAgentKey: vi.fn(() => 'k'),
+  mergeIntoParent: vi.fn(async () => ({ ok: true, summary: 'digest', parentId: 'al' })),
+}))
 vi.mock('../al/al-session.js', () => ({ getAlSession: () => null }))
 vi.mock('../al/persona.js', () => ({ buildAlSystemPrompt: async () => 'AL' }))
 
-import { closeSession } from '../routes/agents.js'
+import { closeSession, mergeIntoParent } from '../routes/agents.js'
 import {
   registerCall, runTurn, runCue, interruptCall, endCallFork, getLiveCalls, getLiveCall, setVoiceForkContext, _resetLiveCalls,
   ANSWERED_CUE, cleanGreeting, type TurnEvent,
@@ -47,6 +50,8 @@ beforeEach(() => {
   broadcasts = []
   events = []
   vi.mocked(closeSession).mockClear()
+  vi.mocked(mergeIntoParent).mockClear()
+  vi.mocked(mergeIntoParent).mockResolvedValue({ ok: true, summary: 'digest', parentId: 'al' })
   setVoiceForkContext({
     agents: { sessions: new Map(), clients: new Set() } as never,
     broadcast: (m) => broadcasts.push(m),
@@ -214,31 +219,49 @@ describe('outbound opening line', () => {
 })
 
 describe('endCallFork', () => {
-  it('sends the closing turn after in-flight turns, then reaps the fork and drops it from the live list', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    register(); await flush(); stub.result(); await flush()
-    const summary = await endCallFork('CALLABC123', '[CALL ENDED]')
-    expect(summary).toMatchObject({ forkSessionId: 'hub-fork-1', forkKey: 'al-call-callabc1-fork' })
+  it('a call with conversation is merged into AL like a chat fork: the closing request is the merge request, no separate close', async () => {
+    register(); await warmDone()
+    await runCue('CALLABC123', ANSWERED_CUE, () => {})
+    const p = runTurn('CALLABC123', 'Hi', () => {}); await flush(); stub.delta('Hello.'); stub.result(); await p
+    const summary = await endCallFork('CALLABC123', '[CALL ENDED] hand back', { merge: true })
+    expect(summary).toMatchObject({ forkSessionId: 'hub-fork-1', forkKey: 'al-call-callabc1-fork', merging: true })
     expect(getLiveCalls()).toEqual([]) // ended calls are hidden immediately
     expect(events.at(-1)?.topic).toBe('voice.call.ended')
     await flush()
-    expect(stub.sent.at(-1)).toBe('[CALL ENDED]')
-    stub.delta('Nothing to do.'); stub.result()
+    expect(vi.mocked(mergeIntoParent)).toHaveBeenCalledWith(expect.anything(), 'hub-fork-1', 180_000, { request: '[CALL ENDED] hand back' })
+    expect(closed()).toEqual([]) // mergeIntoParent closes the fork itself
+    expect(getLiveCall('CALLABC123')).toBeUndefined()
+    expect(stub.sent.filter((t) => t.includes('[CALL ENDED]'))).toEqual([]) // the request went through mergeIntoParent, not a raw turn
+  })
+
+  it('a merge that cannot run (parent gone) falls back to closing the fork; the transcript file is the record', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.mocked(mergeIntoParent).mockResolvedValue({ ok: false, error: 'parent session is not live — cannot merge' })
+    register(); await warmDone()
+    const p = runTurn('CALLABC123', 'Hi', () => {}); await flush(); stub.delta('Hello.'); stub.result(); await p
+    await endCallFork('CALLABC123', '[CALL ENDED]', { merge: true })
     await flush()
-    expect(closed()).toHaveLength(0)
-    await vi.advanceTimersByTimeAsync(2_100)
     expect(closed()).toEqual([stub])
     expect(getLiveCall('CALLABC123')).toBeUndefined()
   })
 
-  it('a fork that raised the attention marker is left alive for Yousef', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    register(); await flush(); stub.result(); await flush()
+  it('a call with no conversation (no answer) is closed without a merge or a turn', async () => {
+    register(); await warmDone()
+    const summary = await endCallFork('CALLABC123', '[CALL NO-ANSWER]', { merge: false })
+    expect(summary).toMatchObject({ merging: false })
+    await flush()
+    expect(vi.mocked(mergeIntoParent)).not.toHaveBeenCalled()
+    expect(closed()).toEqual([stub])
+    expect(stub.sent).toHaveLength(1) // only the warm turn ever reached the fork
+  })
+
+  it('a fork that raised the attention marker is left alive for Yousef when it cannot be merged', async () => {
+    vi.mocked(mergeIntoParent).mockResolvedValue({ ok: false, error: 'child is busy' })
+    register(); await warmDone()
+    const p = runTurn('CALLABC123', 'Hi', () => {}); await flush(); stub.delta('Hello.'); stub.result(); await p
+    stub.needsAttention = { at: 1 }
     await endCallFork('CALLABC123', '[CALL ENDED]')
     await flush()
-    stub.needsAttention = { at: 1 }
-    stub.result()
-    await vi.advanceTimersByTimeAsync(2_100)
     expect(closed()).toEqual([])
   })
 
@@ -247,6 +270,8 @@ describe('endCallFork', () => {
     await endCallFork('CALLABC123', '[CALL ENDED]')
     const got: TurnEvent[] = []
     await runTurn('CALLABC123', 'still there?', (ev) => got.push(ev))
-    expect(got).toEqual([{ type: 'error', message: 'call already ended' }])
+    expect(got).toHaveLength(1)
+    expect(got[0]!.type).toBe('error')
+    expect((got[0] as { message: string }).message).toMatch(/call already ended|no live call/)
   })
 })

@@ -660,7 +660,7 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, in
  *  that digest into the parent, then close the child. Parent = fork lineage
  *  (`parentClaudeSessionId`, same conversation ancestry) — the only hierarchy.
  *  A SUMMARY — not the transcript — keeps the parent's context clean. */
-export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts: { request?: string } = {}): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
@@ -670,7 +670,9 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
   if (!parent) return { ok: false, error: 'parent session is not live — cannot merge' }
   if (parent.id === child.id) return { ok: false, error: 'cannot merge a session into itself' }
 
-  const request = buildMergeRequest(parent.name ?? 'your parent')
+  // `opts.request` lets a caller phrase the hand-back for its own kind of
+  // fork (a voice call: finish promised follow-ups, then summarise).
+  const request = opts.request ?? buildMergeRequest(parent.name ?? 'your parent')
   const summary = await captureNextTurn(ctx, child, request, timeoutMs)
   if (!summary) return { ok: false, error: 'child produced no summary (timed out) — left alive so nothing is lost' }
 

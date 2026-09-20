@@ -99,12 +99,14 @@ describe('voice fork rules + envelope', () => {
     expect(inbound).not.toContain('## Call task')
     expect(inbound.trimEnd().endsWith('Reply with exactly the word: ready')).toBe(true)
   })
-  it('the closing turn is not spoken and asks for promised follow-ups + memory', () => {
+  it('the closing turn is the merge request: not spoken, follow-ups + memory first, then a digest — no transcript', () => {
     const c = closingTurn(completed())
-    expect(c.split('\n')[0]).toBe('[CALL ENDED after 2m05s]')
+    expect(c.split('\n')[0]).toBe('[CALL ENDED after 2m05s — you are being folded back into AL and closed]')
     expect(c).toMatch(/Nothing you write now is spoken/)
     expect(c).toMatch(/memory\/open-threads.md/)
-    expect(closingTurn(completed({ outcome: 'no-answer', durationMs: 0 })).split('\n')[0]).toBe('[CALL NO-ANSWER]')
+    expect(c).toMatch(/FINAL message, write the hand-back/)
+    expect(c).toContain('call-transcripts/ABC123DEF.json')
+    expect(closingTurn(completed({ outcome: 'no-answer', durationMs: 0 })).split('\n')[0]).toBe('[CALL NO-ANSWER — you are being folded back into AL and closed]')
   })
 })
 
@@ -118,13 +120,6 @@ describe('callEnvelope', () => {
     expect(env).toMatch(/This call already happened/)
     expect(env).toMatch(/Reply in this session only if something needs Yousef/)
     expect(env).not.toMatch(/con whatsapp send/)
-  })
-  it('a call handled by a fork tells the parent the fork already did the follow-ups', () => {
-    const env = callEnvelope(completed({ fork: { forkKey: 'al-call-abc123-fork', ttftMs: [900], turnMs: [3000] }, delegations: 0 }), 'Yousef')
-    expect(env).toContain('handled live by your voice fork al-call-abc123-fork')
-    expect(env).toMatch(/a fork of you spoke every "AL:" line/)
-    expect(env).toMatch(/Read those files before acting/)
-    expect(env).not.toMatch(/delegate request/)
   })
   it('an outbound call carries its task', () => {
     const env = callEnvelope(completed({ direction: 'out', task: 'Ask about dinner' }), 'Yousef')

@@ -256,8 +256,10 @@ export function historyLineFor(p: CallTranscript): string {
   return `(${who} call, ${dur}, ${p.turns.length} turns)${last ? ` …${last.role === 'user' ? '' : 'AL: '}${last.text}` : ''}`
 }
 
-/** The fold-back envelope. Same family as the WhatsApp inbound envelope, but
- *  past tense: nothing to send, the call already happened. */
+/** The fold-back envelope for a call NO fork handled (rejected/missed/
+ *  no-answer, or a legacy completed call). A call the fork ran hands itself
+ *  back as a chat-fork digest instead (voice-fork.ts endCallFork) — the parent
+ *  never gets a transcript the fork already has. */
 export function callEnvelope(p: CallTranscript, displayName: string): string {
   const who = `${displayName} (+${normalize(p.jid)})`
   const dir = p.direction === 'in' ? 'inbound' : 'outbound'
@@ -281,7 +283,7 @@ export function callEnvelope(p: CallTranscript, displayName: string): string {
   }
   const lines = [
     `[WHATSAPP CALL with ${who}, ${formatDuration(p.durationMs)}, ${dir}]`,
-    `Call id: ${p.callId}${p.fork ? ` · handled live by your voice fork ${p.fork.forkKey}` : ''}${p.delegations ? ` · ${p.delegations} delegate request(s)` : ''}`,
+    `Call id: ${p.callId}${p.delegations ? ` · ${p.delegations} delegate request(s)` : ''}`,
   ]
   if (p.task) lines.push(`Task: ${p.task}`)
   lines.push('', 'Transcript:')
@@ -291,9 +293,7 @@ export function callEnvelope(p: CallTranscript, displayName: string): string {
   }
   lines.push(
     '',
-    p.fork
-      ? 'This call already happened; a fork of you spoke every "AL:" line above in Yousef\'s voice, with your tools, and was asked to finish anything it promised and to update memory/open-threads.md and the caller\'s users file. Read those files before acting on this; reply in this session only if something needs Yousef.'
-      : 'This call already happened; you (AL) spoke every "AL:" line above in Yousef\'s voice. Update memory/open-threads.md and the caller\'s users file as you would after a chat, and do anything you promised on the call. Reply in this session only if something needs Yousef.',
+    'This call already happened; you (AL) spoke every "AL:" line above in Yousef\'s voice. Update memory/open-threads.md and the caller\'s users file as you would after a chat, and do anything you promised on the call. Reply in this session only if something needs Yousef.',
   )
   return lines.join('\n')
 }
@@ -384,16 +384,18 @@ export async function requestOutboundCall(to: string, task: string, cfg = loadVo
   }
 }
 
-/** The fork's last message once the call is over: finish what it promised,
- *  write memory, stop. Not spoken. */
+/** The fork's last message once the call is over — the merge request: finish
+ *  what it promised, write memory, then hand back a digest (its final message
+ *  becomes the `[MERGE …]` envelope in AL). Not spoken. */
 export function closingTurn(p: CallTranscript): string {
   const dur = formatDuration(p.durationMs)
   const head = p.outcome === 'completed'
-    ? `[CALL ENDED after ${dur}${p.reason ? ` — ${p.reason}` : ''}]`
-    : `[CALL ${p.outcome.toUpperCase()}${p.reason ? ` — ${p.reason}` : ''}]`
+    ? `[CALL ENDED after ${dur}${p.reason ? ` — ${p.reason}` : ''} — you are being folded back into AL and closed]`
+    : `[CALL ${p.outcome.toUpperCase()}${p.reason ? ` — ${p.reason}` : ''} — you are being folded back into AL and closed]`
   return [
     head,
-    'Nothing you write now is spoken. Do everything you promised on the call that is not done yet (messages, calendar, files), then update memory/open-threads.md and the caller\'s users file as you would after a chat. Reply with one short line saying what you did, or "nothing to do". Your parent AL session receives the transcript separately.',
+    'Nothing you write now is spoken. First do anything you promised on the call that is not done yet (messages, calendar, files), then update memory/open-threads.md and the caller\'s users file as you would after a chat — with no commentary while you work.',
+    `Then, as your FINAL message, write the hand-back for your parent AL: who you spoke to, what was said and decided, what you did, anything open or that needs Yousef. Concise plain prose, no preamble, no transcript — the full transcript is call-transcripts/${p.callId}.json. You are closed right after.`,
   ].join('\n')
 }
 

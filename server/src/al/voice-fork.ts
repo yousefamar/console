@@ -12,7 +12,8 @@
 //   POST /voice/turn      → one utterance in, the fork's text streamed out as NDJSON
 //                           (text deltas → TTS as they arrive; tool_use → "hold on")
 //   POST /voice/interrupt → barge-in: stop the fork's turn without killing it
-//   POST /voice/transcript→ closing turn ("do what you promised"), then the fork is reaped
+//   POST /voice/transcript→ the fork finishes what it promised and is merged into AL
+//                           (digest, like a chat fork) — the transcript is a file, not an envelope
 //
 // The map of live calls here is ALSO the in-progress visibility Yousef asked
 // for: GET /voice/calls and /voice/status read it, `voice.call.*` events go on
@@ -22,7 +23,7 @@
 import type { HubMessage } from '../protocol.js'
 import type { Session } from '../session.js'
 import type { AgentContext } from '../routes/agents.js'
-import { closeSession, createSession, mintAgentKey } from '../routes/agents.js'
+import { closeSession, createSession, mergeIntoParent, mintAgentKey } from '../routes/agents.js'
 import { getAlSession } from './al-session.js'
 import { buildAlSystemPrompt } from './persona.js'
 import type { EmitInput } from '../events/types.js'
@@ -542,11 +543,16 @@ export async function interruptCall(callId: string): Promise<{ ok: boolean; meth
   return { ok: true, method }
 }
 
-/** The call is over: one closing turn (finish what was promised), then the
- *  fork is reaped — unless it raised the attention marker, in which case it
- *  stays for Yousef. Resolves once the closing turn has been sent (not
- *  finished). */
-export async function endCallFork(callId: string, closing: string): Promise<{ forkSessionId: string; forkKey: string; turns: LiveTurn[]; ttftMs: number[]; turnMs: number[] } | null> {
+/** The call is over. A call that actually happened is handed back like any
+ *  chat fork (Yousef, 20 Sept: "the fork should hand back to the parent like a
+ *  chat fork" — the parent must NOT get the transcript the fork already has):
+ *  `mergeIntoParent` sends `closing` as the fork's last turn (finish what was
+ *  promised, then a digest), injects `[MERGE — fork … folded in]` + digest into
+ *  AL, and closes the fork. A call with no conversation (no answer, declined)
+ *  is just closed. If the merge cannot run (parent gone, fork ended) the fork
+ *  is closed and the transcript file remains the record. Resolves once the
+ *  hand-back has been scheduled (not finished). */
+export async function endCallFork(callId: string, closing: string, opts: { merge?: boolean } = {}): Promise<{ forkSessionId: string; forkKey: string; turns: LiveTurn[]; ttftMs: number[]; turnMs: number[]; merging: boolean } | null> {
   const call = live.get(callId)
   if (!call) return null
   call.ended = true
@@ -558,13 +564,13 @@ export async function endCallFork(callId: string, closing: string): Promise<{ fo
     callId: call.callId, jid: call.jid, displayName: call.displayName, direction: call.direction,
     durationMs: call.answeredAt ? Date.now() - call.answeredAt : 0, turns: call.turns.length, forkSessionId: call.fork.id,
   }, `${call.callId}:ended`)
-  const summary = { forkSessionId: call.fork.id, forkKey: call.forkKey, turns: [...call.turns], ttftMs: [...call.ttftMs], turnMs: [...call.turnMs] }
+  const merge = opts.merge !== false && call.turns.some((t) => t.role !== 'tool')
+  const summary = { forkSessionId: call.fork.id, forkKey: call.forkKey, turns: [...call.turns], ttftMs: [...call.ttftMs], turnMs: [...call.turnMs], merging: merge }
   const ctx = forkCtx
-  const reap = () => {
+  const drop = () => {
     call.detach()
     live.delete(call.callId)
-    if (!ctx) return
-    if (call.fork.status === 'ended') return
+    if (!ctx || call.fork.status === 'ended') return
     if (call.fork.needsAttention) {
       console.log(`[al/voice] ${call.callId}: fork asked for Yousef — left alive (${call.forkKey})`)
       return
@@ -572,14 +578,20 @@ export async function endCallFork(callId: string, closing: string): Promise<{ fo
     closeSession(ctx.agents, call.fork)
     console.log(`[al/voice] ${call.callId}: fork closed (${call.forkKey})`)
   }
-  // Closing turn after any in-flight turn settles.
   call.chain = call.chain.then(async () => {
-    if (call.fork.status === 'ended') { reap(); return }
-    await sendTurn(call, closing, null, CLOSING_TIMEOUT_MS, null)
-    setTimeout(reap, REAP_SETTLE_MS).unref?.()
+    if (!ctx || call.fork.status === 'ended' || !merge) { drop(); return }
+    const res = await mergeIntoParent(ctx.agents, call.fork.id, 180_000, { request: closing })
+    if (res.ok) {
+      call.detach()
+      live.delete(call.callId)
+      console.log(`[al/voice] ${call.callId}: fork ${call.forkKey} merged into AL (${res.summary?.length ?? 0}-char digest)`)
+      return
+    }
+    console.warn(`[al/voice] ${call.callId}: merge failed (${res.error}) — closing the fork; transcript file is the record`)
+    drop()
   }).catch((err) => {
-    console.error(`[al/voice] ${call.callId}: closing turn failed:`, (err as Error)?.message)
-    reap()
+    console.error(`[al/voice] ${call.callId}: hand-back failed:`, (err as Error)?.message)
+    drop()
   })
   return summary
 }
