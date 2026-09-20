@@ -29,6 +29,10 @@ export interface ListenerEngineCtx {
   notify: (msg: PushMessage) => void
   addCard?: (project: string, text: string, opts: { column?: string; agentKey?: string }) => Promise<string>
   postUrl?: (url: string, body: string, headers: Record<string, string>, method: string) => Promise<{ ok: boolean; detail: string }>
+  /** `--fork`: mint a FRESH session beside `source` (same cwd/project, source is the parent) to take one wake. Null when the source has no csid yet. */
+  spawnFork?: (source: Session, l: Listener, model?: string) => Session | null
+  /** Close a listener fork whose turn is over. */
+  closeFork?: (fork: Session) => void
   shell?: ShellRunner
   log: (msg: string) => void
   now?: () => number
@@ -60,6 +64,8 @@ export interface TestResult {
 }
 
 const ONE_HOUR = 3_600_000
+const FORK_SETTLE_MS = 2_000
+const FORK_IDLE_CAP_MS = 30 * 60_000
 
 async function defaultPost(url: string, body: string, headers: Record<string, string>, method: string): Promise<{ ok: boolean; detail: string }> {
   const delays = [0, 2_000, 5_000]
@@ -119,9 +125,20 @@ export function buildEventEnvelope(l: Listener, events: HubEvent[], guardOutput?
   return lines.join('\n')
 }
 
+/** What a `--fork` wake's fresh session must know about itself: it is a
+ *  throwaway fork of the target, its argv names its csid (twin-delivery check,
+ *  same as a ticket-fork), and it ends with this turn — so anything Yousef or
+ *  the parent must see leaves via a card, notification, emit or the ping. */
+export function buildForkIdentity(fork: Pick<Session, 'agentKey' | 'claudeSessionId'>, source: Pick<Session, 'name' | 'agentKey' | 'cwd'>, l: Listener): string {
+  return [
+    `[LISTENER FORK] You are a fresh, single-turn fork of "${source.name ?? source.agentKey ?? 'the owner'}"${source.agentKey ? ` (@${source.agentKey})` : ''} spawned by listener ${l.id}${l.name ? ` ("${l.name}")` : ''} for the event below. Your agentKey is \`${fork.agentKey}\`; your claudeSessionId is \`${fork.claudeSessionId}\` (\`ps -o args= -p $PPID\` shows \`--session-id ${fork.claudeSessionId}\` — if it does not, this wake reached the wrong process: say so and stop).`,
+    `You run from ${source.cwd} (its CLAUDE.md and auto-memory are yours). The parent's conversation is NOT in your context, and nothing you write reaches it. This session is closed when your turn ends: do the whole job now, and route anything that must outlive you through a board card, \`con event emit\`, a notification, a file, or a chat draft.`,
+  ].join('\n')
+}
+
 export function describeAction(a: ListenerAction): string {
   switch (a.type) {
-    case 'wake': return `wake${a.as ? ` @${a.as}` : ''}: ${a.prompt.length > 60 ? `${a.prompt.slice(0, 57)}…` : a.prompt}`
+    case 'wake': return `wake${a.fork ? ` (fork${a.model ? ` ${a.model}` : ''})` : ''}${a.as ? ` @${a.as}` : ''}: ${a.prompt.length > 60 ? `${a.prompt.slice(0, 57)}…` : a.prompt}`
     case 'run': return `run: ${a.cmd}`
     case 'post': return `post ${a.method ?? 'POST'} ${a.url}`
     case 'notify': return `notify: ${a.title}`
@@ -455,6 +472,7 @@ export class ListenerEngine {
         if (!session) return { ok: false, detail: a.as ? `@${a.as} is not live` : 'session not found' }
         if (session.status === 'ended') return { ok: false, detail: 'session ended' }
         const content = `${buildEventEnvelope(l, events, guardOutput)}\n\n${template(a.prompt, first)}`
+        if (a.fork) return this.wakeFork(l, session, content, a.model)
         return { ok: true, detail: `${describeWake(wakeOrQueue(session, content, this.ctx.broadcast))} → ${session.name || session.id}` }
       }
       case 'run': {
@@ -494,6 +512,50 @@ export class ListenerEngine {
         return { ok: true, detail: `card ${detail}` }
       }
     }
+  }
+
+  /** `--fork`: the target's context stays untouched — a fresh session at its
+   *  cwd takes the envelope and is closed once its turn ends. The target
+   *  itself must still be live (it lends cwd, project and lineage), so the
+   *  skip semantics are exactly those of a plain wake. */
+  private wakeFork(l: Listener, source: Session, content: string, model?: string): { ok: boolean; detail: string } {
+    if (!this.ctx.spawnFork || !this.ctx.closeFork) return { ok: false, detail: 'fork wakes are not wired on this hub' }
+    const fork = this.ctx.spawnFork(source, l, model)
+    if (!fork) return { ok: false, detail: `cannot fork ${source.name ?? source.id} — it has no claudeSessionId yet` }
+    wakeOrQueue(fork, `${buildForkIdentity(fork, source, l)}\n\n${content}`, this.ctx.broadcast)
+    this.reapForkAfterTurn(l, fork)
+    return { ok: true, detail: `forked → ${fork.name ?? fork.id}${model ? ` on ${model}` : ''} (of ${source.name ?? source.id})` }
+  }
+
+  /** Close the fork 2 s after its first `result`. A fork that raised the
+   *  attention marker asked for Yousef and stays; one silent for 30 min
+   *  (a permission prompt nobody answers) is left alive and logged, never
+   *  killed mid-work. */
+  private reapForkAfterTurn(l: Listener, fork: Session): void {
+    const label = `${l.id} fork ${fork.name ?? fork.id}`
+    let cap: ReturnType<typeof setTimeout> | undefined
+    const armCap = () => {
+      if (cap) clearTimeout(cap)
+      cap = setTimeout(() => {
+        fork.off('hub_message', onMsg)
+        this.ctx.log(`[listeners] ${label}: no result after ${FORK_IDLE_CAP_MS / 60_000} min idle — left alive, close it by hand`)
+      }, FORK_IDLE_CAP_MS)
+      cap.unref?.()
+    }
+    const onMsg = (m: HubMessage) => {
+      armCap()
+      if (m.type !== 'result') return
+      fork.off('hub_message', onMsg)
+      if (cap) clearTimeout(cap)
+      setTimeout(() => {
+        if (fork.status === 'ended') return
+        if (fork.needsAttention) { this.ctx.log(`[listeners] ${label}: asked for Yousef — left alive`); return }
+        this.ctx.closeFork!(fork)
+        this.ctx.log(`[listeners] ${label}: turn done ($${m.cost.toFixed(3)}) — closed`)
+      }, FORK_SETTLE_MS).unref?.()
+    }
+    armCap()
+    fork.on('hub_message', onMsg)
   }
 
   // ── skips / auto-disable (the cron policy) ─────────────────────────────
@@ -571,7 +633,12 @@ function shellEnv(l: Listener, events: HubEvent[]): Record<string, string> {
 export function validateAction(a: ListenerAction | undefined): ListenerAction {
   if (!a || typeof a !== 'object' || !('type' in a)) throw new Error('an action is required: --wake | --run | --post | --notify | --emit | --card')
   switch (a.type) {
-    case 'wake': if (!a.prompt?.trim()) throw new Error('--wake needs a prompt'); return { type: 'wake', prompt: a.prompt.trim(), ...(a.as ? { as: a.as } : {}) }
+    case 'wake': {
+      if (!a.prompt?.trim()) throw new Error('--wake needs a prompt')
+      if (a.model && !a.fork) throw new Error('--model only applies to --fork wakes (the target session keeps its own model)')
+      if (a.model && !/^[a-z0-9][\w.:-]*$/i.test(a.model)) throw new Error(`--model wants an alias (haiku, sonnet, opus, fable) or a model id, got "${a.model}"`)
+      return { type: 'wake', prompt: a.prompt.trim(), ...(a.as ? { as: a.as } : {}), ...(a.fork ? { fork: true } : {}), ...(a.model ? { model: a.model } : {}) }
+    }
     case 'run': if (!a.cmd?.trim()) throw new Error('--run needs a command'); return { type: 'run', cmd: a.cmd.trim() }
     case 'post': {
       if (!/^https?:\/\//.test(a.url ?? '')) throw new Error('--post needs an http(s) URL')

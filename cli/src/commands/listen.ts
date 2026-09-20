@@ -36,7 +36,7 @@ interface Listener {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ACTION_FLAGS = ['wake', 'run', 'post', 'notify', 'emit', 'card'] as const
 const ADD_FLAGS = ['session', 'on', 'where', 'guard', 'guard-file', 'coalesce', 'cooldown', 'hours', 'days', 'drop-outside', 'max-per-hour', 'name',
-  'once', 'times', 'expires', ...ACTION_FLAGS, 'as', 'method', 'header', 'body', 'data', 'to', 'assign', 'project']
+  'once', 'times', 'expires', ...ACTION_FLAGS, 'as', 'fork', 'model', 'method', 'header', 'body', 'data', 'to', 'assign', 'project']
 
 export async function listen(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   switch (verb) {
@@ -91,7 +91,7 @@ function fmtDur(ms: number): string {
 
 function describeAction(a: Listener['action']): string {
   switch (a.type) {
-    case 'wake': { const p = String(a.prompt ?? ''); return `wake${a.as ? ` @${a.as}` : ''}: ${p.length > 50 ? `${p.slice(0, 47)}…` : p}` }
+    case 'wake': { const p = String(a.prompt ?? ''); return `wake${a.fork ? ` (fork${a.model ? ` ${a.model}` : ''})` : ''}${a.as ? ` @${a.as}` : ''}: ${p.length > 50 ? `${p.slice(0, 47)}…` : p}` }
     case 'run': return `run: ${a.cmd}`
     case 'post': return `post ${a.url}`
     case 'notify': return `notify: ${a.title}`
@@ -149,7 +149,7 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const bad = unknownFlags(opts, ADD_FLAGS)
   if (bad.length) { exitWithError('USAGE', `Unknown flag(s): ${bad.join(', ')}. See con help listen.`, flags); return }
-  const usage = 'Usage: con listen add --session <claudeSessionId> --on <topic|glob> [--where <path><op><value>]… [--guard "<cmd>"] [--coalesce 30s] [--cooldown 10m] [--hours 07:00-23:00] [--days Mon-Fri] [--drop-outside] [--max-per-hour N] [--once | --times N] [--expires 2h|<iso>] [--name "…"] ACTION\n  ACTION = --wake "<prompt>" [--as <agentKey>] | --run "<cmd>" | --post <url> [--method M] [--header k:v]… | --notify "<title>" [--body "…"] | --emit <topic> [--data \'{…}\'] | --card <project> --body "<text>" [--to Backlog] [--assign key]'
+  const usage = 'Usage: con listen add --session <claudeSessionId> --on <topic|glob> [--where <path><op><value>]… [--guard "<cmd>"] [--coalesce 30s] [--cooldown 10m] [--hours 07:00-23:00] [--days Mon-Fri] [--drop-outside] [--max-per-hour N] [--once | --times N] [--expires 2h|<iso>] [--name "…"] ACTION\n  ACTION = --wake "<prompt>" [--as <agentKey>] [--fork [--model haiku]] | --run "<cmd>" | --post <url> [--method M] [--header k:v]… | --notify "<title>" [--body "…"] | --emit <topic> [--data \'{…}\'] | --card <project> --body "<text>" [--to Backlog] [--assign key]\n  --fork wakes a FRESH single-turn fork of the target (closed when its turn ends) instead of the target itself — its context stays clean; --model pins the fork\'s model.'
   const claudeSessionId = opts.session ?? process.env.CONSOLE_CLAUDE_SESSION_ID ?? ''
   if (!claudeSessionId) { exitWithError('USAGE', `--session is required (your claudeSessionId; \`ps -o args= -p $PPID\` shows --session-id).\n${usage}`, flags); return }
   if (claudeSessionId !== 'al' && !UUID_RE.test(claudeSessionId)) { exitWithError('USAGE', `--session must be a claudeSessionId (UUID) or "al". Got: ${claudeSessionId}`, flags); return }
@@ -159,7 +159,11 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   if (chosen.length !== 1) { exitWithError('USAGE', `Exactly one action flag is required (got ${chosen.length ? chosen.join(', ') : 'none'}).\n${usage}`, flags); return }
   let action: Record<string, unknown>
   switch (chosen[0]) {
-    case 'wake': action = { type: 'wake', prompt: opts.wake, ...(opts.as ? { as: opts.as } : {}) }; break
+    case 'wake': {
+      if (opts.model && opts.fork !== 'true') { exitWithError('USAGE', '--model only applies with --fork (the target session keeps its own model)', flags); return }
+      action = { type: 'wake', prompt: opts.wake, ...(opts.as ? { as: opts.as } : {}), ...(opts.fork === 'true' ? { fork: true } : {}), ...(opts.model ? { model: opts.model } : {}) }
+      break
+    }
     case 'run': action = { type: 'run', cmd: opts.run }; break
     case 'post': {
       const headers: Record<string, string> = {}

@@ -20,17 +20,23 @@ const tick = async (ms = 0) => { clock += ms; await new Promise((r) => setTimeou
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'listeners-')); clock = Date.parse('2026-09-21T10:00:00Z') /* Monday */ })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-interface FakeSession { id: string; name: string; status: string; claudeSessionId: string; agentKey?: string; cwd: string; queuedMessage: string | null; sent: string[]; queued: string[] }
+interface FakeSession { id: string; name: string; status: string; claudeSessionId: string; agentKey?: string; cwd: string; queuedMessage: string | null; needsAttention: unknown; sent: string[]; queued: string[]; emit: (type: string, msg: unknown) => void }
 function fakeSession(csid: string, agentKey = 'tester', status = 'idle'): FakeSession & Session {
-  const s: FakeSession = { id: `session_${csid.slice(0, 4)}`, name: agentKey, status, claudeSessionId: csid, agentKey, cwd: dir, queuedMessage: null, sent: [], queued: [] }
+  const handlers = new Map<string, Set<(m: unknown) => void>>()
+  const s = {
+    id: `session_${csid.slice(0, 4)}`, name: agentKey, status, claudeSessionId: csid, agentKey, cwd: dir, queuedMessage: null, needsAttention: null, sent: [], queued: [],
+    emit: (type: string, msg: unknown) => { for (const fn of handlers.get(type) ?? []) fn(msg) },
+  } as FakeSession
   return Object.assign(s, {
     sendMessage: (c: string) => { s.sent.push(c) },
     queueMessage: (c: string) => { s.queued.push(c); s.queuedMessage = c },
     logMessage: () => {},
+    on: (type: string, fn: (m: unknown) => void) => { if (!handlers.has(type)) handlers.set(type, new Set()); handlers.get(type)!.add(fn) },
+    off: (type: string, fn: (m: unknown) => void) => { handlers.get(type)?.delete(fn) },
   }) as unknown as FakeSession & Session
 }
 
-function harness(opts: { shell?: ShellRunner; sessions?: Array<FakeSession & Session>; postOk?: boolean } = {}) {
+function harness(opts: { shell?: ShellRunner; sessions?: Array<FakeSession & Session>; postOk?: boolean; forks?: boolean } = {}) {
   const bus = new EventBus(new EventStore(join(dir, 'events')), () => {}, now)
   const store = new ListenerStore(join(dir, 'listeners.json'))
   const sessions = new Map<string, Session>()
@@ -39,6 +45,7 @@ function harness(opts: { shell?: ShellRunner; sessions?: Array<FakeSession & Ses
   const posts: Array<{ url: string; body: string; headers: Record<string, string> }> = []
   const cards: string[] = []
   const logs: string[] = []
+  const forks: Array<FakeSession & Session & { model?: string; closed?: boolean }> = []
   const engine = new ListenerEngine({
     bus, store,
     getSessions: () => sessions,
@@ -47,11 +54,19 @@ function harness(opts: { shell?: ShellRunner; sessions?: Array<FakeSession & Ses
     notify: (m) => notices.push(m),
     addCard: async (p, t) => { cards.push(`${p}: ${t}`); return `"${t}" → Backlog` },
     postUrl: async (url, body, headers) => { posts.push({ url, body, headers }); return { ok: opts.postOk ?? true, detail: opts.postOk === false ? 'HTTP 500' : 'HTTP 200' } },
+    ...(opts.forks ? {
+      spawnFork: (source, l, model) => {
+        const f = Object.assign(fakeSession(`f${forks.length}000000-0000-0000-0000-000000000000`, `${source.agentKey}-${l.id.toLowerCase()}-fork`), { model, name: `Listener ${l.id} (fork)` })
+        forks.push(f); sessions.set(f.id, f)
+        return f
+      },
+      closeFork: (f) => { (f as unknown as { closed: boolean }).closed = true; sessions.delete(f.id) },
+    } : {}),
     shell: opts.shell,
     log: (m) => logs.push(m),
     now,
   })
-  return { bus, store, engine, sessions, notices, posts, cards, logs }
+  return { bus, store, engine, sessions, notices, posts, cards, logs, forks }
 }
 
 const OWNER = { claudeSessionId: '11111111-1111-1111-1111-111111111111', agentKey: 'tester' }
@@ -277,8 +292,58 @@ describe('engine: ladder', () => {
     expect(s.sent[0]).toMatch(/\[HUB LISTENER REMOVED\]/)
   })
 
+  it('--fork wakes a fresh fork of the target, not the target; the fork is closed after its turn unless it pinged', async () => {
+    const owner = fakeSession(OWNER.claudeSessionId)
+    const al = fakeSession('22222222-2222-2222-2222-222222222222', 'al')
+    const h = harness({ sessions: [owner, al], forks: true })
+    h.engine.start()
+    const l = h.engine.add({ owner: OWNER, on: 'x.y', coalesce: 0, name: 'baba', action: { type: 'wake', prompt: 'Handle {{data.n}}', fork: true, model: 'haiku' } })
+    h.bus.emit({ topic: 'x.y', source: 't', data: { n: 1 } })
+    await h.engine.flushPending(l)
+    expect(owner.sent).toEqual([])
+    expect(h.forks.length).toBe(1)
+    const f = h.forks[0]!
+    expect(f.model).toBe('haiku')
+    expect(f.sent.length).toBe(1)
+    expect(f.sent[0]).toMatch(/^\[LISTENER FORK\] You are a fresh, single-turn fork of "tester" \(@tester\) spawned by listener L\S+ \("baba"\)/)
+    expect(f.sent[0]).toMatch(new RegExp(`--session-id ${f.claudeSessionId}`))
+    expect(f.sent[0]).toMatch(/\[EVENT — x\.y\] Listener/)
+    expect(f.sent[0]).toMatch(/Handle 1$/)
+    expect(l.stats.lastOutcome).toMatch(/fired: forked → Listener L\S+ \(fork\) on haiku \(of tester\)/)
+    // turn ends → closed after the settle delay
+    f.emit('hub_message', { type: 'result', sessionId: f.id, cost: 0.0123 })
+    await new Promise((r) => setTimeout(r, 2_100))
+    expect(f.closed).toBe(true)
+    expect(h.sessions.has(f.id)).toBe(false)
+    expect(h.logs.some((m) => /fork Listener L\S+ \(fork\): turn done \(\$0\.012\) — closed/.test(m))).toBe(true)
+
+    // --as + --fork forks the named target; a fork that raised the marker stays
+    const l2 = h.engine.add({ owner: OWNER, on: 'x.z', coalesce: 0, action: { type: 'wake', prompt: 'p', as: 'al', fork: true } })
+    h.bus.emit({ topic: 'x.z', source: 't', data: {} })
+    await h.engine.flushPending(l2)
+    expect(al.sent).toEqual([])
+    const f2 = h.forks[1]!
+    expect(f2.agentKey).toBe(`al-${l2.id.toLowerCase()}-fork`)
+    expect(f2.sent[0]).toMatch(/fork of "al" \(@al\)/)
+    f2.needsAttention = { ts: 1, snippet: 'ping' }
+    f2.emit('hub_message', { type: 'result', sessionId: f2.id, cost: 0 })
+    await new Promise((r) => setTimeout(r, 2_100))
+    expect(f2.closed).toBeUndefined()
+    expect(h.logs.some((m) => /asked for Yousef — left alive/.test(m))).toBe(true)
+
+    // a dead target is a skip, exactly like a plain wake
+    const l3 = h.engine.add({ owner: OWNER, on: 'x.w', coalesce: 0, action: { type: 'wake', prompt: 'p', as: 'nobody', fork: true } })
+    h.bus.emit({ topic: 'x.w', source: 't', data: {} })
+    await h.engine.flushPending(l3)
+    expect(l3.stats.lastOutcome).toMatch(/skipped: @nobody is not live/)
+    expect(h.forks.length).toBe(2)
+  }, 10_000)
+
   it('validates actions and topics at add time', () => {
     const h = harness()
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', action: { type: 'wake', prompt: 'p', model: 'haiku' } })).toThrow(/--model only applies to --fork/)
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', action: { type: 'wake', prompt: 'p', fork: true, model: 'not a model' } })).toThrow(/--model wants an alias/)
+    expect(h.engine.add({ owner: OWNER, on: 'x.y', action: { type: 'wake', prompt: 'p', fork: true, model: 'haiku' } }).action).toEqual({ type: 'wake', prompt: 'p', fork: true, model: 'haiku' })
     expect(() => h.engine.add({ owner: OWNER, on: 'Bad Topic', action: { type: 'notify', title: 't' } })).toThrow(/bad topic/)
     expect(() => h.engine.add({ owner: OWNER, on: 'x.y', action: { type: 'post', url: 'ftp://x' } })).toThrow(/http/)
     expect(() => h.engine.add({ owner: OWNER, on: 'x.y', action: { type: 'emit', topic: 'nodots' } })).toThrow(/dotted/)

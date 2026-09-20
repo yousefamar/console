@@ -401,6 +401,8 @@ Lifetime (a one-off wait must not live forever):
   --expires 2h | <iso>        Self-remove at the deadline whether or not it fired (pending events are dropped, logged)
 Actions (exactly one):
   --wake "<prompt>" [--as <agentKey>]   Inject an [EVENT] envelope + your prompt into your session (or @agentKey's). The only rung that costs tokens.
+    [--fork [--model haiku]]            …into a FRESH single-turn fork of that session instead — your context stays clean, the fork is
+                                        closed when its turn ends (unless it pinged Yousef). --model pins the fork's model (haiku = cheap).
   --run "<cmd>"                         bash -c in your cwd, batch JSON on stdin — a software listener, no LLM
   --post <url> [--method M] [--header k:v]   Outbound webhook, JSON body {listener, events}
   --notify "<title>" [--body "…"]       Push to Yousef's phone/SPA. {{data.x}} templates from the first event

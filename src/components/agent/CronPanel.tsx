@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cron } from 'croner'
 import { Play, Trash2, X, Plus, Calendar, Repeat, Copy } from 'lucide-react'
 import { useCronStore, type HubCronTask } from '@/store/cron'
+import { formatRelativeAgo, formatRelativeIn } from '@/utils/date'
 
 interface Props {
   claudeSessionId: string | undefined
@@ -309,25 +310,3 @@ function IcsRow() {
   )
 }
 
-// --------------------------------------------------------------------------
-
-function formatRelativeIn(ms: number): string {
-  if (ms <= 0) return 'now'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `in ${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `in ${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `in ${h}h`
-  return `in ${Math.floor(h / 24)}d`
-}
-
-function formatRelativeAgo(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s ago`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}

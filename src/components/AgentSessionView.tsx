@@ -5,8 +5,11 @@ import { AgentToolApproval } from './AgentToolApproval'
 import { AgentPromptInput } from './AgentPromptInput'
 import { CronPill } from './agent/CronPill'
 import { CronPanel } from './agent/CronPanel'
+import { ListenerPill } from './agent/ListenerPill'
+import { ListenerPanel } from './agent/ListenerPanel'
 import { TodoPanel } from './agent/TodoPanel'
 import { useCronStore } from '@/store/cron'
+import { useListenersStore } from '@/store/listeners'
 import { displayModel } from '@/utils/model-label'
 import { shortCwd } from '@/utils/cwd'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -56,10 +59,14 @@ export function AgentSessionView() {
   const hasCron = useCronStore((s) =>
     claudeSessionId ? (s.tasksBySession[claudeSessionId]?.some((t) => !t.disabledAt) ?? false) : false,
   )
+  const hasListeners = useListenersStore((s) =>
+    claudeSessionId ? (s.bySession[claudeSessionId]?.some((l) => !l.disabledAt) ?? false) : false,
+  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-  const [showCronPanel, setShowCronPanel] = useState(false)
+  // One right-hand drawer at a time: cron and listeners share the slot.
+  const [sidePanel, setSidePanel] = useState<'cron' | 'listeners' | null>(null)
 
   // Mobile-only: swipe right on the message stream to mark read + back to list
   // (mirrors mail's swipe-to-archive UX).
@@ -214,7 +221,7 @@ export function AgentSessionView() {
       <TodoPanel />
 
       {/* Status bar */}
-      {(isRunning || statusText || sessionModel || activeSession?.cwd || activeSession?.gitBranch || subagentCount > 0 || hasCron) && (
+      {(isRunning || statusText || sessionModel || activeSession?.cwd || activeSession?.gitBranch || subagentCount > 0 || hasCron || hasListeners) && (
         <div className="flex items-center border-t border-border/50 px-3 py-1 gap-2 overflow-hidden min-w-0">
           {/* Model name + mode — the label is a per-session picker: choosing a
               model PINS this session to it (applied mid-session, in place);
@@ -304,8 +311,9 @@ export function AgentSessionView() {
             </div>
           )}
 
-          {/* Hub-side scheduled prompts */}
-          <CronPill claudeSessionId={claudeSessionId} onOpen={() => setShowCronPanel(true)} />
+          {/* Hub-side scheduled prompts + event listeners */}
+          <CronPill claudeSessionId={claudeSessionId} onOpen={() => setSidePanel('cron')} />
+          <ListenerPill claudeSessionId={claudeSessionId} onOpen={() => setSidePanel('listeners')} />
 
           {/* Running status */}
           {(isRunning || statusText) && (
@@ -323,9 +331,12 @@ export function AgentSessionView() {
       {/* Prompt input */}
       <AgentPromptInput />
 
-      {/* Hub-side cron management panel */}
-      {showCronPanel && (
-        <CronPanel claudeSessionId={claudeSessionId} onClose={() => setShowCronPanel(false)} />
+      {/* Hub-side cron / listener management panels */}
+      {sidePanel === 'cron' && (
+        <CronPanel claudeSessionId={claudeSessionId} onClose={() => setSidePanel(null)} />
+      )}
+      {sidePanel === 'listeners' && (
+        <ListenerPanel claudeSessionId={claudeSessionId} onClose={() => setSidePanel(null)} />
       )}
     </div>
   )

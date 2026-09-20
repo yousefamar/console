@@ -354,6 +354,45 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   return session
 }
 
+/** A listener's `--fork` wake: the ticket-fork's FRESH mode, minus the board.
+ *  Same cwd/project/lineage as `source` so CLAUDE.md, auto-memory and the
+ *  sidebar nesting come for free; key `<sourceKey>-<listenerId>-fork`, no
+ *  cache pin (one turn, then the engine closes it). The envelope must follow
+ *  immediately — a pinned fresh spawn emits no init until its first message. */
+export function forkSessionForListener(ctx: AgentContext, source: Session, listenerId: string, model?: string | null): Session | null {
+  if (!source.claudeSessionId) return null
+  const base = (source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '')
+  const forkKey = mintAgentKey(ctx, `${source.agentKey ?? base} ${listenerId} fork`)
+  const title = `Listener ${listenerId} (fork)`
+  const session = createSession(ctx, {
+    prompt: '',
+    cwd: source.cwd,
+    pinSessionId: true,
+    forkContext: 'fresh',
+    silent: true,
+    name: title,
+    parentClaudeSessionId: source.claudeSessionId,
+    agentKey: forkKey,
+    project: source.project,
+    areas: source.areas,
+    ...(model ? { modelOverride: model } : {}),
+  })
+  const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
+  session.logMessage(created)
+  broadcast(ctx.clients, created)
+  return session
+}
+
+/** Drop a session the hub itself spawned and is done with (a listener fork
+ *  after its turn). The same steps as the client's `kill_session`. */
+export function closeSession(ctx: AgentContext, session: Session): void {
+  try { session.kill() } catch { /* already gone */ }
+  ctx.sessions.delete(session.id)
+  unpinRead(session.claudeSessionId)
+  saveManifest(ctx.sessions)
+  broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+}
+
 function broadcast(clients: Set<WebSocket>, msg: HubMessage) {
   const data = JSON.stringify(msg)
   for (const ws of clients) {

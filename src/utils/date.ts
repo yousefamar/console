@@ -29,6 +29,29 @@ export function relativeTime(timestamp: number): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+/** Duration → `in 5m` / `in 2h` / `now`, for something scheduled `ms` from now. */
+export function formatRelativeIn(ms: number): string {
+  if (ms <= 0) return 'now'
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `in ${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `in ${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `in ${h}h`
+  return `in ${Math.floor(h / 24)}d`
+}
+
+/** Duration → `12s ago` / `5m ago` / `3d ago`, for something that happened `ms` ago. */
+export function formatRelativeAgo(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, {
     hour: 'numeric',

@@ -14,7 +14,16 @@ export interface WhereClause {
 }
 
 export type ListenerAction =
-  | { type: 'wake'; prompt: string; /** wake this agentKey's live session instead of the owner */ as?: string }
+  | {
+      type: 'wake'
+      prompt: string
+      /** wake this agentKey's live session instead of the owner */
+      as?: string
+      /** Spawn a FRESH fork of the target per fire and wake that instead — the target's own context stays untouched; the fork is closed when its turn ends. */
+      fork?: boolean
+      /** Model alias/id for the fork (`haiku` for a cheap stateless handler). Only with `fork`. */
+      model?: string
+    }
   | { type: 'run'; cmd: string }
   | { type: 'post'; url: string; method?: string; headers?: Record<string, string> }
   | { type: 'notify'; title: string; body?: string }

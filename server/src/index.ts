@@ -35,7 +35,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForListener, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
@@ -897,6 +897,8 @@ const listenerEngine = new ListenerEngine({
     const card = await boardOps.add(project, text, { column: opts.column, agentKey: opts.agentKey, top: true })
     return `"${card.text}" → ${card.column}`
   },
+  spawnFork: (source, l, model) => forkSessionForListener(agentCtx, source, l.id, model),
+  closeFork: (fork) => closeSession(agentCtx, fork),
   log: (m) => log(m),
 })
 const eventRouteCtx: EventRouteCtx = {
