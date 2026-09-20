@@ -527,7 +527,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
                   <ChevronRight size={11} className="flex-shrink-0 text-text-tertiary/70" />
                 </>
               )}
-              <span className={`truncate text-sm ${item.unread === false ? 'text-text-secondary' : 'text-text-primary'}`} title={item.agentName}>{item.header}</span>
+              <span className={`truncate text-sm ${item.unread === true ? 'font-semibold text-text-primary' : item.unread === false ? 'text-text-secondary' : 'text-text-primary'}`} title={item.agentName}>{item.header}</span>
             </span>
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
             {item.draft && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unsent draft">draft</span>}

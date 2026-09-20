@@ -34,9 +34,9 @@ export interface InboxItem {
   network?: string
   ts: number
   route: Route
-  /** Mail/chat: false once opened — a read-but-unarchived thread or a read
-   *  room kept live by a draft renders muted, as the Mail pane does. Absent
-   *  for sources whose rows drop out the moment they're read. */
+  /** Mail/chat/agent read state, rendered as the Mail pane does: true =
+   *  bold, false (a read-but-unarchived thread, a read room kept live by a
+   *  draft) = muted. Absent for feeds, which have no "read but still here". */
   unread?: boolean
   /** Chat only: DM vs group — drives inbox ordering. */
   isDirect?: boolean

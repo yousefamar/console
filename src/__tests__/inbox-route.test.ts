@@ -163,8 +163,14 @@ describe('row shape', () => {
     expect(roomToItem(room({ isUnread: false, draft: 'reply…' }), DEFAULT_RULES).unread).toBe(false)
   })
 
-  it('feeds and agents carry no read state (rows drop the moment they are read)', () => {
+  it('feeds carry no read state (rows drop the moment they are read)', () => {
     expect(feedItemToItem(feedItem(), { id: 'feed-a', title: 'HN', xmlUrl: '', folder: null, addedAt: '' }, DEFAULT_RULES)?.unread).toBeUndefined()
+  })
+
+  it('agents: unread or asking = unread=true (bold), so a live agent never reads as seen', () => {
+    const s = { id: 's1', name: 'Fork', prompt: 'p', status: 'idle' as const, createdAt: NOW }
+    expect(sessionToItem({ ...s, hasUnread: true }).unread).toBe(true)
+    expect(sessionToItem({ ...s, hasUnread: false, needsAttention: { ts: NOW, snippet: 'help' } }).unread).toBe(true)
   })
 })
 

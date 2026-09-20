@@ -166,6 +166,7 @@ export function sessionToItem(s: AgentSessionLike, reviewKeys?: ReadonlySet<stri
     body: s.needsAttention?.snippet ?? s.lastTextSnippet ?? '',
     ts: s.lastActivityAt ?? s.createdAt,
     route: 'inbox',
+    unread: !!s.hasUnread || !!s.needsAttention,
     attention: !!s.needsAttention,
     ...(idle ? { idle: true } : {}),
     ...(idle && s.agentKey && reviewKeys?.has(s.agentKey) ? { review: true } : {}),
