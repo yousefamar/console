@@ -82,7 +82,7 @@ import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
 import { RingReminders } from './ring/remind.js'
 import { classifyWithLlm, claudeOneShot } from './ring/llm-fallback.js'
-import { audioHead } from './ring/audio.js'
+import { audioHead, audioDurationMs } from './ring/audio.js'
 import { cutVoiceNote, audioEnvelope } from './ring/voice.js'
 import { ListWatcher } from './lists/watcher.js'
 import { execFile as execFileCb } from 'node:child_process'
@@ -1516,6 +1516,7 @@ const ringCtx: RingCtx = {
     const head = await audioHead(audioPath)
     return head ? transcribeAudio(head, 'audio/mpeg', { prompt: vocabulary }) : null
   },
+  audioDuration: audioDurationMs,
   voiceAudio: {
     words: async (audioPath, vocabulary) => {
       const head = await audioHead(audioPath)

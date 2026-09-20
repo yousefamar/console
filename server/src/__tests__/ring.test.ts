@@ -1088,13 +1088,14 @@ describe('RingStore + pipeline', () => {
   let notes: Map<string, string>
   let cards: string[]
   let heads: Array<{ path: string; vocabulary: string }>
+  let durationMs: number | null
   let schema: RingSchema
   let ctx: RingCtx
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []; durationMs = null
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -1129,6 +1130,7 @@ describe('RingStore + pipeline', () => {
       },
       transcribe: async () => 'weather from stt',
       transcribeHead: async (path, vocabulary) => { heads.push({ path, vocabulary }); return null },
+      audioDuration: async () => durationMs,
       classify: async (text) => text.includes('skippity') ? { kind: 'music', action: 'next' } : null,
       notify: (m) => notified.push({ title: m.title, body: m.body }),
       now: () => new Date(2026, 8, 2, 23, 7),
@@ -1151,6 +1153,27 @@ describe('RingStore + pipeline', () => {
     expect(notified[0]).toMatchObject({ title: 'Ring → AL', body: 'What is the weather like' })
     expect(JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${rec.id}.json`), 'utf8')).route.ok).toBe(true)
     expect(store.count()).toBe(1)
+  })
+
+  it('flags a recording the app re-stamped with its recovery time as synced late', async () => {
+    // 16 Sep 2026: a 120 s dream made at 04:56Z arrived stamped 05:21:31Z and
+    // was received at 05:21:44Z — 13 s after a 120 s recording "started".
+    durationMs = 120_128
+    const late = await processDelivery(ctx, { transcription: 'Log dream. Three dreams.', audio: { data: Buffer.from('m4a'), contentType: 'audio/mp4' }, recordedAt: Date.now() - 13_000, client: 'ring' })
+    expect(late.audio?.durationMs).toBe(120_128)
+    expect(late.syncedLate).toBe(true)
+    expect(notified.at(-1)?.title).toBe('Ring · log dream · synced late')
+    expect(JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${late.id}.json`), 'utf8'))).toMatchObject({ syncedLate: true, audio: { durationMs: 120_128 } })
+
+    durationMs = 3_328
+    const live = await processDelivery(ctx, { transcription: 'Log dream. Short one.', audio: { data: Buffer.from('m4a'), contentType: 'audio/mp4' }, recordedAt: Date.now() - 15_000, client: 'ring' })
+    expect(live.audio?.durationMs).toBe(3_328)
+    expect(live.syncedLate).toBeUndefined()
+    expect(notified.at(-1)?.title).toBe('Ring · log dream')
+
+    // `con ring say` has no audio and no recordedAt — nothing to judge.
+    const say = await deliver('log dream said one')
+    expect(say.syncedLate).toBeUndefined()
   })
 
   it('log appends a dated bullet to the target note', async () => {

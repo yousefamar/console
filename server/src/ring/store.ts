@@ -17,7 +17,12 @@ export interface RingRecording {
   /** Transcript used for routing, and where it came from. */
   transcription: string | null
   transcriptionSource: 'ring' | 'hub-stt' | null
-  audio: { path: string; bytes: number; contentType: string } | null
+  audio: { path: string; bytes: number; contentType: string; durationMs?: number } | null
+  /** The app delivered this recording later than it was made and re-stamped
+   *  `recordedAt` with the delivery time: a live recording is received no
+   *  sooner than its own duration after it started, this one was received
+   *  sooner. The real capture time is unknown (before receivedAt − duration). */
+  syncedLate?: true
   /** Set once routing ran; absent for a pure archive (nothing to route). */
   route?: {
     command: RingCommand

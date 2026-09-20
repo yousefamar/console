@@ -76,6 +76,8 @@ export interface RingCtx {
    *  the tree's vocabulary — re-hears a command head the ring mis-heard.
    *  Null when unavailable. */
   transcribeHead: (audioPath: string, vocabulary: string) => Promise<string | null>
+  /** Duration of the archived recording (ring/audio.ts); null when unreadable. */
+  audioDuration: (audioPath: string) => Promise<number | null>
   classify: (text: string, schema: RingSchema, env: RouteEnv) => Promise<RingCommand | null>
   notify: (msg: { title: string; body: string; id: string }) => void
   now?: () => Date
@@ -254,8 +256,23 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
   })
   ctx.log(`[ring] ${id} archived (${d.audio ? `${d.audio.data.length} B audio, ` : ''}transcript=${source ?? 'none'})`)
 
+  // The Pebble app stamps a recording it recovers after a dropped BLE link
+  // with the RECOVERY time (16 Sep 2026: a 120 s dream made at 04:56Z arrived
+  // stamped 05:21:31Z, received 05:21:44Z). A live recording cannot be
+  // received sooner than its own duration after it started.
+  if (rec.audio && d.recordedAt !== null) {
+    const durationMs = await ctx.audioDuration(rec.audio.path)
+    if (durationMs) {
+      rec.audio.durationMs = durationMs
+      if (receivedAt - recordedAt < durationMs) rec.syncedLate = true
+      ctx.store.update(rec)
+      if (rec.syncedLate) ctx.log(`[ring] ${id} synced late: ${Math.round(durationMs / 1000)} s recording received ${Math.round((receivedAt - recordedAt) / 1000)} s after its recordedAt`)
+    }
+  }
+  const lateSuffix = rec.syncedLate ? ' · synced late' : ''
+
   if (!transcription) {
-    ctx.notify({ id, title: 'Ring: no transcript', body: d.audio ? 'Recording archived but nothing could be transcribed.' : 'Empty delivery — nothing to route.' })
+    ctx.notify({ id, title: `Ring: no transcript${lateSuffix}`, body: d.audio ? 'Recording archived but nothing could be transcribed.' : 'Empty delivery — nothing to route.' })
     return rec
   }
 
@@ -268,7 +285,8 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
   ctx.store.update(rec)
   ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''}${head ? ` (head re-heard: "${head}")` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}`)
 
-  ctx.notify({ id, ...notification(command, outcome) })
+  const n = notification(command, outcome)
+  ctx.notify({ id, title: n.title + lateSuffix, body: n.body })
 
   // A miss is a bug in the tree or the code — file it where a fork will pick
   // it up, the moment it happens. Not for `unknown` (no fallback configured)

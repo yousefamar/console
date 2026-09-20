@@ -18,3 +18,15 @@ export function audioHead(path: string, seconds = HEAD_SECONDS): Promise<Buffer 
     })
   })
 }
+
+/** Duration of the archived recording in ms; null when ffprobe can't read it. */
+export function audioDurationMs(path: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const args = ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path]
+    execFile('ffprobe', args, { encoding: 'utf8', timeout: 15_000 }, (err, stdout) => {
+      if (err) { console.warn(`[ring] ffprobe duration failed: ${err.message.slice(0, 200)}`); resolve(null); return }
+      const secs = Number(stdout.trim())
+      resolve(Number.isFinite(secs) && secs > 0 ? Math.round(secs * 1000) : null)
+    })
+  })
+}
