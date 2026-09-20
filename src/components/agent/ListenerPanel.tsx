@@ -82,6 +82,12 @@ function ListenerRow({ listener: l, onPause, onResume, onFlush, onRemove }: {
     [l.days, l.hours].filter(Boolean).join(' '),
     l.guard ? 'guard' : '',
   ].filter(Boolean)
+  const nextDeadline = l.expect?.pending.length ? Math.min(...l.expect.pending.map((p) => p.deadlineAt)) : undefined
+  const expectWhen = l.expect
+    ? l.expect.by !== undefined
+      ? `by ${/^\d{12,}$/.test(l.expect.by) ? new Date(Number(l.expect.by)).toLocaleString() : `"${l.expect.by}"`}${l.expect.windowMs ? ` (window ${fmtDur(l.expect.windowMs)})` : ''}`
+      : `within ${fmtDur(l.expect.withinMs ?? 0)}${l.expect.after ? ` after ${l.expect.after.on}${l.expect.after.where.length ? ` where ${whereText(l.expect.after.where)}` : ''}` : ''}`
+    : ''
   const life = [
     l.times !== undefined ? (l.timesTotal === 1 ? 'once' : `${l.times}/${l.timesTotal ?? l.times} left`) : '',
     l.expiresAt ? (l.expiresAt > now ? `expires ${formatRelativeIn(l.expiresAt - now)}` : 'expired') : '',
@@ -93,24 +99,31 @@ function ListenerRow({ listener: l, onPause, onResume, onFlush, onRemove }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5 min-w-0">
             <Radio size={10} className={`flex-shrink-0 ${l.pausedAt || l.disabledAt ? 'text-text-tertiary' : 'text-success'}`} />
-            <code className="text-[11px] text-text-secondary truncate" title={`${l.on}${where.length ? ` where ${whereText(where)}` : ''}`}>
+            <code className="text-[11px] text-text-secondary truncate" title={`${l.expect ? 'expect ' : ''}${l.on}${where.length ? ` where ${whereText(where)}` : ''}${expectWhen ? ` ${expectWhen}` : ''}`}>
+              {l.expect && <span className="text-text-tertiary">expect </span>}
               {l.on}
               {where.length > 0 && <span className="text-text-tertiary"> where {whereText(where)}</span>}
+              {expectWhen && <span className="text-text-tertiary"> {expectWhen}</span>}
             </code>
             {l.disabledAt ? (
               <span className="text-[10px] text-destructive flex-shrink-0">disabled</span>
             ) : l.pausedAt ? (
               <span className="text-[10px] text-yellow-400 flex-shrink-0" title={l.pauseReason}>paused</span>
+            ) : nextDeadline !== undefined ? (
+              <span className="text-[10px] text-text-tertiary flex-shrink-0" title={`deadline ${new Date(nextDeadline).toLocaleString()}`}>armed {l.expect!.pending.length} · {formatRelativeIn(nextDeadline - now)}</span>
+            ) : l.expect ? (
+              <span className="text-[10px] text-text-tertiary flex-shrink-0">waiting</span>
             ) : l.pending ? (
               <span className="text-[10px] text-text-tertiary flex-shrink-0" title={`fires ${formatRelativeIn(l.pending.dueAt - now)}`}>pending {l.pending.events.length}</span>
             ) : null}
           </div>
           <div className="text-xs text-text-primary line-clamp-2 break-words flex items-start gap-1" title={describeAction(l.action)}>
             {l.action.type === 'wake' && l.action.fork && <GitFork size={10} className="flex-shrink-0 mt-0.5 text-text-tertiary" />}
-            <span>{describeAction(l.action)}</span>
+            <span>{l.expect ? 'else ' : ''}{describeAction(l.action)}{l.expect?.then ? `; then ${describeAction(l.expect.then)}` : ''}</span>
           </div>
           {l.name && <div className="text-[10px] text-text-secondary truncate">{l.name}</div>}
           <div className="text-[10px] text-text-tertiary mt-0.5 flex items-center gap-2 flex-wrap">
+            {l.expect && <span>satisfied {l.expect.satisfied} · missed {l.expect.missed}</span>}
             <span>fired {stats.fired ?? 0}{lastFired ? ` · ${lastFired}` : ''}</span>
             {(stats.matched ?? 0) > (stats.fired ?? 0) && <span>matched {stats.matched}</span>}
             {(stats.guardSkipped ?? 0) > 0 && <span>guard-skipped {stats.guardSkipped}</span>}
@@ -124,8 +137,8 @@ function ListenerRow({ listener: l, onPause, onResume, onFlush, onRemove }: {
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {l.pending && !l.pausedAt && !l.disabledAt && (
-            <button onClick={onFlush} className="text-text-tertiary hover:text-text-primary p-1" title="Fire the pending batch now">
+          {(l.pending || nextDeadline !== undefined) && !l.pausedAt && !l.disabledAt && (
+            <button onClick={onFlush} className="text-text-tertiary hover:text-text-primary p-1" title={l.expect ? 'Judge the nearest deadline now' : 'Fire the pending batch now'}>
               <Zap size={11} />
             </button>
           )}

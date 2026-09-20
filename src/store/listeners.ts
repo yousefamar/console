@@ -38,6 +38,8 @@ export interface HubListener {
   consecutiveSkips?: number
   stats?: { matched?: number; fired?: number; guardSkipped?: number; lastEventAt?: number; lastFiredAt?: number; lastOutcome?: string }
   pending?: { events: string[]; startedAt: number; dueAt: number }
+  /** Present = an expectation (`con listen expect`): `action` is the --else, fired when the event does NOT arrive in time. */
+  expect?: { by?: string; windowMs?: number; after?: { on: string; where: Array<{ path: string; op: string; value: string }> }; withinMs?: number; then?: ListenerAction; pending: Array<{ armedAt: number; deadlineAt: number; triggerEventId?: string }>; satisfied: number; missed: number }
   outcomes?: Array<{ at: number; stage: string; events: string[]; detail?: string }>
 }
 
