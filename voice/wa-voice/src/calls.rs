@@ -5,12 +5,19 @@
 //! clock) and a drain that re-chunks the peer's decoded audio into 960-sample
 //! frames on the socket.
 //!
-//! Idle frames are ±1 LSB dither, never exact zeros: wacore's
-//! `encode_mlow_frame` treats an all-zero frame as OS mic-mute and sends a
-//! one-byte DTX comfort-noise packet instead of speech. Feeding the peer DTX
-//! between utterances put its decoder in comfort-noise mode, and every speech
-//! onset lost its first ~0.3-0.5 s while the playout re-converged (the first
-//! live test call, 2026-09-20: "when you said great, I only heard the T").
+//! Idle frames are comfort noise at a realistic room-noise level (~-60 dBFS,
+//! low-passed), never digital silence. Two reasons, both learnt on the live
+//! test calls of 2026-09-20 ("when you said great, I only heard the T";
+//! "count to five" → "I never heard the number one"):
+//! - wacore's `encode_mlow_frame` treats an exactly all-zero frame as OS
+//!   mic-mute and sends a one-byte DTX comfort-noise packet instead of speech,
+//!   so the peer sat in comfort-noise mode between utterances;
+//! - ±1 LSB dither (-90 dBFS) fixed the DTX but not the cut-off: the encoder
+//!   codes it as active speech (TOC 0x50), yet the phone still lost the first
+//!   word — its receive path adapts to an idle level no real microphone ever
+//!   produces. A phone mic sits around -60 dBFS in a quiet room; giving the
+//!   peer that floor keeps every adaptive stage on its side (gate, NS, AGC,
+//!   audio path) in the state a human caller would leave it in.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -32,39 +39,78 @@ const TICK: Duration = Duration::from_millis(60);
 /// ~24 s of queued outbound speech; beyond this the producer is misbehaving.
 const MAX_QUEUE_FRAMES: usize = 400;
 
-/// Cheap xorshift noise source for the idle-frame dither (no crate, no
-/// allocation; audio quality is irrelevant at ±1 LSB, ~-90 dBFS).
-pub struct Dither(u32);
+/// Idle-frame comfort noise: xorshift white noise through a one-pole low-pass
+/// (a soft hiss rather than a bright one), scaled to `WA_VOICE_IDLE_NOISE_DB`
+/// dBFS RMS (default -60; `-inf`/`off` = ±1 LSB dither only). No crate, no
+/// allocation beyond the frame.
+pub struct IdleNoise {
+    x: u32,
+    lp: f32,
+    gain: f32,
+}
 
-impl Dither {
+const IDLE_NOISE_DEFAULT_DB: f32 = -60.0;
+const DITHER_ONLY: f32 = -1000.0;
+
+impl IdleNoise {
     pub fn new() -> Self {
-        Self(0x9E37_79B9)
+        Self::with_level_db(Self::configured_level_db())
     }
 
-    fn next(&mut self) -> u32 {
-        let mut x = self.0;
+    pub fn configured_level_db() -> f32 {
+        match std::env::var("WA_VOICE_IDLE_NOISE_DB") {
+            Ok(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "-inf" | "none") => DITHER_ONLY,
+            Ok(v) => v.trim().parse::<f32>().unwrap_or(IDLE_NOISE_DEFAULT_DB).clamp(-100.0, -30.0),
+            Err(_) => IDLE_NOISE_DEFAULT_DB,
+        }
+    }
+
+    /// `level_db` = target RMS in dBFS (full scale = 32767); `DITHER_ONLY` (any
+    /// value < -100) gives ±1 LSB dither.
+    pub fn with_level_db(level_db: f32) -> Self {
+        let gain = if level_db < -100.0 {
+            0.0
+        } else {
+            // The low-pass below has ~0.28 RMS gain on unit-variance input; uniform
+            // noise in [-1, 1] has RMS 0.577.
+            32767.0 * 10f32.powf(level_db / 20.0) / (0.577 * 0.28)
+        };
+        Self { x: 0x9E37_79B9, lp: 0.0, gain }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.x;
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        self.0 = x;
+        self.x = x;
         x
     }
 
-    /// A full frame of ±1 LSB noise (never all zeros).
+    fn next_sample(&mut self) -> i16 {
+        let white = (self.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        if self.gain == 0.0 {
+            return ((self.next_u32() % 3) as i16) - 1;
+        }
+        self.lp += 0.15 * (white - self.lp);
+        (self.lp * self.gain).round().clamp(-2000.0, 2000.0) as i16
+    }
+
+    /// A full idle frame (never all zeros).
     pub fn frame(&mut self) -> Vec<i16> {
         let mut f = vec![0i16; FRAME_SAMPLES];
         self.apply(&mut f);
         f
     }
 
-    /// Guarantee `frame` is not exactly all-zero (the engine's mute fast-path).
-    /// Frames with any signal are left untouched.
+    /// Guarantee `frame` is not exactly all-zero (the engine's mute fast-path)
+    /// by filling it with comfort noise. Frames with any signal are untouched.
     pub fn apply(&mut self, frame: &mut [i16]) {
         if frame.iter().any(|&s| s != 0) {
             return;
         }
         for s in frame.iter_mut() {
-            *s = (self.next() % 3) as i16 - 1;
+            *s = self.next_sample();
         }
         if frame.iter().all(|&s| s == 0) {
             frame[0] = 1;
@@ -72,7 +118,7 @@ impl Dither {
     }
 }
 
-impl Default for Dither {
+impl Default for IdleNoise {
     fn default() -> Self {
         Self::new()
     }
@@ -553,15 +599,17 @@ impl CallManager {
         spk_rx: async_channel::Receiver<Vec<i16>>,
         spk_tx: async_channel::Sender<Vec<i16>>,
     ) {
-        // Mic ticker: one frame every 60 ms, queued speech else dither (see
-        // the module doc: an all-zero frame is "mic muted" to the engine).
+        // Mic ticker: one frame every 60 ms, queued speech else comfort noise
+        // (see the module doc: an all-zero frame is "mic muted" to the engine,
+        // and digital silence starves the peer's adaptive receive path).
         let ticker_queue = queue.clone();
         let ticker_mic = mic_tx.clone();
         let ticker_handle = handle.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(TICK);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut dither = Dither::new();
+            let mut idle = IdleNoise::new();
+            info!("idle comfort noise at {} dBFS", IdleNoise::configured_level_db());
             loop {
                 interval.tick().await;
                 if ticker_mic.is_closed() {
@@ -578,8 +626,8 @@ impl CallManager {
                         None => None,
                     }
                 };
-                let mut frame = frame.unwrap_or_else(|| dither.frame());
-                dither.apply(&mut frame);
+                let mut frame = frame.unwrap_or_else(|| idle.frame());
+                idle.apply(&mut frame);
                 if ticker_mic.try_send(frame).is_err() {
                     debug!("mic channel full/closed for {}", ticker_handle.call_id());
                 }
@@ -699,33 +747,50 @@ fn qr_svg_data_url(code: &str) -> String {
 mod tests {
     use super::*;
 
+    fn rms(f: &[i16]) -> f32 {
+        (f.iter().map(|&s| (s as f32) * (s as f32)).sum::<f32>() / f.len() as f32).sqrt()
+    }
+
     #[test]
-    fn idle_frame_is_never_all_zero() {
-        let mut d = Dither::new();
-        for _ in 0..200 {
-            let f = d.frame();
+    fn idle_frames_are_room_noise_not_silence() {
+        let mut n = IdleNoise::with_level_db(-60.0);
+        let _ = n.frame(); // let the low-pass settle
+        for _ in 0..20 {
+            let f = n.frame();
             assert_eq!(f.len(), FRAME_SAMPLES);
             assert!(f.iter().any(|&s| s != 0), "an all-zero frame reads as mic-mute (DTX) to the engine");
-            assert!(f.iter().all(|&s| (-1..=1).contains(&s)), "dither stays within ±1 LSB");
+            let db = 20.0 * (rms(&f) / 32767.0).log10();
+            assert!((-66.0..=-54.0).contains(&db), "idle level {db:.1} dBFS, wanted about -60");
+            assert!(f.iter().all(|&s| s.abs() < 400), "comfort noise must stay far below speech");
         }
     }
 
     #[test]
-    fn dither_leaves_real_audio_untouched_and_fixes_zero_frames() {
-        let mut d = Dither::new();
+    fn dither_only_mode_stays_within_one_lsb() {
+        let mut n = IdleNoise::with_level_db(DITHER_ONLY);
+        for _ in 0..50 {
+            let f = n.frame();
+            assert!(f.iter().any(|&s| s != 0));
+            assert!(f.iter().all(|&s| (-1..=1).contains(&s)));
+        }
+    }
+
+    #[test]
+    fn real_audio_is_never_touched_and_zero_frames_are_filled() {
+        let mut n = IdleNoise::with_level_db(-60.0);
         let mut speech: Vec<i16> = (0..FRAME_SAMPLES as i16).map(|i| (i % 200) - 100).collect();
         let before = speech.clone();
-        d.apply(&mut speech);
+        n.apply(&mut speech);
         assert_eq!(speech, before);
 
         let mut zeros = vec![0i16; FRAME_SAMPLES];
-        d.apply(&mut zeros);
+        n.apply(&mut zeros);
         assert!(zeros.iter().any(|&s| s != 0));
 
         let mut quiet = vec![0i16; FRAME_SAMPLES];
         quiet[500] = 1;
         let before = quiet.clone();
-        d.apply(&mut quiet);
-        assert_eq!(quiet, before, "a frame with any signal is not dithered");
+        n.apply(&mut quiet);
+        assert_eq!(quiet, before, "a frame with any signal is not touched");
     }
 }
