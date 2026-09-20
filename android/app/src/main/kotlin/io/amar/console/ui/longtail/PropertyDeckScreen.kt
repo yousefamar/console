@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.House
+import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,7 +72,7 @@ import io.amar.console.data.longtail.PropertyCard
 import io.amar.console.data.longtail.PropertyDeckRepository
 import io.amar.console.data.longtail.Verdict
 import io.amar.console.data.longtail.factsLine
-import io.amar.console.data.longtail.formatPrice
+import io.amar.console.data.longtail.priceHeadline
 import io.amar.console.data.longtail.kindLabel
 import io.amar.console.data.longtail.listedAgo
 import io.amar.console.data.longtail.portalLabel
@@ -334,7 +335,7 @@ private fun PropertyCardFace(card: PropertyCard, onOpen: (() -> Unit)?) {
                 ) {
                     Column {
                         Text(
-                            formatPrice(card.price, card.currency) ?: "Price on request",
+                            priceHeadline(card) ?: "Price on request",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
@@ -347,6 +348,7 @@ private fun PropertyCardFace(card: PropertyCard, onOpen: (() -> Unit)?) {
                 Row(Modifier.align(Alignment.TopEnd).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     // Gold = the tiered (lifted-ceiling) searches' layer colour on the map.
                     if (card.tier != null) Badge(card.tier, Color(0xFFEAB308), fg = Color.Black)
+                    if (card.auction) Badge("auction", MaterialTheme.accents.amber, fg = Color.Black)
                     if (card.fixer) Badge("needs work", MaterialTheme.accents.amber, fg = Color.Black)
                     if (card.footAccess) Badge("foot only", MaterialTheme.accents.amber, fg = Color.Black)
                     Badge(card.country, Color.Black.copy(alpha = 0.55f))
@@ -355,6 +357,7 @@ private fun PropertyCardFace(card: PropertyCard, onOpen: (() -> Unit)?) {
             Column(Modifier.fillMaxWidth().weight(0.42f).padding(horizontal = 14.dp, vertical = 10.dp)) {
                 val facts = factsLine(card)
                 if (facts.isNotEmpty()) Text(facts, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (card.approxLocation) FactRow(Icons.Filled.LocationSearching, "Approximate location")
                 card.highStreet?.let { FactRow(Icons.Filled.Storefront, it) }
                 card.airport?.let { FactRow(Icons.Filled.Flight, it) }
                 // Takes whatever height is left and ellipsizes to it, so the footer never gets pushed off the card.
@@ -407,11 +410,12 @@ private fun PropertyDetailSheet(card: PropertyCard, onDismiss: () -> Unit, onVer
                 AsyncImage(model = card.image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(12.dp)))
                 Spacer(Modifier.height(12.dp))
             }
-            Text(formatPrice(card.price, card.currency) ?: "Price on request", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(priceHeadline(card) ?: "Price on request", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             card.title?.takeIf { it != card.address }?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
             card.address?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             val facts = factsLine(card)
             if (facts.isNotEmpty()) Text(facts, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+            if (card.approxLocation) FactRow(Icons.Filled.LocationSearching, "Approximate location")
             card.highStreet?.let { FactRow(Icons.Filled.Storefront, it) }
             card.airport?.let { FactRow(Icons.Filled.Flight, it) }
             if (card.keyFeatures.isNotEmpty()) {

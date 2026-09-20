@@ -36,6 +36,8 @@ data class PropertyCard(
     val address: String?,
     /** Major units in [currency]. */
     val price: Double?,
+    /** The portal's reading of [price]: `offers over` / `OIRO` / `guide` / `fixed price` (a Scottish offers-over is a floor). */
+    val priceQualifier: String?,
     val currency: String,
     val bedrooms: Int?,
     val bathrooms: Int?,
@@ -51,11 +53,16 @@ data class PropertyCard(
     val description: String?,
     val fixer: Boolean,
     val footAccess: Boolean,
+    /** Sold at auction — [price] is the guide (the seller's minimum), not an asking price. */
+    val auction: Boolean,
     val highStreet: String?,
     val airport: String?,
     val lat: Double,
     val lon: Double,
+    /** `area` = [lat]/[lon] is a town/comune/PLZ centroid (hidden address), not the house. */
+    val coordsPrecision: String?,
 ) {
+    val approxLocation: Boolean get() = coordsPrecision == "area"
     /** Portal ids are unique only within a search. */
     val key: String get() = "$searchId/$listingId"
 }
@@ -100,6 +107,7 @@ private fun parseCard(o: JsonObject): PropertyCard? {
         title = str("title"),
         address = str("address"),
         price = num("price"),
+        priceQualifier = str("priceQualifier"),
         currency = str("currency") ?: "GBP",
         bedrooms = int("bedrooms"),
         bathrooms = int("bathrooms"),
@@ -115,10 +123,12 @@ private fun parseCard(o: JsonObject): PropertyCard? {
         description = str("description"),
         fixer = (o["fixer"] as? JsonPrimitive)?.booleanOrNull ?: false,
         footAccess = (o["footAccess"] as? JsonPrimitive)?.booleanOrNull ?: false,
+        auction = (o["auction"] as? JsonPrimitive)?.booleanOrNull ?: false,
         highStreet = str("highStreet"),
         airport = str("airport"),
         lat = num("lat") ?: 0.0,
         lon = num("lon") ?: 0.0,
+        coordsPrecision = str("coordsPrecision"),
     )
 }
 
@@ -132,6 +142,24 @@ fun formatPrice(price: Double?, currency: String): String? {
     val n = String.format(java.util.Locale.UK, "%,d", price.roundToInt())
     return if (symbol.isNotEmpty()) "$symbol$n" else "$n $currency"
 }
+
+/**
+ * Port of `priceLabel()` in server/src/property/sync.ts — the string the map pin
+ * prints. An auction's price is the guide (the seller's minimum expectation),
+ * so it wins over the portal's own qualifier; otherwise the qualifier prefixes
+ * the figure ("offers over £390,000" — a floor, not an asking price). Null when
+ * the portal states no price.
+ */
+fun priceLabel(price: Double?, currency: String, priceQualifier: String? = null, auction: Boolean = false): String? {
+    val formatted = formatPrice(price, currency) ?: return null
+    if (auction) return "guide $formatted"
+    return if (!priceQualifier.isNullOrBlank()) "$priceQualifier $formatted" else formatted
+}
+
+fun priceLabel(c: PropertyCard): String? = priceLabel(c.price, c.currency, c.priceQualifier, c.auction)
+
+/** [priceLabel] as a headline: "Guide £220,000" / "Offers over £390,000" / "OIRO £250,000". */
+fun priceHeadline(c: PropertyCard): String? = priceLabel(c)?.replaceFirstChar { it.uppercase() }
 
 /** m² up to a hectare, then "1.2 ha" for land. */
 fun formatArea(m2: Double?, land: Boolean = false): String? {

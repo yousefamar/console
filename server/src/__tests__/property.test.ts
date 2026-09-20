@@ -1160,7 +1160,7 @@ describe('PropertySync kind layers', () => {
   it('the deck is exactly the drawn pins minus verdicts, newest first, with per-kind counts', async () => {
     const { store, sync, layers } = harness([
       listing('uk-new', { lat: 52, lon: -1.5, price: 180000, propertyType: 'Detached', listedAt: '2026-09-11T10:00:00Z', description: 'x'.repeat(2500), keyFeatures: ['Garden', 'Garage'], tenure: 'freehold' }),
-      listing('uk-old', { lat: 52, lon: -1.6, price: 120000, propertyType: 'Bungalow', listedAt: '2026-09-01T10:00:00Z' }),
+      listing('uk-old', { lat: 52, lon: -1.6, price: 120000, propertyType: 'Bungalow', listedAt: '2026-09-01T10:00:00Z', priceQualifier: 'offers over', coordsPrecision: 'area' }),
     ])
     const uk = store.create({ country: 'UK', layer: 'zone' })
     const gold = store.create({ country: 'DE', layer: 'zone', tier: 'gold' })
@@ -1178,6 +1178,9 @@ describe('PropertySync kind layers', () => {
     expect(card).toMatchObject({ kind: 'house', price: 180000, currency: 'GBP', tenure: 'freehold', keyFeatures: ['Garden', 'Garage'], fixer: false, alsoOn: [], lat: 52, lon: -1.5 })
     expect(card.description!.length).toBeLessThanOrEqual(2000)
     expect(card.description!.endsWith('…')).toBe(true)
+    expect(card.coordsPrecision).toBeUndefined()
+    // The phone's card labels a floor and an approximate location, so both ride the card raw.
+    expect(all.cards.find((c) => c.listingId === 'uk-old')).toMatchObject({ priceQualifier: 'offers over', coordsPrecision: 'area' })
     // Kind filter + limit; counts still cover every kind.
     const houses = sync.deck({ kind: 'house', limit: 2 })
     expect(houses.cards.map((c) => c.listingId)).toEqual(['uk-new', 'uk-old'])

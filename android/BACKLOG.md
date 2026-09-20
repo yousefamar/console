@@ -70,6 +70,31 @@ view-mode hub-sync (Room meta is fine on one device).
   while the hub was up (`reloadAfterMutation` re-asserts it). Tests:
   `SpacesAttachTest` (wire shape by `^id`, base64 round-trip, hub error
   surfaces, error survives the reload).
+- **Property deck: price qualifier, auction guide, approximate location**
+  (^warm-crab, parity with hub 1dc30a7e / 71b24cd0 / 372495c2 / 0a9e7db0). The
+  deck card printed the bare `price`, so a Scottish "Offers Over £390,000"
+  (RM 92242653, a floor the sale closes above) and an auction guide (RM 92428200,
+  £220k against £325k+ neighbours) read as asking prices — the map pin had said
+  `offers over £390,000` / `guide £220,000` since 15 Sep. `PropertyCard` now
+  parses `priceQualifier` + `auction` (both already on `GET /property/deck`)
+  and `priceLabel()` in `PropertyDeckRepository.kt` is a verbatim port of the
+  hub's `priceLabel()` (`sync.ts`): auction → `guide <price>`, else
+  `<qualifier> <price>`, null when no price (the "Price on request" fallback
+  stands). The card face + detail sheet headline it capitalised
+  (`priceHeadline`: "Guide £220,000", "Offers over £390,000", "OIRO" untouched)
+  and an amber `auction` badge joins `needs work` / `foot only`. Approximate
+  location: the hub deck card never carried `coordsPrecision` (only the
+  `highStreet` label's "town centre …" prefix hinted at it, and only when the
+  row is walk-testable), so `deck.ts` now ships `coordsPrecision: "area"` on
+  centroid-placed rows (hidden-address IS24/Wikicasa/Subito rows sit on the
+  town centre — the detail sheet's `navigate` goes there, not to the house);
+  the card face + sheet show a `LocationSearching` "Approximate location" row.
+  Map pin popup needed nothing: `agentFeatureInfo` renders the layer's `price`
+  field verbatim, which IS the hub label. Hub part needs a restart to serve
+  `coordsPrecision`; the badge/label parts work against the live hub already.
+  Tests: `PropertyDeckLogicTest` (the hub's `priceLabel` cases ported, parse of
+  the three new fields incl. old-hub omission), `AgentFeatureInfoTest` (popup
+  shows `guide £220,000` / `offers over …`, skips a null price).
 
 ## Shipped
 

@@ -15,9 +15,15 @@ class PropertyDeckLogicTest {
            "url":"https://www.rightmove.co.uk/properties/165","title":"3 bedroom detached house for sale","address":"High St, Lewes",
            "price":285000,"currency":"GBP","bedrooms":3,"bathrooms":1,"floorArea":98,"plotArea":1250,"propertyType":"Detached","tenure":"freehold",
            "listedAt":"2026-09-10T09:00:00Z","agent":"Fox & Sons","image":"https://media.rightmove.co.uk/x.jpg","summary":"A house.",
-           "keyFeatures":["Garden","Garage"],"description":"Long text","fixer":true,"footAccess":true,"highStreet":"320 m to shops","airport":"42min drive to LGW","lat":50.87,"lon":0.01},
+           "keyFeatures":["Garden","Garage"],"description":"Long text","fixer":true,"footAccess":true,"auction":false,"highStreet":"320 m to shops","airport":"42min drive to LGW","lat":50.87,"lon":0.01},
           {"listingId":"77","searchId":"ps_it","kind":"house","portal":"immobiliare","alsoOn":[],"country":"IT","url":"https://immobiliare.it/77",
            "currency":"EUR","fixer":false,"lat":43.1,"lon":11.2},
+          {"listingId":"92242653","searchId":"ps_gold","kind":"house","tier":"gold","portal":"rightmove","alsoOn":[],"country":"UK","url":"https://www.rightmove.co.uk/properties/92242653",
+           "price":390000,"priceQualifier":"offers over","currency":"GBP","fixer":false,"footAccess":false,"auction":false,"lat":55.9,"lon":-3.2},
+          {"listingId":"92428200","searchId":"ps_uk","kind":"house","portal":"rightmove","alsoOn":[],"country":"UK","url":"https://www.rightmove.co.uk/properties/92428200",
+           "price":220000,"priceQualifier":"guide","currency":"GBP","fixer":false,"footAccess":false,"auction":true,"lat":51.45,"lon":-1.03},
+          {"listingId":"167831277","searchId":"ps_de","kind":"house","portal":"immoscout24","alsoOn":[],"country":"DE","url":"https://www.immobilienscout24.de/expose/167831277",
+           "price":250000,"currency":"EUR","fixer":false,"footAccess":false,"auction":false,"lat":53.39,"lon":8.08,"coordsPrecision":"area"},
           {"searchId":"ps_x","kind":"house","portal":"rightmove","currency":"GBP","lat":0,"lon":0}
         ],"total":412,"counts":{"house":412,"farmland":38,"plot":5}}
     """.trimIndent()
@@ -25,7 +31,7 @@ class PropertyDeckLogicTest {
     @Test
     fun `parse keeps every field, tolerates omissions, drops a card without ids`() {
         val deck = parsePropertyDeck(deckJson)!!
-        assertEquals(2, deck.cards.size) // the id-less third card is dropped
+        assertEquals(5, deck.cards.size) // the id-less last card is dropped
         assertEquals(412, deck.total)
         assertEquals(mapOf("house" to 412, "farmland" to 38, "plot" to 5), deck.counts)
         val c = deck.cards[0]
@@ -40,6 +46,9 @@ class PropertyDeckLogicTest {
         assertTrue(c.fixer)
         assertTrue(c.footAccess)
         assertEquals("320 m to shops", c.highStreet)
+        assertNull(c.priceQualifier)
+        assertFalse(c.auction)
+        assertFalse(c.approxLocation)
         val it = deck.cards[1]
         assertNull(it.price)
         assertNull(it.tier)
@@ -47,6 +56,39 @@ class PropertyDeckLogicTest {
         assertTrue(it.keyFeatures.isEmpty())
         assertFalse(it.fixer)
         assertFalse(it.footAccess)
+        assertFalse(it.auction) // an older hub omits the flag → not an auction
+        assertNull(it.coordsPrecision)
+        // The qualifier / auction flag / centroid marker ride the card raw (deck.ts DeckCard).
+        assertEquals("offers over", deck.cards[2].priceQualifier)
+        assertTrue(deck.cards[3].auction)
+        assertEquals("guide", deck.cards[3].priceQualifier)
+        assertEquals("area", deck.cards[4].coordsPrecision)
+        assertTrue(deck.cards[4].approxLocation)
+    }
+
+    // Port of the `priceLabel` cases in server/src/__tests__/property.test.ts: a
+    // Scottish offers-over floor is labelled, an auction guide still wins.
+    @Test
+    fun `price label keeps the portal's qualifier and prints an auction price as the guide`() {
+        assertEquals("£390,000", priceLabel(390000.0, "GBP"))
+        assertEquals("offers over £390,000", priceLabel(390000.0, "GBP", priceQualifier = "offers over"))
+        assertEquals("guide £390,000", priceLabel(390000.0, "GBP", priceQualifier = "offers over", auction = true))
+        assertEquals("guide £390,000", priceLabel(390000.0, "GBP", auction = true))
+        assertEquals("OIRO £250,000", priceLabel(250000.0, "GBP", priceQualifier = "OIRO"))
+        assertEquals("fixed price €200,000", priceLabel(200000.0, "EUR", priceQualifier = "fixed price"))
+        assertEquals("€200,000", priceLabel(200000.0, "EUR", priceQualifier = ""))
+        assertNull(priceLabel(null, "GBP", priceQualifier = "offers over", auction = true)) // no price = price on request, whatever else is known
+        val deck = parsePropertyDeck(deckJson)!!
+        assertEquals("£285,000", priceLabel(deck.cards[0]))
+        assertNull(priceLabel(deck.cards[1]))
+        assertEquals("offers over £390,000", priceLabel(deck.cards[2]))
+        assertEquals("guide £220,000", priceLabel(deck.cards[3]))
+        // The card face capitalises the label as a headline; an all-caps qualifier and a bare figure are untouched.
+        assertEquals("Offers over £390,000", priceHeadline(deck.cards[2]))
+        assertEquals("Guide £220,000", priceHeadline(deck.cards[3]))
+        assertEquals("£285,000", priceHeadline(deck.cards[0]))
+        assertEquals("OIRO £250,000", priceHeadline(deck.cards[2].copy(price = 250000.0, priceQualifier = "OIRO")))
+        assertNull(priceHeadline(deck.cards[1]))
     }
 
     @Test

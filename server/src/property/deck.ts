@@ -58,6 +58,8 @@ export interface DeckCard {
   airport?: string
   lat: number
   lon: number
+  /** `area` = lat/lon is a comune/PLZ/town centroid, not the house (hidden-address rows). */
+  coordsPrecision?: Listing['coordsPrecision']
 }
 
 export interface DeckCardInput {
@@ -109,6 +111,7 @@ export function toDeckCard(i: DeckCardInput): DeckCard {
     airport: i.airport,
     lat: l.lat!,
     lon: l.lon!,
+    ...(l.coordsPrecision === 'area' ? { coordsPrecision: 'area' as const } : {}),
   }
 }
 
