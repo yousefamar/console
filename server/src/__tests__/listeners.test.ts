@@ -353,6 +353,80 @@ describe('engine: restarts', () => {
   })
 })
 
+describe('engine: lifetimes (--once / --times / --expires)', () => {
+  it('--once fires exactly once and removes itself; --times N counts down and persists across a restart', async () => {
+    const s = fakeSession(OWNER.claudeSessionId)
+    const h = harness({ sessions: [s] })
+    h.engine.start()
+    const once = h.engine.add({ owner: OWNER, on: 'astera.release.landed', coalesce: 0, times: 1, action: { type: 'wake', prompt: 'It landed.' } })
+    const thrice = h.engine.add({ owner: OWNER, on: 'astera.release.landed', coalesce: 0, times: 3, action: { type: 'run', cmd: 'true' } })
+    expect(once.timesTotal).toBe(1)
+    h.bus.emit({ topic: 'astera.release.landed', source: 't', data: { sha: 'a' } })
+    await h.engine.flushPending(once); await h.engine.flushPending(thrice)
+    expect(s.sent.length).toBe(1)
+    expect(h.engine.get(once.id)).toBeUndefined()
+    expect(h.logs.some((m) => m.includes(`removed ${once.id}`) && m.includes('fired 1/1'))).toBe(true)
+    expect(s.sent).toHaveLength(1) // self-removal is silent for the owner
+    expect(h.engine.get(thrice.id)?.times).toBe(2)
+    h.engine.stop()
+    // restart: the remaining count survives
+    const h2 = harness({ sessions: [s] })
+    h2.engine.start()
+    const t2 = h2.engine.get(thrice.id)!
+    expect(t2.times).toBe(2)
+    for (let i = 0; i < 2; i++) { h2.bus.emit({ topic: 'astera.release.landed', source: 't', data: { i } }); await h2.engine.flushPending(t2) }
+    expect(h2.engine.get(thrice.id)).toBeUndefined()
+    h2.bus.emit({ topic: 'astera.release.landed', source: 't', data: {} })
+    expect(h2.engine.list().length).toBe(0)
+  })
+
+  it('a guard-skipped or dead-target batch does not consume a --once', async () => {
+    const shell: ShellRunner = async () => ({ code: 1, stdout: '', stderr: '', killed: false })
+    const h = harness({ shell })
+    h.engine.start()
+    const l = h.engine.add({ owner: OWNER, on: 'x.y', coalesce: 0, times: 1, guard: 'no', action: { type: 'wake', prompt: 'p' } })
+    h.bus.emit({ topic: 'x.y', source: 't', data: {} }); await h.engine.flushPending(l)
+    expect(l.times).toBe(1)
+    expect(h.engine.get(l.id)).toBeDefined()
+  })
+
+  it('--expires removes the listener at the deadline, fired or not, without acting on what it held', async () => {
+    const s = fakeSession(OWNER.claudeSessionId)
+    const h = harness({ sessions: [s] })
+    h.engine.start()
+    const l = h.engine.add({ owner: OWNER, on: 'x.y', coalesce: 3_600_000, expiresAt: clock + 600_000, action: { type: 'wake', prompt: 'p' } })
+    h.bus.emit({ topic: 'x.y', source: 't', data: {} })
+    expect(l.pending?.events.length).toBe(1)
+    clock += 600_001
+    // an event after expiry sweeps it before matching
+    h.bus.emit({ topic: 'x.y', source: 't', data: {} })
+    expect(h.engine.get(l.id)).toBeUndefined()
+    expect(s.sent).toEqual([])
+    expect(h.logs.some((m) => m.includes(`removed ${l.id}`) && m.includes('expired after 0 fire(s), 1 event(s) still pending'))).toBe(true)
+    // the timer path is closed too
+    await h.engine.flushPending(l)
+    expect(s.sent).toEqual([])
+    // and the periodic sweep / start() catch one with no traffic at all
+    const quiet = h.engine.add({ owner: OWNER, on: 'never.fires', expiresAt: clock + 1_000, action: { type: 'notify', title: 't' } })
+    clock += 2_000
+    expect(h.engine.sweepExpired().map((x) => x.id)).toEqual([quiet.id])
+    h.engine.stop()
+    const stale = h.engine.add({ owner: OWNER, on: 'never.fires', expiresAt: clock + 1_000, action: { type: 'notify', title: 't' } })
+    h.store.flush()
+    clock += 2_000
+    const h2 = harness({ sessions: [s] })
+    h2.engine.start()
+    expect(h2.engine.get(stale.id)).toBeUndefined()
+  })
+
+  it('validates lifetimes at add time', () => {
+    const h = harness()
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', times: 0, action: { type: 'notify', title: 't' } })).toThrow(/--times/)
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', times: 1.5, action: { type: 'notify', title: 't' } })).toThrow(/--times/)
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', expiresAt: clock - 1, action: { type: 'notify', title: 't' } })).toThrow(/future/)
+  })
+})
+
 describe('envelope + template', () => {
   it('template fills paths from the first event', () => {
     const ev: HubEvent = { id: 'e', topic: 'mail.received', at: 0, source: 'g', hops: 0, data: { subject: 'Invoice', n: 3, nested: { a: 1 } } }

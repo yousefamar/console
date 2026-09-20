@@ -21,6 +21,9 @@ interface Listener {
   dropOutside?: boolean
   maxPerHour: number
   action: { type: string } & Record<string, unknown>
+  times?: number
+  timesTotal?: number
+  expiresAt?: number
   pausedAt?: number
   pauseReason?: string
   disabledAt?: number
@@ -33,7 +36,7 @@ interface Listener {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ACTION_FLAGS = ['wake', 'run', 'post', 'notify', 'emit', 'card'] as const
 const ADD_FLAGS = ['session', 'on', 'where', 'guard', 'guard-file', 'coalesce', 'cooldown', 'hours', 'days', 'drop-outside', 'max-per-hour', 'name',
-  ...ACTION_FLAGS, 'as', 'method', 'header', 'body', 'data', 'to', 'assign', 'project']
+  'once', 'times', 'expires', ...ACTION_FLAGS, 'as', 'method', 'header', 'body', 'data', 'to', 'assign', 'project']
 
 export async function listen(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   switch (verb) {
@@ -109,6 +112,22 @@ function state(l: Listener): string {
   return 'active'
 }
 
+function lifetime(l: Listener): string {
+  const parts: string[] = []
+  if (l.times !== undefined) parts.push(l.timesTotal === 1 ? 'once' : `${l.times} of ${l.timesTotal ?? l.times} left`)
+  if (l.expiresAt) { const ms = l.expiresAt - Date.now(); parts.push(ms > 0 ? `expires in ${fmtDur(Math.round(ms / 1000) * 1000)}` : 'expired') }
+  return parts.join(', ')
+}
+
+/** `2h`, `30m`, `1d` or an ISO datetime → epoch ms. */
+function parseExpires(raw: string, flags: GlobalFlags): number | undefined {
+  const rel = /^\+?(\d+)\s*(s|m|h|d)$/.exec(raw.trim())
+  if (rel) return Date.now() + Number(rel[1]) * { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[rel[2] as 's' | 'm' | 'h' | 'd']
+  const t = Date.parse(raw)
+  if (Number.isNaN(t)) { exitWithError('USAGE', `--expires wants a duration (2h, 30m, 1d) or an ISO datetime (got "${raw}")`, flags); return undefined }
+  return t
+}
+
 async function listCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const bad = unknownFlags(opts, ['mine', 'session', 'topic'])
@@ -120,7 +139,8 @@ async function listCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const lines = listeners.map((l) => {
     const rule = `${l.on}${l.where.length ? ` where ${whereText(l)}` : ''}${l.guard ? ' [guard]' : ''}`
     const gates = [l.coalesceMs ? `coalesce ${fmtDur(l.coalesceMs)}` : '', l.cooldownMs ? `cooldown ${fmtDur(l.cooldownMs)}` : '', l.hours ?? '', l.days ?? ''].filter(Boolean).join(', ')
-    return `${l.id}  ${state(l).padEnd(11)} @${(l.owner.agentKey ?? l.ownerName ?? l.owner.claudeSessionId.slice(0, 8)).padEnd(28)} ${rule}\n      → ${describeAction(l.action)}${gates ? `  (${gates})` : ''}\n      matched ${l.stats.matched}, fired ${l.stats.fired}, guard-skipped ${l.stats.guardSkipped}; last fired ${fmtAgo(l.stats.lastFiredAt)}${l.stats.lastOutcome ? `; ${l.stats.lastOutcome}` : ''}${l.name ? `  "${l.name}"` : ''}`
+    const life = lifetime(l)
+    return `${l.id}  ${state(l).padEnd(11)} @${(l.owner.agentKey ?? l.ownerName ?? l.owner.claudeSessionId.slice(0, 8)).padEnd(28)} ${rule}${life ? `  [${life}]` : ''}\n      → ${describeAction(l.action)}${gates ? `  (${gates})` : ''}\n      matched ${l.stats.matched}, fired ${l.stats.fired}, guard-skipped ${l.stats.guardSkipped}; last fired ${fmtAgo(l.stats.lastFiredAt)}${l.stats.lastOutcome ? `; ${l.stats.lastOutcome}` : ''}${l.name ? `  "${l.name}"` : ''}`
   })
   process.stdout.write(lines.join('\n') + '\n')
 }
@@ -129,7 +149,7 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const bad = unknownFlags(opts, ADD_FLAGS)
   if (bad.length) { exitWithError('USAGE', `Unknown flag(s): ${bad.join(', ')}. See con help listen.`, flags); return }
-  const usage = 'Usage: con listen add --session <claudeSessionId> --on <topic|glob> [--where <path><op><value>]… [--guard "<cmd>"] [--coalesce 30s] [--cooldown 10m] [--hours 07:00-23:00] [--days Mon-Fri] [--drop-outside] [--max-per-hour N] [--name "…"] ACTION\n  ACTION = --wake "<prompt>" [--as <agentKey>] | --run "<cmd>" | --post <url> [--method M] [--header k:v]… | --notify "<title>" [--body "…"] | --emit <topic> [--data \'{…}\'] | --card <project> --body "<text>" [--to Backlog] [--assign key]'
+  const usage = 'Usage: con listen add --session <claudeSessionId> --on <topic|glob> [--where <path><op><value>]… [--guard "<cmd>"] [--coalesce 30s] [--cooldown 10m] [--hours 07:00-23:00] [--days Mon-Fri] [--drop-outside] [--max-per-hour N] [--once | --times N] [--expires 2h|<iso>] [--name "…"] ACTION\n  ACTION = --wake "<prompt>" [--as <agentKey>] | --run "<cmd>" | --post <url> [--method M] [--header k:v]… | --notify "<title>" [--body "…"] | --emit <topic> [--data \'{…}\'] | --card <project> --body "<text>" [--to Backlog] [--assign key]'
   const claudeSessionId = opts.session ?? process.env.CONSOLE_CLAUDE_SESSION_ID ?? ''
   if (!claudeSessionId) { exitWithError('USAGE', `--session is required (your claudeSessionId; \`ps -o args= -p $PPID\` shows --session-id).\n${usage}`, flags); return }
   if (claudeSessionId !== 'al' && !UUID_RE.test(claudeSessionId)) { exitWithError('USAGE', `--session must be a claudeSessionId (UUID) or "al". Got: ${claudeSessionId}`, flags); return }
@@ -166,6 +186,11 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const coalesce = parseDuration(opts.coalesce, 'coalesce', flags)
   const cooldown = parseDuration(opts.cooldown, 'cooldown', flags)
   if ((opts.coalesce && coalesce === undefined) || (opts.cooldown && cooldown === undefined)) return
+  if (opts.once !== undefined && opts.times !== undefined) { exitWithError('USAGE', '--once and --times are the same knob; pass one', flags); return }
+  const times = opts.once === 'true' ? 1 : opts.times !== undefined ? Number(opts.times) : undefined
+  if (times !== undefined && (!Number.isInteger(times) || times < 1)) { exitWithError('USAGE', '--times wants a whole number ≥ 1', flags); return }
+  const expiresAt = opts.expires ? parseExpires(opts.expires, flags) : undefined
+  if (opts.expires && expiresAt === undefined) return
 
   const body = {
     owner: { claudeSessionId, ...(process.env.CONSOLE_AGENT_KEY ? { agentKey: process.env.CONSOLE_AGENT_KEY } : {}), cwd: process.cwd() },
@@ -179,11 +204,14 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
     ...(opts['drop-outside'] === 'true' ? { dropOutside: true } : {}),
     ...(opts['max-per-hour'] ? { maxPerHour: Number(opts['max-per-hour']) } : {}),
     ...(opts.name ? { name: opts.name } : {}),
+    ...(times !== undefined ? { times } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     action,
   }
   const l = await hubFetch<Listener>('/listeners', { method: 'POST', body })
   if (isJsonMode(flags)) { output(l, flags); return }
-  process.stdout.write(`${l.id}  on ${l.on}${l.where.length ? ` where ${whereText(l)}` : ''} → ${describeAction(l.action)}\n`)
+  const life = lifetime(l)
+  process.stdout.write(`${l.id}  on ${l.on}${l.where.length ? ` where ${whereText(l)}` : ''} → ${describeAction(l.action)}${life ? `  [${life}]` : ''}\n`)
   process.stdout.write(`coalesce ${fmtDur(l.coalesceMs)}, cooldown ${fmtDur(l.cooldownMs)}, max ${l.maxPerHour}/h${l.hours ? `, ${l.hours}` : ''}${l.days ? ` ${l.days}` : ''}. Try it: con listen test ${l.id}\n`)
 }
 

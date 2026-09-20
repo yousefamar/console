@@ -357,9 +357,12 @@ Commands:
 
 Topics are dotted and lower-case (mail.received, chat.message, geo.enter,
 webhook.received, board.card.moved, cal.event.starting, hub.started, …). Custom
-topics register themselves on first emit — e.g. a release script running
-\`con event emit astera.release --data '{"sha":"…"}'\` replaces a cron that
-tails its log. Events carry a summary + a \`ref\` (the command that fetches the
+topics register themselves on first emit and are named <project>.<noun>.<verb>
+— e.g. a release script running \`con event emit astera.release.landed --data
+'{"sha":"…"}'\` replaces a cron that tails its log. EMIT WHENEVER ANOTHER AGENT
+MAY BE WAITING ON YOUR RESULT (a build landed, a corpus refreshed, a card's
+work done): the waiter holds a \`con listen add --once --on <topic>\` and is
+woken the moment you emit, instead of polling you. Events carry a summary + a \`ref\` (the command that fetches the
 full thing), never the full payload. Log: ~/.config/console/events/<day>.jsonl,
 90 days. \`location.fix\` is ring-buffered only. Same (topic, --key) within
 24 h is dropped as a duplicate.
@@ -393,6 +396,9 @@ Gates:
   --cooldown 10m              Minimum gap between actions; events inside it are held, not dropped
   --hours 07:00-23:00 --days Mon-Fri [--drop-outside]   Active window (Europe/London); outside it events are held to the opening
   --max-per-hour N            Ceiling; exceeding it PAUSES the listener + pushes you (default 12 for --wake, 60 otherwise)
+Lifetime (a one-off wait must not live forever):
+  --once | --times N          Self-remove after 1 / N fires (a guard-skip or dead target does not count)
+  --expires 2h | <iso>        Self-remove at the deadline whether or not it fired (pending events are dropped, logged)
 Actions (exactly one):
   --wake "<prompt>" [--as <agentKey>]   Inject an [EVENT] envelope + your prompt into your session (or @agentKey's). The only rung that costs tokens.
   --run "<cmd>"                         bash -c in your cwd, batch JSON on stdin — a software listener, no LLM
@@ -404,6 +410,12 @@ Actions (exactly one):
 
 Ownership works like cron: --wake needs your session live (3 skips warn, 10 auto-disable); run/post/notify/emit/card
 keep working after you end. A ticket-fork's listeners die with the card — register long-lived rules on the parent.
+
+WAITING ON ANOTHER AGENT goes through events, never a polling cron or con agent send. The waiter registers a
+one-off; the doer emits when done. Topics are <project>.<noun>.<verb>, e.g. astera.release.landed,
+console.card.hazy-fawn.done, deen.corpus.refreshed. If someone may be waiting on your result, emit it.
+  waiter:  con listen add --once --expires 6h --on astera.release.landed --wake "Release landed — verify prod and close the card."
+  doer:    con event emit astera.release.landed --data '{"sha":"abc1234","cards":["^sly-owl"]}' --key abc1234
 
 Examples:
   con listen add --on chat.message --where 'data.room=!abc:beeper.local' --where data.isSelf=false \

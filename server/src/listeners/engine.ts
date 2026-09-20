@@ -15,7 +15,7 @@ import { ListenerStore } from './store.js'
 import { inWindow, nextWindowStart, parseDays, parseHours, parseWhere, whereMatches, pathGet, formatWhere } from './matcher.js'
 import { runShell, type ShellRunner } from './shell.js'
 import {
-  DEFAULT_COALESCE_WAKE_MS, DEFAULT_MAX_PER_HOUR, DEFAULT_MAX_PER_HOUR_WAKE, GUARD_OUTPUT_CAP, GUARD_TIMEOUT_MS,
+  DEFAULT_COALESCE_WAKE_MS, DEFAULT_MAX_PER_HOUR, DEFAULT_MAX_PER_HOUR_WAKE, EXPIRY_SWEEP_MS, GUARD_OUTPUT_CAP, GUARD_TIMEOUT_MS,
   MAX_BATCH, MAX_OUTCOMES, MAX_SKIPS_BEFORE_DISABLE, OVERDUE_PENDING_MAX_MS, RUN_TIMEOUT_MS, SKIPS_BEFORE_WARN,
   type Listener, type ListenerAction, type ListenerOwner, type Outcome, type WhereClause,
 } from './types.js'
@@ -46,6 +46,10 @@ export interface AddListenerInput {
   dropOutside?: boolean
   maxPerHour?: number
   name?: string
+  /** Self-remove after this many fires (`--once` = 1). */
+  times?: number
+  /** Self-remove at this epoch ms regardless. */
+  expiresAt?: number
   action: ListenerAction
 }
 
@@ -128,6 +132,7 @@ export function describeAction(a: ListenerAction): string {
 
 export class ListenerEngine {
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
+  private sweepTimer: ReturnType<typeof setInterval> | null = null
   private unsubscribe: (() => void) | null = null
   private readonly shell: ShellRunner
   private readonly post: NonNullable<ListenerEngineCtx['postUrl']>
@@ -166,16 +171,34 @@ export class ListenerEngine {
         }
       }
     }
+    this.sweepExpired()
     this.store.persist()
     this.ctx.log(`[listeners] ${this.store.listeners.filter((l) => !l.disabledAt && !l.pausedAt).length} active of ${this.store.listeners.length}`)
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => this.sweepExpired(), EXPIRY_SWEEP_MS)
+      this.sweepTimer.unref?.()
+    }
   }
 
   stop(): void {
     this.unsubscribe?.()
     this.unsubscribe = null
+    if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = null }
     for (const t of this.timers.values()) clearTimeout(t)
     this.timers.clear()
     this.store.flush()
+  }
+
+  /** Remove every listener whose `expiresAt` has passed. Also run per event so an
+   *  expired one never fires between sweeps. Returns what went. */
+  sweepExpired(): Listener[] {
+    const now = this.now()
+    const gone = this.store.listeners.filter((l) => l.expiresAt !== undefined && l.expiresAt <= now)
+    for (const l of gone) {
+      this.record(l, 'expired', l.pending?.events ?? [], `expired ${fmtWhen(l.expiresAt!)} after ${l.stats.fired} fire(s)`)
+      this.remove(l.id, { actor: 'hub', reason: `expired after ${l.stats.fired} fire(s)${l.pending?.events.length ? `, ${l.pending.events.length} event(s) still pending` : ''}` })
+    }
+    return gone
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────
@@ -206,6 +229,8 @@ export class ListenerEngine {
     if (input.days) parseDays(input.days)
     const action = validateAction(input.action)
     const isWake = action.type === 'wake'
+    if (input.times !== undefined && (!Number.isInteger(input.times) || input.times < 1)) throw new Error('--times must be a whole number ≥ 1 (--once = 1)')
+    if (input.expiresAt !== undefined && !(input.expiresAt > this.now())) throw new Error('--expires must be in the future')
     const l: Listener = {
       id: this.store.mintId(),
       ...(input.name ? { name: input.name } : {}),
@@ -221,6 +246,8 @@ export class ListenerEngine {
       ...(input.dropOutside ? { dropOutside: true } : {}),
       maxPerHour: input.maxPerHour ?? (isWake ? DEFAULT_MAX_PER_HOUR_WAKE : DEFAULT_MAX_PER_HOUR),
       action,
+      ...(input.times !== undefined ? { times: input.times, timesTotal: input.times } : {}),
+      ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
       consecutiveSkips: 0,
       stats: { matched: 0, fired: 0, guardSkipped: 0 },
       firedAt: [],
@@ -228,7 +255,7 @@ export class ListenerEngine {
     }
     this.store.listeners.push(l)
     this.store.persistSync()
-    this.ctx.log(`[listeners] added ${l.id} on ${l.on}${where.length ? ` where ${where.map(formatWhere).join(' && ')}` : ''} → ${describeAction(action)} (owner ${l.owner.agentKey ?? l.owner.claudeSessionId.slice(0, 8)})`)
+    this.ctx.log(`[listeners] added ${l.id} on ${l.on}${where.length ? ` where ${where.map(formatWhere).join(' && ')}` : ''} → ${describeAction(action)} (owner ${l.owner.agentKey ?? l.owner.claudeSessionId.slice(0, 8)}${l.times ? `, ${l.times === 1 ? 'once' : `${l.times}×`}` : ''}${l.expiresAt ? `, expires ${fmtWhen(l.expiresAt)}` : ''})`)
     return l
   }
 
@@ -283,6 +310,7 @@ export class ListenerEngine {
 
   private onEvent(ev: HubEvent): void {
     const now = this.now()
+    if (this.store.listeners.some((l) => l.expiresAt !== undefined && l.expiresAt <= now)) this.sweepExpired()
     for (const l of this.store.listeners) {
       if (l.disabledAt) continue
       if (ev.source === `listener:${l.id}`) continue
@@ -328,6 +356,7 @@ export class ListenerEngine {
   async flushPending(l: Listener): Promise<void> {
     if (!l.pending || l.disabledAt || l.pausedAt) return
     const now = this.now()
+    if (l.expiresAt !== undefined && l.expiresAt <= now) { this.sweepExpired(); return }
     const due = this.dueAt(l, now - l.coalesceMs)
     if (due > now + 500) { l.pending.dueAt = due; this.arm(l); return }
     l.firedAt = l.firedAt.filter((t) => now - t < ONE_HOUR)
@@ -369,7 +398,14 @@ export class ListenerEngine {
       l.firedAt.push(l.stats.lastFiredAt)
       l.consecutiveSkips = 0
       this.ctx.bus.emit({ topic: 'listener.fired', source: 'listeners', data: { listenerId: l.id, action: l.action.type, events: ids } })
-      return this.finish(l, outcome, 'fired', r.detail)
+      const done = this.finish(l, outcome, 'fired', r.detail)
+      if (l.times !== undefined) {
+        l.times--
+        if (l.times <= 0) {
+          this.remove(l.id, { actor: 'hub', reason: `fired ${l.timesTotal ?? 1}/${l.timesTotal ?? 1} — self-removed` })
+        }
+      }
+      return done
     } catch (e) {
       return this.finish(l, outcome, 'error', (e as Error).message, true)
     }

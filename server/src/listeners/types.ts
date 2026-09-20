@@ -22,6 +22,7 @@ export type ListenerAction =
   | { type: 'card'; project: string; text: string; column?: string; assign?: string }
 
 export type OutcomeStage =
+  | 'expired'        // expiresAt passed before it fired (or finished firing) — removed
   | 'matched'        // passed where; batched (pending)
   | 'firing'         // batch taken off pending, guard/action in progress — a restart here re-runs it
   | 'fired'
@@ -65,6 +66,12 @@ export interface Listener {
   dropOutside?: boolean
   maxPerHour: number
   action: ListenerAction
+  /** Fires left before the listener removes itself (`--once` = 1). Absent = unlimited. */
+  times?: number
+  /** What `times` started at, for the removal log ("fired 3/3"). */
+  timesTotal?: number
+  /** Self-remove at this epoch ms whether or not it ever fired — a one-off wait must not live forever. */
+  expiresAt?: number
   pausedAt?: number
   pauseReason?: string
   disabledAt?: number
@@ -96,3 +103,4 @@ export const DEFAULT_MAX_PER_HOUR = 60
 export const MAX_SKIPS_BEFORE_DISABLE = 10
 export const SKIPS_BEFORE_WARN = 3
 export const OVERDUE_PENDING_MAX_MS = 24 * 60 * 60 * 1000
+export const EXPIRY_SWEEP_MS = 60_000
