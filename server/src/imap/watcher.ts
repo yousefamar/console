@@ -143,6 +143,7 @@ interface Live {
   status: ImapAccountStatus
   catchingUp: Promise<void> | null
   rerun: boolean
+  removed: boolean
 }
 
 export class ImapIdleWatcher {
@@ -153,12 +154,16 @@ export class ImapIdleWatcher {
 
   constructor(private readonly ctx: ImapWatcherCtx) {
     this.cursors = this.loadCursors()
-    for (const a of ctx.accounts) {
-      this.live.set(a.name, {
-        client: null, catchingUp: null, rerun: false,
-        status: { address: a.user, connected: false, mode: null, since: null, cursor: this.cursors[a.name] ?? null, lastError: null, lastEventAt: null, emitted: 0, reconnects: 0 },
-      })
+    for (const a of ctx.accounts) this.register(a)
+  }
+
+  private register(a: ImapAccount): Live {
+    const l: Live = {
+      client: null, catchingUp: null, rerun: false, removed: false,
+      status: { address: a.user, connected: false, mode: null, since: null, cursor: this.cursors[a.name] ?? null, lastError: null, lastEventAt: null, emitted: 0, reconnects: 0 },
     }
+    this.live.set(a.name, l)
+    return l
   }
 
   private now(): number { return this.ctx.now ? this.ctx.now() : Date.now() }
@@ -168,6 +173,28 @@ export class ImapIdleWatcher {
     this.stopped = false
     if (!this.ctx.accounts.length) { this.ctx.log('[imap] no *-mail accounts configured — adapter idle'); return }
     this.loops = this.ctx.accounts.map((a) => this.runAccount(a))
+  }
+
+  has(name: string): boolean { return this.live.has(name) && !this.live.get(name)!.removed }
+
+  /** Start watching a mailbox provisioned after boot. No-op if the name is already live. */
+  addAccount(a: ImapAccount): void {
+    if (this.has(a.name)) return
+    this.ctx.accounts.push(a)
+    this.register(a)
+    if (!this.stopped) this.loops.push(this.runAccount(a))
+  }
+
+  /** Close a mailbox's connection and let its loop exit; the cursor is dropped so a re-add baselines afresh. */
+  removeAccount(name: string): void {
+    const l = this.live.get(name)
+    if (!l) return
+    l.removed = true
+    try { l.client?.close() } catch { /* already gone */ }
+    this.live.delete(name)
+    const i = this.ctx.accounts.findIndex((a) => a.name === name)
+    if (i >= 0) this.ctx.accounts.splice(i, 1)
+    if (this.cursors[name]) { delete this.cursors[name]; this.saveCursors() }
   }
 
   /** Closes every connection; resolves once each account loop has exited. */
@@ -199,7 +226,7 @@ export class ImapIdleWatcher {
     const l = this.live.get(account.name)!
     const backoff = this.ctx.backoff ?? DEFAULT_BACKOFF
     let wait = backoff.minMs
-    while (!this.stopped) {
+    while (!this.stopped && !l.removed) {
       const connectedAt = this.now()
       let closed!: () => void
       const gone = new Promise<void>((resolve) => { closed = resolve })
@@ -235,7 +262,7 @@ export class ImapIdleWatcher {
         l.client = null
         try { client.close() } catch { /* already closed */ }
       }
-      if (this.stopped) break
+      if (this.stopped || l.removed) break
       if (this.now() - connectedAt > STABLE_MS) wait = backoff.minMs
       l.status.reconnects++
       this.ctx.log(`[imap] ${account.name}: disconnected${l.status.lastError ? ` (${l.status.lastError})` : ''} — reconnecting in ${Math.round(wait / 1000)} s`)
@@ -336,6 +363,10 @@ export class ImapIdleWatcher {
     this.cursors[name] = cursor
     const l = this.live.get(name)
     if (l) l.status.cursor = cursor
+    this.saveCursors()
+  }
+
+  private saveCursors(): void {
     mkdirSync(dirname(this.ctx.cursorFile), { recursive: true })
     const tmp = `${this.ctx.cursorFile}.tmp`
     writeFileSync(tmp, JSON.stringify(this.cursors, null, 2))

@@ -60,6 +60,10 @@ import { handleEventRoutes, type EventRouteCtx } from './routes/events.js'
 import { ListenerEngine } from './listeners/engine.js'
 import { ListenerStore } from './listeners/store.js'
 import { handleListenerRoutes } from './routes/listeners.js'
+import { handleAgentInboxRoutes, type AgentInboxRouteCtx } from './routes/agent-inbox.js'
+import { MxrouteClient, loadMxrouteConfig } from './mxroute/client.js'
+import { randomBytes } from 'node:crypto'
+import { describeWake, wakeOrQueue } from './agents/wake.js'
 import { handleCronRoutes } from './routes/cron.js'
 import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, pushCapped, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
@@ -1674,6 +1678,35 @@ const imapWatcher = new ImapIdleWatcher({
   emit: (input) => eventBus.emit(input),
   log,
 })
+// Agent mailbox provisioning (`con agent inbox …`, ^red-bear): mxroute API →
+// ~/.config/<name>-mail/.env → IMAP login check → watcher hot-add → SKILL.md
+// in the agent's cwd → mail.received listener → onboarding wake.
+const mxrouteEnvFile = join(configDir, 'mxroute.env')
+const agentInboxCtx: AgentInboxRouteCtx = {
+  mxrouteEnvFile,
+  deps: () => {
+    const cfg = loadMxrouteConfig(mxrouteEnvFile)
+    return {
+      mxroute: cfg ? new MxrouteClient(cfg) : null,
+      configHome: join(homedir(), '.config'),
+      vaultProjects: join(homedir(), 'sync', 'brain', 'root', 'projects'),
+      imapHost: cfg?.server ?? 'blizzard.mxrouting.net',
+      watcher: imapWatcher,
+      liveSession: (key) => liveSessionForRole(agentCtx, key),
+      addListener: (input) => ({ id: listenerEngine.add(input).id }),
+      listenersFor: (name) => listenerEngine.list({ topic: 'mail.received' }).filter((l) => l.where.some((w) => w.path === 'data.account' && w.op === '=' && w.value === name)),
+      removeListener: (id) => { listenerEngine.remove(id, { actor: 'inbox', reason: 'mailbox removed' }) },
+      wake: (session, content) => describeWake(wakeOrQueue(session as Session, content, broadcast)),
+      verifyImap: async (a) => {
+        const c = new ImapFlow({ host: a.host, port: a.port, secure: true, auth: { user: a.user, pass: a.pass }, logger: false })
+        await c.connect()
+        try { await c.mailboxOpen('INBOX', { readOnly: true }) } finally { await c.logout().catch(() => c.close()) }
+      },
+      random: (n) => new Uint8Array(randomBytes(n)),
+      log,
+    }
+  },
+}
 const locationCtx: LocationRouteCtx = {
   store: geofenceStore,
   watcher: locationWatcher,
@@ -1807,6 +1840,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   // from the JSONL ledger + live forks, bucketed by context mode. `?days=N`
   // narrows the ended set (default all).
   if (handleRecallRoutes(req, res, path, url, { recall: recallIndex, qlog: recallQlog, getSessions: () => sessions })) return
+  if (handleAgentInboxRoutes(req, res, path, url, agentInboxCtx, readBody)) return
 
   if (path === '/agents/fork-cost' && req.method === 'GET') {
     const days = Number(url.searchParams.get('days') ?? '0')

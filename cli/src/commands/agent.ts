@@ -1,6 +1,6 @@
-import { hubFetch } from '../client.js'
+import { hubFetch, HubError } from '../client.js'
 import { output, exitWithError, info, outputLine, type GlobalFlags } from '../output.js'
-import { parseFlags } from './util.js'
+import { parseFlags, unknownFlags } from './util.js'
 
 export async function agent(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   switch (verb) {
@@ -25,6 +25,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'fork-cost': return agentForkCost(args, flags)
     case 'search': return agentSearch(args, flags)
     case 'read': return agentRead(args, flags)
+    case 'inbox': return agentInbox(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -705,4 +706,89 @@ async function agentWait(args: string[], flags: GlobalFlags): Promise<void> {
       return 'stop'
     },
   })
+}
+
+// --------------------------------------------------------------------------
+// agent inbox — an agent's own email address (mxroute mailbox + al-mail.py
+// config + IDLE watch + SKILL.md + mail.received listener), see
+// server/src/agents/inbox.ts.
+// --------------------------------------------------------------------------
+
+interface InboxCreateResult {
+  name: string; address: string; created: boolean; envFile: string
+  imap: { ok: boolean; attempts: number; error?: string }
+  watcher: string; skillFile: string | null; listener: { id: string } | null; wake: string | null; warnings: string[]
+}
+interface InboxListing { name: string; address: string; local: boolean; watched: boolean; listeners: string[]; mxroute: { quota: number; usage: number; limit: number; sent: number; suspended: boolean } | null }
+
+const INBOX_CREATE_FLAGS = ['agent', 'project', 'from-name', 'signature', 'domain', 'quota', 'password', 'quiet']
+
+/** The hub answers inbox errors with `{success:false, error:{code,message}}` — surface the message, not the JSON. */
+function inboxFail(err: unknown, flags: GlobalFlags): never {
+  if (err instanceof HubError) {
+    let code = err.code
+    let message = err.message
+    try { const parsed = JSON.parse(err.message) as { error?: { code?: string; message?: string } }; if (parsed.error?.message) { message = parsed.error.message; code = parsed.error.code ?? code } } catch { /* plain text */ }
+    exitWithError(code, message, flags)
+  }
+  throw err
+}
+
+async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
+  const [verb, ...rest] = args
+  const usage = 'Usage: con agent inbox create <name> [--agent <agentKey> | --project <slug>] [--from-name "…"] [--signature "…\\n…"] [--domain amar.io] [--quota MB] [--password "…"] [--quiet]\n       con agent inbox list\n       con agent inbox remove <name> [--keep-mailbox]'
+  if (verb === 'list') {
+    const bad = unknownFlags(parseFlags(rest), [])
+    if (bad.length) exitWithError('USAGE', `Unknown flag(s) --${bad.join(', --')}. ${usage}`, flags)
+    let r: { success: boolean; data: { domain: string; inboxes: InboxListing[]; mxrouteError?: string } }
+    try { r = await hubFetch('/agents/inbox') } catch (err) { inboxFail(err, flags) }
+    if (flags.json) { output(r.data, flags); return }
+    if (r.data.mxrouteError) info(`mxroute: ${r.data.mxrouteError} (showing local configs only)`)
+    if (!r.data.inboxes.length) { outputLine(`no agent mailboxes on ${r.data.domain}`); return }
+    for (const i of r.data.inboxes) {
+      const mx = i.mxroute ? `${i.mxroute.usage}/${i.mxroute.quota || '∞'} MB, ${i.mxroute.sent}/${i.mxroute.limit} sent today${i.mxroute.suspended ? ', SUSPENDED' : ''}` : 'not on mxroute'
+      const local = i.local ? `~/.config/${i.name}-mail` : 'no local config'
+      outputLine(`${i.address.padEnd(28)} ${local.padEnd(26)} ${i.watched ? 'IDLE-watched' : 'not watched'}${i.listeners.length ? `, wakes ${i.listeners.join(',')}` : ''}  [${mx}]`)
+    }
+    return
+  }
+  if (verb === 'create') {
+    const opts = parseFlags(rest)
+    const bad = unknownFlags(opts, INBOX_CREATE_FLAGS)
+    if (bad.length) exitWithError('USAGE', `Unknown flag(s) --${bad.join(', --')}. ${usage}`, flags)
+    const name = positionals(rest, opts)[0]
+    if (!name) exitWithError('USAGE', usage, flags)
+    if (opts.quota !== undefined && !/^\d+$/.test(opts.quota)) exitWithError('USAGE', `--quota must be a whole number of MB, got ${opts.quota}`, flags)
+    const body = {
+      name, agentKey: opts.agent, project: opts.project, fromName: opts['from-name'], signature: opts.signature, domain: opts.domain,
+      quotaMb: opts.quota !== undefined ? Number(opts.quota) : undefined, password: opts.password, quiet: opts.quiet === 'true',
+    }
+    let r: { success: boolean; data: InboxCreateResult }
+    try { r = await hubFetch('/agents/inbox', { method: 'POST', body, timeout: 120_000 }) } catch (err) { inboxFail(err, flags) }
+    const d = r.data
+    if (flags.json) { output(d, flags); return }
+    outputLine(`${d.address}  ${d.created ? 'created on mxroute' : 'adopted (existing mailbox)'}`)
+    outputLine(`  config    ${d.envFile}`)
+    outputLine(`  imap      ${d.imap.ok ? `login OK (attempt ${d.imap.attempts})` : `FAILED after ${d.imap.attempts} attempts: ${d.imap.error}`}`)
+    outputLine(`  watcher   ${d.watcher === 'added' ? 'IDLE watch started' : 'already watching'}`)
+    outputLine(`  skill     ${d.skillFile ?? '(none — no --agent/--project)'}`)
+    outputLine(`  listener  ${d.listener ? `${d.listener.id} (mail.received, data.account=${d.name})` : '(none)'}`)
+    outputLine(`  wake      ${d.wake ?? '(none)'}`)
+    for (const w of d.warnings) info(`warning: ${w}`)
+    return
+  }
+  if (verb === 'remove') {
+    const opts = parseFlags(rest)
+    const bad = unknownFlags(opts, ['keep-mailbox'])
+    if (bad.length) exitWithError('USAGE', `Unknown flag(s) --${bad.join(', --')}. ${usage}`, flags)
+    const name = positionals(rest, opts)[0]
+    if (!name) exitWithError('USAGE', usage, flags)
+    let r: { success: boolean; data: { address: string; mxroute: string; envRemoved: boolean; listenersRemoved: string[]; skillsRemoved: string[] } }
+    try { r = await hubFetch(`/agents/inbox/${encodeURIComponent(name)}`, { method: 'DELETE', params: { keep: opts['keep-mailbox'] === 'true' ? '1' : undefined }, timeout: 60_000 }) } catch (err) { inboxFail(err, flags) }
+    if (flags.json) { output(r.data, flags); return }
+    const d = r.data
+    outputLine(`${d.address}  mxroute mailbox ${d.mxroute}; local config ${d.envRemoved ? 'removed' : 'was absent'}; listeners removed: ${d.listenersRemoved.join(', ') || 'none'}; skills removed: ${d.skillsRemoved.join(', ') || 'none'}`)
+    return
+  }
+  exitWithError('USAGE', usage, flags)
 }
