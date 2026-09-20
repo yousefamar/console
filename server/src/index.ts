@@ -83,6 +83,9 @@ import { handleLocationRoutes, type LocationRouteCtx } from './routes/location.j
 import { GeofenceStore } from './location/store.js'
 import { LocationWatcher } from './location/watcher.js'
 import { makeRecorderLastFetcher } from './location/recorder.js'
+import { makeNominatimReverse } from './location/revgeo.js'
+import { parseFrontmatter } from './al/users.js'
+import { listAllEvents } from './routes/calendar.js'
 import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
 import { RingReminders } from './ring/remind.js'
@@ -1591,6 +1594,26 @@ const locationCtx: LocationRouteCtx = {
   watcher: locationWatcher,
   agentLive: webhookCtx.agentLive,
   actorOf: (req) => (req.headers['x-console-agent'] as string | undefined)?.trim() || undefined,
+  // Disclosure policy = AL's users/<slug>.md frontmatter, applied hub-side.
+  userFrontmatter: (slug) => {
+    const file = join(WORKSPACE_DIR, 'users', `${slug}.md`)
+    if (!existsSync(file)) return null
+    try { return parseFrontmatter(readFileSync(file, 'utf8'), file) } catch { return null }
+  },
+  revgeo: makeNominatimReverse(join(configDir, 'revgeo-cache.json')),
+  blockedTerms: alWa.blockedTerms,
+  lateStateFile: join(configDir, 'location-late-alerts.json'),
+  geocode: async (q, near) => {
+    const hits = await googleMapsClient.searchText(q, { lat: near.lat, lon: near.lon, radiusMeters: 50_000 })
+    const h = hits[0]
+    return h ? { name: h.name, address: h.address, lat: h.lat, lon: h.lon } : null
+  },
+  route: async (origin, destination, mode) => {
+    const routes = await googleMapsClient.computeRoutes({ origin, destination, travelMode: mode, alternatives: false, departureTime: new Date().toISOString() })
+    const r = routes[0]
+    return r ? { durationSec: r.durationSec, distanceMeters: r.distanceMeters, description: r.description } : null
+  },
+  listEvents: async (fromIso, toIso) => (await listAllEvents(calendarClient, authStore, fromIso, toIso)) as import('./location/late.js').CalEvent[],
 }
 const certCandidates = (() => {
   try {

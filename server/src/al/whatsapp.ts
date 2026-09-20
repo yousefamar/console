@@ -461,6 +461,11 @@ function loadBlockedTerms(): string[] {
 
 const BLOCKED_TERMS = loadBlockedTerms()
 
+/** The censor's terms, for other guards that must never leak his address (location disclosure). */
+export function blockedTerms(): string[] {
+  return BLOCKED_TERMS
+}
+
 function normalizeForMatch(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }

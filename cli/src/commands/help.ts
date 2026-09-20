@@ -26,7 +26,7 @@ Services:
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
   webhook      Inbound project webhooks — setup, status, list, show, test, redeliver
-  location     Where Yousef is (OwnTracks) + geofences — now, history, geofence, events, test
+  location     Where Yousef is (OwnTracks) + geofences — now, for, eta, late-check, geofence, events
 
 System:
   auth         Manage accounts — login, logout, status
@@ -311,6 +311,23 @@ Commands:
   events [--limit N] [--fence id]     Transitions, newest first, with who was notified
   test <fence-id> [--event enter|leave]
                                       Fire a synthetic transition through the real wake/POST pipeline
+  for <user-slug>                     What THAT person may be told about where he is. The hub applies
+                                      users/<slug>.md in AL's workspace (trust: owner → exact;
+                                      location: exact|area|city|country|none; legacy allow: location
+                                      → exact; nothing → REFUSE) and prints the sentence to relay.
+                                      Inside a private fence exact/area collapse to "At home (Reading)".
+                                      THE ONLY way to answer a third party — never relay 'con location'.
+  eta "<place>" [--mode DRIVE|TRANSIT|WALK|BICYCLE]
+                                      Traffic-aware ETA from the current fix (Google), arrival time
+  late-check [--threshold 10] [--window 180] [--mode DRIVE] [--guard]
+                                      Upcoming events with a physical venue he will reach more than
+                                      --threshold min after they start: geocoded venue, ETA, minutes
+                                      late, attendees. One report per event (re-reports only when
+                                      lateness grows by another threshold; state in
+                                      ~/.config/console/location-late-alerts.json). Skips virtual/home
+                                      venues, declined, cancelled, all-day; says nothing on a fix
+                                      older than 30 min. --guard = cron guard semantics: report + exit
+                                      0 only when late, else silent exit 1 (zero agent tokens).
 
 How it works: the hub polls the OwnTracks Recorder (maps.amar.io) every 60 s
 for the latest fix, runs it through every fence with hysteresis (leave needs
@@ -320,8 +337,8 @@ transition appends to ~/.config/console/geofence-events.jsonl, wakes each
 POSTs the event JSON to the fence's url (Bearer url-token) if set. A new fence
 is initialised silently from the current fix — events are transitions only.
 
-The fix is owner-grade data. Relaying it to anyone else goes through AL's
-disclosure policy (~/exec/where.py --for <user>), never straight from here.
+The fix is owner-grade data. Relaying it to anyone else goes through
+'con location for <user>', never straight from 'con location'.
 `.trim(),
 
   webhook: `

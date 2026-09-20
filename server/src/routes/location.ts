@@ -9,22 +9,52 @@
 //   POST   /location/geofences/<id>/test  {event?: enter|leave} — synthetic transition
 //                                         through the real wake/POST pipeline
 //   GET    /location/events[?limit&fence] transitions, newest first
+//   GET    /location/for/<user-slug>      the disclosure that person may hear
+//                                         {level, why, say|null, note} — policy
+//                                         from users/<slug>.md, applied HERE
+//   GET    /location/eta?to=<place>[&mode] traffic-aware ETA from the current fix
+//   GET    /location/late-check[?threshold&window&mode]
+//                                         upcoming placed events he will be late
+//                                         for; de-duped per event (state file)
 //
 // The raw Recorder proxy (`/owntracks/*`) stays for history browsing; this is
 // the interpreted layer agents talk to.
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { slugify, type FenceTrigger, type Geofence } from '../location/geofence.js'
 import type { GeofenceStore } from '../location/store.js'
 import type { LocationWatcher } from '../location/watcher.js'
+import { disclose, levelFor, type ReverseGeocoder } from '../location/disclose.js'
+import { lateCheck, type LateCtx, type LateState, type TravelMode } from '../location/late.js'
 
-export interface LocationRouteCtx {
+export interface LocationRouteCtx extends LateCtx {
   store: GeofenceStore
   watcher: LocationWatcher
   /** Is the session with this agentKey live right now? */
   agentLive: (agentKey: string) => boolean
   /** Actor from X-Console-Agent, for createdBy. */
   actorOf: (req: IncomingMessage) => string | undefined
+  /** Parsed frontmatter of AL's users/<slug>.md, null when no such user. */
+  userFrontmatter: (slug: string) => Record<string, string | string[]> | null
+  revgeo: ReverseGeocoder
+  /** The WhatsApp send censor's terms (his address) — the home backstop. */
+  blockedTerms: () => string[]
+  /** Where late-check keeps its per-event de-dup state. */
+  lateStateFile: string
+}
+
+const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i
+const MODES = new Set<TravelMode>(['DRIVE', 'WALK', 'BICYCLE', 'TRANSIT'])
+
+function readLateState(file: string): LateState {
+  try { return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as LateState) : {} } catch { return {} }
+}
+
+function writeLateState(file: string, state: LateState): void {
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, JSON.stringify(state))
+  renameSync(tmp, file)
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
@@ -152,6 +182,51 @@ export function handleLocationRoutes(
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50))
     send(res, 200, { events: ctx.store.events({ limit, fenceId: url.searchParams.get('fence') }) })
     return true
+  }
+
+  const forMatch = /^\/location\/for\/([^/]+)$/.exec(path)
+  if (forMatch && req.method === 'GET') {
+    return run(async () => {
+      const slug = decodeURIComponent(forMatch[1]!)
+      if (!SLUG_RE.test(slug)) return send(res, 400, { error: 'bad user slug' })
+      if (!ctx.watcher.current().fix) await ctx.watcher.tick()
+      const policy = levelFor(ctx.userFrontmatter(slug))
+      const d = await disclose(policy, ctx.watcher.current(), ctx.revgeo, ctx.blockedTerms())
+      send(res, 200, { user: slug, ...d })
+    })
+  }
+
+  if (path === '/location/eta' && req.method === 'GET') {
+    return run(async () => {
+      const to = url.searchParams.get('to')?.trim()
+      if (!to) return send(res, 400, { error: 'to (place) required' })
+      const modeRaw = (url.searchParams.get('mode') ?? 'DRIVE').toUpperCase() as TravelMode
+      if (!MODES.has(modeRaw)) return send(res, 400, { error: 'mode must be DRIVE, WALK, BICYCLE or TRANSIT' })
+      if (!ctx.watcher.current().fix) await ctx.watcher.tick()
+      const cur = ctx.watcher.current()
+      if (!cur.fix) return send(res, 503, { error: 'no current fix' })
+      const venue = await ctx.geocode(to, cur.fix)
+      if (!venue) return send(res, 404, { error: `nothing found for "${to}"` })
+      const r = await ctx.route(cur.fix, venue, modeRaw)
+      if (!r) return send(res, 404, { error: 'no route' })
+      const now = Date.now()
+      send(res, 200, { from: { lat: cur.fix.lat, lon: cur.fix.lon, ageS: cur.ageS }, to: venue, mode: modeRaw, durationSec: r.durationSec, distanceMeters: r.distanceMeters, description: r.description ?? null, arriveAt: new Date(now + r.durationSec * 1000).toISOString() })
+    })
+  }
+
+  if (path === '/location/late-check' && req.method === 'GET') {
+    return run(async () => {
+      const threshold = Number(url.searchParams.get('threshold') ?? 10)
+      const window = Number(url.searchParams.get('window') ?? 180)
+      const modeRaw = (url.searchParams.get('mode') ?? 'DRIVE').toUpperCase() as TravelMode
+      if (!Number.isFinite(threshold) || threshold < 0 || !Number.isFinite(window) || window <= 0) return send(res, 400, { error: 'threshold ≥ 0 and window > 0 (minutes)' })
+      if (!MODES.has(modeRaw)) return send(res, 400, { error: 'mode must be DRIVE, WALK, BICYCLE or TRANSIT' })
+      if (!ctx.watcher.current().fix) await ctx.watcher.tick()
+      const cur = ctx.watcher.current()
+      const result = await lateCheck(ctx, cur.fix, cur.ageS, readLateState(ctx.lateStateFile), { thresholdMin: threshold, windowMin: window, mode: modeRaw })
+      writeLateState(ctx.lateStateFile, result.state)
+      send(res, 200, { late: result.reports, considered: result.considered, skipped: result.skipped ?? null, thresholdMin: threshold, windowMin: window, mode: modeRaw })
+    })
   }
 
   return false

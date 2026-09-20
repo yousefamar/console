@@ -7,15 +7,20 @@
 //   con location events [--limit N] [--fence id]
 //   con location test <fence-id> [--event enter|leave]
 //   con location refresh
+//   con location for <user-slug>          what THAT person may be told (policy from users/<slug>.md)
+//   con location eta "<place>" [--mode]   traffic-aware ETA from the current fix
+//   con location late-check [--threshold 10] [--window 180] [--guard]
+//                                         upcoming placed events he will be late for; --guard = cron
+//                                         semantics (exit 0 + report only when late, else silent exit 1)
 //
 // The raw fix is owner-grade data: anything relaying it to a third party goes
-// through AL's disclosure policy (`~/exec/where.py --for <user>`), not this.
+// through `con location for <user>`, never `con location` itself.
 
 import { hubFetch } from '../client.js'
 import { output, info, exitWithError, type GlobalFlags } from '../output.js'
 import { parseFlags, unknownFlags } from './util.js'
 
-const BOOLEAN_FLAGS = new Set(['private'])
+const BOOLEAN_FLAGS = new Set(['private', 'guard'])
 
 function positionals(args: string[]): string[] {
   const out: string[] = []
@@ -58,8 +63,12 @@ export async function location(verb: string | undefined, args: string[], flags: 
     case 'fence': return geofence(args[0], args.slice(1), flags)
     case 'events': return locationEvents(args, flags)
     case 'test': return locationTest(args, flags)
+    case 'for': return locationFor(args, flags)
+    case 'eta': return locationEta(args, flags)
+    case 'late-check':
+    case 'late': return locationLateCheck(args, flags)
     default:
-      exitWithError('USAGE', `Unknown location command: ${verb}. Verbs: now, refresh, history, geofence, events, test. Run 'con help location'.`, flags)
+      exitWithError('USAGE', `Unknown location command: ${verb}. Verbs: now, refresh, history, geofence, events, test, for, eta, late-check. Run 'con help location'.`, flags)
   }
 }
 
@@ -204,4 +213,62 @@ async function locationTest(args: string[], flags: GlobalFlags): Promise<void> {
   const d = await hubFetch<{ event: GeofenceEvent }>(`/location/geofences/${encodeURIComponent(id!)}/test`, { method: 'POST', body: { event: opts.event ?? 'enter' } })
   if (flags.json) { output(d, flags); return }
   info(`Fired TEST ${d.event.event} for "${d.event.fenceId}" → ${d.event.delivered.map((x) => `${x.ok ? '✓' : '✗'} ${x.to}${!x.ok && x.detail ? ` (${x.detail})` : ''}`).join(', ') || 'nobody to notify'}`)
+}
+
+// con location for <user-slug> — the ONLY way to answer a third party. The hub
+// applies users/<slug>.md (`location:` level / legacy allow / none) and returns
+// the sentence to relay; `say: null` = refuse and tell Yousef who asked.
+async function locationFor(args: string[], flags: GlobalFlags): Promise<void> {
+  flagsOf(args, [], flags)
+  const slug = positionals(args)[0]
+  if (!slug) exitWithError('USAGE', 'Usage: con location for <user-slug>   (users/<slug>.md in AL\'s workspace)', flags)
+  const d = await hubFetch<{ user: string; level: string; why: string; say: string | null; note: string }>(`/location/for/${encodeURIComponent(slug!)}`)
+  if (flags.json) { output(d, flags); return }
+  info(`level: ${d.level} (${d.why})`)
+  info(`say: ${d.say ?? `REFUSE — ${d.note}`}`)
+}
+
+async function locationEta(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['mode'], flags)
+  const place = positionals(args).join(' ').trim()
+  if (!place) exitWithError('USAGE', 'Usage: con location eta "<place>" [--mode DRIVE|TRANSIT|WALK|BICYCLE]', flags)
+  const d = await hubFetch<{ from: { lat: number; lon: number; ageS: number | null }; to: { name: string; address?: string; lat: number; lon: number }; mode: string; durationSec: number; distanceMeters: number; description: string | null; arriveAt: string }>(
+    '/location/eta', { params: { to: place, mode: opts.mode?.toUpperCase() } })
+  if (flags.json) { output(d, flags); return }
+  const arrive = new Date(d.arriveAt).toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false })
+  info(`${d.to.name}${d.to.address ? `, ${d.to.address}` : ''}`)
+  info(`${d.mode === 'DRIVE' ? 'Drive' : d.mode.toLowerCase()}: ${Math.round(d.durationSec / 60)} min, ${(d.distanceMeters / 1000).toFixed(1)} km${d.description ? `, via ${d.description}` : ''}; arrive ~${arrive} if leaving now (fix ${ago(d.from.ageS)}).`)
+}
+
+interface LateReport { eventId: string; calendarId?: string; summary: string; startIso: string; startsInMin: number; location: string; venue: { name: string }; mode: string; etaMin: number; distanceKm: number; arriveIso: string; lateMin: number; attendees: string[]; reAlert: boolean }
+
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false })
+
+function formatLate(r: LateReport): string {
+  return [
+    `LATE: "${r.summary}" starts ${hhmm(r.startIso)} (in ${r.startsInMin} min) at ${r.location}`,
+    `  ${r.mode === 'DRIVE' ? 'Drive' : r.mode.toLowerCase()} ETA ${r.etaMin} min (${r.distanceKm} km) → arrives ~${hhmm(r.arriveIso)}, about ${r.lateMin} min late${r.reAlert ? ' (re-alert: got worse)' : ''}`,
+    `  Attendees: ${r.attendees.length ? r.attendees.join(', ') : 'none besides Yousef'}`,
+    `  Event id: ${r.eventId}${r.calendarId ? `  calendar: ${r.calendarId}` : ''}`,
+  ].join('\n')
+}
+
+// con location late-check [--threshold 10] [--window 180] [--mode DRIVE] [--guard]
+// --guard = hub-cron guard semantics: print the report(s) and exit 0 only when
+// he is late for something; otherwise print nothing and exit 1.
+async function locationLateCheck(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['threshold', 'window', 'mode', 'guard'], flags)
+  const d = await hubFetch<{ late: LateReport[]; considered: number; skipped: string | null; thresholdMin: number; windowMin: number; mode: string }>(
+    '/location/late-check', { params: { threshold: opts.threshold, window: opts.window, mode: opts.mode?.toUpperCase() } })
+  if (opts.guard) {
+    if (!d.late.length) process.exit(1)
+    console.log(d.late.map(formatLate).join('\n\n'))
+    return
+  }
+  if (flags.json) { output(d, flags); return }
+  if (!d.late.length) {
+    info(d.skipped ? `Cannot judge lateness: ${d.skipped}.` : `Not late for anything in the next ${d.windowMin} min (${d.considered} placed event${d.considered === 1 ? '' : 's'} checked, threshold ${d.thresholdMin} min, ${d.mode.toLowerCase()}).`)
+    return
+  }
+  for (const r of d.late) info(formatLate(r))
 }

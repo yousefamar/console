@@ -6,6 +6,25 @@ import type { AuthStore } from '../auth-store.js'
 import type { DedupStore } from '../dedup-store.js'
 import { readLinks, linksPatch, addLink, removeLink, LINK_MARKER_FILTER, LinkTooLongError } from '../calendar-links.js'
 
+/** Every event across every account's calendars in [timeMin, timeMax], each
+ *  stamped with `calendarId` + `accountEmail`. Per-calendar failures are
+ *  skipped, never fatal — one broken shared calendar must not blank the list. */
+export async function listAllEvents(calendar: CalendarClient, authStore: AuthStore, timeMin: string, timeMax?: string, singleEvents = 'true'): Promise<unknown[]> {
+  const allEvents: unknown[] = []
+  for (const acc of authStore.getGoogleAccounts()) {
+    try {
+      const calendars = await calendar.getCalendarList(acc.email)
+      for (const cal of calendars.items || []) {
+        try {
+          const events = await calendar.getEvents(acc.email, cal.id, { timeMin, timeMax, singleEvents }) as any
+          for (const event of events.items || []) allEvents.push({ ...event, calendarId: cal.id, accountEmail: acc.email })
+        } catch { /* skip individual calendar errors */ }
+      }
+    } catch { /* skip account errors */ }
+  }
+  return allEvents
+}
+
 export function handleCalendarRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -147,29 +166,7 @@ export function handleCalendarRoutes(
         const data = await calendar.getEvents(account, calendarId, { timeMin, timeMax: timeMax || undefined, singleEvents })
         json(data)
       } else {
-        // Fetch events for all calendars across all accounts
-        const accounts = authStore.getGoogleAccounts()
-        const allEvents: unknown[] = []
-
-        for (const acc of accounts) {
-          try {
-            const calendars = await calendar.getCalendarList(acc.email)
-            for (const cal of calendars.items || []) {
-              try {
-                const events = await calendar.getEvents(acc.email, cal.id, {
-                  timeMin,
-                  timeMax: timeMax || undefined,
-                  singleEvents,
-                }) as any
-                for (const event of events.items || []) {
-                  allEvents.push({ ...event, calendarId: cal.id, accountEmail: acc.email })
-                }
-              } catch { /* skip individual calendar errors */ }
-            }
-          } catch { /* skip account errors */ }
-        }
-
-        json({ items: allEvents })
+        json({ items: await listAllEvents(calendar, authStore, timeMin, timeMax || undefined, singleEvents) })
       }
     })
   }

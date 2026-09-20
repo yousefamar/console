@@ -9,6 +9,8 @@ import { GeofenceStore } from '../location/store.js'
 import { LocationWatcher } from '../location/watcher.js'
 import { fixFromRecorder } from '../location/recorder.js'
 import { handleLocationRoutes, parseFenceBody, type LocationRouteCtx } from '../routes/location.js'
+import { levelFor, placeWords, ageWords, disclose, type ReverseGeo } from '../location/disclose.js'
+import { lateCheck, formatLateReport, VIRTUAL_RE, type CalEvent, type LateCtx } from '../location/late.js'
 
 const HOME = { lat: 51.45537, lon: -0.96380 }
 const fence = (over: Partial<Geofence> = {}): Geofence => ({ id: 'home', name: 'Home', lat: HOME.lat, lon: HOME.lon, radius: 150, wake: ['al'], on: 'both', createdAt: 0, ...over })
@@ -260,6 +262,123 @@ describe('routes: parseFenceBody', () => {
   })
 })
 
+const USERS: Record<string, Record<string, string | string[]>> = {
+  yousef: { trust: 'owner' },
+  nica: { allow: ['location', 'schedule'] },
+  mai: { location: 'city', allow: ['wellbeing'] },
+  sam: { allow: ['bedrock-guest-key-support'] },
+  lucas: { allow: ['location:country'] },
+}
+const HOME_GEO: Record<number, ReverseGeo> = {
+  3: { display: 'United Kingdom', address: { country: 'United Kingdom' } },
+  10: { display: 'Reading, England, United Kingdom', address: { town: 'Reading', country: 'United Kingdom' } },
+  14: { display: 'Katesgrove, Reading, England, United Kingdom', address: { suburb: 'Katesgrove', town: 'Reading', country: 'United Kingdom' } },
+  18: { display: '15, Blakes Cottages, Katesgrove, Reading, RG1 3JA, United Kingdom', address: { house_number: '15', road: 'Blakes Cottages', suburb: 'Katesgrove', town: 'Reading', postcode: 'RG1 3JA', country: 'United Kingdom' } },
+}
+const LONDON_GEO: Record<number, ReverseGeo> = {
+  3: { display: 'United Kingdom', address: { country: 'United Kingdom' } },
+  10: { display: 'London', address: { city: 'London', country: 'United Kingdom' } },
+  14: { display: 'Paddington, London', address: { suburb: 'Paddington', city: 'London', country: 'United Kingdom' } },
+  18: { display: 'Praed Street, Paddington, London W2 1HU', address: { road: 'Praed Street', suburb: 'Paddington', city: 'London', postcode: 'W2 1HU', country: 'United Kingdom' } },
+}
+const fakeRevgeo = async (lat: number, _lon: number, zoom: number): Promise<ReverseGeo> => (lat > 51.5 ? LONDON_GEO : HOME_GEO)[zoom] ?? { display: null, address: {} }
+const VENUES: Record<string, { name: string; address?: string; lat: number; lon: number }> = {
+  'Paddington Station, London': { name: 'Paddington', address: 'Praed St, London W2 1HU', lat: 51.5154, lon: -0.1755 },
+  'Reading Speakers Club, Orts Rd': { name: 'Reading Speakers Club', lat: HOME.lat + 0.001, lon: HOME.lon + 0.001 },
+}
+let EVENTS: CalEvent[] = []
+
+describe('disclose: policy', () => {
+  it('levelFor walks trust → location → allow → none', () => {
+    expect(levelFor(USERS.yousef!)).toEqual({ level: 'exact', why: 'trust: owner' })
+    expect(levelFor(USERS.nica!)).toEqual({ level: 'exact', why: 'allow: location' })
+    expect(levelFor(USERS.mai!)).toEqual({ level: 'city', why: 'location: city' })
+    expect(levelFor(USERS.lucas!)).toEqual({ level: 'country', why: 'allow: location:country' })
+    expect(levelFor(USERS.sam!)).toEqual({ level: 'none', why: 'not in allow' })
+    expect(levelFor(null)).toMatchObject({ level: 'none' })
+    expect(levelFor({ location: 'exactly' })).toMatchObject({ level: 'none' }) // bad value ≠ a grant
+  })
+  it('placeWords per level, ageWords thresholds', () => {
+    expect(placeWords(HOME_GEO[3]!.address, 'country')).toBe('in United Kingdom')
+    expect(placeWords(HOME_GEO[10]!.address, 'city')).toBe('in Reading')
+    expect(placeWords(HOME_GEO[14]!.address, 'area')).toBe('in Reading, around Katesgrove')
+    expect(placeWords(HOME_GEO[18]!.address, 'exact')).toBe('15, Blakes Cottages, Katesgrove, Reading, RG1 3JA')
+    expect(placeWords({}, 'city')).toBe('location unknown')
+    expect(ageWords(120)).toBe('')
+    expect(ageWords(1500)).toBe(' (as of 25 min ago)')
+    expect(ageWords(7200)).toBe(' (last seen 2.0 h ago)')
+    expect(ageWords(200_000)).toBe(' (last seen 2 d ago)')
+  })
+  const cur = (over: Partial<Parameters<typeof disclose>[1]> = {}) => ({ fix: at(0, 100), ageS: 60, inside: [], polledAt: 1, ...over })
+  it('none refuses; no fix says so', async () => {
+    expect(await disclose({ level: 'none', why: 'x' }, cur(), fakeRevgeo, [])).toMatchObject({ say: null })
+    expect((await disclose({ level: 'exact', why: 'x' }, cur({ fix: null }), fakeRevgeo, [])).say).toMatch(/can't see/)
+  })
+  it('inside a private fence exact/area collapse to the fence name; city/country unaffected', async () => {
+    const c = cur({ inside: [{ id: 'home', name: 'Home', private: true }] })
+    expect((await disclose({ level: 'exact', why: 'x' }, c, fakeRevgeo, [])).say).toBe('At home (Reading).')
+    expect((await disclose({ level: 'area', why: 'x' }, c, fakeRevgeo, [])).say).toBe('At home (Reading).')
+    expect((await disclose({ level: 'city', why: 'x' }, c, fakeRevgeo, [])).say).toBe('Yousef is in Reading.')
+    expect((await disclose({ level: 'country', why: 'x' }, c, fakeRevgeo, [])).say).toBe('Yousef is in United Kingdom.')
+  })
+  it('the censor backstop hides home even with no fence; away from home exact gives words + pin', async () => {
+    const home = await disclose({ level: 'exact', why: 'x' }, cur(), fakeRevgeo, ['15 Blakes Cottages'])
+    expect(home.say).toBe('At home (Reading).')
+    expect(home.lat).toBeUndefined()
+    const leak = await disclose({ level: 'exact', why: 'x' }, cur(), fakeRevgeo, [])
+    expect(leak.say).toContain('Blakes Cottages') // no fence, no terms → nothing to collapse on (the live hub always has terms)
+    const away = await disclose({ level: 'exact', why: 'x' }, cur({ fix: { lat: 51.5154, lon: -0.1755, tst: 100 }, ageS: 900 }), fakeRevgeo, ['15 Blakes Cottages'])
+    expect(away.say).toBe('Praed Street, Paddington, London, W2 1HU (as of 15 min ago). Pin: https://maps.google.com/?q=51.51540,-0.17550')
+    expect(away).toMatchObject({ lat: 51.5154, lon: -0.1755 })
+    const named = await disclose({ level: 'area', why: 'x' }, cur({ fix: { lat: 51.5154, lon: -0.1755, tst: 100 }, inside: [{ id: 'office', name: 'Office', private: false }] }), fakeRevgeo, [])
+    expect(named.say).toBe('Yousef is at Office, in London, around Paddington.')
+  })
+})
+
+describe('late-check', () => {
+  const T0 = Date.parse('2026-09-20T09:30:00Z')
+  const ev = (over: Partial<CalEvent> = {}): CalEvent => ({ id: 'e1', summary: 'Meeting', location: 'Paddington Station, London', start: { dateTime: new Date(T0 + 15 * 60_000).toISOString() }, attendees: [{ email: 'me@x', self: true, responseStatus: 'accepted' }, { email: 'a@b' }], calendarId: 'cal', ...over })
+  const ctx = (events: CalEvent[], durationSec = 73 * 60): LateCtx => ({
+    listEvents: async () => events,
+    geocode: async (q) => VENUES[q] ?? null,
+    route: async () => ({ durationSec, distanceMeters: 64_500, description: 'M4' }),
+  })
+  it('reports a placed event he cannot reach in time, once, with attendees minus himself', async () => {
+    const r1 = await lateCheck(ctx([ev()]), at(0, 1), 60, {}, { nowMs: T0 })
+    expect(r1.reports).toHaveLength(1)
+    expect(r1.reports[0]).toMatchObject({ eventId: 'e1', startsInMin: 15, etaMin: 73, lateMin: 58, attendees: ['a@b'], reAlert: false, distanceKm: 64.5 })
+    expect(r1.state.e1).toMatchObject({ lateMin: 58 })
+    const text = formatLateReport(r1.reports[0]!)
+    expect(text).toContain('LATE: "Meeting" starts 10:45 (in 15 min) at Paddington Station, London')
+    expect(text).toContain('about 58 min late')
+    expect(text).toContain('Attendees: a@b')
+    const r2 = await lateCheck(ctx([ev()]), at(0, 1), 60, r1.state, { nowMs: T0 })
+    expect(r2.reports).toEqual([]) // de-duped
+    const r3 = await lateCheck(ctx([ev()], 90 * 60), at(0, 1), 60, r1.state, { nowMs: T0 })
+    expect(r3.reports[0]).toMatchObject({ lateMin: 75, reAlert: true }) // grew by ≥ threshold
+  })
+  it('skips virtual/home venues, declined, cancelled, all-day, past, unknown venues and on-time events', async () => {
+    const events = [
+      ev({ id: 'v', location: 'Zoom' }), ev({ id: 'h', location: 'Our nice living room' }), ev({ id: 'u', location: 'https://meet.google.com/x' }),
+      ev({ id: 'd', attendees: [{ self: true, responseStatus: 'declined' }] }), ev({ id: 'c', status: 'cancelled' }),
+      ev({ id: 'a', start: { date: '2026-09-20' } }), ev({ id: 'p', start: { dateTime: new Date(T0 - 60_000).toISOString() } }),
+      ev({ id: 'g', location: 'Nowhere Specific' }),
+      ev({ id: 'ok', start: { dateTime: new Date(T0 + 120 * 60_000).toISOString() } }),
+    ]
+    const r = await lateCheck(ctx(events), at(0, 1), 60, {}, { nowMs: T0 })
+    expect(r.reports).toEqual([])
+    expect(r.considered).toBe(2) // 'g' and 'ok' got as far as geocoding
+    expect(VIRTUAL_RE.test('Reading Speakers Club, Orts Rd')).toBe(false)
+  })
+  it('already at the venue clears its state; no/stale fix evaluates nothing', async () => {
+    const r = await lateCheck(ctx([ev({ location: 'Reading Speakers Club, Orts Rd' })]), at(0, 1), 60, { e1: { lateMin: 20, at: 'x' } }, { nowMs: T0 })
+    expect(r.reports).toEqual([])
+    expect(r.state.e1).toBeUndefined()
+    expect(await lateCheck(ctx([ev()]), null, null, {}, { nowMs: T0 })).toMatchObject({ skipped: 'no fix' })
+    expect(await lateCheck(ctx([ev()]), at(0, 1), 3600, {}, { nowMs: T0 })).toMatchObject({ skipped: 'stale fix' })
+  })
+})
+
 describe('routes: over HTTP', () => {
   let server: Server
   let base: string
@@ -267,11 +386,18 @@ describe('routes: over HTTP', () => {
   const readBody = (req: import('node:http').IncomingMessage) => new Promise<string>((resolve) => { let s = ''; req.on('data', (c: Buffer) => { s += c }); req.on('end', () => resolve(s)) })
 
   beforeEach(async () => {
-    h = harness([at(0, 100)])
+    h = harness([at(0, 9_940)]) // 60 s before the harness clock (10_000_000 ms)
     const ctx: LocationRouteCtx = {
       store: h.store, watcher: h.watcher,
       agentLive: (k) => h.live.has(k),
       actorOf: (req) => (req.headers['x-console-agent'] as string | undefined) || undefined,
+      userFrontmatter: (slug) => USERS[slug] ?? null,
+      revgeo: fakeRevgeo,
+      blockedTerms: () => ['15 blakes cottages'],
+      lateStateFile: join(dir, 'late.json'),
+      geocode: async (q) => VENUES[q] ?? null,
+      route: async (o, d) => ({ durationSec: Math.round(haversineM(o.lat, o.lon, d.lat, d.lon) / 10), distanceMeters: Math.round(haversineM(o.lat, o.lon, d.lat, d.lon)) }),
+      listEvents: async () => EVENTS.slice(),
     }
     server = createServer((req, res) => {
       const url = new URL(req.url!, 'http://x')
@@ -291,7 +417,8 @@ describe('routes: over HTTP', () => {
   it('GET /location polls on first call and reports the fix + fences inside', async () => {
     const r = await call('GET', '/location')
     expect(r.status).toBe(200)
-    expect(r.json.fix).toMatchObject({ tst: 100 })
+    expect(r.json.fix).toMatchObject({ tst: 9_940 })
+    expect(r.json.ageS).toBe(60)
     expect(r.json.inside).toEqual([])
     expect(r.json.polledAt).toBe(10_000_000)
   })
@@ -324,5 +451,32 @@ describe('routes: over HTTP', () => {
     h.fixes.splice(0, 1, at(500, 900))
     const r = await call('POST', '/location/refresh')
     expect(r.json.fix.tst).toBe(900)
+  })
+  it('GET /location/for/<slug> applies the policy hub-side', async () => {
+    expect((await call('GET', '/location/for/mai')).json).toMatchObject({ user: 'mai', level: 'city', say: 'Yousef is in Reading.' })
+    expect((await call('GET', '/location/for/sam')).json).toMatchObject({ level: 'none', say: null })
+    expect((await call('GET', '/location/for/nobody')).json).toMatchObject({ level: 'none', why: 'unknown sender (no user file)' })
+    expect((await call('GET', '/location/for/nica')).json).toMatchObject({ level: 'exact', say: 'At home (Reading).' }) // censor backstop
+    expect((await call('GET', '/location/for/..%2Fetc')).status).toBe(400)
+  })
+  it('GET /location/eta geocodes + routes from the current fix', async () => {
+    const r = await call('GET', '/location/eta?to=' + encodeURIComponent('Paddington Station, London'))
+    expect(r.status).toBe(200)
+    expect(r.json).toMatchObject({ mode: 'DRIVE', to: { name: 'Paddington' } })
+    expect(r.json.durationSec).toBeGreaterThan(5000)
+    expect((await call('GET', '/location/eta?to=Nowhere')).status).toBe(404)
+    expect((await call('GET', '/location/eta')).status).toBe(400)
+    expect((await call('GET', '/location/eta?to=x&mode=TELEPORT')).status).toBe(400)
+  })
+  it('GET /location/late-check persists de-dup state', async () => {
+    EVENTS = [{ id: 'e9', summary: 'Trip', location: 'Paddington Station, London', start: { dateTime: new Date(Date.now() + 15 * 60_000).toISOString() }, attendees: [{ email: 'a@b' }] }]
+    const r1 = await call('GET', '/location/late-check?threshold=10')
+    expect(r1.json.late).toHaveLength(1)
+    expect(r1.json.late[0]).toMatchObject({ eventId: 'e9', attendees: ['a@b'] })
+    expect(JSON.parse(readFileSync(join(dir, 'late.json'), 'utf8'))).toHaveProperty('e9')
+    const r2 = await call('GET', '/location/late-check?threshold=10')
+    expect(r2.json.late).toEqual([])
+    expect((await call('GET', '/location/late-check?threshold=-1')).status).toBe(400)
+    EVENTS = []
   })
 })
