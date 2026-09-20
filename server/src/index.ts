@@ -88,6 +88,9 @@ import { handleWebhookRoutes, type WebhookRouteCtx } from './routes/webhooks.js'
 import { handleLocationRoutes, type LocationRouteCtx } from './routes/location.js'
 import { GeofenceStore } from './location/store.js'
 import { LocationWatcher } from './location/watcher.js'
+import { ImapFlow } from 'imapflow'
+import { ImapIdleWatcher } from './imap/watcher.js'
+import { discoverAccounts } from './imap/accounts.js'
 import { makeRecorderLastFetcher } from './location/recorder.js'
 import { makeNominatimReverse } from './location/revgeo.js'
 import { parseFrontmatter } from './al/users.js'
@@ -899,6 +902,7 @@ const listenerEngine = new ListenerEngine({
 const eventRouteCtx: EventRouteCtx = {
   bus: eventBus,
   redeliver: (eventId, listenerId) => listenerEngine.redeliver(eventId, listenerId),
+  adapters: () => ({ imap: imapWatcher.status() }),
   log,
 }
 
@@ -1639,6 +1643,20 @@ const locationWatcher = new LocationWatcher({
   log,
 })
 locationWatcher.start()
+// IMAP IDLE — the agent mailboxes (~/.config/<name>-mail/.env: al@, ceo@, Mai's
+// Yahoo…) held open in IDLE, every arrival → `mail.received` with
+// `data.account = <name>` (imap/watcher.ts). Started with the bus below so
+// the catch-up after a restart reaches the listener engine.
+const imapWatcher = new ImapIdleWatcher({
+  accounts: discoverAccounts(join(homedir(), '.config')),
+  cursorFile: join(configDir, 'imap-cursors.json'),
+  connect: (a) => new ImapFlow({
+    host: a.host, port: a.port, secure: true, auth: { user: a.user, pass: a.pass },
+    logger: false, maxIdleTime: 25 * 60_000, clientInfo: { name: 'console-hub', vendor: 'amar.io' },
+  }),
+  emit: (input) => eventBus.emit(input),
+  log,
+})
 const locationCtx: LocationRouteCtx = {
   store: geofenceStore,
   watcher: locationWatcher,
@@ -2718,6 +2736,7 @@ httpServer.listen(port, host, () => {
     // one-per-boot `hub.started` for catch-up listeners.
     eventBus.start()
     listenerEngine.start()
+    imapWatcher.start()
     eventBus.emitStarted()
 
     // -----------------------------------------------------------------
@@ -2842,6 +2861,7 @@ function shutdown() {
   eventBus.stop()
   staleSweeper.stop()
   locationWatcher.stop()
+  void imapWatcher.stop()
   recallIndex?.stop()
   const children: number[] = []
   for (const session of sessions.values()) {

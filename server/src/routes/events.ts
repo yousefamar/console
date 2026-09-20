@@ -16,6 +16,8 @@ export interface EventRouteCtx {
   bus: EventBus
   /** Set by the listener engine (card B); null until then. */
   redeliver?: (eventId: string, listenerId: string) => Promise<{ ok: boolean; detail: string }>
+  /** Per-adapter health folded into `/events/status` (`adapters.imap.<account>` …). */
+  adapters?: () => Record<string, unknown>
   log: (msg: string) => void
 }
 
@@ -86,7 +88,7 @@ export function handleEventRoutes(
   }
 
   if (path === '/events/topics' && req.method === 'GET') { json(ctx.bus.topics()); return true }
-  if (path === '/events/status' && req.method === 'GET') { json(ctx.bus.status()); return true }
+  if (path === '/events/status' && req.method === 'GET') { json({ ...ctx.bus.status(), adapters: ctx.adapters?.() ?? {} }); return true }
 
   const replay = /^\/events\/([^/]+)\/redeliver$/.exec(path)
   if (replay && req.method === 'POST') {
