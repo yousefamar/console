@@ -66,6 +66,14 @@ export type MatrixJoinedRoomDelta = {
   }
 }
 
+/** A Beeper bridge's verdict on one of our sends (`com.beeper.message_send_status`). */
+export type BridgeSendStatus = {
+  status: string // SUCCESS | FAIL_RETRIABLE | FAIL_PERMANENT
+  reason?: string // machine-readable, e.g. m.too_old
+  error?: string // human-readable
+  network?: string
+}
+
 export type MatrixDelta = {
   nextBatch: string
   // Map of roomId → MatrixJoinedRoom-shaped payload (mirrors /sync's rooms.join)
@@ -449,6 +457,91 @@ export class MatrixSync {
     return { ok: true, eventId: result.event_id }
   }
 
+  /**
+   * Edit one of our own sent messages (`m.replace`). Same content shape as the
+   * SPA's editMessage so both paths look identical to bridges and Element.
+   * On a bridged room this also waits for the bridge's verdict
+   * (`com.beeper.message_send_status` referencing the edit) — the WhatsApp
+   * bridge only forwards edits inside WhatsApp's ~15-minute window and
+   * otherwise answers FAIL_PERMANENT, which the caller must be told about
+   * because the Matrix side of the edit still succeeded.
+   */
+  async editMessage(args: { roomId: string; eventId: string; body: string; html?: string; waitMs?: number }): Promise<{
+    event_id: string
+    bridge?: BridgeSendStatus
+  }> {
+    const cfg = this.auth.getMatrixConfig()
+    if (!cfg) throw new Error('no matrix credentials')
+    const { roomId, eventId, body, html } = args
+    if (!roomId || !eventId || !body) throw new Error('roomId, eventId, body required')
+
+    let target: Record<string, unknown>
+    try {
+      target = await this.matrix.getEvent(roomId, eventId) as Record<string, unknown>
+    } catch (e) {
+      throw new Error(`event not found: ${(e as Error).message}`)
+    }
+    if (target.sender !== cfg.userId) throw new Error(`not your message (sent by ${String(target.sender)}); only your own messages can be edited`)
+    if (target.type !== 'm.room.message' && target.type !== 'm.room.encrypted') throw new Error(`event is a ${String(target.type)}, not a message`)
+
+    const newContent: Record<string, unknown> = { msgtype: 'm.text', body }
+    const content: Record<string, unknown> = {
+      msgtype: 'm.text',
+      body: ` * ${body}`,
+      'm.new_content': newContent,
+      'm.relates_to': { rel_type: 'm.replace', event_id: eventId },
+    }
+    if (html) {
+      content.format = 'org.matrix.custom.html'
+      content.formatted_body = ` * ${html}`
+      newContent.format = 'org.matrix.custom.html'
+      newContent.formatted_body = html
+    }
+
+    const bridged = !!this.chatRoomsStore?.snapshot().data[roomId]?.networkIcon
+    const waiter = bridged ? this.awaitBridgeSendStatus(args.waitMs ?? 10_000) : undefined
+    const result = await this.sendRoomEvent({ roomId, type: 'm.room.message', content })
+    if (!waiter) return result
+    const bridge = await waiter(result.event_id)
+    return bridge ? { ...result, bridge } : result
+  }
+
+  private readonly bridgeStatusWaiters = new Map<string, (s: BridgeSendStatus) => void>()
+  /** Sends in flight whose event id isn't known yet; while > 0, statuses are
+   *  buffered so a verdict can't slip past between the PUT and registration. */
+  private armedBridgeWaiters = 0
+  private readonly earlyBridgeStatuses = new Map<string, BridgeSendStatus>()
+
+  private awaitBridgeSendStatus(timeoutMs: number): (eventId: string) => Promise<BridgeSendStatus | undefined> {
+    const armedAt = Date.now()
+    this.armedBridgeWaiters++
+    return (eventId) => new Promise((resolve) => {
+      const early = this.earlyBridgeStatuses.get(eventId)
+      if (--this.armedBridgeWaiters === 0) this.earlyBridgeStatuses.clear()
+      if (early) { resolve(early); return }
+      const timer = setTimeout(() => { this.bridgeStatusWaiters.delete(eventId); resolve(undefined) }, Math.max(0, timeoutMs - (Date.now() - armedAt)))
+      this.bridgeStatusWaiters.set(eventId, (s) => { clearTimeout(timer); this.bridgeStatusWaiters.delete(eventId); resolve(s) })
+    })
+  }
+
+  /** Called per decrypted timeline event in tick(); PENDING is skipped — only a terminal verdict resolves a waiter. */
+  private noteBridgeSendStatus(ev: MatrixEventLike): void {
+    if (ev.type !== 'com.beeper.message_send_status') return
+    const c = (ev.content ?? {}) as Record<string, unknown>
+    const targetId = (c['m.relates_to'] as Record<string, unknown> | undefined)?.event_id
+    const status = c.status
+    if (typeof targetId !== 'string' || typeof status !== 'string' || status === 'PENDING') return
+    const s: BridgeSendStatus = {
+      status,
+      reason: typeof c.reason === 'string' ? c.reason : undefined,
+      error: typeof c.error === 'string' ? c.error : typeof c.message === 'string' ? c.message : undefined,
+      network: typeof c.network === 'string' ? c.network : undefined,
+    }
+    const waiter = this.bridgeStatusWaiters.get(targetId)
+    if (waiter) waiter(s)
+    else if (this.armedBridgeWaiters > 0) this.earlyBridgeStatuses.set(targetId, s)
+  }
+
   /** Redact an event (always unencrypted; redactions are never encrypted). */
   async redactEvent(args: { roomId: string; eventId: string; reason?: string }): Promise<{ event_id: string }> {
     const cfg = this.auth.getMatrixConfig()
@@ -807,6 +900,7 @@ export class MatrixSync {
       this.ingestAccountData(resp.account_data)
       for (const [roomId, r] of Object.entries(rooms)) {
         this.ingestRoomState(roomId, r)
+        for (const ev of r.timeline?.events ?? []) this.noteBridgeSendStatus(ev)
       }
 
       // 2b. Backfill any rooms whose timeline came back `limited` (gap > ~10

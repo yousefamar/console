@@ -273,6 +273,34 @@ export function handleMatrixRoutes(
     })
   }
 
+  // POST /matrix/rooms/:id/edit   body: { eventId, body, html?, waitMs? }
+  // m.replace of one of OUR messages. On a bridged room the response carries
+  // the bridge's verdict as `bridge: {status, reason, error}` — the WhatsApp
+  // bridge refuses edits older than ~15 min and the Matrix event still lands,
+  // so callers must read `bridge.status` before telling anyone it worked.
+  const editMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/edit$/)
+  if (editMatch && req.method === 'POST') {
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(editMatch[1]!)
+      const body = JSON.parse(await readBody(req)) as {
+        eventId?: string
+        body?: string
+        html?: boolean | string
+        waitMs?: number
+      }
+      if (!body.eventId) return error(400, 'eventId required')
+      if (!body.body) return error(400, 'body required')
+      const result = await matrixSync.editMessage({
+        roomId,
+        eventId: body.eventId,
+        body: body.body,
+        html: body.html ? body.body : undefined,
+        waitMs: typeof body.waitMs === 'number' ? body.waitMs : undefined,
+      })
+      json(result)
+    })
+  }
+
   // POST /matrix/rooms/:id/send-file
   // Uploads media raw (per bridge-attachment workaround — Beeper bridges
   // can't decrypt encrypted attachments) and routes the event through

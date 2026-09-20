@@ -1,5 +1,5 @@
 import { hubFetch } from '../client.js'
-import { output, exitWithError, info, outputLine, type GlobalFlags } from '../output.js'
+import { output, exitWithError, info, outputLine, isJsonMode, type GlobalFlags } from '../output.js'
 import { parseFlags, unknownFlags, readStdin } from './util.js'
 
 export async function chat(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
@@ -8,6 +8,7 @@ export async function chat(verb: string | undefined, args: string[], flags: Glob
     case 'messages': return chatMessages(args, flags)
     case 'send': return chatSend(args, flags)
     case 'send-file': return chatSendFile(args, flags)
+    case 'edit': return chatEdit(args, flags)
     case 'react': return chatReact(args, flags)
     case 'mark-read': return chatMarkRead(args, flags)
     case 'mark-unread': return chatMarkUnread(args, flags)
@@ -30,14 +31,71 @@ async function chatRooms(args: string[], flags: GlobalFlags): Promise<void> {
   output(data, flags)
 }
 
+type HubMessage = {
+  id: string
+  sender?: string
+  timestamp?: number
+  type?: string
+  content?: Record<string, unknown>
+  decryptFailed?: boolean
+}
+
 async function chatMessages(args: string[], flags: GlobalFlags): Promise<void> {
   const roomId = args[0]
   if (!roomId) exitWithError('USAGE', 'Usage: con chat messages <room-id>', flags)
   const opts = parseFlags(args.slice(1))
-  const data = await hubFetch(`/matrix/rooms/${encodeURIComponent(roomId)}/messages`, {
+  const data = await hubFetch<{ messages: HubMessage[]; prevBatch?: string }>(`/matrix/rooms/${encodeURIComponent(roomId)}/messages`, {
     params: { limit: opts.limit, before: opts.before },
   })
-  output(data, flags)
+  if (isJsonMode(flags)) { output(data, flags); return }
+  // Oldest first, one line per event, event id leading so it can be pasted
+  // straight into `con chat react|edit`.
+  for (const m of [...data.messages].reverse()) {
+    const when = m.timestamp ? new Date(m.timestamp).toISOString().slice(0, 16).replace('T', ' ') : ''
+    process.stdout.write(`${m.id}  ${when}  ${m.sender ?? ''}  ${messageLine(m)}\n`)
+  }
+  if (data.prevBatch) info(`older: --before ${data.prevBatch}`)
+}
+
+function messageLine(m: HubMessage): string {
+  if (m.decryptFailed) return '[undecryptable]'
+  const c = m.content ?? {}
+  const relates = c['m.relates_to'] as Record<string, unknown> | undefined
+  const edited = relates?.rel_type === 'm.replace' ? `(edit of ${String(relates.event_id)}) ` : ''
+  const body = typeof c.body === 'string' ? c.body : ''
+  const msgtype = typeof c.msgtype === 'string' ? c.msgtype : ''
+  if (Object.keys(c).length === 0) return '[redacted]'
+  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.emote') return `${edited}[${msgtype}] ${body}`
+  if (!msgtype && m.type && m.type !== 'm.room.message') return `[${m.type}]`
+  return edited + body.replace(/\s*\n\s*/g, ' ⏎ ')
+}
+
+const EDIT_USAGE = 'Usage: con chat edit <room-id> <event-id> --body <text> [--html]'
+
+/** Replace the text of a message WE sent (m.replace). Bridged rooms wait for
+ *  the bridge's verdict: WhatsApp only accepts edits inside ~15 minutes and a
+ *  refusal is reported as an error even though the Matrix edit landed. */
+async function chatEdit(args: string[], flags: GlobalFlags): Promise<void> {
+  const roomId = args[0]
+  const eventId = args[1]
+  if (!roomId || !eventId || roomId.startsWith('--') || eventId.startsWith('--')) exitWithError('USAGE', EDIT_USAGE, flags)
+  const opts = parseFlags(args.slice(2))
+  const bad = unknownFlags(opts, ['body', 'html'])
+  if (bad.length) exitWithError('USAGE', `Unknown flag(s): ${bad.map((f) => `--${f}`).join(', ')}. ${EDIT_USAGE}`, flags)
+  if (!opts.body) exitWithError('USAGE', `Provide --body. ${EDIT_USAGE}`, flags)
+
+  if (flags.dryRun) { info(`Would edit ${eventId} in ${roomId} to: ${opts.body}`); return }
+
+  const result = await hubFetch<{ event_id: string; bridge?: { status: string; reason?: string; error?: string; network?: string } }>(
+    `/matrix/rooms/${encodeURIComponent(roomId)}/edit`,
+    { method: 'POST', body: { eventId, body: opts.body, html: opts.html === 'true' } },
+  )
+  const bridge = result.bridge
+  if (bridge && bridge.status !== 'SUCCESS') {
+    const detail = [bridge.error, bridge.reason].filter(Boolean).join(', ')
+    exitWithError('BRIDGE_REJECTED', `${bridge.network ?? 'bridge'} refused the edit: ${bridge.status}${detail ? ` (${detail})` : ''}. The edit landed on Matrix only (${result.event_id}); the recipient still sees the original.`, flags)
+  }
+  output(result, flags)
 }
 
 async function chatSend(args: string[], flags: GlobalFlags): Promise<void> {
