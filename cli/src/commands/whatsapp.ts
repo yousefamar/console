@@ -8,6 +8,9 @@
 //   con whatsapp send <to> --audio <file>      → any audio file, sent as a voice note
 //   con whatsapp delete <message_id> --to <jid> → revoke for everyone
 //   con whatsapp contacts [--query <text>]     → workspace contacts lookup
+//   con whatsapp call <to> --task "…"          → AL phones <to> on WhatsApp (Yousef's voice, full context)
+//   con whatsapp calls [--last N]              → recent call transcripts
+//   con whatsapp voice [--qr <path.png>]       → voice device (wa-voice) + pipeline status; QR when unpaired
 //
 // `to` accepts a bare phone (`447700900123`) or a fully-qualified JID
 // (`447700900123@s.whatsapp.net`, `<lid>@lid`, `<id>@g.us`). Bare phones get
@@ -25,6 +28,9 @@ export async function whatsapp(verb: string | undefined, args: string[], flags: 
     case 'send': return waSend(args, flags)
     case 'delete': return waDelete(args, flags)
     case 'contacts': return waContacts(args, flags)
+    case 'call': return waCall(args, flags)
+    case 'calls': return waCalls(args, flags)
+    case 'voice': return waVoice(args, flags)
     default:
       exitWithError('USAGE', `Unknown whatsapp command: ${verb}. Run 'con help whatsapp'.`, flags)
   }
@@ -100,5 +106,41 @@ async function waContacts(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const query = opts.query ? `?query=${encodeURIComponent(opts.query)}` : ''
   const data = await hubFetch(`/whatsapp/contacts${query}`)
+  output(data, flags)
+}
+
+async function waCall(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const to = (args.find((a) => !a.startsWith('--')) ?? opts.to ?? '').trim()
+  const task = (opts.task ?? '').trim()
+  if (!to || !task) exitWithError('USAGE', 'Usage: con whatsapp call <phone|jid|slug> --task "why you are calling and what to achieve"', flags)
+  const data = await hubFetch('/voice/call', { method: 'POST', body: { to, task } })
+  output(data, flags)
+}
+
+async function waCalls(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const limit = Number(opts.last ?? opts.limit ?? 20)
+  const data = await hubFetch(`/voice/calls?limit=${Number.isFinite(limit) && limit > 0 ? limit : 20}`)
+  output(data, flags)
+}
+
+async function waVoice(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  if (opts.qr !== undefined) {
+    const res = await hubFetch<Response>('/voice/qr', { raw: true })
+    if (!res.ok) {
+      exitWithError('NOT_FOUND', `No voice-device QR (status ${res.status}) — wa-voice is paired, down, or not yet asking.`, flags)
+      return
+    }
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (typeof opts.qr === 'string' && opts.qr !== 'true') {
+      writeFileSync(opts.qr, buf)
+      return output({ ok: true, path: opts.qr, bytes: buf.length }, flags)
+    }
+    process.stdout.write(buf)
+    return
+  }
+  const data = await hubFetch('/voice/status')
   output(data, flags)
 }

@@ -1,0 +1,36 @@
+[package]
+name = "wa-voice"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "WhatsApp voice-call sidecar for the Console hub: linked device #2 on AL's account, calls over a local WebSocket as 16 kHz PCM"
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+bytes = "1"
+env_logger = "0.11"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+log = "0.4"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.26"
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust.git", rev = "908e62b6a83e2ba714a758dcdc8f1c191e45a256", default-features = false, features = [
+    "sqlite-storage",
+    "sqlite-storage-bundled",
+    "tokio-transport",
+    "ureq-client",
+    "tokio-native",
+    "signal",
+    "voip-mlow",
+    "voip-libopus",
+    "voip-relay-native",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

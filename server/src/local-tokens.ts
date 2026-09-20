@@ -1,8 +1,6 @@
-// Local plaintext bearer cache for same-machine clients (CLI + Al) and for
-// the one remote caller the hub itself configures (Atoms voice — see
-// al/voice.ts, which pushes the `voice` token into the Atoms tool + webhook
-// headers so those callbacks pass the normal auth wall instead of being
-// exempt from it).
+// Local plaintext bearer cache for same-machine clients: the CLI, Al, and the
+// voice pipeline (voice/pipeline/ reads the `voice` token to call
+// /voice/context, /voice/delegate and /voice/transcript — see al/voice.ts).
 //
 // The hub never stores plaintext bearers — only sha256 hashes. But the CLI
 // and Al run as the same unix user on the same machine, so a 0600 sidecar
@@ -76,7 +74,7 @@ export function ensureLocalTokens(store: AuthStore): { cli: string; al: string; 
   const scopes: Array<{ scope: HubTokenScope; key: LocalTokenScope; name: string }> = [
     { scope: 'cli', key: 'cli', name: 'local-cli' },
     { scope: 'al', key: 'al', name: 'local-al' },
-    { scope: 'voice', key: 'voice', name: 'atoms-voice' },
+    { scope: 'voice', key: 'voice', name: 'voice-pipeline' },
   ]
 
   for (const { scope, key, name } of scopes) {

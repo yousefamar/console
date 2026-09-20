@@ -8,16 +8,18 @@
 //   POST /whatsapp/delete {to,messageId}  → { ok }
 //   GET  /whatsapp/contacts?query=…       → { contacts: [...] }
 //
-//   GET  /voice/health                    → { ok: true }
-//   POST /voice/delegate                  → { response }   (called by Atoms during a call)
-//   POST /voice/call {phoneNumber,context} → { callId } | { error }
-//   POST /voice/webhook                   → { ok }         (Atoms post-call)
+//   GET  /voice/health                    → { ok: true }                (the only open one)
+//   GET  /voice/status                    → { sidecar, pipeline }
+//   GET  /voice/qr                        → image/png pairing QR for the wa-voice device (404 when paired)
+//   GET  /voice/context?jid&task&direction → { answer, why, systemPrompt, displayName, user, jid }
+//   POST /voice/delegate {request,callerPhone,callId} → { response }   (pipeline, mid-call)
+//   POST /voice/transcript {callId,jid,direction,outcome,turns,…}     → { ok, file }  (pipeline, post-call)
+//   POST /voice/call {to,task}            → { ok, callId, to } | { error }  (→ pipeline → sidecar)
+//   GET  /voice/calls?limit=N             → { calls: [...] }
 //
-// Every route here requires the hub bearer — the voice callbacks included.
-// Atoms reaches /voice/delegate + /voice/webhook from the public internet via
-// al.amar.io → Caddy → hub carrying `Authorization: Bearer <voice token>`,
-// which the hub itself installs on the Atoms tool + webhook config
-// (al/voice.ts syncVoiceAuth). Only /voice/health is exempt.
+// Every route here requires the hub bearer. The voice pipeline is a local
+// process (voice/pipeline/) carrying the `voice`-scoped token from
+// local-tokens.json; only /voice/health is exempt. Atoms is gone (^wise-lark).
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -27,8 +29,16 @@ import * as tts from '../al/tts.js'
 import * as voice from '../al/voice.js'
 import { record as recordHistory } from '../al/wa-history.js'
 import { resolveUsername, ensureUserKnown } from '../al/users.js'
-import { getAlSession } from '../al/al-session.js'
+import { getAlSession, injectToAl } from '../al/al-session.js'
 import { WORKSPACE_DIR } from '../al/identity.js'
+import QRCode from 'qrcode'
+
+/** Hub-side wiring the voice routes need but the route signature lacks: the
+ *  SPA broadcast for AL injections. Set once from index.ts at boot. */
+let voiceBroadcast: ((msg: any) => void) | null = null
+export function setVoiceRouteContext(ctx: { broadcast: (msg: any) => void }): void {
+  voiceBroadcast = ctx.broadcast
+}
 
 function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -141,11 +151,45 @@ export function handleAlRoutes(
   }
 
   // ----------------------------------------------------------------------
-  // Voice (Atoms integration)
+  // Voice (WhatsApp calls via wa-voice + al-voice-pipeline)
   // ----------------------------------------------------------------------
 
   if (path === '/voice/health' && req.method === 'GET') {
     jsonResponse(res, 200, { ok: true })
+    return true
+  }
+
+  if (path === '/voice/status' && req.method === 'GET') {
+    voice.pipelineHealth().then((pipeline) => jsonResponse(res, 200, { sidecar: voice.getSidecarStatus(), pipeline }))
+    return true
+  }
+
+  if (path === '/voice/qr' && req.method === 'GET') {
+    const code = voice.getSidecarQr()
+    if (!code) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' })
+      res.end('No voice-device QR available. wa-voice is paired, down, or not yet awaiting a scan.')
+      return true
+    }
+    QRCode.toBuffer(code, { width: 300 }).then((buf) => {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store, must-revalidate' })
+      res.end(buf)
+    }).catch((err: Error) => jsonResponse(res, 500, { error: err.message }))
+    return true
+  }
+
+  if (path === '/voice/context' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const jid = (url.searchParams.get('jid') || '').trim()
+    const task = url.searchParams.get('task') || undefined
+    const direction = url.searchParams.get('direction') === 'out' ? 'out' : 'in'
+    if (!jid || !voice.normalisePhone(jid.split('@')[0]!)) return (jsonResponse(res, 400, { error: 'missing or non-phone jid' }), true)
+    voice.buildCallContext(jid, { task, direction })
+      .then((ctx) => {
+        console.log(`[al/voice] context for ${jid} (${direction}): answer=${ctx.answer} (${ctx.why}), ${ctx.systemPrompt.length} chars`)
+        jsonResponse(res, 200, ctx)
+      })
+      .catch((err: Error) => jsonResponse(res, 500, { error: err.message }))
     return true
   }
 
@@ -158,24 +202,62 @@ export function handleAlRoutes(
 
   if (path === '/voice/call' && req.method === 'POST') {
     readBody(req).then(async (body) => {
-      const { phoneNumber, context } = JSON.parse(body || '{}') as { phoneNumber?: string; context?: string }
-      if (!phoneNumber) return jsonResponse(res, 400, { error: 'missing phoneNumber' })
-      const result = await voice.makeOutboundCall(phoneNumber, context ?? '')
-      jsonResponse(res, result.error ? 500 : 200, result)
+      const b = JSON.parse(body || '{}') as { to?: string; task?: string; phoneNumber?: string; context?: string }
+      const to = (b.to ?? b.phoneNumber ?? '').trim()
+      const task = (b.task ?? b.context ?? '').trim()
+      if (!to) return jsonResponse(res, 400, { error: 'missing to' })
+      const result = await voice.requestOutboundCall(to, task)
+      if (result.ok) {
+        console.log(`[al/voice] outbound call ${result.callId} → ${result.to}: ${task.slice(0, 80)}`)
+        return jsonResponse(res, 200, result)
+      }
+      jsonResponse(res, result.status, { error: result.error })
     }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
     return true
   }
 
-  if (path === '/voice/webhook' && req.method === 'POST') {
+  if (path === '/voice/transcript' && req.method === 'POST') {
     readBody(req).then(async (body) => {
+      const p = JSON.parse(body || '{}') as Partial<voice.CallTranscript>
+      if (!voice.isSafeCallId(p.callId)) return jsonResponse(res, 400, { error: 'missing or unsafe callId' })
+      if (typeof p.jid !== 'string' || !voice.normalisePhone(p.jid.split('@')[0]!)) return jsonResponse(res, 400, { error: 'missing or non-phone jid' })
+      const payload: voice.CallTranscript = {
+        callId: p.callId,
+        jid: p.jid,
+        user: typeof p.user === 'string' ? p.user : null,
+        displayName: typeof p.displayName === 'string' ? p.displayName : undefined,
+        direction: p.direction === 'out' ? 'out' : 'in',
+        outcome: typeof p.outcome === 'string' ? p.outcome : 'completed',
+        reason: typeof p.reason === 'string' ? p.reason : null,
+        task: typeof p.task === 'string' ? p.task : null,
+        startedAt: typeof p.startedAt === 'string' ? p.startedAt : null,
+        answeredAt: typeof p.answeredAt === 'string' ? p.answeredAt : null,
+        durationMs: Number(p.durationMs) || 0,
+        turns: Array.isArray(p.turns)
+          ? p.turns.filter((t) => t && typeof t.text === 'string').map((t) => ({ role: t.role === 'user' ? 'user' : 'assistant', text: t.text, t: typeof t.t === 'number' ? t.t : undefined }))
+          : [],
+        delegations: Number(p.delegations) || 0,
+        latency: p.latency,
+        models: p.models,
+      }
       try {
-        const payload = body ? JSON.parse(body) : {}
-        await voice.handleWebhook(payload)
-        jsonResponse(res, 200, { ok: true })
+        const alJid = wa.ownNumber() ? `${wa.ownNumber()}@s.whatsapp.net` : (voice.getSidecarStatus().jid ?? 'al')
+        const { envelope, file, displayName } = await voice.foldBackCall(payload, alJid)
+        const injected = voiceBroadcast ? injectToAl(envelope, voiceBroadcast) : false
+        console.log(`[al/voice] call ${payload.callId} with ${displayName}: ${payload.outcome}, ${payload.turns.length} turns → ${file}${injected ? ', folded into AL' : ', AL not injected'}`)
+        jsonResponse(res, 200, { ok: true, file, injected })
       } catch (err) {
         jsonResponse(res, 500, { error: (err as Error).message })
       }
     }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
+    return true
+  }
+
+  if (path === '/voice/calls' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 20))
+    voice.listCallTranscripts(limit).then((calls) => jsonResponse(res, 200, { calls }))
+      .catch((err: Error) => jsonResponse(res, 500, { error: err.message }))
     return true
   }
 

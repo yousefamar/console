@@ -23,7 +23,7 @@ Services:
   event        Hub event bus — topics, log, tail, emit (what happened)
   listen       Event-driven rules — add, list, test, pause (react to it without polling)
   mic          System mic owner + push-to-talk routing
-  whatsapp     WhatsApp (via AL) — send, contacts, status
+  whatsapp     WhatsApp (via AL) — send, call, calls, voice, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav, teleprompt
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema

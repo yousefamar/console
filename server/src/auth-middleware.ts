@@ -95,15 +95,14 @@ export function isAlwaysOpenPath(path: string, method: string): boolean {
   // routes/webhooks.ts validates it — the management surface under
   // /webhooks/* stays behind the wall.
   if (isWebhookInboundPath(path)) return true
-  // Voice: Atoms calls /voice/delegate + /voice/webhook from the public
-  // internet via al.amar.io → Caddy → hub, and they are NOT exempt — the hub
-  // configures both callbacks itself (al/voice.ts syncVoiceAuth) with an
-  // `Authorization: Bearer <voice-scoped token>` header, so they pass the
-  // bearer check in decide() like any other client. An earlier exemption
-  // here claimed "they authenticate via their own signed payloads" — nothing
-  // ever verified a signature, so /voice/delegate was an unauthenticated write
-  // primitive into Al's session (opsec rem #63, ^gold-hare). Only the
-  // credential-free health probe stays open.
+  // Voice: the call pipeline (voice/pipeline/, a local process) hits
+  // /voice/context, /voice/delegate and /voice/transcript carrying the
+  // `voice`-scoped bearer from local-tokens.json, so it passes the bearer
+  // check in decide() like any other client — nothing under /voice is exempt.
+  // (The Atoms-era exemption here claimed "they authenticate via their own
+  // signed payloads"; nothing ever verified a signature, so /voice/delegate
+  // was an unauthenticated write primitive into Al's session — opsec rem #63,
+  // ^gold-hare.) Only the credential-free health probe stays open.
   if (path === '/voice/health') return true
   return false
 }

@@ -8,3 +8,9 @@ dist
 *.crt
 *.key
 **/.claude/scheduled_tasks.lock
+
+# voice sidecars (^wise-lark): build outputs + venv + harness audio
+voice/wa-voice/target/
+voice/pipeline/.venv/
+voice/pipeline/tests/*.wav
+voice/pipeline/**/__pycache__/

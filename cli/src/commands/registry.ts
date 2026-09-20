@@ -678,6 +678,17 @@ export const COMMANDS: CommandDef[] = [
     flags: { to: { type: 'string', description: 'Recipient JID (required)' } } },
   { name: 'whatsapp contacts', description: 'List workspace contacts (JID lookup; source: ~/.local/share/al/workspace/users/*.md)', safety: 'read',
     flags: { query: { type: 'string', description: 'Filter (substring of username or identifier)' } } },
+  { name: 'whatsapp call', description: 'AL phones someone on WhatsApp from his own account, speaking in Yousef\'s cloned voice with full context (their users/ file, recent thread, open threads). Refused for numbers AL has never chatted with. The transcript folds back into AL\'s session after the call.', safety: 'write',
+    args: [{ name: 'to', required: true, description: 'Phone, JID or users/ slug (e.g. yousef)' }],
+    flags: { task: { type: 'string', description: 'Why AL is calling and what to achieve (required)' } },
+    examples: [
+      'con whatsapp call yousef --task "Confirm he is free for the 3pm call and ask what he wants for dinner."',
+      'con whatsapp call 447700900123 --task "Remind them the invoice is due Friday."',
+    ] },
+  { name: 'whatsapp calls', description: 'Recent WhatsApp call transcripts (newest first)', safety: 'read',
+    flags: { last: { type: 'string', description: 'How many (default 20)' } } },
+  { name: 'whatsapp voice', description: 'Voice-device status: wa-voice sidecar (linked device #2) connection + pairing state, and the call pipeline\'s health. --qr fetches the pairing QR PNG when unpaired.', safety: 'read',
+    flags: { qr: { type: 'string', description: 'Write the pairing QR PNG to this path (or stdout with no value)' } } },
 
   // mic — push-to-talk ownership + capture. A single owner session (default
   // Al) receives PTT transcripts; agents can pass the mic to each other.

@@ -135,9 +135,10 @@ import { GlassesHub } from './glasses-hub.js'
 import { handleGlassesRoutes } from './routes/glasses.js'
 import { PenHub } from './pen-hub.js'
 import { handlePenRoutes } from './routes/pen.js'
-import { handleAlRoutes } from './routes/al.js'
+import { handleAlRoutes, setVoiceRouteContext } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
-import { syncVoiceAuth } from './al/voice.js'
+import { startSidecarRelay as startVoiceSidecarRelay } from './al/voice.js'
+import QRCode from 'qrcode'
 import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
@@ -2769,10 +2770,33 @@ httpServer.listen(port, host, () => {
         setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
         const alSession = await ensureAlSession(agentCtx)
         log(`AL session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
-        // Atoms carries the hub's voice bearer on every callback — push the
-        // current token (+ prompt) so the first inbound call passes the auth
-        // wall. Fire-and-forget: Atoms being down must not block AL's boot.
-        syncVoiceAuth().catch((err: Error) => log(`[al/voice] auth sync failed: ${err.message}`))
+        // WhatsApp voice calls: the hub only relays the wa-voice sidecar's
+        // pairing QR into AL's session (same path as Baileys' QR) and gives
+        // the transcript route a way to inject the fold-back envelope. The
+        // sidecar + pipeline are separate pm2 processes; them being down must
+        // not block AL's boot.
+        setVoiceRouteContext({ broadcast })
+        // An unpaired sidecar reissues QRs for as long as nobody scans; each
+        // injection costs AL a turn, so relay one every 10 min at most and
+        // point at `con whatsapp voice --qr` for a fresh one in between.
+        let lastVoiceQrInject = 0
+        startVoiceSidecarRelay({
+          onQr: (code, timeoutSecs) => {
+            if (Date.now() - lastVoiceQrInject < 10 * 60_000) return
+            lastVoiceQrInject = Date.now()
+            QRCode.toDataURL(code, { width: 300 }, (err, dataUrl) => {
+              if (err) return console.error('[al/voice] QR render failed:', err.message)
+              injectToAl([
+                '[Hub event] The WhatsApp VOICE device (wa-voice, linked device #2 for calls) needs pairing.',
+                `Yousef scans this with the AL phone: WhatsApp → Linked devices → Link a device. Valid ~${timeoutSecs}s; if it has expired, \`con whatsapp voice --qr /tmp/wa-voice-qr.png\` fetches the current one. Nothing for you to do beyond telling him if he asks.`,
+                '',
+                `![wa-voice QR](${dataUrl})`,
+              ].join('\n'), broadcast)
+            })
+          },
+          onReady: (jid) => log(`[al/voice] wa-voice connected as ${jid}`),
+          onLoggedOut: () => injectToAl('[Hub event] The WhatsApp VOICE device (wa-voice) was logged out; a fresh QR follows when it reconnects.', broadcast),
+        })
         // Conversation-fork router: restores the thread→fork table + starts the
         // idle sweep (merge-or-reap). Must run before WhatsApp so early inbound
         // routes correctly.
