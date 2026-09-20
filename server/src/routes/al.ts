@@ -165,13 +165,13 @@ export function handleAlRoutes(
   }
 
   if (path === '/voice/qr' && req.method === 'GET') {
-    const code = voice.getSidecarQr()
-    if (!code) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' })
-      res.end('No voice-device QR available. wa-voice is paired, down, or not yet awaiting a scan.')
-      return true
-    }
-    QRCode.toBuffer(code, { width: 300 }).then((buf) => {
+    voice.requestSidecarQr().then(async (code) => {
+      if (!code) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('No voice-device QR available. wa-voice is paired, down, or did not issue one within 8 s.')
+        return
+      }
+      const buf = await QRCode.toBuffer(code, { width: 300 })
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store, must-revalidate' })
       res.end(buf)
     }).catch((err: Error) => jsonResponse(res, 500, { error: err.message }))

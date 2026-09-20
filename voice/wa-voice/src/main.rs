@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
             Ok(Exit::Restart(why)) => {
                 info!("restarting WhatsApp client: {why}");
                 backoff = Duration::from_secs(2);
-                if why.contains("QR") {
+                if why.contains("QR codes exhausted") {
                     // Nobody scanned a whole batch; do not hammer the pairing
                     // endpoint (and the hub's QR relay) — the next batch can wait.
                     info!("pairing batch unused; next QR batch in 3 min");
@@ -172,6 +172,7 @@ async fn run_once(db_path: &std::path::Path, calls: Arc<CallManager>) -> Result<
         _ = &mut handle => Exit::Restart("client run loop ended".into()),
         _ = shutdown_signal() => Exit::Shutdown,
         Some(x) = restart_rx.recv() => x,
+        _ = calls.repair.notified() => Exit::Restart("repair requested".into()),
     };
     calls.set_disconnected("client stopped");
     handle.shutdown().await;

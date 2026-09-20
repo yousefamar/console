@@ -511,6 +511,23 @@ export function getSidecarQr(): string | null {
   return relayQr && Date.now() - relayQr.at < 60_000 ? relayQr.code : null
 }
 
+/** The current QR, or ask the sidecar for a fresh batch (`repair`) and wait
+ *  for the first code. Null when paired, when the socket is down, or when
+ *  nothing arrived within `waitMs`. */
+export async function requestSidecarQr(waitMs = 8000): Promise<string | null> {
+  const now = getSidecarQr()
+  if (now) return now
+  if (relayStatus.paired || !relaySocket || relaySocket.readyState !== WebSocket.OPEN) return null
+  try { relaySocket.send(JSON.stringify({ cmd: 'repair' })) } catch { return null }
+  const deadline = Date.now() + waitMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250))
+    const code = getSidecarQr()
+    if (code) return code
+  }
+  return null
+}
+
 /** Applies one sidecar event to the relay state; exported for tests. */
 export function applySidecarEvent(ev: Record<string, unknown>, cb: Partial<SidecarRelayCallbacks>): void {
   switch (ev.ev) {

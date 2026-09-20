@@ -67,6 +67,8 @@ pub struct CallManager {
     bcast: Broadcaster,
     client: RwLock<Option<Arc<Client>>>,
     state: Mutex<State>,
+    /// Fired by `repair`; main's run loop restarts the client for a fresh QR batch.
+    pub repair: tokio::sync::Notify,
 }
 
 impl CallManager {
@@ -75,6 +77,7 @@ impl CallManager {
             bcast,
             client: RwLock::new(None),
             state: Mutex::new(State::default()),
+            repair: tokio::sync::Notify::new(),
         }
     }
 
@@ -206,6 +209,13 @@ impl CallManager {
             Command::Status { id } => {
                 let ev = self.status(id).await;
                 self.bcast.event(&ev);
+            }
+            Command::Repair { id } => {
+                if self.st().paired {
+                    return self.err(None, id, "already paired; nothing to repair");
+                }
+                self.bcast.event(&Event::Ack { cmd: "repair", call_id: None, slot: None, id });
+                self.repair.notify_one();
             }
             Command::Ping => self.bcast.event(&Event::Pong),
         }

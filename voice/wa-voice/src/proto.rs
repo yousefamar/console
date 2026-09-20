@@ -40,6 +40,12 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Not paired: drop the current connection and ask WhatsApp for a fresh QR
+    /// batch right now (skips the between-batch pause).
+    Repair {
+        #[serde(default)]
+        id: Option<String>,
+    },
     Ping,
 }
 
