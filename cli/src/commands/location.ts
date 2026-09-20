@@ -1,0 +1,207 @@
+// con location — where Yousef is (OwnTracks via the hub), plus server-side
+// geofences whose transitions wake agents / POST to a URL.
+//
+//   con location                          latest fix: coords, accuracy, age, battery, fences he is inside
+//   con location history [--from D --to D] Recorder history for a day range
+//   con location geofence list|add|remove
+//   con location events [--limit N] [--fence id]
+//   con location test <fence-id> [--event enter|leave]
+//   con location refresh
+//
+// The raw fix is owner-grade data: anything relaying it to a third party goes
+// through AL's disclosure policy (`~/exec/where.py --for <user>`), not this.
+
+import { hubFetch } from '../client.js'
+import { output, info, exitWithError, type GlobalFlags } from '../output.js'
+import { parseFlags, unknownFlags } from './util.js'
+
+const BOOLEAN_FLAGS = new Set(['private'])
+
+function positionals(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (!a.startsWith('--')) { out.push(a); continue }
+    if (!a.includes('=') && !BOOLEAN_FLAGS.has(a.slice(2)) && i + 1 < args.length && !args[i + 1]!.startsWith('--')) i++
+  }
+  return out
+}
+
+function flagsOf(args: string[], allowed: readonly string[], flags: GlobalFlags): Record<string, string> {
+  const opts = parseFlags(args)
+  const bad = unknownFlags(opts, allowed)
+  if (bad.length) exitWithError('USAGE', `Unknown flag(s): ${bad.map((b) => `--${b}`).join(', ')}. Allowed: ${allowed.map((a) => `--${a}`).join(', ') || 'none'}`, flags)
+  return opts
+}
+
+interface Fix { lat: number; lon: number; tst: number; acc?: number; batt?: number; vel?: number; device?: string; user?: string }
+interface Current { fix: Fix | null; ageS: number | null; inside: Array<{ id: string; name: string; private: boolean }>; polledAt: number | null; lastError: string | null; fences: number }
+interface FenceView {
+  id: string; name: string; lat: number; lon: number; radius: number; wake: string[]; url?: string; urlToken?: string; private?: boolean; on: string; note?: string; expiresAt?: number; createdAt: number; createdBy?: string
+  state: { inside: boolean; since: number; tst: number } | null
+  wakeLive: Array<{ key: string; live: boolean }>
+}
+interface GeofenceEvent { id: string; ts: number; fenceId: string; fenceName: string; event: 'enter' | 'leave'; fix: Fix; dwellS: number; test?: boolean; delivered: Array<{ to: string; ok: boolean; detail?: string }> }
+
+const when = (ms: number | null | undefined) => ms ? new Date(ms).toLocaleString('en-GB', { timeZone: 'Europe/London', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '—'
+const ago = (s: number | null | undefined) => s == null ? '—' : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${(s / 3600).toFixed(1)} h ago` : `${Math.round(s / 86400)} d ago`
+const coords = (f: { lat: number; lon: number }) => `${f.lat.toFixed(5)},${f.lon.toFixed(5)}`
+
+export async function location(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
+  switch (verb) {
+    case undefined:
+    case 'now':
+    case 'last': return locationNow(args, flags)
+    case 'refresh': return locationNow(args, flags, true)
+    case 'history': return locationHistory(args, flags)
+    case 'geofence':
+    case 'fence': return geofence(args[0], args.slice(1), flags)
+    case 'events': return locationEvents(args, flags)
+    case 'test': return locationTest(args, flags)
+    default:
+      exitWithError('USAGE', `Unknown location command: ${verb}. Verbs: now, refresh, history, geofence, events, test. Run 'con help location'.`, flags)
+  }
+}
+
+function describe(d: Current): string[] {
+  if (!d.fix) return [`No fix known${d.lastError ? ` — ${d.lastError}` : ' (OwnTracks unconfigured or Recorder unreachable)'}`]
+  const f = d.fix
+  const parts = [coords(f)]
+  if (f.acc != null) parts.push(`±${Math.round(f.acc)} m`)
+  parts.push(ago(d.ageS), when(f.tst * 1000))
+  if (f.batt != null) parts.push(`battery ${f.batt} %`)
+  if (f.vel != null && f.vel > 0) parts.push(`${f.vel} km/h`)
+  const lines = [parts.join(' · ')]
+  lines.push(d.inside.length ? `Inside: ${d.inside.map((i) => `${i.name}${i.private ? ' (private)' : ''}`).join(', ')}` : `Inside: none of ${d.fences} fence${d.fences === 1 ? '' : 's'}`)
+  lines.push(`https://maps.google.com/?q=${f.lat},${f.lon}`)
+  if (d.lastError) lines.push(`Last poll error: ${d.lastError}`)
+  return lines
+}
+
+async function locationNow(args: string[], flags: GlobalFlags, refresh = false): Promise<void> {
+  flagsOf(args, [], flags)
+  const d = refresh ? await hubFetch<Current>('/location/refresh', { method: 'POST', body: {} }) : await hubFetch<Current>('/location')
+  if (flags.json) { output(d, flags); return }
+  for (const l of describe(d)) info(l)
+}
+
+// con location history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--limit N] — Recorder day range (default today).
+async function locationHistory(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['from', 'to', 'limit', 'user', 'device'], flags)
+  const cur = await hubFetch<Current>('/location')
+  const user = opts.user ?? cur.fix?.user ?? 'amar'
+  const device = opts.device ?? cur.fix?.device ?? 'armor'
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/London' })
+  const from = opts.from ?? today
+  const to = opts.to ?? from
+  const d = await hubFetch<{ count?: number; data?: Array<Fix & { isolocal?: string }> } | Array<Fix & { isolocal?: string }>>('/owntracks/locations', { params: { user, device, from, to, format: 'json' } })
+  const rows = Array.isArray(d) ? d : d.data ?? []
+  const limit = Number(opts.limit ?? 0) || 0
+  const shown = limit ? rows.slice(-limit) : rows
+  if (flags.json) { output({ user, device, from, to, count: rows.length, data: shown }, flags); return }
+  info(`${rows.length} fixes for ${user}/${device} ${from}${to !== from ? ` → ${to}` : ''}${limit && rows.length > limit ? ` (last ${limit})` : ''}`)
+  for (const r of shown) info(`${r.isolocal ?? new Date(r.tst * 1000).toISOString()}  ${coords(r)}${r.acc != null ? `  ±${Math.round(r.acc)} m` : ''}${r.vel ? `  ${r.vel} km/h` : ''}`)
+}
+
+async function geofence(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
+  switch (verb) {
+    case undefined:
+    case 'list': return fenceList(args, flags)
+    case 'add':
+    case 'set': return fenceAdd(args, flags)
+    case 'remove':
+    case 'rm': return fenceRemove(args, flags)
+    default:
+      exitWithError('USAGE', `Unknown geofence command: ${verb}. Verbs: list, add, remove.`, flags)
+  }
+}
+
+async function fenceList(args: string[], flags: GlobalFlags): Promise<void> {
+  flagsOf(args, [], flags)
+  const d = await hubFetch<{ fences: FenceView[] }>('/location/geofences')
+  if (flags.json) { output(d, flags); return }
+  if (!d.fences.length) { info('No geofences — con location geofence add <name> --at "<address>" --radius 150'); return }
+  for (const f of d.fences) {
+    const st = f.state ? `${f.state.inside ? 'INSIDE' : 'outside'} since ${when(f.state.since)}` : 'no fix yet'
+    const wake = f.wakeLive.map((w) => `@${w.key}${w.live ? '' : '(not live)'}`).join(',') || 'nobody'
+    info(`${f.id.padEnd(22)} ${coords(f)} r ${Math.round(f.radius)} m  ${st}  on ${f.on} → ${wake}${f.url ? ` + POST ${f.url}` : ''}${f.private ? '  [private]' : ''}${f.expiresAt ? `  expires ${when(f.expiresAt)}` : ''}`)
+    if (f.note) info(`  ${f.note}`)
+  }
+}
+
+/** `+90m` / `+2h` / `+1d` / ISO → epoch ms. */
+export function parseExpires(v: string, nowMs = Date.now()): number {
+  const m = /^\+(\d+)([mhd])$/.exec(v.trim())
+  if (m) return nowMs + Number(m[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 'm' | 'h' | 'd']
+  const t = Date.parse(v)
+  if (!Number.isFinite(t)) throw new Error(`bad --expires "${v}" (use +90m, +2h, +1d or an ISO datetime)`)
+  return t
+}
+
+// con location geofence add <name> (--at "<address>" | --lat --lon) --radius M [--id] [--wake al,ceo]
+//   [--url https://…] [--url-token T] [--private] [--on enter|leave|both] [--expires +2h] [--note …]
+async function fenceAdd(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['at', 'lat', 'lon', 'radius', 'id', 'wake', 'url', 'url-token', 'private', 'on', 'expires', 'note'], flags)
+  const name = positionals(args).join(' ').trim()
+  if (!name) exitWithError('USAGE', 'Usage: con location geofence add <name> (--at "<address>" | --lat L --lon L) --radius <m> [--wake al,ceo] [--url …] [--private] [--on enter|leave|both] [--expires +2h] [--note …]', flags)
+  let lat = opts.lat != null ? Number(opts.lat) : NaN
+  let lon = opts.lon != null ? Number(opts.lon) : NaN
+  let resolved: string | undefined
+  if (opts.at) {
+    const cur = await hubFetch<Current>('/location').catch(() => null)
+    const params: Record<string, string> = { q: opts.at }
+    if (cur?.fix) { params.lat = String(cur.fix.lat); params.lon = String(cur.fix.lon); params.radius = '50000' }
+    const g = await hubFetch<{ results: Array<{ name: string; address?: string; lat: number; lon: number }> }>('/gmaps/search', { params })
+    const hit = g.results[0]
+    if (!hit) exitWithError('NOT_FOUND', `Nothing found for "${opts.at}"`, flags)
+    lat = hit!.lat; lon = hit!.lon; resolved = `${hit!.name}${hit!.address ? `, ${hit!.address}` : ''}`
+  }
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) exitWithError('USAGE', 'Give --at "<address>" or both --lat and --lon', flags)
+  const radius = Number(opts.radius ?? 150)
+  let expiresAt: number | undefined
+  if (opts.expires) { try { expiresAt = parseExpires(opts.expires) } catch (e) { exitWithError('USAGE', (e as Error).message, flags) } }
+  const body: Record<string, unknown> = { name, lat, lon, radius, on: opts.on ?? 'both' }
+  if (opts.id) body.id = opts.id
+  if (opts.wake) body.wake = opts.wake
+  if (opts.url) body.url = opts.url
+  if (opts['url-token']) body.urlToken = opts['url-token']
+  if (opts.private) body.private = true
+  if (expiresAt) body.expiresAt = expiresAt
+  const note = [opts.note, resolved ? `at ${resolved}` : undefined].filter(Boolean).join(' — ')
+  if (note) body.note = note
+  const d = await hubFetch<{ fence: FenceView; created: boolean }>('/location/geofences', { method: 'POST', body })
+  if (flags.json) { output(d, flags); return }
+  const f = d.fence
+  info(`${d.created ? 'Created' : 'Updated'} fence "${f.id}" — ${coords(f)} r ${Math.round(f.radius)} m${resolved ? ` (${resolved})` : ''}`)
+  info(`  wakes ${f.wakeLive.map((w) => `@${w.key}${w.live ? '' : ' (not live)'}`).join(', ') || 'nobody'} on ${f.on}${f.url ? `; POSTs ${f.url}` : ''}${f.private ? '; private' : ''}${f.expiresAt ? `; expires ${when(f.expiresAt)}` : ''}`)
+  info(`  state now: ${f.state ? (f.state.inside ? 'INSIDE' : 'outside') : 'no fix yet'}`)
+}
+
+async function fenceRemove(args: string[], flags: GlobalFlags): Promise<void> {
+  flagsOf(args, [], flags)
+  const id = positionals(args)[0]
+  if (!id) exitWithError('USAGE', 'Usage: con location geofence remove <id>', flags)
+  const d = await hubFetch<{ removed: string }>(`/location/geofences/${encodeURIComponent(id!)}`, { method: 'DELETE' })
+  if (flags.json) { output(d, flags); return }
+  info(`Removed fence "${d.removed}"`)
+}
+
+async function locationEvents(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['limit', 'fence'], flags)
+  const d = await hubFetch<{ events: GeofenceEvent[] }>('/location/events', { params: { limit: opts.limit ?? '20', fence: opts.fence } })
+  if (flags.json) { output(d, flags); return }
+  if (!d.events.length) { info('No geofence events yet.'); return }
+  for (const e of d.events) {
+    const to = e.delivered.map((x) => `${x.ok ? '✓' : '✗'} ${x.to}${!x.ok && x.detail ? ` (${x.detail})` : ''}`).join(', ') || 'nobody'
+    info(`${when(e.ts)}  ${e.test ? 'TEST ' : ''}${e.event.toUpperCase().padEnd(5)} ${e.fenceId.padEnd(22)} after ${ago(e.dwellS).replace(' ago', '')} ${e.event === 'enter' ? 'away' : 'inside'}  → ${to}`)
+  }
+}
+
+async function locationTest(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['event'], flags)
+  const id = positionals(args)[0]
+  if (!id) exitWithError('USAGE', 'Usage: con location test <fence-id> [--event enter|leave]', flags)
+  const d = await hubFetch<{ event: GeofenceEvent }>(`/location/geofences/${encodeURIComponent(id!)}/test`, { method: 'POST', body: { event: opts.event ?? 'enter' } })
+  if (flags.json) { output(d, flags); return }
+  info(`Fired TEST ${d.event.event} for "${d.event.fenceId}" → ${d.event.delivered.map((x) => `${x.ok ? '✓' : '✗'} ${x.to}${!x.ok && x.detail ? ` (${x.detail})` : ''}`).join(', ') || 'nobody to notify'}`)
+}

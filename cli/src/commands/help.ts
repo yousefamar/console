@@ -26,6 +26,7 @@ Services:
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
   webhook      Inbound project webhooks — setup, status, list, show, test, redeliver
+  location     Where Yousef is (OwnTracks) + geofences — now, history, geofence, events, test
 
 System:
   auth         Manage accounts — login, logout, status
@@ -288,6 +289,39 @@ Examples:
   con glasses nav exit
   con glasses timer 10m
   con glasses timer cancel
+`.trim(),
+
+  location: `
+con location — where Yousef is (OwnTracks via the hub) + server-side geofences
+
+Commands:
+  [now]                               Latest fix: coords, ±accuracy, age, battery, fences he is inside
+  refresh                             Poll the Recorder now, then as 'now'
+  history [--from D] [--to D] [--limit N]
+                                      Recorder fixes for a day range (default today), oldest first
+  geofence list                       Every fence with INSIDE/outside state and who it wakes
+  geofence add <name> (--at "<address>" | --lat L --lon L) [--radius M] [--id slug]
+               [--wake al,ceo] [--url https://…] [--url-token T] [--private]
+               [--on enter|leave|both] [--expires +2h|ISO] [--note …]
+                                      Create/replace a circular fence (default r 150 m, wakes @al on both).
+                                      --at geocodes via Google Places; --expires makes it one-shot
+                                      (a meeting venue that self-prunes); --private = a privacy zone
+                                      that disclosure tools name but never locate (home).
+  geofence remove <id>
+  events [--limit N] [--fence id]     Transitions, newest first, with who was notified
+  test <fence-id> [--event enter|leave]
+                                      Fire a synthetic transition through the real wake/POST pipeline
+
+How it works: the hub polls the OwnTracks Recorder (maps.amar.io) every 60 s
+for the latest fix, runs it through every fence with hysteresis (leave needs
+radius + max(30 m, 15 %); a fix coarser than the fence is ignored), and on a
+transition appends to ~/.config/console/geofence-events.jsonl, wakes each
+'wake' agent with a [GEOFENCE — Yousef ENTERED/LEFT "<name>"] envelope, and
+POSTs the event JSON to the fence's url (Bearer url-token) if set. A new fence
+is initialised silently from the current fix — events are transitions only.
+
+The fix is owner-grade data. Relaying it to anyone else goes through AL's
+disclosure policy (~/exec/where.py --for <user>), never straight from here.
 `.trim(),
 
   webhook: `

@@ -151,6 +151,11 @@ async function main() {
         await webhook(verb, rest, flags)
         break
       }
+      case 'location': {
+        const { location } = await import('./commands/location.js')
+        await location(verb, rest, flags)
+        break
+      }
       case 'whatsapp': {
         const { whatsapp } = await import('./commands/whatsapp.js')
         await whatsapp(verb, rest, flags)

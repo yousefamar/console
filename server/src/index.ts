@@ -79,6 +79,10 @@ import { handleHubRoutes } from './routes/hub.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { handleWebhookRoutes, type WebhookRouteCtx } from './routes/webhooks.js'
+import { handleLocationRoutes, type LocationRouteCtx } from './routes/location.js'
+import { GeofenceStore } from './location/store.js'
+import { LocationWatcher } from './location/watcher.js'
+import { makeRecorderLastFetcher } from './location/recorder.js'
 import { WebhookStore } from './webhooks/store.js'
 import { RingStore } from './ring/store.js'
 import { RingReminders } from './ring/remind.js'
@@ -1570,6 +1574,24 @@ const webhookCtx: WebhookRouteCtx = {
   projectExists: (slug) => existsSync(join(noteStore.vaultPath, 'projects', slug)) || existsSync(join(noteStore.vaultPath, 'projects', `${slug}.md`)),
   log,
 }
+// Location + geofences — the Recorder's latest fix polled every minute, run
+// through server-side fences, transitions wake the fence's agents / POST to
+// its URL (location/watcher.ts, routes/location.ts). Same wake seam as the
+// project webhooks above.
+const geofenceStore = new GeofenceStore(configDir)
+const locationWatcher = new LocationWatcher({
+  store: geofenceStore,
+  fetchLast: makeRecorderLastFetcher(authStore),
+  deliverToAgent: webhookCtx.deliverToAgent,
+  log,
+})
+locationWatcher.start()
+const locationCtx: LocationRouteCtx = {
+  store: geofenceStore,
+  watcher: locationWatcher,
+  agentLive: webhookCtx.agentLive,
+  actorOf: (req) => (req.headers['x-console-agent'] as string | undefined)?.trim() || undefined,
+}
 const certCandidates = (() => {
   try {
     return readdirSync(configDir)
@@ -2077,6 +2099,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
   if (path.startsWith('/ring') && handleRingRoutes(req, res, path, url, ringCtx, readBody, ringWebhookUrl)) return
   if ((path.startsWith('/hook/') || path.startsWith('/webhooks')) && handleWebhookRoutes(req, res, path, url, webhookCtx, readBody)) return
+  if ((path === '/location' || path.startsWith('/location/')) && handleLocationRoutes(req, res, path, url, locationCtx, readBody)) return
   if (path.startsWith('/dashboard/canvas/islands') && handleCanvasIslandRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   }, readBody)) return
@@ -2728,6 +2751,7 @@ function shutdown() {
   flushReadState()
   cronScheduler.flush()
   staleSweeper.stop()
+  locationWatcher.stop()
   recallIndex?.stop()
   const children: number[] = []
   for (const session of sessions.values()) {
