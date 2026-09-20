@@ -48,6 +48,8 @@ interface ListenersState {
   errorBySession: Record<string, string | undefined>
 
   refresh: (claudeSessionId: string) => Promise<void>
+  /** Fleet-wide fetch, grouped by owner — feeds the session-row badge (the cron store's twin). */
+  refreshAll: () => Promise<void>
   pause: (id: string) => Promise<void>
   resume: (id: string) => Promise<void>
   flush: (id: string) => Promise<void>
@@ -67,6 +69,17 @@ export const useListenersStore = create<ListenersState>((set, get) => ({
       }))
     } catch (e) {
       set((s) => ({ errorBySession: { ...s.errorBySession, [claudeSessionId]: (e as Error).message } }))
+    }
+  },
+
+  refreshAll: async () => {
+    try {
+      const list = await hubFetch<HubListener[]>('/listeners')
+      const grouped: Record<string, HubListener[]> = {}
+      for (const l of Array.isArray(list) ? list : []) (grouped[l.owner.claudeSessionId] ??= []).push(l)
+      set({ bySession: grouped })
+    } catch {
+      // keep the last good snapshot; the per-session refresh reports errors where they are shown
     }
   },
 

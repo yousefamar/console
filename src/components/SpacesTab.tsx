@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Camera, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Camera, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Radio, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
@@ -19,6 +19,7 @@ import { useUiStore } from '@/store/ui'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
 import { useCronStore } from '@/store/cron'
+import { useListenersStore } from '@/store/listeners'
 import { todoLabel, todoProgress } from './agent/TodoList'
 import { showPrompt, showConfirm, showAlert } from '@/dialog'
 import { useDictation } from '@/hooks/useDictation'
@@ -170,6 +171,8 @@ export const SpacesTab = memo(function SpacesTab() {
  *  on the Spaces agent rows. Same data sources + colour vocabulary as
  *  the retired Agents tab's SessionListItem: amber Terminal = live background processes,
  *  grey Clock = active cron prompts (grey NOT blue — blue means unread),
+ *  grey Radio = active event listeners / expectations (same store as the
+ *  session's listen pill, fleet-refreshed at boot like cron),
  *  violet ListTodo = outstanding CLI task-list progress (hidden when done). */
 function SessionBadges({ session }: { session: import('@/store/agent').SessionInfo }) {
   const bg = session.backgroundProcessCount ?? 0
@@ -178,6 +181,14 @@ function SessionBadges({ session }: { session: import('@/store/agent').SessionIn
     if (!csid) return 0
     return (s.tasksBySession[csid] ?? []).filter((t) => !t.disabledAt).length
   })
+  // Select the stored array (stable reference) and derive — a selector returning a
+  // fresh object re-renders forever ("getSnapshot should be cached").
+  const listeners = useListenersStore((s) => (session.claudeSessionId ? s.bySession[session.claudeSessionId] : undefined))
+  const listen = useMemo(() => {
+    const active = (listeners ?? []).filter((l) => !l.disabledAt)
+    if (!active.length) return null
+    return { count: active.length, expects: active.filter((l) => l.expect).length, paused: active.filter((l) => l.pausedAt).length }
+  }, [listeners])
   const todo = useMemo(() => {
     if (!session.todos?.length) return null
     const { done, total, current } = todoProgress(session.todos)
@@ -194,6 +205,11 @@ function SessionBadges({ session }: { session: import('@/store/agent').SessionIn
       {cronCount > 0 && (
         <span className="flex items-center gap-0.5 text-[9px] font-medium text-text-tertiary flex-shrink-0" title={`${cronCount} scheduled prompt${cronCount === 1 ? '' : 's'}`}>
           <Clock size={9} />{cronCount}
+        </span>
+      )}
+      {listen && (
+        <span className={`flex items-center gap-0.5 text-[9px] font-medium flex-shrink-0 ${listen.paused ? 'text-yellow-400' : 'text-text-tertiary'}`} title={`${listen.count} event listener${listen.count === 1 ? '' : 's'}${listen.expects ? ` (${listen.expects} expectation${listen.expects === 1 ? '' : 's'})` : ''}${listen.paused ? `, ${listen.paused} paused` : ''}`}>
+          <Radio size={9} />{listen.count}
         </span>
       )}
       {todo && (

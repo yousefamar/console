@@ -129,10 +129,12 @@ const LazyApp = lazy(async () => {
   const { useAgentStore } = await import('./store/agent')
   const { useMicStore } = await import('./store/mic')
   const { useCronStore } = await import('./store/cron')
+  const { useListenersStore } = await import('./store/listeners')
   useAgentStore.getState().connect()
   useMicStore.getState().init()
   useCronStore.getState().refreshAll()
-  setInterval(() => useCronStore.getState().refreshAll(), 30_000)
+  useListenersStore.getState().refreshAll()
+  setInterval(() => { useCronStore.getState().refreshAll(); useListenersStore.getState().refreshAll() }, 30_000)
   // `backgroundProcessCount` is only recomputed hub-side on getInfo() calls.
   setInterval(() => useAgentStore.getState().listSessions(), 10_000)
 
