@@ -70,6 +70,7 @@ export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
     ts: t.date,
     route: routeForThread(t, rules),
     routeKey: t.fromEmail?.toLowerCase() ?? '',
+    unread: t.isUnread,
   }
 }
 
@@ -92,6 +93,7 @@ export function roomToItem(r: DbChatRoom, rules: InboxRules, now?: number): Inbo
     ts: r.draft ? Math.max(r.lastMessageTime, r.draftUpdatedAt ?? 0) : r.lastMessageTime,
     route: routeForRoom(r, rules),
     routeKey: r.id,
+    unread: r.isUnread || !!r.manualUnread,
     isDirect: r.isDirect,
     ...(r.draft ? { draft: true } : {}),
     ...(now !== undefined && isOverdue(r, rules, now) ? { overdue: true } : {}),

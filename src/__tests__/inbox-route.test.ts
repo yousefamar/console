@@ -152,6 +152,20 @@ describe('row shape', () => {
     expect(i?.header).toBe('Post')
     expect(i?.body).toBe('HN')
   })
+
+  it('mail carries read state: an opened-but-unarchived thread is unread=false (^fond-koi)', () => {
+    expect(threadToItem(thread({ isUnread: true }), DEFAULT_RULES).unread).toBe(true)
+    expect(threadToItem(thread({ isUnread: false }), DEFAULT_RULES).unread).toBe(false)
+  })
+
+  it('chat carries read state: manual-unread counts, a read room kept live by a draft is unread=false', () => {
+    expect(roomToItem(room({ isUnread: false, manualUnread: true }), DEFAULT_RULES).unread).toBe(true)
+    expect(roomToItem(room({ isUnread: false, draft: 'reply…' }), DEFAULT_RULES).unread).toBe(false)
+  })
+
+  it('feeds and agents carry no read state (rows drop the moment they are read)', () => {
+    expect(feedItemToItem(feedItem(), { id: 'feed-a', title: 'HN', xmlUrl: '', folder: null, addedAt: '' }, DEFAULT_RULES)?.unread).toBeUndefined()
+  })
 })
 
 describe('agent sessions', () => {
