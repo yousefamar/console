@@ -34,6 +34,10 @@ export const BUILTIN_TOPICS: TopicDoc[] = [
     fields: { listenerId: 'listener id', action: 'action type', events: 'event ids coalesced into this action' } },
   { topic: 'listener.paused', description: 'A listener exceeded its per-hour ceiling and paused itself.',
     fields: { listenerId: 'listener id', firedLastHour: 'count', maxPerHour: 'ceiling' } },
+  { topic: 'expect.missed', description: 'An expectation\'s deadline passed with no matching event (`con listen expect`). Its --else ran on this event unless reason is "hub down".',
+    fields: { listenerId: 'listener id', expect: 'one-line rule', on: 'awaited topic', deadlineAt: 'epoch ms', armedAt: 'epoch ms', reason: 'deadline | hub down', acted: 'false when the deadline was >24 h stale on restart', lateMs: 'present when judged late', confidence: 'fresh | stale — geo topics only, stale = last fix >30 min old', triggerEventId: 'the --after event, if any', trigger: 'that event\'s data', sinceLastSatisfiedMs: 'ms since it was last satisfied' } },
+  { topic: 'expect.satisfied', description: 'An expectation\'s awaited event arrived in time.',
+    fields: { listenerId: 'listener id', expect: 'one-line rule', eventId: 'the satisfying event', deadlineAt: 'the tick it satisfied (absolute)', triggerEventIds: 'the --after events it disarmed (relative)' } },
   { topic: 'hub.started', description: 'The hub finished booting. Fires once per process — the hook for catch-up scripts after downtime.',
     fields: { downSince: 'epoch ms of the last heartbeat before the restart (null on first boot)', downMs: 'downtime length', pid: 'process id' } },
 ]

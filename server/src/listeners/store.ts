@@ -60,6 +60,7 @@ export class ListenerStore {
         l.stats ??= { matched: 0, fired: 0, guardSkipped: 0 }
         l.consecutiveSkips ??= 0
         l.where ??= []
+        if (l.expect) { l.expect.pending ??= []; l.expect.matches ??= []; l.expect.satisfied ??= 0; l.expect.missed ??= 0 }
       }
     } catch (e) {
       this.log(`[listeners] load failed: ${(e as Error).message}`)

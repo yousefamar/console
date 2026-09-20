@@ -1,12 +1,13 @@
 // Listener HTTP routes.
 //
 //   GET    /listeners[?session=<csid>&topic=]        fleet-wide list
-//   POST   /listeners  {owner:{claudeSessionId,agentKey?,cwd?}, on, where?[], guard?, coalesce?, cooldown?, hours?, days?, dropOutside?, maxPerHour?, name?, action}
+//   POST   /listeners  {owner:{claudeSessionId,agentKey?,cwd?}, on, where?[], guard?, coalesce?, cooldown?, hours?, days?, dropOutside?, maxPerHour?, name?, action,
+//                       expect?: {by?, window?, after?, afterWhere?[], within?, then?}}   — expect present = act on the event's ABSENCE; action is the --else
 //   GET    /listeners/<id>                            full record incl. outcomes
 //   DELETE /listeners/<id>[?force=1]                  403 for an agent removing another session's listener without force
 //   POST   /listeners/<id>/pause | /resume
 //   POST   /listeners/<id>/test  {event?: <id>, topic?, data?}   dry run — which rung stops it
-//   POST   /listeners/<id>/flush                      fire the pending batch now
+//   POST   /listeners/<id>/flush                      fire the pending batch now (expectation: judge the nearest deadline now)
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ListenerEngine, AddListenerInput } from '../listeners/engine.js'
@@ -89,6 +90,10 @@ export function handleListenerRoutes(
   if (verb === 'pause' && req.method === 'POST') { json(ctx.engine.pause(id, `paused by ${actor ?? 'a human client'}`)); return true }
   if (verb === 'resume' && req.method === 'POST') { json(ctx.engine.resume(id)); return true }
   if (verb === 'flush' && req.method === 'POST') {
+    if (l.expect) {
+      void ctx.engine.judgeNow(l).then((r) => json({ ...r, outcome: l.outcomes[l.outcomes.length - 1] ?? null })).catch((e: Error) => json({ error: e.message }, 500))
+      return true
+    }
     if (!l.pending) { json({ ok: false, detail: 'nothing pending' }); return true }
     l.pending.dueAt = Date.now()
     void ctx.engine.flushPending(l).then(() => json({ ok: true, outcome: l.outcomes[l.outcomes.length - 1] ?? null })).catch((e: Error) => json({ error: e.message }, 500))

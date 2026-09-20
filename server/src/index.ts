@@ -899,6 +899,7 @@ const listenerEngine = new ListenerEngine({
   },
   spawnFork: (source, l, model) => forkSessionForListener(agentCtx, source, l.id, model),
   closeFork: (fork) => closeSession(agentCtx, fork),
+  lastFixAt: () => { const f = geofenceStore.lastFix(); return f ? f.tst * 1000 : undefined },
   log: (m) => log(m),
 })
 const eventRouteCtx: EventRouteCtx = {

@@ -32,6 +32,9 @@ export type ListenerAction =
 
 export type OutcomeStage =
   | 'expired'        // expiresAt passed before it fired (or finished firing) — removed
+  | 'armed'          // expectation: an --after event started a deadline
+  | 'satisfied'      // expectation: the awaited event arrived before the deadline
+  | 'missed'         // expectation: deadline passed with no matching event — the --else ran (or was refused)
   | 'matched'        // passed where; batched (pending)
   | 'firing'         // batch taken off pending, guard/action in progress — a restart here re-runs it
   | 'fired'
@@ -55,6 +58,36 @@ export interface ListenerOwner {
   cwd?: string
 }
 
+export interface ExpectPending {
+  armedAt: number
+  deadlineAt: number
+  /** The `--after` event that armed this deadline; absent for absolute ticks and armed-at-creation waits. */
+  triggerEventId?: string
+}
+
+/** A listener that acts on the ABSENCE of its `on` event. `action` is the
+ *  `--else`. Absolute (`by` set): at every deadline, satisfied iff a matching
+ *  event arrived inside the window before it. Relative (`by` unset): an
+ *  `after` event arms a deadline `withinMs` later that a matching `on` event
+ *  disarms; with no `after` the deadline is armed once at creation. */
+export interface Expectation {
+  /** Cron expression (Europe/London), ISO datetime, or epoch ms as a string. */
+  by?: string
+  /** How far back from a `by` deadline a matching event still counts. Default: since the previous deadline. */
+  windowMs?: number
+  after?: { on: string; where: WhereClause[] }
+  withinMs?: number
+  /** Runs when the expectation is satisfied. */
+  then?: ListenerAction
+  pending: ExpectPending[]
+  /** Matching `on` events, newest last; pruned past the window. Absolute bookkeeping. */
+  matches: Array<{ id: string; at: number }>
+  lastSatisfiedAt?: number
+  lastMissedAt?: number
+  satisfied: number
+  missed: number
+}
+
 export interface Listener {
   id: string
   name?: string
@@ -63,6 +96,8 @@ export interface Listener {
   on: string
   where: WhereClause[]
   guard?: string
+  /** Present = this rule watches for the event NOT arriving in time. */
+  expect?: Expectation
   /** Quiet period before acting; matching events in it are batched into one action. */
   coalesceMs: number
   /** Minimum gap between actions; events inside it are batched, not dropped. */
@@ -113,3 +148,7 @@ export const MAX_SKIPS_BEFORE_DISABLE = 10
 export const SKIPS_BEFORE_WARN = 3
 export const OVERDUE_PENDING_MAX_MS = 24 * 60 * 60 * 1000
 export const EXPIRY_SWEEP_MS = 60_000
+export const MAX_EXPECT_PENDING = 50
+export const MAX_EXPECT_MATCHES = 200
+/** A geo expectation whose last fix is older than this at the deadline is judged on stale data. */
+export const STALE_FIX_MS = 30 * 60 * 1000

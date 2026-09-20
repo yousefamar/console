@@ -16,6 +16,8 @@ let dir: string
 let clock: number
 const now = () => clock
 const tick = async (ms = 0) => { clock += ms; await new Promise((r) => setTimeout(r, 5)) }
+/** Wait (real time, ≤ 2 s) for an async start()-time side effect. */
+const until = async (fn: () => boolean) => { for (let i = 0; i < 400 && !fn(); i++) await new Promise((r) => setTimeout(r, 5)) }
 
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'listeners-')); clock = Date.parse('2026-09-21T10:00:00Z') /* Monday */ })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -502,8 +504,222 @@ describe('envelope + template', () => {
     const l = h.engine.add({ owner: OWNER, on: 'mail.received', name: 'astera alerts', action: { type: 'wake', prompt: 'p' } })
     const ev: HubEvent = { id: '2026-09-21T10-00-00.000Z-aaaa', topic: 'mail.received', at: clock, source: 'g', hops: 0, data: { from: 'alerts@astera.catering', subject: 'Mirror not applied' }, ref: 'con mail read t1' }
     const env = buildEventEnvelope(l, [ev])
-    expect(env).toMatch(/^\[EVENT — mail\.received\] Listener L\w+ \("astera alerts"\) fired\./)
+    expect(env).toMatch(/^\[EVENT — mail\.received\] Listener L[\w-]+ \("astera alerts"\) fired\./)
     expect(env).toMatch(/from: alerts@astera\.catering · subject: Mirror not applied · ref: con mail read t1 · id 2026-09-21T10-00-00\.000Z-aaaa/)
     expect(env).toMatch(new RegExp(`con listen pause ${l.id}`))
+  })
+})
+
+describe('engine: expectations', () => {
+  const geoEnter = (bus: EventBus, fence: string) => bus.emit({ topic: 'geo.enter', source: 'location', data: { fence } })!
+  const geoLeave = (bus: EventBus, fence: string) => bus.emit({ topic: 'geo.leave', source: 'location', data: { fence } })!
+
+  it('relative: --after arms, --on before the deadline satisfies (then runs), nothing fires', async () => {
+    const s = fakeSession(OWNER.claudeSessionId)
+    const h = harness({ sessions: [s] })
+    h.engine.start()
+    const l = h.engine.add({
+      owner: OWNER, on: 'geo.enter', where: ['data.fence=office'],
+      expect: { after: 'geo.leave', afterWhere: ['data.fence=home'], within: 90 * 60_000, then: { type: 'notify', title: 'Made it: {{data.fence}}' } },
+      action: { type: 'wake', prompt: 'Left home 90 min ago, not at the office' },
+    })
+    geoLeave(h.bus, 'gym')                          // wrong fence — does not arm
+    expect(l.expect!.pending.length).toBe(0)
+    const trigger = geoLeave(h.bus, 'home')
+    expect(l.expect!.pending.length).toBe(1)
+    expect(l.expect!.pending[0]!.deadlineAt).toBe(clock + 90 * 60_000)
+    expect(l.expect!.pending[0]!.triggerEventId).toBe(trigger.id)
+    clock += 30 * 60_000
+    geoEnter(h.bus, 'office')
+    expect(l.expect!.pending.length).toBe(0)
+    expect(l.expect!.satisfied).toBe(1)
+    expect(h.notices.map((n) => n.title)).toEqual(['Made it: office'])
+    expect(h.bus.list({ topic: 'expect.satisfied' }).length).toBe(1)
+    clock += 90 * 60_000
+    await h.engine.evaluateDue(l, 'sweep')
+    expect(s.sent).toEqual([])
+    expect(l.stats.fired).toBe(0)
+    expect(l.outcomes.map((o) => o.stage)).toEqual(['armed', 'satisfied', 'fired'])
+    expect(h.engine.get(l.id)).toBeDefined()         // has an --after: keeps waiting for the next arm
+  })
+
+  it('relative: the deadline passes → expect.missed emitted, --else runs through guard + envelope with the trigger', async () => {
+    const s = fakeSession(OWNER.claudeSessionId)
+    const guardSeen: string[] = []
+    const shell: ShellRunner = async (_cmd, o) => { guardSeen.push(o.input); return { code: 0, stdout: 'no yoga booked, still nudge', stderr: '', killed: false } }
+    const h = harness({ sessions: [s], shell })
+    h.engine.start()
+    const l = h.engine.add({
+      owner: OWNER, on: 'geo.enter', where: ['data.fence=office'], guard: 'check.sh', name: 'commute',
+      expect: { after: 'geo.leave', afterWhere: ['data.fence=home'], within: 90 * 60_000 },
+      action: { type: 'wake', prompt: 'Not at the office. Trigger fence: {{data.trigger.fence}}' },
+    })
+    const trigger = geoLeave(h.bus, 'home')
+    geoEnter(h.bus, 'gym')                          // wrong fence — does not satisfy
+    clock += 90 * 60_000 + 1
+    await h.engine.evaluateDue(l, 'deadline')
+    const missed = h.bus.list({ topic: 'expect.missed' })
+    expect(missed.length).toBe(1)
+    expect(missed[0]!.data).toMatchObject({ listenerId: l.id, reason: 'deadline', acted: true, triggerEventId: trigger.id, trigger: { fence: 'home' }, confidence: 'stale' })
+    expect(guardSeen.length).toBe(1)
+    expect(JSON.parse(guardSeen[0]!).events[0].topic).toBe('expect.missed')
+    expect(s.sent.length).toBe(1)
+    expect(s.sent[0]).toMatch(/^\[EXPECTATION MISSED — expect geo\.enter where data\.fence=office within 90m after geo\.leave where data\.fence=home\] Listener L[\w-]+ \("commute"\): deadline \d\d\/\d\d \d\d:\d\d passed with no matching event\. location data is STALE/)
+    expect(s.sent[0]).toMatch(/no yoga booked, still nudge/)
+    expect(s.sent[0]).toMatch(/Trigger fence: home$/)
+    expect(l.expect!.pending.length).toBe(0)
+    expect(l.expect!.missed).toBe(1)
+    expect(l.stats.fired).toBe(1)
+    expect(l.stats.lastOutcome).toMatch(/^missed: /)
+    // still alive, re-armable
+    geoLeave(h.bus, 'home')
+    expect(l.expect!.pending.length).toBe(1)
+  })
+
+  it('relative with no --after: armed at creation, one-shot — satisfied removes it, missed runs the else and removes it', async () => {
+    const h = harness()
+    h.engine.start()
+    const wait = h.engine.add({ owner: OWNER, on: 'astera.release.landed', expect: { within: 6 * 3_600_000 }, action: { type: 'notify', title: 'release never landed' } })
+    expect(wait.expect!.pending.length).toBe(1)
+    expect(wait.expect!.pending[0]!.triggerEventId).toBeUndefined()
+    h.bus.emit({ topic: 'astera.release.landed', source: 't', data: { sha: 'abc' } })
+    expect(h.engine.get(wait.id)).toBeUndefined()
+    expect(h.notices.length).toBe(0)
+    const wait2 = h.engine.add({ owner: OWNER, on: 'astera.release.landed', expect: { within: 6 * 3_600_000 }, action: { type: 'notify', title: 'release never landed' } })
+    clock += 6 * 3_600_000 + 1
+    await h.engine.evaluateDue(wait2, 'deadline')
+    expect(h.notices.map((n) => n.title)).toEqual(['release never landed'])
+    expect(h.engine.get(wait2.id)).toBeUndefined()
+  })
+
+  it('absolute: at each --by tick, a matching event inside the window satisfies; none → miss; cron re-arms the next tick', async () => {
+    // clock = Monday 2026-09-21 10:00Z (11:00 BST). Tuesday 19:10 local = 2026-09-22T18:10Z
+    const h = harness()
+    h.engine.start()
+    const l = h.engine.add({ owner: OWNER, on: 'geo.enter', where: ['data.fence=buzz-gym'], expect: { by: '10 19 * * 2', window: 3 * 3_600_000 }, action: { type: 'notify', title: 'Not at the gym by 19:10' } })
+    expect(l.expect!.pending.length).toBe(1)
+    const tue = Date.parse('2026-09-22T18:10:00Z')
+    expect(l.expect!.pending[0]!.deadlineAt).toBe(tue)
+    expect(l.coalesceMs).toBe(0)
+    // too early: an enter on Monday is outside the 3 h window
+    geoEnter(h.bus, 'buzz-gym')
+    clock = tue - 2 * 3_600_000
+    geoEnter(h.bus, 'buzz-gym')                     // 17:10 — inside the window
+    clock = tue + 1
+    await h.engine.evaluateDue(l, 'deadline')
+    expect(l.expect!.satisfied).toBe(1)
+    expect(h.notices.length).toBe(0)
+    expect(l.expect!.pending[0]!.deadlineAt).toBe(Date.parse('2026-09-29T18:10:00Z'))
+    expect(l.expect!.matches.length).toBe(1)        // Monday's pruned (outside the window); Tuesday's kept until the window moves on
+    // next week: nothing → miss
+    clock = Date.parse('2026-09-29T18:10:00Z') + 1
+    await h.engine.evaluateDue(l, 'deadline')
+    expect(l.expect!.missed).toBe(1)
+    expect(h.notices.map((n) => n.title)).toEqual(['Not at the gym by 19:10'])
+    expect(h.bus.list({ topic: 'expect.missed' })[0]!.data).toMatchObject({ reason: 'deadline', acted: true, deadlineAt: Date.parse('2026-09-29T18:10:00Z') })
+    expect(l.expect!.pending[0]!.deadlineAt).toBe(Date.parse('2026-10-06T18:10:00Z'))
+    expect(l.expect!.matches.length).toBe(0)
+  })
+
+  it('absolute one-shot (ISO --by): default window = since creation; evaluated once then self-removed', async () => {
+    const h = harness()
+    h.engine.start()
+    const at = clock + 2 * 3_600_000
+    const l = h.engine.add({ owner: OWNER, on: 'geo.leave', where: ['data.fence=home'], expect: { by: new Date(at).toISOString() }, action: { type: 'notify', title: 'You meant to leave at 07:00' } })
+    expect(l.expect!.pending[0]!.deadlineAt).toBe(at)
+    clock += 3_600_000
+    geoLeave(h.bus, 'home')
+    clock = at + 1
+    await h.engine.evaluateDue(l, 'deadline')
+    expect(h.notices.length).toBe(0)
+    expect(h.engine.get(l.id)).toBeUndefined()
+    // +2h relative form also works, and a past --by is refused
+    const l2 = h.engine.add({ owner: OWNER, on: 'x.y', expect: { by: '+2h' }, action: { type: 'notify', title: 't' } })
+    expect(l2.expect!.pending[0]!.deadlineAt).toBe(clock + 2 * 3_600_000)
+    expect(() => h.engine.add({ owner: OWNER, on: 'x.y', expect: { by: '2020-01-01T00:00:00Z' }, action: { type: 'notify', title: 't' } })).toThrow(/past/)
+  })
+
+  it('restart: an overdue deadline < 24 h fires the --else late; > 24 h emits expect.missed{hub down} and does not act', async () => {
+    const h1 = harness()
+    h1.engine.start()
+    const soon = h1.engine.add({ owner: OWNER, on: 'x.y', expect: { within: 10 * 60_000 }, action: { type: 'notify', title: 'soon missed' } })
+    const stale = h1.engine.add({ owner: OWNER, on: 'x.z', expect: { after: 'x.arm', within: 10 * 60_000 }, action: { type: 'notify', title: 'stale missed' } })
+    h1.bus.emit({ topic: 'x.arm', source: 't', data: {} })
+    expect(stale.expect!.pending.length).toBe(1)
+    h1.engine.stop()
+    const raw = JSON.parse(readFileSync(join(dir, 'listeners.json'), 'utf8')).listeners as Array<{ id: string; expect: { pending: Array<{ deadlineAt: number }> } }>
+    expect(raw.find((x) => x.id === soon.id)!.expect.pending.length).toBe(1)
+    // make `stale`'s deadline 30 h old and `soon`'s 2 h old at the restart
+    clock += 2 * 3_600_000 + 10 * 60_000
+    const h2pre = harness(); // no start — just to edit the file through a store
+    const l = h2pre.store.get(stale.id)!
+    l.expect!.pending[0]!.deadlineAt = clock - 30 * 3_600_000
+    h2pre.store.persistSync()
+    const h2 = harness()
+    h2.engine.start()
+    await until(() => h2.engine.get(soon.id) === undefined) // the one-shot's removal is the last step of its late judgement
+    expect(h2.notices.map((n) => n.title)).toEqual(['soon missed'])
+    const missed = h2.bus.list({ topic: 'expect.missed' })
+    expect(missed.map((m) => m.data.reason).sort()).toEqual(['deadline', 'hub down'])
+    expect(missed.find((m) => m.data.reason === 'hub down')!.data).toMatchObject({ listenerId: stale.id, acted: false })
+    expect(missed.find((m) => m.data.reason === 'deadline')!.data.lateMs).toBe(2 * 3_600_000)
+    expect(h2.engine.get(soon.id)).toBeUndefined()   // one-shot wait resolved
+    const st = h2.engine.get(stale.id)!
+    expect(st.expect!.pending.length).toBe(0)
+    expect(st.outcomes[st.outcomes.length - 1]!.stage).toBe('missed')
+    expect(st.outcomes[st.outcomes.length - 1]!.detail).toMatch(/hub came back — not acted on/)
+  })
+
+  it('restart: an absolute expectation whose tick passed during downtime is judged from its persisted matches', async () => {
+    const h1 = harness()
+    h1.engine.start()
+    const l = h1.engine.add({ owner: OWNER, on: 'x.y', expect: { by: '10 19 * * 2', window: 3 * 3_600_000 }, action: { type: 'notify', title: 'missed tick' } })
+    const tue = Date.parse('2026-09-22T18:10:00Z')
+    clock = tue - 3_600_000
+    h1.bus.emit({ topic: 'x.y', source: 't', data: {} })
+    h1.engine.stop()
+    clock = tue + 3_600_000
+    const h2 = harness()
+    h2.engine.start()
+    await until(() => h2.engine.get(l.id)!.expect!.satisfied === 1)
+    const l2 = h2.engine.get(l.id)!
+    expect(l2.expect!.satisfied).toBe(1)
+    expect(h2.notices.length).toBe(0)
+    expect(l2.expect!.pending[0]!.deadlineAt).toBe(Date.parse('2026-09-29T18:10:00Z'))
+  })
+
+  it('test() explains would-arm / would-satisfy / would-count / ignored without acting; flush judges now', async () => {
+    const h = harness()
+    h.engine.start()
+    const rel = h.engine.add({ owner: OWNER, on: 'geo.enter', where: ['data.fence=office'], expect: { after: 'geo.leave', afterWhere: ['data.fence=home'], within: 90 * 60_000 }, action: { type: 'notify', title: 'late' } })
+    const enter: HubEvent = { id: 'e1', topic: 'geo.enter', at: clock, source: 't', hops: 0, data: { fence: 'office' } }
+    const leave: HubEvent = { id: 'e2', topic: 'geo.leave', at: clock, source: 't', hops: 0, data: { fence: 'home' } }
+    expect((await h.engine.test(rel.id, enter)).stage).toBe('ignored')
+    expect((await h.engine.test(rel.id, leave)).stage).toBe('would-arm')
+    expect((await h.engine.test(rel.id, { ...leave, data: { fence: 'gym' } })).stage).toBe('where')
+    expect((await h.engine.test(rel.id, { ...leave, topic: 'chat.message' })).stage).toBe('no-match')
+    expect(rel.expect!.pending.length).toBe(0)
+    geoLeave(h.bus, 'home')
+    expect((await h.engine.test(rel.id, enter)).stage).toBe('would-satisfy')
+    const abs = h.engine.add({ owner: OWNER, on: 'geo.enter', expect: { by: '10 19 * * 2' }, action: { type: 'notify', title: 'x' } })
+    expect((await h.engine.test(abs.id, enter)).stage).toBe('would-count')
+    // flush = judge the nearest deadline now → miss
+    const r = await h.engine.judgeNow(rel)
+    expect(r.ok).toBe(true)
+    expect(h.notices.map((n) => n.title)).toEqual(['late'])
+    expect(rel.expect!.pending.length).toBe(0)
+  })
+
+  it('validates expectation inputs', () => {
+    const h = harness()
+    const base = { owner: OWNER, on: 'x.y', action: { type: 'notify', title: 't' } as const }
+    expect(() => h.engine.add({ ...base, expect: {} })).toThrow(/--by .* or --within/)
+    expect(() => h.engine.add({ ...base, expect: { by: '10 19 * * 2', within: 1000 } })).toThrow(/different flavours/)
+    expect(() => h.engine.add({ ...base, expect: { by: 'nonsense' } })).toThrow(/--by wants/)
+    expect(() => h.engine.add({ ...base, expect: { by: '99 99 * * *' } })).toThrow(/cron/)
+    expect(() => h.engine.add({ ...base, expect: { within: 1000, window: 5 } })).toThrow(/--window only/)
+    expect(() => h.engine.add({ ...base, expect: { within: 1000, afterWhere: ['a=b'] } })).toThrow(/--after-where needs --after/)
+    expect(() => h.engine.add({ ...base, expect: { after: 'x.y', within: 1000 } })).toThrow(/satisfy itself/)
+    expect(() => h.engine.add({ ...base, expect: { within: 1000, then: { type: 'wake', prompt: '' } } })).toThrow(/--wake needs a prompt/)
   })
 })

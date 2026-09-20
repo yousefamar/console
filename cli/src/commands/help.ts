@@ -379,11 +379,12 @@ con listen — event-driven rules that survive hub restarts (cron = time, listen
 
 Commands:
   add --on <topic|glob> [filters] [gates] ACTION      Register a rule (see below)
+  expect --on <topic> [--where …] WHEN --else ACTION   Act on the event NOT arriving in time (see "Expectations" below)
   list [--mine] [--topic t]                            Fleet-wide table: id, state, owner, rule, action, stats
   show <id>                                            Full record incl. the outcome journal
-  log <id> [--limit N]                                 Outcomes newest first: fired / guard-skipped / dropped / paused / skipped / error
-  test <id> [--event <eid> | --topic t --data '{…}']   Dry run: which rung stops it (where / window / cooldown / guard / would-fire). Never acts.
-  pause <id> | resume <id> | flush <id>                Hold, release (clears skips/ceiling), fire the pending batch now
+  log <id> [--limit N]                                 Outcomes newest first: fired / guard-skipped / dropped / paused / skipped / error (expect: armed / satisfied / missed)
+  test <id> [--event <eid> | --topic t --data '{…}']   Dry run: which rung stops it (where / window / cooldown / guard / would-fire; expect: would-arm / would-satisfy / would-count / ignored). Never acts.
+  pause <id> | resume <id> | flush <id>                Hold, release (clears skips/ceiling), fire the pending batch now (expect: judge the nearest deadline now)
   remove <id> [--force]                                403 for another session's listener without --force (the owner is told)
 
 Filters (all ANDed, repeatable):
@@ -418,6 +419,29 @@ one-off; the doer emits when done. Topics are <project>.<noun>.<verb>, e.g. aste
 console.card.hazy-fawn.done, deen.corpus.refreshed. If someone may be waiting on your result, emit it.
   waiter:  con listen add --once --expires 6h --on astera.release.landed --wake "Release landed — verify prod and close the card."
   doer:    con event emit astera.release.landed --data '{"sha":"abc1234","cards":["^sly-owl"]}' --key abc1234
+  ...and to be told if it NEVER lands:  con listen expect --on astera.release.landed --within 6h --else wake "Release did not land in 6 h — find out why."
+
+Expectations (con listen expect) — the "didn't happen on time" half. Cron = time, listen = event, expect = both.
+  --on <topic> [--where …]      The event you expect (same filters as add)
+  --by <cron|iso|+dur> [--window 3h]   ABSOLUTE: at every tick (cron, Europe/London; ISO/+dur = once) satisfied iff a matching event
+                                arrived in [tick − window, tick]; else the --else runs. Default window: since the previous tick.
+                                A one-shot --by self-removes after its tick is judged.
+  --within 90m [--after <topic> [--where …]…]   RELATIVE: every --after event arms a deadline; a matching --on event before it
+                                disarms (all pending). No --after = armed ONCE at creation: a one-shot wait that self-removes on
+                                satisfied OR missed — the replacement for "--once --expires 6h and hope".
+  --else <type> <arg> [opts]    REQUIRED. wake "…" [--as k] | run "…" | post <url> | notify "…" [--body] | emit <topic> [--data] | card <p> "<text>"
+  --then <type> <arg> [opts]    Optional: runs when the expectation IS satisfied (same action grammar).
+  --guard "<cmd>" runs before the --else with the expect.missed event on stdin (exit 1 = don't nudge — e.g. "no yoga booked today");
+  --hours/--days gate ARMING (relative) / judging (absolute); --max-per-hour, --once/--times (count --else fires), --expires, --name as for add.
+  {{data.deadlineAt}} {{data.trigger.<field>}} {{data.confidence}} template from the expect.missed event; geo topics carry confidence=stale
+  when the last location fix is >30 min old at the deadline (phone dead ≠ not there). Restart: a deadline the hub slept through fires
+  the --else if <24 h late (envelope says how late), else is logged as expect.missed{reason:"hub down"} with no action.
+  con listen expect --on geo.enter --where data.fence=buzz-gym --by "10 19 * * 2" --window 3h \\
+      --guard 'python3 ~/exec/yoga-booked.py' --else wake "Not at the gym by 19:10 and yoga is booked. Nudge Yousef."
+  con listen expect --on geo.enter --where data.fence=office --after geo.leave --where data.fence=home --within 90m \\
+      --else notify "Left home 90 min ago, not at the office" --then notify "Made it to the office"
+  con listen expect --on geo.leave --where data.fence=home --by 2026-09-25T07:15 --else wake "Equinox camp — you meant to leave at 07:00."
+  con listen expect --on mail.received --where 'data.fromEmail=alerts@astera.catering' --by "0 9 * * 1-5" --window 24h --else notify "No Astera alert mail in 24 h — is the mirror running?"
 
 Examples:
   con listen add --on chat.message --where 'data.room=!abc:beeper.local' --where data.isSelf=false \

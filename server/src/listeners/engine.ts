@@ -14,10 +14,11 @@ import { describeWake, findByClaudeSessionId, wakeOrQueue } from '../agents/wake
 import { ListenerStore } from './store.js'
 import { inWindow, nextWindowStart, parseDays, parseHours, parseWhere, whereMatches, pathGet, formatWhere } from './matcher.js'
 import { runShell, type ShellRunner } from './shell.js'
+import { describeExpect, isAbsolute, nextDeadline, parseBy, fmtDur } from './expect.js'
 import {
   DEFAULT_COALESCE_WAKE_MS, DEFAULT_MAX_PER_HOUR, DEFAULT_MAX_PER_HOUR_WAKE, EXPIRY_SWEEP_MS, GUARD_OUTPUT_CAP, GUARD_TIMEOUT_MS,
-  MAX_BATCH, MAX_OUTCOMES, MAX_SKIPS_BEFORE_DISABLE, OVERDUE_PENDING_MAX_MS, RUN_TIMEOUT_MS, SKIPS_BEFORE_WARN,
-  type Listener, type ListenerAction, type ListenerOwner, type Outcome, type WhereClause,
+  MAX_BATCH, MAX_EXPECT_MATCHES, MAX_EXPECT_PENDING, MAX_OUTCOMES, MAX_SKIPS_BEFORE_DISABLE, OVERDUE_PENDING_MAX_MS, RUN_TIMEOUT_MS, SKIPS_BEFORE_WARN, STALE_FIX_MS,
+  type Expectation, type ExpectPending, type Listener, type ListenerAction, type ListenerOwner, type Outcome, type WhereClause,
 } from './types.js'
 
 export interface ListenerEngineCtx {
@@ -34,8 +35,23 @@ export interface ListenerEngineCtx {
   /** Close a listener fork whose turn is over. */
   closeFork?: (fork: Session) => void
   shell?: ShellRunner
+  /** Epoch ms of the newest location fix — a geo expectation judged on a fix older than STALE_FIX_MS says so. */
+  lastFixAt?: () => number | undefined
   log: (msg: string) => void
   now?: () => number
+}
+
+export interface ExpectInput {
+  /** Absolute: cron (Europe/London), ISO datetime, or `+2h`. */
+  by?: string
+  /** Absolute: ms before each deadline in which a matching event counts. Default: since the previous deadline. */
+  window?: number
+  /** Relative: the arming topic. Omit to arm once at creation. */
+  after?: string
+  afterWhere?: string[]
+  /** Relative: ms after arming before the `--else` fires. */
+  within?: number
+  then?: ListenerAction
 }
 
 export interface AddListenerInput {
@@ -54,11 +70,13 @@ export interface AddListenerInput {
   times?: number
   /** Self-remove at this epoch ms regardless. */
   expiresAt?: number
+  /** Present = an expectation; `action` is then the `--else`. */
+  expect?: ExpectInput
   action: ListenerAction
 }
 
 export interface TestResult {
-  stage: 'no-match' | 'where' | 'window' | 'cooldown' | 'paused' | 'guard' | 'would-fire'
+  stage: 'no-match' | 'where' | 'window' | 'cooldown' | 'paused' | 'guard' | 'would-fire' | 'would-arm' | 'would-satisfy' | 'would-count' | 'ignored'
   detail: string
   envelope?: string
 }
@@ -113,7 +131,14 @@ function summariseEvent(ev: HubEvent): string {
 export function buildEventEnvelope(l: Listener, events: HubEvent[], guardOutput?: string): string {
   const lines: string[] = []
   const topics = [...new Set(events.map((e) => e.topic))].join(', ')
-  lines.push(`[EVENT — ${topics}${events.length > 1 ? ` ×${events.length} coalesced` : ''}] Listener ${l.id}${l.name ? ` ("${l.name}")` : ''} fired. Nothing has acted on ${events.length > 1 ? 'these' : 'this'}.`)
+  const miss = l.expect && events[0]?.topic === 'expect.missed' ? events[0] : undefined
+  if (miss) {
+    const d = miss.data as { deadlineAt?: number; confidence?: string; lateMs?: number }
+    const flags = [d.confidence === 'stale' ? 'location data is STALE — the phone may be off, not the person elsewhere' : '', d.lateMs ? `judged ${fmtDur(Math.round(d.lateMs / 1000) * 1000)} late (hub was down)` : ''].filter(Boolean)
+    lines.push(`[EXPECTATION MISSED — ${describeExpect(l)}] Listener ${l.id}${l.name ? ` ("${l.name}")` : ''}: deadline ${d.deadlineAt ? fmtWhen(d.deadlineAt) : '?'} passed with no matching event.${flags.length ? ` ${flags.join('; ')}.` : ''} Nothing has acted on this.`)
+  } else {
+    lines.push(`[EVENT — ${topics}${events.length > 1 ? ` ×${events.length} coalesced` : ''}] Listener ${l.id}${l.name ? ` ("${l.name}")` : ''} fired. Nothing has acted on ${events.length > 1 ? 'these' : 'this'}.`)
+  }
   events.forEach((ev, i) => {
     lines.push(`${events.length > 1 ? `${i + 1}. ` : ''}${fmtWhen(ev.at)} · ${ev.topic} · ${summariseEvent(ev)}${ev.ref ? ` · ref: ${ev.ref}` : ''} · id ${ev.id}`)
   })
@@ -187,13 +212,46 @@ export class ListenerEngine {
           this.arm(l)
         }
       }
+      if (l.expect) void this.resumeExpect(l)
     }
     this.sweepExpired()
     this.store.persist()
     this.ctx.log(`[listeners] ${this.store.listeners.filter((l) => !l.disabledAt && !l.pausedAt).length} active of ${this.store.listeners.length}`)
     if (!this.sweepTimer) {
-      this.sweepTimer = setInterval(() => this.sweepExpired(), EXPIRY_SWEEP_MS)
+      this.sweepTimer = setInterval(() => { this.sweepExpired(); this.sweepDeadlines() }, EXPIRY_SWEEP_MS)
       this.sweepTimer.unref?.()
+    }
+  }
+
+  /** After a restart: a deadline the hub slept through fires its `--else` if
+   *  < 24 h late (the cron one-shot policy), else is logged as `expect.missed`
+   *  with reason `hub down` and no action. Then the timer is re-derived. */
+  private async resumeExpect(l: Listener): Promise<void> {
+    const x = l.expect!
+    const now = this.now()
+    const overdue = x.pending.filter((p) => p.deadlineAt <= now)
+    for (const p of overdue) {
+      if (now - p.deadlineAt > OVERDUE_PENDING_MAX_MS) {
+        x.pending = x.pending.filter((q) => q !== p)
+        x.missed++
+        x.lastMissedAt = now
+        this.record(l, 'missed', p.triggerEventId ? [p.triggerEventId] : [], `deadline ${fmtWhen(p.deadlineAt)} was ${Math.round((now - p.deadlineAt) / ONE_HOUR)} h ago when the hub came back — not acted on`)
+        this.ctx.bus.emit({ topic: 'expect.missed', source: 'listeners', data: { listenerId: l.id, name: l.name ?? null, expect: describeExpect(l), deadlineAt: p.deadlineAt, reason: 'hub down', acted: false, ...(p.triggerEventId ? { triggerEventId: p.triggerEventId } : {}) } })
+        this.ctx.log(`[listeners] ${l.id} expectation deadline ${fmtWhen(p.deadlineAt)} missed while the hub was down — not delivered`)
+      }
+    }
+    if (isAbsolute(x) && !x.pending.length) this.scheduleAbsolute(l, now)
+    await this.evaluateDue(l, 'restart')
+    this.armExpect(l)
+  }
+
+  /** Missed-deadline watchdog: a timer chain can die (the cron 2026-09-14
+   *  lesson); any deadline past due with no timer is evaluated here. */
+  sweepDeadlines(): void {
+    const now = this.now()
+    for (const l of this.store.listeners) {
+      if (!l.expect || l.disabledAt || l.pausedAt) continue
+      if (l.expect.pending.some((p) => p.deadlineAt <= now)) void this.evaluateDue(l, 'sweep').then(() => this.armExpect(l))
     }
   }
 
@@ -233,7 +291,7 @@ export class ListenerEngine {
    *  pipeline uses it to decide whether the owner-wake fallback still runs. */
   matching(ev: HubEvent): string[] {
     return this.store.listeners
-      .filter((l) => !l.disabledAt && ev.source !== `listener:${l.id}` && topicMatches(l.on, ev.topic) && whereMatches(ev, l.where))
+      .filter((l) => !l.disabledAt && !l.expect && ev.source !== `listener:${l.id}` && topicMatches(l.on, ev.topic) && whereMatches(ev, l.where))
       .map((l) => l.id)
   }
 
@@ -248,6 +306,7 @@ export class ListenerEngine {
     const isWake = action.type === 'wake'
     if (input.times !== undefined && (!Number.isInteger(input.times) || input.times < 1)) throw new Error('--times must be a whole number ≥ 1 (--once = 1)')
     if (input.expiresAt !== undefined && !(input.expiresAt > this.now())) throw new Error('--expires must be in the future')
+    const expect = input.expect ? this.buildExpect(input.expect, on) : undefined
     const l: Listener = {
       id: this.store.mintId(),
       ...(input.name ? { name: input.name } : {}),
@@ -256,7 +315,9 @@ export class ListenerEngine {
       on,
       where,
       ...(input.guard?.trim() ? { guard: input.guard.trim() } : {}),
-      coalesceMs: input.coalesce ?? (isWake ? DEFAULT_COALESCE_WAKE_MS : 0),
+      ...(expect ? { expect } : {}),
+      // An expectation's deadline IS its schedule — no quiet period on the --else.
+      coalesceMs: input.coalesce ?? (isWake && !expect ? DEFAULT_COALESCE_WAKE_MS : 0),
       cooldownMs: input.cooldown ?? 0,
       ...(input.hours ? { hours: input.hours } : {}),
       ...(input.days ? { days: input.days } : {}),
@@ -271,9 +332,39 @@ export class ListenerEngine {
       outcomes: [],
     }
     this.store.listeners.push(l)
+    if (l.expect) {
+      const now = this.now()
+      if (isAbsolute(l.expect)) this.scheduleAbsolute(l, now)
+      else if (!l.expect.after) this.armDeadline(l, now, undefined)
+      this.armExpect(l)
+    }
     this.store.persistSync()
-    this.ctx.log(`[listeners] added ${l.id} on ${l.on}${where.length ? ` where ${where.map(formatWhere).join(' && ')}` : ''} → ${describeAction(action)} (owner ${l.owner.agentKey ?? l.owner.claudeSessionId.slice(0, 8)}${l.times ? `, ${l.times === 1 ? 'once' : `${l.times}×`}` : ''}${l.expiresAt ? `, expires ${fmtWhen(l.expiresAt)}` : ''})`)
+    const rule = l.expect ? describeExpect(l) : `on ${l.on}${where.length ? ` where ${where.map(formatWhere).join(' && ')}` : ''}`
+    this.ctx.log(`[listeners] added ${l.id} ${rule} → ${l.expect ? 'else ' : ''}${describeAction(action)} (owner ${l.owner.agentKey ?? l.owner.claudeSessionId.slice(0, 8)}${l.times ? `, ${l.times === 1 ? 'once' : `${l.times}×`}` : ''}${l.expiresAt ? `, expires ${fmtWhen(l.expiresAt)}` : ''})`)
     return l
+  }
+
+  private buildExpect(input: ExpectInput, on: string): Expectation {
+    const now = this.now()
+    const then = input.then ? validateAction(input.then) : undefined
+    if (input.by !== undefined) {
+      if (input.after || input.within !== undefined) throw new Error('--by (absolute) and --after/--within (relative) are different flavours; pass one')
+      const by = parseBy(input.by, now)
+      if (nextDeadline(by, now) === undefined) throw new Error('--by is already in the past')
+      if (input.window !== undefined && !(input.window > 0)) throw new Error('--window must be a positive duration')
+      return { by, ...(input.window !== undefined ? { windowMs: input.window } : {}), ...(then ? { then } : {}), pending: [], matches: [], satisfied: 0, missed: 0 }
+    }
+    if (input.within === undefined) throw new Error('an expectation needs --by <cron|iso|+dur> (absolute) or --within <duration> (relative)')
+    if (!(input.within > 0)) throw new Error('--within must be a positive duration')
+    if (input.window !== undefined) throw new Error('--window only applies with --by')
+    let after: Expectation['after']
+    if (input.after) {
+      const a = input.after.trim()
+      if (!/^[a-z*][a-z0-9*]*(\.[a-z0-9_*-]+)*$/.test(a)) throw new Error(`bad --after topic pattern "${input.after}"`)
+      after = { on: a, where: (input.afterWhere ?? []).map(parseWhere) }
+      if (a === on && !after.where.length && !input.afterWhere?.length) throw new Error('--after and --on are the same topic with no filters — every arming event would satisfy itself')
+    } else if (input.afterWhere?.length) throw new Error('--after-where needs --after')
+    return { ...(after ? { after } : {}), withinMs: input.within, ...(then ? { then } : {}), pending: [], matches: [], satisfied: 0, missed: 0 }
   }
 
   remove(id: string, opts: { actor?: string; reason?: string } = {}): boolean {
@@ -306,6 +397,7 @@ export class ListenerEngine {
     l.consecutiveSkips = 0
     l.firedAt = []
     if (l.pending) { l.pending.dueAt = this.now() + 1_000; this.arm(l) }
+    if (l.expect) this.armExpect(l)
     this.store.persistSync()
     return l
   }
@@ -331,6 +423,7 @@ export class ListenerEngine {
     for (const l of this.store.listeners) {
       if (l.disabledAt) continue
       if (ev.source === `listener:${l.id}`) continue
+      if (l.expect) { this.onExpectEvent(l, ev, now); continue }
       if (!topicMatches(l.on, ev.topic)) continue
       if (!whereMatches(ev, l.where)) continue
       l.stats.matched++
@@ -369,6 +462,155 @@ export class ListenerEngine {
     if (t) { clearTimeout(t); this.timers.delete(id) }
   }
 
+  // ── expectations ───────────────────────────────────────────────────────
+
+  /** `on` events satisfy (relative) or count toward the window (absolute); `after` events arm. */
+  private onExpectEvent(l: Listener, ev: HubEvent, now: number): void {
+    const x = l.expect!
+    if (topicMatches(l.on, ev.topic) && whereMatches(ev, l.where)) {
+      l.stats.matched++
+      l.stats.lastEventAt = now
+      if (isAbsolute(x)) {
+        x.matches.push({ id: ev.id, at: ev.at })
+        if (x.matches.length > MAX_EXPECT_MATCHES) x.matches.splice(0, x.matches.length - MAX_EXPECT_MATCHES)
+        return
+      }
+      if (x.pending.length) void this.satisfy(l, ev)
+      return
+    }
+    if (x.after && topicMatches(x.after.on, ev.topic) && whereMatches(ev, x.after.where)) {
+      if (l.pausedAt) return
+      if ((l.hours || l.days) && !inWindow(now, l.hours, l.days)) { this.record(l, 'dropped', [ev.id], 'arming event outside the active window'); return }
+      this.armDeadline(l, now, ev.id)
+      this.armExpect(l)
+    }
+  }
+
+  private armDeadline(l: Listener, now: number, triggerEventId: string | undefined): void {
+    const x = l.expect!
+    const p: ExpectPending = { armedAt: now, deadlineAt: now + (x.withinMs ?? 0), ...(triggerEventId ? { triggerEventId } : {}) }
+    x.pending.push(p)
+    if (x.pending.length > MAX_EXPECT_PENDING) x.pending.splice(0, x.pending.length - MAX_EXPECT_PENDING)
+    this.record(l, 'armed', triggerEventId ? [triggerEventId] : [], `deadline ${fmtWhen(p.deadlineAt)}`)
+  }
+
+  /** Absolute: keep exactly one pending entry — the next `by` tick. */
+  private scheduleAbsolute(l: Listener, from: number): void {
+    const x = l.expect!
+    const next = nextDeadline(x.by!, from)
+    if (next === undefined) return
+    x.pending = [{ armedAt: from, deadlineAt: next }]
+  }
+
+  /** One timer per expectation: the earliest pending deadline. */
+  private armExpect(l: Listener): void {
+    this.disarm(l.id)
+    const x = l.expect
+    if (!x || l.disabledAt || l.pausedAt || !x.pending.length) return
+    const due = Math.min(...x.pending.map((p) => p.deadlineAt))
+    const delay = Math.max(0, due - this.now())
+    const t = setTimeout(() => { this.timers.delete(l.id); void this.evaluateDue(l, 'deadline').then(() => this.armExpect(l)) }, Math.min(delay, 2_147_000_000))
+    t.unref?.()
+    this.timers.set(l.id, t)
+  }
+
+  /** `con listen flush` on an expectation: pull the nearest deadline to now and judge it. */
+  async judgeNow(l: Listener): Promise<{ ok: boolean; detail: string }> {
+    const x = l.expect
+    if (!x) return { ok: false, detail: 'not an expectation' }
+    if (!x.pending.length) return { ok: false, detail: 'nothing armed' }
+    const now = this.now()
+    const p = x.pending.reduce((a, b) => (a.deadlineAt <= b.deadlineAt ? a : b))
+    p.deadlineAt = Math.min(p.deadlineAt, now)
+    await this.evaluateDue(l, 'flush')
+    this.armExpect(l)
+    return { ok: true, detail: l.stats.lastOutcome ?? 'judged' }
+  }
+
+  /** Resolve every pending deadline that has passed. Public so `flush` and tests can drive it. */
+  async evaluateDue(l: Listener, why: 'deadline' | 'sweep' | 'restart' | 'flush'): Promise<void> {
+    const x = l.expect
+    if (!x || l.disabledAt || l.pausedAt) return
+    const now = this.now()
+    const due = x.pending.filter((p) => p.deadlineAt <= now)
+    if (!due.length) return
+    for (const p of due) {
+      if (!x.pending.includes(p)) continue
+      x.pending = x.pending.filter((q) => q !== p)
+      if (isAbsolute(x)) {
+        const windowStart = p.deadlineAt - (x.windowMs ?? Math.max(0, p.deadlineAt - p.armedAt))
+        const hit = x.matches.find((m) => m.at >= windowStart && m.at <= p.deadlineAt + 1_000)
+        x.matches = x.matches.filter((m) => m.at > windowStart)
+        if (hit) await this.satisfy(l, this.ctx.bus.get(hit.id) ?? undefined, p)
+        else await this.miss(l, p, why)
+        if (!this.store.get(l.id)) return
+        if (!x.pending.length) this.scheduleAbsolute(l, p.deadlineAt)
+        if (!x.pending.length) { this.remove(l.id, { actor: 'hub', reason: 'one-shot deadline evaluated — self-removed' }); return }
+      } else {
+        await this.miss(l, p, why)
+        if (!this.store.get(l.id)) return
+        if (!x.after) { this.remove(l.id, { actor: 'hub', reason: 'one-shot wait resolved (missed) — self-removed' }); return }
+      }
+    }
+    this.store.persist()
+  }
+
+  private async satisfy(l: Listener, ev: HubEvent | undefined, tick?: ExpectPending): Promise<void> {
+    const x = l.expect!
+    const now = this.now()
+    const triggers = tick ? [] : x.pending.map((p) => p.triggerEventId).filter((s): s is string => !!s)
+    if (!tick) { x.pending = []; this.disarm(l.id) }
+    x.satisfied++
+    x.lastSatisfiedAt = now
+    const ids = [...(ev ? [ev.id] : []), ...triggers]
+    this.record(l, 'satisfied', ids, ev ? `${ev.topic} ${fmtWhen(ev.at)}${tick ? ` inside the window before ${fmtWhen(tick.deadlineAt)}` : ''}` : 'matching event')
+    l.stats.lastOutcome = l.outcomes[l.outcomes.length - 1]!.detail ? `satisfied: ${l.outcomes[l.outcomes.length - 1]!.detail}` : 'satisfied'
+    this.ctx.bus.emit({ topic: 'expect.satisfied', source: 'listeners', data: { listenerId: l.id, name: l.name ?? null, expect: describeExpect(l), ...(ev ? { eventId: ev.id, eventTopic: ev.topic } : {}), ...(tick ? { deadlineAt: tick.deadlineAt } : {}), triggerEventIds: triggers } })
+    this.ctx.log(`[listeners] ${l.id} expectation satisfied${ev ? ` by ${ev.id}` : ''}`)
+    if (x.then && ev) {
+      try {
+        const r = await this.act(l, x.then, [ev], undefined)
+        this.record(l, r.ok ? 'fired' : 'skipped', [ev.id], `then: ${r.detail}`)
+      } catch (e) {
+        this.record(l, 'error', [ev.id], `then: ${(e as Error).message}`)
+      }
+    }
+    if (!isAbsolute(x) && !x.after) { this.remove(l.id, { actor: 'hub', reason: 'one-shot wait resolved (satisfied) — self-removed' }); return }
+    this.store.persist()
+  }
+
+  /** Emit `expect.missed`, then run the `--else` through the normal guard → ceiling → action path. */
+  private async miss(l: Listener, p: ExpectPending, why: string): Promise<void> {
+    const x = l.expect!
+    const now = this.now()
+    x.missed++
+    x.lastMissedAt = now
+    const trigger = p.triggerEventId ? this.ctx.bus.get(p.triggerEventId) : null
+    const geo = /^(geo|location)\./.test(l.on)
+    const lastFix = geo ? this.ctx.lastFixAt?.() : undefined
+    const confidence = geo ? (lastFix === undefined || now - lastFix > STALE_FIX_MS ? 'stale' : 'fresh') : undefined
+    const lateMs = now - p.deadlineAt
+    const missed = this.ctx.bus.emit({
+      topic: 'expect.missed',
+      source: 'listeners',
+      data: {
+        listenerId: l.id, name: l.name ?? null, expect: describeExpect(l), on: l.on,
+        deadlineAt: p.deadlineAt, armedAt: p.armedAt, reason: 'deadline', acted: true,
+        ...(lateMs > 5_000 ? { lateMs } : {}),
+        ...(confidence ? { confidence, lastFixAt: lastFix ?? null } : {}),
+        ...(trigger ? { triggerEventId: trigger.id, triggerTopic: trigger.topic, trigger: trigger.data } : {}),
+        sinceLastSatisfiedMs: x.lastSatisfiedAt ? now - x.lastSatisfiedAt : null,
+      },
+    })
+    this.ctx.log(`[listeners] ${l.id} expectation missed (deadline ${fmtWhen(p.deadlineAt)}, ${why})`)
+    if (!missed) { this.record(l, 'error', [], 'expect.missed could not be emitted'); return }
+    const ids = [missed.id, ...(trigger ? [trigger.id] : [])]
+    if (this.ceilingHit(l, now, ids)) return
+    const o = await this.runBatch(l, ids, 'expect')
+    // The journal keeps the else's real stage; the headline stat says what it was about.
+    if (o.stage === 'fired') l.stats.lastOutcome = `missed: ${o.detail ?? 'else ran'}`
+  }
+
   /** Timer callback: take the batch off `pending` and run it, or re-arm if a gate says not yet. */
   async flushPending(l: Listener): Promise<void> {
     if (!l.pending || l.disabledAt || l.pausedAt) return
@@ -376,17 +618,7 @@ export class ListenerEngine {
     if (l.expiresAt !== undefined && l.expiresAt <= now) { this.sweepExpired(); return }
     const due = this.dueAt(l, now - l.coalesceMs)
     if (due > now + 500) { l.pending.dueAt = due; this.arm(l); return }
-    l.firedAt = l.firedAt.filter((t) => now - t < ONE_HOUR)
-    if (l.firedAt.length >= l.maxPerHour) {
-      l.pausedAt = now
-      l.pauseReason = `ceiling: ${l.firedAt.length} actions in the last hour (max ${l.maxPerHour})`
-      this.record(l, 'paused', l.pending.events, l.pauseReason)
-      this.ctx.notify({ type: 'agent', id: `listener:${l.id}`, title: `Listener ${l.id} paused`, body: `${l.name ?? l.on}: ${l.pauseReason}. \`con listen resume ${l.id}\` when fixed.`, pane: 'agents' })
-      this.ctx.bus.emit({ topic: 'listener.paused', source: 'listeners', data: { listenerId: l.id, firedLastHour: l.firedAt.length, maxPerHour: l.maxPerHour } })
-      this.ctx.log(`[listeners] ${l.id} ${l.pauseReason}`)
-      this.store.persist()
-      return
-    }
+    if (this.ceilingHit(l, now, l.pending.events)) return
     const batch = l.pending.events.slice(0, MAX_BATCH)
     const rest = l.pending.events.slice(MAX_BATCH)
     if (rest.length) { l.pending = { events: rest, startedAt: now, dueAt: now + Math.max(l.coalesceMs, 1_000) }; this.arm(l) }
@@ -394,8 +626,22 @@ export class ListenerEngine {
     await this.runBatch(l, batch, 'scheduled')
   }
 
+  /** The per-hour ceiling: over it, pause + notify + emit; the batch stays put. */
+  private ceilingHit(l: Listener, now: number, events: string[]): boolean {
+    l.firedAt = l.firedAt.filter((t) => now - t < ONE_HOUR)
+    if (l.firedAt.length < l.maxPerHour) return false
+    l.pausedAt = now
+    l.pauseReason = `ceiling: ${l.firedAt.length} actions in the last hour (max ${l.maxPerHour})`
+    this.record(l, 'paused', events, l.pauseReason)
+    this.ctx.notify({ type: 'agent', id: `listener:${l.id}`, title: `Listener ${l.id} paused`, body: `${l.name ?? l.on}: ${l.pauseReason}. \`con listen resume ${l.id}\` when fixed.`, pane: 'agents' })
+    this.ctx.bus.emit({ topic: 'listener.paused', source: 'listeners', data: { listenerId: l.id, firedLastHour: l.firedAt.length, maxPerHour: l.maxPerHour } })
+    this.ctx.log(`[listeners] ${l.id} ${l.pauseReason}`)
+    this.store.persist()
+    return true
+  }
+
   /** Guard → action for one batch. Journaled `firing` first so a crash re-runs it. */
-  private async runBatch(l: Listener, ids: string[], why: 'scheduled' | 'restart' | 'redeliver'): Promise<Outcome> {
+  private async runBatch(l: Listener, ids: string[], why: 'scheduled' | 'restart' | 'redeliver' | 'expect'): Promise<Outcome> {
     const outcome = this.record(l, 'firing', ids, why === 'scheduled' ? undefined : why)
     this.store.persistSync()
     const events = ids.map((id) => this.ctx.bus.get(id)).filter((e): e is HubEvent => !!e)
@@ -408,7 +654,7 @@ export class ListenerEngine {
       guardOutput = g.output
     }
     try {
-      const r = await this.act(l, events, guardOutput)
+      const r = await this.act(l, l.action, events, guardOutput)
       if (!r.ok) return this.finish(l, outcome, 'skipped', r.detail, true)
       l.stats.fired++
       l.stats.lastFiredAt = this.now()
@@ -461,8 +707,7 @@ export class ListenerEngine {
     return { proceed: r.code === 0, output }
   }
 
-  private async act(l: Listener, events: HubEvent[], guardOutput?: string): Promise<{ ok: boolean; detail: string }> {
-    const a = l.action
+  private async act(l: Listener, a: ListenerAction, events: HubEvent[], guardOutput?: string): Promise<{ ok: boolean; detail: string }> {
     const first = events[0]!
     switch (a.type) {
       case 'wake': {
@@ -591,6 +836,7 @@ export class ListenerEngine {
   async test(id: string, ev: HubEvent): Promise<TestResult> {
     const l = this.store.get(id)
     if (!l) throw new Error('listener not found')
+    if (l.expect) return this.testExpect(l, ev)
     if (!topicMatches(l.on, ev.topic)) return { stage: 'no-match', detail: `topic ${ev.topic} does not match ${l.on}` }
     const failing = l.where.find((c) => !whereMatches(ev, [c]))
     if (failing) return { stage: 'where', detail: `${formatWhere(failing)} is false (value: ${JSON.stringify(pathGet(ev, failing.path))})` }
@@ -606,6 +852,29 @@ export class ListenerEngine {
       guardOutput = g.output
     }
     return { stage: 'would-fire', detail: describeAction(l.action), ...(l.action.type === 'wake' ? { envelope: buildEventEnvelope(l, [ev], guardOutput) } : {}) }
+  }
+
+  /** Expectation dry run: would this event arm, satisfy, or count toward the window? Never acts. */
+  private testExpect(l: Listener, ev: HubEvent): TestResult {
+    const x = l.expect!
+    const now = this.now()
+    const next = x.pending.length ? Math.min(...x.pending.map((p) => p.deadlineAt)) : undefined
+    const state = next !== undefined ? `${x.pending.length} deadline(s) pending, next ${fmtWhen(next)}` : 'nothing armed'
+    if (topicMatches(l.on, ev.topic)) {
+      const failing = l.where.find((c) => !whereMatches(ev, [c]))
+      if (failing) return { stage: 'where', detail: `${formatWhere(failing)} is false (value: ${JSON.stringify(pathGet(ev, failing.path))}) — ${state}` }
+      if (isAbsolute(x)) return { stage: 'would-count', detail: `counts as the awaited event for the deadline at ${next !== undefined ? fmtWhen(next) : '?'}${x.windowMs ? ` (window ${fmtDur(x.windowMs)})` : ''}` }
+      if (x.pending.length) return { stage: 'would-satisfy', detail: `disarms ${state}${x.then ? `; then ${describeAction(x.then)}` : ''}` }
+      return { stage: 'ignored', detail: `matches the awaited event but ${state} — nothing to satisfy` }
+    }
+    if (x.after && topicMatches(x.after.on, ev.topic)) {
+      const failing = x.after.where.find((c) => !whereMatches(ev, [c]))
+      if (failing) return { stage: 'where', detail: `--after ${formatWhere(failing)} is false (value: ${JSON.stringify(pathGet(ev, failing.path))}) — ${state}` }
+      if ((l.hours || l.days) && !inWindow(now, l.hours, l.days)) return { stage: 'window', detail: `outside ${[l.days, l.hours].filter(Boolean).join(' ')} — would not arm` }
+      if (l.pausedAt) return { stage: 'paused', detail: l.pauseReason ?? 'paused' }
+      return { stage: 'would-arm', detail: `arms a deadline at ${fmtWhen(now + (x.withinMs ?? 0))}; else ${describeAction(l.action)} — ${state}` }
+    }
+    return { stage: 'no-match', detail: `topic ${ev.topic} matches neither ${l.on}${x.after ? ` nor --after ${x.after.on}` : ''} — ${state}` }
   }
 
   /** Run one listener against an archived event for real, bypassing coalesce/cooldown/window/pause. */
