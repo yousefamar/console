@@ -91,7 +91,7 @@ import { LocationWatcher } from './location/watcher.js'
 import { ImapFlow } from 'imapflow'
 import { ImapIdleWatcher } from './imap/watcher.js'
 import { discoverAccounts } from './imap/accounts.js'
-import { makeRecorderLastFetcher } from './location/recorder.js'
+import { makeRecorderHistoryFetcher, makeRecorderLastFetcher, makeRecorderLiveFeed } from './location/recorder.js'
 import { makeNominatimReverse } from './location/revgeo.js'
 import { parseFrontmatter } from './al/users.js'
 import { listAllEvents } from './routes/calendar.js'
@@ -1633,18 +1633,31 @@ const webhookCtx: WebhookRouteCtx = {
   projectExists: (slug) => existsSync(join(noteStore.vaultPath, 'projects', slug)) || existsSync(join(noteStore.vaultPath, 'projects', `${slug}.md`)),
   log,
 }
-// Location + geofences — the Recorder's latest fix polled every minute, run
-// through server-side fences, transitions wake the fence's agents / POST to
-// its URL (location/watcher.ts, routes/location.ts). Same wake seam as the
-// project webhooks above.
+// Location + geofences — the Recorder's live WebSocket (history since the last
+// fix replayed on every reconnect, so no transition is lost across downtime),
+// every fix run through server-side fences, transitions wake the fence's
+// agents / POST to its URL (location/watcher.ts, routes/location.ts). Same
+// wake seam as the project webhooks above. The Map tab follows over SyncBus.
 const geofenceStore = new GeofenceStore(configDir)
-const locationWatcher = new LocationWatcher({
+const mapFences = () => {
+  const state = geofenceStore.state()
+  return geofenceStore.fences().map((f) => ({ id: f.id, name: f.name, lat: f.lat, lon: f.lon, radius: f.radius, private: !!f.private, note: f.note ?? null, wake: f.wake, expiresAt: f.expiresAt ?? null, state: state[f.id] ?? null }))
+}
+const locationWatcher: LocationWatcher = new LocationWatcher({
   store: geofenceStore,
   fetchLast: makeRecorderLastFetcher(authStore),
+  fetchHistory: makeRecorderHistoryFetcher(authStore),
+  openLiveFeed: makeRecorderLiveFeed(authStore),
   deliverToAgent: webhookCtx.deliverToAgent,
   emit: (input) => eventBus.emit(input),
+  onChange: (change) => {
+    if (change.kind === 'fix') syncBus.broadcast('location', 'fix', { fix: change.fix, replayed: change.replayed })
+    else if (change.kind === 'fences') syncBus.broadcast('location', 'fences', { fences: mapFences() })
+    else syncBus.broadcast('location', 'feed', { live: change.live })
+  },
   log,
 })
+syncBus.register('location', { snapshot: async () => ({ ...locationWatcher.current(), live: locationWatcher.status().live, fences: mapFences() }) })
 locationWatcher.start()
 // IMAP IDLE — the agent mailboxes (~/.config/<name>-mail/.env: al@, ceo@, Mai's
 // Yahoo…) held open in IDLE, every arrival → `mail.received` with

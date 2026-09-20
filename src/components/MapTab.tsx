@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './map-popup.css'
 import type { FeatureCollection } from 'geojson'
 import { Crosshair, Download, MapPin, X, KeyRound, Loader2, Layers as LayersIcon, Clock, Calendar, Users, Search, Navigation, ExternalLink, Car, Footprints, Bike, Train, Locate, Heart } from 'lucide-react'
-import { useMapStore, type MapCache, type OtFix, type MapLayerMeta, type MapLayerStyle, type LayerFeatureSel, type MeetupEvent, type BuiltinLayerId, type GPlace, type GRoute, type GTravelMode } from '@/store/map'
+import { useMapStore, type MapCache, type OtFix, type MapFence, type MapLayerMeta, type MapLayerStyle, type LayerFeatureSel, type MeetupEvent, type BuiltinLayerId, type GPlace, type GRoute, type GTravelMode } from '@/store/map'
 import type { FeatureCollection as GJ } from 'geojson'
 import { basemapStyleUrl } from '@/map/basemap-style'
 import { mapController } from '@/map/controller'
@@ -146,6 +146,71 @@ function currentToFC(current: OtFix[]): FeatureCollection {
   }
 }
 
+/** A geodesic circle as a lon/lat polygon ring (MapLibre circles are pixel-sized; fences are metres). */
+function circleRing(lat: number, lon: number, radiusM: number, steps = 64): [number, number][] {
+  const dLat = radiusM / 111_320
+  const dLon = radiusM / (111_320 * Math.cos((lat * Math.PI) / 180))
+  const ring: [number, number][] = []
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * 2 * Math.PI
+    ring.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)])
+  }
+  return ring
+}
+
+function fencesToFC(fences: MapFence[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: fences.map((f) => ({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [circleRing(f.lat, f.lon, f.radius)] },
+      properties: {
+        id: f.id,
+        name: f.name,
+        radius: f.radius,
+        inside: f.state?.inside ? 1 : 0,
+        known: f.state ? 1 : 0,
+        private: f.private ? 1 : 0,
+        since: f.state?.since ?? 0,
+        note: f.note ?? '',
+        wake: f.wake.join(', '),
+        expiresAt: f.expiresAt ?? 0,
+      },
+    })),
+  }
+}
+
+/** Labels sit just above each circle's north edge — a geographic point, so they clear the pin at every zoom. */
+function fenceLabelsToFC(fences: MapFence[]): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: fences.map((f) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [f.lon, f.lat + f.radius / 111_320] },
+      properties: { id: f.id, name: f.name, inside: f.state?.inside ? 1 : 0 },
+    })),
+  }
+}
+
+function fmtSince(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.round(s / 60)} min`
+  if (s < 86400) return `${(s / 3600).toFixed(1)} h`
+  return `${Math.round(s / 86400)} d`
+}
+
+function fencePopupHtml(p: Record<string, unknown>): string {
+  const rows: Array<[string, string]> = []
+  rows.push(['State', p.known ? `${p.inside ? 'INSIDE' : 'outside'} for ${fmtSince(Number(p.since))}` : 'unknown (no fix yet)'])
+  rows.push(['Radius', `${Math.round(Number(p.radius))} m`])
+  if (p.wake) rows.push(['Wakes', String(p.wake)])
+  if (p.private) rows.push(['Private', 'yes'])
+  if (p.note) rows.push(['Note', String(p.note)])
+  if (Number(p.expiresAt) > 0) rows.push(['Expires', new Date(Number(p.expiresAt)).toLocaleString('en-GB', { hour12: false })])
+  return `<div class="pt">${escapeHtml(String(p.name))}</div>` + rows.map(([k, v]) => `<div class="pr"><span class="pk">${escapeHtml(k)}</span><span class="pv">${escapeHtml(v)}</span></div>`).join('')
+}
+
 function ymd(ms: number): string {
   const d = new Date(ms)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -160,6 +225,7 @@ export function MapTab() {
   const {
     current, track, pins, selectedCode, gcStatus, fetching, error,
     rangeFrom, rangeTo, device, devices, loadingHistory,
+    fences, locationFeed, loadLocation,
     refresh, loadHistory, selectCache, loadLayers,
     layers, layerData, layerVisible,
     events, selectedEventId, meetupStatus, fetchingMeetup,
@@ -223,6 +289,8 @@ export function MapTab() {
       pushSource(m, 'meetup-pins', eventsToFC(st.events))
       pushSource(m, 'ot-track', trackToFC(st.track))
       pushSource(m, 'ot-current', currentToFC(st.current))
+      pushSource(m, 'geo-fences', fencesToFC(st.fences))
+      pushSource(m, 'geo-fence-labels', fenceLabelsToFC(st.fences))
       pushSource(m, 'gmaps-pins', placesToFC(st.gmapsResults))
       pushSource(m, 'gmaps-routes', routesToFC(st.gmapsRoutes, st.gmapsSelectedRoute))
       m.setFilter('gc-selected', ['==', ['get', 'code'], st.selectedCode ?? ''])
@@ -246,6 +314,17 @@ export function MapTab() {
     })
     map.on('mouseenter', 'meetup-pins', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'meetup-pins', () => { map.getCanvas().style.cursor = '' })
+
+    map.on('click', 'geo-fences-fill', (e) => {
+      const props = (e.features?.[0]?.properties ?? {}) as Record<string, unknown>
+      if (!props.id) return
+      new maplibregl.Popup({ closeButton: true, maxWidth: '280px', className: 'console-map-popup' })
+        .setLngLat(e.lngLat)
+        .setHTML(fencePopupHtml(props))
+        .addTo(map)
+    })
+    map.on('mouseenter', 'geo-fences-fill', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'geo-fences-fill', () => { map.getCanvas().style.cursor = '' })
 
     map.on('click', 'gmaps-pins', (e) => {
       const id = e.features?.[0]?.properties?.id as string | undefined
@@ -306,6 +385,7 @@ export function MapTab() {
   // initial data load
   useEffect(() => {
     void refresh().then(() => void loadHistory())
+    void loadLocation()
     void loadLayers()
     void probeGmaps()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,6 +395,11 @@ export function MapTab() {
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'gc-pins', pinsToFC(pins)) }, [pins])
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'meetup-pins', eventsToFC(events)) }, [events])
   useEffect(() => { if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-track', trackToFC(track)) }, [track])
+  useEffect(() => {
+    if (!readyRef.current || !mapRef.current) return
+    pushSource(mapRef.current, 'geo-fences', fencesToFC(fences))
+    pushSource(mapRef.current, 'geo-fence-labels', fenceLabelsToFC(fences))
+  }, [fences])
   useEffect(() => {
     if (readyRef.current && mapRef.current) pushSource(mapRef.current, 'ot-current', currentToFC(current))
     if (!centeredRef.current && current[0] && mapRef.current) {
@@ -415,7 +500,7 @@ export function MapTab() {
         {/* layers */}
         <button onClick={() => setShowLayers((v) => !v)} title="Map layers"
           className="flex items-center gap-1 rounded bg-surface-0/90 border border-border px-2 py-1 backdrop-blur hover:bg-surface-2">
-          <LayersIcon size={13} /><span className="text-text-tertiary">{layers.length + 3}</span>
+          <LayersIcon size={13} /><span className="text-text-tertiary">{layers.length + BUILTIN_META.length}</span>
         </button>
 
         {/* google maps: search + directions */}
@@ -451,9 +536,11 @@ export function MapTab() {
                 </select>
               )}
             </div>
-            <button onClick={() => mapController.flyToMe?.()} title="Centre on my location"
-              className="flex items-center rounded bg-surface-0/90 border border-border p-1.5 backdrop-blur hover:bg-surface-2">
+            <button onClick={() => mapController.flyToMe?.()}
+              title={`Centre on my location · ${feedTitle(locationFeed)}`}
+              className="relative flex items-center rounded bg-surface-0/90 border border-border p-1.5 backdrop-blur hover:bg-surface-2">
               <Crosshair size={13} />
+              <span className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ${feedDotClass(locationFeed)}`} />
             </button>
           </>
         )}
@@ -557,6 +644,7 @@ function pushSource(map: maplibregl.Map, id: string, data: FeatureCollection) {
 // exactly like agent layers do.
 const BUILTIN_SUBLAYERS: Record<BuiltinLayerId, string[]> = {
   location: ['ot-track', 'ot-current'],
+  fences: ['geo-fences-fill', 'geo-fences-line', 'geo-fence-labels'],
   geocaches: ['gc-selected', 'gc-pins'],
   meetup: ['meetup-selected', 'meetup-pins'],
 }
@@ -572,6 +660,45 @@ function applyBuiltinVisibility(map: maplibregl.Map, visible: Record<BuiltinLaye
 
 /** Idempotently (re)add the OwnTracks + geocache overlay sources/layers. */
 function addOverlayLayers(map: maplibregl.Map) {
+  // Geofences sit under everything else: a translucent disc tinted by state
+  // (green inside, neutral outside, dashed while unknown) with the name at the
+  // centre. Data arrives live over SyncBus 'location'.
+  if (!map.getSource('geo-fences')) {
+    map.addSource('geo-fences', { type: 'geojson', data: fencesToFC([]) })
+    map.addLayer({
+      id: 'geo-fences-fill', type: 'fill', source: 'geo-fences',
+      paint: {
+        'fill-color': ['case', ['==', ['get', 'inside'], 1], '#22c55e', '#94a3b8'] as unknown as maplibregl.ExpressionSpecification,
+        'fill-opacity': ['case', ['==', ['get', 'inside'], 1], 0.22, 0.1] as unknown as maplibregl.ExpressionSpecification,
+      },
+    })
+    map.addLayer({
+      id: 'geo-fences-line', type: 'line', source: 'geo-fences',
+      paint: {
+        'line-color': ['case', ['==', ['get', 'inside'], 1], '#22c55e', ['==', ['get', 'private'], 1], '#f59e0b', '#94a3b8'] as unknown as maplibregl.ExpressionSpecification,
+        'line-width': ['case', ['==', ['get', 'inside'], 1], 2.5, 1.5] as unknown as maplibregl.ExpressionSpecification,
+        'line-opacity': 0.9,
+        'line-dasharray': ['case', ['==', ['get', 'known'], 1], ['literal', [1, 0]], ['literal', [2, 2]]] as unknown as maplibregl.ExpressionSpecification,
+      },
+    })
+    map.addSource('geo-fence-labels', { type: 'geojson', data: fenceLabelsToFC([]) })
+    map.addLayer({
+      id: 'geo-fence-labels', type: 'symbol', source: 'geo-fence-labels',
+      minzoom: 10,
+      layout: {
+        'text-field': ['get', 'name'] as unknown as maplibregl.ExpressionSpecification,
+        'text-size': 11,
+        'text-offset': [0, -0.4],
+        'text-anchor': 'bottom',
+        'text-allow-overlap': false,
+      },
+      paint: {
+        'text-color': ['case', ['==', ['get', 'inside'], 1], '#4ade80', '#cbd5e1'] as unknown as maplibregl.ExpressionSpecification,
+        'text-halo-color': '#0a0a0a',
+        'text-halo-width': 1.2,
+      },
+    })
+  }
   if (!map.getSource('ot-track')) {
     map.addSource('ot-track', { type: 'geojson', data: trackToFC([]) })
     map.addLayer({ id: 'ot-track', type: 'line', source: 'ot-track', paint: { 'line-color': '#38bdf8', 'line-width': 3, 'line-opacity': 0.8 } })
@@ -847,12 +974,32 @@ function reconcileAgentLayers(
 
 const BUILTIN_META: { id: BuiltinLayerId; label: string; icon: string }[] = [
   { id: 'location', label: 'Location history', icon: '🔵' },
+  { id: 'fences', label: 'Geofences', icon: '🟢' },
   { id: 'geocaches', label: 'Geocaches', icon: '📦' },
   { id: 'meetup', label: 'Meetup events', icon: '📅' },
 ]
 
+function feedDotClass(feed: { state: string } | null): string {
+  switch (feed?.state) {
+    case 'connected': return 'bg-green-500'
+    case 'connecting': return 'bg-amber-400 animate-pulse'
+    case 'polling': return 'bg-slate-500'
+    default: return 'bg-slate-700'
+  }
+}
+
+function feedTitle(feed: { state: string; since: number | null; lastFrameAt: number | null; reconnects: number; lastError: string | null } | null): string {
+  if (!feed) return 'live feed: unknown'
+  switch (feed.state) {
+    case 'connected': return `live feed connected${feed.lastFrameAt ? `, last fix ${fmtSince(feed.lastFrameAt)} ago` : ''}${feed.reconnects ? `, ${feed.reconnects} reconnects` : ''}`
+    case 'connecting': return `live feed reconnecting${feed.lastError ? ` (${feed.lastError})` : ''}`
+    case 'polling': return `no live feed${feed.lastError ? ` — ${feed.lastError}` : ''}`
+    default: return 'live feed stopped'
+  }
+}
+
 function LayersPanel({ onClose }: { onClose: () => void }) {
-  const { layers, layerVisible, toggleLayer, setGroupVisible, builtinVisible, toggleBuiltin, pins, events } = useMapStore()
+  const { layers, layerVisible, toggleLayer, setGroupVisible, builtinVisible, toggleBuiltin, pins, events, fences } = useMapStore()
   const groups = new Map<string, MapLayerMeta[]>()
   for (const l of layers) {
     const g = l.group || ''
@@ -861,6 +1008,7 @@ function LayersPanel({ onClose }: { onClose: () => void }) {
   }
   const builtinCount: Record<BuiltinLayerId, number | null> = {
     location: null,
+    fences: fences.length,
     geocaches: pins.filter((p) => p.lat != null && p.lon != null).length,
     meetup: events.filter((e) => e.lat != null && e.lon != null).length,
   }

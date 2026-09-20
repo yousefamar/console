@@ -95,6 +95,9 @@ const LazyApp = lazy(async () => {
   const { wireMapLayersSubscription } = await import('./map/layers-subscribe')
   wireMapLayersSubscription()
 
+  const { wireLocationSubscription } = await import('./map/location-subscribe')
+  wireLocationSubscription()
+
   // `con notes open <path>` — wired at boot, not in NotesTab, so it works
   // before the Notes pane has ever been visited.
   const { wireNotesOpenSubscription } = await import('./notes/open-subscribe')

@@ -65,6 +65,8 @@ export interface GeofenceEvent {
   /** seconds spent in the previous state */
   dwellS: number
   test?: boolean
+  /** derived from Recorder history after a live-feed gap, not from a live fix */
+  replayed?: boolean
   delivered: Array<{ to: string; ok: boolean; detail?: string }>
 }
 
@@ -169,8 +171,8 @@ export function buildGeofenceEnvelope(ev: GeofenceEvent, fence: Geofence | undef
   const batt = ev.fix.batt != null ? `, battery ${ev.fix.batt} %` : ''
   const prevState = ev.event === 'enter' ? 'outside' : 'inside'
   const lines = [
-    `[GEOFENCE${ev.test ? ' TEST' : ''} — Yousef ${verb} "${ev.fenceName}"]`,
-    `When: ${fmtLocal(ev.ts)} Europe/London (fix ${fmtDuration(ageS)} old${acc}${batt})`,
+    `[GEOFENCE${ev.test ? ' TEST' : ''}${ev.replayed ? ' REPLAYED' : ''} — Yousef ${verb} "${ev.fenceName}"]`,
+    `When: ${fmtLocal(ev.ts)} Europe/London (fix ${fmtDuration(ageS)} old${acc}${batt})${ev.replayed ? ' — replayed from Recorder history; the hub was not listening when it happened' : ''}`,
     `Fence: ${ev.fenceId} — ${fence ? `${fence.lat.toFixed(5)},${fence.lon.toFixed(5)} r ${Math.round(fence.radius)} m` : 'removed'}${fence?.note ? ` — ${fence.note}` : ''}`,
     `Fix: ${ev.fix.lat.toFixed(5)},${ev.fix.lon.toFixed(5)}`,
     `Before: ${prevState} for ${fmtDuration(ev.dwellS)}`,

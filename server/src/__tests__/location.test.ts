@@ -6,8 +6,9 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { evaluate, haversineM, leaveMarginM, fixTooCoarse, buildGeofenceEnvelope, slugify, fencesContaining, type Fix, type Geofence } from '../location/geofence.js'
 import { GeofenceStore } from '../location/store.js'
-import { LocationWatcher } from '../location/watcher.js'
-import { fixFromRecorder } from '../location/recorder.js'
+import { LocationWatcher, type LocationChange } from '../location/watcher.js'
+import { fixFromRecorder, type HistoryQuery, type LiveFeedHandlers } from '../location/recorder.js'
+import type { EmitInput } from '../events/types.js'
 import { handleLocationRoutes, parseFenceBody, type LocationRouteCtx } from '../routes/location.js'
 import { levelFor, placeWords, ageWords, disclose, type ReverseGeo } from '../location/disclose.js'
 import { lateCheck, formatLateReport, VIRTUAL_RE, type CalEvent, type LateCtx } from '../location/late.js'
@@ -152,6 +153,10 @@ describe('recorder mapping', () => {
       .toEqual({ lat: 51.4553713, lon: -0.9638021, tst: 1789894800, acc: 100, batt: 93, vel: 0, device: 'armor', user: 'amar' })
     expect(fixFromRecorder({ _type: 'lwt' })).toBeNull()
   })
+  it('the /ws/last snapshot names the device only in its topic', () => {
+    expect(fixFromRecorder({ _type: 'location', lat: 51.4553919, lon: -0.963761, tst: 1789922584, tid: 'h2', topic: 'owntracks/amar/armor' } as Parameters<typeof fixFromRecorder>[0]))
+      .toEqual({ lat: 51.4553919, lon: -0.963761, tst: 1789922584, device: 'armor', user: 'amar' })
+  })
 })
 
 interface Harness {
@@ -243,6 +248,229 @@ describe('watcher', () => {
     expect(h.delivered.at(-1)!.envelope).toContain('[GEOFENCE TEST — Yousef LEFT "Home"]')
     expect(h.store.state().home!.inside).toBe(true)
     expect(await h.watcher.test('nope', 'enter')).toBeNull()
+  })
+})
+
+// --- live feed + replay ------------------------------------------------------
+
+interface FakeFeed {
+  handlers: LiveFeedHandlers
+  closedByHub: boolean
+}
+
+interface LiveHarness extends Harness {
+  feeds: FakeFeed[]
+  /** Recorder history the replay will see, any order */
+  history: Fix[]
+  historyQueries: HistoryQuery[]
+  emitted: EmitInput[]
+  changes: LocationChange[]
+  /** null → "unconfigured" for that attempt */
+  configured: { value: boolean }
+  /** drive the newest feed */
+  feed: () => FakeFeed
+  open: (snapshot: Fix[]) => Promise<void>
+}
+
+function liveHarness(opts: { live?: string[]; fetchLastFixes?: Fix[] } = {}): LiveHarness {
+  const store = new GeofenceStore(dir)
+  const delivered: Harness['delivered'] = []
+  const posts: Harness['posts'] = []
+  const logs: string[] = []
+  const live = new Set(opts.live ?? ['al'])
+  const clock = { now: 10_000_000 }
+  const feeds: FakeFeed[] = []
+  const history: Fix[] = []
+  const historyQueries: HistoryQuery[] = []
+  const emitted: EmitInput[] = []
+  const changes: LocationChange[] = []
+  const configured = { value: true }
+  const fixes = opts.fetchLastFixes ?? []
+  const watcher = new LocationWatcher({
+    store,
+    fetchLast: async () => fixes,
+    fetchHistory: async (q) => {
+      historyQueries.push(q)
+      return history.filter((f) => (f.device ?? 'armor') === q.device && f.tst >= q.fromTst && f.tst <= q.toTst).sort((a, b) => a.tst - b.tst)
+    },
+    openLiveFeed: (handlers) => {
+      if (!configured.value) return null
+      const f: FakeFeed = { handlers, closedByHub: false }
+      feeds.push(f)
+      return { close: () => { f.closedByHub = true } }
+    },
+    deliverToAgent: (key, envelope) => { if (!live.has(key)) return false; delivered.push({ key, envelope }); return true },
+    postUrl: async (url, body, token) => { posts.push({ url, body, token }); return { ok: true, detail: 'HTTP 200' } },
+    emit: (input) => { emitted.push(input); return null },
+    onChange: (c) => { changes.push(c) },
+    log: (m) => logs.push(m),
+    now: () => clock.now,
+    reconnectBaseMs: 1,
+    reconnectMaxMs: 4,
+  })
+  const feed = () => feeds[feeds.length - 1]!
+  const open = async (snapshot: Fix[]) => {
+    for (const f of snapshot) feed().handlers.onFix(f)
+    feed().handlers.onSnapshot()
+    await watcher.settled()
+  }
+  return { store, watcher, fixes, delivered, posts, logs, live, clock, feeds, history, historyQueries, emitted, changes, configured, feed, open }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+describe('watcher: live feed', () => {
+  it('opens the feed on start, applies the LAST snapshot silently, then fires on live frames in order', async () => {
+    const h = liveHarness()
+    h.store.upsert(fence())
+    h.watcher.start()
+    expect(h.feeds).toHaveLength(1)
+    expect(h.watcher.status().live.state).toBe('connecting')
+    await h.open([at(0, 100, { device: 'armor', user: 'amar' })])
+    expect(h.watcher.status().live).toMatchObject({ state: 'connected', reconnects: 0 })
+    expect(h.store.state().home!.inside).toBe(true)
+    expect(h.delivered).toEqual([])
+    expect(h.historyQueries).toEqual([]) // nothing to replay: no prior fix
+
+    h.feed().handlers.onFix(at(400, 200, { device: 'armor' }))
+    h.feed().handlers.onFix(at(0, 300, { device: 'armor' }))
+    await h.watcher.settled()
+    expect(h.delivered.map((d) => d.envelope.split('\n')[0])).toEqual(['[GEOFENCE — Yousef LEFT "Home"]', '[GEOFENCE — Yousef ENTERED "Home"]'])
+    expect(h.emitted.filter((e) => e.topic === 'location.fix').map((e) => e.data.confidence)).toEqual(['live', 'live', 'live'])
+    expect(h.emitted.filter((e) => e.topic.startsWith('geo.')).map((e) => [e.topic, e.data.confidence])).toEqual([['geo.leave', 'live'], ['geo.enter', 'live']])
+    expect(h.changes.filter((c) => c.kind === 'fix')).toHaveLength(3)
+    expect(h.watcher.current().fix!.tst).toBe(300)
+    h.watcher.stop()
+    expect(h.feed().closedByHub).toBe(true)
+    expect(h.watcher.status().live.state).toBe('stopped')
+  })
+
+  it('a stale or duplicate frame is ignored; frames are never re-evaluated out of order', async () => {
+    const h = liveHarness()
+    h.store.upsert(fence())
+    h.watcher.start()
+    await h.open([at(0, 500)])
+    h.feed().handlers.onFix(at(400, 400)) // older than what we have
+    h.feed().handlers.onFix(at(0, 500)) // same again
+    await h.watcher.settled()
+    expect(h.delivered).toEqual([])
+    expect(h.store.lastFix()!.tst).toBe(500)
+  })
+
+  it('kill-and-restart: a transit entirely inside the gap replays both transitions in fix order, flagged replayed, with no duplicate enter', async () => {
+    // session 1: inside home, then the hub dies
+    const h1 = liveHarness()
+    h1.store.upsert(fence())
+    h1.watcher.start()
+    await h1.open([at(0, 1000, { device: 'armor', user: 'amar' })])
+    h1.watcher.stop()
+    expect(h1.store.state().home!.inside).toBe(true)
+
+    // while down: he left (1200), came back (1500); the Recorder has it all; his phone is now at home (1800)
+    const h2 = liveHarness()
+    h2.clock.now = 1_900_000
+    h2.history.push(at(0, 1000, { device: 'armor' }), at(600, 1200, { device: 'armor' }), at(700, 1300, { device: 'armor' }), at(0, 1500, { device: 'armor' }), at(0, 1800, { device: 'armor' }))
+    h2.watcher.start()
+    await h2.open([at(0, 1800, { device: 'armor', user: 'amar' })])
+
+    expect(h2.historyQueries).toEqual([{ user: 'amar', device: 'armor', fromTst: 1000, toTst: 1900 + 60 }])
+    expect(h2.delivered.map((d) => d.envelope.split('\n')[0])).toEqual([
+      '[GEOFENCE REPLAYED — Yousef LEFT "Home"]',
+      '[GEOFENCE REPLAYED — Yousef ENTERED "Home"]',
+    ])
+    expect(h2.delivered[0]!.envelope).toContain('replayed from Recorder history')
+    const geo = h2.emitted.filter((e) => e.topic.startsWith('geo.'))
+    expect(geo.map((e) => [e.topic, e.at, e.data.confidence])).toEqual([['geo.leave', 1_200_000, 'replayed'], ['geo.enter', 1_500_000, 'replayed']])
+    expect(h2.store.events().map((e) => [e.event, e.ts, e.replayed])).toEqual([['enter', 1_500_000, true], ['leave', 1_200_000, true]])
+    expect(h2.store.lastFix()!.tst).toBe(1800)
+    expect(h2.store.state().home).toMatchObject({ inside: true, since: 1_500_000 })
+    expect(h2.watcher.status().lastReplay).toMatchObject({ window: [1000, 1900], fixes: 4, events: 2 })
+    expect(h2.logs.some((l) => l.includes('replayed 4 fixes since 1970-01-01T00:16:40.000Z → 2 transitions'))).toBe(true)
+    // the LAST snapshot fix (1800) arrived before the replay finished and was applied AFTER it, not before
+    expect(h2.emitted.filter((e) => e.topic === 'location.fix').map((e) => e.data.tst)).toEqual([1200, 1300, 1500, 1800])
+  })
+
+  it('reconnect: the socket dies, backoff reopens it, and the gap is replayed before the buffered live frames', async () => {
+    const h = liveHarness()
+    h.store.upsert(fence())
+    h.watcher.start()
+    await h.open([at(0, 100, { device: 'armor', user: 'amar' })])
+    h.clock.now = 10_000_000 + 700_000
+    h.feed().handlers.onClose('closed 1006')
+    expect(h.watcher.status().live).toMatchObject({ state: 'connecting', lastError: 'closed 1006' })
+    expect(h.logs.at(-1)).toContain('live feed closed: closed 1006')
+    await sleep(15)
+    expect(h.feeds).toHaveLength(2)
+    // the Recorder recorded a leave while we were reconnecting
+    h.history.push(at(600, 400, { device: 'armor' }))
+    // live frame arrives with the snapshot, then the sentinel
+    await h.open([at(650, 700, { device: 'armor', user: 'amar' })])
+    expect(h.watcher.status().live).toMatchObject({ state: 'connected', reconnects: 1, lastError: null })
+    expect(h.delivered.map((d) => d.envelope.split('\n')[0])).toEqual(['[GEOFENCE REPLAYED — Yousef LEFT "Home"]'])
+    expect(h.emitted.filter((e) => e.topic === 'location.fix').map((e) => [e.data.tst, e.data.confidence])).toEqual([[100, 'live'], [400, 'replayed'], [700, 'live']])
+    expect(h.store.state().home!.inside).toBe(false)
+    // a close from a feed we already replaced is ignored
+    h.feeds[0]!.handlers.onClose('late')
+    expect(h.watcher.status().live.state).toBe('connected')
+  })
+
+  it('a gap older than 14 days is not replayed; state re-derives silently from the live snapshot', async () => {
+    const h1 = liveHarness()
+    h1.store.upsert(fence())
+    h1.watcher.start()
+    await h1.open([at(0, 1000)])
+    h1.watcher.stop()
+    const h2 = liveHarness()
+    h2.clock.now = (1000 + 20 * 86400) * 1000
+    h2.history.push(at(600, 2000))
+    h2.watcher.start()
+    await h2.open([at(600, 1000 + 20 * 86400)])
+    expect(h2.historyQueries).toEqual([])
+    expect(h2.logs.some((l) => l.includes('too old to replay'))).toBe(true)
+    // he is outside now — that IS a transition relative to the persisted inside state, and it fires once, live
+    expect(h2.delivered.map((d) => d.envelope.split('\n')[0])).toEqual(['[GEOFENCE — Yousef LEFT "Home"]'])
+  })
+
+  it('unconfigured OwnTracks: no feed, status says so, the feed is retried; a manual tick still works', async () => {
+    const h = liveHarness({ fetchLastFixes: [at(0, 100)] })
+    h.configured.value = false
+    h.watcher.start()
+    expect(h.feeds).toHaveLength(0)
+    expect(h.watcher.status().live).toMatchObject({ state: 'polling', lastError: 'OwnTracks not configured' })
+    await h.watcher.tick()
+    expect(h.store.lastFix()!.tst).toBe(100)
+    h.configured.value = true
+    await sleep(15)
+    expect(h.feeds).toHaveLength(1)
+    h.watcher.stop()
+  })
+
+  it('fence changes and feed state reach the Map seam', async () => {
+    const h = liveHarness()
+    h.watcher.start()
+    h.watcher.fencesChanged()
+    expect(h.changes.map((c) => c.kind)).toEqual(['feed', 'fences'])
+    await h.open([at(0, 100)])
+    expect(h.changes.map((c) => c.kind)).toEqual(['feed', 'fences', 'feed', 'fix'])
+    expect((h.changes[2] as { live: { state: string } }).live.state).toBe('connected')
+    h.watcher.stop()
+  })
+
+  it('dryReplay reports the transitions history would produce without touching state or waking anyone', async () => {
+    const h = liveHarness()
+    h.store.upsert(fence())
+    h.store.upsert(fence({ id: 'gym', name: 'Gym', lat: at(5000, 0).lat, lon: at(5000, 0).lon, radius: 100 }))
+    h.history.push(at(0, 100), at(600, 200), at(5000, 300), at(5010, 400), at(600, 500), at(0, 600))
+    const r = await h.watcher.dryReplay(0, 1000)
+    expect(r).toMatchObject({ window: [0, 1000], devices: ['amar/armor'], fixes: 6 })
+    expect(r.events.map((e) => `${e.fenceId}:${e.event}@${e.ts / 1000}`)).toEqual(['home:leave@200', 'gym:enter@300', 'gym:leave@500', 'home:enter@600'])
+    expect(r.state.home!.inside).toBe(true)
+    expect(r.state.gym!.inside).toBe(false)
+    const only = await h.watcher.dryReplay(0, 1000, { fenceId: 'gym' })
+    expect(only.events.map((e) => e.fenceId)).toEqual(['gym', 'gym'])
+    expect(h.delivered).toEqual([])
+    expect(h.store.lastFix()).toBeNull()
+    expect(h.store.events()).toEqual([])
   })
 })
 

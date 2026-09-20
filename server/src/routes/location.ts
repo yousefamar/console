@@ -3,11 +3,18 @@
 //   GET    /location                      latest fix, its age, the fences it is inside
 //   POST   /location/refresh              poll the Recorder now, then as GET /location
 //   GET    /location/geofences            every fence with its inside/outside state
+//   GET    /location/map                  what the Map tab draws: fix, fences with
+//                                         state, live-feed health (SyncBus 'location'
+//                                         pushes the same as fix/fences/feed events)
 //   POST   /location/geofences            upsert {id?, name, lat, lon, radius, wake?, url?,
 //                                         urlToken?, private?, on?, expiresAt?, note?}
 //   DELETE /location/geofences/<id>
 //   POST   /location/geofences/<id>/test  {event?: enter|leave} — synthetic transition
 //                                         through the real wake/POST pipeline
+//   POST   /location/replay               {from?, to?, fence?, device?} — dry run:
+//                                         the transitions the fences WOULD have
+//                                         fired over Recorder history; no state
+//                                         change, nobody woken (default: last 7 d)
 //   GET    /location/events[?limit&fence] transitions, newest first
 //   GET    /location/for/<user-slug>      the disclosure that person may hear
 //                                         {level, why, say|null, note} — policy
@@ -144,6 +151,16 @@ export function handleLocationRoutes(
     return true
   }
 
+  if (path === '/location/map' && req.method === 'GET') {
+    const state = ctx.store.state()
+    send(res, 200, {
+      ...ctx.watcher.current(),
+      live: ctx.watcher.status().live,
+      fences: ctx.store.fences().map((f) => ({ id: f.id, name: f.name, lat: f.lat, lon: f.lon, radius: f.radius, private: !!f.private, note: f.note ?? null, wake: f.wake, expiresAt: f.expiresAt ?? null, state: state[f.id] ?? null })),
+    })
+    return true
+  }
+
   if (path === '/location/geofences' && req.method === 'POST') {
     return run(async () => {
       const parsed = parseFenceBody(await readBody(req), ctx.actorOf(req), Date.now())
@@ -154,6 +171,7 @@ export function handleLocationRoutes(
       const fix = ctx.store.lastFix()
       if (fix) await ctx.watcher.applyFix(fix)
       else await ctx.watcher.tick()
+      ctx.watcher.fencesChanged()
       const view = fencesView(ctx).find((f) => f.id === fence.id)
       send(res, existed ? 200 : 201, { fence: view, created: !existed })
     })
@@ -164,6 +182,7 @@ export function handleLocationRoutes(
     const id = decodeURIComponent(m[1]!)
     if (!m[2] && req.method === 'DELETE') {
       if (!ctx.store.remove(id)) { send(res, 404, { error: `no fence "${id}"` }); return true }
+      ctx.watcher.fencesChanged()
       send(res, 200, { removed: id })
       return true
     }
@@ -176,6 +195,28 @@ export function handleLocationRoutes(
         send(res, 200, { event: ev })
       })
     }
+  }
+
+  if (path === '/location/replay' && req.method === 'POST') {
+    return run(async () => {
+      const body = JSON.parse((await readBody(req)) || '{}') as { from?: string | number; to?: string | number; fence?: string; device?: string; user?: string }
+      const parseT = (v: string | number | undefined, fallback: number): number | null => {
+        if (v == null || v === '') return fallback
+        if (typeof v === 'number') return v > 1e11 ? Math.round(v / 1000) : v
+        if (/^\d+$/.test(v)) return parseT(Number(v), fallback)
+        const t = Date.parse(v)
+        return Number.isFinite(t) ? Math.round(t / 1000) : null
+      }
+      const nowTst = Math.round(Date.now() / 1000)
+      const to = parseT(body.to, nowTst)
+      const from = parseT(body.from, nowTst - 7 * 86400)
+      if (from == null || to == null) return send(res, 400, { error: 'from/to must be ISO datetimes or unix seconds' })
+      if (to <= from) return send(res, 400, { error: 'to must be after from' })
+      if (to - from > 92 * 86400) return send(res, 400, { error: 'window must be 92 days or less' })
+      if (body.fence && !ctx.store.fence(body.fence)) return send(res, 404, { error: `no fence "${body.fence}"` })
+      const devices = body.device ? [{ user: body.user ?? 'amar', device: body.device }] : undefined
+      send(res, 200, await ctx.watcher.dryReplay(from, to, { fenceId: body.fence, devices }))
+    })
   }
 
   if (path === '/location/events' && req.method === 'GET') {

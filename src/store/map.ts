@@ -27,6 +27,28 @@ export interface OtFix {
   isolocal?: string
 }
 
+/** A hub geofence as the Map shows it (mirror of the hub's location snapshot). */
+export interface MapFence {
+  id: string
+  name: string
+  lat: number
+  lon: number
+  radius: number // metres
+  private: boolean
+  note: string | null
+  wake: string[]
+  expiresAt: number | null
+  state: { inside: boolean; since: number; tst: number } | null
+}
+
+export interface LocationFeed {
+  state: 'connected' | 'connecting' | 'polling' | 'stopped'
+  since: number | null
+  lastFrameAt: number | null
+  reconnects: number
+  lastError: string | null
+}
+
 // --- Geocaches (mirror of the hub summary shape) ----------------------------
 
 export interface MapCache {
@@ -174,14 +196,14 @@ function saveLayerVis(v: Record<string, boolean>): void {
   }
 }
 
-// The three hub-backed overlays (location history, geocaches, Meetup) are
+// The hub-backed overlays (location history, geofences, geocaches, Meetup) are
 // modelled as "built-in layers": they live in the same Layers panel as the
 // agent-pushed layers and each owns a toolbar control cluster that renders
 // only while the layer is visible. Visibility persists like agent layers.
-export type BuiltinLayerId = 'location' | 'geocaches' | 'meetup'
+export type BuiltinLayerId = 'location' | 'fences' | 'geocaches' | 'meetup'
 const BUILTIN_VIS_KEY = 'console:map:builtinVisible'
 function loadBuiltinVis(): Record<BuiltinLayerId, boolean> {
-  const def = { location: true, geocaches: true, meetup: true }
+  const def = { location: true, fences: true, geocaches: true, meetup: true }
   try {
     return { ...def, ...JSON.parse(localStorage.getItem(BUILTIN_VIS_KEY) || '{}') }
   } catch {
@@ -228,6 +250,11 @@ interface MapState {
   rangeFrom: number // epoch ms
   rangeTo: number // epoch ms
   loadingHistory: boolean
+  // live feed (hub → SyncBus 'location'): fences with inside/outside state, the
+  // Recorder WebSocket's health, the fence a click selected
+  fences: MapFence[]
+  locationFeed: LocationFeed | null
+  selectedFenceId: string | null
 
   // Geocaches
   pins: MapCache[]
@@ -248,6 +275,11 @@ interface MapState {
   refresh: () => Promise<void>
   loadHistory: (fromMs?: number, toMs?: number, device?: string) => Promise<void>
   setRange: (fromMs: number, toMs: number) => void
+  loadLocation: () => Promise<void>
+  applyLiveFix: (fix: OtFix) => void
+  setFences: (fences: MapFence[]) => void
+  setLocationFeed: (feed: LocationFeed) => void
+  selectFence: (id: string | null) => void
   fetchArea: (bbox: BBox, max?: number) => Promise<void>
   loadPins: () => Promise<void>
   mergePins: (incoming: MapCache[]) => void
@@ -322,6 +354,9 @@ export const useMapStore = create<MapState>((set, get) => ({
   rangeFrom: Date.now() - 1 * DAY,
   rangeTo: Date.now(),
   loadingHistory: false,
+  fences: [],
+  locationFeed: null,
+  selectedFenceId: null,
 
   pins: [],
   selectedCode: null,
@@ -356,6 +391,31 @@ export const useMapStore = create<MapState>((set, get) => ({
       set({ error: (err as Error).message })
     }
   },
+
+  loadLocation: async () => {
+    try {
+      const snap = await hubFetch<{ fences: MapFence[]; live: LocationFeed }>('/location/map')
+      set({ fences: snap.fences, locationFeed: snap.live })
+    } catch {
+      /* hub unreachable — keep whatever we have */
+    }
+  },
+  applyLiveFix: (fix) =>
+    set((s) => {
+      const dev = fix.device ?? s.current[0]?.device
+      const rest = s.current.filter((f) => f.device !== dev)
+      const cur = [...rest, { ...fix, device: dev }].sort((a, b) => b.tst - a.tst)
+      const devices = [...new Set(cur.map((f) => f.device).filter(Boolean) as string[])]
+      // extend the drawn track when its range reaches "now", so the polyline follows him live
+      const last = s.track[s.track.length - 1]
+      const track = last && s.rangeTo >= last.tst * 1000 - 60_000 && (!s.device || s.device === dev) && fix.tst > last.tst
+        ? [...s.track, fix]
+        : s.track
+      return { current: cur, devices, device: s.device ?? devices[0] ?? null, track }
+    }),
+  setFences: (fences) => set((s) => ({ fences, selectedFenceId: s.selectedFenceId && fences.some((f) => f.id === s.selectedFenceId) ? s.selectedFenceId : null })),
+  setLocationFeed: (feed) => set({ locationFeed: feed }),
+  selectFence: (id) => set({ selectedFenceId: id }),
 
   loadHistory: async (fromMs, toMs, device) => {
     const s = get()

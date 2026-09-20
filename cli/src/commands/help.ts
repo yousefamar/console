@@ -298,7 +298,8 @@ con location — where Yousef is (OwnTracks via the hub) + server-side geofences
 
 Commands:
   [now]                               Latest fix: coords, ±accuracy, age, battery, fences he is inside
-  refresh                             Poll the Recorder now, then as 'now'
+  refresh                             Fetch the Recorder's /last now, then as 'now' (the hub normally
+                                      holds a live WebSocket to the Recorder; 'now' shows its state)
   history [--from D] [--to D] [--limit N]
                                       Recorder fixes for a day range (default today), oldest first
   geofence list                       Every fence with INSIDE/outside state and who it wakes
@@ -311,6 +312,11 @@ Commands:
                                       that disclosure tools name but never locate (home).
   geofence remove <id>
   events [--limit N] [--fence id]     Transitions, newest first, with who was notified
+  replay [--from D] [--to D] [--fence id] [--device d]
+                                      DRY RUN: the transitions the fences as configured would have
+                                      fired over Recorder history (default last 7 d). Nothing is
+                                      woken, no state changes — tune a radius against a known week.
+                                      (Reconnects replay the gap for real, automatically.)
   test <fence-id> [--event enter|leave]
                                       Fire a synthetic transition through the real wake/POST pipeline
   for <user-slug>                     What THAT person may be told about where he is. The hub applies

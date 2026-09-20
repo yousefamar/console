@@ -5,8 +5,9 @@
 //   con location history [--from D --to D] Recorder history for a day range
 //   con location geofence list|add|remove
 //   con location events [--limit N] [--fence id]
+//   con location replay [--from D --to D] [--fence id]  dry run of the engine over history
 //   con location test <fence-id> [--event enter|leave]
-//   con location refresh
+//   con location refresh                  fetch /last now (the live WebSocket normally makes this moot)
 //   con location for <user-slug>          what THAT person may be told (policy from users/<slug>.md)
 //   con location eta "<place>" [--mode]   traffic-aware ETA from the current fix
 //   con location late-check [--threshold 10] [--window 180] [--guard]
@@ -40,13 +41,18 @@ function flagsOf(args: string[], allowed: readonly string[], flags: GlobalFlags)
 }
 
 interface Fix { lat: number; lon: number; tst: number; acc?: number; batt?: number; vel?: number; device?: string; user?: string }
-interface Current { fix: Fix | null; ageS: number | null; inside: Array<{ id: string; name: string; private: boolean }>; polledAt: number | null; lastError: string | null; fences: number }
+interface LiveStatus { state: 'connected' | 'connecting' | 'polling' | 'stopped'; since: number | null; lastFrameAt: number | null; reconnects: number; lastError: string | null }
+interface Current {
+  fix: Fix | null; ageS: number | null; inside: Array<{ id: string; name: string; private: boolean }>; polledAt: number | null; lastError: string | null; fences: number
+  live?: LiveStatus
+  lastReplay?: { at: number; window: [number, number]; fixes: number; events: number } | null
+}
 interface FenceView {
   id: string; name: string; lat: number; lon: number; radius: number; wake: string[]; url?: string; urlToken?: string; private?: boolean; on: string; note?: string; expiresAt?: number; createdAt: number; createdBy?: string
   state: { inside: boolean; since: number; tst: number } | null
   wakeLive: Array<{ key: string; live: boolean }>
 }
-interface GeofenceEvent { id: string; ts: number; fenceId: string; fenceName: string; event: 'enter' | 'leave'; fix: Fix; dwellS: number; test?: boolean; delivered: Array<{ to: string; ok: boolean; detail?: string }> }
+interface GeofenceEvent { id: string; ts: number; fenceId: string; fenceName: string; event: 'enter' | 'leave'; fix: Fix; dwellS: number; test?: boolean; replayed?: boolean; delivered: Array<{ to: string; ok: boolean; detail?: string }> }
 
 const when = (ms: number | null | undefined) => ms ? new Date(ms).toLocaleString('en-GB', { timeZone: 'Europe/London', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).replace(',', '') : '—'
 const ago = (s: number | null | undefined) => s == null ? '—' : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${(s / 3600).toFixed(1)} h ago` : `${Math.round(s / 86400)} d ago`
@@ -62,13 +68,14 @@ export async function location(verb: string | undefined, args: string[], flags: 
     case 'geofence':
     case 'fence': return geofence(args[0], args.slice(1), flags)
     case 'events': return locationEvents(args, flags)
+    case 'replay': return locationReplay(args, flags)
     case 'test': return locationTest(args, flags)
     case 'for': return locationFor(args, flags)
     case 'eta': return locationEta(args, flags)
     case 'late-check':
     case 'late': return locationLateCheck(args, flags)
     default:
-      exitWithError('USAGE', `Unknown location command: ${verb}. Verbs: now, refresh, history, geofence, events, test, for, eta, late-check. Run 'con help location'.`, flags)
+      exitWithError('USAGE', `Unknown location command: ${verb}. Verbs: now, refresh, history, geofence, events, replay, test, for, eta, late-check. Run 'con help location'.`, flags)
   }
 }
 
@@ -83,8 +90,19 @@ function describe(d: Current): string[] {
   const lines = [parts.join(' · ')]
   lines.push(d.inside.length ? `Inside: ${d.inside.map((i) => `${i.name}${i.private ? ' (private)' : ''}`).join(', ')}` : `Inside: none of ${d.fences} fence${d.fences === 1 ? '' : 's'}`)
   lines.push(`https://maps.google.com/?q=${f.lat},${f.lon}`)
+  if (d.live) lines.push(`Feed: ${describeLive(d.live)}${d.lastReplay?.fixes ? ` · last replay ${d.lastReplay.fixes} fixes → ${d.lastReplay.events} transitions (${when(d.lastReplay.at)})` : ''}`)
   if (d.lastError) lines.push(`Last poll error: ${d.lastError}`)
   return lines
+}
+
+function describeLive(l: LiveStatus): string {
+  const now = Date.now()
+  switch (l.state) {
+    case 'connected': return `live WebSocket, up ${ago(Math.round((now - (l.since ?? now)) / 1000)).replace(' ago', '')}${l.lastFrameAt ? `, last frame ${ago(Math.round((now - l.lastFrameAt) / 1000))}` : ''}${l.reconnects ? `, ${l.reconnects} reconnect${l.reconnects === 1 ? '' : 's'}` : ''}`
+    case 'connecting': return `RECONNECTING${l.lastError ? ` (${l.lastError})` : ''}`
+    case 'polling': return `no live feed${l.lastError ? ` — ${l.lastError}` : ''}`
+    case 'stopped': return 'stopped'
+  }
 }
 
 async function locationNow(args: string[], flags: GlobalFlags, refresh = false): Promise<void> {
@@ -202,8 +220,24 @@ async function locationEvents(args: string[], flags: GlobalFlags): Promise<void>
   if (!d.events.length) { info('No geofence events yet.'); return }
   for (const e of d.events) {
     const to = e.delivered.map((x) => `${x.ok ? '✓' : '✗'} ${x.to}${!x.ok && x.detail ? ` (${x.detail})` : ''}`).join(', ') || 'nobody'
-    info(`${when(e.ts)}  ${e.test ? 'TEST ' : ''}${e.event.toUpperCase().padEnd(5)} ${e.fenceId.padEnd(22)} after ${ago(e.dwellS).replace(' ago', '')} ${e.event === 'enter' ? 'away' : 'inside'}  → ${to}`)
+    info(`${when(e.ts)}  ${e.test ? 'TEST ' : ''}${e.replayed ? 'REPLAYED ' : ''}${e.event.toUpperCase().padEnd(5)} ${e.fenceId.padEnd(22)} after ${ago(e.dwellS).replace(' ago', '')} ${e.event === 'enter' ? 'away' : 'inside'}  → ${to}`)
   }
+}
+
+// con location replay [--from D] [--to D] [--fence id] [--device d] — dry run of
+// the fence engine over Recorder history: what WOULD have fired. Nothing is
+// woken, no state changes. Tune a radius against a known week.
+async function locationReplay(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = flagsOf(args, ['from', 'to', 'fence', 'device', 'user'], flags)
+  const day = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s)
+  const toDay = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59` : s)
+  interface Replay { window: [number, number]; devices: string[]; fixes: number; events: Array<{ id: string; ts: number; fenceId: string; fenceName: string; event: string; dwellS: number; fix: { lat: number; lon: number; acc?: number; tst: number } }>; state: Record<string, { inside: boolean; since: number }> }
+  const d = await hubFetch<Replay>('/location/replay', { method: 'POST', body: { from: day(opts.from), to: toDay(opts.to), fence: opts.fence, device: opts.device, user: opts.user } })
+  if (flags.json) { output(d, flags); return }
+  info(`${d.fixes} fixes for ${d.devices.join(', ')} ${when(d.window[0] * 1000)} → ${when(d.window[1] * 1000)}: ${d.events.length} transition${d.events.length === 1 ? '' : 's'}${opts.fence ? ` for "${opts.fence}"` : ''} (dry run — nothing fired)`)
+  for (const e of d.events) info(`${when(e.ts)}  ${e.event.toUpperCase().padEnd(5)} ${e.fenceId.padEnd(22)} after ${ago(e.dwellS).replace(' ago', '')} ${e.event === 'enter' ? 'away' : 'inside'}  ${coords(e.fix)}${e.fix.acc != null ? ` ±${Math.round(e.fix.acc)} m` : ''}`)
+  const end = Object.entries(d.state).map(([id, s]) => `${id}: ${s.inside ? 'INSIDE' : 'outside'}`).join(', ')
+  if (end) info(`End state: ${end}`)
 }
 
 async function locationTest(args: string[], flags: GlobalFlags): Promise<void> {
