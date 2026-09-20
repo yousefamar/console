@@ -473,12 +473,9 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
     }
     broadcast(ctx.clients, msg)
     if (msg.type === 'tool_diff') ctx.onToolDiff?.(msg.sessionId, msg.filePath)
-    // The live session was re-keyed (pruned-transcript fresh respawn) — its
-    // hub crons are keyed by claudeSessionId and would otherwise fire into
-    // "session not found" until auto-disabled.
+    // The live session was re-keyed (pruned-transcript fresh respawn).
     if (msg.type === 'session_init' && msg.rekeyedFrom) {
-      const moved = ctx.reassignCron?.(msg.rekeyedFrom, msg.claudeSessionId) ?? 0
-      if (moved) console.log(`[agents] ${session.name ?? session.id} re-keyed ${msg.rekeyedFrom.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}: ${moved} cron task(s) followed`)
+      followRekey(ctx, msg.rekeyedFrom, msg.claudeSessionId, session.name ?? session.id)
     }
     // Save manifest on any session state change (debounced)
     if (msg.type === 'session_init' || msg.type === 'session_ended' || msg.type === 'result'
@@ -562,6 +559,29 @@ export function wakeForkCompacted(ctx: AgentContext, session: Session, envelope:
   session.queueMessage(envelope, images)
 }
 
+
+/** A live session got a new claudeSessionId (`con agent reload Al`, the
+ *  pruned-transcript fresh respawn). Everything keyed by the old csid follows:
+ *  hub crons + listeners (reassignCron) and the fork lineage — every live fork
+ *  whose `parentClaudeSessionId` was the old csid now points at the new one,
+ *  so wind-down digests and card summaries still reach a live parent instead
+ *  of a dead id (^plum-dove: three al-* ticket forks orphaned by one reload).
+ *  Returns what moved. */
+export function followRekey(ctx: AgentContext, fromCsid: string, toCsid: string, who: string): { crons: number; forks: number } {
+  const crons = ctx.reassignCron?.(fromCsid, toCsid) ?? 0
+  let forks = 0
+  for (const s of ctx.sessions.values()) {
+    if (s.parentClaudeSessionId !== fromCsid) continue
+    s.parentClaudeSessionId = toCsid
+    forks++
+  }
+  if (forks) {
+    saveManifest(ctx.sessions)
+    broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
+  }
+  if (crons || forks) ctx.log(`[agents] ${who} re-keyed ${fromCsid.slice(0, 8)} → ${toCsid.slice(0, 8)}: ${crons} cron/listener(s), ${forks} fork(s) followed`)
+  return { crons, forks }
+}
 
 /** Inject a prompt into a session and resolve with the text of its next turn
  *  (captures streamed deltas + directly-emitted text; ends on `result`).

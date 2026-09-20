@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSy
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { Session } from '../session.js'
-import { createSession, type AgentContext } from '../routes/agents.js'
+import { createSession, followRekey, type AgentContext } from '../routes/agents.js'
 import { AL_NAME, AL_SESSION_FILE, WORKSPACE_DIR, isAlName } from './identity.js'
 import { saveManifest } from '../manifest.js'
 import { buildAlSystemPrompt } from './persona.js'
@@ -191,9 +191,9 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
  */
 export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
   const existing = currentAlSession
-  // The fresh spawn mints a NEW claudeSessionId; Al's hub crons are keyed by
-  // the old one and would orphan (fired into "session not found" until
-  // auto-disabled — lost the al-mail watch + a reply on 2026-09-02).
+  // The fresh spawn mints a NEW claudeSessionId; Al's hub crons (lost the
+  // al-mail watch + a reply on 2026-09-02) and his live ticket forks (three
+  // orphaned on 2026-09-20) are keyed by the old one and must follow.
   const oldCsid = existing?.claudeSessionId ?? loadAlSession()?.claudeSessionId ?? null
   if (existing) {
     try { existing.kill() } catch { /* ignore */ }
@@ -207,8 +207,7 @@ export async function reloadAlSession(ctx: AgentContext): Promise<Session> {
     const onInit = (msg: { type: string; claudeSessionId?: string }) => {
       if (msg.type !== 'session_init' || !msg.claudeSessionId) return
       session.off('hub_message', onInit as any)
-      const moved = ctx.reassignCron?.(oldCsid, msg.claudeSessionId) ?? 0
-      if (moved) console.log(`[al/session] ${moved} cron task(s) followed AL ${oldCsid.slice(0, 8)} → ${msg.claudeSessionId.slice(0, 8)}`)
+      followRekey(ctx, oldCsid, msg.claudeSessionId, AL_NAME)
     }
     session.on('hub_message', onInit as any)
   }
