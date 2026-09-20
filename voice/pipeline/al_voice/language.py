@@ -13,11 +13,16 @@ The router sits between the LLM and the TTS: it re-chunks the token stream into
 sentences (pipecat's own aggregator, so nothing the TTS would have waited for is
 delayed — the TTS itself runs in TOKEN mode and forwards each sentence as it
 arrives), detects each sentence's language and, when it changes, pushes a
-`TTSUpdateSettingsFrame(language=…)` ahead of the text. Detection is
-script-first (Arabic/Hebrew/Cyrillic/CJK are unambiguous) and py3langid,
-restricted to the voice's candidate languages, for Latin script; the previous
-language is kept unless the classifier is confident, so a bare "Ja." mid-German
-does not flip to English."""
+`TTSUpdateSettingsFrame(language=…)` ahead of the text AND an
+`STTUpdateSettingsFrame(language=…)` upstream: Cartesia's STT has NO language
+auto-detection (`language` "defaults to en" — the fifth call transcribed
+Yousef's Arabic as English gibberish), and the caller almost always answers
+in the language AL just spoke, so the STT follows the conversation. Detection
+is script-first (Arabic/Hebrew/Cyrillic/CJK are unambiguous) and py3langid
+over a broad Latin-script set (the voice's accents plus `VOICE_EXTRA_LANGUAGES`,
+default it/fr/es/pt/nl/tr — Italian got English phonemes when the set was
+en/de only) for Latin script; the previous language is kept unless the
+classifier is confident, so a bare "Ja." mid-German does not flip to English."""
 
 from __future__ import annotations
 
@@ -35,13 +40,18 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    STTUpdateSettingsFrame,
     TTSUpdateSettingsFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSSettings
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 DEFAULT_LANGUAGES = ("en", "ar", "de")
+# Latin-script languages the classifier may pick even when the voice has no
+# native accent for them: the `language` still fixes phonemes/normalisation.
+EXTRA_LANGUAGES = ("it", "fr", "es", "pt", "nl", "tr")
 CONFIDENCE = 0.85
 MIN_LATIN_LETTERS = 4
 
@@ -71,6 +81,9 @@ FILLERS: dict[str, list[str]] = {
     "en": ["One sec.", "Let me check.", "Hang on a moment.", "Give me a second."],
     "ar": ["ثانية واحدة.", "خليني أشوف.", "لحظة.", "ثواني."],
     "de": ["Einen Moment.", "Ich schaue kurz nach.", "Sekunde.", "Moment bitte."],
+    "it": ["Un attimo.", "Controllo subito.", "Un secondo."],
+    "fr": ["Un instant.", "Je regarde.", "Une seconde."],
+    "es": ["Un momento.", "Déjame ver.", "Un segundo."],
 }
 
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -128,12 +141,13 @@ class LanguageDetector:
 
 
 class LanguageRouter(FrameProcessor):
-    def __init__(self, candidates: Iterable[str] = DEFAULT_LANGUAGES, initial: str = "en"):
+    def __init__(self, candidates: Iterable[str] = DEFAULT_LANGUAGES, initial: str = "en", steer_stt: bool = True):
         super().__init__()
         self.detector = LanguageDetector(candidates)
         self.language = initial if initial in self.detector.candidates else self.detector.candidates[0]
         self._agg = SimpleTextAggregator()
         self.switches = 0
+        self.steer_stt = steer_stt
 
     def filler(self) -> str:
         import random
@@ -145,10 +159,14 @@ class LanguageRouter(FrameProcessor):
             return
         lang = self.detector.detect(text, self.language)
         if lang != self.language:
-            logger.info(f"tts language {self.language} → {lang}: {text[:60]!r}")
+            logger.info(f"language {self.language} → {lang}: {text[:60]!r}")
             self.language = lang
             self.switches += 1
             await self.push_frame(TTSUpdateSettingsFrame(delta=CartesiaTTSSettings(language=lang)), direction)
+            if self.steer_stt:
+                # Upstream to the STT: Cartesia reconnects with the new language
+                # (a ~1 s gap that lands while AL is still speaking).
+                await self.push_frame(STTUpdateSettingsFrame(delta=CartesiaSTTService.Settings(language=lang)), FrameDirection.UPSTREAM)
         # Whole sentences, own spacing: the TTS forwards them verbatim (TOKEN
         # mode) and the transcript joins them without inventing spaces.
         frame = LLMTextFrame(text.strip() + " ")

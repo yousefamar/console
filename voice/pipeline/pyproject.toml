@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AL's WhatsApp voice pipeline: Pipecat over the wa-voice sidecar (Cartesia Ink STT, the AL voice fork via the hub, Cartesia TTS in Yousef's clone)"
 requires-python = ">=3.12"
 dependencies = [
-    "pipecat-ai[cartesia,silero]>=1.11.0",
+    "pipecat-ai[cartesia,silero,openai]>=1.11.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "websockets>=13",

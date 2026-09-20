@@ -38,11 +38,20 @@ class Config:
     cartesia_voice_id: str = ""
     cartesia_tts_model: str = "sonic-3.6"
     cartesia_stt_model: str = "ink-whisper"
-    stt_language: str = "auto"
+    # cartesia (default, the spec's vendor): no language auto-detect ("defaults
+    # to en"), so the router moves it to follow whatever AL speaks and a call
+    # starts in `stt_language` / the caller's users-file language.
+    # openai: gpt-transcribe over the Realtime API with the language omitted =
+    # true auto-detect per utterance (code-switching works; Arabic dialects).
+    stt_vendor: str = "cartesia"
+    openai_api_key: str = ""
+    openai_stt_model: str = "gpt-transcribe"
+    stt_language: str = "en"
     # TTS languages the clone can speak natively (Cartesia voice accents); the
     # language router only switches between these. Refreshed from the voice
     # record at startup when possible.
     tts_languages: tuple[str, ...] = ("en", "ar", "de")
+    extra_languages: tuple[str, ...] = ("it", "fr", "es", "pt", "nl", "tr")
     turn_stop: str = "timeout"  # timeout | smart
     # Words the caller must say over AL before it counts as a barge-in (a bare
     # "Hello?"/"yeah" no longer cancels the sentence); 1 word when AL is quiet.
@@ -74,8 +83,12 @@ class Config:
             cartesia_voice_id=env.get("CARTESIA_VOICE_ID", ""),
             cartesia_tts_model=env.get("CARTESIA_MODEL", "sonic-3.6"),
             cartesia_stt_model=env.get("VOICE_STT_MODEL", "ink-whisper"),
-            stt_language=env.get("VOICE_STT_LANGUAGE", "auto"),
+            stt_vendor=env.get("VOICE_STT", "cartesia").strip().lower(),
+            openai_api_key=env.get("OPENAI_API_KEY", ""),
+            openai_stt_model=env.get("VOICE_OPENAI_STT_MODEL", "gpt-transcribe"),
+            stt_language=env.get("VOICE_STT_LANGUAGE", "en"),
             tts_languages=tuple(x.strip() for x in env.get("VOICE_TTS_LANGUAGES", "en,ar,de").split(",") if x.strip()) or ("en",),
+            extra_languages=tuple(x.strip() for x in env.get("VOICE_EXTRA_LANGUAGES", "it,fr,es,pt,nl,tr").split(",") if x.strip()),
             turn_stop=env.get("VOICE_TURN_STOP", "timeout"),
             interrupt_min_words=max(1, int(env.get("VOICE_INTERRUPT_MIN_WORDS", "2"))),
             user_speech_timeout=float(env.get("VOICE_USER_SPEECH_TIMEOUT", "0.4")),
@@ -96,4 +109,6 @@ class Config:
             out.append("CARTESIA_API_KEY")
         if not self.cartesia_voice_id:
             out.append("CARTESIA_VOICE_ID")
+        if self.stt_vendor == "openai" and not self.openai_api_key:
+            out.append("OPENAI_API_KEY (VOICE_STT=openai)")
         return out

@@ -133,12 +133,23 @@ export interface CallPrep {
   jid: string
   phone: string
   envelope: string
+  /** ISO 639-1 the call STARTS in (users/<slug>.md `language:`; default en).
+   *  Cartesia STT has no auto-detect, so this is what it listens in until AL
+   *  speaks another language. */
+  language: string
+}
+
+export function callerLanguage(fm: Record<string, string | string[]>): string {
+  const raw = fm.language ?? fm.lang ?? fm.locale
+  const v = Array.isArray(raw) ? raw[0] : raw
+  const code = typeof v === 'string' ? v.trim().toLowerCase().split(/[-_]/)[0]! : ''
+  return /^[a-z]{2}$/.test(code) ? code : 'en'
 }
 
 export async function prepareCall(rawJid: string, opts: { callId: string; direction: 'in' | 'out'; task?: string | null; now?: number; rulesInline?: string | null }): Promise<CallPrep> {
   const caller = await lookupCaller(rawJid)
   const policy = answerPolicy(caller, opts.direction)
-  const base = { displayName: caller.displayName, user: caller.user, jid: caller.jid, phone: caller.phone }
+  const base = { displayName: caller.displayName, user: caller.user, jid: caller.jid, phone: caller.phone, language: callerLanguage(caller.frontmatter) }
   if (!policy.answer) return { ...policy, ...base, envelope: '' }
   const openThreads = (await readIfExists(join(WORKSPACE_DIR, 'memory', 'open-threads.md'))) || ''
   const ids = caller.user ? identifiersFor(caller.user) : [caller.phone]

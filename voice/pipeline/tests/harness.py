@@ -224,7 +224,7 @@ class FakeHub:
         if "hang up" in t or "hangup" in t or "bye" in t:
             return [("text", "Alright, bye Yousef.")]
         if "arabic" in t:
-            return [("text", "تمام. "), ("text", "أنا بتكلم معاك بالعربي المصري دلوقتي. "), ("text", "Back to English now.")]
+            return [("text", "تمام. "), ("text", "أنا بتكلم معاك بالعربي المصري دلوقتي. "), ("text", "Back to English now. Anything else?")]
         if "calendar" in t or "tomorrow" in t:
             return [("text", "Hold on, let me check the calendar. "), ("tool", "Bash"), ("sleep", 1.5), ("text", "Just the ten a.m. with Callum.")]
         if "story" in t:
@@ -282,7 +282,10 @@ async def main():
     ap.add_argument("--ring", type=float, default=4.0, help="seconds between dial and accept")
     ap.add_argument("--no-spawn", action="store_true", help="assume a pipeline is already running on 9979")
     ap.add_argument("--barge", action="store_true", help="turn 1 asks for a long story; the caller talks over it (checks interrupt + flush + interruptedAfter)")
+    ap.add_argument("--arabic", action="store_true", help="turn 1 asks for Arabic; the scripted reply switches ar → en mid-turn (checks the language router, and that the next English utterance still transcribes)")
     args = ap.parse_args()
+    if args.arabic:
+        args.wavs = [str(HERE / "q5.wav"), str(HERE / "q3.wav")]
     if args.barge:
         args.wavs = [str(HERE / "q4.wav"), str(HERE / "q1.wav"), str(HERE / "q3.wav")]
 
@@ -353,6 +356,10 @@ async def main():
             "hangup waited for playout": side.hangup_at is not None and side.hangup_at >= side.last_bot_audio - 0.05,
             "transcript reason = hangup": payload.get("reason") == "hangup",
         }
+        if args.arabic:
+            checks["arabic turn switched languages (router)"] = (payload.get("languageSwitches") or 0) >= 2
+            last_user = [t["text"] for t in turns if t["role"] == "user"][-1:]
+            checks["english after the Arabic turn still transcribed"] = bool(last_user) and "hang" in last_user[0].lower()
         if args.barge:
             interrupted_reqs = [r for r in hub.turn_requests if r.get("interruptedAfter")]
             checks["barge-in flushed the sidecar queue"] = side.flushes >= 1

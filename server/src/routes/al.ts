@@ -11,7 +11,7 @@
 //   GET  /voice/health                    → { ok: true }                (the only open one)
 //   GET  /voice/status                    → { sidecar, pipeline, live: [...] }
 //   GET  /voice/qr                        → image/png pairing QR for the wa-voice device (404 when paired)
-//   POST /voice/session {callId,jid,direction,task} → { answer, why, displayName, user, jid, forkSessionId }
+//   POST /voice/session {callId,jid,direction,task} → { answer, why, displayName, user, jid, language, forkSessionId }
 //                                           (pipeline, at ring time: answer policy + fork AL for the call)
 //   POST /voice/turn {callId,text,cue?,interruptedAfter?} → NDJSON stream of
 //                                           {type:text|tool|result|error} until the fork's turn ends
@@ -211,7 +211,7 @@ export function handleAlRoutes(
           callId: b.callId, jid: prep.jid, phone: prep.phone, displayName: prep.displayName, user: prep.user,
           direction, task, envelope: prep.envelope, model: cfg.forkModel, contextMode: cfg.forkContext,
         })
-        jsonResponse(res, 200, { answer: true, why: prep.why, displayName: prep.displayName, user: prep.user, jid: prep.jid, forkSessionId: call.fork.id, forkKey: call.forkKey, model: call.model, contextMode: call.contextMode })
+        jsonResponse(res, 200, { answer: true, why: prep.why, displayName: prep.displayName, user: prep.user, jid: prep.jid, language: prep.language, forkSessionId: call.fork.id, forkKey: call.forkKey, model: call.model, contextMode: call.contextMode })
       } catch (err) {
         const msg = (err as Error)?.message ?? 'fork failed'
         jsonResponse(res, /not bootstrapped|not wired/.test(msg) ? 503 : 500, { error: msg })

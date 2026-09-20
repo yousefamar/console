@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import {
   answerPolicy, callEnvelope, historyLineFor, transcriptRecord, saveTranscript,
   resolveCallTarget, hasPriorChat, applySidecarEvent, getSidecarStatus, getSidecarQr, formatDuration,
-  loadVoiceConfig, closingTurn, type CallTranscript,
+  loadVoiceConfig, closingTurn, callerLanguage, type CallTranscript,
 } from '../al/voice.js'
 import { buildCallEnvelope, voiceForkRules } from '../al/voice-fork.js'
 import { record, resetHistoryCache } from '../al/wa-history.js'
@@ -73,7 +73,10 @@ describe('voice fork rules + envelope', () => {
     expect(rules).toMatch(/con whatsapp hangup CALL42XYZ/)
     expect(rules).toMatch(/ONCE/)
     expect(rules).toMatch(/do not retry/)
-    expect(rules).toMatch(/English, Arabic and German/)
+    expect(rules).toMatch(/English, Arabic \(Modern Standard accent\), German, Italian, French and Spanish/)
+    expect(rules).toMatch(/ALWAYS written in Arabic script/)
+    expect(rules).toMatch(/never Franco-Arabic/)
+    expect(rules).toMatch(/ONE language at a time/)
     expect(rules).not.toMatch(/delegate/)
   })
   it('the envelope carries caller, thread, task and ends with the warm-turn cue; inherited mode inlines the rules', () => {
@@ -195,6 +198,16 @@ describe('sidecar relay state', () => {
     applySidecarEvent({ ev: 'loggedout' }, cb)
     expect(getSidecarStatus()).toMatchObject({ connected: false, paired: false, jid: null })
     expect(seen).toEqual(['qr:2@abc', `ready:${AL}`, 'out'])
+  })
+})
+
+describe('callerLanguage', () => {
+  it('reads users/<slug>.md language/lang/locale as a base code, default en', () => {
+    expect(callerLanguage({})).toBe('en')
+    expect(callerLanguage({ language: 'ar' })).toBe('ar')
+    expect(callerLanguage({ lang: 'de-DE' })).toBe('de')
+    expect(callerLanguage({ locale: ['it_IT'] })).toBe('it')
+    expect(callerLanguage({ language: 'arabic' })).toBe('en')
   })
 })
 

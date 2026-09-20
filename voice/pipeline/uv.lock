@@ -161,7 +161,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "pipecat-ai", extras = ["cartesia", "silero"], specifier = ">=1.11.0" },
+    { name = "pipecat-ai", extras = ["cartesia", "silero", "openai"], specifier = ">=1.11.0" },
     { name = "py3langid", specifier = ">=0.4" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=13" },

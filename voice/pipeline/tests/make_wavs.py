@@ -17,6 +17,7 @@ PROMPTS = {
     "q2": "What is on my calendar tomorrow?",
     "q3": "Okay, thanks. Hang up.",
     "q4": "Tell me a long story.",
+    "q5": "Can you say something in Arabic?",
 }
 
 

@@ -42,6 +42,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, CartesiaTTSSettings
+from pipecat.services.openai.stt import OpenAIRealtimeSTTService
 from pipecat.services.tts_service import TextAggregationMode
 from pipecat.turns.user_start.min_words_user_turn_start_strategy import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
@@ -65,18 +66,6 @@ HANGUP_RE = re.compile(
 
 ANSWERED_CUE = "(The call was answered.)"
 SILENT_CUE = "(The caller has said nothing for two seconds.)"
-
-
-class CartesiaSTT(CartesiaSTTService):
-    """Cartesia's STT socket rejects `language=auto` outright (1008 "Invalid
-    language") and `ink-2` rejects any non-English language; omitting the
-    parameter is what auto-detection is. Pipecat always sends it, so strip it
-    from the URL when the configured language is `auto`."""
-
-    async def _websocket_connect(self, url: str, **kwargs):
-        if self._settings.language in ("auto", None, ""):
-            url = url.replace("&language=auto", "").replace("&language=None", "").replace("&language=", "")
-        return await super()._websocket_connect(url, **kwargs)
 
 
 class TranscriptCollector(FrameProcessor):
@@ -196,8 +185,23 @@ class CallSession:
         cfg = self.cfg
         self._transport = WhatsAppCallTransport(self.sidecar, self.slot, self.call_id, self.latency)
 
-        stt_settings = CartesiaSTTService.Settings(model=cfg.cartesia_stt_model, language=cfg.stt_language)
-        stt = CartesiaSTT(api_key=cfg.cartesia_api_key, sample_rate=SAMPLE_RATE, settings=stt_settings)
+        initial_language = self.session.get("language") or cfg.stt_language
+        if cfg.stt_vendor == "openai":
+            # Language omitted = OpenAI auto-detects per utterance; the router
+            # need not steer it.
+            stt = OpenAIRealtimeSTTService(
+                api_key=cfg.openai_api_key,
+                sample_rate=SAMPLE_RATE,
+                settings=OpenAIRealtimeSTTService.Settings(model=cfg.openai_stt_model, language=None, noise_reduction="far_field"),
+            )
+            steer_stt = False
+        else:
+            # Cartesia STT has no language auto-detect (the parameter "defaults
+            # to en"); it starts in the caller's language and the router moves
+            # it to follow whatever language AL speaks.
+            stt_settings = CartesiaSTTService.Settings(model=cfg.cartesia_stt_model, language=initial_language)
+            stt = CartesiaSTTService(api_key=cfg.cartesia_api_key, sample_rate=SAMPLE_RATE, settings=stt_settings)
+            steer_stt = True
 
         # TOKEN mode: the language router already delivers whole sentences (and
         # switches the Cartesia context between them); a second sentence
@@ -211,7 +215,7 @@ class CallSession:
 
         self._collector = TranscriptCollector(self.started_at)
         collector = self._collector
-        self._router = LanguageRouter(self.tts_languages)
+        self._router = LanguageRouter((*self.tts_languages, *cfg.extra_languages), initial=initial_language, steer_stt=steer_stt)
         router = self._router
         self._llm = ForkLLMService(
             hub=self.hub,
@@ -424,5 +428,6 @@ class CallSession:
             "forkSessionId": self.fork_session_id,
             "languageSwitches": self._router.switches if self._router else 0,
             "latency": self.latency.summary(),
-            "models": {"stt": self.cfg.cartesia_stt_model, "llm": f"al-fork:{self.session.get('model') or 'al'}", "tts": self.cfg.cartesia_tts_model},
+            "models": {"stt": f"{self.cfg.stt_vendor}:{self.cfg.openai_stt_model if self.cfg.stt_vendor == 'openai' else self.cfg.cartesia_stt_model}", "llm": f"al-fork:{self.session.get('model') or 'al'}", "tts": self.cfg.cartesia_tts_model},
+            "languages": {"initial": self.session.get("language") or self.cfg.stt_language, "final": self._router.language if self._router else None, "candidates": list(self._router.detector.candidates) if self._router else []},
         }

@@ -4,6 +4,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    STTUpdateSettingsFrame,
     TTSUpdateSettingsFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -59,11 +60,13 @@ class _Sink:
         self.frames: list[Frame] = []
 
 
-async def _run(router: LanguageRouter, frames: list[Frame]) -> list[Frame]:
+async def _run(router: LanguageRouter, frames: list[Frame], directions: list | None = None) -> list[Frame]:
     out: list[Frame] = []
 
     async def push(frame, direction=FrameDirection.DOWNSTREAM):
         out.append(frame)
+        if directions is not None:
+            directions.append((frame, direction))
 
     router.push_frame = push  # type: ignore[method-assign]
     # Bypass FrameProcessor plumbing: process_frame's super() call only bookkeeps.
@@ -86,15 +89,20 @@ async def _run(router: LanguageRouter, frames: list[Frame]) -> list[Frame]:
 async def test_router_switches_language_once_per_change_and_keeps_sentences_whole():
     router = LanguageRouter(("en", "ar", "de"))
     tokens = ["Got", " it.", " تمام", "، أنا", " بتكلم معاك", " بالعربي.", " Ich", " bin Al.", " Das ist", " ein Test."]
-    out = await _run(router, [LLMFullResponseStartFrame(), *[LLMTextFrame(t) for t in tokens], LLMFullResponseEndFrame()])
+    dirs: list = []
+    out = await _run(router, [LLMFullResponseStartFrame(), *[LLMTextFrame(t) for t in tokens], LLMFullResponseEndFrame()], dirs)
     texts = [f.text for f in out if isinstance(f, LLMTextFrame)]
     langs = [f.delta.language for f in out if isinstance(f, TTSUpdateSettingsFrame)]
+    # the STT is steered too, upstream, with the same language
+    stt = [(f.delta.language, d) for f, d in dirs if isinstance(f, STTUpdateSettingsFrame)]
+    assert stt == [("ar", FrameDirection.UPSTREAM), ("de", FrameDirection.UPSTREAM)]
     assert texts == ["Got it. ", "تمام، أنا بتكلم معاك بالعربي. ", "Ich bin Al. ", "Das ist ein Test. "]
     assert all(f.includes_inter_frame_spaces for f in out if isinstance(f, LLMTextFrame))
     assert langs == ["ar", "de"]
-    # settings frame precedes the sentence it applies to
+    # settings frames (TTS, then STT upstream) precede the sentence they apply to
     idx_ar = next(i for i, f in enumerate(out) if isinstance(f, TTSUpdateSettingsFrame) and f.delta.language == "ar")
-    assert isinstance(out[idx_ar + 1], LLMTextFrame) and out[idx_ar + 1].text.startswith("تمام")
+    assert isinstance(out[idx_ar + 1], STTUpdateSettingsFrame)
+    assert isinstance(out[idx_ar + 2], LLMTextFrame) and out[idx_ar + 2].text.startswith("تمام")
     assert router.language == "de"
     assert router.switches == 2
     assert isinstance(out[-1], LLMFullResponseEndFrame)
@@ -108,3 +116,14 @@ async def test_router_flushes_trailing_text_without_terminator():
     assert texts == ["Hallo Yousef, wie geht es dir "]
     assert router.language == "de"
     assert router.filler() in FILLERS["de"]
+
+
+@pytest.mark.asyncio
+async def test_router_can_leave_the_stt_alone_and_detects_italian_in_the_wide_set():
+    router = LanguageRouter(("en", "ar", "de", "it", "fr", "es"), steer_stt=False)
+    dirs: list = []
+    out = await _run(router, [LLMFullResponseStartFrame(), LLMTextFrame("Va bene, passiamo all'italiano allora."), LLMFullResponseEndFrame()], dirs)
+    assert [f.delta.language for f in out if isinstance(f, TTSUpdateSettingsFrame)] == ["it"]
+    assert not any(isinstance(f, STTUpdateSettingsFrame) for f in out)
+    assert router.language == "it"
+    assert router.filler() in FILLERS["it"]
