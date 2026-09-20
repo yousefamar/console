@@ -642,12 +642,13 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
   // The child's claudeSessionId is stable — it's been running. The parent's may
   // not be set yet if it was just revived from parked, so defer to its next
   // session_init in that case (crons fire minutes apart; the csid arrives first).
+  // followRekey moves crons/listeners AND the child's own live forks onto the
+  // parent — a merged child's forks otherwise keep a dead parentClaudeSessionId
+  // (grandchildren orphaned the same way `con agent reload` used to orphan
+  // forks, ^plum-dove).
   const childCsid = child.claudeSessionId
-  if (childCsid && ctx.reassignCron) {
-    const absorb = (parentCsid: string) => {
-      const n = ctx.reassignCron!(childCsid, parentCsid)
-      if (n) ctx.log(`[merge] absorbed ${n} cron task(s): ${childCsid} → ${parentCsid}`)
-    }
+  if (childCsid) {
+    const absorb = (parentCsid: string) => followRekey(ctx, childCsid, parentCsid, `merge of ${child.name ?? child.id}`)
     if (parent.claudeSessionId) {
       absorb(parent.claudeSessionId)
     } else {

@@ -63,6 +63,18 @@ describe('mergeFork', () => {
     expect(ctx.sessions.has('s-f')).toBe(false)
   })
 
+  it("re-parents the merged fork's own live forks onto the parent — grandchildren must not keep a dead csid (^plum-dove)", async () => {
+    const parent = new TestSession('s-p', { claudeSessionId: 'c-p', name: 'Parent' })
+    const fork = new TestSession('s-f', { claudeSessionId: 'c-f', name: 'Parent (fork)', parentClaudeSessionId: 'c-p', reply: 'done.' })
+    const grandchild = new TestSession('s-g', { claudeSessionId: 'c-g', name: 'Fork (fork)', parentClaudeSessionId: 'c-f' })
+    const unrelated = new TestSession('s-u', { claudeSessionId: 'c-u', name: 'Other (fork)', parentClaudeSessionId: 'c-other' })
+    const ctx = ctxOf(new Map([['s-p', parent], ['s-f', fork], ['s-g', grandchild], ['s-u', unrelated]]))
+    const res = await mergeFork(ctx, 's-f', 2000)
+    expect(res.ok).toBe(true)
+    expect(grandchild.parentClaudeSessionId).toBe('c-p')
+    expect(unrelated.parentClaudeSessionId).toBe('c-other')
+  })
+
   it('refuses a non-fork (no parent lineage)', async () => {
     const p = new TestSession('s-p', { claudeSessionId: 'c-p', agentKey: 'worker' })
     const res = await mergeFork(ctxOf(new Map([['s-p', p]])), 's-p', 300)
