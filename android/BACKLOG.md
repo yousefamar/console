@@ -95,6 +95,58 @@ view-mode hub-sync (Room meta is fine on one device).
   Tests: `PropertyDeckLogicTest` (the hub's `priceLabel` cases ported, parse of
   the three new fields incl. old-hub omission), `AgentFeatureInfoTest` (popup
   shows `guide £220,000` / `offers over …`, skips a null price).
+- **Boards: video clips on a card render as play tiles, and the Photo tile
+  attaches them** (^kind-newt ← SPA ^hazy-swan d50a12f5). `attach` now takes
+  webm/mp4 ≤20 MB on the same `![…](board/…)` line shape as stills; the APK's
+  `CardContent.imagePaths` treated every such line as an image, so a clip
+  rendered as a broken Coil thumbnail on the board tile and in the sheet.
+  `CardContent` gained the SPA's `isVideoAsset` / `mediaPaths` / `videoPaths`
+  (extension-only test, case-insensitive, `x.mp4.png` is a still); `imagePaths`
+  is now stills-only so the lightbox never pages onto a clip. Board chip + card
+  sheet draw every media line through one `CardMediaTile`: a still is the Coil
+  thumb as before, a clip is the SPA `CardClipTile` — play glyph + extension on
+  black, fetching NOTHING until tapped. Tap → `VideoLightbox` (new
+  `ui/components/HubVideo.kt`): the transcript's VideoView + MediaController
+  (v94 `InlineVideo`, now built on the shared `HubVideoView`, bearer via
+  `setVideoURI(uri, headers)`) full-screen over a black scrim, autoplay, source
+  = the hub `/notes/asset/` URL. The sheet's Photo tile picks
+  `ImageAndVideo`: a `video/*` pick goes through `prepareClip` — ext from the
+  MIME (`video/mp4`→mp4, `video/webm`→webm, anything else refused with a
+  toast), size via `openFileDescriptor().statSize` BEFORE reading, >20 MB
+  refused with a toast naming the size — and uploads untouched (no phone-side
+  transcode) with caption `clip`; stills keep the 2000 px JPEG path. Tests:
+  `CardContentTest` (the SPA kanban.test.ts clip cases), `ClipAttachTest`
+  (MIME→ext, the inclusive 20 MB cap).
+- **Agent transcript: sub-bullets nest again** (^kind-newt ← SPA ^keen-boar
+  7fb97340). Same bug as the SPA, same two halves: (1)
+  `TranscriptHelpers.stripHandoff` collapsed every run of 2+ spaces/tabs
+  before the text reached the segmenter, so `  - child` lost its indent (flat
+  list) and fenced code lost its indentation — it is now
+  `MarkdownBlocks.prepareTranscriptText` (handoff sentinel stripped, trailing
+  whitespace trimmed, leading indentation kept) and the collapse happens inside
+  `segmentBlocks` on prose `Text` segments only, where pre-wrap would otherwise
+  show the runs; (2) list depth was `indent / 2`, so `1. a` + `   - b`
+  (three-space child) or four-space children came out wrong — `parseListItem`
+  now returns the indent column (`ParsedListItem`) and `segmentBlocks` keeps a
+  stack of open ancestors' marker columns, nesting an item under the nearest
+  ancestor it is indented ≥2 past (CommonMark, lenient by a `- ` marker).
+  `MarkdownBlocksTest` gained the SPA's five new cases verbatim (reported
+  shape, relative depth incl. tabs, closing back to an ancestor,
+  `prepareTranscriptText`, prose-only collapsing); `TranscriptHelpersTest`
+  asserts indentation survives `stripHandoff`.
+- **Cron panel: every fire attempt shows its record** (^kind-newt ← SPA
+  ^plum-goat f669f99b). The hub's `HubCronTask` gained `lastAttemptAt`,
+  `lastOutcome` (`fired` / `queued (…)` / `skipped: <reason>` / `missed fire
+  …`) and `nextFireAt` (persisted, re-armed after a missed slot); `Cron.Task`
+  parsed only `lastFiredAt`. The three fields are parsed as optional (older
+  hub → null) and the row's status line is the SPA `TaskRow` exactly, via the
+  pure `Cron.statusChips`: `next <in>` (hub `nextFireAt` wins over the
+  client-side `CronExpr` walk — the hub knows ISO one-shots and re-arms;
+  hidden while disabled), `fired|queued <ago>` (verb from `lastOutcome`, time
+  from `lastFiredAt`), amber `skip: <reason>` from `lastSkipReason` — the old
+  row gated skip on `lastGuardResult == "skipped"`, which hid the new
+  missed-fire skips (they carry no guard result). Also drops the "next in"
+  wording for the SPA's "next". Tests: `CronStatusTest`.
 
 ## Shipped
 

@@ -8,12 +8,21 @@ package io.amar.console.ui.agents
 
 object MarkdownBlocks {
     data class ListItem(
-        /** Nesting depth from leading indentation (2 spaces or a tab per level). */
+        /** Nesting depth: an item indented ≥2 columns past the previous item's marker nests under it. */
         val depth: Int,
         val ordered: Boolean,
         /** The written number of an ordered item (`3.` → 3). */
         val num: Int? = null,
         /** `- [ ]` / `- [x]` task boxes; null for plain bullets. */
+        val checked: Boolean? = null,
+        val text: String,
+    )
+
+    /** A list line as written — indent column, not yet a depth (that needs its ancestors). */
+    data class ParsedListItem(
+        val indent: Int,
+        val ordered: Boolean,
+        val num: Int? = null,
         val checked: Boolean? = null,
         val text: String,
     )
@@ -33,21 +42,31 @@ object MarkdownBlocks {
     // `- item`, `* item`, `+ item`, `1. item`, `1) item`, optional `[ ]`/`[x]` task box.
     private val LIST_RE = Regex("""^([ \t]*)(?:([-*+])|(\d{1,3})[.)])\s+(?:\[([ xX])]\s+)?(.*)$""")
     private val CONTINUATION_RE = Regex("""^(?: {2,}|\t)\S""")
+    private val HANDOFF_RE = Regex("""(?<![\w])@handoff\([a-z0-9-]+\)""", RegexOption.IGNORE_CASE)
+    private val SPACE_RUN_RE = Regex("""[ \t]{2,}""")
 
-    fun parseListItem(line: String): ListItem? {
+    fun parseListItem(line: String): ParsedListItem? {
         val m = LIST_RE.find(line) ?: return null
         val indent = m.groupValues[1].replace("\t", "  ").length
         val num = m.groupValues[3].takeIf { it.isNotEmpty() }?.toInt()
         // groups() is null for an unmatched optional group; groupValues gives "".
         val box = m.groups[4]?.value
-        return ListItem(
-            depth = indent / 2,
+        return ParsedListItem(
+            indent = indent,
             ordered = num != null,
             num = num,
             checked = if (box == null) null else box != " ",
             text = m.groupValues[5],
         )
     }
+
+    /** Transcript text as the renderer should see it: the `@handoff(<key>)`
+     *  control sentinel stripped (it drives the "Talk to X" banner, not message
+     *  text) and trailing whitespace trimmed. Leading indentation is left
+     *  alone — it is what nests list items and indents fenced code (^keen-boar:
+     *  collapsing runs of spaces here flattened every sub-bullet). */
+    fun prepareTranscriptText(content: String): String =
+        content.replace(HANDOFF_RE, "").trimEnd()
 
     fun parseHeading(line: String): Segment.Heading? {
         val m = HEADING_RE.find(line) ?: return null
@@ -82,11 +101,22 @@ object MarkdownBlocks {
             when {
                 heading != null -> { out += heading; i++ }
                 item != null -> {
-                    val items = arrayListOf(item)
+                    val items = ArrayList<ListItem>()
+                    // Marker columns of the open ancestors. CommonMark nests an
+                    // item under the nearest ancestor whose content it is
+                    // indented past; `+ 2` (a `- ` marker) is the lenient
+                    // version so `  - b` still nests under `1. a`.
+                    val open = ArrayList<Int>()
+                    fun push(p: ParsedListItem) {
+                        while (open.isNotEmpty() && p.indent < open.last() + 2) open.removeAt(open.size - 1)
+                        items += ListItem(depth = open.size, ordered = p.ordered, num = p.num, checked = p.checked, text = p.text)
+                        open += p.indent
+                    }
+                    push(item)
                     i++
                     while (i < lines.size) {
                         val next = parseListItem(lines[i])
-                        if (next != null) { items += next; i++; continue }
+                        if (next != null) { push(next); i++; continue }
                         // Indented continuation of the previous item (not blank, not a new block).
                         if (CONTINUATION_RE.containsMatchIn(lines[i]) && !startsBlock(i)) {
                             val last = items.removeAt(items.size - 1)
@@ -112,7 +142,10 @@ object MarkdownBlocks {
                 else -> {
                     val start = i
                     while (i < lines.size && !startsBlock(i)) i++
-                    out += Segment.Text(lines.subList(start, i).toList())
+                    // Prose renders pre-wrap, so runs of spaces would show;
+                    // collapse them here only — list/code indentation must
+                    // reach the parser intact.
+                    out += Segment.Text(lines.subList(start, i).map { it.replace(SPACE_RUN_RE, " ") })
                 }
             }
         }

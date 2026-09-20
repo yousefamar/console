@@ -5,6 +5,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
+import io.amar.console.ui.notes.prepareClip
 import io.amar.console.ui.notes.prepareImage
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SmartToy
@@ -981,6 +983,7 @@ private fun CardChip(
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
         val tagSplit = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
+        val media = remember(card.detail) { io.amar.console.data.spaces.CardContent.mediaPaths(card.detail) }
         val images = remember(card.detail) { io.amar.console.data.spaces.CardContent.imagePaths(card.detail) }
         val textDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
         val urls = remember(card.text, card.detail) { io.amar.console.data.spaces.CardContent.cardUrls(card.text, card.detail) }
@@ -999,22 +1002,20 @@ private fun CardChip(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
-        // Image thumbs (48dp) via GET /notes/asset/<path> (bearer via Coil);
-        // tap → lightbox paging through this card's attachments (^spry-koi).
-        if (images.isNotEmpty()) {
+        // Media thumbs (48dp) via GET /notes/asset/<path> (bearer via Coil);
+        // stills tap → lightbox paging through this card's stills (^spry-koi);
+        // clips render as a play tile (nothing fetched until tapped, ^hazy-swan).
+        if (media.isNotEmpty()) {
             var lightbox by remember(card.blockId ?: card.text) { mutableStateOf<Int?>(null) }
+            var clip by remember(card.blockId ?: card.text) { mutableStateOf<String?>(null) }
             val models = remember(images) { images.map { assetUrl(it) } }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 3.dp)) {
-                for ((i, path) in images.take(4).withIndex()) {
-                    coil.compose.AsyncImage(
-                        model = assetUrl(path),
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)).clickable { lightbox = i },
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                    )
+                for (path in media.take(4)) {
+                    CardMediaTile(path, 48.dp, onOpenStill = { lightbox = images.indexOf(path).coerceAtLeast(0) }, onOpenClip = { clip = path })
                 }
             }
             lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
+            clip?.let { io.amar.console.ui.components.VideoLightbox(assetUrl(it), it.substringAfterLast('/')) { clip = null } }
         }
         // URL chips — tappable, open browser.
         if (urls.isNotEmpty()) {
@@ -1111,7 +1112,7 @@ fun CardSheet(
         // must never push Move/Assign/Open-agent out of reach.
         Column(Modifier.padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
             val sheetTags = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
-            val sheetImages = remember(card.detail) { io.amar.console.data.spaces.CardContent.imagePaths(card.detail) }
+            val sheetMedia = remember(card.detail) { io.amar.console.data.spaces.CardContent.mediaPaths(card.detail) }
             val sheetTextDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
             val sheetUrls = remember(card.text, card.detail) { io.amar.console.data.spaces.CardContent.cardUrls(card.text, card.detail) }
             Text(sheetTags.text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
@@ -1151,13 +1152,24 @@ fun CardSheet(
             var attached by remember(card.blockId ?: card.text) { mutableStateOf(listOf<String>()) }
             var uploading by remember { mutableStateOf(0) }
             var attachError by remember { mutableStateOf<String?>(null) }
-            val allImages = sheetImages + attached
+            val allMedia = sheetMedia + attached
+            val allImages = remember(allMedia) { allMedia.filter { !io.amar.console.data.spaces.CardContent.isVideoAsset(it) } }
             suspend fun attachUri(uri: android.net.Uri) {
                 uploading++
                 try {
-                    val prepared = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { prepareImage(ctx, uri) }
-                    if (prepared == null) { attachError = "Couldn't read that image"; return }
-                    val asset = spacesRepo.attachImage(slug, card, prepared.bytes, prepared.ext, caption = "img")
+                    val mime = ctx.contentResolver.getType(uri) ?: ""
+                    val prepared = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        // A clip passes through untouched — the hub takes
+                        // webm/mp4 ≤20 MB; anything else is refused here so a
+                        // 200 MB recording never even uploads.
+                        if (mime.startsWith("video/")) prepareClip(ctx, uri, mime) else prepareImage(ctx, uri)?.let { Result.success(it) }
+                    }
+                    if (prepared == null) { attachError = "Couldn't read that file"; return }
+                    val p = prepared.getOrElse { e ->
+                        android.widget.Toast.makeText(ctx, e.message ?: "Couldn't attach", android.widget.Toast.LENGTH_LONG).show()
+                        return
+                    }
+                    val asset = spacesRepo.attachImage(slug, card, p.bytes, p.ext, caption = if (mime.startsWith("video/")) "clip" else "img")
                     if (asset != null) { attached = attached + asset; attachError = null }
                     else attachError = spacesRepo.boardError.value ?: "Upload failed"
                 } finally { uploading-- }
@@ -1178,19 +1190,15 @@ fun CardSheet(
                 if (granted) cameraLauncher.launch(cameraUri)
             }
             var lightbox by remember(allImages) { mutableStateOf<Int?>(null) }
+            var clip by remember(allMedia) { mutableStateOf<String?>(null) }
             val models = remember(allImages) { allImages.map { assetUrl(it) } }
             Row(
                 Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                for ((i, path) in allImages.withIndex()) {
-                    coil.compose.AsyncImage(
-                        model = assetUrl(path),
-                        contentDescription = path,
-                        modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).clickable { lightbox = i },
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                    )
+                for (path in allMedia) {
+                    CardMediaTile(path, 96.dp, onOpenStill = { lightbox = allImages.indexOf(path).coerceAtLeast(0) }, onOpenClip = { clip = path })
                 }
                 if (uploading > 0) {
                     Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
@@ -1198,13 +1206,13 @@ fun CardSheet(
                     }
                 }
                 Surface(
-                    onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
                     shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.size(40.dp),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Image, "Attach image", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Filled.Image, "Attach image or clip", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                     }
                 }
                 Surface(
@@ -1225,6 +1233,7 @@ fun CardSheet(
                 Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 2.dp))
             }
             lightbox?.let { io.amar.console.ui.components.ImageLightbox(models, it) { lightbox = null } }
+            clip?.let { io.amar.console.ui.components.VideoLightbox(assetUrl(it), it.substringAfterLast('/')) { clip = null } }
             if (sheetUrls.isNotEmpty()) {
                 val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                 Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -1814,6 +1823,32 @@ private fun CrownedBot(tint: Color) {
 /** Card image line → hub asset URL (bearer attached by Coil's hub interceptor). */
 internal fun assetUrl(path: String): String =
     io.amar.console.core.HubConfig.hubBase + "/notes/asset/" + java.net.URLEncoder.encode(path, "UTF-8")
+
+/** One card attachment: a still thumbnail (Coil, cropped) or — for a webm/mp4
+ *  clip — the SPA `CardClipTile`: play glyph + extension on black, fetching
+ *  nothing until tapped. */
+@Composable
+private fun CardMediaTile(path: String, size: androidx.compose.ui.unit.Dp, onOpenStill: () -> Unit, onOpenClip: () -> Unit) {
+    if (io.amar.console.data.spaces.CardContent.isVideoAsset(path)) {
+        val ext = path.substringAfterLast('.').lowercase()
+        Column(
+            Modifier.size(size).clip(RoundedCornerShape(if (size < 64.dp) 6.dp else 8.dp))
+                .background(Color.Black.copy(alpha = 0.7f)).clickable(onClick = onOpenClip),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.Filled.PlayArrow, "Play $ext clip", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(size / 2.5f))
+            Text(ext.uppercase(), style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, letterSpacing = 1.sp), color = Color.White.copy(alpha = 0.85f))
+        }
+    } else {
+        coil.compose.AsyncImage(
+            model = assetUrl(path),
+            contentDescription = path,
+            modifier = Modifier.size(size).clip(RoundedCornerShape(if (size < 64.dp) 6.dp else 8.dp)).clickable(onClick = onOpenStill),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    }
+}
 
 /** SPA SpacesTab.tsx `queued (N)` tooltip, verbatim. */
 internal fun queuedTooltip(n: Int): String =

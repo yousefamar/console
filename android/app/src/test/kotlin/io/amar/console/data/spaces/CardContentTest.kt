@@ -1,6 +1,7 @@
 package io.amar.console.data.spaces
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,6 +19,35 @@ class CardContentTest {
         )
         assertEquals(listOf("images/shot-1.png", "images/deep/shot-2.jpg"), CardContent.imagePaths(detail))
         assertEquals(listOf("Some context line", "See https://example.com for more"), CardContent.textDetail(detail))
+    }
+
+    @Test
+    fun `imagePaths empty for a card with no image lines`() {
+        assertEquals(emptyList<String>(), CardContent.imagePaths(listOf("just text")))
+        assertEquals(emptyList<String>(), CardContent.videoPaths(listOf("just text")))
+    }
+
+    @Test
+    fun `clips split off from stills, case-insensitive on the extension (hazy-swan)`() {
+        val detail = listOf(
+            "![shot](board/card-1.png)",
+            "![clip](board/card-2.webm)",
+            "![flow](board/card-3.MP4)",
+        )
+        assertEquals(listOf("board/card-1.png", "board/card-2.webm", "board/card-3.MP4"), CardContent.mediaPaths(detail))
+        assertEquals(listOf("board/card-1.png"), CardContent.imagePaths(detail))
+        assertEquals(listOf("board/card-2.webm", "board/card-3.MP4"), CardContent.videoPaths(detail))
+        // Clip lines are media lines too — the text preview strips them.
+        assertEquals(emptyList<String>(), CardContent.textDetail(detail))
+    }
+
+    @Test
+    fun `isVideoAsset matches only the trailing extension`() {
+        assertTrue(CardContent.isVideoAsset("board/x.webm"))
+        assertTrue(CardContent.isVideoAsset("board/x.Mp4"))
+        assertFalse(CardContent.isVideoAsset("board/x.mp4.png"))
+        assertFalse(CardContent.isVideoAsset("board/webm-notes.png"))
+        assertFalse(CardContent.isVideoAsset("board/x.mov"))
     }
 
     @Test

@@ -698,10 +698,9 @@ internal fun isVideoPath(path: String): Boolean {
 }
 
 /**
- * Inline `<video controls>` twin: a VideoView with a MediaController inside a
- * 16:9 box. Hub URLs need the bearer — `setVideoURI(uri, headers)` carries it
- * (Coil's interceptor only covers images). A failed load falls back to the
- * alt text so a dead path never leaves a black box in the transcript.
+ * Inline `<video controls>` twin inside a 16:9 box (`HubVideoView` carries the
+ * bearer). A failed load falls back to the alt text so a dead path never
+ * leaves a black box in the transcript.
  */
 @Composable
 private fun InlineVideo(model: String, alt: String) {
@@ -714,23 +713,11 @@ private fun InlineVideo(model: String, alt: String) {
         return
     }
     Column {
-        androidx.compose.ui.viewinterop.AndroidView(
+        io.amar.console.ui.components.HubVideoView(
+            model = model,
             modifier = Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(8.dp))
                 .background(androidx.compose.ui.graphics.Color.Black),
-            factory = { ctx ->
-                android.widget.VideoView(ctx).apply {
-                    val headers = HashMap<String, String>()
-                    if (model.startsWith(io.amar.console.core.HubConfig.hubBase)) {
-                        io.amar.console.HubTokenStore.get()?.let { headers["Authorization"] = "Bearer $it" }
-                    }
-                    setVideoURI(android.net.Uri.parse(model), headers)
-                    val controller = android.widget.MediaController(ctx)
-                    controller.setAnchorView(this)
-                    setMediaController(controller)
-                    setOnPreparedListener { mp -> mp.isLooping = false; seekTo(1) } // first frame as poster
-                    setOnErrorListener { _, _, _ -> failed = true; true }
-                }
-            },
+            onError = { failed = true },
         )
         if (alt.isNotBlank()) {
             Text(alt, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))

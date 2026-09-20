@@ -66,6 +66,39 @@ fun prepareImage(context: Context, uri: Uri): PreparedImage? {
     return encode(scaled, mime)
 }
 
+/** The hub's `attach` caps every attachment at 20 MB (`MAX_ATTACH_BYTES`) and
+ *  takes only webm/mp4 clips (`ATTACH_VIDEO_EXTS`, ^hazy-swan). */
+const val MAX_ATTACH_BYTES = 20L * 1024 * 1024
+
+/** Video MIME → the extension the hub accepts, or null for a refused type.
+ *  Pure — unit-tested; the size gate lives beside it in [clipTooLarge]. */
+fun clipExtFor(mime: String): String? = when (mime.lowercase().substringBefore(';').trim()) {
+    "video/webm" -> "webm"
+    "video/mp4" -> "mp4"
+    else -> null
+}
+
+fun clipTooLarge(bytes: Long): Boolean = bytes > MAX_ATTACH_BYTES
+
+/** Picker Uri of a video → upload-ready bytes, passed through UNTOUCHED (no
+ *  transcode on the phone). Failure = a user-facing reason (toast it): the
+ *  hub would refuse the same two things, but only after the whole upload. */
+fun prepareClip(context: Context, uri: Uri, mime: String): Result<PreparedImage> {
+    val ext = clipExtFor(mime) ?: return Result.failure(IllegalArgumentException("Only mp4/webm clips can be attached"))
+    val size = runCatching {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+    }.getOrDefault(-1L)
+    if (size >= 0 && clipTooLarge(size)) {
+        return Result.failure(IllegalArgumentException("Clip is ${size / 1024 / 1024} MB — the cap is 20 MB, trim or compress it"))
+    }
+    val raw = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+        ?: return Result.failure(IllegalStateException("Couldn't read that clip"))
+    if (clipTooLarge(raw.size.toLong())) {
+        return Result.failure(IllegalArgumentException("Clip is ${raw.size / 1024 / 1024} MB — the cap is 20 MB, trim or compress it"))
+    }
+    return Result.success(PreparedImage(raw, ext, mime))
+}
+
 private fun encode(bmp: Bitmap, mime: String): PreparedImage {
     val out = ByteArrayOutputStream()
     // Always JPEG q85 (matches the SPA); transparency is rare for photos.

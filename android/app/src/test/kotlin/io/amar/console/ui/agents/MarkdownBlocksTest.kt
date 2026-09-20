@@ -109,4 +109,45 @@ class MarkdownBlocksTest {
         assertEquals(2, seg.items.size)
         assertEquals(ListItem(depth = 1, ordered = true, num = 2, text = "two more two"), seg.items[1])
     }
+
+    // --- list nesting (^keen-boar: sub-bullets rendered flat) ---------------
+
+    private fun depths(md: String): List<Int> = (segmentBlocks(md)[0] as Segment.ListBlock).items.map { it.depth }
+
+    @Test
+    fun `the reported shape - bold parents with two-space children nest one level`() {
+        assertEquals(listOf(0, 1, 1, 0, 1), depths("- **Email in** foo\n  - Agree: x\n  - Disagree: y\n- **Email out** bar\n  - Agree: z"))
+    }
+
+    @Test
+    fun `depth is relative to the enclosing item, not indent over 2 (four-space children are depth 1)`() {
+        assertEquals(listOf(0, 1, 2, 0), depths("- a\n    - b\n        - c\n- d"))
+        assertEquals(listOf(0, 1, 1, 0), depths("1. a\n   - b\n   - c\n2. d"))
+        assertEquals(listOf(0, 1, 2), depths("- a\n\t- b\n\t\t- c"))
+    }
+
+    @Test
+    fun `a child indented less than its would-be parent closes back to the matching ancestor`() {
+        assertEquals(listOf(0, 1, 2, 1, 0), depths("- a\n  - b\n    - c\n  - d\n- e"))
+        assertEquals(listOf(0, 1, 1), depths("- a\n  - b\n   - c"))
+    }
+
+    @Test
+    fun `prepareTranscriptText keeps list indentation and fenced code, strips the handoff sentinel`() {
+        assertEquals(
+            "- a\n  - b\n\n```\n    indented\n```\n done",
+            MarkdownBlocks.prepareTranscriptText("- a\n  - b\n\n```\n    indented\n```\n@handoff(al-x) done  \n"),
+        )
+    }
+
+    @Test
+    fun `runs of spaces collapse only inside prose text segments`() {
+        assertEquals(
+            listOf(
+                Segment.Text(listOf("col a b")),
+                Segment.ListBlock(listOf(ListItem(depth = 0, ordered = false, text = "x  y"))),
+            ),
+            segmentBlocks("col   a    b\n- x  y"),
+        )
+    }
 }

@@ -7,13 +7,12 @@ package io.amar.console.ui.agents
  */
 object TranscriptHelpers {
 
-    /** Strip the `@handoff(<key>)` control sentinel (drives the "Talk to X"
-     *  banner, not message text), then collapse runs of 2+ spaces/tabs and trim
-     *  trailing whitespace. Mirrors AgentMessageBlock.tsx:68. */
-    fun stripHandoff(text: String): String =
-        text.replace(Regex("""(?<![\w])@handoff\([a-z0-9-]+\)""", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("""[ \t]{2,}"""), " ")
-            .trimEnd()
+    /** Strip the `@handoff(<key>)` control sentinel and trim trailing
+     *  whitespace — `prepareTranscriptText` in markdown-blocks.ts. Runs of
+     *  spaces are NOT collapsed here any more: that flattened every nested
+     *  bullet and un-indented fenced code (^keen-boar); the segmenter collapses
+     *  them inside prose text runs only. */
+    fun stripHandoff(text: String): String = MarkdownBlocks.prepareTranscriptText(text)
 
     /** Plain-text form for TTS: code fences → "(code block)", strip inline
      *  code/bold/italic/heading markers. Mirrors AgentMessageBlock.tsx:80-85. */

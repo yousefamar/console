@@ -107,9 +107,11 @@ fun CronSheet(claudeSessionId: String, onDismiss: () -> Unit) {
 
 @Composable
 private fun CronTaskRow(task: Cron.Task, onRun: () -> Unit, onDelete: () -> Unit) {
-    val nextIn = remember(task.trigger, task.disabledAt) {
-        if (task.disabledAt != null) null
-        else runCatching { CronExpr.nextRuns(task.trigger, System.currentTimeMillis(), 1).firstOrNull() }.getOrNull()
+    val chips = remember(task) {
+        val now = System.currentTimeMillis()
+        val computedNext = if (task.disabledAt != null || task.nextFireAt != null) null
+        else runCatching { CronExpr.nextRuns(task.trigger, now, 1).firstOrNull() }.getOrNull()
+        Cron.statusChips(task, now, computedNext, TranscriptHelpers::formatRelativeIn, TranscriptHelpers::formatRelativeAgo)
     }
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)).padding(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -121,10 +123,10 @@ private fun CronTaskRow(task: Cron.Task, onRun: () -> Unit, onDelete: () -> Unit
         }
         Text(task.prompt, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            nextIn?.let { Text("next in ${TranscriptHelpers.formatRelativeIn(it - System.currentTimeMillis())}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            task.lastFiredAt?.let { Text("fired ${TranscriptHelpers.formatRelativeAgo(System.currentTimeMillis() - it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            if (task.lastGuardResult == "skipped" && task.lastSkipReason != null) {
-                Text("skip: ${task.lastSkipReason}", style = MaterialTheme.typography.labelSmall, color = AMBER, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            chips.next?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            chips.last?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            chips.skip?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = AMBER, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

@@ -1,8 +1,8 @@
 package io.amar.console.data.spaces
 
 // Pure card-content helpers — verbatim ports of src/kanban/board.ts
-// cardUrls / cardImagePaths / splitTrailingTags (KEEP IN SYNC, the
-// frontmatter.ts precedent). All operate on the hub CardView shape
+// cardUrls / cardMediaPaths / cardImagePaths / cardVideoPaths / isVideoAsset /
+// splitTrailingTags (KEEP IN SYNC, the frontmatter.ts precedent). All operate on the hub CardView shape
 // (text + detail lines); rendering decides thumbs/chips/badges.
 
 object CardContent {
@@ -15,11 +15,25 @@ object CardContent {
     private val BARE_URL = Regex("""https?://[^\s)\]}>"']+""")
     private val TRAILING_PUNCT = Regex("""[.,;:!?)\]}>'"]+$""")
     private val TRAILING_TAG = Regex("""^(.*?)\s+#([A-Za-z0-9][\w/-]*)$""")
+    /** `VIDEO_ASSET_RE` — the hub's `attach` accepts webm/mp4 clips on the
+     *  same `![…](board/…)` line shape as stills; the extension is the only
+     *  thing telling them apart (^hazy-swan). */
+    private val VIDEO_ASSET = Regex("""\.(webm|mp4)$""", RegexOption.IGNORE_CASE)
 
-    /** Image paths from detail lines that are EXACTLY `![alt](path)` —
-     *  vault-relative, served at GET /notes/asset/<path>. */
-    fun imagePaths(detail: List<String>): List<String> =
+    fun isVideoAsset(path: String): Boolean = VIDEO_ASSET.containsMatchIn(path)
+
+    /** Every media path (stills AND clips) from detail lines that are EXACTLY
+     *  `![alt](path)` — vault-relative, served at GET /notes/asset/<path>. */
+    fun mediaPaths(detail: List<String>): List<String> =
         detail.mapNotNull { IMAGE_ONLY.find(it.trim())?.groupValues?.get(1) }
+
+    /** Stills only — what a lightbox pages through. */
+    fun imagePaths(detail: List<String>): List<String> =
+        mediaPaths(detail).filter { !isVideoAsset(it) }
+
+    /** Clips only — rendered as play tiles, never fetched until tapped. */
+    fun videoPaths(detail: List<String>): List<String> =
+        mediaPaths(detail).filter { isVideoAsset(it) }
 
     /** Detail lines minus image lines — the visible text preview. */
     fun textDetail(detail: List<String>): List<String> =

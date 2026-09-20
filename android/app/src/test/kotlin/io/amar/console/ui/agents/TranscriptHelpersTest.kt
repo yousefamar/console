@@ -9,9 +9,12 @@ import org.junit.Test
 class TranscriptHelpersTest {
 
     @Test
-    fun `stripHandoff removes sentinel and collapses whitespace`() {
+    fun `stripHandoff removes sentinel and trims the end, keeping indentation`() {
         assertEquals("Talk to Bob.", TranscriptHelpers.stripHandoff("Talk to Bob. @handoff(bob-agent)"))
-        assertEquals("A B", TranscriptHelpers.stripHandoff("A    B   "))
+        // Runs of spaces survive here (the segmenter collapses prose only) —
+        // list indentation and fenced code depend on them (^keen-boar).
+        assertEquals("A    B", TranscriptHelpers.stripHandoff("A    B   "))
+        assertEquals("- a\n  - b", TranscriptHelpers.stripHandoff("- a\n  - b\n"))
         // email addresses are not stripped (word-boundary before @)
         assertEquals("mail me at a@handoff.io", TranscriptHelpers.stripHandoff("mail me at a@handoff.io"))
     }

@@ -42,6 +42,13 @@ object Cron {
         val lastSkipReason: String?,
         val consecutiveSkips: Int,
         val disabledAt: Long?,
+        /** Every attempt stamps this, whatever the outcome; lastFiredAt only
+         *  advances when the agent was woken (^plum-goat). Absent on an
+         *  older hub. */
+        val lastAttemptAt: Long? = null,
+        /** `fired` | `queued (…)` | `skipped: <reason>` | `missed fire …` */
+        val lastOutcome: String? = null,
+        val nextFireAt: Long? = null,
     )
 
     private val _tasksBySession = MutableStateFlow<Map<String, List<Task>>>(emptyMap())
@@ -57,7 +64,7 @@ object Cron {
     fun tasksFor(claudeSessionId: String?): kotlinx.coroutines.flow.Flow<List<Task>> =
         _tasksBySession.map { if (claudeSessionId == null) emptyList() else it[claudeSessionId] ?: emptyList() }
 
-    private fun taskFrom(o: JsonObject) = Task(
+    internal fun taskFrom(o: JsonObject) = Task(
         id = o["id"]!!.jsonPrimitive.content,
         claudeSessionId = o["claudeSessionId"]?.jsonPrimitive?.content ?: "",
         trigger = o["trigger"]?.jsonPrimitive?.content ?: "",
@@ -69,7 +76,34 @@ object Cron {
         lastSkipReason = o["lastSkipReason"]?.jsonPrimitive?.content,
         consecutiveSkips = o["consecutiveSkips"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
         disabledAt = o["disabledAt"]?.jsonPrimitive?.longOrNull,
+        lastAttemptAt = o["lastAttemptAt"]?.jsonPrimitive?.longOrNull,
+        lastOutcome = o["lastOutcome"]?.jsonPrimitive?.content,
+        nextFireAt = o["nextFireAt"]?.jsonPrimitive?.longOrNull,
     )
+
+    /** The SPA CronPanel row's status line (`TaskRow`, CronPanel.tsx): `next <in>`
+     *  (hidden while disabled), `fired|queued <ago>` — the verb from
+     *  `lastOutcome`, the time from `lastFiredAt` — and an amber `skip: <reason>`.
+     *  `nextFireAt` is the hub's own belief (it re-arms after a missed slot and
+     *  knows ISO one-shots), so it wins over the client-side cron walk. */
+    data class StatusChips(val next: String?, val last: String?, val skip: String?)
+
+    fun statusChips(
+        task: Task,
+        now: Long,
+        computedNext: Long?,
+        relIn: (Long) -> String,
+        relAgo: (Long) -> String,
+    ): StatusChips {
+        val nextAt = task.nextFireAt ?: computedNext
+        val next = if (task.disabledAt != null || nextAt == null) null else "next ${relIn(nextAt - now)}"
+        val last = task.lastFiredAt?.let { at ->
+            val verb = if (task.lastOutcome?.startsWith("queued") == true) "queued" else "fired"
+            "$verb ${relAgo(now - at)}"
+        }
+        val skip = task.lastSkipReason?.let { "skip: $it" }
+        return StatusChips(next, last, skip)
+    }
 
     fun refresh(claudeSessionId: String) {
         val client = hub ?: return
