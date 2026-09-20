@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -479,6 +480,128 @@ class ChatRepositoryTest {
         val after = db.chatRooms().byId("!r:x")!!
         assertTrue(after.isUnread)
         assertEquals(3, after.unreadCount)
+    }
+
+    // ------------------------------------------------------------------ //
+    // Drafts on the outbox + heal after a terminal failure (^blue-bee —
+    // SPA healAfterFailedRpc 3c032e93, full page-load reconcile 343321cf)
+
+    private suspend fun roomDraft(id: String) = io.amar.console.data.inbox.roomDraft(db.chatRooms().byId(id)?.rawJson)
+
+    private suspend fun seedRoom(extra: String = "") {
+        repo.applyRoomsDelta(env("""{"seq":1,"data":{"!r:x":{"name":"R","lastMessageTime":1$extra}}}"""), isSnapshot = true)
+    }
+
+    @Test
+    fun `setRoomDraft patches the row and queues ONE durable row per room — a newer draft supersedes, before carries forward`() = runTest {
+        seedRoom(""","draft":"hub copy"""")
+        repo.setRoomDraft("!r:x", "a")
+        repo.setRoomDraft("!r:x", "ab")
+        assertEquals("ab", roomDraft("!r:x"))
+        val pending = db.outbox().pending().filter { it.type == ChatRepository.TYPE_DRAFT }
+        assertEquals(1, pending.size)
+        val p = env(pending[0].payloadJson)
+        assertEquals("ab", p["text"]!!.jsonPrimitive.content)
+        // The rollback target is the hub's copy as of the FIRST optimistic write, not "a".
+        assertEquals("hub copy", p["before"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `setRoomDraft is a no-op when the row already holds the text, and empty clears`() = runTest {
+        seedRoom(""","draft":"same"""")
+        repo.setRoomDraft("!r:x", "same")
+        assertTrue(db.outbox().pending().none { it.type == ChatRepository.TYPE_DRAFT })
+        repo.setRoomDraft("!r:x", "   ")
+        assertNull(roomDraft("!r:x"))
+        assertEquals("", env(db.outbox().pending().first { it.type == ChatRepository.TYPE_DRAFT }.payloadJson)["text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a draft push that terminally fails puts the hub's copy back on the row`() = runTest {
+        seedRoom(""","draft":"hub copy"""")
+        repo.registerOutboxHandlers()
+        outbox.register(ChatRepository.TYPE_DRAFT) { _, _ -> Outbox.Result.Fail("HTTP 400") }
+        repo.setRoomDraft("!r:x", "typed on the phone")
+        assertEquals("typed on the phone", roomDraft("!r:x"))
+        outbox.drain()
+        // Hub unreachable in the test (no WS) → the payload's `before` restores the row.
+        assertEquals("hub copy", roomDraft("!r:x"))
+        assertTrue(db.outbox().pending().isEmpty()) // parked terminal, not retried
+    }
+
+    @Test
+    fun `a markUnread that exhausts its retries heals the row back to read`() = runTest {
+        seedRoom(""","isUnread":false,"unreadCount":0""")
+        repo.registerOutboxHandlers()
+        outbox.register(ChatRepository.TYPE_MARK_UNREAD) { _, _ -> Outbox.Result.Retry("markUnread failed") }
+        repo.markUnread("!r:x")
+        assertTrue(db.chatRooms().byId("!r:x")!!.isUnread)
+        repeat(Outbox.MAX_RETRIES) { outbox.drain() }
+        val room = db.chatRooms().byId("!r:x")!!
+        assertEquals(false, room.isUnread)
+        assertEquals(false, room.manualUnread)
+        assertEquals(0, room.unreadCount)
+    }
+
+    @Test
+    fun `a markRead that terminally fails heals the row back to unread`() = runTest {
+        seedRoom(""","isUnread":true,"unreadCount":2,"lastReadEventId":"${'$'}prev"""")
+        repo.registerOutboxHandlers()
+        outbox.register(ChatRepository.TYPE_MARK_READ) { _, _ -> Outbox.Result.Fail("markRead failed") }
+        repo.markRead("!r:x")
+        assertEquals(false, db.chatRooms().byId("!r:x")!!.isUnread)
+        outbox.drain()
+        val room = db.chatRooms().byId("!r:x")!!
+        assertTrue(room.isUnread)
+        assertEquals(2, room.unreadCount)
+    }
+
+    @Test
+    fun `a snooze that terminally fails heals the row back to unsnoozed`() = runTest {
+        seedRoom()
+        repo.registerOutboxHandlers()
+        outbox.register(ChatRepository.TYPE_SNOOZE) { _, _ -> Outbox.Result.Fail("snooze failed") }
+        repo.snooze("!r:x", 123_000L)
+        assertEquals(123_000L, db.chatRooms().byId("!r:x")!!.snoozedUntil)
+        outbox.drain()
+        assertNull(db.chatRooms().byId("!r:x")!!.snoozedUntil)
+    }
+
+    @Test
+    fun `an unsnooze that terminally fails heals the row back to snoozed`() = runTest {
+        seedRoom(""","snoozedUntil":999000""")
+        repo.registerOutboxHandlers()
+        outbox.register(ChatRepository.TYPE_SNOOZE) { _, _ -> Outbox.Result.Fail("snooze failed") }
+        repo.snooze("!r:x", null)
+        assertNull(db.chatRooms().byId("!r:x")!!.snoozedUntil)
+        outbox.drain()
+        assertEquals(999_000L, db.chatRooms().byId("!r:x")!!.snoozedUntil)
+    }
+
+    @Test
+    fun `the snooze RPC args never carry the local rollback snapshot`() = runTest {
+        seedRoom(""","snoozedUntil":999000""")
+        repo.snooze("!r:x", null)
+        val payload = env(db.outbox().pending().first { it.type == ChatRepository.TYPE_SNOOZE }.payloadJson)
+        assertEquals(999_000L, payload["before"]!!.jsonPrimitive.content.toLong())
+        assertNull(payload["untilMs"]) // absent = clear; never null (the hub would persist it)
+    }
+
+    @Test
+    fun `a forced full snapshot applies at an already-seen seq — the heal path — but a patch never does`() = runTest {
+        repo.applyRoomsDelta(env("""{"seq":5,"data":{"!r:x":{"name":"R","lastMessageTime":1,"draft":"hub copy"}}}"""), isSnapshot = true)
+        // Local divergence with no seq change: an optimistic write the hub never saw.
+        val row = db.chatRooms().byId("!r:x")!!
+        db.chatRooms().upsertAll(listOf(row.copy(rawJson = withRoomDraft(row.rawJson, "lost blur-flush"))))
+        // The ordinary seq-equal path can't see it…
+        repo.applyRoomsDelta(env("""{"seq":5,"data":{"!r:x":{"name":"R","lastMessageTime":1,"draft":"hub copy"}}}"""), isSnapshot = true)
+        assertEquals("lost blur-flush", roomDraft("!r:x"))
+        // …the forced full snapshot heals it.
+        repo.applyRoomsDelta(env("""{"seq":5,"data":{"!r:x":{"name":"R","lastMessageTime":1,"draft":"hub copy"}}}"""), isSnapshot = true, force = true)
+        assertEquals("hub copy", roomDraft("!r:x"))
+        // A stale PATCH is stale even when forced.
+        repo.applyRoomsDelta(env("""{"seq":5,"partial":true,"changed":{"!r:x":{"name":"R","lastMessageTime":1,"draft":"old patch"}},"removed":[]}"""), isSnapshot = true, force = true)
+        assertEquals("hub copy", roomDraft("!r:x"))
     }
 
     @Test

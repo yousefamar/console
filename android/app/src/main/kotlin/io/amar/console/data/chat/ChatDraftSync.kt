@@ -13,7 +13,15 @@ import kotlinx.serialization.json.put
  * (`hubDraftRef` / `syncedDraftRef` / `lastLocalWriteRef`). Pure so the rules
  * that were each a bug on the desktop are unit-tested here:
  *
- *  - the FIRST hub read for a room fills the composer (hydrate);
+ *  - typing is NEVER pushed: the screen calls [flush] only when the field loses
+ *    focus, on room switch, on leaving the screen, on app background and on
+ *    send (^cool-ibis — a typing debounce made the room list re-sort and
+ *    re-preview on every pause, and a hub delta computed before the write
+ *    landed echoed the previous text back);
+ *  - the FIRST hub read for a room fills the composer (hydrate). Unlike the
+ *    SPA, a non-empty field at first read is the on-device DraftStore cache,
+ *    not typing (the Room read lands within a frame of opening), so the hub's
+ *    copy replaces it;
  *  - a later remote change (another device, an agent's `con chat draft`)
  *    replaces the text only when nothing unsaved is typed — local typing wins
  *    and overwrites the hub on its next flush;
@@ -21,8 +29,10 @@ import kotlinx.serialization.json.put
  *    (a sync delta computed before the write landed echoes the PREVIOUS draft;
  *    applying it blanked the textarea mid-typing);
  *  - edit mode never persists (the field holds the message being edited);
- *  - a flush pushes only when the text differs from the hub mirror, so a push
- *    the hub dropped is simply retried on the next flush.
+ *  - a flush pushes only when the text differs from the hub mirror — the ROOM
+ *    ROW's draft as last read, which every [onRemote] refreshes even inside
+ *    the echo window — so a push the hub dropped or healed away is simply
+ *    retried on the next flush.
  *
  * `hubDraft` = latest mirror value seen for this room (null until the first
  * read); `synced` = the last text this composer applied or pushed, i.e. what
@@ -85,7 +95,6 @@ class ChatDraftSync {
     }
 
     companion object {
-        const val SAVE_DEBOUNCE_MS = 400L
         const val ECHO_WINDOW_MS = 1500L
     }
 }

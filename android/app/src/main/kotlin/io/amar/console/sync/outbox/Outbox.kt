@@ -179,7 +179,11 @@ class Outbox(
             when (result) {
                 is Result.Done -> db.outbox().delete(row.id)
                 is Result.Fail -> {
+                    // Terminal, same as an exhausted Retry: the domain's rollback
+                    // hook runs here too (a 4xx used to park the row with the
+                    // optimistic write still standing — no badge, no heal).
                     db.outbox().setStatus(row.id, "failed", result.error)
+                    handlers[row.type + ":onFailed"]?.handle(row, this)
                     allClear = false
                 }
                 is Result.Conflict -> {

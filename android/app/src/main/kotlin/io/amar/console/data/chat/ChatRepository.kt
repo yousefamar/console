@@ -10,12 +10,14 @@ import io.amar.console.sync.SyncBusClient
 import io.amar.console.sync.outbox.Outbox
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -52,6 +54,7 @@ class ChatRepository(
         const val TYPE_MUTE = "chatMute"
         const val TYPE_EDIT = "chatEdit"
         const val TYPE_LOWPRIO = "chatLowPriority"
+        const val TYPE_DRAFT = "chatDraft"
         /** Timeline cache bound per room (paginate loads more transiently). */
         const val ROOM_CACHE_LIMIT = 100
     }
@@ -219,14 +222,52 @@ class ChatRepository(
             }.getOrNull()
         }
         if (eventId == null) return
-        val payload = buildJsonObject { put("roomId", roomId); put("eventId", eventId) }
+        val payload = buildJsonObject {
+            put("roomId", roomId); put("eventId", eventId)
+            put("before", unreadSnapshot(room))
+        }
         outbox.enqueue(TYPE_MARK_READ, payload.toString(), entityId = roomId)
     }
 
     suspend fun markUnread(roomId: String) {
         val room = db.chatRooms().byId(roomId) ?: return
         db.chatRooms().upsertAll(listOf(room.copy(isUnread = true, manualUnread = true, unreadCount = maxOf(1, room.unreadCount))))
-        outbox.enqueue(TYPE_MARK_UNREAD, buildJsonObject { put("roomId", roomId) }.toString(), entityId = roomId)
+        outbox.enqueue(TYPE_MARK_UNREAD, buildJsonObject {
+            put("roomId", roomId)
+            put("before", unreadSnapshot(room))
+        }.toString(), entityId = roomId)
+    }
+
+    private fun unreadSnapshot(room: ChatRoomRow): JsonObject = buildJsonObject {
+        put("isUnread", room.isUnread)
+        put("manualUnread", room.manualUnread)
+        put("unreadCount", room.unreadCount)
+        room.lastReadTs?.let { put("lastReadTs", it) }
+    }
+
+    private fun restoreUnread(room: ChatRoomRow, before: JsonObject?): ChatRoomRow {
+        before ?: return room
+        return room.copy(
+            isUnread = before["isUnread"]?.jsonPrimitive?.booleanOrNull ?: room.isUnread,
+            manualUnread = before["manualUnread"]?.jsonPrimitive?.booleanOrNull ?: room.manualUnread,
+            unreadCount = before["unreadCount"]?.jsonPrimitive?.intOrNull ?: room.unreadCount,
+            lastReadTs = before["lastReadTs"]?.jsonPrimitive?.longOrNull,
+        )
+    }
+
+    /**
+     * An optimistic room-row write whose hub call TERMINALLY failed must not
+     * stand (SPA `healAfterFailedRpc`, 3c032e93): the hub never saw it, so no
+     * seq bump will ever reconcile it and a seq-equal `snapshotSince` answers
+     * "nothing changed" forever. Pull the authoritative snapshot, ignoring our
+     * seq; if the hub can't be reached either, put the row back to what it
+     * held before the write ([restore]) — the best local knowledge of the
+     * hub's copy, and the next process-start full reconcile settles it.
+     */
+    internal suspend fun healRoomAfterFailedWrite(roomId: String, restore: (ChatRoomRow) -> ChatRoomRow) {
+        val healed = runCatching { reconcileRoomsFull() }.isSuccess
+        if (healed) return
+        db.chatRooms().byId(roomId)?.let { db.chatRooms().upsertAll(listOf(restore(it))) }
     }
 
     // ---------------------------------------------------------------- //
@@ -241,47 +282,40 @@ class ChatRepository(
             .map { io.amar.console.data.inbox.roomDraft(it?.rawJson) ?: "" }
             .distinctUntilChanged()
 
-    /** Drafts whose hub push failed, re-pushed on the next connect (the
-     *  phone is offline often enough that "the snapshot reconciles it" would
-     *  silently lose typing). */
-    private val dirtyDrafts = java.util.concurrent.ConcurrentHashMap<String, String>()
-
     /**
      * Persist [text] as the room's draft: optimistic rawJson patch (the room's
-     * `draft`/`draftUpdatedAt` — the SPA store does the same on Dexie), then
-     * `PUT /matrix/rooms/:id/draft {text}` (empty → `DELETE`). Failure is not an
-     * error to the caller: the hub reconciles on the next connect via
-     * [dirtyDrafts]. No-op when the mirror already holds [text].
+     * `draft`/`draftUpdatedAt` — the SPA store does the same on Dexie), then a
+     * DURABLE outbox row → `PUT /matrix/rooms/:id/draft {text}` (empty →
+     * `DELETE`). The outbox, not a direct call: the phone is offline often
+     * enough that an in-memory "re-push on connect" list lost the typing on
+     * process death and left the row diverged from the hub for good. One row
+     * per room — a newer draft supersedes a still-pending one (its `before`,
+     * the hub's copy as of the first optimistic write, carries forward). A
+     * terminal failure heals the row via [healRoomAfterFailedWrite]. No-op
+     * when the row already holds [text].
      */
     suspend fun setRoomDraft(roomId: String, text: String) {
         val room = db.chatRooms().byId(roomId) ?: return
         val current = io.amar.console.data.inbox.roomDraft(room.rawJson) ?: ""
         val wanted = if (text.isBlank()) "" else text
-        if (current == wanted && dirtyDrafts[roomId] == null) return
+        if (current == wanted) return
+        val pending = db.outbox().observeByEntityStatus(TYPE_DRAFT, roomId, "pending").first()
+        val before = pending.firstOrNull()
+            ?.let { json.parseToJsonElement(it.payloadJson).jsonObject["before"]?.jsonPrimitive?.content }
+            ?: current
         db.chatRooms().upsertAll(listOf(room.copy(rawJson = withRoomDraft(room.rawJson, wanted))))
-        dirtyDrafts[roomId] = wanted
-        pushDraft(roomId, wanted)
-    }
-
-    private suspend fun pushDraft(roomId: String, text: String) {
-        val ok = runCatching {
-            val path = "/matrix/rooms/${java.net.URLEncoder.encode(roomId, "UTF-8")}/draft"
-            if (text.isEmpty()) hub.delete(path)
-            else hub.put(path, buildJsonObject { put("text", text) }.toString())
-        }.isSuccess
-        // Only clear the dirty mark if no newer text was queued meanwhile.
-        if (ok) dirtyDrafts.remove(roomId, text)
+        outbox.cancel(roomId, TYPE_DRAFT)
+        outbox.enqueue(TYPE_DRAFT, buildJsonObject {
+            put("roomId", roomId)
+            put("text", wanted)
+            put("before", before)
+        }.toString(), entityId = roomId)
     }
 
     /** Fire-and-forget [setRoomDraft] for composer callbacks that outlive their
      *  composition scope (dispose-time flush). */
     fun setRoomDraftAsync(roomId: String, text: String) {
         repoScope?.launch { runCatching { setRoomDraft(roomId, text) } }
-    }
-
-    /** Re-push drafts the hub never acknowledged (connect-time). */
-    suspend fun flushDirtyDrafts() {
-        for ((roomId, text) in dirtyDrafts.entries.toList()) pushDraft(roomId, text)
     }
 
     /**
@@ -297,12 +331,15 @@ class ChatRepository(
         return text
     }
 
+    /** Snooze (or unsnooze with null). `before` rides the payload so a terminal
+     *  failure can put the row back even when the hub is unreachable. */
     suspend fun snooze(roomId: String, untilMs: Long?) {
         val room = db.chatRooms().byId(roomId) ?: return
         db.chatRooms().upsertAll(listOf(room.copy(snoozedUntil = untilMs)))
         val payload = buildJsonObject {
             put("roomId", roomId)
             untilMs?.let { put("untilMs", it) }
+            room.snoozedUntil?.let { put("before", it) }
         }
         outbox.enqueue(TYPE_SNOOZE, payload.toString(), entityId = roomId)
     }
@@ -765,12 +802,55 @@ class ChatRepository(
             Outbox.Handler { row, _ ->
                 if (!syncBus.connected) return@Handler Outbox.Result.NotReady("hub disconnected")
                 try {
-                    syncBus.rpc("chat-rooms", op, json.parseToJsonElement(row.payloadJson))
+                    // `before` is the local rollback snapshot, not an RPC arg.
+                    val args = JsonObject(json.parseToJsonElement(row.payloadJson).jsonObject.filterKeys { it != "before" })
+                    syncBus.rpc("chat-rooms", op, args)
                     Outbox.Result.Done
                 } catch (e: Exception) {
                     Outbox.retryOrNotReady(e, "$op failed")
                 }
             }
+        }
+        // Terminal failure of an optimistic room-row write → heal from the hub
+        // (SPA healAfterFailedRpc; the seq-based reconcile never notices the
+        // divergence on its own). Each type restores its own fields as the
+        // offline fallback.
+        val unreadHeal = Outbox.Handler { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]?.jsonPrimitive?.content ?: return@Handler Outbox.Result.Done
+            healRoomAfterFailedWrite(roomId) { restoreUnread(it, p["before"] as? JsonObject) }
+            Outbox.Result.Done
+        }
+        outbox.register("$TYPE_MARK_READ:onFailed", unreadHeal)
+        outbox.register("$TYPE_MARK_UNREAD:onFailed", unreadHeal)
+        outbox.register("$TYPE_SNOOZE:onFailed") { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]?.jsonPrimitive?.content ?: return@register Outbox.Result.Done
+            val before = p["before"]?.jsonPrimitive?.longOrNull
+            healRoomAfterFailedWrite(roomId) { it.copy(snoozedUntil = before) }
+            Outbox.Result.Done
+        }
+        // Draft push: HTTP twin of chat-rooms.setDraft (works with the WS down).
+        outbox.register(TYPE_DRAFT) { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = java.net.URLEncoder.encode(p["roomId"]!!.jsonPrimitive.content, "UTF-8")
+            val text = p["text"]?.jsonPrimitive?.content ?: ""
+            try {
+                if (text.isEmpty()) hub.delete("/matrix/rooms/$roomId/draft")
+                else hub.put("/matrix/rooms/$roomId/draft", buildJsonObject { put("text", text) }.toString())
+                Outbox.Result.Done
+            } catch (e: HubClient.HttpException) {
+                if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+            } catch (e: Exception) {
+                Outbox.retryOrNotReady(e, "network")
+            }
+        }
+        outbox.register("$TYPE_DRAFT:onFailed") { row, _ ->
+            val p = json.parseToJsonElement(row.payloadJson).jsonObject
+            val roomId = p["roomId"]?.jsonPrimitive?.content ?: return@register Outbox.Result.Done
+            val before = p["before"]?.jsonPrimitive?.content ?: ""
+            healRoomAfterFailedWrite(roomId) { it.copy(rawJson = withRoomDraft(it.rawJson, before)) }
+            Outbox.Result.Done
         }
         outbox.register(TYPE_SEND_FILE) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
@@ -951,10 +1031,7 @@ class ChatRepository(
 
     fun wireLiveDeltas(scope: kotlinx.coroutines.CoroutineScope) {
         repoScope = scope
-        syncBus.onConnect {
-            resumedThisConnection = false
-            if (dirtyDrafts.isNotEmpty()) scope.launch { runCatching { flushDirtyDrafts() } }
-        }
+        syncBus.onConnect { resumedThisConnection = false }
         // Handlers fire on the OkHttp WS reader thread — hop to a coroutine.
         syncBus.on("chat-rooms", "delta") { data ->
             scope.launch { runCatching { applyRoomsDelta(data.jsonObject) } }
@@ -969,20 +1046,42 @@ class ChatRepository(
     suspend fun syncNow() {
         if (!syncBus.connected) return
         runCatching { syncBus.rpc("matrix", "syncNow", kotlinx.serialization.json.JsonNull, timeoutMs = 30_000) }
-        reconcile()
+        reconcile(fullRooms = true)
     }
 
-    /** Connect-time reconcile: rooms via seq patch, messages via resume cursor. */
-    suspend fun reconcile() {
+    /** Whether this process has taken one FULL rooms snapshot yet. */
+    @Volatile private var roomsFullyReconciled = false
+
+    /**
+     * Pull the authoritative rooms snapshot, ignoring our seq (SPA
+     * `reconcileFromHub({full:true})`, 343321cf): a local row can diverge from
+     * the hub WITHOUT a seq change (an optimistic write whose call never
+     * landed), and a seq-equal `snapshotSince` answers "nothing changed"
+     * forever. Throws when the hub can't be reached.
+     */
+    internal suspend fun reconcileRoomsFull() {
+        val result = syncBus.rpc("chat-rooms", "snapshotSince", buildJsonObject { })
+        applyRoomsDelta(result.jsonObject, isSnapshot = true, force = true)
+        roomsFullyReconciled = true
+    }
+
+    /** Connect-time reconcile: rooms via seq patch, messages via resume cursor.
+     *  The first pass per process (and pull-to-refresh — the phone's "make it
+     *  right" gesture, like the SPA's reload) takes the FULL rooms snapshot. */
+    suspend fun reconcile(fullRooms: Boolean = false) {
         if (!syncBus.connected) return
         // Own-MXID warm-up (meta-persisted; cheap no-op once cached).
         runCatching { myUserId() }
         // 1. Rooms: snapshotSince with our persisted seq.
-        val seq = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull()
-        val args = buildJsonObject { seq?.let { put("since", it) } }
-        runCatching {
-            val result = syncBus.rpc("chat-rooms", "snapshotSince", args)
-            applyRoomsDelta(result.jsonObject, isSnapshot = true)
+        if (fullRooms || !roomsFullyReconciled) {
+            runCatching { reconcileRoomsFull() }
+        } else {
+            val seq = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull()
+            val args = buildJsonObject { seq?.let { put("since", it) } }
+            runCatching {
+                val result = syncBus.rpc("chat-rooms", "snapshotSince", args)
+                applyRoomsDelta(result.jsonObject, isSnapshot = true)
+            }
         }
         // 2. Messages: matrix.resume with our persisted next_batch.
         val since = db.meta().get(CURSOR_KEY)
@@ -1017,12 +1116,15 @@ class ChatRepository(
     }
 
     /** Apply a chat-rooms envelope: patch {seq,partial,changed,removed} or
-     *  full {seq,data}. Full snapshots prune rooms the hub no longer has. */
-    internal suspend fun applyRoomsDelta(env: JsonObject, isSnapshot: Boolean = false) {
+     *  full {seq,data}. Full snapshots prune rooms the hub no longer has.
+     *  [force] applies a FULL snapshot even at a seq we have already seen —
+     *  the heal path, where the divergence is local and the seq never moved
+     *  (patches are never forced: a stale patch is stale). */
+    internal suspend fun applyRoomsDelta(env: JsonObject, isSnapshot: Boolean = false, force: Boolean = false) {
         val seq = env["seq"]?.jsonPrimitive?.longOrNull ?: return
         val lastSeen = db.meta().get(ROOMS_SEQ_KEY)?.toLongOrNull() ?: 0L
-        if (seq <= lastSeen) return
         val partial = env["partial"]?.jsonPrimitive?.booleanOrNull == true
+        if (seq <= lastSeen && !(force && !partial)) return
 
         db.withTransaction {
             if (partial) {

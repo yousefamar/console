@@ -551,27 +551,16 @@ fun ChatRoomScreen(
     val composerHandle = remember(roomId) { io.amar.console.ui.components.ComposerHandle() }
 
     // Hub-synced per-room draft (SPA ChatComposeInput useRoomDraft): hydrate the
-    // composer from the room's `draft` on open, persist typing after 400 ms,
-    // flush on leave, clear on send; remote changes replace the text only when
-    // nothing unsaved is typed; edit mode never persists. Rules live in the
-    // pure ChatDraftSync; the local DraftStore stays as the on-device cache.
+    // composer from the room's `draft` on open; write it ONLY when the input
+    // loses focus (plus room switch, leaving the screen, app background) —
+    // never while typing (^cool-ibis); send/empty clears at once; remote
+    // changes replace the text only when nothing unsaved is typed; edit mode
+    // never persists. Rules live in the pure ChatDraftSync; the local
+    // DraftStore stays as the on-device cache.
     val hubDraft by repo.observeRoomDraft(roomId).collectAsState(initial = null)
     val draftSync = remember(roomId) { io.amar.console.data.chat.ChatDraftSync() }
-    var draftJob by remember(roomId) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     fun flushDraftNow(text: String) {
-        draftJob?.cancel(); draftJob = null
         draftSync.flush(text, editing = editingMsg != null)?.let { repo.setRoomDraftAsync(roomId, it) }
-    }
-    fun scheduleDraftSave() {
-        if (editingMsg != null) return
-        draftJob?.cancel()
-        draftJob = scope.launch {
-            kotlinx.coroutines.delay(io.amar.console.data.chat.ChatDraftSync.SAVE_DEBOUNCE_MS)
-            draftJob = null
-            // Read the field at fire time: an edit that ended meanwhile has
-            // already put the room's draft back, and must not be cleared.
-            draftSync.flush(composerHandle.text, editing = editingMsg != null)?.let { repo.setRoomDraftAsync(roomId, it) }
-        }
     }
     LaunchedEffect(hubDraft, editingMsg == null) {
         val d = hubDraft ?: return@LaunchedEffect
@@ -583,13 +572,14 @@ fun ChatRoomScreen(
         if (wasEditing && editingMsg == null) composerHandle.setText(draftSync.afterEdit())
         wasEditing = editingMsg != null
     }
+    // A focused field gets no blur when the app goes to the background or the
+    // screen leaves (room switch / back): flush explicitly, like the SPA's
+    // pagehide + unmount handlers.
+    LaunchedEffect(roomId) {
+        io.amar.console.core.AppLifecycle.foregroundFlow.collect { fg -> if (!fg) flushDraftNow(composerHandle.text) }
+    }
     androidx.compose.runtime.DisposableEffect(roomId) {
-        onDispose {
-            draftJob?.cancel()
-            if (editingMsg == null) {
-                draftSync.flush(composerHandle.text, editing = false)?.let { repo.setRoomDraftAsync(roomId, it) }
-            }
-        }
+        onDispose { flushDraftNow(composerHandle.text) }
     }
     val mentionQuery = remember(composerText) { io.amar.console.data.chat.Mentions.activeQuery(composerText) }
     val emojiQuery = remember(composerText) { activeEmojiQuery(composerText) }
@@ -813,7 +803,8 @@ fun ChatRoomScreen(
                 }
                 scope.launch { listState.animateScrollToItem(0) } // reverseLayout: 0 = bottom
             },
-            onTextChange = { composerText = it; onComposerChange(it); scheduleDraftSave() },
+            onTextChange = { composerText = it; onComposerChange(it) },
+            onBlur = { flushDraftNow(composerHandle.text) },
             onSendWithAttachments = { text, uris ->
                 flushDraftNow("")
                 scope.launch {

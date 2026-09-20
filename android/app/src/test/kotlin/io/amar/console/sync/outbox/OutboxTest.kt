@@ -190,4 +190,18 @@ class OutboxTest {
         repeat(4) { outbox.drain() }
         assertTrue(badgeSet)
     }
+
+    @Test
+    fun `onFailed hook fires on a Fail result too — a 4xx is terminal on the first drain`() = runTest {
+        var rolledBack = false
+        outbox.register("calUpdate") { _, _ -> Outbox.Result.Fail("HTTP 400") }
+        outbox.register("calUpdate:onFailed") { _, _ ->
+            rolledBack = true
+            Outbox.Result.Done
+        }
+        val id = outbox.enqueue("calUpdate", "{}")
+        outbox.drain()
+        assertTrue(rolledBack)
+        assertEquals("failed", db.outbox().byId(id)?.status)
+    }
 }

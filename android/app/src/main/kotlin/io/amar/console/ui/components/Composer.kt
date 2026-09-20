@@ -45,6 +45,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -86,6 +88,9 @@ fun Composer(
     /** Long-press Send: queue the text for the end of the agent's turn (SPA
      *  Ctrl+Enter). Null = no queueing on this composer. */
     onQueue: ((String) -> Unit)? = null,
+    /** The input lost focus after having it — the chat draft's write point.
+     *  Never fires for the initial unfocused state. */
+    onBlur: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     // Durable draft: loads on entry, persists on every edit (blank = cleared).
@@ -272,6 +277,7 @@ fun Composer(
                 if (fieldValue.text != displayText) {
                     fieldValue = androidx.compose.ui.text.input.TextFieldValue(displayText, androidx.compose.ui.text.TextRange(displayText.length))
                 }
+                var hadFocus by remember { mutableStateOf(false) }
                 BasicTextField(
                     value = fieldValue,
                     onValueChange = {
@@ -287,7 +293,10 @@ fun Composer(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     maxLines = 5,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().onFocusChanged { st ->
+                        if (st.isFocused) hadFocus = true
+                        else if (hadFocus) { hadFocus = false; onBlur?.invoke() }
+                    },
                 )
             }
             IconButton(
@@ -337,10 +346,13 @@ fun Composer(
                 onQueue(text)
             }
             // Tap = send, long-press = queue (Box + combinedClickable: IconButton
-            // has no long-press slot).
+            // has no long-press slot). Send can never take focus: a send that
+            // blurred the input would write the draft and then clear it (the
+            // SPA preventDefaults mousedown for the same reason).
             Box(
                 Modifier.size(44.dp).clip(CircleShape)
                     .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                    .focusProperties { canFocus = false }
                     .combinedClickable(
                         enabled = canSend,
                         onClick = { send() },

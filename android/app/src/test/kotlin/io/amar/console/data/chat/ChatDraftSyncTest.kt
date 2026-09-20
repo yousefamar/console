@@ -21,6 +21,28 @@ class ChatDraftSyncTest {
     }
 
     @Test
+    fun `first read replaces the on-device cache — the hub is the authority on open`() {
+        // Unlike the SPA (an empty textarea per room switch), the field is
+        // prefilled from DraftStore; a stale cache must not beat the hub.
+        assertEquals("hub copy", ChatDraftSync().onRemote("hub copy", current = "stale cache", editing = false, now = 1000))
+        assertEquals("", ChatDraftSync().onRemote("", current = "stale cache", editing = false, now = 1000))
+    }
+
+    @Test
+    fun `a healed mirror inside the echo window is tracked, so the next flush re-pushes`() {
+        // A push that terminally failed heals the row back to the hub's copy;
+        // the composer keeps the typed text but the mirror now says "" — the
+        // rule "compare against the ROOM ROW, not our own last push" is what
+        // makes the next blur retry it instead of believing it landed.
+        val s = ChatDraftSync()
+        s.onRemote("", current = "", editing = false, now = 1000)
+        assertEquals("hel", s.flush("hel", editing = false, now = 5000))
+        assertNull(s.onRemote("", current = "hel", editing = false, now = 5400))
+        assertEquals("", s.hubDraft)
+        assertEquals("hel", s.flush("hel", editing = false, now = 6000))
+    }
+
+    @Test
     fun `first read that equals the local cache applies nothing`() {
         val s = ChatDraftSync()
         assertNull(s.onRemote("hello", current = "hello", editing = false, now = 1000))

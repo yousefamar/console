@@ -147,6 +147,42 @@ view-mode hub-sync (Room meta is fine on one device).
   row gated skip on `lastGuardResult == "skipped"`, which hid the new
   missed-fire skips (they carry no guard result). Also drops the "next in"
   wording for the SPA's "next". Tests: `CronStatusTest`.
+- **Chat drafts write on blur only; a failed optimistic room write heals**
+  (^blue-bee, SPA parity for ^cool-ibis 43c167ee + 3c032e93/343321cf).
+  *Drafts:* `ChatRoomScreen` persisted the composer text after a 400 ms typing
+  debounce — every pause re-sorted/re-previewed the room list and a hub delta
+  computed before the write landed echoed the previous text back (Yousef:
+  "only set the draft on blur"). The draft is now flushed ONLY when the input
+  loses focus (`Composer.onBlur`, a had-focus latch so the initial unfocused
+  state never fires), on room switch / leaving the screen (`DisposableEffect`),
+  on app background (`AppLifecycle.foregroundFlow` → false) and on send (clears
+  at once); the Send tile is `focusProperties { canFocus = false }` so a tap
+  can never blur-write-then-clear (the SPA preventDefaults mousedown).
+  Hydrate / remote-replaces-only-when-nothing-typed / 1.5 s echo window /
+  edit-never-persists are unchanged in `ChatDraftSync`; `SAVE_DEBOUNCE_MS` is
+  gone. *Heal:* `setRoomDraft` was a direct PUT with an IN-MEMORY
+  `dirtyDrafts` re-push list — process death lost the pending push and left
+  the Room row diverged from the hub for good, and the seq-based
+  `snapshotSince` reconcile never notices a divergence the hub never saw (the
+  SPA's Baba's-draft blind spot). Drafts now ride the durable outbox
+  (`TYPE_DRAFT` → `PUT|DELETE /matrix/rooms/:id/draft`, HTTP so it works with
+  the WS down; one row per room — a newer draft cancels the pending one and
+  carries its `before` forward). Every terminal failure of an optimistic room
+  write — draft, markRead, markUnread, snooze, unsnooze — now runs
+  `healRoomAfterFailedWrite`: pull the FULL rooms snapshot force-applied at an
+  already-seen seq (`applyRoomsDelta(force)`; patches are never forced), or,
+  hub unreachable, restore the payload's `before` (the SPA's own draft revert).
+  `Outbox` now fires `:onFailed` on a `Fail` result too — only exhausted
+  retries did, so a 4xx parked the row with the optimistic write standing
+  (the calendar `TYPE_UPDATE` rollback and the send-file badge never ran on
+  4xx either). The first `reconcile()` per process and pull-to-refresh
+  (`syncNow`) take the full snapshot — the phone's "make it right" gesture,
+  like the SPA's page load. Tests: `ChatDraftSyncTest` (cache-vs-hub on first
+  read, healed mirror re-pushes), `ChatRepositoryTest` (one row per room +
+  `before` carry-forward, no-op/clear, and a heal test per path: draft,
+  markRead, markUnread, snooze, unsnooze; forced snapshot at equal seq),
+  `OutboxTest` (`Fail` fires `onFailed`). No emulator here — blur/background
+  behaviour is verified on the phone after release.
 
 ## Shipped
 
