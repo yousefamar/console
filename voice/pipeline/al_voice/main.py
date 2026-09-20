@@ -1,8 +1,9 @@
 """al-voice-pipeline: the process pm2 runs.
 
-- Holds the sidecar socket; every `incoming` asks the hub whether to answer.
+- Holds the sidecar socket; every `incoming` asks the hub whether to answer
+  (`POST /voice/session`, which also forks AL for the call).
 - FastAPI on 127.0.0.1:9879 for the hub: `POST /call {jid, task}`, `GET /health`,
-  `GET /calls`.
+  `GET /calls`, `POST /hangup/{callId}` (graceful: after the current sentence).
 - On `ended` posts the transcript back to the hub, whatever the outcome."""
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 from .call import CallSession
 from .config import Config
 from .hub import HubClient
+from .language import voice_languages
 from .sidecar import SidecarClient
 
 
@@ -31,11 +33,15 @@ class CallManager:
         self.hub = HubClient(cfg)
         self.sidecar = SidecarClient(cfg.sidecar_url, self._on_sidecar_event)
         self.calls: dict[str, CallSession] = {}
-        self._pending_outbound: dict[str, dict[str, Any]] = {}
         self.recent: list[dict[str, Any]] = []
+        self.tts_languages: tuple[str, ...] = cfg.tts_languages
 
     async def start(self) -> None:
         self.sidecar.start()
+        langs = await voice_languages(self.cfg)
+        if langs:
+            self.tts_languages = langs
+        logger.info(f"tts languages: {', '.join(self.tts_languages)}")
 
     async def stop(self) -> None:
         for call in list(self.calls.values()):
@@ -51,21 +57,40 @@ class CallManager:
             raise HTTPException(503, "WhatsApp voice device is not connected (sidecar down or unpaired)")
         if self.calls:
             raise HTTPException(409, "a call is already in progress")
-        ctx = await self.hub.context(jid, task=task, direction="out")
-        if not ctx.get("answer", True):
-            raise HTTPException(403, ctx.get("why") or "hub refused the call")
+        if not await self.hub.health():
+            raise HTTPException(503, "hub unreachable — the call's AL fork cannot be started")
+        # Dial first: the sidecar mints the call id. The fork + pipeline then
+        # warm up during the ring (typically 5-10 s).
         ack = await self.sidecar.call(jid)
         call_id = ack.get("callId")
         slot = ack.get("slot")
         if not call_id or slot is None:
             raise HTTPException(502, f"sidecar did not return a call id: {ack}")
+        try:
+            sess = await self.hub.session(call_id, jid, "out", task=task)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{call_id}] hub session failed: {e!r}; cancelling the call")
+            await self.sidecar.hangup(call_id)
+            raise HTTPException(502, f"hub refused to start the call's AL fork: {e}")
+        if not sess.get("answer", True):
+            await self.sidecar.hangup(call_id)
+            raise HTTPException(403, sess.get("why") or "hub refused the call")
         session = CallSession(
             cfg=self.cfg, sidecar=self.sidecar, hub=self.hub, call_id=call_id, slot=int(slot),
-            jid=jid, direction="out", context=ctx, task=task,
+            jid=jid, direction="out", session=sess, task=task, tts_languages=self.tts_languages,
         )
         self.calls[call_id] = session
-        logger.info(f"[{call_id}] ringing {ctx.get('displayName') or jid}")
-        return {"ok": True, "callId": call_id, "slot": slot, "to": jid, "displayName": ctx.get("displayName")}
+        logger.info(f"[{call_id}] ringing {session.display_name}; fork {sess.get('forkKey')} warming")
+        asyncio.create_task(self._prepare(session), name=f"prepare-{call_id}")
+        return {"ok": True, "callId": call_id, "slot": slot, "to": jid, "displayName": session.display_name, "forkSessionId": sess.get("forkSessionId")}
+
+    async def _prepare(self, session: CallSession) -> None:
+        try:
+            await session.prepare()
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{session.call_id}] pipeline prepare failed: {e!r}; hanging up")
+            session.end_reason = "pipeline failed"
+            await self.sidecar.hangup(session.call_id)
 
     # ---- sidecar events ----
 
@@ -76,8 +101,9 @@ class CallManager:
         elif kind == "accepted":
             call = self.calls.get(ev.get("callId", ""))
             if call and call.live_at is None:
-                logger.info(f"[{call.call_id}] accepted — starting pipeline")
-                await call.start()
+                warm = f"{time.time() - call.prepared_at:.1f} s after prepare" if call.prepared_at else "pipeline not yet prepared"
+                logger.info(f"[{call.call_id}] accepted — live ({warm})")
+                await call.go()
         elif kind == "ended":
             await self._on_ended(ev)
         elif kind == "error" and ev.get("callId") in self.calls:
@@ -104,27 +130,32 @@ class CallManager:
             await self._report_unanswered(call_id, jid, "missed", "busy")
             return
         try:
-            ctx = await self.hub.context(jid, direction="in")
+            sess = await self.hub.session(call_id, jid, "in")
         except Exception as e:  # noqa: BLE001
-            logger.error(f"[{call_id}] hub context failed: {e!r}; rejecting")
+            logger.error(f"[{call_id}] hub session failed: {e!r}; rejecting")
             await self.sidecar.reject(call_id)
+            await self._report_unanswered(call_id, jid, "failed", f"hub session: {e}")
             return
-        if not ctx.get("answer"):
-            logger.info(f"[{call_id}] policy says no ({ctx.get('why')}) — rejecting {jid}")
+        if not sess.get("answer"):
+            logger.info(f"[{call_id}] policy says no ({sess.get('why')}) — rejecting {jid}")
             await self.sidecar.reject(call_id)
-            await self._report_unanswered(call_id, jid, "rejected", ctx.get("why") or "policy", ctx)
+            await self._report_unanswered(call_id, jid, "rejected", sess.get("why") or "policy", sess)
             return
         session = CallSession(
             cfg=self.cfg, sidecar=self.sidecar, hub=self.hub, call_id=call_id, slot=slot,
-            jid=jid, direction="in", context=ctx,
+            jid=jid, direction="in", session=sess, tts_languages=self.tts_languages,
         )
         self.calls[call_id] = session
+        # Sockets open while we answer; the caller's first words meet a live pipeline.
+        prep = asyncio.create_task(self._prepare(session), name=f"prepare-{call_id}")
         try:
             await self.sidecar.answer(call_id)
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{call_id}] answer failed: {e!r}")
+            prep.cancel()
             self.calls.pop(call_id, None)
-            await self._report_unanswered(call_id, jid, "failed", str(e), ctx)
+            await session.stop("answer failed")
+            await self._report_unanswered(call_id, jid, "failed", str(e), sess)
 
     async def _on_ended(self, ev: dict[str, Any]) -> None:
         call_id = ev.get("callId", "")
@@ -178,9 +209,12 @@ class CallManager:
     def snapshot(self) -> dict[str, Any]:
         return {
             "sidecar": {"socket": self.sidecar.connected, **self.sidecar.state},
+            "ttsLanguages": list(self.tts_languages),
             "active": [
-                {"callId": c.call_id, "jid": c.jid, "direction": c.direction, "live": c.live_at is not None,
-                 "turns": len(c._collector.turns) if c._collector else 0}
+                {"callId": c.call_id, "jid": c.jid, "displayName": c.display_name, "direction": c.direction,
+                 "live": c.live_at is not None, "prepared": c.prepared_at is not None,
+                 "forkSessionId": c.fork_session_id, "turns": len(c._collector.turns) if c._collector else 0,
+                 "lastTurn": (c._collector.turns[-1] if c._collector and c._collector.turns else None)}
                 for c in self.calls.values()
             ],
             "recent": [
@@ -226,11 +260,15 @@ def build_app(cfg: Config) -> FastAPI:
         return await manager.place_call(req.jid.strip(), req.task.strip())
 
     @app.post("/hangup/{call_id}")
-    async def hangup(call_id: str):
-        if call_id not in manager.calls:
+    async def hangup(call_id: str, now: bool = False):
+        call = manager.calls.get(call_id)
+        if not call:
             raise HTTPException(404, "no such call")
-        await manager.sidecar.hangup(call_id)
-        return {"ok": True}
+        if now or call.live_at is None:
+            await manager.sidecar.hangup(call_id)
+        else:
+            call.request_hangup("api")
+        return {"ok": True, "graceful": not now and call.live_at is not None}
 
     return app
 

@@ -3,7 +3,11 @@
 One persistent WebSocket. Text frames are JSON events/commands; binary frames
 are `[slot][s16le 16 kHz PCM]`. Audio for a slot is routed to whichever
 `AudioSink` registered for it; everything else is fanned out to the event
-handler. Reconnects with backoff — the sidecar may restart independently."""
+handler THROUGH A QUEUE, in order, on its own task: the read loop must never
+wait on the handler, because the handler waits on command acks that only the
+read loop can deliver (`incoming` → `answer()` deadlocked every inbound call
+until 2026-09-20). Reconnects with backoff — the sidecar may restart
+independently."""
 
 from __future__ import annotations
 
@@ -32,6 +36,8 @@ class SidecarClient:
         self._sinks: dict[int, AudioSink] = {}
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._task: asyncio.Task | None = None
+        self._pump: asyncio.Task | None = None
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._connected = asyncio.Event()
         self.state: dict[str, Any] = {"connected": False, "paired": False, "jid": None}
 
@@ -39,16 +45,28 @@ class SidecarClient:
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="sidecar-client")
+        self._pump = asyncio.create_task(self._pump_events(), name="sidecar-events")
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for t in (self._task, self._pump):
+            if t:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
         if self._ws:
             await self._ws.close()
+
+    async def _pump_events(self) -> None:
+        while True:
+            ev = await self._events.get()
+            try:
+                await self._on_event(ev)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception(f"event handler failed for {ev.get('ev')}")
 
     @property
     def connected(self) -> bool:
@@ -113,10 +131,7 @@ class SidecarClient:
             fut.set_result(ev)
         if kind in ("pong",):
             return
-        try:
-            await self._on_event(ev)
-        except Exception:  # noqa: BLE001
-            logger.exception(f"event handler failed for {kind}")
+        self._events.put_nowait(ev)
 
     # ---- audio ----
 

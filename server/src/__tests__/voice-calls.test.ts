@@ -8,10 +8,11 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  answerPolicy, stripSections, callEnvelope, historyLineFor, transcriptRecord, saveTranscript,
+  answerPolicy, callEnvelope, historyLineFor, transcriptRecord, saveTranscript,
   resolveCallTarget, hasPriorChat, applySidecarEvent, getSidecarStatus, getSidecarQr, formatDuration,
-  loadVoiceConfig, VOICE_PREAMBLE, type CallTranscript,
+  loadVoiceConfig, closingTurn, type CallTranscript,
 } from '../al/voice.js'
+import { buildCallEnvelope, voiceForkRules } from '../al/voice-fork.js'
 import { record, resetHistoryCache } from '../al/wa-history.js'
 
 const YOUSEF = '447845443890@s.whatsapp.net'
@@ -64,19 +65,45 @@ describe('answerPolicy', () => {
   })
 })
 
-describe('stripSections', () => {
-  it('drops the text-only AL.md sections and keeps the rest', () => {
-    const md = '# AL\nintro\n\n## Messaging\nsend stuff\n\n## Persona\nbe warm\n\n## Workflows\nx\n\n## Boundaries\nno addresses'
-    const out = stripSections(md)
-    expect(out).toContain('be warm')
-    expect(out).toContain('no addresses')
-    expect(out).not.toContain('send stuff')
-    expect(out).not.toContain('## Workflows')
+describe('voice fork rules + envelope', () => {
+  it('the rules name the identity rule, the hold-on-before-tools rule and the hangup command with the call id', () => {
+    const rules = voiceForkRules('CALL42XYZ')
+    expect(rules).toMatch(/Yousef's cloned voice/)
+    expect(rules).toMatch(/holding phrase/)
+    expect(rules).toMatch(/con whatsapp hangup CALL42XYZ/)
+    expect(rules).toMatch(/ONCE/)
+    expect(rules).toMatch(/do not retry/)
+    expect(rules).toMatch(/English, Arabic and German/)
+    expect(rules).not.toMatch(/delegate/)
   })
-  it('the preamble names the identity rule and the tool', () => {
-    expect(VOICE_PREAMBLE).toMatch(/Yousef Amar's cloned voice/)
-    expect(VOICE_PREAMBLE).toMatch(/"delegate"/)
-    expect(VOICE_PREAMBLE).toMatch(/Never mention delegation/)
+  it('the envelope carries caller, thread, task and ends with the warm-turn cue; inherited mode inlines the rules', () => {
+    const base = {
+      callId: 'CALL42XYZ', displayName: 'Yousef', phone: '447845443890', user: 'yousef', trust: 'owner', userBody: 'likes tea',
+      recentThread: ['[2 h ago] Yousef: hi', '[2 h ago] AL: hello'], openThreads: '- dentist', now: Date.UTC(2026, 8, 20, 18, 0, 0),
+    }
+    const out = buildCallEnvelope({ ...base, direction: 'out', task: 'Ask about dinner.' })
+    expect(out.split('\n')[0]).toBe('[VOICE CALL OUTBOUND to Yousef (yousef, +447845443890) — callId CALL42XYZ]')
+    expect(out).toContain('this is Yousef himself, your owner')
+    expect(out).toContain('likes tea')
+    expect(out).toContain('[2 h ago] AL: hello')
+    expect(out).toContain('- dentist')
+    expect(out).toContain('Your task: Ask about dinner.')
+    expect(out).toContain('"(The call was answered.)"')
+    expect(out.trimEnd().endsWith('Reply with exactly the word: ready')).toBe(true)
+    expect(out).not.toContain('# You are on a live voice call')
+
+    const inbound = buildCallEnvelope({ ...base, direction: 'in', task: null, rulesInline: voiceForkRules('CALL42XYZ') })
+    expect(inbound.startsWith('# You are on a live voice call')).toBe(true)
+    expect(inbound).toContain('[VOICE CALL INBOUND from Yousef')
+    expect(inbound).toContain('Yousef is calling you.')
+    expect(inbound).not.toContain('## Call task')
+  })
+  it('the closing turn is not spoken and asks for promised follow-ups + memory', () => {
+    const c = closingTurn(completed())
+    expect(c.split('\n')[0]).toBe('[CALL ENDED after 2m05s]')
+    expect(c).toMatch(/Nothing you write now is spoken/)
+    expect(c).toMatch(/memory\/open-threads.md/)
+    expect(closingTurn(completed({ outcome: 'no-answer', durationMs: 0 })).split('\n')[0]).toBe('[CALL NO-ANSWER]')
   })
 })
 
@@ -90,6 +117,13 @@ describe('callEnvelope', () => {
     expect(env).toMatch(/This call already happened/)
     expect(env).toMatch(/Reply in this session only if something needs Yousef/)
     expect(env).not.toMatch(/con whatsapp send/)
+  })
+  it('a call handled by a fork tells the parent the fork already did the follow-ups', () => {
+    const env = callEnvelope(completed({ fork: { forkKey: 'al-call-abc123-fork', ttftMs: [900], turnMs: [3000] }, delegations: 0 }), 'Yousef')
+    expect(env).toContain('handled live by your voice fork al-call-abc123-fork')
+    expect(env).toMatch(/a fork of you spoke every "AL:" line/)
+    expect(env).toMatch(/Read those files before acting/)
+    expect(env).not.toMatch(/delegate request/)
   })
   it('an outbound call carries its task', () => {
     const env = callEnvelope(completed({ direction: 'out', task: 'Ask about dinner' }), 'Yousef')
@@ -169,11 +203,21 @@ describe('sidecar relay state', () => {
 })
 
 describe('loadVoiceConfig', () => {
+  it('fork model/context default to Sonnet 5 and fresh', () => {
+    const f = join(dir, 'none.env')
+    const cfg = loadVoiceConfig(f)
+    expect(cfg.forkModel).toBe('claude-sonnet-5')
+    expect(cfg.forkContext).toBe('fresh')
+    writeFileSync(f, 'VOICE_FORK_MODEL=haiku\nVOICE_FORK_CONTEXT=inherited\n')
+    const cfg2 = loadVoiceConfig(f)
+    expect(cfg2.forkModel).toBe('haiku')
+    expect(cfg2.forkContext).toBe('inherited')
+  })
   it('defaults to the documented loopback ports and honours voice.env', () => {
     const none = loadVoiceConfig(join(dir, 'missing.env'))
-    expect(none).toEqual({ sidecarUrl: 'ws://127.0.0.1:9878', pipelineUrl: 'http://127.0.0.1:9879' })
+    expect(none).toMatchObject({ sidecarUrl: 'ws://127.0.0.1:9878', pipelineUrl: 'http://127.0.0.1:9879' })
     const f = join(dir, 'voice.env')
     writeFileSync(f, 'WA_VOICE_PORT=9900\nVOICE_PIPELINE_PORT="9901"\n')
-    expect(loadVoiceConfig(f)).toEqual({ sidecarUrl: 'ws://127.0.0.1:9900', pipelineUrl: 'http://127.0.0.1:9901' })
+    expect(loadVoiceConfig(f)).toMatchObject({ sidecarUrl: 'ws://127.0.0.1:9900', pipelineUrl: 'http://127.0.0.1:9901' })
   })
 })

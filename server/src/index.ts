@@ -142,6 +142,7 @@ import { handlePenRoutes } from './routes/pen.js'
 import { handleAlRoutes, setVoiceRouteContext } from './routes/al.js'
 import { ensureAlSession, reloadAlSession, injectToAl, getAlSession, getRecordedAlSessionId } from './al/al-session.js'
 import { startSidecarRelay as startVoiceSidecarRelay } from './al/voice.js'
+import { setVoiceForkContext } from './al/voice-fork.js'
 import QRCode from 'qrcode'
 import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
@@ -2810,6 +2811,9 @@ httpServer.listen(port, host, () => {
         // sidecar + pipeline are separate pm2 processes; them being down must
         // not block AL's boot.
         setVoiceRouteContext({ broadcast })
+        // The call's brain is a fork of AL (al/voice-fork.ts): it needs the
+        // agent context to spawn/close sessions and the bus for voice.call.*.
+        setVoiceForkContext({ agents: agentCtx, broadcast, emit: (input) => eventBus.emit(input) })
         // An unpaired sidecar reissues QRs for as long as nobody scans; each
         // injection costs AL a turn, so relay one every 10 min at most and
         // point at `con whatsapp voice --qr` for a fresh one in between.

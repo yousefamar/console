@@ -1,6 +1,8 @@
 """Runtime configuration: `~/.config/console/voice.env` + `cartesia.env` +
 the hub's `voice` bearer from `local-tokens.json`. Process env wins over the
-files so pm2 / a shell can override anything."""
+files so pm2 / a shell can override anything. The call's brain (a fork of AL)
+and its model live hub-side (VOICE_FORK_MODEL / VOICE_FORK_CONTEXT in the same
+voice.env are read by the hub, not here)."""
 
 from __future__ import annotations
 
@@ -10,13 +12,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("CONSOLE_CONFIG_DIR", Path.home() / ".config" / "console"))
-
-# Owner-tagged inference profiles (server/src/bedrock-profiles.ts). Haiku is the
-# default: measured 1.1 s end-of-speech → first audio vs 2.1–2.5 s on Sonnet 5
-# (2026-09-20), and the spec's ceiling is 1.2 s. VOICE_LLM_MODEL overrides.
-DEFAULT_LLM_MODEL = "arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/5we3084lce1f"  # haiku-4-5
-SONNET_LLM_MODEL = "arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/56dbk0s0u5no"  # sonnet-5
-
 
 def _read_env_file(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -44,13 +39,15 @@ class Config:
     cartesia_tts_model: str = "sonic-3.6"
     cartesia_stt_model: str = "ink-whisper"
     stt_language: str = "auto"
-    llm_model: str = DEFAULT_LLM_MODEL
-    aws_profile: str = "bedrock-amar"
-    aws_region: str = "us-east-1"
+    # TTS languages the clone can speak natively (Cartesia voice accents); the
+    # language router only switches between these. Refreshed from the voice
+    # record at startup when possible.
+    tts_languages: tuple[str, ...] = ("en", "ar", "de")
     turn_stop: str = "timeout"  # timeout | smart
-    user_speech_timeout: float = 0.5
+    user_speech_timeout: float = 0.4
     inbound_greet_after_secs: float = 2.0
-    delegate_timeout_secs: float = 27.0
+    turn_timeout_secs: float = 200.0
+    hangup_grace_secs: float = 8.0
     max_call_secs: int = 30 * 60
     log_dir: Path = field(default_factory=lambda: CONFIG_DIR / "voice-calls")
     inbound_enabled: bool = True
@@ -75,20 +72,15 @@ class Config:
             cartesia_tts_model=env.get("CARTESIA_MODEL", "sonic-3.6"),
             cartesia_stt_model=env.get("VOICE_STT_MODEL", "ink-whisper"),
             stt_language=env.get("VOICE_STT_LANGUAGE", "auto"),
-            llm_model=env.get("VOICE_LLM_MODEL", DEFAULT_LLM_MODEL),
-            aws_profile=env.get("AWS_PROFILE", "bedrock-amar"),
-            aws_region=env.get("AWS_REGION", "us-east-1"),
+            tts_languages=tuple(x.strip() for x in env.get("VOICE_TTS_LANGUAGES", "en,ar,de").split(",") if x.strip()) or ("en",),
             turn_stop=env.get("VOICE_TURN_STOP", "timeout"),
-            user_speech_timeout=float(env.get("VOICE_USER_SPEECH_TIMEOUT", "0.5")),
+            user_speech_timeout=float(env.get("VOICE_USER_SPEECH_TIMEOUT", "0.4")),
             inbound_greet_after_secs=float(env.get("VOICE_INBOUND_GREET_AFTER", "2.0")),
-            delegate_timeout_secs=float(env.get("VOICE_DELEGATE_TIMEOUT", "27")),
+            turn_timeout_secs=float(env.get("VOICE_TURN_TIMEOUT", "200")),
+            hangup_grace_secs=float(env.get("VOICE_HANGUP_GRACE", "8")),
             max_call_secs=int(env.get("VOICE_MAX_CALL_SECS", str(30 * 60))),
             inbound_enabled=env.get("VOICE_INBOUND", "1") not in ("0", "false", "off"),
         )
-        # The Bedrock client reads the standard AWS env; make the hub's profile the default.
-        os.environ.setdefault("AWS_PROFILE", cfg.aws_profile)
-        os.environ.setdefault("AWS_REGION", cfg.aws_region)
-        os.environ.setdefault("AWS_DEFAULT_REGION", cfg.aws_region)
         cfg.log_dir.mkdir(parents=True, exist_ok=True)
         return cfg
 

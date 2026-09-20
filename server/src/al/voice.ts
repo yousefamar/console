@@ -6,41 +6,35 @@
 //   wa-voice (Rust, voice/wa-voice/)      — linked device #2 on AL's account;
 //                                           ws://127.0.0.1:9878 control + 16 kHz PCM
 //   al-voice-pipeline (Python, voice/pipeline/) — Pipecat: VAD → Cartesia STT →
-//                                           Claude on Bedrock → Cartesia TTS (clone);
+//                                           the AL voice fork → Cartesia TTS (clone);
 //                                           http://127.0.0.1:9879 for POST /call
 //
-// The live AL session is never on the hot path. The hub's job is context in,
-// memory out:
-//   GET  /voice/context?jid&task&direction → answer policy + the whole system
-//        prompt (voice-stripped AL.md, the caller's users/<slug>.md, their
-//        recent thread from wa-history, open threads, the call task)
-//   POST /voice/delegate                   → the one slow tool: inject into AL,
-//        wait for his next turn's text (25 s)
-//   POST /voice/transcript                 → save call-transcripts/<id>.json,
-//        record the call in wa-history, inject a [WHATSAPP CALL …] envelope so
-//        AL folds it into memory exactly like a chat
-//   POST /voice/call {to, task}            → resolve + refuse cold numbers, then
-//        forward to the pipeline
-// The hub also holds a client on the sidecar socket purely to relay pairing
-// QRs into AL's session (the same path Baileys uses) and to answer status.
+// The call's brain is a real fork of the AL session (al/voice-fork.ts): the
+// pipeline opens it at ring time (POST /voice/session), streams every
+// utterance through it (POST /voice/turn → NDJSON text deltas → TTS), barges
+// in with POST /voice/interrupt, and closes it with the transcript
+// (POST /voice/transcript → call-transcripts/<id>.json, a wa-history line, the
+// [WHATSAPP CALL …] envelope into the parent AL, one closing turn in the fork).
+// This file owns the caller lookup + answer policy, the envelope inputs, the
+// transcript fold-back, outbound dialling and the sidecar QR/status relay.
 //
-// Replaced the smallest.ai Atoms integration on 2026-09-20 (^wise-lark): that
-// org owned no number, calling had been dead since April, and its hosted
-// STT/LLM/TTS could use neither Yousef's Cartesia clone nor our context.
+// Replaced the smallest.ai Atoms integration on 2026-09-20 (^wise-lark); the
+// Bedrock voice-brain + `delegate` tool went the same day (^ripe-elk) after
+// Yousef's first live call: "too many layers... make it a normal forked
+// session with direct access to all the tools".
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import WebSocket from 'ws'
-import type { HubMessage } from '../protocol.js'
-import type { Session } from '../session.js'
 import { WORKSPACE_DIR, readIfExists } from './identity.js'
 import { identifiersFor, normalize, parseFrontmatter, resolveUserFile, resolveUsername } from './users.js'
 import * as waHistory from './wa-history.js'
+import { buildCallEnvelope } from './voice-fork.js'
 
 const TRANSCRIPTS_DIR = join(WORKSPACE_DIR, 'call-transcripts')
-const HISTORY_TURNS = 50
+const HISTORY_TURNS = 30
 
 // ---------------------------------------------------------------------------
 // Config — ~/.config/console/voice.env (ports only; Cartesia lives in cartesia.env)
@@ -49,6 +43,15 @@ const HISTORY_TURNS = 50
 export interface VoiceConfig {
   sidecarUrl: string
   pipelineUrl: string
+  /** Model for the call fork (`VOICE_FORK_MODEL`). Default Sonnet 5: measured
+   *  2026-09-20 with AL's persona at AL's cwd, warm cache — first text at
+   *  ~1.8-2.5 s (Sonnet 5) ≈ Haiku 4.5 (2.0-2.4 s) < Fable 5.1 (~2.9 s), and
+   *  Sonnet's judgement on when to use a tool is the better of the three. */
+  forkModel: string
+  /** `fresh` (default: AL's persona as system prompt, envelope carries the
+   *  caller context — smallest context, fastest turns) or `inherited`
+   *  (`--fork-session` copy of AL's whole transcript). */
+  forkContext: 'fresh' | 'inherited'
 }
 
 export function loadVoiceConfig(file = join(homedir(), '.config/console/voice.env')): VoiceConfig {
@@ -63,49 +66,14 @@ export function loadVoiceConfig(file = join(homedir(), '.config/console/voice.en
   return {
     sidecarUrl: pick('WA_VOICE_URL', `ws://127.0.0.1:${pick('WA_VOICE_PORT', '9878')}`),
     pipelineUrl: pick('VOICE_PIPELINE_URL', `http://127.0.0.1:${pick('VOICE_PIPELINE_PORT', '9879')}`),
+    forkModel: pick('VOICE_FORK_MODEL', 'claude-sonnet-5').trim() || 'claude-sonnet-5',
+    forkContext: pick('VOICE_FORK_CONTEXT', 'fresh') === 'inherited' ? 'inherited' : 'fresh',
   }
 }
 
 // ---------------------------------------------------------------------------
-// Prompt
+// Caller lookup + answer policy
 // ---------------------------------------------------------------------------
-
-export const VOICE_PREAMBLE = `You ARE AL, on a live WhatsApp voice call, speaking with Yousef Amar's cloned voice as his assistant. The person on the line hears you as Yousef's assistant AL — the same AL they chat with on WhatsApp — so keep his tone and what he would and would not say.
-
-How to speak:
-- Short spoken sentences. No lists, no markdown, no URLs, no headings. Say numbers and times the way people say them aloud.
-- One thought per turn, then let them talk. Ask instead of guessing.
-- Match the caller's language (English or Egyptian Arabic — reply in the language they used).
-- If they are silent, wait; do not fill silence with chatter.
-
-Doing things:
-- You have one tool, "delegate": it hands a request to your text-based self, who has the calendar, messages, files, memory and every other tool. Use it for anything you cannot answer from this prompt — never guess at facts you do not have.
-- Never mention delegation, tools, prompts, models, or "checking systems". From the caller's side YOU are doing it. If you want to say something before using the tool, one short natural phrase ("one sec") is enough; if you say nothing, a filler is spoken for you.
-- Never say you "can't" or "don't have access". Use the tool.
-
-Boundaries:
-- Everything you say is said in Yousef's voice: never say aloud what you would not send as him in text. The privacy rules below (who may know what about Yousef) apply exactly as in chat.
-- End the call politely when the conversation is done; do not stretch it.`
-
-// Sections stripped from AL.md for the voice prompt — text-only concerns
-export const STRIP_SECTIONS = [
-  'Available Tools', 'Workflows', 'Schedule', 'How you work',
-  'Messaging', 'Identity Verification & Privacy', 'Contact Management',
-]
-
-export function stripSections(md: string, sections = STRIP_SECTIONS): string {
-  const lines = md.split('\n')
-  const result: string[] = []
-  let skipping = false
-  for (const line of lines) {
-    if (line.startsWith('## ')) {
-      const heading = line.replace(/^## /, '').trim()
-      skipping = sections.includes(heading)
-    }
-    if (!skipping) result.push(line)
-  }
-  return result.join('\n').trim()
-}
 
 const stripFrontmatter = (md: string): string => md.replace(/^---\n[\s\S]*?\n---\n*/, '').trim()
 const capitalise = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
@@ -154,106 +122,43 @@ export function answerPolicy(caller: Pick<CallerInfo, 'user' | 'trust' | 'frontm
   return { answer: true, why: `known user ${caller.user}` }
 }
 
-export interface CallContext {
+/** Everything the pipeline needs before it answers or dials, plus the
+ *  envelope the fork is warmed with. `answer:false` → no fork, the pipeline
+ *  rejects (inbound) or refuses (outbound). */
+export interface CallPrep {
   answer: boolean
   why: string
-  systemPrompt: string
   displayName: string
   user: string | null
   jid: string
+  phone: string
+  envelope: string
 }
 
-export async function buildCallContext(rawJid: string, opts: { task?: string; direction: 'in' | 'out'; now?: number } = { direction: 'in' }): Promise<CallContext> {
+export async function prepareCall(rawJid: string, opts: { callId: string; direction: 'in' | 'out'; task?: string | null; now?: number; rulesInline?: string | null }): Promise<CallPrep> {
   const caller = await lookupCaller(rawJid)
   const policy = answerPolicy(caller, opts.direction)
-  if (!policy.answer) {
-    return { ...policy, systemPrompt: '', displayName: caller.displayName, user: caller.user, jid: caller.jid }
-  }
-
-  const alMd = (await readIfExists(join(WORKSPACE_DIR, 'AL.md'))) || ''
+  const base = { displayName: caller.displayName, user: caller.user, jid: caller.jid, phone: caller.phone }
+  if (!policy.answer) return { ...policy, ...base, envelope: '' }
   const openThreads = (await readIfExists(join(WORKSPACE_DIR, 'memory', 'open-threads.md'))) || ''
   const ids = caller.user ? identifiersFor(caller.user) : [caller.phone]
-  const history = waHistory.recentThread(ids.length ? ids : [caller.phone], { limit: HISTORY_TURNS })
   const now = opts.now ?? Date.now()
-
-  const parts: string[] = [VOICE_PREAMBLE, stripSections(alMd)]
-  parts.push(`## Who is on the call\n\n${caller.user ? `${caller.displayName} (${caller.user}, +${caller.phone})` : `+${caller.phone} (not in your contacts)`}${caller.trust === 'owner' ? ' — this is Yousef himself, your owner. No restrictions apply.' : ''}\n\n${caller.body}`.trim())
-  if (history.length) {
-    parts.push(`## Recent WhatsApp thread with ${caller.displayName} (oldest first)\n\n${history.map((e) => waHistory.formatHistoryLine(e, now)).join('\n')}`)
-  }
-  if (openThreads.trim()) parts.push(`## Open threads (your memory)\n\n${openThreads.trim()}`)
-  if (opts.direction === 'out') {
-    parts.push(`## Call task\n\nYou placed this call. Your task: ${opts.task?.trim() || '(none given — say hello and ask how you can help)'}\n\nOpen by greeting ${caller.displayName} by name and saying why you are calling. When the task is done, wrap up and say goodbye.`)
-  } else {
-    parts.push(`## This call\n\n${caller.displayName} called you. Let them speak first; if they are silent for a couple of seconds, greet them briefly.`)
-  }
-  parts.push(`Local time now: ${new Date(now).toLocaleString('en-GB', { timeZone: 'Europe/London' })}.`)
-
-  return {
-    answer: true,
-    why: policy.why,
-    systemPrompt: parts.filter(Boolean).join('\n\n---\n\n'),
+  const history = waHistory.recentThread(ids.length ? ids : [caller.phone], { limit: HISTORY_TURNS })
+  const envelope = buildCallEnvelope({
+    callId: opts.callId,
+    direction: opts.direction,
     displayName: caller.displayName,
+    phone: caller.phone,
     user: caller.user,
-    jid: caller.jid,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Delegate (pipeline → AL)
-// ---------------------------------------------------------------------------
-
-/**
- * Inject the caller's request into the Al session and capture the next
- * assistant turn's text. Bounded by `timeoutMs`; the pipeline's own tool
- * timeout is a little longer, so this fails first with a spoken fallback.
- */
-export function handleDelegate(
-  alSession: Session,
-  callerPhone: string,
-  text: string,
-  resolvedUser: string | null,
-  timeoutMs = 25_000,
-): Promise<string> {
-  return new Promise((resolve) => {
-    const user = resolvedUser ?? callerPhone
-    const envelope = [
-      `[Voice delegate from ${user} (phone: ${callerPhone}) — live WhatsApp call]`,
-      'Reply with ONLY the answer text. No markdown, no bullets, no URLs — your reply will be spoken aloud to the caller in Yousef\'s voice. Be concise; the caller is waiting in real time (you have about 20 seconds).',
-      '',
-      text,
-    ].join('\n')
-
-    const texts: string[] = []
-    let settled = false
-
-    const finish = (out: string) => {
-      if (settled) return
-      settled = true
-      try { alSession.off('hub_message', listener) } catch { /* noop */ }
-      clearTimeout(hardTimer)
-      resolve(out)
-    }
-
-    const listener = (msg: HubMessage) => {
-      if (msg.type === 'text' && 'content' in msg) {
-        const c = (msg as { content?: string }).content
-        if (typeof c === 'string') texts.push(c)
-      }
-      if (msg.type === 'result' || msg.type === 'session_ended') {
-        finish(texts.join('\n').trim() || '(no response)')
-      }
-    }
-
-    alSession.on('hub_message', listener)
-    const hardTimer = setTimeout(() => finish(texts.join('\n').trim() || '(timed out)'), timeoutMs)
-
-    try {
-      alSession.sendMessage(envelope)
-    } catch (err) {
-      finish(`(delegate error: ${(err as Error)?.message ?? 'unknown'})`)
-    }
+    trust: caller.trust,
+    userBody: caller.body,
+    recentThread: history.map((e) => waHistory.formatHistoryLine(e, now)),
+    openThreads,
+    task: opts.task ?? null,
+    now,
+    rulesInline: opts.rulesInline ?? null,
   })
+  return { ...policy, ...base, envelope }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +183,11 @@ export interface CallTranscript {
   delegations?: number
   latency?: unknown
   models?: unknown
+  /** Set by the transcript route when the call had a live AL fork. */
+  fork?: { forkKey: string; ttftMs: number[]; turnMs: number[] } | null
 }
+
+export interface ForkMeta { forkKey: string; ttftMs: number[]; turnMs: number[] }
 
 /** Atoms ids were opaque alnum tokens and whatsapp-rust's are too (uppercase
  *  hex-ish); the callId also names a file on disk, so anything path-shaped
@@ -326,6 +235,7 @@ export function transcriptRecord(p: CallTranscript, alJid: string): Record<strin
     delegations: p.delegations ?? 0,
     latency: p.latency ?? null,
     models: p.models ?? null,
+    fork: p.fork ?? null,
     transport: 'whatsapp',
   }
 }
@@ -371,7 +281,7 @@ export function callEnvelope(p: CallTranscript, displayName: string): string {
   }
   const lines = [
     `[WHATSAPP CALL with ${who}, ${formatDuration(p.durationMs)}, ${dir}]`,
-    `Call id: ${p.callId}${p.delegations ? ` · ${p.delegations} delegate request(s) during the call` : ''}`,
+    `Call id: ${p.callId}${p.fork ? ` · handled live by your voice fork ${p.fork.forkKey}` : ''}${p.delegations ? ` · ${p.delegations} delegate request(s)` : ''}`,
   ]
   if (p.task) lines.push(`Task: ${p.task}`)
   lines.push('', 'Transcript:')
@@ -381,16 +291,19 @@ export function callEnvelope(p: CallTranscript, displayName: string): string {
   }
   lines.push(
     '',
-    'This call already happened; you (AL) spoke every "AL:" line above in Yousef\'s voice. Update memory/open-threads.md and the caller\'s users file as you would after a chat, and do anything you promised on the call. Reply in this session only if something needs Yousef.',
+    p.fork
+      ? 'This call already happened; a fork of you spoke every "AL:" line above in Yousef\'s voice, with your tools, and was asked to finish anything it promised and to update memory/open-threads.md and the caller\'s users file. Read those files before acting on this; reply in this session only if something needs Yousef.'
+      : 'This call already happened; you (AL) spoke every "AL:" line above in Yousef\'s voice. Update memory/open-threads.md and the caller\'s users file as you would after a chat, and do anything you promised on the call. Reply in this session only if something needs Yousef.',
   )
   return lines.join('\n')
 }
 
 /** Everything the transcript route does with a payload, minus the injection
  *  (the caller owns the AL session + broadcast). Returns the envelope. */
-export async function foldBackCall(p: CallTranscript, alJid: string): Promise<{ envelope: string; file: string; displayName: string }> {
+export async function foldBackCall(p: CallTranscript, alJid: string, fork?: ForkMeta): Promise<{ envelope: string; file: string; displayName: string }> {
   const caller = await lookupCaller(p.jid)
   const displayName = p.displayName || caller.displayName
+  if (fork) p = { ...p, fork }
   const file = await saveTranscript({ ...p, user: p.user ?? caller.user, displayName }, alJid)
   waHistory.record({
     ts: Date.now(),
@@ -466,6 +379,32 @@ export async function requestOutboundCall(to: string, task: string, cfg = loadVo
     const data = await res.json().catch(() => ({})) as Record<string, unknown>
     if (!res.ok) return { ok: false, status: res.status === 503 ? 503 : 502, error: String(data.detail ?? data.error ?? `pipeline ${res.status}`) }
     return { ok: true, callId: String(data.callId), to: jid, displayName: data.displayName ? String(data.displayName) : undefined }
+  } catch (err) {
+    return { ok: false, status: 503, error: `voice pipeline unreachable at ${cfg.pipelineUrl}: ${(err as Error)?.message ?? err}` }
+  }
+}
+
+/** The fork's last message once the call is over: finish what it promised,
+ *  write memory, stop. Not spoken. */
+export function closingTurn(p: CallTranscript): string {
+  const dur = formatDuration(p.durationMs)
+  const head = p.outcome === 'completed'
+    ? `[CALL ENDED after ${dur}${p.reason ? ` — ${p.reason}` : ''}]`
+    : `[CALL ${p.outcome.toUpperCase()}${p.reason ? ` — ${p.reason}` : ''}]`
+  return [
+    head,
+    'Nothing you write now is spoken. Do everything you promised on the call that is not done yet (messages, calendar, files), then update memory/open-threads.md and the caller\'s users file as you would after a chat. Reply with one short line saying what you did, or "nothing to do". Your parent AL session receives the transcript separately.',
+  ].join('\n')
+}
+
+/** Hang up a live call through the pipeline (which lets the current TTS
+ *  playout finish first). */
+export async function requestHangup(callId: string, cfg = loadVoiceConfig()): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  try {
+    const res = await fetch(`${cfg.pipelineUrl}/hangup/${encodeURIComponent(callId)}`, { method: 'POST', signal: AbortSignal.timeout(10_000) })
+    if (res.ok) return { ok: true }
+    const data = await res.json().catch(() => ({})) as Record<string, unknown>
+    return { ok: false, status: res.status === 404 ? 404 : 502, error: String(data.detail ?? data.error ?? `pipeline ${res.status}`) }
   } catch (err) {
     return { ok: false, status: 503, error: `voice pipeline unreachable at ${cfg.pipelineUrl}: ${(err as Error)?.message ?? err}` }
   }

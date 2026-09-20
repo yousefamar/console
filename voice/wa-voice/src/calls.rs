@@ -1,9 +1,16 @@
 //! Call slots: the bridge between the control socket and whatsapp-rust's
 //! call facade. Each live call owns a 60 ms ticker that feeds the engine one
-//! 960-sample frame per tick (queued PCM from the socket, else silence — the
-//! engine emits one RTP packet per mic frame, so the ticker IS the RTP clock)
-//! and a drain that re-chunks the peer's decoded audio into 960-sample frames
-//! on the socket.
+//! 960-sample frame per tick (queued PCM from the socket, else near-silence —
+//! the engine emits one RTP packet per mic frame, so the ticker IS the RTP
+//! clock) and a drain that re-chunks the peer's decoded audio into 960-sample
+//! frames on the socket.
+//!
+//! Idle frames are ±1 LSB dither, never exact zeros: wacore's
+//! `encode_mlow_frame` treats an all-zero frame as OS mic-mute and sends a
+//! one-byte DTX comfort-noise packet instead of speech. Feeding the peer DTX
+//! between utterances put its decoder in comfort-noise mode, and every speech
+//! onset lost its first ~0.3-0.5 s while the playout re-converged (the first
+//! live test call, 2026-09-20: "when you said great, I only heard the T").
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -24,6 +31,52 @@ pub const FRAME_SAMPLES: usize = 960;
 const TICK: Duration = Duration::from_millis(60);
 /// ~24 s of queued outbound speech; beyond this the producer is misbehaving.
 const MAX_QUEUE_FRAMES: usize = 400;
+
+/// Cheap xorshift noise source for the idle-frame dither (no crate, no
+/// allocation; audio quality is irrelevant at ±1 LSB, ~-90 dBFS).
+pub struct Dither(u32);
+
+impl Dither {
+    pub fn new() -> Self {
+        Self(0x9E37_79B9)
+    }
+
+    fn next(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+
+    /// A full frame of ±1 LSB noise (never all zeros).
+    pub fn frame(&mut self) -> Vec<i16> {
+        let mut f = vec![0i16; FRAME_SAMPLES];
+        self.apply(&mut f);
+        f
+    }
+
+    /// Guarantee `frame` is not exactly all-zero (the engine's mute fast-path).
+    /// Frames with any signal are left untouched.
+    pub fn apply(&mut self, frame: &mut [i16]) {
+        if frame.iter().any(|&s| s != 0) {
+            return;
+        }
+        for s in frame.iter_mut() {
+            *s = (self.next() % 3) as i16 - 1;
+        }
+        if frame.iter().all(|&s| s == 0) {
+            frame[0] = 1;
+        }
+    }
+}
+
+impl Default for Dither {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
@@ -500,14 +553,15 @@ impl CallManager {
         spk_rx: async_channel::Receiver<Vec<i16>>,
         spk_tx: async_channel::Sender<Vec<i16>>,
     ) {
-        // Mic ticker: one frame every 60 ms, queued speech else silence.
+        // Mic ticker: one frame every 60 ms, queued speech else dither (see
+        // the module doc: an all-zero frame is "mic muted" to the engine).
         let ticker_queue = queue.clone();
         let ticker_mic = mic_tx.clone();
         let ticker_handle = handle.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(TICK);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let silence = vec![0i16; FRAME_SAMPLES];
+            let mut dither = Dither::new();
             loop {
                 interval.tick().await;
                 if ticker_mic.is_closed() {
@@ -524,7 +578,8 @@ impl CallManager {
                         None => None,
                     }
                 };
-                let frame = frame.unwrap_or_else(|| silence.clone());
+                let mut frame = frame.unwrap_or_else(|| dither.frame());
+                dither.apply(&mut frame);
                 if ticker_mic.try_send(frame).is_err() {
                     debug!("mic channel full/closed for {}", ticker_handle.call_id());
                 }
@@ -638,4 +693,39 @@ fn qr_svg_data_url(code: &str) -> String {
         }
     };
     format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_frame_is_never_all_zero() {
+        let mut d = Dither::new();
+        for _ in 0..200 {
+            let f = d.frame();
+            assert_eq!(f.len(), FRAME_SAMPLES);
+            assert!(f.iter().any(|&s| s != 0), "an all-zero frame reads as mic-mute (DTX) to the engine");
+            assert!(f.iter().all(|&s| (-1..=1).contains(&s)), "dither stays within ±1 LSB");
+        }
+    }
+
+    #[test]
+    fn dither_leaves_real_audio_untouched_and_fixes_zero_frames() {
+        let mut d = Dither::new();
+        let mut speech: Vec<i16> = (0..FRAME_SAMPLES as i16).map(|i| (i % 200) - 100).collect();
+        let before = speech.clone();
+        d.apply(&mut speech);
+        assert_eq!(speech, before);
+
+        let mut zeros = vec![0i16; FRAME_SAMPLES];
+        d.apply(&mut zeros);
+        assert!(zeros.iter().any(|&s| s != 0));
+
+        let mut quiet = vec![0i16; FRAME_SAMPLES];
+        quiet[500] = 1;
+        let before = quiet.clone();
+        d.apply(&mut quiet);
+        assert_eq!(quiet, before, "a frame with any signal is not dithered");
+    }
 }

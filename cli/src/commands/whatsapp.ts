@@ -9,8 +9,9 @@
 //   con whatsapp delete <message_id> --to <jid> → revoke for everyone
 //   con whatsapp contacts [--query <text>]     → workspace contacts lookup
 //   con whatsapp call <to> --task "…"          → AL phones <to> on WhatsApp (Yousef's voice, full context)
-//   con whatsapp calls [--last N]              → recent call transcripts
-//   con whatsapp voice [--qr <path.png>]       → voice device (wa-voice) + pipeline status; QR when unpaired
+//   con whatsapp calls [--last N] [--live]     → calls in progress (live transcript so far), then recent transcripts
+//   con whatsapp hangup <callId>               → end a live call (after the current sentence finishes)
+//   con whatsapp voice [--qr <path.png>]       → voice device (wa-voice) + pipeline status + live call; QR when unpaired
 //
 // `to` accepts a bare phone (`447700900123`) or a fully-qualified JID
 // (`447700900123@s.whatsapp.net`, `<lid>@lid`, `<id>@g.us`). Bare phones get
@@ -30,6 +31,7 @@ export async function whatsapp(verb: string | undefined, args: string[], flags: 
     case 'contacts': return waContacts(args, flags)
     case 'call': return waCall(args, flags)
     case 'calls': return waCalls(args, flags)
+    case 'hangup': return waHangup(args, flags)
     case 'voice': return waVoice(args, flags)
     default:
       exitWithError('USAGE', `Unknown whatsapp command: ${verb}. Run 'con help whatsapp'.`, flags)
@@ -121,7 +123,15 @@ async function waCall(args: string[], flags: GlobalFlags): Promise<void> {
 async function waCalls(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const limit = Number(opts.last ?? opts.limit ?? 20)
-  const data = await hubFetch(`/voice/calls?limit=${Number.isFinite(limit) && limit > 0 ? limit : 20}`)
+  const data = await hubFetch<{ live?: unknown[]; calls?: unknown[] }>(`/voice/calls?limit=${Number.isFinite(limit) && limit > 0 ? limit : 20}`)
+  if (opts.live !== undefined) return output({ live: data.live ?? [] }, flags)
+  output(data, flags)
+}
+
+async function waHangup(args: string[], flags: GlobalFlags): Promise<void> {
+  const callId = (args.find((a) => !a.startsWith('--')) ?? '').trim()
+  if (!callId) exitWithError('USAGE', 'Usage: con whatsapp hangup <callId>   (con whatsapp calls --live lists them)', flags)
+  const data = await hubFetch('/voice/hangup', { method: 'POST', body: { callId } })
   output(data, flags)
 }
 

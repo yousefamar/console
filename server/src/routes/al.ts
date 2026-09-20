@@ -9,17 +9,22 @@
 //   GET  /whatsapp/contacts?query=…       → { contacts: [...] }
 //
 //   GET  /voice/health                    → { ok: true }                (the only open one)
-//   GET  /voice/status                    → { sidecar, pipeline }
+//   GET  /voice/status                    → { sidecar, pipeline, live: [...] }
 //   GET  /voice/qr                        → image/png pairing QR for the wa-voice device (404 when paired)
-//   GET  /voice/context?jid&task&direction → { answer, why, systemPrompt, displayName, user, jid }
-//   POST /voice/delegate {request,callerPhone,callId} → { response }   (pipeline, mid-call)
-//   POST /voice/transcript {callId,jid,direction,outcome,turns,…}     → { ok, file }  (pipeline, post-call)
+//   POST /voice/session {callId,jid,direction,task} → { answer, why, displayName, user, jid, forkSessionId }
+//                                           (pipeline, at ring time: answer policy + fork AL for the call)
+//   POST /voice/turn {callId,text,cue?,interruptedAfter?} → NDJSON stream of
+//                                           {type:text|tool|result|error} until the fork's turn ends
+//   POST /voice/interrupt {callId}        → { ok, method }  (barge-in: stop the fork's turn)
+//   POST /voice/hangup {callId}           → { ok }          (the fork's own `con whatsapp hangup`; → pipeline)
+//   POST /voice/transcript {callId,jid,direction,outcome,turns,…} → { ok, file, fork }  (pipeline, post-call)
 //   POST /voice/call {to,task}            → { ok, callId, to } | { error }  (→ pipeline → sidecar)
-//   GET  /voice/calls?limit=N             → { calls: [...] }
+//   GET  /voice/calls?limit=N             → { live: [...], calls: [...] }
 //
 // Every route here requires the hub bearer. The voice pipeline is a local
 // process (voice/pipeline/) carrying the `voice`-scoped token from
-// local-tokens.json; only /voice/health is exempt. Atoms is gone (^wise-lark).
+// local-tokens.json; only /voice/health is exempt. Atoms is gone (^wise-lark),
+// so is the Bedrock voice-brain + /voice/delegate (^ripe-elk).
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -27,17 +32,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as wa from '../al/whatsapp.js'
 import * as tts from '../al/tts.js'
 import * as voice from '../al/voice.js'
+import * as voiceFork from '../al/voice-fork.js'
 import { record as recordHistory } from '../al/wa-history.js'
-import { resolveUsername, ensureUserKnown } from '../al/users.js'
-import { getAlSession, injectToAl } from '../al/al-session.js'
+import { resolveUsername } from '../al/users.js'
+import { injectToAl } from '../al/al-session.js'
 import { WORKSPACE_DIR } from '../al/identity.js'
 import QRCode from 'qrcode'
 
 /** Hub-side wiring the voice routes need but the route signature lacks: the
- *  SPA broadcast for AL injections. Set once from index.ts at boot. */
+ *  SPA broadcast for AL injections (the fork machinery gets its own context
+ *  via voiceFork.setVoiceForkContext). Set once from index.ts at boot. */
 let voiceBroadcast: ((msg: any) => void) | null = null
 export function setVoiceRouteContext(ctx: { broadcast: (msg: any) => void }): void {
   voiceBroadcast = ctx.broadcast
+}
+
+function ndjsonLine(res: ServerResponse, obj: unknown): void {
+  if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`)
 }
 
 function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
@@ -160,7 +171,7 @@ export function handleAlRoutes(
   }
 
   if (path === '/voice/status' && req.method === 'GET') {
-    voice.pipelineHealth().then((pipeline) => jsonResponse(res, 200, { sidecar: voice.getSidecarStatus(), pipeline }))
+    voice.pipelineHealth().then((pipeline) => jsonResponse(res, 200, { sidecar: voice.getSidecarStatus(), pipeline, live: voiceFork.getLiveCalls() }))
     return true
   }
 
@@ -178,25 +189,79 @@ export function handleAlRoutes(
     return true
   }
 
-  if (path === '/voice/context' && req.method === 'GET') {
-    const url = new URL(req.url ?? '/', 'http://localhost')
-    const jid = (url.searchParams.get('jid') || '').trim()
-    const task = url.searchParams.get('task') || undefined
-    const direction = url.searchParams.get('direction') === 'out' ? 'out' : 'in'
-    if (!jid || !voice.normalisePhone(jid.split('@')[0]!)) return (jsonResponse(res, 400, { error: 'missing or non-phone jid' }), true)
-    voice.buildCallContext(jid, { task, direction })
-      .then((ctx) => {
-        console.log(`[al/voice] context for ${jid} (${direction}): answer=${ctx.answer} (${ctx.why}), ${ctx.systemPrompt.length} chars`)
-        jsonResponse(res, 200, ctx)
+  // Ring time: answer policy + fork AL for the call. The fork's warm turn runs
+  // while the phone rings so the first utterance meets a live process.
+  if (path === '/voice/session' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const b = JSON.parse(body || '{}') as { callId?: unknown; jid?: unknown; direction?: unknown; task?: unknown }
+      if (!voice.isSafeCallId(b.callId)) return jsonResponse(res, 400, { error: 'missing or unsafe callId' })
+      const jid = typeof b.jid === 'string' ? b.jid.trim() : ''
+      if (!jid || !voice.normalisePhone(jid.split('@')[0]!)) return jsonResponse(res, 400, { error: 'missing or non-phone jid' })
+      const direction = b.direction === 'out' ? 'out' : 'in'
+      const task = typeof b.task === 'string' && b.task.trim() ? b.task.trim() : null
+      const cfg = voice.loadVoiceConfig()
+      const prep = await voice.prepareCall(jid, {
+        callId: b.callId, direction, task,
+        rulesInline: cfg.forkContext === 'inherited' ? voiceFork.voiceForkRules(b.callId) : null,
       })
-      .catch((err: Error) => jsonResponse(res, 500, { error: err.message }))
+      console.log(`[al/voice] session ${b.callId} for ${jid} (${direction}): answer=${prep.answer} (${prep.why})`)
+      if (!prep.answer) return jsonResponse(res, 200, { answer: false, why: prep.why, displayName: prep.displayName, user: prep.user, jid: prep.jid })
+      try {
+        const call = await voiceFork.startCallFork({
+          callId: b.callId, jid: prep.jid, phone: prep.phone, displayName: prep.displayName, user: prep.user,
+          direction, task, envelope: prep.envelope, model: cfg.forkModel, contextMode: cfg.forkContext,
+        })
+        jsonResponse(res, 200, { answer: true, why: prep.why, displayName: prep.displayName, user: prep.user, jid: prep.jid, forkSessionId: call.fork.id, forkKey: call.forkKey, model: call.model, contextMode: call.contextMode })
+      } catch (err) {
+        const msg = (err as Error)?.message ?? 'fork failed'
+        jsonResponse(res, /not bootstrapped|not wired/.test(msg) ? 503 : 500, { error: msg })
+      }
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
     return true
   }
 
-  // POST only: a GET here would fire from a bare URL (img src, link, crawler).
-  if (path === '/voice/delegate' && req.method === 'POST') {
-    handleVoiceDelegate(req, res, readBody).catch((err: Error) =>
-      jsonResponse(res, 500, { error: err.message }))
+  // One utterance → the fork's reply, streamed as NDJSON while it is generated.
+  if (path === '/voice/turn' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const b = JSON.parse(body || '{}') as { callId?: unknown; text?: unknown; cue?: unknown; interruptedAfter?: unknown }
+      if (!voice.isSafeCallId(b.callId)) return jsonResponse(res, 400, { error: 'missing or unsafe callId' })
+      const text = typeof b.text === 'string' ? b.text.trim() : ''
+      if (!text) return jsonResponse(res, 400, { error: 'missing text' })
+      if (!voiceFork.getLiveCall(b.callId)) return jsonResponse(res, 404, { error: `no live call ${b.callId}` })
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' })
+      res.flushHeaders()
+      const sink = (ev: voiceFork.TurnEvent) => ndjsonLine(res, ev)
+      const done = b.cue === true
+        ? await voiceFork.runCue(b.callId, text, sink)
+        : await voiceFork.runTurn(b.callId, text, sink, { interruptedAfter: typeof b.interruptedAfter === 'string' ? b.interruptedAfter : null })
+      if (done.type === 'result') console.log(`[al/voice] ${b.callId}: turn ${done.ms} ms (first text ${done.ttftMs ?? '-'} ms${done.interrupted ? ', interrupted' : ''})`)
+      res.end()
+    }).catch((err: Error) => {
+      if (res.headersSent) { ndjsonLine(res, { type: 'error', message: err.message }); res.end() }
+      else jsonResponse(res, 400, { error: err.message })
+    })
+    return true
+  }
+
+  if (path === '/voice/interrupt' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const b = JSON.parse(body || '{}') as { callId?: unknown }
+      if (!voice.isSafeCallId(b.callId)) return jsonResponse(res, 400, { error: 'missing or unsafe callId' })
+      const out = await voiceFork.interruptCall(b.callId)
+      jsonResponse(res, out.ok ? 200 : 404, out)
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
+    return true
+  }
+
+  // The fork (or anyone with the bearer) ends the call: forwarded to the
+  // pipeline, which lets the goodbye finish playing before it hangs up.
+  if (path === '/voice/hangup' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const b = JSON.parse(body || '{}') as { callId?: unknown }
+      if (!voice.isSafeCallId(b.callId)) return jsonResponse(res, 400, { error: 'missing or unsafe callId' })
+      const out = await voice.requestHangup(b.callId)
+      jsonResponse(res, out.ok ? 200 : out.status, out.ok ? { ok: true, callId: b.callId } : { error: out.error })
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
     return true
   }
 
@@ -242,10 +307,11 @@ export function handleAlRoutes(
       }
       try {
         const alJid = wa.ownNumber() ? `${wa.ownNumber()}@s.whatsapp.net` : (voice.getSidecarStatus().jid ?? 'al')
-        const { envelope, file, displayName } = await voice.foldBackCall(payload, alJid)
+        const fork = await voiceFork.endCallFork(payload.callId, voice.closingTurn(payload))
+        const { envelope, file, displayName } = await voice.foldBackCall(payload, alJid, fork ? { forkKey: fork.forkKey, ttftMs: fork.ttftMs, turnMs: fork.turnMs } : undefined)
         const injected = voiceBroadcast ? injectToAl(envelope, voiceBroadcast) : false
-        console.log(`[al/voice] call ${payload.callId} with ${displayName}: ${payload.outcome}, ${payload.turns.length} turns → ${file}${injected ? ', folded into AL' : ', AL not injected'}`)
-        jsonResponse(res, 200, { ok: true, file, injected })
+        console.log(`[al/voice] call ${payload.callId} with ${displayName}: ${payload.outcome}, ${payload.turns.length} turns → ${file}${injected ? ', folded into AL' : ', AL not injected'}${fork ? `, fork ${fork.forkKey} closing` : ''}`)
+        jsonResponse(res, 200, { ok: true, file, injected, fork: fork ? { forkSessionId: fork.forkSessionId, forkKey: fork.forkKey } : null })
       } catch (err) {
         jsonResponse(res, 500, { error: (err as Error).message })
       }
@@ -256,43 +322,12 @@ export function handleAlRoutes(
   if (path === '/voice/calls' && req.method === 'GET') {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 20))
-    voice.listCallTranscripts(limit).then((calls) => jsonResponse(res, 200, { calls }))
+    voice.listCallTranscripts(limit).then((calls) => jsonResponse(res, 200, { live: voiceFork.getLiveCalls(), calls }))
       .catch((err: Error) => jsonResponse(res, 500, { error: err.message }))
     return true
   }
 
   return false
-}
-
-async function handleVoiceDelegate(
-  req: IncomingMessage,
-  res: ServerResponse,
-  readBody: (req: IncomingMessage) => Promise<string>,
-): Promise<void> {
-  const rawBody = await readBody(req)
-  console.log('[al/voice] delegate POST')
-
-  const body = rawBody ? JSON.parse(rawBody) : {}
-  const rawPhone = body.callerPhone ?? body.caller_phone ?? body.from ?? body.fromNumber ?? ''
-  const text = body.request ?? body.text ?? body.message ?? ''
-
-  if (typeof text !== 'string' || !text) return jsonResponse(res, 400, { error: 'missing request field' })
-  // The phone names the caller in Al's envelope AND seeds a users/<phone>.md
-  // record — only a phone-shaped value may do either.
-  const callerPhone = voice.normalisePhone(rawPhone)
-  if (rawPhone && !callerPhone) console.warn(`[al/voice] delegate: ignoring non-phone callerPhone ${JSON.stringify(String(rawPhone)).slice(0, 40)}`)
-
-  const al = getAlSession()
-  if (!al) return jsonResponse(res, 503, { error: 'AL session not bootstrapped' })
-
-  if (callerPhone) {
-    ensureUserKnown(callerPhone, 'voice').catch((err: Error) =>
-      console.error('[al/voice] ensureUserKnown failed:', err.message))
-  }
-
-  const resolvedUser = callerPhone ? resolveUsername(callerPhone) : null
-  const response = await voice.handleDelegate(al, callerPhone, text, resolvedUser)
-  jsonResponse(res, 200, { response })
 }
 
 // --- contacts ---

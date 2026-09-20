@@ -893,6 +893,22 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** Stop the current turn WITHOUT killing the process: the stream-json
+   *  `interrupt` control request, which the CLI answers by ending the turn
+   *  with a result. A voice barge-in needs this — SIGINT respawns the CLI and
+   *  the next reply would wait on the resume. Falls back to SIGINT when the
+   *  CLI does not acknowledge. */
+  async softInterrupt(): Promise<'control' | 'signal' | 'idle'> {
+    if (!this.process || this.status !== 'running') return 'idle'
+    const res = await this.sendControlRequest('interrupt', {}, 3000)
+    if (res.ok) {
+      this.midTurn = false
+      return 'control'
+    }
+    this.interrupt()
+    return 'signal'
+  }
+
   /** True when the user explicitly ended this session (kill_session /
    *  delete_session), as opposed to the subprocess dying on its own (SDK
    *  timeout, crash). Persisted to the manifest so an explicit "End session"
