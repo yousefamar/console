@@ -51,10 +51,16 @@ async function chatMessages(args: string[], flags: GlobalFlags): Promise<void> {
   // Oldest first, one line per event, event id leading so it can be pasted
   // straight into `con chat react|edit`.
   for (const m of [...data.messages].reverse()) {
-    const when = m.timestamp ? new Date(m.timestamp).toISOString().slice(0, 16).replace('T', ' ') : ''
+    const when = m.timestamp ? localStamp(m.timestamp) : ''
     process.stdout.write(`${m.id}  ${when}  ${m.sender ?? ''}  ${messageLine(m)}\n`)
   }
   if (data.prevBatch) info(`older: --before ${data.prevBatch}`)
+}
+
+function localStamp(ts: number): string {
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 function messageLine(m: HubMessage): string {
