@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, Kanban, Clock, ListTodo, Mic, Moon, Play, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Camera, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
@@ -36,7 +36,7 @@ import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
 import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
-import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl, isVideoAsset } from '@/kanban/card-images'
+import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl, isVideoAsset, prepareCardMedia } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
 import { compareSpacesForRail } from '@/spaces/rail-order'
 import { effectiveOwnerKey } from '@/spaces/owner'
@@ -1519,12 +1519,35 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
     while (rest.length && !rest[0]!.trim()) rest.shift()
     onEditContent(first.trim(), [...rest, ...imagesRef.current.map(imageLineFor)])
   }
+  const uploadAndAppend = async (blob: Blob, ext?: string): Promise<boolean> => {
+    const path = await uploadCardImage(blob, ext)
+    if (path) setImages((cur) => [...cur, path])
+    return path !== null
+  }
   const pasteImages = async (blobs: Blob[]) => {
-    for (const blob of blobs) {
-      const path = await uploadCardImage(blob)
-      if (path) setImages((cur) => [...cur, path])
-    }
+    for (const blob of blobs) await uploadAndAppend(blob)
     // setState is async — commit on the next tick with the ref current.
+    setTimeout(commitContent, 0)
+  }
+  // File picker / camera path (phone browsers have no paste affordance).
+  const [uploading, setUploading] = useState(false)
+  const pickInputRef = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const isMobile = useIsMobile()
+  const pickMedia = async (files: FileList | null) => {
+    if (!files?.length) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        const prepared = await prepareCardMedia(file)
+        if (!prepared.ok) { useUiStore.getState().pushToast({ kind: 'error', message: prepared.reason }); continue }
+        if (!(await uploadAndAppend(prepared.blob, prepared.ext))) {
+          useUiStore.getState().pushToast({ kind: 'error', message: `${file.name}: upload failed` })
+        }
+      }
+    } finally {
+      setUploading(false)
+    }
     setTimeout(commitContent, 0)
   }
   const close = () => {
@@ -1666,8 +1689,48 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
           )}
         </div>
 
-        {/* Footer — just the mic */}
-        <div className="flex items-center border-t border-border px-5 py-2">
+        {/* Footer — attach (picker / camera on mobile) + the mic */}
+        <div className="flex items-center gap-1 border-t border-border px-5 py-2">
+          <input
+            ref={pickInputRef}
+            type="file"
+            accept="image/*,video/mp4,video/webm"
+            multiple
+            className="hidden"
+            data-testid="card-media-pick"
+            onChange={(e) => { void pickMedia(e.target.files); e.target.value = '' }}
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            data-testid="card-media-camera"
+            onChange={(e) => { void pickMedia(e.target.files); e.target.value = '' }}
+          />
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => pickInputRef.current?.click()}
+            disabled={uploading}
+            className="rounded-sm p-1 text-text-tertiary hover:text-text-primary disabled:opacity-60"
+            title="Attach image or clip"
+            aria-label="Attach image or clip"
+          >
+            {uploading ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
+          </button>
+          {isMobile && (
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => cameraInputRef.current?.click()}
+              disabled={uploading}
+              className="rounded-sm p-1 text-text-tertiary hover:text-text-primary disabled:opacity-60"
+              title="Take photo"
+              aria-label="Take photo"
+            >
+              <Camera size={12} />
+            </button>
+          )}
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => dictation.recording ? dictation.stop() : dictation.start()}

@@ -13,6 +13,8 @@
 // Older `images/card-*` lines still render; the hub serves any assets path.
 
 import { getHubUrl } from '@/hub'
+import { downscaleImage } from '@/utils/downscale-image'
+import { cardAssetExt, classifyCardMedia, formatMb, MAX_CARD_MEDIA_BYTES } from '@/kanban/card-media'
 
 export const CARD_ASSET_DIR = 'board'
 
@@ -32,10 +34,9 @@ export function imageLineFor(assetPath: string): string {
   return `![img](${assetPath})`
 }
 
-/** Upload a pasted image blob to the sibling assets dir under `board/`.
+/** Upload a card media blob to the sibling assets dir under `board/`.
  *  Returns the asset-relative path. */
-export async function uploadCardImage(blob: Blob): Promise<string | null> {
-  const ext = (blob.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg')
+export async function uploadCardImage(blob: Blob, ext = cardAssetExt(blob.type) ?? 'png'): Promise<string | null> {
   const filename = `card-${Date.now()}.${ext}`
   const assetPath = `${CARD_ASSET_DIR}/${filename}`
   try {
@@ -47,6 +48,22 @@ export async function uploadCardImage(blob: Blob): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+export type PreparedCardMedia = { ok: true; blob: Blob; ext: string } | { ok: false; reason: string }
+
+/** File picker / camera → upload-ready blob. Stills are downscaled to 2000 px
+ *  on the long edge (the WriteActionBar rule — a phone photo is 12 MP
+ *  otherwise); clips pass through once the pure gate accepts them. */
+export async function prepareCardMedia(file: File): Promise<PreparedCardMedia> {
+  const c = classifyCardMedia(file.name, file.type, file.size)
+  if (c.kind === 'reject') return { ok: false, reason: c.reason }
+  if (c.kind === 'clip') return { ok: true, blob: file, ext: c.ext }
+  const blob = await downscaleImage(file)
+  const ext = cardAssetExt(blob.type)
+  if (!ext) return { ok: false, reason: `${file.name}: only png, jpg, gif or webp images` }
+  if (blob.size > MAX_CARD_MEDIA_BYTES) return { ok: false, reason: `${file.name}: ${formatMb(blob.size)} MB, cap ${formatMb(MAX_CARD_MEDIA_BYTES)} MB` }
+  return { ok: true, blob, ext }
 }
 
 /** Extract image blobs from a paste event (returns [] for text-only pastes). */
