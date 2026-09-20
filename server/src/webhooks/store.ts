@@ -35,6 +35,8 @@ export interface WebhookDelivery {
   }
   /** Every replay of this delivery, newest last. */
   redeliveries?: Array<{ at: number; owner: string | null; delivered: boolean; detail?: string }>
+  /** Listener ids whose filters matched the `webhook.received` event — they own it; no owner-wake ran. */
+  handledBy?: string[]
 }
 
 export class WebhookStore {
@@ -93,7 +95,7 @@ export class WebhookStore {
       const s = out[rec.project] ?? (out[rec.project] = { count: 0, lastReceivedAt: 0, undelivered: 0 })
       s.count++
       s.lastReceivedAt = Math.max(s.lastReceivedAt, rec.receivedAt)
-      const landed = rec.route.delivered || (rec.redeliveries ?? []).some((r) => r.delivered)
+      const landed = rec.route.delivered || !!rec.handledBy?.length || (rec.redeliveries ?? []).some((r) => r.delivered)
       if (!landed) s.undelivered++
     }
     return out

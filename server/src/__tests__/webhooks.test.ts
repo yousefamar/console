@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebhookStore } from '../webhooks/store.js'
-import { buildDelivery, buildWebhookEnvelope, bodyPreview, processInbound, redeliver, sanitiseHeaders, sanitiseQuery, bodyIsText, ENVELOPE_BODY_CHARS, type WebhookCtx } from '../webhooks/pipeline.js'
+import { buildDelivery, buildWebhookEnvelope, bodyPreview, processInbound, redeliver, sanitiseHeaders, sanitiseQuery, bodyIsText, webhookEvent, ENVELOPE_BODY_CHARS, type WebhookCtx } from '../webhooks/pipeline.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 import { handleWebhookRoutes, parseInboundPath, isWebhookInboundPath, webhookTokenName, inboundUrl, type WebhookRouteCtx } from '../routes/webhooks.js'
 import { isAlwaysOpenPath } from '../auth-middleware.js'
 import type { AuthStore, HubToken } from '../auth-store.js'
@@ -143,6 +144,44 @@ describe('webhooks: pipeline', () => {
     expect(store.list({ project: 'b' }).map((r) => r.id)).toEqual([b.id])
     expect(store.list({ limit: 1 })).toHaveLength(1)
     expect(store.get('../etc/passwd')).toBeNull()
+  })
+})
+
+describe('webhooks: event bus + listener takeover', () => {
+  it('emits webhook.received with provider headers + parsed json, and still wakes the owner when no listener matched', () => {
+    const emitted: EmitInput[] = []
+    const ctx = { ...ctxWith(), emit: (i: EmitInput) => { emitted.push(i); return { ...i, id: 'evt', at: 0, hops: 0 } as HubEvent }, matchedListeners: () => [] }
+    const rec = processInbound(ctx, inbound({ headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-hub-signature-256': 'sha256=x' } }))
+    expect(emitted).toHaveLength(1)
+    const ev = emitted[0]!
+    expect(ev.topic).toBe('webhook.received')
+    expect(ev.key).toBe(rec.id)
+    expect(ev.data).toMatchObject({ project: 'console', deliveryId: rec.id, headers: { 'x-github-event': 'push' }, json: { action: 'opened', number: 7 } })
+    expect(ev.ref).toBe(`con webhook show ${rec.id}`)
+    expect(rec.route.delivered).toBe(true)
+    expect(rec.handledBy).toBeUndefined()
+  })
+
+  it('a matching listener owns the delivery: no owner-wake, handledBy recorded, counted as landed', () => {
+    const base = ctxWith()
+    const ctx = { ...base, emit: (i: EmitInput) => ({ ...i, id: 'evt', at: 0, hops: 0 } as HubEvent), matchedListeners: () => ['Labc123'] }
+    const rec = processInbound(ctx, inbound())
+    expect(base.delivered).toHaveLength(0)
+    expect(rec.handledBy).toEqual(['Labc123'])
+    expect(rec.route.delivered).toBe(false)
+    expect(rec.route.detail).toMatch(/handled by listener\(s\) Labc123/)
+    expect(store.summary().console.undelivered).toBe(0)
+    expect(ctx.logs[0]).toMatch(/→ listeners Labc123/)
+  })
+
+  it('webhookEvent clips a huge JSON body field-by-field and keeps the rest', () => {
+    const big = { ref: 'refs/heads/main', commits: 'x'.repeat(20_000), pusher: { name: 'nic' } }
+    const rec = buildDelivery(store, inbound({ body: Buffer.from(JSON.stringify(big)) }))
+    const data = webhookEvent(rec).data as { json: Record<string, unknown>; bodyPreview: string }
+    expect(data.json.ref).toBe('refs/heads/main')
+    expect(data.json.pusher).toEqual({ name: 'nic' })
+    expect(String(data.json.commits).length).toBeLessThan(300)
+    expect(data.bodyPreview.length).toBe(1024)
   })
 })
 

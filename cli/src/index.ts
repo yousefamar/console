@@ -196,6 +196,18 @@ async function main() {
         await cron(verb, rest, flags)
         break
       }
+      case 'event':
+      case 'events': {
+        const { event } = await import('./commands/event.js')
+        await event(verb, rest, flags)
+        break
+      }
+      case 'listen':
+      case 'listeners': {
+        const { listen } = await import('./commands/listen.js')
+        await listen(verb, rest, flags)
+        break
+      }
       case 'spaces': {
         const { spaces } = await import('./commands/spaces.js')
         await spaces(verb, rest, flags)

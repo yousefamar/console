@@ -24,6 +24,7 @@ import type { PushServer } from '../push.js'
 import type { ChatRoomsStore } from './chat-rooms-store.js'
 import type { MessageArchive } from './message-archive.js'
 import { isConversationEvent, previewBody, type SyncRoomDelta } from './room-state.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 import { health } from '../health.js'
 
 type MatrixSyncState = { nextBatch?: string; lastSyncMs?: number }
@@ -137,6 +138,12 @@ export class MatrixSync {
     /** Append-only archive of every decrypted event — the soft-delete-only
      *  guarantee. See message-archive.ts. */
     private readonly archive?: MessageArchive,
+    /** Event bus seam: one `chat.message` per conversation event in every
+     *  NON-initial delta — muted rooms and own sends included (listeners
+     *  filter). A resume-from-cursor delta after a restart is the downtime
+     *  traffic and does emit; the cursorless initial sync is backfill and never
+     *  does. */
+    private readonly emit?: (input: EmitInput) => HubEvent | null,
   ) {
     this.loadState()
   }
@@ -957,6 +964,43 @@ export class MatrixSync {
       }
       if (this.chatRoomsStore) {
         for (const leftId of leaves) this.chatRoomsStore.removeRoom(leftId)
+      }
+
+      // 4b. Event bus — before the push filters below: a muted or low-priority
+      //     room must not notify the phone, but a listener on it is a legitimate
+      //     rule (the Baba/Helween greeting guards watch muted family rooms).
+      if (!isInitial && this.emit) {
+        for (const [roomId, r] of Object.entries(rooms)) {
+          const events = r.timeline?.events ?? []
+          if (!events.length) continue
+          const canonical = this.chatRoomsStore?.snapshot().data[roomId]
+          const cache = this.roomState.get(roomId)
+          for (const ev of events) {
+            if (!isConversationEvent(ev.type) || !ev.event_id) continue
+            const body = previewBody(ev)
+            const member = ev.sender ? cache?.members.get(ev.sender) : undefined
+            const content = ev.content as Record<string, unknown> | undefined
+            this.emit({
+              topic: 'chat.message',
+              source: 'matrix',
+              key: ev.event_id,
+              at: ev.origin_server_ts ?? Date.now(),
+              data: {
+                room: roomId,
+                roomName: canonical?.name ?? cache?.name ?? null,
+                isDirect: canonical?.isDirect ?? cache?.isDirect ?? this.directRooms.has(roomId),
+                sender: ev.sender ?? null,
+                senderName: member?.displayname ?? null,
+                isSelf: ev.sender === cfg.userId,
+                body: body.slice(0, 500),
+                eventId: ev.event_id,
+                msgtype: (content?.msgtype as string | undefined) ?? (ev.type === 'm.sticker' ? 'm.sticker' : null),
+                network: canonical?.networkIcon ?? null,
+              },
+              ref: `con chat messages ${roomId} --limit 20`,
+            })
+          }
+        }
       }
 
       // 5. Push notifications for new messages from other users (not our own).

@@ -20,6 +20,8 @@ Services:
   music        Spotify remote — play, pause, search, playlists, volume
   dashboard    Home pane — servers, canvas tabs/islands, costs
   cron         Hub-side agent scheduler — list, add, remove, run
+  event        Hub event bus — topics, log, tail, emit (what happened)
+  listen       Event-driven rules — add, list, test, pause (react to it without polling)
   mic          System mic owner + push-to-talk routing
   whatsapp     WhatsApp (via AL) — send, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav, teleprompt
@@ -339,6 +341,78 @@ is initialised silently from the current fix — events are transitions only.
 
 The fix is owner-grade data. Relaying it to anyone else goes through
 'con location for <user>', never straight from 'con location'.
+`.trim(),
+
+  event: `
+con event — the hub's event bus: what topics exist, what happened, publish your own
+
+Commands:
+  topics                      Every topic with its fields, how often it fired and the last example
+  log [<topic-glob>] [--since 2h] [--limit 50] [--source s]   Archived events, newest first
+  tail [<topic-glob>]         Live stream (poll-based) — watch a filter take shape
+  show <id>                   One event in full
+  emit <topic> [--data '{…}'] [--key k] [--ref '<cmd>']    Publish a custom event (any script can)
+  redeliver <id> --listener <lid>   Re-run one listener against an archived event
+  status                      Bus counters
+
+Topics are dotted and lower-case (mail.received, chat.message, geo.enter,
+webhook.received, board.card.moved, cal.event.starting, hub.started, …). Custom
+topics register themselves on first emit — e.g. a release script running
+\`con event emit astera.release --data '{"sha":"…"}'\` replaces a cron that
+tails its log. Events carry a summary + a \`ref\` (the command that fetches the
+full thing), never the full payload. Log: ~/.config/console/events/<day>.jsonl,
+90 days. \`location.fix\` is ring-buffered only. Same (topic, --key) within
+24 h is dropped as a duplicate.
+
+Examples:
+  con event topics
+  con event tail chat.message
+  con event log geo.* --since 7d
+  con event emit astera.release --data '{"sha":"abc1234","state":"RELEASED"}' --key abc1234
+`.trim(),
+
+  listen: `
+con listen — event-driven rules that survive hub restarts (cron = time, listen = something happened)
+
+Commands:
+  add --on <topic|glob> [filters] [gates] ACTION      Register a rule (see below)
+  list [--mine] [--topic t]                            Fleet-wide table: id, state, owner, rule, action, stats
+  show <id>                                            Full record incl. the outcome journal
+  log <id> [--limit N]                                 Outcomes newest first: fired / guard-skipped / dropped / paused / skipped / error
+  test <id> [--event <eid> | --topic t --data '{…}']   Dry run: which rung stops it (where / window / cooldown / guard / would-fire). Never acts.
+  pause <id> | resume <id> | flush <id>                Hold, release (clears skips/ceiling), fire the pending batch now
+  remove <id> [--force]                                403 for another session's listener without --force (the owner is told)
+
+Filters (all ANDed, repeatable):
+  --where <path><op><value>   ops: = != ~ (regex, /…/i for flags) ^= (prefix) > < >= <= in (a|b|c)
+                              paths: data.room, data.isSelf, data.headers.x-github-event, topic, source
+  --guard "<cmd>"             bash -c in your cwd; the batch as JSON on stdin ({listener, events}), exit 0 = proceed,
+                              stdout rides in the wake envelope. Env: LISTENER_ID EVENT_TOPIC EVENT_ID EVENT_IDS EVENT_COUNT
+Gates:
+  --coalesce 30s              Quiet period; matching events in it become ONE action (default 60s for --wake, 0 otherwise)
+  --cooldown 10m              Minimum gap between actions; events inside it are held, not dropped
+  --hours 07:00-23:00 --days Mon-Fri [--drop-outside]   Active window (Europe/London); outside it events are held to the opening
+  --max-per-hour N            Ceiling; exceeding it PAUSES the listener + pushes you (default 12 for --wake, 60 otherwise)
+Actions (exactly one):
+  --wake "<prompt>" [--as <agentKey>]   Inject an [EVENT] envelope + your prompt into your session (or @agentKey's). The only rung that costs tokens.
+  --run "<cmd>"                         bash -c in your cwd, batch JSON on stdin — a software listener, no LLM
+  --post <url> [--method M] [--header k:v]   Outbound webhook, JSON body {listener, events}
+  --notify "<title>" [--body "…"]       Push to Yousef's phone/SPA. {{data.x}} templates from the first event
+  --emit <topic> [--data '{…}']         Derive a new event (compose rules; hops capped at 5)
+  --card <project> --body "<text>" [--to Backlog] [--assign key]   File a board card
+--session defaults to your own claudeSessionId (CONSOLE_CLAUDE_SESSION_ID); --name labels the rule.
+
+Ownership works like cron: --wake needs your session live (3 skips warn, 10 auto-disable); run/post/notify/emit/card
+keep working after you end. A ticket-fork's listeners die with the card — register long-lived rules on the parent.
+
+Examples:
+  con listen add --on chat.message --where 'data.room=!abc:beeper.local' --where data.isSelf=false \
+      --guard 'python3 ~/exec/gmgn.py --event' --hours 07:00-23:00 --wake "Tell Yousef in one line what Mai said."
+  con listen add --on mail.received --where 'data.fromEmail=alerts@astera.catering' --wake "Triage this Astera alert."
+  con listen add --on geo.enter --where data.fence=home --hours 22:00-06:00 --run '~/exec/evening.sh'
+  con listen add --on webhook.received --where data.project=astera --where 'data.headers.x-github-event in push|pull_request' \
+      --guard 'python3 ~/exec/astera-conflict-relay.py --event' --wake "Resolve the conflict per the guard output."
+  con listen test L3f9a2b
 `.trim(),
 
   webhook: `

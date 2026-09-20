@@ -20,6 +20,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
 import { health } from '../health.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 
 type MailAccountState = {
   historyId?: string
@@ -59,6 +60,10 @@ export class MailSync {
     private readonly push: PushServer,
     private readonly stateFile: string,
     private readonly log: (msg: string) => void,
+    /** Event bus seam: `mail.received` per message in an incremental delta.
+     *  The first (cursorless) sync of an account is backfill and emits nothing;
+     *  a resume from a saved historyId after a restart is real news and does. */
+    private readonly emit?: (input: EmitInput) => HubEvent | null,
   ) {
     this.loadState()
   }
@@ -260,6 +265,17 @@ export class MailSync {
         const subject = headers.find((h) => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)'
         const { name: fromName, email: fromEmail } = parseFrom(from)
         const snippet = msg.snippet ?? ''
+        this.emit?.({
+          topic: 'mail.received',
+          source: `gmail:${account}`,
+          key: messageId,
+          data: {
+            account, id: messageId, threadId, from, fromName, fromEmail, subject, snippet,
+            to: headers.find((h) => h.name.toLowerCase() === 'to')?.value ?? '',
+            labels: (msg as { labelIds?: string[] }).labelIds ?? [],
+          },
+          ref: `con mail read ${threadId}`,
+        })
         // Remember the most recent arrival for the glasses HUD preview row.
         this.latestSubject = `${fromName || fromEmail}: ${subject}`.trim()
         this.push.broadcast({

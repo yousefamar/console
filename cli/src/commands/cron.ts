@@ -6,7 +6,7 @@
 // claudeSessionId only; look it up with `con agent list --json`.
 
 import { hubFetch, getHubUrl } from '../client.js'
-import { output, exitWithError, type GlobalFlags } from '../output.js'
+import { output, info, exitWithError, type GlobalFlags } from '../output.js'
 import { parseFlags } from './util.js'
 
 interface HubCronTask {
@@ -55,7 +55,7 @@ async function listCmd(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
-  const claudeSessionId = String(opts.session ?? '')
+  const claudeSessionId = String(opts.session ?? process.env.CONSOLE_CLAUDE_SESSION_ID ?? '')
   if (!claudeSessionId) {
     exitWithError('USAGE', 'Usage: con cron add --session <claudeSessionId> --trigger "<cron-or-iso-or-+15m>" --prompt "<text>" [--once] [--guard "<shell cmd>" | --guard-file <path>]', flags); return
   }
@@ -95,6 +95,23 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
     body: { claudeSessionId, trigger, prompt, recurring, ...(guard ? { guard } : {}) },
   })
   output(task, flags)
+  const streamed = guard && recurring ? streamedChannelHint(guard) : null
+  if (streamed) info(`Hint: this guard polls ${streamed}, which the hub already streams as events — \`con listen add --on ${streamedTopic(streamed)} …\` reacts in seconds with no polling. See \`con help listen\`.`)
+}
+
+/** A recurring guard that re-reads a channel the event bus carries is a listener in disguise. */
+function streamedChannelHint(guard: string): string | null {
+  if (/\bcon (chat|whatsapp)\b|\/matrix\//.test(guard)) return 'a chat room'
+  if (/\bcon mail\b|gmail|imaplib|IMAP4/.test(guard)) return 'a mailbox'
+  if (/\bcon cal\b|calendar/.test(guard)) return 'the calendar'
+  if (/\bcon (spaces )?board\b|\/board\//.test(guard)) return 'a board'
+  if (/\bcon location\b|owntracks/.test(guard)) return 'location'
+  if (/\bgh (api|pr|issue|run)\b|api\.github\.com/.test(guard)) return 'GitHub'
+  return null
+}
+
+function streamedTopic(channel: string): string {
+  return { 'a chat room': 'chat.message', 'a mailbox': 'mail.received', 'the calendar': 'cal.event.*', 'a board': 'board.card.*', location: 'geo.*', GitHub: 'webhook.received' }[channel] ?? '<topic>'
 }
 
 async function removeCmd(args: string[], flags: GlobalFlags): Promise<void> {

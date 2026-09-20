@@ -7,6 +7,7 @@
 
 import { buildGeofenceEnvelope, evaluate, fencesContaining, type Fix, type Geofence, type GeofenceEvent } from './geofence.js'
 import type { GeofenceStore } from './store.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 
 export interface LocationWatcherCtx {
   store: GeofenceStore
@@ -16,6 +17,10 @@ export interface LocationWatcherCtx {
   deliverToAgent: (agentKey: string, envelope: string) => boolean
   /** Outbound webhook. Default = global fetch with a 10 s timeout. */
   postUrl?: (url: string, body: string, token?: string) => Promise<{ ok: boolean; detail?: string }>
+  /** Event bus seam: `location.fix` per new fix (ring-only), `geo.enter` /
+   *  `geo.leave` per transition — alongside, not instead of, the fence's own
+   *  wake/url. Listeners are the general path; fences keep theirs. */
+  emit?: (input: EmitInput) => HubEvent | null
   log: (msg: string) => void
   intervalMs?: number
   now?: () => number
@@ -111,6 +116,14 @@ export class LocationWatcher {
     const fences = this.ctx.store.fences()
     const { state, events } = evaluate(fences, this.ctx.store.state(), fix)
     this.ctx.store.commit(state, fix)
+    this.ctx.emit?.({
+      topic: 'location.fix',
+      source: 'owntracks',
+      key: `${fix.device ?? 'device'}:${fix.tst}`,
+      at: fix.tst * 1000,
+      data: { device: fix.device ?? null, lat: fix.lat, lon: fix.lon, acc: fix.acc ?? null, tst: fix.tst, vel: fix.vel ?? null, batt: fix.batt ?? null },
+      ref: 'con location',
+    })
     for (const ev of events) await this.dispatch(ev, fences.find((f) => f.id === ev.fenceId))
     return events
   }
@@ -136,6 +149,17 @@ export class LocationWatcher {
   }
 
   private async dispatch(ev: GeofenceEvent, fence: Geofence | undefined): Promise<void> {
+    this.ctx.emit?.({
+      topic: ev.event === 'enter' ? 'geo.enter' : 'geo.leave',
+      source: 'location',
+      key: ev.id,
+      at: ev.ts,
+      data: {
+        fence: ev.fenceId, fenceName: ev.fenceName, lat: ev.fix.lat, lon: ev.fix.lon, acc: ev.fix.acc ?? null,
+        dwellS: ev.dwellS, device: ev.fix.device ?? null, private: !!fence?.private, test: !!ev.test, eventId: ev.id,
+      },
+      ref: 'con location events',
+    })
     const envelope = buildGeofenceEnvelope(ev, fence, this.now())
     for (const key of fence?.wake ?? []) {
       const ok = this.ctx.deliverToAgent(key, envelope)

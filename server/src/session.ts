@@ -457,6 +457,10 @@ export class Session extends EventEmitter {
         // carry an X-Console-Agent header, letting notifiers skip echoing an
         // agent's own edits back at it.
         ...(this.agentKey ? { CONSOLE_AGENT_KEY: this.agentKey } : {}),
+        // Known before spawn for pinned/resumed sessions — `con listen add`
+        // and `con cron add` default --session to it so agents stop
+        // grepping their own argv for it.
+        ...(this.claudeSessionId ? { CONSOLE_CLAUDE_SESSION_ID: this.claudeSessionId } : {}),
         ...projectDirEnv(cwd),
         CLAUDE_CODE_PROMPT_CACHE_TTL: ttlChoice.ttl,
         // Which hub generation spawned this process — the reaper kills claude

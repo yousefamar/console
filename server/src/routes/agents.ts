@@ -127,6 +127,8 @@ export interface AgentContext {
    *  they survive the child being killed. Wired in index.ts to
    *  `HubCronScheduler.reassignSession`; returns the number of tasks moved. */
   reassignCron?: (fromClaudeSessionId: string, toClaudeSessionId: string) => number
+  /** A session reported `session_ended` — the event bus emits `agent.session.ended`. */
+  onSessionEnded?: (session: Session) => void
   /** Absolute vault root (index.ts wires noteStore.vaultPath) — lets a role
    *  spawn name its project's kanban board in the system prompt. */
   vaultPath?: string
@@ -486,6 +488,7 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
     if ((msg.type === 'result' || msg.type === 'session_ended') && session.claudeSessionId) {
       ctx.recall?.touch(session.claudeSessionId, session.cwd)
     }
+    if (msg.type === 'session_ended') ctx.onSessionEnded?.(session)
   })
 
   session.on('exit', () => {

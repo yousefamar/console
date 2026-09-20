@@ -22,6 +22,7 @@ import { promisify } from 'node:util'
 import type { Session } from '../session.js'
 import type { HubMessage } from '../protocol.js'
 import type { PushMessage } from '../push.js'
+import { describeWake, wakeOrQueue } from '../agents/wake.js'
 
 const execFileP = promisify(execFile)
 
@@ -454,27 +455,7 @@ export class HubCronScheduler {
       : task.prompt
     delete task.guardOutput
 
-    if (session.status === 'running') {
-      // Mid-turn. A stdin write now lands at the CLI's next tool boundary as
-      // a second user message inside the running turn — the stream-json
-      // behaviour ~/CLAUDE.md records as broken. The session's own queue
-      // exists for exactly this: it delivers at `result`, which for a cron
-      // prompt is the right moment anyway. A per-minute task firing through
-      // a long turn must not stack the same prompt N times.
-      if (session.queuedMessage?.includes(content)) {
-        task.lastOutcome = 'queued (already pending from an earlier fire)'
-      } else {
-        session.queueMessage(content)
-        task.lastOutcome = 'queued (session mid-turn)'
-      }
-    } else {
-      // Mirror the "Continue." nudge path: broadcast + log + writeStdin
-      const userMsg: HubMessage = { type: 'user_prompt', sessionId: session.id, content }
-      this.broadcast(userMsg)
-      session.logMessage(userMsg)
-      session.sendMessage(content)
-      task.lastOutcome = 'fired'
-    }
+    task.lastOutcome = describeWake(wakeOrQueue(session, content, this.broadcast))
 
     task.lastFiredAt = Date.now()
     task.consecutiveSkips = 0

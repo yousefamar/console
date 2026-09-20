@@ -6,6 +6,7 @@
 
 import { createHash } from 'node:crypto'
 import type { WebhookStore, WebhookDelivery } from './store.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 
 export interface WebhookCtx {
   store: WebhookStore
@@ -13,6 +14,11 @@ export interface WebhookCtx {
   resolveOwner: (project: string) => string | null
   /** Inject an envelope into the live session with this agentKey. False = not live. */
   deliverToAgent: (agentKey: string, envelope: string) => boolean
+  /** Event bus seam. `emit` publishes `webhook.received`; `matchedListeners`
+   *  says which listeners' filters matched it — when any did, they own the
+   *  delivery and the legacy owner-wake below is skipped. */
+  emit?: (input: EmitInput) => HubEvent | null
+  matchedListeners?: (ev: HubEvent) => string[]
   log: (msg: string) => void
 }
 
@@ -139,11 +145,71 @@ export function buildWebhookEnvelope(rec: WebhookDelivery, opts: { redelivery?: 
  *  so a crash mid-delivery still leaves the payload on disk. */
 export function processInbound(ctx: WebhookCtx, input: InboundWebhook): WebhookDelivery {
   const rec = ctx.store.save(buildDelivery(ctx.store, input))
+  // Listeners first: a project that registered rules for its webhooks handles
+  // them in software (or wakes on its own terms); the owner-wake is the
+  // fallback for deliveries no rule claimed, so nothing silently vanishes.
+  const ev = ctx.emit?.(webhookEvent(rec)) ?? null
+  const handledBy = ev && ctx.matchedListeners ? ctx.matchedListeners(ev) : []
+  if (handledBy.length) {
+    rec.route = { owner: null, delivered: false, detail: `handled by listener(s) ${handledBy.join(', ')}`, at: Date.now() }
+    rec.handledBy = handledBy
+    ctx.store.save(rec)
+    ctx.log(`[webhooks] ${rec.project} ${rec.method} ${rec.subpath || '/'} ${fmtBytes(rec.bodyBytes)} → listeners ${handledBy.join(', ')} ${rec.id}`)
+    return rec
+  }
   const outcome = route(ctx, rec, buildWebhookEnvelope(rec))
   rec.route = { ...outcome, at: Date.now() }
   ctx.store.save(rec)
   ctx.log(`[webhooks] ${rec.project} ${rec.method} ${rec.subpath || '/'} ${fmtBytes(rec.bodyBytes)} → ${outcome.delivered ? `@${outcome.owner}` : `undelivered (${outcome.detail})`} ${rec.id}`)
   return rec
+}
+
+/** The `webhook.received` event: provider headers + a parsed/clipped body, never the raw payload. */
+export function webhookEvent(rec: WebhookDelivery): EmitInput {
+  let json: unknown
+  if (rec.bodyText && /json/i.test(rec.contentType ?? '')) {
+    try { json = JSON.parse(rec.bodyText) } catch { /* not JSON after all */ }
+  }
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(rec.headers)) if (k !== 'accept' && k !== 'content-type' && k !== 'user-agent') headers[k] = v
+  return {
+    topic: 'webhook.received',
+    source: `webhook:${rec.project}`,
+    key: rec.id,
+    at: rec.receivedAt,
+    data: {
+      project: rec.project,
+      subpath: rec.subpath,
+      method: rec.method,
+      deliveryId: rec.id,
+      contentType: rec.contentType,
+      userAgent: rec.headers['user-agent'] ?? null,
+      query: rec.query,
+      headers,
+      bodyPreview: rec.bodyText ? rec.bodyText.slice(0, 1024) : rec.bodyBase64 ? `<binary ${rec.bodyBytes} bytes>` : '',
+      ...(json !== undefined ? { json: clipJson(json) } : {}),
+    },
+    ref: `con webhook show ${rec.id}`,
+  }
+}
+
+const EVENT_JSON_CHARS = 8 * 1024
+
+function clipJson(v: unknown): unknown {
+  const s = JSON.stringify(v)
+  if (s.length <= EVENT_JSON_CHARS) return v
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const out: Record<string, unknown> = {}
+    let used = 2
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      const piece = JSON.stringify(val)
+      if (used + piece.length + k.length + 4 > EVENT_JSON_CHARS) { out[k] = typeof val === 'string' ? `${val.slice(0, 200)}…` : '<clipped>'; continue }
+      out[k] = val
+      used += piece.length + k.length + 4
+    }
+    return out
+  }
+  return { _clipped: true, preview: s.slice(0, 2000) }
 }
 
 /** Replay an archived delivery to the project's CURRENT owner. */

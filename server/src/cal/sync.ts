@@ -23,6 +23,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
 import { health } from '../health.js'
+import type { EmitInput, HubEvent } from '../events/types.js'
 
 type EventFingerprint = string // hash of `updated` timestamp + status
 
@@ -33,6 +34,7 @@ type ReminderEntry = {
   startMs: number
   /** Override minutes-before-start. Empty array = no per-event reminders configured. */
   minutesBefore: number[]
+  location?: string
 }
 
 type CalendarState = {
@@ -92,6 +94,10 @@ export class CalendarSync {
     private readonly push: PushServer,
     private readonly stateFile: string,
     private readonly log: (msg: string) => void,
+    /** Event bus seam: `cal.event.created|updated` from the fingerprint diff
+     *  (only for calendars that already had a baseline — the first sync of a
+     *  calendar is backfill) and `cal.event.starting` when a reminder fires. */
+    private readonly emit?: (input: EmitInput) => HubEvent | null,
   ) {
     this.loadState()
   }
@@ -182,6 +188,7 @@ export class CalendarSync {
       const resp = await this.cal.getEvents(account, cal.id, { timeMin, timeMax }).catch(() => null) as any
       if (!resp) continue
       const events: any[] = resp.items ?? []
+      const hadBaseline = cal.id in accState.events
       const prevFps = accState.events[cal.id] ?? {}
       const nextFps: Record<string, EventFingerprint> = {}
       const added: any[] = []
@@ -213,6 +220,10 @@ export class CalendarSync {
       if (added.length + updated.length + removed.length > 0) {
         const delta: CalDelta = { account, calendarId: cal.id, added, updated, removed }
         this.bus.broadcast('cal', 'delta', delta)
+        if (hadBaseline && this.emit) {
+          for (const ev of added) this.emit(calEvent('cal.event.created', account, cal.id, ev))
+          for (const ev of updated) this.emit(calEvent('cal.event.updated', account, cal.id, ev))
+        }
       }
     }
 
@@ -263,6 +274,7 @@ export class CalendarSync {
       summary: ev.summary || '(No title)',
       startMs,
       minutesBefore,
+      ...(typeof ev.location === 'string' && ev.location ? { location: ev.location } : {}),
     })
   }
 
@@ -321,6 +333,13 @@ export class CalendarSync {
           pane: 'calendar',
           id: `cal:${account}:${fireKey}`,
         })
+        this.emit?.({
+          topic: 'cal.event.starting',
+          source: `calendar:${account}`,
+          key: `${account}:${fireKey}`,
+          data: { account, calendarId: entry.calendarId, id: eventId, summary: entry.summary, start: new Date(entry.startMs).toISOString(), minutesBefore: minutes, location: entry.location ?? null },
+          ref: `con cal get ${eventId} --calendar ${entry.calendarId}`,
+        })
       }
     }
 
@@ -352,5 +371,23 @@ export class CalendarSync {
     } catch (e) {
       this.log(`[cal-sync] failed to save state: ${e}`)
     }
+  }
+}
+
+function calEvent(topic: 'cal.event.created' | 'cal.event.updated', account: string, calendarId: string, ev: any): EmitInput {
+  const start: string | undefined = ev.start?.dateTime ?? ev.start?.date
+  const end: string | undefined = ev.end?.dateTime ?? ev.end?.date
+  return {
+    topic,
+    source: `calendar:${account}`,
+    key: `${ev.id}:${ev.updated ?? ev.etag ?? ''}`,
+    data: {
+      account, calendarId, id: ev.id, summary: ev.summary || '(No title)',
+      start: start ?? null, end: end ?? null, allDay: !ev.start?.dateTime,
+      location: ev.location ?? null, status: ev.status ?? null,
+      attendees: Array.isArray(ev.attendees) ? ev.attendees.length : 0,
+      organizer: ev.organizer?.email ?? null,
+    },
+    ref: `con cal get ${ev.id} --calendar ${calendarId}`,
   }
 }

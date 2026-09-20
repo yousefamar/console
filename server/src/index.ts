@@ -54,6 +54,12 @@ import { handleBoardRoutes } from './routes/board.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState, unpinRead } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
+import { EventBus } from './events/bus.js'
+import { EventStore } from './events/store.js'
+import { handleEventRoutes, type EventRouteCtx } from './routes/events.js'
+import { ListenerEngine } from './listeners/engine.js'
+import { ListenerStore } from './listeners/store.js'
+import { handleListenerRoutes } from './routes/listeners.js'
 import { handleCronRoutes } from './routes/cron.js'
 import { STT_REALTIME_URL, STT_BATCH_MODEL, STT_FLUSH_IDLE_MS, STT_DONE_TIMEOUT_MS, pushCapped, buildSttHeaders, buildTranscriptionSessionUpdate, translateOpenAiEvent } from './stt.js'
 import { AuthStore } from './auth-store.js'
@@ -196,6 +202,12 @@ const cwd = getArg('--cwd', process.cwd())
 const bookmarkVault = getArg('--bookmarks', join(homedir(), 'sync', 'brain', 'root', 'bookmarks'))
 const notesVault = getArg('--notes', join(homedir(), 'sync', 'brain', 'root'))
 const feedsConfigDir = getArg('--feeds', join(homedir(), '.config', 'console'))
+
+// Event bus — the one in-process pub/sub. Adapters (Matrix, Gmail, calendar,
+// board, webhooks, geofences, sessions) emit; the listener engine, WS tails
+// and the daily JSONL log subscribe. Constructed first so every adapter below
+// can take it. `hub.started` fires once at the end of boot.
+const eventBus = new EventBus(new EventStore(join(feedsConfigDir, 'events')), (m) => log(m))
 
 // --------------------------------------------------------------------------
 // Stores
@@ -377,6 +389,7 @@ const mailSync = new MailSync(
   pushServer,
   join(feedsConfigDir, 'mail-state.json'),
   (msg: string) => { log(msg) },
+  (input) => eventBus.emit(input),
 )
 syncBus.register('mail', {
   syncNow: async () => mailSync.syncNow(),
@@ -389,6 +402,7 @@ const calSync = new CalendarSync(
   pushServer,
   join(feedsConfigDir, 'cal-state.json'),
   (msg: string) => { log(msg) },
+  (input) => eventBus.emit(input),
 )
 syncBus.register('cal', {
   syncNow: async () => calSync.syncNow(),
@@ -570,6 +584,7 @@ const matrixSync = new MatrixSync(
   (msg: string) => { log(msg) },
   chatRoomsStore,
   messageArchive,
+  (input) => eventBus.emit(input),
 )
 syncBus.register('matrix', {
   syncNow: async () => matrixSync.syncNow(),
@@ -775,7 +790,9 @@ const agentCtx: AgentContext = {
   reloadAl: () => reloadAlSession(agentCtx),
   // On merge, re-key the child's live crons onto the parent's session. Refers to
   // cronScheduler (declared below) — only ever invoked at runtime, well after boot.
-  reassignCron: (from, to) => cronScheduler.reassignSession(from, to).length,
+  // Listeners are keyed by claudeSessionId exactly like crons and follow the same re-key/merge.
+  reassignCron: (from, to) => cronScheduler.reassignSession(from, to).length + listenerEngine.reassignSession(from, to).length,
+  onSessionEnded: (s) => { eventBus.emit({ topic: 'agent.session.ended', source: 'agents', key: `${s.id}:ended`, data: { agentKey: s.agentKey ?? null, csid: s.claudeSessionId ?? null, name: s.name ?? null, parent: s.parentClaudeSessionId ?? null } }) },
   // Agent Edit/Write inside the vault → tell any open doc editor so it can
   // flip into inline review mode (SPA re-reads disk and diffs locally).
   onToolDiff: (sessionId, filePath) => {
@@ -862,6 +879,28 @@ const cronScheduler = new HubCronScheduler(
   (msg) => pushServer.broadcast(msg),
 )
 cronScheduler.start()
+
+// Event listeners — agent-owned rules over the bus (listeners/engine.ts). The
+// cost ladder ends in the same wake path cron uses; run/post/notify/emit/card
+// never touch an LLM. Card add resolves lazily (boardOps is declared below).
+const listenerEngine = new ListenerEngine({
+  bus: eventBus,
+  store: new ListenerStore(join(feedsConfigDir, 'listeners.json'), (m) => log(m)),
+  getSessions: () => sessions,
+  liveSessionForKey: (key) => liveSessionForRole(agentCtx, key),
+  broadcast: (msg) => broadcast(msg),
+  notify: (msg) => pushServer.broadcast(msg),
+  addCard: async (project, text, opts) => {
+    const card = await boardOps.add(project, text, { column: opts.column, agentKey: opts.agentKey, top: true })
+    return `"${card.text}" → ${card.column}`
+  },
+  log: (m) => log(m),
+})
+const eventRouteCtx: EventRouteCtx = {
+  bus: eventBus,
+  redeliver: (eventId, listenerId) => listenerEngine.redeliver(eventId, listenerId),
+  log,
+}
 
 // Board-driven delegation: the vault's kanban boards ARE the task store. A
 // card assigned `@agentkey` under an In-Progress column gets a ^blockid
@@ -983,6 +1022,11 @@ function ownerForProject(project: string): string | null {
   }
   return conventionOwnerForProject(project)
 }
+/** `projects/<slug>/board.md` → slug; anything else → null. */
+function projectOfBoard(boardPath: string): string | null {
+  const m = /^projects\/([^/]+)\//.exec(boardPath)
+  return m ? m[1]! : null
+}
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
   onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit }) => {
@@ -1039,6 +1083,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       parentDigest: forked && !inherit ? parentDigestFor(live) : null,
       load,
     }), images)
+    eventBus.emit({ topic: 'board.card.dispatched', source: 'board', key: `${card.blockId}:${worker.agentKey ?? card.agentKey}`, data: { project, boardPath, cardId: card.blockId, text: card.text.slice(0, 200), agentKey: worker.agentKey ?? card.agentKey, sourceKey: card.agentKey, column, forked }, ref: `con board ${project ?? '<project>'}` })
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not
     // the source role, which would otherwise start working alongside it.
@@ -1048,6 +1093,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   onTransition: (t) => {
     const state = t.done ? 'done' : t.review ? 'review' : 'blocked'
     log(`[boards] ^${t.blockId} "${t.text}" → ${state} (${t.boardPath})`)
+    eventBus.emit({ topic: 'board.card.moved', source: 'board', key: `${t.blockId}:${state}:${t.column}`, data: { project: projectOfBoard(t.boardPath), boardPath: t.boardPath, cardId: t.blockId, text: t.text.slice(0, 200), to: state, column: t.column, agentKey: t.agentKey }, ref: `con board ${projectOfBoard(t.boardPath) ?? '<project>'}` })
     syncBus.broadcast('boards', 'transition', { blockId: t.blockId, boardPath: t.boardPath, review: t.review, done: t.done, blocked: t.blocked, text: t.text, agentKey: t.agentKey })
     // DONE = Yousef approved → wind the ticket-fork down: it merges/cleans
     // its worktree (gated boards: approval IS the merge/deploy signal), then
@@ -1219,6 +1265,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
   // an assignee's own /board/* report must not ping it back. Console-wide;
   // replaces the Astera-only ~/exec cron-guard hack.
   onCardEdited: (t) => {
+    eventBus.emit({ topic: 'board.card.edited', source: 'board', data: { project: projectOfBoard(t.boardPath), boardPath: t.boardPath, cardId: t.blockId, text: t.text.slice(0, 200), column: t.column, agentKey: t.agentKey }, ref: `con board ${projectOfBoard(t.boardPath) ?? '<project>'}` })
     if (!t.agentKey) return
     const rec = boardOps.lastActor(t.boardPath, t.blockId)
     if (rec && rec.actor === t.agentKey && Date.now() - rec.ts < SELF_ECHO_WINDOW_MS) return
@@ -1573,6 +1620,8 @@ const webhookCtx: WebhookRouteCtx = {
     const s = liveSessionForRole(agentCtx, key)
     return s ? injectToSession(s.id, envelope) : false
   },
+  emit: (input) => eventBus.emit(input),
+  matchedListeners: (ev) => listenerEngine.matching(ev),
   agentLive: (key) => !!liveSessionForRole(agentCtx, key),
   projectExists: (slug) => existsSync(join(noteStore.vaultPath, 'projects', slug)) || existsSync(join(noteStore.vaultPath, 'projects', `${slug}.md`)),
   log,
@@ -1586,6 +1635,7 @@ const locationWatcher = new LocationWatcher({
   store: geofenceStore,
   fetchLast: makeRecorderLastFetcher(authStore),
   deliverToAgent: webhookCtx.deliverToAgent,
+  emit: (input) => eventBus.emit(input),
   log,
 })
 locationWatcher.start()
@@ -2138,6 +2188,8 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/canvas') && handleCanvasRoutes(req, res, path, {
     servers: dashboardServers, canvas: canvasDir, sessions, cal: calSync, debugLog, publicRegistry: canvasPublicRegistry, costs: awsCosts,
   })) return
+  if ((path === '/events' || path.startsWith('/events/')) && handleEventRoutes(req, res, path, url, eventRouteCtx, readBody)) return
+  if ((path === '/listeners' || path.startsWith('/listeners/')) && handleListenerRoutes(req, res, path, url, { engine: listenerEngine, bus: eventBus, getSessions: () => sessions, log }, readBody)) return
   if ((path === '/cron' || path === '/cron.ics' || path.startsWith('/cron/')) && handleCronRoutes(req, res, path, url, {
     scheduler: cronScheduler, getSessions: () => sessions, getAlConnected: () => alBridge.isConnected(), log,
   }, readBody)) return
@@ -2210,6 +2262,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   }
 
   // Push clients (Android foreground service) connect on /push path
+  if (urlPath.startsWith('/events/tail')) {
+    const topic = new URL(urlPath, 'http://x').searchParams.get('topic') ?? '*'
+    eventBus.attachTail(ws, topic)
+    return
+  }
+
   if (urlPath === '/push') {
     pushServer.attach(ws)
     return
@@ -2655,6 +2713,13 @@ httpServer.listen(port, host, () => {
       saveManifest(sessions)
     }
 
+    // Events + listeners come up AFTER the session restore so wake targets
+    // resolve and interrupted batches re-run into live sessions; then the
+    // one-per-boot `hub.started` for catch-up listeners.
+    eventBus.start()
+    listenerEngine.start()
+    eventBus.emitStarted()
+
     // -----------------------------------------------------------------
     // Al runtime bootstrap — absorbed from ~/proj/code/al into the hub.
     //
@@ -2773,6 +2838,8 @@ function shutdown() {
   saveManifestSync(sessions)
   flushReadState()
   cronScheduler.flush()
+  listenerEngine.stop()
+  eventBus.stop()
   staleSweeper.stop()
   locationWatcher.stop()
   recallIndex?.stop()
