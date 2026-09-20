@@ -66,6 +66,7 @@ class FakeSidecar:
         self.answered = asyncio.Event()
         self.hangup_at: float | None = None
         self.flushes = 0
+        self.reply_latencies: list[float] = []
 
     async def send(self, obj):
         await self.ws.send(json.dumps(obj))
@@ -82,6 +83,9 @@ class FakeSidecar:
                 if msg and msg[0] == 0:
                     self.out.extend(msg[1:])
                     self.last_bot_audio = time.monotonic()
+                    if getattr(self, "speech_end_at", None) and getattr(self, "reply_latency", None) is None:
+                        self.reply_latency = self.last_bot_audio - self.speech_end_at
+                        self.reply_latencies.append(self.reply_latency)
                     if self.first_bot_audio is None:
                         self.first_bot_audio = self.last_bot_audio
                     self.bot_spoke.set()
@@ -127,6 +131,9 @@ class FakeSidecar:
                 chunk = chunk + b"\0" * (FRAME - len(chunk))
             await self.ws.send(bytes((0,)) + chunk)
             await asyncio.sleep(max(0, t0 + (i // FRAME + 1) * 0.06 - time.monotonic()))
+        # end of the caller's speech (the wav has ~0.3 s of Cartesia tail silence)
+        self.speech_end_at = time.monotonic()
+        self.reply_latency = None
         for _ in range(20):
             await self.ws.send(bytes((0,)) + b"\0" * FRAME)
             await asyncio.sleep(0.06)
@@ -202,6 +209,7 @@ class FakeHub:
     async def session(self, req):
         body = await req.json()
         print(f"[fake-hub] session: {json.dumps(body)}")
+        self.greeting = "Hi Yousef, it's AL. This is a harness test call. Can you hear me alright?" if body.get("direction") == "out" else None
         return web.json_response({"answer": True, "why": "owner", "displayName": "Yousef", "user": "yousef", "jid": body.get("jid"),
                                   "forkSessionId": "fake-fork", "forkKey": "al-call-testcall-fork", "model": None, "contextMode": "fresh"})
 
@@ -209,7 +217,8 @@ class FakeHub:
         """[(kind, payload)] — ('text', str) | ('tool', name) | ('sleep', secs)"""
         t = text.lower()
         if cue and "answered" in t:
-            return [("text", "Hi Yousef, it's AL. "), ("text", "This is a harness test call. "), ("text", "Can you hear me alright?")]
+            # The real hub serves this from the pre-generated opening line with zero fork latency.
+            return [("text", self.greeting or "Hi Yousef, it's AL. This is a harness test call. Can you hear me alright?")]
         if cue:
             return [("text", "Hello? This is AL.")]
         if "hang up" in t or "hangup" in t or "bye" in t:
@@ -232,7 +241,8 @@ class FakeHub:
         t0 = time.monotonic()
         chars = 0
         first = None
-        await asyncio.sleep(0.6)  # a Claude Code turn's TTFT, roughly
+        if not (body.get("cue") and "answered" in body.get("text", "").lower()):
+            await asyncio.sleep(0.6)  # a Claude Code turn's TTFT, roughly
         for kind, payload in self.script(body.get("text", ""), bool(body.get("cue"))):
             if self.interrupted.is_set():
                 break
@@ -352,6 +362,7 @@ async def main():
                 print(f"[harness] interruptedAfter = {interrupted_reqs[0]['interruptedAfter']!r}")
         print(f"[harness] accept → first audio: {first_audio:.2f}s" if first_audio is not None else "[harness] no bot audio")
         print(f"[harness] fork turn requests: {len(hub.turn_requests)}, interrupts: {hub.interrupts}, flushes: {side.flushes}")
+        print(f"[harness] caller speech end → first reply audio: {[round(x, 2) for x in side.reply_latencies]} s (fake fork TTFT 0.6 s included)")
         for k, v in checks.items():
             print(f"  {'PASS' if v else 'FAIL'}  {k}")
         if not all(checks.values()):

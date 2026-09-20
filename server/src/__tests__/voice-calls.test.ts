@@ -88,8 +88,8 @@ describe('voice fork rules + envelope', () => {
     expect(out).toContain('[2 h ago] AL: hello')
     expect(out).toContain('- dentist')
     expect(out).toContain('Your task: Ask about dinner.')
-    expect(out).toContain('"(The call was answered.)"')
-    expect(out.trimEnd().endsWith('Reply with exactly the word: ready')).toBe(true)
+    expect(out).toMatch(/Reply with ONLY your opening line/)
+    expect(out).not.toContain('Reply with exactly the word: ready')
     expect(out).not.toContain('# You are on a live voice call')
 
     const inbound = buildCallEnvelope({ ...base, direction: 'in', task: null, rulesInline: voiceForkRules('CALL42XYZ') })
@@ -97,6 +97,7 @@ describe('voice fork rules + envelope', () => {
     expect(inbound).toContain('[VOICE CALL INBOUND from Yousef')
     expect(inbound).toContain('Yousef is calling you.')
     expect(inbound).not.toContain('## Call task')
+    expect(inbound.trimEnd().endsWith('Reply with exactly the word: ready')).toBe(true)
   })
   it('the closing turn is not spoken and asks for promised follow-ups + memory', () => {
     const c = closingTurn(completed())

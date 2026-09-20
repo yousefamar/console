@@ -28,6 +28,7 @@ from pipecat.frames.frames import (
     LLMRunFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -42,6 +43,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, CartesiaTTSSettings
 from pipecat.services.tts_service import TextAggregationMode
+from pipecat.turns.user_start.min_words_user_turn_start_strategy import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
@@ -119,7 +121,8 @@ class TranscriptCollector(FrameProcessor):
             if self._bot_t is None:
                 self._bot_t = self._t()
             self._bot_parts.append(TextPartForConcatenation(frame.text, frame.includes_inter_frame_spaces))
-        elif isinstance(frame, UserStartedSpeakingFrame):
+        elif isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            # VAD first: the turn start itself waits for words (min-words strategy).
             self.user_spoke = True
         elif isinstance(frame, BotStartedSpeakingFrame):
             self.bot_speaking = True
@@ -222,9 +225,16 @@ class CallSession:
         stop_strategies = None
         if cfg.turn_stop == "timeout":
             stop_strategies = [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=cfg.user_speech_timeout)]
+        # A user turn starts on WORDS, not on VAD: while AL is talking the
+        # caller must say `interrupt_min_words` before it counts as a barge-in
+        # (the Nica call: her "Hello?" over the greeting cancelled it), and a
+        # single word is enough when AL is quiet.
+        # VOICE_INTERRUPT_MIN_WORDS=1 keeps pipecat's default VAD-based start
+        # (any sound barges in, and turns end 0.4 s after the caller stops).
+        start_strategies = [MinWordsUserTurnStartStrategy(min_words=cfg.interrupt_min_words)] if cfg.interrupt_min_words > 1 else None
         user_params = LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(sample_rate=SAMPLE_RATE, params=VADParams(stop_secs=0.2)),
-            user_turn_strategies=UserTurnStrategies(stop=stop_strategies),
+            user_turn_strategies=UserTurnStrategies(start=start_strategies, stop=stop_strategies),
         )
         aggregators = LLMContextAggregatorPair(context, user_params=user_params, assistant_params=LLMAssistantAggregatorParams())
 

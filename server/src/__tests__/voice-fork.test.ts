@@ -13,7 +13,7 @@ vi.mock('../al/persona.js', () => ({ buildAlSystemPrompt: async () => 'AL' }))
 import { closeSession } from '../routes/agents.js'
 import {
   registerCall, runTurn, runCue, interruptCall, endCallFork, getLiveCalls, getLiveCall, setVoiceForkContext, _resetLiveCalls,
-  type TurnEvent,
+  ANSWERED_CUE, cleanGreeting, type TurnEvent,
 } from '../al/voice-fork.js'
 import type { Session } from '../session.js'
 
@@ -58,11 +58,16 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function register(callId = 'CALLABC123') {
+function register(callId = 'CALLABC123', direction: 'in' | 'out' = 'out') {
   return registerCall(stub as unknown as Session, {
     callId, jid: '447845443890@s.whatsapp.net', phone: '447845443890', displayName: 'Yousef', user: 'yousef',
-    direction: 'out', task: 'Say hi', envelope: '[VOICE CALL …] ready?', forkKey: 'al-call-callabc1-fork', model: null, contextMode: 'fresh',
+    direction, task: 'Say hi', envelope: '[VOICE CALL …] ready?', forkKey: 'al-call-callabc1-fork', model: null, contextMode: 'fresh',
   })
+}
+
+/** Warm turn done: outbound calls answer it with the opening line. */
+async function warmDone(text = 'Hi Yousef, it is AL.') {
+  await flush(); stub.delta(text); stub.result(); await flush()
 }
 
 describe('registerCall + warm turn', () => {
@@ -142,16 +147,69 @@ describe('runTurn', () => {
   })
 
   it('cues are spoken but not logged as prompts; unknown calls error out', async () => {
-    register(); await flush(); stub.result(); await flush()
-    const p = runCue('CALLABC123', '(The call was answered.)', () => {})
+    register('CALLABC123', 'in'); await flush(); stub.result(); await flush()
+    const p = runCue('CALLABC123', '(The caller has said nothing for two seconds.)', () => {})
     await flush()
-    expect(stub.sent.at(-1)).toBe('(The call was answered.)')
-    expect(stub.logged.find((m) => (m as { content?: string }).content === '(The call was answered.)')).toBeUndefined()
+    expect(stub.sent.at(-1)).toBe('(The caller has said nothing for two seconds.)')
+    expect(stub.logged.find((m) => (m as { content?: string }).content === '(The caller has said nothing for two seconds.)')).toBeUndefined()
     stub.delta('Hi Yousef, it is AL.'); stub.result()
     await p
     const got: TurnEvent[] = []
     await runTurn('NOPE', 'x', (ev) => got.push(ev))
     expect(got).toEqual([{ type: 'error', message: 'no live call NOPE' }])
+  })
+})
+
+describe('outbound opening line', () => {
+  it('the warm turn\'s text is the greeting; the answered cue speaks it instantly without a fork turn, and the first utterance tells the fork', async () => {
+    register()
+    await warmDone('"Hey Yousef, it\'s AL — quick one about dinner."')
+    expect(getLiveCall('CALLABC123')!.greeting).toBe("Hey Yousef, it's AL — quick one about dinner.")
+    const got: TurnEvent[] = []
+    const done = await runCue('CALLABC123', ANSWERED_CUE, (ev) => got.push(ev))
+    expect(stub.sent).toHaveLength(1) // no second message to the fork
+    expect(got.map((e) => e.type)).toEqual(['text', 'result'])
+    expect(done).toMatchObject({ type: 'result', ttftMs: 0, text: "Hey Yousef, it's AL — quick one about dinner." })
+    expect(getLiveCall('CALLABC123')!.turns).toEqual([expect.objectContaining({ role: 'assistant', text: "Hey Yousef, it's AL — quick one about dinner." })])
+    const p = runTurn('CALLABC123', 'Oh hi. Pasta?', () => {})
+    await flush()
+    expect(stub.sent.at(-1)).toBe('(The call was answered and you opened with: "Hey Yousef, it\'s AL — quick one about dinner.")\nOh hi. Pasta?')
+    stub.delta('Pasta it is.'); stub.result()
+    await p
+    // the note is used once
+    const p2 = runTurn('CALLABC123', 'Bye', () => {})
+    await flush()
+    expect(stub.sent.at(-1)).toBe('Bye')
+    stub.delta('Bye.'); stub.result(); await p2
+  })
+
+  it('a pickup while the opening line is still being written streams it live', async () => {
+    register(); await flush()
+    stub.delta('Hey Yousef, ')
+    const got: TurnEvent[] = []
+    const p = runCue('CALLABC123', ANSWERED_CUE, (ev) => got.push(ev))
+    await flush()
+    expect(got).toEqual([{ type: 'text', text: 'Hey Yousef, ' }])
+    stub.delta('it is AL.'); stub.result()
+    const done = await p
+    expect(got.filter((e) => e.type === 'text').map((e) => (e as { text: string }).text)).toEqual(['Hey Yousef, ', 'it is AL.'])
+    expect(done).toMatchObject({ type: 'result', text: 'Hey Yousef, it is AL.' })
+    expect(stub.sent).toHaveLength(1)
+    expect(getLiveCall('CALLABC123')!.greetingNote).toBe('Hey Yousef, it is AL.')
+  })
+
+  it('no opening line (empty warm reply) falls back to a normal cue turn', async () => {
+    register(); await flush(); stub.result(); await flush()
+    const p = runCue('CALLABC123', ANSWERED_CUE, () => {})
+    await flush()
+    expect(stub.sent.at(-1)).toBe(ANSWERED_CUE)
+    stub.delta('Hi.'); stub.result(); await p
+  })
+
+  it('cleanGreeting strips quotes and emphasis', () => {
+    expect(cleanGreeting('  "Hi there."  ')).toBe('Hi there.')
+    expect(cleanGreeting('**Hi there.**')).toBe('Hi there.')
+    expect(cleanGreeting('“Hi.”')).toBe('Hi.')
   })
 })
 

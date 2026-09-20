@@ -44,6 +44,9 @@ class Config:
     # record at startup when possible.
     tts_languages: tuple[str, ...] = ("en", "ar", "de")
     turn_stop: str = "timeout"  # timeout | smart
+    # Words the caller must say over AL before it counts as a barge-in (a bare
+    # "Hello?"/"yeah" no longer cancels the sentence); 1 word when AL is quiet.
+    interrupt_min_words: int = 2
     user_speech_timeout: float = 0.4
     inbound_greet_after_secs: float = 2.0
     turn_timeout_secs: float = 200.0
@@ -74,6 +77,7 @@ class Config:
             stt_language=env.get("VOICE_STT_LANGUAGE", "auto"),
             tts_languages=tuple(x.strip() for x in env.get("VOICE_TTS_LANGUAGES", "en,ar,de").split(",") if x.strip()) or ("en",),
             turn_stop=env.get("VOICE_TURN_STOP", "timeout"),
+            interrupt_min_words=max(1, int(env.get("VOICE_INTERRUPT_MIN_WORDS", "2"))),
             user_speech_timeout=float(env.get("VOICE_USER_SPEECH_TIMEOUT", "0.4")),
             inbound_greet_after_secs=float(env.get("VOICE_INBOUND_GREET_AFTER", "2.0")),
             turn_timeout_secs=float(env.get("VOICE_TURN_TIMEOUT", "200")),
