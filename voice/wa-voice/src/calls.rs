@@ -32,6 +32,7 @@ use whatsapp_rust::wacore::types::call::{CallAction, IncomingCall};
 use whatsapp_rust::{Client, Jid};
 
 use crate::proto::{CallSummary, Command, Event};
+use crate::wire::WIRE;
 use crate::ws::Broadcaster;
 
 pub const FRAME_SAMPLES: usize = 960;
@@ -121,6 +122,85 @@ impl IdleNoise {
 impl Default for IdleNoise {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A/B levers for the first-word cut-off (research/voice-cutoff-investigation.md),
+/// read once per call from the environment (`~/.config/console/voice.env` is
+/// loaded at startup) so a test call needs `pm2 restart wa-voice`, not a rebuild:
+/// - `WA_VOICE_DTX=1`: idle frames are exact zeros, so the engine sends 1-byte SID
+///   packets with the DTX extension and a marker on the first speech frame (the
+///   framing of calls 1-2 on 20 Sept);
+/// - `WA_VOICE_ONSET_PREROLL_MS=<n>` + `WA_VOICE_ONSET_PREROLL=tone|noise`
+///   [+ `WA_VOICE_ONSET_PREROLL_DB`, default -30]: when the queue goes from empty
+///   to non-empty, <n> ms of pre-roll go out BEFORE the queued speech (a 440 Hz
+///   tone is the diagnostic: whether it is heard whole says whether a level gate
+///   sits between the wire and the phone's speaker; noise is the production shape).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Preroll {
+    Off,
+    Tone,
+    Noise,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Levers {
+    pub dtx: bool,
+    pub preroll: Preroll,
+    pub preroll_frames: usize,
+    pub preroll_db: f32,
+}
+
+impl Levers {
+    pub fn from_env() -> Self {
+        let flag = |k: &str| std::env::var(k).map(|v| !matches!(v.trim(), "" | "0" | "off" | "false" | "no")).unwrap_or(false);
+        let ms: usize = std::env::var("WA_VOICE_ONSET_PREROLL_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let kind = match std::env::var("WA_VOICE_ONSET_PREROLL").map(|v| v.trim().to_ascii_lowercase()) {
+            Ok(v) if v == "tone" => Preroll::Tone,
+            Ok(v) if v == "noise" => Preroll::Noise,
+            _ => Preroll::Off,
+        };
+        let preroll = if ms == 0 { Preroll::Off } else { kind };
+        Self {
+            dtx: flag("WA_VOICE_DTX"),
+            preroll,
+            preroll_frames: if preroll == Preroll::Off { 0 } else { ms.div_ceil(60) },
+            preroll_db: std::env::var("WA_VOICE_ONSET_PREROLL_DB")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(-30.0f32)
+                .clamp(-60.0, -10.0),
+        }
+    }
+
+    /// The whole pre-roll as frames: a 440 Hz tone or low-passed noise at
+    /// `preroll_db`, with a 20 ms raised-cosine fade at both ends.
+    pub fn preroll_frames(&self) -> VecDeque<Vec<i16>> {
+        let n = self.preroll_frames * FRAME_SAMPLES;
+        if n == 0 {
+            return VecDeque::new();
+        }
+        let amp = 32767.0 * 10f32.powf(self.preroll_db / 20.0);
+        let mut noise = IdleNoise::with_level_db(self.preroll_db);
+        let fade = 320usize;
+        let mut buf: Vec<i16> = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut v = match self.preroll {
+                Preroll::Tone => (amp * 1.414) * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin(),
+                Preroll::Noise => noise.next_sample() as f32,
+                Preroll::Off => 0.0,
+            };
+            let env = if i < fade {
+                0.5 - 0.5 * (std::f32::consts::PI * i as f32 / fade as f32).cos()
+            } else if i >= n - fade {
+                0.5 - 0.5 * (std::f32::consts::PI * (n - 1 - i) as f32 / fade as f32).cos()
+            } else {
+                1.0
+            };
+            v *= env;
+            buf.push(v.round().clamp(-32767.0, 32767.0) as i16);
+        }
+        buf.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
     }
 }
 
@@ -599,6 +679,7 @@ impl CallManager {
         spk_rx: async_channel::Receiver<Vec<i16>>,
         spk_tx: async_channel::Sender<Vec<i16>>,
     ) {
+        WIRE.open(&call_id);
         // Mic ticker: one frame every 60 ms, queued speech else comfort noise
         // (see the module doc: an all-zero frame is "mic muted" to the engine,
         // and digital silence starves the peer's adaptive receive path).
@@ -609,27 +690,80 @@ impl CallManager {
             let mut interval = tokio::time::interval(TICK);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut idle = IdleNoise::new();
-            info!("idle comfort noise at {} dBFS", IdleNoise::configured_level_db());
+            let levers = Levers::from_env();
+            info!(
+                "idle comfort noise at {} dBFS; levers {levers:?}",
+                if levers.dtx { "DTX (zeros)".to_string() } else { IdleNoise::configured_level_db().to_string() }
+            );
+            WIRE.line(&format!("levers {levers:?} idle_db={}", IdleNoise::configured_level_db()));
+            // Idle -> (Preroll ->) Speaking -> Idle, per queue transition.
+            let mut speaking = false;
+            let mut preroll: VecDeque<Vec<i16>> = VecDeque::new();
+            let mut spoken_frames = 0usize;
+            let mut tick_no = 0u64;
+            let mut last_tick = Instant::now();
             loop {
                 interval.tick().await;
+                tick_no += 1;
+                let now = Instant::now();
+                let gap = now.duration_since(last_tick).as_millis();
+                last_tick = now;
+                if gap > 90 {
+                    WIRE.line(&format!("tick gap {gap} ms at tick {tick_no}"));
+                }
                 if ticker_mic.is_closed() {
                     break;
                 }
-                let frame = {
+                let (popped, depth) = {
                     let mut q = ticker_queue.lock().unwrap_or_else(|p| p.into_inner());
-                    match q.pop_front() {
-                        Some(f) if f.len() == FRAME_SAMPLES => Some(f),
-                        Some(mut f) => {
-                            f.resize(FRAME_SAMPLES, 0);
-                            Some(f)
-                        }
-                        None => None,
+                    let depth = q.len();
+                    if !speaking && depth > 0 && preroll.is_empty() && levers.preroll_frames > 0 {
+                        preroll = levers.preroll_frames();
+                        WIRE.line(&format!("preroll start q_depth={depth} frames={}", preroll.len()));
+                    }
+                    if !preroll.is_empty() {
+                        (None, depth)
+                    } else {
+                        let f = match q.pop_front() {
+                            Some(f) if f.len() == FRAME_SAMPLES => Some(f),
+                            Some(mut f) => {
+                                WIRE.line(&format!("partial frame {} samples padded", f.len()));
+                                f.resize(FRAME_SAMPLES, 0);
+                                Some(f)
+                            }
+                            None => None,
+                        };
+                        (f, depth)
                     }
                 };
-                let mut frame = frame.unwrap_or_else(|| idle.frame());
-                idle.apply(&mut frame);
+                let frame = if let Some(pre) = preroll.pop_front() {
+                    pre
+                } else if let Some(mut f) = popped {
+                    if !speaking {
+                        speaking = true;
+                        spoken_frames = 0;
+                        let rms = (f.iter().map(|&s| (s as f32) * (s as f32)).sum::<f32>() / f.len() as f32).sqrt();
+                        WIRE.line(&format!(
+                            "onset q_depth={depth} first_frame_dbfs={:.1}",
+                            if rms > 0.0 { 20.0 * (rms / 32767.0).log10() } else { -120.0 }
+                        ));
+                    }
+                    spoken_frames += 1;
+                    if !levers.dtx {
+                        idle.apply(&mut f);
+                    }
+                    f
+                } else {
+                    if speaking {
+                        speaking = false;
+                        WIRE.line(&format!("idle after {spoken_frames} speech frames"));
+                    }
+                    if levers.dtx { vec![0i16; FRAME_SAMPLES] } else { idle.frame() }
+                };
+                WIRE.tx_pcm(&frame);
                 if ticker_mic.try_send(frame).is_err() {
                     debug!("mic channel full/closed for {}", ticker_handle.call_id());
+                    WIRE.line("mic channel full: frame dropped");
                 }
             }
         });
@@ -640,6 +774,7 @@ impl CallManager {
         tokio::spawn(async move {
             let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES * 2);
             while let Ok(pcm) = spk_rx.recv().await {
+                WIRE.rx_pcm(&pcm);
                 acc.extend_from_slice(&pcm);
                 while acc.len() >= FRAME_SAMPLES {
                     let frame: Vec<i16> = acc.drain(..FRAME_SAMPLES).collect();
@@ -657,6 +792,9 @@ impl CallManager {
         tokio::spawn(async move {
             let events = ev_handle.events();
             while let Ok(ev) = events.recv().await {
+                if !matches!(ev, CallEvent::ForeignAudio(_)) {
+                    WIRE.line(&format!("event {ev:?}"));
+                }
                 match ev {
                     CallEvent::RelayAllocated => info!("{ev_id}: relay allocated, media path live"),
                     CallEvent::RelayAllocateFailed(code) => warn!("{ev_id}: relay rejected allocate ({code})"),
@@ -686,6 +824,10 @@ impl CallManager {
         tokio::spawn(async move {
             handle.wait_ended().await;
             drop(mic_tx);
+            let stats = handle.media_stats();
+            info!("{call_id}: media stats {stats:?}");
+            WIRE.line(&format!("media_stats {stats:?}"));
+            WIRE.close(&call_id);
             me.end_slot(slot, Some("ended".into()));
             info!("{call_id}: ended");
         });
@@ -763,6 +905,23 @@ mod tests {
             assert!((-66.0..=-54.0).contains(&db), "idle level {db:.1} dBFS, wanted about -60");
             assert!(f.iter().all(|&s| s.abs() < 400), "comfort noise must stay far below speech");
         }
+    }
+
+    #[test]
+    fn preroll_is_whole_frames_at_the_asked_level_with_quiet_edges() {
+        let l = Levers { dtx: false, preroll: Preroll::Tone, preroll_frames: 5, preroll_db: -30.0 };
+        let frames = l.preroll_frames();
+        assert_eq!(frames.len(), 5);
+        assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
+        let mid = &frames[2];
+        let db = 20.0 * (rms(mid) / 32767.0).log10();
+        assert!((-31.0..=-29.0).contains(&db), "tone level {db:.1} dBFS, wanted -30");
+        assert!(frames[0][0].abs() < 50 && frames[4][FRAME_SAMPLES - 1].abs() < 50, "faded edges");
+        let n = Levers { dtx: false, preroll: Preroll::Noise, preroll_frames: 2, preroll_db: -35.0 };
+        let nf = n.preroll_frames();
+        assert_eq!(nf.len(), 2);
+        assert!(nf[1].iter().any(|&s| s != 0));
+        assert!(Levers { dtx: true, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 }.preroll_frames().is_empty());
     }
 
     #[test]

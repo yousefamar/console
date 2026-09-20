@@ -10,6 +10,7 @@
 
 mod calls;
 mod proto;
+mod wire;
 mod ws;
 
 use std::net::SocketAddr;
@@ -33,8 +34,30 @@ fn store_dir() -> PathBuf {
     PathBuf::from(home).join(".config").join("console").join("wa-voice")
 }
 
+/// `~/.config/console/voice.env` (shared with the hub and the pipeline): a
+/// `KEY=value` per line, process env wins, so a lever set there applies on
+/// `pm2 restart wa-voice` without touching the pm2 environment.
+fn load_voice_env() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let path = PathBuf::from(home).join(".config").join("console").join("voice.env");
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim().trim_matches('"'));
+        if !k.is_empty() && std::env::var_os(k).is_none() {
+            // SAFETY: called before any other thread exists (top of main).
+            unsafe { std::env::set_var(k, v) };
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    load_voice_env();
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,webrtc_sctp=error,webrtc_dtls=error,rtc_dtls=error,rtc_sctp=error"),
     )
@@ -165,6 +188,11 @@ async fn run_once(db_path: &std::path::Path, calls: Arc<CallManager>) -> Result<
             .map_err(|e| anyhow!("build bot: {e}"))?
     };
     let client = bot.client();
+    // Every relay datagram (both directions) through the wire log's tap;
+    // WA_VOICE_WIRE_LOG=0 keeps the library's default dialler.
+    if wire::enabled() {
+        client.set_relay_transport_provider(Arc::new(wire::TappedNativeRelay));
+    }
     calls.set_client(Some(client.clone())).await;
     let mut handle = bot.spawn();
 
