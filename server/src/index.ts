@@ -75,6 +75,7 @@ import { FinanceStore } from './finance/store.js'
 import { handleFinanceRoutes } from './routes/finance.js'
 import { PrefsStore } from './prefs-store.js'
 import { handleConfigRoutes } from './routes/config.js'
+import { handleHubRoutes } from './routes/hub.js'
 import { handleInboxRoutes, InboxRulesStore } from './routes/inbox.js'
 import { handleRingRoutes } from './routes/ring.js'
 import { handleWebhookRoutes, type WebhookRouteCtx } from './routes/webhooks.js'
@@ -178,6 +179,7 @@ import type { DebugClientMessage } from './debug-protocol.js'
 
 const DEFAULT_PORT = 9877
 const port = getArg('--port', DEFAULT_PORT)
+const startedAt = Date.now()
 // Loopback only. Caddy (con.amar.io) is the sole external ingress — it
 // reverse-proxies /hub/* and /public/* from :443. Same-host clients (CLI,
 // Al, agents) hit 127.0.0.1:9877 directly with a bearer. Override with
@@ -1633,7 +1635,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     // Include Al in session list if connected
     if (alBridge.isConnected()) sessionList.unshift(alBridge.getSessionInfo())
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, version: '0.3.0', sessions: sessionList, cwd }))
+    res.end(JSON.stringify({ ok: true, version: '0.3.0', startedAt, pid: process.pid, sessions: sessionList, cwd }))
     return
   }
 
@@ -2069,6 +2071,9 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   if (path.startsWith('/pen') && handlePenRoutes(req, res, path, penHub, readBody)) return
   if ((path.startsWith('/whatsapp') || path.startsWith('/voice')) && handleAlRoutes(req, res, path, readBody)) return
   if (path === '/config' && handleConfigRoutes(req, res, path, prefsStore, readBody)) return
+  // Self-SIGTERM = the exact path a `pm2 restart` takes (graceful shutdown()
+  // below → exit 0 → pm2 autorestart), with no dependency on pm2 being on PATH.
+  if (path === '/restart' && handleHubRoutes(req, res, path, { restart: () => process.kill(process.pid, 'SIGTERM'), log })) return
   if (path.startsWith('/inbox') && handleInboxRoutes(req, res, path, inboxRulesStore, readBody)) return
   if (path.startsWith('/ring') && handleRingRoutes(req, res, path, url, ringCtx, readBody, ringWebhookUrl)) return
   if ((path.startsWith('/hook/') || path.startsWith('/webhooks')) && handleWebhookRoutes(req, res, path, url, webhookCtx, readBody)) return

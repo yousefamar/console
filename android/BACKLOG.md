@@ -19,6 +19,10 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
   sheet gains a category picker + ignore/transfer toggles first (one outbox
   action, `overrides` POST), then a Budgets section under Runway; scenarios
   and the ledger editor last.
+- Hub restart (`POST /restart`, ^mild-crow): SPA Settings → Hub → Restart with
+  a confirm, then polls `/health` until `startedAt` changes (≤30 s) and shows
+  "Back in Ns". Phone twin = the same row in the app's Settings sheet; the
+  outage window also drops the sync WS, so reuse the existing reconnect.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a

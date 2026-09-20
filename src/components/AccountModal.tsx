@@ -3,13 +3,15 @@ import { useUiStore } from '@/store/ui'
 import { signOut } from '@/gmail/auth'
 import { matrixLogout, isMatrixConnected } from '@/matrix/auth'
 import { db } from '@/db'
-import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Download } from 'lucide-react'
+import { X, Mail, MessageCircle, LogOut, BellOff, Bell, Download, Server, RotateCw } from 'lucide-react'
 import { GlassesSettings } from './GlassesSettings'
 import { PenSettings } from './PenSettings'
 import { glassesSupported } from '@/glasses/bridge'
 import { importFromOrigin, type MigrationResult } from '@/migration'
 import { ApkPairSection } from './ApkPairSection'
 import { isNative } from '@/platform'
+import { hubFetch, HubError } from '@/hub'
+import { showConfirm } from '@/dialog'
 
 export function AccountModal() {
   const setShowAccountModal = useUiStore((s) => s.setShowAccountModal)
@@ -131,6 +133,9 @@ export function AccountModal() {
             )}
           </div>
 
+          <div className="border-t border-border" />
+          <HubSection />
+
           {glassesSupported() && (
             <>
               <div className="border-t border-border" />
@@ -161,6 +166,73 @@ export function AccountModal() {
           </span>
         </div>
       </div>
+    </div>
+  )
+}
+
+type RestartState =
+  | { kind: 'idle' }
+  | { kind: 'restarting' }
+  | { kind: 'back'; secs: number }
+  | { kind: 'timeout' }
+  | { kind: 'error'; message: string }
+
+const RESTART_TIMEOUT_MS = 30_000
+
+function fetchHealth(): Promise<{ startedAt?: number } | null> {
+  return hubFetch<{ startedAt?: number }>('/health', { timeoutMs: 2000 }).catch(() => null)
+}
+
+function HubSection() {
+  const [state, setState] = useState<RestartState>({ kind: 'idle' })
+
+  async function handleRestart() {
+    if (!(await showConfirm('Restart the hub?', { title: 'Restart hub', danger: true, confirmLabel: 'Restart' }))) return
+    setState({ kind: 'restarting' })
+    const t0 = Date.now()
+    const before = await fetchHealth()
+    try {
+      await hubFetch('/restart', { method: 'POST', timeoutMs: 5000 })
+    } catch (e) {
+      // A status means the hub answered and refused; a network error means it
+      // is already going down, so keep polling.
+      if (e instanceof HubError) {
+        setState({ kind: 'error', message: `Hub returned ${e.status}` })
+        return
+      }
+    }
+    // The new process reports a different startedAt; the old one answering
+    // during its shutdown window would otherwise pass as "back".
+    while (Date.now() - t0 < RESTART_TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, 400))
+      const h = await fetchHealth()
+      if (h && h.startedAt !== before?.startedAt) {
+        setState({ kind: 'back', secs: Math.round((Date.now() - t0) / 1000) })
+        return
+      }
+    }
+    setState({ kind: 'timeout' })
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Server size={13} className="text-text-tertiary" />
+          <span className="text-sm text-text-secondary">Hub</span>
+        </div>
+        <button
+          onClick={handleRestart}
+          disabled={state.kind === 'restarting'}
+          className="flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-fast flex-shrink-0 disabled:opacity-50"
+        >
+          <RotateCw size={11} />
+          <span>{state.kind === 'restarting' ? 'Restarting…' : 'Restart'}</span>
+        </button>
+      </div>
+      {state.kind === 'back' && <p className="text-[10px] text-success">Back in {state.secs}s</p>}
+      {state.kind === 'timeout' && <p className="text-[10px] text-destructive">Not back after {RESTART_TIMEOUT_MS / 1000}s</p>}
+      {state.kind === 'error' && <p className="text-[10px] text-destructive">{state.message}</p>}
     </div>
   )
 }
