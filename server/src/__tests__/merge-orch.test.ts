@@ -15,12 +15,13 @@ vi.mock('../manifest.js', async (importOriginal) => ({
   saveManifest: () => {},
 }))
 
-import { mergeFork, type AgentContext } from '../routes/agents.js'
+import { mergeFork, ABSORB_BATCH_HOLD_MS, type AgentContext } from '../routes/agents.js'
 
 // --- stubs -----------------------------------------------------------------
 
 class TestSession extends EventEmitter {
   sent: string[] = []
+  queued: Array<{ content: string; holdMs?: number }> = []
   killed = false
   status: 'running' | 'idle' | 'ended' = 'idle'
   claudeSessionId?: string
@@ -42,6 +43,7 @@ class TestSession extends EventEmitter {
     }
   }
   logMessage() {}
+  queueMessage(content: string, _images?: unknown, opts?: { holdMs?: number }) { this.queued.push({ content, holdMs: opts?.holdMs }) }
   kill() { this.killed = true }
   getInfo() { return { id: this.id, status: this.status, agentKey: this.agentKey, name: this.name } }
 }
@@ -61,6 +63,19 @@ describe('mergeFork', () => {
     expect(parent.sent.some((s) => s.includes('[MERGE') && s.includes('learned X'))).toBe(true)
     expect(fork.killed).toBe(true)
     expect(ctx.sessions.has('s-f')).toBe(false)
+  })
+
+  it("absorb: 'batch' queues the digest on the parent with a hold instead of waking it (^cool-newt)", async () => {
+    const parent = new TestSession('s-p', { claudeSessionId: 'c-p', name: 'Parent' })
+    const fork = new TestSession('s-f', { claudeSessionId: 'c-f', name: 'Parent (fork)', parentClaudeSessionId: 'c-p', reply: 'card done, worktree removed.' })
+    const ctx = ctxOf(new Map([['s-p', parent], ['s-f', fork]]))
+    const res = await mergeFork(ctx, 's-f', 2000, { absorb: 'batch' })
+    expect(res.ok).toBe(true)
+    expect(parent.sent).toEqual([]) // no dedicated wake
+    expect(parent.queued).toHaveLength(1)
+    expect(parent.queued[0]!.content).toContain('card done')
+    expect(parent.queued[0]!.holdMs).toBe(ABSORB_BATCH_HOLD_MS)
+    expect(fork.killed).toBe(true)
   })
 
   it("re-parents the merged fork's own live forks onto the parent — grandchildren must not keep a dead csid (^plum-dove)", async () => {

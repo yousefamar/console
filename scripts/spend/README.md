@@ -9,6 +9,8 @@ context parts is proportional to each part's measured size in the prefix that re
 - `cold-vs-warm.py` — cold (whole prompt rewritten @1.25×) vs warm vs re-read (@0.1×), and what
                      preceded each cold request (TTL lapse / hibernation / >2h wake)
 - `ttl-policy.py`  — simulates CLAUDE_CODE_PROMPT_CACHE_TTL 5m vs 1h per session
+- `requests.py`   — requests/day attributed by wake source (board dispatch, cron, listener,
+                     merge fold-in, hub-restart nudge, user) — the request-count half of the bill
 
 Gotchas that produced wrong answers the first time (2026-09-08, ^odd-toad):
 - Images bill by dimensions (w×h/750, longest edge capped at 1568), NOT by base64 length —
