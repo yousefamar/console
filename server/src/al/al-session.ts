@@ -107,6 +107,11 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
         // Space binding — without it the Spaces rail files Al under
         // ~unassigned (the "where is Al??" incident after a reload).
         project: 'al',
+        // Al is the always-on front door: never hibernated, poked all day.
+        // Without a pin a boot spawn resolves 'fresh' → 5m and Al then runs
+        // DAYS on the 5m cache, paying a full prompt rewrite for every
+        // message that lands >5 min after the last.
+        cacheTtl: '1h',
       })
       currentAlSession = session
       saveAlSession({ version: 1, claudeSessionId: existing.claudeSessionId, hubSessionId: session.id, createdAt: existing.createdAt })
@@ -157,6 +162,8 @@ export async function ensureAlSession(ctx: AgentContext): Promise<Session> {
     // Space binding — the Spaces rail places sessions by project/areas; Al
     // belongs under the `al` project, not ~unassigned.
     project: 'al',
+    // Always-on front door — see the resume path above.
+    cacheTtl: '1h',
   })
   currentAlSession = session
 

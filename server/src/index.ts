@@ -266,10 +266,10 @@ const inboxRulesStore = new InboxRulesStore(feedsConfigDir)
 const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
 setAgentModelResolver(() => modelConfig.getModel())
 // Prompt-cache TTL policy (agents/cache-ttl.ts): decided per spawn, so install
-// before the first spawn too. `cache.ttlRecentMinutes` (prefs, default 30 —
-// the hibernation threshold) is how recently a session must have been active
-// for a respawn to keep the 1h cache; ticket forks pin 1h regardless. The
-// ledger counts what the CLI reports per TTL class → /dashboard/costs.
+// before the first spawn too. Every spawn with history gets 1h since
+// 2026-09-21 (^lime-kiwi); `cache.ttlRecentMinutes` (prefs, default 30) only
+// picks the recent-vs-idle log label now. The ledger counts what the CLI
+// reports per TTL class → /dashboard/costs.
 const cacheTtlLedger = new CacheTtlLedger(join(feedsConfigDir, 'cache-ttl-ledger.json'))
 setCacheTtlHooks({
   recentMinutes: () => {
@@ -1331,16 +1331,26 @@ void boardWatcher.start()
 
 // Idle hibernation sweep: every live `claude` subprocess holds ~250MB RSS
 // even while idle — dozens of parked sessions were costing >10GB. Reap the
-// subprocess of sessions idle >30min (session entry, log, and unread state
-// stay; sendMessage transparently re-spawns with --resume). Al is exempt —
-// he's the always-on front door (WhatsApp/voice inbound wants zero wake lag).
+// subprocess of idle sessions (session entry, log, and unread state stay;
+// sendMessage transparently re-spawns with --resume). Al is exempt — he's the
+// always-on front door (WhatsApp/voice inbound wants zero wake lag).
+//
+// The threshold is TTL-aware because a --resume respawn rebuilds the prompt
+// with fresh bytes (gitStatus, date) and so ALWAYS rewrites the cache, even
+// when the killed process's cache is still live (measured ~80% cold,
+// ^lime-kiwi 2026-09-21). A 1h-TTL session therefore stays alive 65 min —
+// its whole cache lifetime plus slop — so pokes inside the hour land warm
+// (~2% cold); at 65 min the cache is dead and the process is pure RAM. A
+// 5m-TTL session's cache died at 5 min, so reaping it at 30 min costs nothing.
 const HIBERNATE_AFTER_MS = 30 * 60_000
+const HIBERNATE_1H_AFTER_MS = 65 * 60_000
 setInterval(() => {
   try {
     const now = Date.now()
     for (const s of sessions.values()) {
       if (s.agentKey === 'al') continue
-      if (now - s.lastActivityAt < HIBERNATE_AFTER_MS) continue
+      const threshold = s.cacheTtl === '1h' ? HIBERNATE_1H_AFTER_MS : HIBERNATE_AFTER_MS
+      if (now - s.lastActivityAt < threshold) continue
       if (s.hibernate()) log(`[hibernate] reaped idle subprocess of ${s.id} (${s.name ?? 'unnamed'})`)
     }
   } catch (e) { log(`[hibernate] sweep: ${(e as Error).message}`) }
@@ -2741,7 +2751,9 @@ httpServer.listen(port, host, () => {
             modelOverride: entry.modelOverride,
             forkContext: entry.forkContext,
             queuedMessage: entry.queuedMessage,
-            cacheTtl: entry.cacheTtl,
+            // Al predates the pin in al-session.ts — force it so a restored
+            // manifest entry without one can't strand him on 5m.
+            cacheTtl: entry.agentKey === 'al' ? '1h' : entry.cacheTtl,
             formerIds: [entry.hubId, ...(entry.formerHubIds ?? [])].filter((id): id is string => !!id),
             // The restore spawn of a mid-turn session is "being worked" for the
             // cache-TTL decision (the nudge below continues its turn).

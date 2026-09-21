@@ -13,25 +13,22 @@ describe('resolveCacheTtl', () => {
     expect(resolveCacheTtl({ ...base, pin: '5m', midTurn: true })).toEqual({ ttl: '5m', reason: 'pinned' })
   })
 
-  it('a hibernation wake is 5m even though sendMessage already stamped activity + midTurn', () => {
-    expect(resolveCacheTtl({ ...base, wake: true, midTurn: true, everActive: true, lastActivityAt: base.now })).toEqual({ ttl: '5m', reason: 'woken' })
+  it('a hibernation wake is 1h — 44% of wakes get another poke within the hour, and they cluster', () => {
+    expect(resolveCacheTtl({ ...base, wake: true, midTurn: true, everActive: true, lastActivityAt: base.now })).toEqual({ ttl: '1h', reason: 'woken' })
   })
 
   it('an unfinished turn (restart resume of a wasRunning session, live midTurn, running) is 1h', () => {
     expect(resolveCacheTtl({ ...base, midTurn: true })).toEqual({ ttl: '1h', reason: 'mid-turn' })
   })
 
-  it('a brand-new session is 5m — no history to justify the 2× write rate', () => {
+  it('a brand-new session is 5m — usually a single-turn fork that never sees a second request', () => {
     expect(resolveCacheTtl({ ...base, everActive: false, lastActivityAt: base.now })).toEqual({ ttl: '5m', reason: 'fresh' })
   })
 
-  it('a respawn of a recently-active session keeps 1h; idle longer than N minutes drops to 5m', () => {
+  it('any respawn with history is 1h; recentMs only picks the log label', () => {
     expect(resolveCacheTtl({ ...base, everActive: true, lastActivityAt: base.now - 10 * MIN })).toEqual({ ttl: '1h', reason: 'recent' })
-    expect(resolveCacheTtl({ ...base, everActive: true, lastActivityAt: base.now - 31 * MIN })).toEqual({ ttl: '5m', reason: 'idle' })
-  })
-
-  it('N is a knob: recentMs = 0 means only pins / mid-turn ever get 1h', () => {
-    expect(resolveCacheTtl({ ...base, recentMs: 0, everActive: true, lastActivityAt: base.now })).toEqual({ ttl: '5m', reason: 'idle' })
+    expect(resolveCacheTtl({ ...base, everActive: true, lastActivityAt: base.now - 31 * MIN })).toEqual({ ttl: '1h', reason: 'idle' })
+    expect(resolveCacheTtl({ ...base, recentMs: 0, everActive: true, lastActivityAt: base.now })).toEqual({ ttl: '1h', reason: 'idle' })
   })
 })
 

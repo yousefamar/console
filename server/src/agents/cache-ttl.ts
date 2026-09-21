@@ -2,12 +2,21 @@
 //
 // Claude Code reads CLAUDE_CODE_PROMPT_CACHE_TTL ("5m" | "1h") at process start
 // and runs every request of that process on it; unset = 5m on Bedrock. A 1h
-// write costs 2× a 5m write, so 1h only wins when the next request lands
-// between 5 and 60 minutes later — a session being worked (a card fork, a
-// conversation Yousef keeps returning to), not one woken once by a cron. The
-// hub decides at spawn time from what it knows about the session; the ledger
-// counts the CLI's reported `cache_creation.ephemeral_{1h,5m}_input_tokens`
-// per day so the split is measurable after a week.
+// write costs 2× a 5m write (1.25×), so 1h wins when a follow-up request lands
+// 5–60 minutes later. Measured on 14d of traces (^lime-kiwi, 2026-09-21):
+//   - a `--resume` respawn is NOT byte-stable (fresh gitStatus/date in the
+//     rebuilt prompt) — hibernated wakes were ~80% cold even inside a live 1h
+//     cache, so warmth requires the PROCESS alive AND the TTL unexpired;
+//   - 44% of wakes get another poke within the hour, and those cluster
+//     (active conversations), so per-session simulation puts 1h-everywhere
+//     ahead of any 5m mix by ~$1.4k/wk at current traffic;
+//   - hence: every spawn with history gets 1h, and the hibernation sweep
+//     (index.ts) keeps 1h processes alive 65 min so the cache is actually
+//     reachable for its whole life. 5m remains only for brand-new sessions
+//     (mostly single-turn listener forks that never see a second request).
+// The ledger counts the CLI's reported
+// `cache_creation.ephemeral_{1h,5m}_input_tokens` per day so the split is
+// measurable after a week.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -37,18 +46,20 @@ export interface CacheTtlInput {
 
 export const DEFAULT_RECENT_MINUTES = 30
 
-/** Decide the TTL for one spawn. Order matters: a pin beats everything; a
- *  wake is 5m even though sendMessage has already stamped activity + midTurn
- *  on the instance (hibernation means it sat idle ≥30 min — the exact case
- *  the 5m cache is for). */
+/** Decide the TTL for one spawn. Order matters: a pin beats everything.
+ *  Everything with history gets 1h (see the header: wakes cluster, and the
+ *  5m TTL turned every follow-up inside the hour into a full prompt rewrite);
+ *  only a brand-new session — usually a single-turn listener fork that will
+ *  never see a second request — stays 5m. `recentMs` only picks the log label
+ *  (recent vs idle) now; both resolve to 1h. */
 export function resolveCacheTtl(i: CacheTtlInput): { ttl: CacheTtl; reason: CacheTtlReason } {
   if (i.pin) return { ttl: i.pin, reason: 'pinned' }
-  if (i.wake) return { ttl: '5m', reason: 'woken' }
+  if (i.wake) return { ttl: '1h', reason: 'woken' }
   if (i.midTurn) return { ttl: '1h', reason: 'mid-turn' }
   if (!i.everActive) return { ttl: '5m', reason: 'fresh' }
   const now = i.now ?? Date.now()
   if (i.lastActivityAt !== undefined && now - i.lastActivityAt < i.recentMs) return { ttl: '1h', reason: 'recent' }
-  return { ttl: '5m', reason: 'idle' }
+  return { ttl: '1h', reason: 'idle' }
 }
 
 export interface CacheTtlDay {

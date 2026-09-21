@@ -1459,12 +1459,12 @@ describe('Session prompt-cache TTL', () => {
     expect(ttlOf()).toBe('1h')
   })
 
-  it('a hibernated session woken by a message runs 5m (it sat idle ≥30 min by definition)', async () => {
+  it('a hibernated session woken by a message runs 1h (wakes cluster — 44% get another poke inside the hour)', async () => {
     const session = await initedIdle()
     session.hibernate()
     await new Promise((r) => setTimeout(r, 10))
     session.sendMessage('wake up')
-    expect(ttlOf()).toBe('5m')
+    expect(ttlOf()).toBe('1h')
     expect(session.getInfo().cacheTtlReason).toBe('woken')
   })
 
@@ -1473,9 +1473,11 @@ describe('Session prompt-cache TTL', () => {
     expect(ttlOf()).toBe('1h')
   })
 
-  it('a hub-restart resume of an idle session that spawns live (Al) runs 5m', () => {
-    new Session({ prompt: '', resume: 'idle_al', silent: true })
+  it('a hub-restart resume of an idle session without history reads as fresh (5m); Al avoids this via his 1h pin', () => {
+    new Session({ prompt: '', resume: 'idle_no_pin', silent: true })
     expect(ttlOf()).toBe('5m')
+    new Session({ prompt: '', resume: 'idle_al', silent: true, cacheTtl: '1h' })
+    expect(ttlOf()).toBe('1h')
   })
 
   it('getInfo drops the TTL once the process is gone (hibernated)', async () => {
