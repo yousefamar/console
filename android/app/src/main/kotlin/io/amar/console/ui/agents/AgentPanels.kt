@@ -16,12 +16,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -52,6 +59,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.agents.Cron
+import io.amar.console.data.agents.Listeners
+import io.amar.console.ui.shell.AppToast
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -190,6 +199,109 @@ private fun resolveOneShot(input: String): String {
     val ms = when (unit) { "m" -> n * 60_000; "h" -> n * 3_600_000; else -> n * 86_400_000 }
     val instant = java.time.Instant.ofEpochMilli(System.currentTimeMillis() + ms)
     return instant.toString()
+}
+
+// ------------------------------------------------------------------ //
+// Listener sheet — the ListenerPanel.tsx twin. Shares the status bar's
+// one sheet slot with CronSheet. No create form: rules come from
+// `con listen add` in the session itself.
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ListenerSheet(claudeSessionId: String, onDismiss: () -> Unit) {
+    val listeners by Listeners.listenersFor(claudeSessionId).collectAsState(initial = emptyList())
+    val error by Listeners.errorFor(claudeSessionId).collectAsState(initial = null)
+    LaunchedEffect(claudeSessionId) { Listeners.refresh(claudeSessionId) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Event listeners", style = MaterialTheme.typography.titleMedium)
+            error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
+            if (listeners.isEmpty() && error == null) {
+                Text("No listeners for this session.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            for (l in listeners) ListenerRow(l)
+            Text("con listen add --on <topic> …", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+            Box(Modifier.size(20.dp))
+        }
+    }
+}
+
+@Composable
+private fun ListenerRow(l: Listeners.Listener) {
+    val scope = rememberCoroutineScope()
+    var busy by remember(l.id) { mutableStateOf(false) }
+    val now = System.currentTimeMillis()
+    val dateFmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    val fmtDate: (Long) -> String = { dateFmt.format(Date(it)) }
+    val rule = remember(l) { Listeners.listenerSummary(l, fmtDate) }
+    val chip = Listeners.stateChip(l, now, TranscriptHelpers::formatRelativeIn)
+    val meta = Listeners.statsLine(l, now, TranscriptHelpers::formatRelativeAgo) +
+        Listeners.gates(l).joinToString(", ").let { if (it.isEmpty()) emptyList() else listOf(it) } +
+        Listeners.life(l, now, TranscriptHelpers::formatRelativeIn).joinToString(", ").let { if (it.isEmpty()) emptyList() else listOf(it) }
+    val outcome = l.stats.lastOutcome
+    val canFlush = (l.pending != null || Listeners.nextDeadline(l) != null) && !l.paused && l.active
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+
+    fun run(verb: suspend () -> String?) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            val err = verb()
+            busy = false
+            if (err != null) AppToast.show(err, error = true)
+        }
+    }
+
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)).padding(8.dp)
+            .let { if (!l.active) it.alpha(0.6f) else it },
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(Icons.Filled.Sensors, contentDescription = null, modifier = Modifier.size(11.dp), tint = if (l.paused || !l.active) muted else GREEN)
+            Text(rule, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            chip?.let {
+                Text(
+                    it.text, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                    color = when (it.kind) { Listeners.StateKind.DISABLED -> RED; Listeners.StateKind.PAUSED -> AMBER; Listeners.StateKind.INFO -> muted },
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (l.action.type == "wake" && l.action.fork) Icon(Icons.Filled.CallSplit, contentDescription = "fork", modifier = Modifier.size(11.dp).padding(top = 2.dp), tint = muted)
+            Text(Listeners.actionLine(l), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        l.name?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        Text(meta.joinToString("   "), style = MaterialTheme.typography.labelSmall, color = muted)
+        outcome?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = if (Listeners.outcomeBad(it)) AMBER else muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            if (busy) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            if (canFlush) {
+                TextButton(enabled = !busy, onClick = { run { Listeners.flush(l.id) } }) {
+                    Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Text(if (l.expect != null) " Judge now" else " Fire now", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (l.paused || !l.active) {
+                TextButton(enabled = !busy, onClick = { run { Listeners.resume(l.id) } }) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Text(if (!l.active) " Re-enable" else " Resume", style = MaterialTheme.typography.labelSmall)
+                }
+            } else {
+                TextButton(enabled = !busy, onClick = { run { Listeners.pause(l.id) } }) {
+                    Icon(Icons.Filled.Pause, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Text(" Pause", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            TextButton(enabled = !busy, onClick = { run { Listeners.remove(l.id) } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                Text(" Remove", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------------ //

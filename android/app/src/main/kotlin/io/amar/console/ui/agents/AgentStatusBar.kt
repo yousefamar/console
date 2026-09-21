@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -26,6 +27,7 @@ import io.amar.console.ui.theme.accents
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,8 +44,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.amar.console.data.agents.AgentsRepository
 import io.amar.console.data.agents.Cron
+import io.amar.console.data.agents.Listeners
 import io.amar.console.data.agents.shortCwd
 import io.amar.console.data.db.AgentSessionRow
+import kotlinx.coroutines.delay
 
 private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
@@ -51,7 +55,7 @@ private val RED: Color @Composable @ReadOnlyComposable get() = MaterialTheme.acc
 
 /**
  * Per-session status bar: model pin picker · permission-mode badge · git
- * cwd · git branch/stats · sub-agent counter · cron pill · context-usage meter.
+ * cwd · git branch/stats · sub-agent counter · cron pill · listener pill · context-usage meter.
  * Ported from AgentSessionView.tsx:216-296.
  */
 @Composable
@@ -64,10 +68,18 @@ fun StatusBar(
 ) {
     if (session == null) return
     val usage = repo.contextUsage.collectAsState().value[sessionId]
-    var showCron by remember { mutableStateOf(false) }
+    // The cron and listener sheets share one slot — one open at a time (SPA `sidePanel`).
+    var sidePanel by remember { mutableStateOf<SidePanel?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
     val cronTasks by Cron.tasksFor(session.claudeSessionId).collectAsState(initial = emptyList())
     val activeCron = cronTasks.count { it.disabledAt == null }
+    val listeners by Listeners.listenersFor(session.claudeSessionId).collectAsState(initial = emptyList())
+    val listenerCounts = Listeners.pillCounts(listeners)
+    // Poll this session's listeners every 30 s while its screen is open (the SPA ListenerPill's cadence).
+    LaunchedEffect(session.claudeSessionId) {
+        val csid = session.claudeSessionId ?: return@LaunchedEffect
+        while (true) { Listeners.refresh(csid); delay(30_000) }
+    }
 
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -141,11 +153,24 @@ fun StatusBar(
             // Cron pill.
             if (activeCron > 0) {
                 Row(
-                    Modifier.clickable { showCron = true }.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)).padding(horizontal = 5.dp, vertical = 1.dp),
+                    Modifier.clickable { sidePanel = SidePanel.CRON }.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)).padding(horizontal = 5.dp, vertical = 1.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.Filled.Schedule, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(11.dp))
                     Text("cron: $activeCron", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            // Listener pill (SPA ListenerPill): hidden at 0, paused count in amber.
+            if (listenerCounts != null) {
+                Row(
+                    Modifier.clickable { sidePanel = SidePanel.LISTENERS }.clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)).padding(horizontal = 5.dp, vertical = 1.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Sensors, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(11.dp))
+                    Text("listen: ${listenerCounts.active}", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.primary)
+                    if (listenerCounts.paused > 0) {
+                        Text("(${listenerCounts.paused} paused)", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = AMBER)
+                    }
                 }
             }
         }
@@ -163,10 +188,15 @@ fun StatusBar(
         }
     }
 
-    if (showCron && session.claudeSessionId != null) {
-        CronSheet(claudeSessionId = session.claudeSessionId, onDismiss = { showCron = false })
+    val csid = session.claudeSessionId
+    if (csid != null) when (sidePanel) {
+        SidePanel.CRON -> CronSheet(claudeSessionId = csid, onDismiss = { sidePanel = null })
+        SidePanel.LISTENERS -> ListenerSheet(claudeSessionId = csid, onDismiss = { sidePanel = null })
+        null -> Unit
     }
 }
+
+private enum class SidePanel { CRON, LISTENERS }
 
 private fun fmtTokens(n: Long): String = when {
     n >= 1_000_000 -> "${"%.1f".format(n / 1_000_000.0)}M"

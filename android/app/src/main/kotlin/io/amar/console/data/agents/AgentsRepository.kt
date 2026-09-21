@@ -1061,8 +1061,9 @@ class AgentsRepository(
     private fun sendWs(obj: JsonObject): Boolean = ws?.send(obj.toString()) ?: false
 
     fun registerOutboxHandlers() {
-        // Cron store mirrors hub state over REST; hand it our HubClient once.
+        // Cron + listener stores mirror hub state over REST; hand them our HubClient once.
         Cron.attach(hub)
+        Listeners.attach(hub)
         outbox.register(TYPE_SEND) { row, _ ->
             val p = json.parseToJsonElement(row.payloadJson).jsonObject
             val images = (p["imagePaths"] as? JsonArray)?.mapNotNull { el ->
