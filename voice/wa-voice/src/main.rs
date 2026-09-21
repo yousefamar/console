@@ -67,6 +67,14 @@ async fn main() -> Result<()> {
     })
     .init();
 
+    // Proof that voice.env loaded — /proc/…/environ can't show runtime set_var.
+    info!(
+        "levers at startup: {:?}, idle {} dBFS, wire log {}",
+        calls::Levers::from_env(),
+        calls::IdleNoise::configured_level_db(),
+        wire::enabled()
+    );
+
     let port: u16 = std::env::var("WA_VOICE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(9878);
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let dir = store_dir();
