@@ -170,6 +170,7 @@ class CallSession:
         self._hangup_after_reply = False
         self._hangup_task: asyncio.Task | None = None
         self._greet_task: asyncio.Task | None = None
+        self._line_problems: set[str] = set()
 
     @property
     def display_name(self) -> str:
@@ -325,6 +326,20 @@ class CallSession:
         if col and not col.user_spoke and not col.turns and not self._done.is_set():
             await self._kick(task, SILENT_CUE)
 
+    async def notify_line_problem(self, kind: str, issue: str) -> None:
+        """The sidecar says the line is broken (call 00357d4b: 11 turns against
+        a dead outbound path, nobody told the fork). Once per problem kind."""
+        if kind in self._line_problems or self._done.is_set() or not self._pipeline_task:
+            return
+        self._line_problems.add(kind)
+        logger.warning(f"[{self.call_id}] line problem ({kind}): {issue}")
+        if self.live_at is None:
+            return
+        await self._kick(
+            self._pipeline_task,
+            f"(Line problem — {issue}. If the caller does not seem to hear you, tell them briefly the line is broken and you'll follow up by message, then hang up.)",
+        )
+
     async def _max_duration_guard(self) -> None:
         try:
             await asyncio.wait_for(self._done.wait(), timeout=self.cfg.max_call_secs)
@@ -423,6 +438,7 @@ class CallSession:
             "answeredAt": datetime.fromtimestamp(live_at, tz=timezone.utc).isoformat() if self.live_at else None,
             "durationMs": int((ended - live_at) * 1000) if self.live_at else 0,
             "turns": turns,
+            "lineProblems": sorted(self._line_problems),
             "delegations": 0,
             "toolCalls": self._llm.tool_calls if self._llm else 0,
             "forkSessionId": self.fork_session_id,

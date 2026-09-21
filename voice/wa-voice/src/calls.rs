@@ -456,10 +456,10 @@ impl CallManager {
     // ---- media in (socket → engine) ----
 
     pub fn push_audio(&self, slot: u8, pcm_le: &[u8]) {
-        let queue = {
+        let (queue, call_id) = {
             let st = self.st();
             match st.slots.get(&slot) {
-                Some(s) => s.queue.clone(),
+                Some(s) => (s.queue.clone(), s.call_id.clone()),
                 None => return,
             }
         };
@@ -490,6 +490,12 @@ impl CallManager {
             if total == dropped || total % 100 < dropped {
                 WIRE.line(&format!("queue overflow: {total} speech frames dropped (cap {MAX_QUEUE_FRAMES})"));
                 warn!("outbound queue overflow: {total} speech frames dropped so far");
+                self.bcast.event(&Event::Health {
+                    call_id,
+                    slot,
+                    kind: "outbound-lost",
+                    issue: format!("{total} frames of AL's speech were discarded before transmission — the caller is not hearing AL"),
+                });
             }
         }
     }
@@ -882,6 +888,7 @@ impl CallManager {
         let ev_handle = handle.clone();
         let fallback = spawn_fallback_opus_decoder(spk_tx);
         let ev_id = call_id.clone();
+        let ev_bcast = self.bcast.clone();
         tokio::spawn(async move {
             let events = ev_handle.events();
             while let Ok(ev) = events.recv().await {
@@ -901,9 +908,23 @@ impl CallManager {
                     CallEvent::AudioFormatMismatch { expected_rate, received_rates } => {
                         error!("{ev_id}: audio format mismatch (expected {expected_rate}, got {received_rates:?})")
                     }
-                    CallEvent::AudioSilent { .. } => warn!("{ev_id}: inbound audio arriving but decoding to silence"),
+                    CallEvent::AudioSilent { .. } => {
+                        warn!("{ev_id}: inbound audio arriving but decoding to silence");
+                        ev_bcast.event(&Event::Health {
+                            call_id: ev_id.clone(),
+                            slot,
+                            kind: "inbound-silent",
+                            issue: "the caller's audio is arriving but decodes to silence — AL cannot hear them".into(),
+                        });
+                    }
                     CallEvent::AudioReceptionStalled { silent_for_ms } => {
-                        warn!("{ev_id}: no inbound audio for {silent_for_ms:?}")
+                        warn!("{ev_id}: no inbound audio for {silent_for_ms:?}");
+                        ev_bcast.event(&Event::Health {
+                            call_id: ev_id.clone(),
+                            slot,
+                            kind: "inbound-stalled",
+                            issue: format!("no audio has arrived from the caller for {silent_for_ms:?}"),
+                        });
                     }
                     CallEvent::AudioCodecSwitched { .. } => info!("{ev_id}: audio codec switched"),
                     CallEvent::Closed(reason) => info!("{ev_id}: media closed ({reason:?})"),

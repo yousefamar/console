@@ -106,6 +106,10 @@ class CallManager:
                 await call.go()
         elif kind == "ended":
             await self._on_ended(ev)
+        elif kind == "health":
+            call = self.calls.get(ev.get("callId", ""))
+            if call:
+                await call.notify_line_problem(ev.get("kind") or "line", ev.get("issue") or "the line is degraded")
         elif kind == "error" and ev.get("callId") in self.calls:
             logger.warning(f"[{ev.get('callId')}] sidecar error: {ev.get('message')}")
         elif kind in ("ready", "disconnected", "loggedout", "qr"):

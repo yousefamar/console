@@ -94,6 +94,18 @@ pub enum Event {
         #[serde(rename = "durationMs")]
         duration_ms: u64,
     },
+    /// The line is degraded in a way the caller can hear and the pipeline
+    /// otherwise cannot: the fork gets to react instead of talking into static
+    /// (call 00357d4b ran 11 turns against a dead outbound path).
+    Health {
+        #[serde(rename = "callId")]
+        call_id: String,
+        slot: u8,
+        /// Stable discriminator for de-duplication: `outbound-lost`,
+        /// `inbound-silent`, `inbound-stalled`.
+        kind: &'static str,
+        issue: String,
+    },
     Error {
         #[serde(rename = "callId", skip_serializing_if = "Option::is_none")]
         call_id: Option<String>,
@@ -135,5 +147,27 @@ pub struct CallSummary {
 impl Event {
     pub fn json(&self) -> String {
         serde_json::to_string(self).expect("event serialises")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The pipeline dispatches on these exact keys (main.py `kind == "health"`).
+    #[test]
+    fn health_event_wire_shape() {
+        let ev = Event::Health {
+            call_id: "abc".into(),
+            slot: 3,
+            kind: "outbound-lost",
+            issue: "42 frames dropped".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&ev.json()).unwrap();
+        assert_eq!(v["ev"], "health");
+        assert_eq!(v["callId"], "abc");
+        assert_eq!(v["slot"], 3);
+        assert_eq!(v["kind"], "outbound-lost");
+        assert_eq!(v["issue"], "42 frames dropped");
     }
 }
