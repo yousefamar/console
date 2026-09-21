@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Tag
@@ -146,11 +147,15 @@ fun SpacesScreen(
     val sessions by agents.observeSessions().collectAsState(initial = emptyList())
     val activity by agents.activity.collectAsState()
     // Fleet-level init lived on the retired Agents tab; Spaces is the session
-    // surface now. Poll cron cross-client mutations every 30s while mounted.
+    // surface now. Poll cron + listener cross-client mutations every 30s while mounted.
     LaunchedEffect(Unit) {
         spacesRepo.refreshSpaces()
         io.amar.console.data.agents.Mic.init()
-        while (true) { io.amar.console.data.agents.Cron.refreshAll(); kotlinx.coroutines.delay(30_000) }
+        while (true) {
+            io.amar.console.data.agents.Cron.refreshAll()
+            io.amar.console.data.agents.Listeners.refreshAll()
+            kotlinx.coroutines.delay(30_000)
+        }
     }
 
     fun spaceSessions(slug: String, kind: String): List<AgentSessionRow> =
@@ -1570,7 +1575,10 @@ private fun SpaceAgentsList(
     // Fork-lineage order: parents before their forks, indented by depth
     // (parentClaudeSessionId — SPA SpaceRail tree parity, flattened).
     val ordered = remember(bound) { lineageOrder(bound) }
-    LaunchedEffect(Unit) { io.amar.console.data.agents.Cron.refreshAll() }
+    LaunchedEffect(Unit) {
+        io.amar.console.data.agents.Cron.refreshAll()
+        io.amar.console.data.agents.Listeners.refreshAll()
+    }
     var menuTarget by remember { mutableStateOf<AgentSessionRow?>(null) }
     val micOwner by io.amar.console.data.agents.Mic.owner.collectAsState()
     val ownerScope = rememberCoroutineScope()
@@ -1642,14 +1650,23 @@ private fun SpaceAgentsList(
                         )
                     }
                     // SPA SessionBadges parity: amber shell count, grey cron
-                    // count, violet todo progress (hidden once complete),
-                    // mic owner, dormant moon.
+                    // count, grey listener count (amber when any is paused),
+                    // violet todo progress (hidden once complete), mic owner,
+                    // dormant moon.
                     val cronTasks by io.amar.console.data.agents.Cron.tasksFor(s.claudeSessionId)
                         .collectAsState(initial = emptyList())
                     val activeCrons = cronTasks.count { it.disabledAt == null }
                     if (activeCrons > 0) {
                         Icon(Icons.Filled.Schedule, "Cron tasks", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
                         Text("$activeCrons", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    val listeners by io.amar.console.data.agents.Listeners.listenersFor(s.claudeSessionId)
+                        .collectAsState(initial = emptyList())
+                    val listen = remember(listeners) { io.amar.console.data.agents.Listeners.badge(listeners) }
+                    if (listen != null) {
+                        val tint = if (listen.paused > 0) AMBER else MaterialTheme.colorScheme.onSurfaceVariant
+                        Icon(Icons.Filled.Sensors, listen.title, tint = tint, modifier = Modifier.size(13.dp))
+                        Text("${listen.count}", style = MaterialTheme.typography.labelSmall, color = tint)
                     }
                     if (s.backgroundProcessCount > 0) {
                         Icon(Icons.Filled.Terminal, "Background processes", tint = AMBER, modifier = Modifier.size(13.dp))

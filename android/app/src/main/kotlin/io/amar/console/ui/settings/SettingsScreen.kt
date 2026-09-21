@@ -188,7 +188,24 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
                     TextButton(onClick = {
                         confirmRestart = false
                         restart = HubRestart.State.Restarting
-                        scope.launch { restart = HubRestart.run(app.graph.hub) }
+                        scope.launch {
+                            val outcome = HubRestart.run(app.graph.hub)
+                            restart = outcome
+                            // The row scrolls off while you wait — say it at the shell too.
+                            when (outcome) {
+                                is HubRestart.State.Back -> {
+                                    io.amar.console.ui.shell.AppToast.show("Hub back in ${outcome.secs}s")
+                                    // The old process took the sync WS down with it; start()
+                                    // self-heals (want-connected but not connected → reopen)
+                                    // now instead of at the next backoff tick.
+                                    app.graph.syncBus.start()
+                                }
+                                HubRestart.State.Timeout ->
+                                    io.amar.console.ui.shell.AppToast.show("Hub not back after ${HubRestart.TIMEOUT_MS / 1000}s", error = true)
+                                is HubRestart.State.Error -> io.amar.console.ui.shell.AppToast.show(outcome.message, error = true)
+                                else -> Unit
+                            }
+                        }
                     }) { Text("Restart", color = MaterialTheme.colorScheme.error) }
                 },
                 dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text("Cancel") } },

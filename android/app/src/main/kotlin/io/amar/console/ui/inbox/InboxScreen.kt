@@ -468,10 +468,18 @@ private fun InboxRow(
                         modifier = Modifier.size(12.dp).offset(x = (-4).dp),
                     )
                 }
+                // Read state by WEIGHT like the Mail app (^fond-koi): unread =
+                // bold, read-but-still-here (unarchived mail, a drafted read
+                // room) = regular + muted, feeds (no read state) = medium.
                 Text(
                     entry.header,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = when (entry.unread) {
+                        true -> FontWeight.Bold
+                        false -> FontWeight.Normal
+                        null -> FontWeight.Medium
+                    },
+                    color = if (entry.unread == false) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),

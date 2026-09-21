@@ -130,6 +130,11 @@ data class InboxEntry(
     val ts: Long,
     /** true → inbox list, false → feed list. */
     val inInbox: Boolean,
+    /** Mail/chat/agent read state, rendered as the Mail app does: true =
+     *  bold, false (a read-but-unarchived thread, a read room kept live by a
+     *  draft) = muted. Null for feeds, which have no "read but still here"
+     *  (^fond-koi — unread differs by WEIGHT, not colour). */
+    val unread: Boolean? = null,
     /** Agent only: session flagged @amar / pending question — tops the inbox. */
     val attention: Boolean = false,
     /** Agent only: the turn has ended (not mid-stream) — a finished agent
@@ -259,6 +264,7 @@ fun threadToEntry(t: MailThreadRow, rules: InboxRules): InboxEntry = InboxEntry(
     body = t.subject.ifBlank { "(no subject)" },
     ts = t.date,
     inInbox = rules.routeForSender(t.fromEmail) == "inbox",
+    unread = t.isUnread,
     routeKey = t.fromEmail.lowercase(),
 )
 
@@ -279,6 +285,7 @@ fun roomToEntry(r: ChatRoomRow, rules: InboxRules, now: Long): InboxEntry {
         network = r.networkIcon,
         ts = if (draft != null) maxOf(r.lastMessageTime, roomDraftUpdatedAt(r.rawJson)) else r.lastMessageTime,
         inInbox = rules.routeForRoom(r.id) == "inbox",
+        unread = r.isUnread || r.manualUnread,
         overdue = isOverdue(r, rules, now),
         draft = draft != null,
         routeKey = r.id,
@@ -323,6 +330,7 @@ fun sessionToEntry(
         body = s.attentionSnippet ?: s.lastTextSnippet ?: "",
         ts = if (s.lastActivityAt > 0) s.lastActivityAt else s.createdAt,
         inInbox = true,
+        unread = s.hasUnread || s.needsAttention,
         attention = s.needsAttention,
         idle = idle,
         review = idle && s.agentKey != null && s.agentKey in reviewKeys,

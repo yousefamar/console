@@ -187,6 +187,20 @@ class ListenersTest {
     }
 
     @Test
+    fun `row badge counts active rules only, expectations and paused feed the title`() {
+        val a = parse(wake)
+        val e = parse(relativeExpect)
+        assertNull(Listeners.badge(emptyList()))
+        assertNull(Listeners.badge(listOf(a.copy(disabledAt = 1))))
+        val b = Listeners.badge(listOf(a, a.copy(id = "b", pausedAt = 5), e, a.copy(id = "d", disabledAt = 1)))!!
+        assertEquals(Listeners.Badge(3, 1, 1), b)
+        assertEquals("3 event listeners (1 expectation), 1 paused", b.title)
+        assertEquals("1 event listener", Listeners.badge(listOf(a))!!.title)
+        // A paused rule is still active — it holds its batch, so it counts.
+        assertEquals(Listeners.Badge(1, 0, 1), Listeners.badge(listOf(a.copy(pausedAt = 1))))
+    }
+
+    @Test
     fun `an older hub record with sparse fields still parses`() {
         val l = parse("""{"id":"old","owner":{"claudeSessionId":"c"},"on":"chat.message","action":{"type":"run","cmd":"true"}}""")
         assertEquals("chat.message", Listeners.listenerSummary(l))

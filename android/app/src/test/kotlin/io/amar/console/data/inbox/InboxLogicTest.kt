@@ -42,9 +42,10 @@ private fun thread(
     isInbox: Boolean = true,
     snoozedUntil: Long? = null,
     date: Long = NOW - 2 * HOUR,
+    isUnread: Boolean = true,
 ) = MailThreadRow(
     id = id, subject = "Subject", fromName = "Bob", fromEmail = fromEmail,
-    snippet = "…", date = date, isUnread = true, isInbox = isInbox,
+    snippet = "…", date = date, isUnread = isUnread, isInbox = isInbox,
     hasAttachments = false, messageCount = 1, snoozedUntil = snoozedUntil, account = "a",
 )
 
@@ -186,6 +187,32 @@ class InboxLogicTest {
             InboxRules.DEFAULT, NOW,
         )
         assertEquals("Alice: hey", group.body)
+    }
+
+    // Port of the ^fond-koi cases in src/__tests__/inbox-route.test.ts.
+    @Test
+    fun `mail carries read state - an opened-but-unarchived thread is unread=false`() {
+        assertEquals(true, threadToEntry(thread(isUnread = true), InboxRules.DEFAULT).unread)
+        assertEquals(false, threadToEntry(thread(isUnread = false), InboxRules.DEFAULT).unread)
+    }
+
+    @Test
+    fun `chat carries read state - manual-unread counts, a read room kept live by a draft is unread=false`() {
+        assertEquals(true, roomToEntry(room(isUnread = false, manualUnread = true), InboxRules.DEFAULT, NOW).unread)
+        val drafted = room(isUnread = false, rawJson = """{"draft":"reply…"}""")
+        assertEquals(false, roomToEntry(drafted, InboxRules.DEFAULT, NOW).unread)
+    }
+
+    @Test
+    fun `feeds carry no read state - rows drop the moment they are read`() {
+        assertNull(feedItemToEntry(feedItem(), feed(), InboxRules.DEFAULT)!!.unread)
+    }
+
+    @Test
+    fun `agents - unread or asking = unread=true, so a live agent never reads as seen`() {
+        assertEquals(true, sessionToEntry(session(hasUnread = true)).unread)
+        assertEquals(true, sessionToEntry(session(hasUnread = false, attention = true)).unread)
+        assertEquals(false, sessionToEntry(session(hasUnread = false)).unread)
     }
 
     @Test

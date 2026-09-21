@@ -338,6 +338,24 @@ object Listeners {
         return PillCounts(active.size, active.count { it.paused })
     }
 
+    /** Spaces session-row badge (SPA `SessionBadges` `listen`, ^deft-hawk): active
+     *  rules only — disabled ones are dead; expectations + paused feed the
+     *  description. Null when the badge hides. */
+    data class Badge(val count: Int, val expects: Int, val paused: Int) {
+        val title: String
+            get() = buildString {
+                append(count).append(" event listener").append(if (count == 1) "" else "s")
+                if (expects > 0) append(" (").append(expects).append(" expectation").append(if (expects == 1) "" else "s").append(")")
+                if (paused > 0) append(", ").append(paused).append(" paused")
+            }
+    }
+
+    fun badge(list: List<Listener>): Badge? {
+        val active = list.filter { it.active }
+        if (active.isEmpty()) return null
+        return Badge(active.size, active.count { it.expect != null }, active.count { it.paused })
+    }
+
     // ------------------------------------------------------------------ //
     // Hub calls
 

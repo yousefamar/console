@@ -102,7 +102,34 @@ view-mode hub-sync (Room meta is fine on one device).
   refused ("Hub returned 403", stop); a transport error = it is already going
   down (keep polling). Row shows "Waiting for the new process…" → "Back in
   Ns" / "Not back after 30s". The sync WS drops during the window and
-  reconnects on its own (nothing new to do).
+  reconnects on its own (nothing new to do). ^jade-elk (same sweep, same
+  Open entry) added the outcome as an `AppToast` too — the row scrolls off
+  on a phone while you wait — and a `syncBus.start()` kick on "Back" so the
+  WS the old process took down reopens now, not at the next backoff tick.
+- **Inbox: unread rows are bold, read-but-still-here rows are muted** (^jade-elk,
+  parity with SPA ^fond-koi 56fbc769 + d9c75e06). Yousef: "I can't distinguish
+  unread from unarchived mail in Inbox (like in Mail)" — and his standing rule
+  that read/unread differ by WEIGHT, not colour. Root cause: `InboxRow` drew
+  every header at `FontWeight.Medium` in the default colour, so a mail thread
+  he had opened but not archived, or a read room kept live by a draft, looked
+  identical to a fresh one. `InboxEntry.unread: Boolean?` is the port of
+  `InboxItem.unread` — mail `t.isUnread`, chat `isUnread || manualUnread`,
+  agents `hasUnread || needsAttention` (a live agent never reads as seen),
+  null for feeds (no "read but still here"). The row: `true` → Bold (the Mail
+  app's from-name weight), `false` → Normal + `onSurfaceVariant`, null →
+  Medium as before. Tests: the four ^fond-koi cases ported into
+  `InboxLogicTest` (`thread()` fixture gained `isUnread`).
+- **Spaces: agent rows carry a grey listener badge beside the cron one**
+  (^jade-elk, parity with SPA ^deft-hawk 449c5dc0 — Yousef: "We need an icon in
+  the list like the cron icon"). Reads the sibling ^sly-pony `data/agents/
+  Listeners.kt` (the `Cron.kt` twin, landed first): `Listeners.attach(hub)`
+  beside `Cron.attach`, `refreshAll()` (fleet-wide `GET /listeners` grouped by
+  owner) polled every 30 s with cron while Spaces is mounted + once on the
+  agents panel, `listenersFor(csid)` per row, and a new pure `badge()` (active
+  = no `disabledAt`; expectation + paused counts for the description). Badge =
+  `Icons.Filled.Sensors` (the closest to lucide's Radio) + count,
+  `onSurfaceVariant`, AMBER when any rule is paused (the SPA's yellow), beside
+  the cron Clock. Tests: the badge case in `ListenersTest`.
 
 ## Shipped
 
