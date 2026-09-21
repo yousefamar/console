@@ -683,7 +683,16 @@ invalid (`:272`–`:273`).
 - Commit `f5b04bed` (2025-10-03) "Temporary handling when offline data is broken": bail out
   of stroke parsing when the payload truncates mid-dot — NeoLAB-level acknowledgment that
   pens deliver broken/truncated offline stores (our pen's empty-index state is kin).
-- A weekly hub cron (`m6Vfu5U`) watches the NeoSmartpen org for further pushes
+- Commit `b8a5d396` (2026-09-15) "WiFi 기능 추가 및 펜 프로토콜 수정 (AIrecord 연동)": +2,278
+  lines, almost all NEW hardware — a Wi-Fi file-transfer path (`pen/wifi/*`, BLE-negotiated via
+  `WifiBleProto`) and an **audio-recording GATT service `e97d10xx`** (`reqAudioFileList/File/
+  Delete`, msg types `0xA0–0xA6`) for the AIrecord pen family (NWP-F55 named). None of it applies
+  to the F130. Two protocol-level bits: the offset-18 fix above is re-applied with the
+  uncompressed length now exactly `18 + sizeBeforeCompress` (the `-1` drop is gone), and
+  `CommProcessor20` guards `RES_PenProfile` on `dataLength < 9` — the firmware can answer a
+  PROFILE_FAILURE with EMPTY data, which used to crash their connection thread. We don't parse
+  profile responses; if we ever do, guard the length.
+- A hub cron watches the NeoSmartpen org for further pushes
   (marker: `~/.config/console/neolab-upstream.json`).
 
 ---
