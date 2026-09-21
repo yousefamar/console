@@ -635,7 +635,7 @@ Commands:
   model         Inspect/switch the model all agents spawn with
   search        Find past sessions by full text (all transcripts on this machine) [--project --here --since --file --tools]
   read          Read a past session / turn / tool result by address [--grep --turns --tools]
-  inbox create <name> [--agent <key> | --project <slug>] [--from-name --signature --domain --quota --password --quiet]
+  inbox create <name> [--for <agentKey> | --project <slug>] [--from-name --signature --domain --quota --password --quiet]
                 Give an agent its own <name>@amar.io: mxroute mailbox (API key in ~/.config/console/mxroute.env)
                 + ~/.config/<name>-mail/.env for al-mail.py + IMAP IDLE watch + <name>-email SKILL.md in its cwd
                 + mail.received listener on its session + one onboarding wake. Like al@ and ceo@, automated.
@@ -643,7 +643,7 @@ Commands:
   inbox remove <name> [--keep-mailbox]   Undo create (mxroute mailbox deleted unless --keep-mailbox)
 
 Examples:
-  con agent inbox create opsec --agent opsec --from-name "OpSec"
+  con agent inbox create opsec --for opsec --from-name "OpSec"
   con agent create "Fix the auth bug" --cwd /path/to/project --wait
   con agent list
   con agent tail session_1

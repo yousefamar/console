@@ -369,7 +369,7 @@ export const COMMANDS: CommandDef[] = [
   { name: 'agent inbox create', description: "Give an agent its own email address, end to end, the way al@amar.io and ceo@amar.io were set up: creates <name>@<domain> on mxroute (API key in ~/.config/console/mxroute.env), writes ~/.config/<name>-mail/.env (what ~/exec/al-mail.py --account <name> and the hub's IMAP IDLE watcher both read), verifies the IMAP login, hot-adds the mailbox to the watcher, writes a <name>-email SKILL.md into the agent's cwd (commands, inbound handling, Yousef's standing send rules and style), registers a mail.received listener on the agent's session and sends it one onboarding wake telling it to read the skill. The name is the local part AND the account key (data.account on events).", safety: 'write',
     args: [{ name: 'name', required: true, description: 'Local part / account key: opsec → opsec@amar.io, ~/.config/opsec-mail/.env, --account opsec' }],
     flags: {
-      agent: { type: 'string', description: 'agentKey of the live session to educate (skill in its cwd, listener on it, onboarding wake). Omit with --project to only write the skill.' },
+      for: { type: 'string', description: "agentKey of the live session to educate (skill in its cwd, listener on it, onboarding wake) — named --for because --agent is the CLI's global agent-mode flag. Omit with --project to only write the skill." },
       project: { type: 'string', description: 'Vault project slug for the SKILL.md when no --agent is given (~/sync/brain/root/projects/<slug>/.claude/skills/<name>-email/)' },
       'from-name': { type: 'string', description: 'From display name (default: Title Case of the name)' },
       signature: { type: 'string', description: 'MAIL_SIGNATURE, \\n for newlines (default: "<From Name>\\n\\n<From Name> is an AI agent acting for Yousef Amar.")' },
@@ -378,7 +378,7 @@ export const COMMANDS: CommandDef[] = [
       password: { type: 'string', description: 'Adopt a mailbox that ALREADY exists on mxroute with this password (skips creation)' },
       quiet: { type: 'boolean', description: 'Skip the onboarding wake (skill + listener still land)' },
     },
-    examples: ['con agent inbox create opsec --agent opsec --from-name "OpSec"', 'con agent inbox create scout --project astera --signature "Scout\\n\\nScout is an AI agent acting for Yousef Amar."'] },
+    examples: ['con agent inbox create opsec --for opsec --from-name "OpSec"', 'con agent inbox create scout --project astera --signature "Scout\\n\\nScout is an AI agent acting for Yousef Amar."'] },
   { name: 'agent inbox list', description: 'Every agent mailbox: local ~/.config/*-mail configs joined with what mxroute reports for the domain (quota, usage, sent today, suspended), whether the hub is IDLE-watching it and which listeners wake on it.', safety: 'read',
     examples: ['con agent inbox list'] },
   { name: 'agent inbox remove', description: 'Undo `inbox create`: deletes the mxroute mailbox (mail and all — --keep-mailbox leaves it), removes ~/.config/<name>-mail, stops the watcher, removes its mail.received listeners and the <name>-email skill dirs.', safety: 'destructive',

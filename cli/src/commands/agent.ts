@@ -721,7 +721,7 @@ interface InboxCreateResult {
 }
 interface InboxListing { name: string; address: string; local: boolean; watched: boolean; listeners: string[]; mxroute: { quota: number; usage: number; limit: number; sent: number; suspended: boolean } | null }
 
-const INBOX_CREATE_FLAGS = ['agent', 'project', 'from-name', 'signature', 'domain', 'quota', 'password', 'quiet']
+const INBOX_CREATE_FLAGS = ['for', 'project', 'from-name', 'signature', 'domain', 'quota', 'password', 'quiet']
 
 /** The hub answers inbox errors with `{success:false, error:{code,message}}` — surface the message, not the JSON. */
 function inboxFail(err: unknown, flags: GlobalFlags): never {
@@ -736,7 +736,7 @@ function inboxFail(err: unknown, flags: GlobalFlags): never {
 
 async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
   const [verb, ...rest] = args
-  const usage = 'Usage: con agent inbox create <name> [--agent <agentKey> | --project <slug>] [--from-name "…"] [--signature "…\\n…"] [--domain amar.io] [--quota MB] [--password "…"] [--quiet]\n       con agent inbox list\n       con agent inbox remove <name> [--keep-mailbox]'
+  const usage = 'Usage: con agent inbox create <name> [--for <agentKey> | --project <slug>] [--from-name "…"] [--signature "…\\n…"] [--domain amar.io] [--quota MB] [--password "…"] [--quiet]\n       con agent inbox list\n       con agent inbox remove <name> [--keep-mailbox]'
   if (verb === 'list') {
     const bad = unknownFlags(parseFlags(rest), [])
     if (bad.length) exitWithError('USAGE', `Unknown flag(s) --${bad.join(', --')}. ${usage}`, flags)
@@ -760,7 +760,7 @@ async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
     if (!name) exitWithError('USAGE', usage, flags)
     if (opts.quota !== undefined && !/^\d+$/.test(opts.quota)) exitWithError('USAGE', `--quota must be a whole number of MB, got ${opts.quota}`, flags)
     const body = {
-      name, agentKey: opts.agent, project: opts.project, fromName: opts['from-name'], signature: opts.signature, domain: opts.domain,
+      name, agentKey: opts.for, project: opts.project, fromName: opts['from-name'], signature: opts.signature, domain: opts.domain,
       quotaMb: opts.quota !== undefined ? Number(opts.quota) : undefined, password: opts.password, quiet: opts.quiet === 'true',
     }
     let r: { success: boolean; data: InboxCreateResult }
