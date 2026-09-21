@@ -19,10 +19,6 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
   sheet gains a category picker + ignore/transfer toggles first (one outbox
   action, `overrides` POST), then a Budgets section under Runway; scenarios
   and the ledger editor last.
-- Hub restart (`POST /restart`, ^mild-crow): SPA Settings → Hub → Restart with
-  a confirm, then polls `/health` until `startedAt` changes (≤30 s) and shows
-  "Back in Ns". Phone twin = the same row in the app's Settings sheet; the
-  outage window also drops the sync WS, so reuse the existing reconnect.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -72,6 +68,41 @@ view-mode hub-sync (Room meta is fine on one device).
   `MapRendererLogicTest` (ring geometry/closure, fence + label FCs, fmtSince,
   feedTitle) and `MapLogicTest` (snapshot parse incl. nulls, Room round-trip,
   `mergeLiveFix` device/track rules).
+- **Agent session: event-listener pill + sheet** (^sly-pony; SPA ^loud-kite
+  83d415e7 + ^deft-hawk 48bbe1fa — `ListenerPill.tsx`/`ListenerPanel.tsx`,
+  `src/store/listeners.ts`). The phone had no view of the hub's `con listen`
+  rules, so a session that fires on `mail.received`/geofences/webhooks looked
+  identical to one that does nothing. Now: `data/agents/Listeners.kt` (port of
+  the SPA store + the panel's labels, pure and unit-tested in `ListenersTest`
+  — the Spaces-row badge card reads the same file), attached beside `Cron` in
+  `AgentsRepository.registerOutboxHandlers`; `StatusBar` polls
+  `GET /listeners?session=<csid>` every 30 s while a session screen is open
+  and shows a `listen: N (M paused)` pill beside the cron pill (hidden at 0);
+  tapping opens `ListenerSheet` (`AgentPanels.kt`) in the same slot as the
+  cron sheet — one open at a time (`SidePanel` enum, the SPA's `sidePanel`).
+  Per rule: `[expect ]<topic> where … [by "<cron>" (window 3h) | within 90m
+  after <topic> where …]`, state chip (`disabled` / `paused` / `armed N · in X`
+  / `waiting` / `pending N`), `[else ]<action>[; then <action>]` with a fork
+  glyph on `wake --fork`, `satisfied N · missed M` for expectations, `fired N
+  · <ago>`, `matched`, `guard-skipped`, gates (coalesce/cooldown/days+hours/
+  guard), `once` / `2/3 left` / `expires in …`, last outcome in amber when it
+  starts `skipped|error|paused|dropped`. Buttons: Fire now / Judge now (flush,
+  only when a batch or deadline is pending), Pause / Resume / Re-enable,
+  Remove — each disabled while its call is in flight, hub errors surfaced
+  verbatim as an error toast (the 403 for another session's rule is shown,
+  never forced). No create form, like the SPA — rules come from `con listen
+  add`. Screenshots: from the phone after the release (no emulator here).
+- **Settings: Restart hub** (^sly-pony, closes the Open entry; SPA ^mild-crow
+  `HubSection` in AccountModal.tsx). Settings → Hub → Restart, behind an
+  AlertDialog confirm. `data/longtail/HubRestart.kt` is the SPA state machine
+  with its IO injected (`HubRestartTest`): read `/health.startedAt` BEFORE the
+  `POST /restart`, then poll every 400 ms for ≤30 s until a probe returns a
+  DIFFERENT `startedAt` — the old process keeps answering during its shutdown
+  window, so any-200 would pass as "back". A status on the POST = the hub
+  refused ("Hub returned 403", stop); a transport error = it is already going
+  down (keep polling). Row shows "Waiting for the new process…" → "Back in
+  Ns" / "Not back after 30s". The sync WS drops during the window and
+  reconnects on its own (nothing new to do).
 
 ## Shipped
 

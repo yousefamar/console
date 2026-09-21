@@ -38,7 +38,9 @@ import io.amar.console.HubTokenStore
 import io.amar.console.PushService
 import io.amar.console.core.HubConfig
 import io.amar.console.core.Updater
+import io.amar.console.data.longtail.HubRestart
 import io.amar.console.data.longtail.MatrixStatus
+import io.amar.console.ui.theme.accents
 import kotlinx.coroutines.launch
 
 /**
@@ -148,6 +150,49 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
             } else {
                 TextButton(onClick = { showMatrixLogin = true }) { Text("Connect") }
             }
+        }
+
+        HorizontalDivider()
+
+        // ---- Hub (SPA Settings → Hub → Restart) ---- //
+        Text("Hub", style = MaterialTheme.typography.titleMedium)
+        var restart by remember { mutableStateOf<HubRestart.State>(HubRestart.State.Idle) }
+        var confirmRestart by remember { mutableStateOf(false) }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Restart hub", style = MaterialTheme.typography.bodyMedium)
+                val r = restart
+                val line = when (r) {
+                    HubRestart.State.Idle -> null
+                    HubRestart.State.Restarting -> "Waiting for the new process…" to MaterialTheme.colorScheme.onSurfaceVariant
+                    is HubRestart.State.Back -> "Back in ${r.secs}s" to MaterialTheme.accents.green
+                    HubRestart.State.Timeout -> "Not back after ${HubRestart.TIMEOUT_MS / 1000}s" to MaterialTheme.colorScheme.error
+                    is HubRestart.State.Error -> r.message to MaterialTheme.colorScheme.error
+                }
+                line?.let { (text, tint) -> Text(text, style = MaterialTheme.typography.labelSmall, color = tint) }
+            }
+            TextButton(onClick = { confirmRestart = true }, enabled = restart != HubRestart.State.Restarting) {
+                Text(if (restart == HubRestart.State.Restarting) "Restarting…" else "Restart")
+            }
+        }
+        if (confirmRestart) {
+            AlertDialog(
+                onDismissRequest = { confirmRestart = false },
+                title = { Text("Restart hub") },
+                text = { Text("Restart the hub?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmRestart = false
+                        restart = HubRestart.State.Restarting
+                        scope.launch { restart = HubRestart.run(app.graph.hub) }
+                    }) { Text("Restart", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text("Cancel") } },
+            )
         }
 
         HorizontalDivider()
