@@ -721,6 +721,8 @@ interface InboxCreateResult {
 }
 interface InboxListing { name: string; address: string; local: boolean; watched: boolean; listeners: string[]; mxroute: { quota: number; usage: number; limit: number; sent: number; suspended: boolean } | null }
 
+const println = (line: string) => process.stdout.write(line + '\n')
+
 const INBOX_CREATE_FLAGS = ['for', 'project', 'from-name', 'signature', 'domain', 'quota', 'password', 'quiet']
 
 /** The hub answers inbox errors with `{success:false, error:{code,message}}` — surface the message, not the JSON. */
@@ -744,11 +746,11 @@ async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
     try { r = await hubFetch('/agents/inbox') } catch (err) { inboxFail(err, flags) }
     if (flags.json) { output(r.data, flags); return }
     if (r.data.mxrouteError) info(`mxroute: ${r.data.mxrouteError} (showing local configs only)`)
-    if (!r.data.inboxes.length) { outputLine(`no agent mailboxes on ${r.data.domain}`); return }
+    if (!r.data.inboxes.length) { println(`no agent mailboxes on ${r.data.domain}`); return }
     for (const i of r.data.inboxes) {
       const mx = i.mxroute ? `${i.mxroute.usage}/${i.mxroute.quota || '∞'} MB, ${i.mxroute.sent}/${i.mxroute.limit} sent today${i.mxroute.suspended ? ', SUSPENDED' : ''}` : 'not on mxroute'
       const local = i.local ? `~/.config/${i.name}-mail` : 'no local config'
-      outputLine(`${i.address.padEnd(28)} ${local.padEnd(26)} ${i.watched ? 'IDLE-watched' : 'not watched'}${i.listeners.length ? `, wakes ${i.listeners.join(',')}` : ''}  [${mx}]`)
+      println(`${i.address.padEnd(28)} ${local.padEnd(26)} ${i.watched ? 'IDLE-watched' : 'not watched'}${i.listeners.length ? `, wakes ${i.listeners.join(',')}` : ''}  [${mx}]`)
     }
     return
   }
@@ -767,13 +769,13 @@ async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
     try { r = await hubFetch('/agents/inbox', { method: 'POST', body, timeout: 120_000 }) } catch (err) { inboxFail(err, flags) }
     const d = r.data
     if (flags.json) { output(d, flags); return }
-    outputLine(`${d.address}  ${d.created ? 'created on mxroute' : 'adopted (existing mailbox)'}`)
-    outputLine(`  config    ${d.envFile}`)
-    outputLine(`  imap      ${d.imap.ok ? `login OK (attempt ${d.imap.attempts})` : `FAILED after ${d.imap.attempts} attempts: ${d.imap.error}`}`)
-    outputLine(`  watcher   ${d.watcher === 'added' ? 'IDLE watch started' : 'already watching'}`)
-    outputLine(`  skill     ${d.skillFile ?? '(none — no --agent/--project)'}`)
-    outputLine(`  listener  ${d.listener ? `${d.listener.id} (mail.received, data.account=${d.name})` : '(none)'}`)
-    outputLine(`  wake      ${d.wake ?? '(none)'}`)
+    println(`${d.address}  ${d.created ? 'created on mxroute' : 'adopted (existing mailbox)'}`)
+    println(`  config    ${d.envFile}`)
+    println(`  imap      ${d.imap.ok ? `login OK (attempt ${d.imap.attempts})` : `FAILED after ${d.imap.attempts} attempts: ${d.imap.error}`}`)
+    println(`  watcher   ${d.watcher === 'added' ? 'IDLE watch started' : 'already watching'}`)
+    println(`  skill     ${d.skillFile ?? '(none — no --agent/--project)'}`)
+    println(`  listener  ${d.listener ? `${d.listener.id} (mail.received, data.account=${d.name})` : '(none)'}`)
+    println(`  wake      ${d.wake ?? '(none)'}`)
     for (const w of d.warnings) info(`warning: ${w}`)
     return
   }
@@ -787,7 +789,7 @@ async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
     try { r = await hubFetch(`/agents/inbox/${encodeURIComponent(name)}`, { method: 'DELETE', params: { keep: opts['keep-mailbox'] === 'true' ? '1' : undefined }, timeout: 60_000 }) } catch (err) { inboxFail(err, flags) }
     if (flags.json) { output(r.data, flags); return }
     const d = r.data
-    outputLine(`${d.address}  mxroute mailbox ${d.mxroute}; local config ${d.envRemoved ? 'removed' : 'was absent'}; listeners removed: ${d.listenersRemoved.join(', ') || 'none'}; skills removed: ${d.skillsRemoved.join(', ') || 'none'}`)
+    println(`${d.address}  mxroute mailbox ${d.mxroute}; local config ${d.envRemoved ? 'removed' : 'was absent'}; listeners removed: ${d.listenersRemoved.join(', ') || 'none'}; skills removed: ${d.skillsRemoved.join(', ') || 'none'}`)
     return
   }
   exitWithError('USAGE', usage, flags)
