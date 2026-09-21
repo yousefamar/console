@@ -20,6 +20,7 @@
 //!   audio path) in the state a human caller would leave it in.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,8 @@ pub const FRAME_SAMPLES: usize = 960;
 const TICK: Duration = Duration::from_millis(60);
 /// ~24 s of queued outbound speech; beyond this the producer is misbehaving.
 const MAX_QUEUE_FRAMES: usize = 400;
+/// Speech frames dropped by the overflow guard, for the wire log's running total.
+static QUEUE_DROPS: AtomicUsize = AtomicUsize::new(0);
 
 /// Idle-frame comfort noise: xorshift white noise through a one-pole low-pass
 /// (a soft hiss rather than a bright one), scaled to `WA_VOICE_IDLE_NOISE_DB`
@@ -204,6 +207,113 @@ impl Levers {
     }
 }
 
+/// How long the source waits, with the queue empty, before it calls the
+/// utterance over. Without it a pipeline that hands over its TTS a little
+/// slower than real time looks like the end of a talkspurt, and the next
+/// chunk would get a fresh pre-roll spliced into the middle of a sentence.
+const HANGOVER_TICKS: usize = 8;
+
+/// One tick's worth of transition, for the wire log.
+#[derive(Debug, PartialEq)]
+pub enum MicEvent {
+    PrerollStart { q_depth: usize, frames: usize },
+    Onset { q_depth: usize, first_frame_dbfs: f32 },
+    Idle { spoken_frames: usize },
+    PartialFrame { samples: usize },
+}
+
+#[derive(Debug, PartialEq)]
+enum MicState {
+    Idle,
+    /// Pre-roll for THIS talkspurt, armed once on the idle→speech transition.
+    ///
+    /// It is armed here and nowhere else, which is the whole lesson of call
+    /// 00357d4b (21 Sept, Mai heard 56 s of hiss and no words): the first
+    /// version re-armed whenever the pre-roll had drained and the queue was
+    /// still non-empty, so every fifth tick built another pre-roll and the
+    /// queued speech was never sent at all.
+    Preroll(VecDeque<Vec<i16>>),
+    Speaking { spoken_frames: usize, empty_ticks: usize },
+}
+
+/// The 60 ms mic clock's frame source: queued speech when there is any, comfort
+/// noise otherwise, and the configured pre-roll in front of each talkspurt.
+pub struct MicSource {
+    levers: Levers,
+    idle: IdleNoise,
+    state: MicState,
+}
+
+impl MicSource {
+    pub fn new(levers: Levers) -> Self {
+        Self { levers, idle: IdleNoise::new(), state: MicState::Idle }
+    }
+
+    fn idle_frame(&mut self) -> Vec<i16> {
+        if self.levers.dtx { vec![0i16; FRAME_SAMPLES] } else { self.idle.frame() }
+    }
+
+    fn take_speech(&mut self, q: &mut VecDeque<Vec<i16>>, events: &mut Vec<MicEvent>) -> Option<Vec<i16>> {
+        match q.pop_front() {
+            Some(f) if f.len() == FRAME_SAMPLES => Some(f),
+            Some(mut f) => {
+                events.push(MicEvent::PartialFrame { samples: f.len() });
+                f.resize(FRAME_SAMPLES, 0);
+                Some(f)
+            }
+            None => None,
+        }
+    }
+
+    /// The frame to send on this tick, plus whatever transitions it made.
+    pub fn next_frame(&mut self, q: &mut VecDeque<Vec<i16>>) -> (Vec<i16>, Vec<MicEvent>) {
+        let mut events = Vec::new();
+        let depth = q.len();
+        if self.state == MicState::Idle && depth > 0 && self.levers.preroll_frames > 0 {
+            let frames = self.levers.preroll_frames();
+            events.push(MicEvent::PrerollStart { q_depth: depth, frames: frames.len() });
+            self.state = MicState::Preroll(frames);
+        }
+        if let MicState::Preroll(frames) = &mut self.state {
+            if let Some(f) = frames.pop_front() {
+                if frames.is_empty() {
+                    self.state = MicState::Speaking { spoken_frames: 0, empty_ticks: 0 };
+                }
+                return (f, events);
+            }
+            self.state = MicState::Speaking { spoken_frames: 0, empty_ticks: 0 };
+        }
+        if let Some(mut f) = self.take_speech(q, &mut events) {
+            match &mut self.state {
+                MicState::Speaking { spoken_frames, empty_ticks } => {
+                    *spoken_frames += 1;
+                    *empty_ticks = 0;
+                }
+                _ => {
+                    let rms = (f.iter().map(|&s| (s as f32) * (s as f32)).sum::<f32>() / f.len() as f32).sqrt();
+                    events.push(MicEvent::Onset {
+                        q_depth: depth,
+                        first_frame_dbfs: if rms > 0.0 { 20.0 * (rms / 32767.0).log10() } else { -120.0 },
+                    });
+                    self.state = MicState::Speaking { spoken_frames: 1, empty_ticks: 0 };
+                }
+            }
+            if !self.levers.dtx {
+                self.idle.apply(&mut f);
+            }
+            return (f, events);
+        }
+        if let MicState::Speaking { spoken_frames, empty_ticks } = &mut self.state {
+            *empty_ticks += 1;
+            if *empty_ticks >= HANGOVER_TICKS {
+                events.push(MicEvent::Idle { spoken_frames: *spoken_frames });
+                self.state = MicState::Idle;
+            }
+        }
+        (self.idle_frame(), events)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
     In,
@@ -366,8 +476,21 @@ impl CallManager {
         for chunk in samples.chunks(FRAME_SAMPLES) {
             q.push_back(chunk.to_vec());
         }
+        // Overflow is silence on the wire — the frames dropped here are speech
+        // the peer will never hear — so it is logged rather than absorbed. Call
+        // 00357d4b (21 Sept) discarded a whole call's audio through this branch
+        // with nothing in any log to say so.
+        let mut dropped = 0usize;
         while q.len() > MAX_QUEUE_FRAMES {
             q.pop_front();
+            dropped += 1;
+        }
+        if dropped > 0 {
+            let total = QUEUE_DROPS.fetch_add(dropped, Ordering::Relaxed) + dropped;
+            if total == dropped || total % 100 < dropped {
+                WIRE.line(&format!("queue overflow: {total} speech frames dropped (cap {MAX_QUEUE_FRAMES})"));
+                warn!("outbound queue overflow: {total} speech frames dropped so far");
+            }
         }
     }
 
@@ -689,17 +812,13 @@ impl CallManager {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(TICK);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut idle = IdleNoise::new();
             let levers = Levers::from_env();
             info!(
                 "idle comfort noise at {} dBFS; levers {levers:?}",
                 if levers.dtx { "DTX (zeros)".to_string() } else { IdleNoise::configured_level_db().to_string() }
             );
             WIRE.line(&format!("levers {levers:?} idle_db={}", IdleNoise::configured_level_db()));
-            // Idle -> (Preroll ->) Speaking -> Idle, per queue transition.
-            let mut speaking = false;
-            let mut preroll: VecDeque<Vec<i16>> = VecDeque::new();
-            let mut spoken_frames = 0usize;
+            let mut source = MicSource::new(levers);
             let mut tick_no = 0u64;
             let mut last_tick = Instant::now();
             loop {
@@ -714,52 +833,26 @@ impl CallManager {
                 if ticker_mic.is_closed() {
                     break;
                 }
-                let (popped, depth) = {
+                let (frame, events) = {
                     let mut q = ticker_queue.lock().unwrap_or_else(|p| p.into_inner());
-                    let depth = q.len();
-                    if !speaking && depth > 0 && preroll.is_empty() && levers.preroll_frames > 0 {
-                        preroll = levers.preroll_frames();
-                        WIRE.line(&format!("preroll start q_depth={depth} frames={}", preroll.len()));
-                    }
-                    if !preroll.is_empty() {
-                        (None, depth)
-                    } else {
-                        let f = match q.pop_front() {
-                            Some(f) if f.len() == FRAME_SAMPLES => Some(f),
-                            Some(mut f) => {
-                                WIRE.line(&format!("partial frame {} samples padded", f.len()));
-                                f.resize(FRAME_SAMPLES, 0);
-                                Some(f)
-                            }
-                            None => None,
-                        };
-                        (f, depth)
-                    }
+                    source.next_frame(&mut q)
                 };
-                let frame = if let Some(pre) = preroll.pop_front() {
-                    pre
-                } else if let Some(mut f) = popped {
-                    if !speaking {
-                        speaking = true;
-                        spoken_frames = 0;
-                        let rms = (f.iter().map(|&s| (s as f32) * (s as f32)).sum::<f32>() / f.len() as f32).sqrt();
-                        WIRE.line(&format!(
-                            "onset q_depth={depth} first_frame_dbfs={:.1}",
-                            if rms > 0.0 { 20.0 * (rms / 32767.0).log10() } else { -120.0 }
-                        ));
+                for ev in events {
+                    match ev {
+                        MicEvent::PrerollStart { q_depth, frames } => {
+                            WIRE.line(&format!("preroll start q_depth={q_depth} frames={frames}"))
+                        }
+                        MicEvent::Onset { q_depth, first_frame_dbfs } => {
+                            WIRE.line(&format!("onset q_depth={q_depth} first_frame_dbfs={first_frame_dbfs:.1}"))
+                        }
+                        MicEvent::Idle { spoken_frames } => {
+                            WIRE.line(&format!("idle after {spoken_frames} speech frames"))
+                        }
+                        MicEvent::PartialFrame { samples } => {
+                            WIRE.line(&format!("partial frame {samples} samples padded"))
+                        }
                     }
-                    spoken_frames += 1;
-                    if !levers.dtx {
-                        idle.apply(&mut f);
-                    }
-                    f
-                } else {
-                    if speaking {
-                        speaking = false;
-                        WIRE.line(&format!("idle after {spoken_frames} speech frames"));
-                    }
-                    if levers.dtx { vec![0i16; FRAME_SAMPLES] } else { idle.frame() }
-                };
+                }
                 WIRE.tx_pcm(&frame);
                 if ticker_mic.try_send(frame).is_err() {
                     debug!("mic channel full/closed for {}", ticker_handle.call_id());
@@ -922,6 +1015,106 @@ mod tests {
         assert_eq!(nf.len(), 2);
         assert!(nf[1].iter().any(|&s| s != 0));
         assert!(Levers { dtx: true, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 }.preroll_frames().is_empty());
+    }
+
+    /// Marked frames, so a test can tell queued speech from generated noise.
+    fn speech(n: usize) -> VecDeque<Vec<i16>> {
+        (0..n).map(|i| vec![1000 + i as i16; FRAME_SAMPLES]).collect()
+    }
+
+    fn levers(preroll_frames: usize) -> Levers {
+        Levers {
+            dtx: false,
+            preroll: if preroll_frames == 0 { Preroll::Off } else { Preroll::Noise },
+            preroll_frames,
+            preroll_db: -30.0,
+        }
+    }
+
+    fn is_speech(f: &[i16]) -> bool {
+        f[0] >= 1000
+    }
+
+    /// Call 00357d4b, 21 Sept: Mai heard 56 s of hiss and not one word, because
+    /// the pre-roll re-armed every time it drained while the queue still held
+    /// speech. Every queued frame must reach the wire, exactly once, in order.
+    #[test]
+    fn preroll_runs_once_and_never_starves_the_queue() {
+        let mut src = MicSource::new(levers(5));
+        let mut q = speech(20);
+        let mut pre = 0;
+        let mut sent: Vec<i16> = Vec::new();
+        let mut prerolls_armed = 0;
+        for _ in 0..40 {
+            let (f, evs) = src.next_frame(&mut q);
+            prerolls_armed += evs.iter().filter(|e| matches!(e, MicEvent::PrerollStart { .. })).count();
+            if is_speech(&f) {
+                sent.push(f[0]);
+            } else if sent.is_empty() {
+                pre += 1;
+            }
+        }
+        assert_eq!(prerolls_armed, 1, "the pre-roll must be armed once per talkspurt, not per drain");
+        assert_eq!(pre, 5, "300 ms of pre-roll, then speech");
+        assert_eq!(sent, (0..20).map(|i| 1000 + i as i16).collect::<Vec<_>>(), "every queued frame, in order");
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn with_no_preroll_the_first_queued_frame_goes_out_immediately() {
+        let mut src = MicSource::new(levers(0));
+        let mut q = speech(3);
+        let (f, evs) = src.next_frame(&mut q);
+        assert!(is_speech(&f));
+        assert!(evs.iter().any(|e| matches!(e, MicEvent::Onset { .. })));
+    }
+
+    /// A gap shorter than the hangover is the pipeline lagging mid-sentence, not
+    /// a new utterance: splicing pre-roll noise in there would be audible.
+    #[test]
+    fn a_short_gap_does_not_splice_preroll_into_a_sentence() {
+        let mut src = MicSource::new(levers(5));
+        let mut q = speech(2);
+        for _ in 0..7 {
+            src.next_frame(&mut q);
+        }
+        assert!(q.is_empty());
+        let mut armed = 0;
+        for _ in 0..(HANGOVER_TICKS - 1) {
+            let (_, evs) = src.next_frame(&mut q);
+            armed += evs.iter().filter(|e| matches!(e, MicEvent::PrerollStart { .. })).count();
+        }
+        q.extend(speech(2));
+        let (f, evs) = src.next_frame(&mut q);
+        armed += evs.iter().filter(|e| matches!(e, MicEvent::PrerollStart { .. })).count();
+        assert_eq!(armed, 0, "no second pre-roll inside one utterance");
+        assert!(is_speech(&f), "the continuation goes straight out");
+    }
+
+    /// After a real silence the next utterance gets its own pre-roll.
+    #[test]
+    fn preroll_rearms_for_the_next_utterance() {
+        let mut src = MicSource::new(levers(5));
+        let mut q = speech(2);
+        for _ in 0..(7 + HANGOVER_TICKS) {
+            src.next_frame(&mut q);
+        }
+        q.extend(speech(2));
+        let (f, evs) = src.next_frame(&mut q);
+        assert!(evs.iter().any(|e| matches!(e, MicEvent::PrerollStart { .. })), "second utterance, second pre-roll");
+        assert!(!is_speech(&f));
+    }
+
+    #[test]
+    fn an_idle_call_only_ever_sends_comfort_noise() {
+        let mut src = MicSource::new(levers(5));
+        let mut q: VecDeque<Vec<i16>> = VecDeque::new();
+        for _ in 0..20 {
+            let (f, evs) = src.next_frame(&mut q);
+            assert!(evs.is_empty());
+            assert!(f.iter().any(|&s| s != 0), "never an all-zero frame (the engine reads that as mic-mute)");
+            assert!(!is_speech(&f));
+        }
     }
 
     #[test]
